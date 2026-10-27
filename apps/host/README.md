@@ -28,3 +28,56 @@ interface; the service does not terminate TLS.
 to authenticate an Xpra hello over the relay, parks, resumes, and repeats.
 Set `CABOOSE_URL` when testing a different host. This check is not yet validated
 against the Caboose guest image.
+
+## Self-host with Docker
+
+On an amd64 Linux machine, install Docker and Compose, enable hardware
+virtualization and make `/dev/kvm` available. Docker must be able to run
+privileged containers. Allow space for the golden image, overlays and memory
+snapshots; the default sparse XFS volume has a 400 GiB maximum and grows on
+use. State is under `/data/caboose` by default, including `disks.xfs.img` when
+the underlying filesystem is not XFS or Btrfs. Set `CABOOSE_STATE_DIR` in
+`deploy/.env` to use a different absolute path. If using a loop image, its
+filesystem is mounted inside the container at `/data/caboose/disks`, not on
+the host. Back up the entire state directory while the container is stopped.
+Do not run multiple containers against the same state directory.
+
+Create `deploy/.env` with mode 0600 containing a long random owner token:
+
+```sh
+umask 077
+printf 'CABOOSE_OWNER_TOKEN=%s\n' "$(openssl rand -hex 32)" > deploy/.env
+```
+
+Then start from the repository root:
+
+```sh
+docker compose -f deploy/compose.yaml up -d --build
+```
+
+The service listens on host loopback port 7310 by default. Set
+`CABOOSE_PUBLISH_ADDRESS` in `deploy/.env` to a specific host address (or
+`0.0.0.0` for all interfaces) when a trusted reverse proxy or network needs
+access. HTTP carries the bearer token in cleartext: use HTTPS/WSS at a trusted
+proxy for network access. The container is privileged for KVM, loop mounts,
+and TAP networking; only run it on a trusted host. Its private Docker network
+namespace contains its TAP, forwarding and NAT rules, while Docker itself
+manages the published port on the host. The guest can reach networks available
+to the container. Cloud Hypervisor is pinned to the amd64 v49.0 static release.
+
+The service can start and report health before a guest image is installed, but
+cannot wake a computer until `base.raw`, `vmlinux`, and `initrd` are present in
+its disk root. Once the Caboose image builder is available, copy its output
+into the mounted disk root (for example, `docker cp base.raw
+$(docker compose -f deploy/compose.yaml ps -q caboose-host):/data/caboose/disks/base.raw`,
+and likewise for the kernel and initrd). The guest image and end-to-end flow
+are not yet verified. `apps/host/scripts/check-container.sh` checks the real
+container's network namespace, TAP/NAT, KVM access, reflinks and authenticated
+health. The `e2e.sh` check above requires the Xpra client and a built guest;
+its first wake is cold only if no saved snapshot exists.
+
+To rotate the token, replace `CABOOSE_OWNER_TOKEN` in `deploy/.env` with a new
+random value, then run `docker compose -f deploy/compose.yaml up -d` to
+recreate the service. Update every client; the old token stops working. Keep
+this file private and never commit it. The token is also visible to Docker
+administrators through container configuration.

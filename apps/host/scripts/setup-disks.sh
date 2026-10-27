@@ -33,7 +33,7 @@ else
     if ! mountpoint -q "$root"; then
         mount -o loop,noatime "$image" "$root"
     fi
-    if ! grep -qs " $root xfs " /etc/fstab; then
+    if [[ ${CABOOSE_NO_FSTAB:-0} != 1 ]] && ! grep -qs " $root xfs " /etc/fstab; then
         echo "$image $root xfs loop,noatime,nofail 0 0" >> /etc/fstab
     fi
     type=$(fs_type "$root")
