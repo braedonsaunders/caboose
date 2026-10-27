@@ -7,3 +7,4 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     xpra-common=6.5.5-r0-1 xpra-server=6.5.5-r0-1 xpra-x11=6.5.5-r0-1 \
     xpra-codecs=6.5.5-r0-1 xpra-codecs-extras=6.5.5-r0-1 \
     libx264-164 xterm x11-apps xvfb python3-websockets xclip xauth xdotool && apt-get clean
+RUN apt-get update -qq && apt-get install -y --no-install-recommends x11-utils && apt-get clean

@@ -253,9 +253,28 @@ processing. The server can replace the data field with a preceding raw chunk.
 See [draw construction](https://github.com/Xpra-org/xpra/blob/v6.5.5/xpra/server/window/compress.py)
 and the [reference draw handler](https://github.com/Xpra-org/xpra/blob/v6.5.5/xpra/client/subsystem/window/draw.py).
 
-**H.264 remains unverified.** The test server loaded x264, but the animated
-terminal was classified as text and its updates were encoded as WebP. No H.264
-wire frame was captured, so this document does not yet prescribe NAL framing,
-SPS/PPS handling, frame reset or VideoToolbox sample conversion. Those details,
-a complete seamless hello, all negotiated packet layouts and real-device checks
-are required before this research can be used as a definitive client contract.
+### H.264 evidence and VideoToolbox mapping
+
+The `video-session.json` capture uses the real 6.5.5 x264 server and its first
+`h264` draw has `frame: 0`, `pts: 0`, `type: "IDR"`, `profile: "high"`,
+`csc: "YUV420P"` and `full-range: true`. Its bytes use Annex-B start codes;
+NAL types in order are SPS (7), PPS (8), SEI (6), and IDR slices (5). Later
+server logs show increasing `frame` and `pts`. This is one tested x264 session,
+not proof that every Xpra video encoder or stream restart has identical behavior.
+Do not advertise B-frame decoding: set `encoding.video_b_frames: []`. In this
+release the server enables B-frames only when the encoding is listed there
+and the server's other B-frame conditions are satisfied.
+
+For a VideoToolbox implementation, split Annex-B NAL units at three- or
+four-byte start codes; collect SPS and PPS without their start codes. Create a
+format description from the parameter sets with a four-byte NAL length field,
+then build AVC samples by replacing each start code with the corresponding
+four-byte big-endian NAL length. Feed complete access units in stream order and
+track a separate decoder per window/video stream. Reconfigure on a new stream
+or changed parameter sets, and do not decode dependent frames after a missing
+frame until recovery. Apple's [Core Media parameter-set API](https://developer.apple.com/documentation/coremedia/cmvideoformatdescriptioncreatefromh264parametersets%28allocator%3Aparametersetcount%3Aparametersetpointers%3Aparametersetsizes%3Analunitheaderlength%3Aformatdescriptionout%3A%29)
+documents the parameter-set and AVC length-field requirements. This mapping is
+an implementation approach, not yet verified on an iPhone; stream reset,
+frame ordering across changes, timestamp semantics and B-frame behavior still
+need device and server tests. The complete hello, metadata, remaining packet
+layouts and guest end-to-end checks are also outstanding.
