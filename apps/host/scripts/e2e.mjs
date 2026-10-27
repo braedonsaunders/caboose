@@ -36,11 +36,16 @@ async function hello(session) {
     console.log('Xpra authenticated hello and info succeeded')
   } finally { await new Promise(resolve => bridge.close(resolve)) }
 }
+let started = performance.now()
 const first = await request('/v1/session', 'POST')
+console.log(`First wake (cold only without a snapshot): ${((performance.now() - started) / 1000).toFixed(2)} s`)
 await hello(first)
+started = performance.now()
 await request('/v1/session/park', 'POST')
-console.log('Park succeeded')
+console.log(`Park: ${((performance.now() - started) / 1000).toFixed(2)} s`)
+started = performance.now()
 const second = await request('/v1/session', 'POST')
+console.log(`Warm resume: ${((performance.now() - started) / 1000).toFixed(2)} s`)
 await hello(second)
 const health = await request('/v1/health')
 if (health.desk?.lastError) throw new Error(`Desk host reported: ${health.desk.lastError}`)
