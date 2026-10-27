@@ -1,0 +1,35 @@
+name: Caboose
+options:
+  bundleIdPrefix: com.braedonsaunders
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+packages:
+  CabooseKit:
+    path: CabooseKit
+configFiles:
+  Debug: Caboose/Config/Caboose.xcconfig
+  Release: Caboose/Config/Caboose.xcconfig
+settings:
+  base:
+    DEVELOPMENT_TEAM: 9YL3YCJTNT
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  Caboose:
+    type: application
+    platform: iOS
+    sources:
+      - path: Caboose
+        excludes: ["Config/*.xcconfig"]
+    dependencies:
+      - package: CabooseKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.braedonsaunders.caboose
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: Caboose/Info.plist

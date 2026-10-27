@@ -1,0 +1,178 @@
+import SwiftUI
+
+@main
+struct CabooseApp: App {
+    @State private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .environment(model)
+                .preferredColorScheme(.dark)
+                .onOpenURL { url in
+                    if let credentials = Credentials(link: url) { model.connect(with: credentials) }
+                }
+                .onAppear { AppModel.requestNotificationPermission() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active: model.sceneBecameActive()
+            case .background: model.sceneEnteredBackground()
+            default: break
+            }
+        }
+    }
+}
+
+struct RootView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        ZStack {
+            Backdrop()
+            switch model.phase {
+            case .needsSetup:
+                SetupView()
+            case .waking, .connecting:
+                WakeView(connecting: model.phase == .connecting)
+            case .failed(let message):
+                FailureView(message: message)
+            case .ready:
+                HomeView()
+                    .fullScreenCover(isPresented: Binding(
+                        get: { model.presentedWindowID != nil },
+                        set: { if !$0 { model.presentedWindowID = nil } })) {
+                        WindowScreen()
+                            .environment(model)
+                    }
+            }
+        }
+        .animation(.smooth(duration: 0.35), value: model.phase)
+    }
+}
+
+/// The dusk-to-night gradient behind everything.
+struct Backdrop: View {
+    var body: some View {
+        MeshGradient(width: 3, height: 3, points: [
+            [0, 0], [0.5, 0], [1, 0],
+            [0, 0.5], [0.6, 0.45], [1, 0.55],
+            [0, 1], [0.5, 1], [1, 1],
+        ], colors: [
+            Color(red: 0.06, green: 0.07, blue: 0.13), Color(red: 0.10, green: 0.08, blue: 0.20), Color(red: 0.05, green: 0.10, blue: 0.18),
+            Color(red: 0.16, green: 0.09, blue: 0.20), Color(red: 0.32, green: 0.12, blue: 0.16), Color(red: 0.10, green: 0.12, blue: 0.24),
+            Color(red: 0.05, green: 0.05, blue: 0.09), Color(red: 0.12, green: 0.06, blue: 0.10), Color(red: 0.04, green: 0.06, blue: 0.10),
+        ])
+        .ignoresSafeArea()
+    }
+}
+
+struct WakeView: View {
+    let connecting: Bool
+    @State private var pulse = false
+
+    var body: some View {
+        VStack(spacing: 22) {
+            Image(systemName: "train.side.rear.car")
+                .font(.system(size: 64, weight: .light))
+                .symbolEffect(.pulse, options: .repeating, isActive: true)
+                .foregroundStyle(.white.opacity(0.9))
+            VStack(spacing: 6) {
+                Text(connecting ? "Opening your display" : "Waking your computer")
+                    .font(.title3.weight(.semibold))
+                Text(connecting ? "Your apps are right where you left them." : "Every app comes back exactly as it was.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            ProgressView().tint(.white)
+        }
+        .multilineTextAlignment(.center)
+        .padding(32)
+    }
+}
+
+struct FailureView: View {
+    @Environment(AppModel.self) private var model
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(.orange)
+            Text("Your computer is out of reach")
+                .font(.title3.weight(.semibold))
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 12) {
+                Button("Try Again") { Task { await model.wake() } }
+                    .buttonStyle(.glassProminent)
+                Button("Change Computer") { model.signOut() }
+                    .buttonStyle(.glass)
+            }
+        }
+        .padding(32)
+    }
+}
+
+struct SetupView: View {
+    @Environment(AppModel.self) private var model
+    @State private var host = ""
+    @State private var token = ""
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            Spacer()
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: "train.side.rear.car")
+                    .font(.system(size: 44, weight: .light))
+                Text("Caboose")
+                    .font(.system(size: 44, weight: .bold, design: .rounded))
+                Text("Your phone's computer. A real Linux machine that wakes when you open it and keeps every app exactly where you left it.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+            VStack(spacing: 12) {
+                TextField("Computer address — https://…", text: $host)
+                    .textContentType(.URL)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(14)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 14))
+                SecureField("Sign-in token", text: $token)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(14)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 14))
+                if let error {
+                    Text(error).font(.footnote).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Button {
+                connect()
+            } label: {
+                Text("Wake My Computer").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            .disabled(host.isEmpty || token.isEmpty)
+            Spacer()
+        }
+        .padding(28)
+    }
+
+    private func connect() {
+        var text = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.contains("://") { text = "http://" + text }
+        guard let url = URL(string: text), url.host != nil else {
+            error = "That doesn't look like a computer address."
+            return
+        }
+        model.connect(with: Credentials(hostURL: url, token: token.trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+}

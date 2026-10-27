@@ -1,0 +1,3 @@
+// Copy to Local.xcconfig (untracked). `//` starts a comment in xcconfig, so write URLs as http:/$()/…
+CABOOSE_DEVELOPMENT_HOST = http:/$()/192.0.2.10:7310
+CABOOSE_DEVELOPMENT_TOKEN = paste-your-owner-token
