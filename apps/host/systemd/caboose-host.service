@@ -1,0 +1,15 @@
+[Unit]
+Description=Caboose host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/caboose/host.env
+ExecStart=/bin/sh -c 'cd "$$CABOOSE_HOST_DIR" && exec "$$CABOOSE_NODE" ./node_modules/tsx/dist/cli.mjs src/index.ts'
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=180
+
+[Install]
+WantedBy=default.target
