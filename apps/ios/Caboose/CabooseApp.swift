@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct CabooseApp: App {
-    @State private var model = AppModel()
+    @State private var model = AppModel.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -38,6 +38,8 @@ struct RootView: View {
                 WakeView(connecting: model.phase == .connecting)
             case .failed(let message):
                 FailureView(message: message)
+            case .ready where model.externalDisplayActive:
+                TrackpadScreen(desktop: model.desktop)
             case .ready:
                 HomeView()
                     .fullScreenCover(isPresented: Binding(
