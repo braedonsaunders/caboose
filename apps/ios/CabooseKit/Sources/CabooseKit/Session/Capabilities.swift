@@ -10,9 +10,14 @@ public struct ClientCapabilities: Sendable {
     public var uuid: String
     public var version: String
     public var keyboardLayout: String
+    /// Xpra's authenticators identify the connecting user by name; the guest's user is `caboose`.
+    public var username: String
+    /// The encoding the server should prefer; "auto" lets it choose per region.
+    public var preferredEncoding = "auto"
 
     public init(desktopWidth: Int, desktopHeight: Int, dpi: Int, refreshRate: Int = 60,
-                uuid: String = UUID().uuidString, version: String = "6.3", keyboardLayout: String = "us") {
+                uuid: String = UUID().uuidString, version: String = "6.5.5", keyboardLayout: String = "us",
+                username: String = "caboose") {
         self.desktopWidth = desktopWidth
         self.desktopHeight = desktopHeight
         self.dpi = dpi
@@ -20,6 +25,7 @@ public struct ClientCapabilities: Sendable {
         self.uuid = uuid
         self.version = version
         self.keyboardLayout = keyboardLayout
+        self.username = username
     }
 
     /// Encodings Caboose decodes natively: H.264 through VideoToolbox, stills through ImageIO.
@@ -40,6 +46,7 @@ public struct ClientCapabilities: Sendable {
             pair("protocol-version", [7, 0]),
             pair("client_type", "Caboose"),
             pair("uuid", RValue(uuid)),
+            pair("username", RValue(username)),
             pair("platform", ["": "ios", "name": "iOS"]),
             pair("session-type", "Caboose"),
             pair("display", [
@@ -74,7 +81,7 @@ public struct ClientCapabilities: Sendable {
             pair("auto_refresh_delay", 250),
             pair("metadata.supported", .list(Self.metadataSupported)),
             pair("encoding", [
-                "": "auto",
+                "": RValue(preferredEncoding),
                 "options": .list(Self.encodings),
                 "core": .list(Self.encodings),
                 "rgb_formats": ["BGRX", "BGRA", "RGBX", "RGBA"],

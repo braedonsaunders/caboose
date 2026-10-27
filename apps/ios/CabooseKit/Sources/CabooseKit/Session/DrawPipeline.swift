@@ -4,10 +4,29 @@ import ImageIO
 
 /// Decodes and applies one window's draws, in order, off the main thread.
 ///
-/// Every draw is acknowledged with `window-ack` carrying the decode time in
+/// Every draw is acknowledged with `window-draw-ack` carrying the decode time in
 /// microseconds (or -1 on failure). The server's flow control runs on those acks:
 /// it will not send more than a few frames ahead of them, so acking promptly is
 /// what keeps the stream smooth.
+/// Counts of applied draws by encoding, for diagnostics and tests.
+public final class DrawStatistics: @unchecked Sendable {
+    public static let shared = DrawStatistics()
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+    private var failures: [String: Int] = [:]
+
+    func record(_ coding: String, failed: Bool) {
+        lock.lock()
+        if failed { failures[coding, default: 0] += 1 } else { counts[coding, default: 0] += 1 }
+        lock.unlock()
+    }
+
+    public var snapshot: (applied: [String: Int], failed: [String: Int]) {
+        lock.lock(); defer { lock.unlock() }
+        return (counts, failures)
+    }
+}
+
 final class DrawPipeline: @unchecked Sendable {
     let windowID: Int
     let surface = WindowSurface()
@@ -42,9 +61,11 @@ final class DrawPipeline: @unchecked Sendable {
             } catch {
                 failure = String(describing: error)
             }
+            DrawStatistics.shared.record(packet[5]?.string ?? "?", failed: !failure.isEmpty)
             let micros = failure.isEmpty ? Int64((DispatchTime.now().uptimeNanoseconds - start) / 1000) : -1
-            send(XpraPacket("window-ack", [
-                .int(Int64(windowID)), .int(Int64(width)), .int(Int64(height)), .int(Int64(sequence)),
+            // window-draw-ack: sequence, wid, width, height, decode time (µs, -1 on failure), message.
+            send(XpraPacket("window-draw-ack", [
+                .int(Int64(sequence)), .int(Int64(windowID)), .int(Int64(width)), .int(Int64(height)),
                 .int(micros), RValue(failure),
             ]))
         }

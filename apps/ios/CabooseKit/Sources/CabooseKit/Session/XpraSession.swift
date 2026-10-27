@@ -221,6 +221,15 @@ public final class XpraSession {
     private func didReceiveHello(_ packet: XpraPacket) {
         let caps = packet[0] ?? .dict([])
         serverVersion = caps["version"]?.string
+        // The server defers its keymap until the client describes its keyboard. Without it,
+        // modifiers in key events are ignored (no Shift, so "(" types "9"). The layout equals
+        // the server default, so force it to apply.
+        send("keyboard-config", [[
+            "layout": RValue(capabilities.keyboardLayout),
+            "keymap": ["layout": RValue(capabilities.keyboardLayout), "variant": "", "options": ""],
+            "modifiers": [],
+            "force": true,
+        ]])
         state = .ready
         pingTimer?.invalidate()
         pingTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -303,7 +312,7 @@ public final class XpraSession {
     private func answerPing(_ packet: XpraPacket) {
         let echo = packet[0] ?? .int(0)
         let sid = packet[2] ?? RValue("")
-        send("ping-echo", [echo, 0, 0, 0, 0, sid])
+        send("ping_echo", [echo, 0, 0, 0, 0, sid])
     }
 
     private func measureLatency(_ packet: XpraPacket) {
@@ -313,8 +322,17 @@ public final class XpraSession {
 
     // MARK: Clipboard
 
-    /// `clipboard-data`: selection, { targets, data: { target: [type, format, encoding, bytes] }, claim }.
+    /// The computer's clipboard changed. Xpra 6 sends `clipboard-token` with positional
+    /// fields (selection, targets, target, dtype, dformat, encoding, data, …); newer servers
+    /// send `clipboard-data` with { targets, data: { target: [dtype, dformat, encoding, bytes] } }.
     private func receiveClipboard(_ packet: XpraPacket) {
+        if packet[1]?.list != nil || packet.arguments.count >= 7 {
+            guard let target = packet[2]?.string, target.contains("STRING") || target.contains("text"),
+                  let bytes = packet[6]?.data, let text = String(data: bytes, encoding: .utf8) else { return }
+            lastClipboardSent = text
+            onClipboardText?(text)
+            return
+        }
         guard let options = packet[1], let items = options["data"]?.pairs else { return }
         for item in items {
             guard let target = item.key.string, target.contains("STRING") || target.contains("text"),
@@ -341,13 +359,9 @@ public final class XpraSession {
     public func offerClipboard(_ text: String) {
         guard state == .ready, text != lastClipboardSent else { return }
         lastClipboardSent = text
-        let bytes = RValue.bytes(Data(text.utf8))
-        let targets: [RValue] = ["UTF8_STRING", "text/plain"]
-        send("clipboard-data", ["CLIPBOARD", [
-            "targets": .list(targets),
-            "data": .dict(targets.map { RPair($0, [$0, 8, "bytes", bytes]) }),
-            "claim": true, "greedy": true, "synchronous": true,
-        ]])
+        // clipboard-token: selection, targets, target, dtype, dformat, wire encoding, data, claim, greedy, synchronous.
+        send("clipboard-token", ["CLIPBOARD", ["UTF8_STRING", "text/plain"], "UTF8_STRING", "UTF8_STRING", 8, "bytes",
+                                 .bytes(Data(text.utf8)), true, true, true])
     }
 
     // MARK: Windows
@@ -397,16 +411,16 @@ public final class XpraSession {
 
     /// Precise scrolling; deltas in pixels, positive down/right.
     public func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, modifiers: [String] = []) {
-        let (position, props) = pointer(window, point, modifiers)
+        let (position, _) = pointer(window, point, modifiers)
         let buttons = RValue.list(buttonsDown.sorted().map { .int(Int64($0)) })
         let mods = RValue.list(modifiers.map { RValue($0) })
         if dy != 0 {
             let distance = Int64((abs(dy) * 1000 / 120).rounded())
-            send("pointer-wheel", [.int(Int64(window.id)), .int(dy > 0 ? 5 : 4), .int(distance), position, mods, buttons, props])
+            send("pointer-wheel", [.int(Int64(window.id)), .int(dy > 0 ? 5 : 4), .int(distance), position, mods, buttons])
         }
         if dx != 0 {
             let distance = Int64((abs(dx) * 1000 / 120).rounded())
-            send("pointer-wheel", [.int(Int64(window.id)), .int(dx > 0 ? 7 : 6), .int(distance), position, mods, buttons, props])
+            send("pointer-wheel", [.int(Int64(window.id)), .int(dx > 0 ? 7 : 6), .int(distance), position, mods, buttons])
         }
     }
 
@@ -422,6 +436,7 @@ public final class XpraSession {
     }
 
     /// Types text as key presses — what the iOS keyboard, dictation and paste produce.
+    /// Each key carries the modifiers its character needs; the server presses Shift to match.
     public func type(_ text: String, in window: RemoteWindow?) {
         for character in text {
             guard let stroke = Keysyms.stroke(for: character) else { continue }
