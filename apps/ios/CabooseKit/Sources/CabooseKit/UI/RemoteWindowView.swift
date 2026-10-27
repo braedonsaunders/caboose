@@ -29,6 +29,13 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
     private var scrollRemainder = CGPoint.zero
     private var momentum = CGPoint.zero
     private var momentumLink: CADisplayLink?
+    /// Ctrl/Alt from the key bar, applied to the next key and then released.
+    private var stickyModifiers = Set<String>()
+    private lazy var keyBar: KeyBar = {
+        let bar = KeyBar()
+        bar.onAction = { [weak self] action in self?.keyBarAction(action) }
+        return bar
+    }()
 
     public init(session: XpraSession?, window: RemoteWindow?) {
         self.session = session
@@ -297,14 +304,49 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
     public var keyboardAppearance: UIKeyboardAppearance = .dark
     public var returnKeyType: UIReturnKeyType = .default
 
+    public override var inputAccessoryView: UIView? { isInteractive ? keyBar : nil }
+
     public func insertText(_ text: String) {
-        session?.type(text, in: remoteWindow)
+        guard !stickyModifiers.isEmpty else {
+            session?.type(text, in: remoteWindow)
+            return
+        }
+        for character in text {
+            guard let stroke = Keysyms.stroke(for: Character(character.lowercased())) else { continue }
+            pressAndRelease(stroke, modifiers: Array(stickyModifiers))
+        }
+        releaseSticky()
+    }
+
+    private func keyBarAction(_ action: KeyBar.Action) {
+        switch action {
+        case .modifier(let name):
+            if stickyModifiers.contains(name) { stickyModifiers.remove(name) } else { stickyModifiers.insert(name) }
+            keyBar.show(activeModifiers: stickyModifiers)
+        case .key(let name):
+            guard let stroke = Keysyms.special[name] else { return }
+            pressAndRelease(stroke, modifiers: Array(stickyModifiers))
+            releaseSticky()
+        case .text(let text):
+            insertText(text)
+        }
+    }
+
+    private func pressAndRelease(_ stroke: KeyStroke, modifiers: [String]) {
+        session?.key(stroke, pressed: true, in: remoteWindow, extraModifiers: modifiers)
+        session?.key(stroke, pressed: false, in: remoteWindow, extraModifiers: modifiers)
+    }
+
+    private func releaseSticky() {
+        guard !stickyModifiers.isEmpty else { return }
+        stickyModifiers.removeAll()
+        keyBar.show(activeModifiers: stickyModifiers)
     }
 
     public func deleteBackward() {
         guard let stroke = Keysyms.special["BackSpace"] else { return }
-        session?.key(stroke, pressed: true, in: remoteWindow)
-        session?.key(stroke, pressed: false, in: remoteWindow)
+        pressAndRelease(stroke, modifiers: Array(stickyModifiers))
+        releaseSticky()
     }
 
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
