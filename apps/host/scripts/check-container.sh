@@ -4,8 +4,8 @@ set -euo pipefail
 compose=(docker compose -f deploy/compose.yaml)
 id=$("${compose[@]}" ps -q caboose-host)
 [[ -n $id ]] || { echo 'caboose-host is not running' >&2; exit 1; }
-pid=$(docker inspect -f '{{.State.Pid}}' "$id")
-[[ $pid != 0 && $(readlink /proc/1/ns/net) != "$(readlink "/proc/$pid/ns/net")" ]] || { echo 'Network namespace is not isolated' >&2; exit 1; }
+container_net=$("${compose[@]}" exec -T caboose-host readlink /proc/self/ns/net)
+[[ -n $container_net && $(readlink /proc/self/ns/net) != "$container_net" ]] || { echo 'Network namespace is not isolated' >&2; exit 1; }
 "${compose[@]}" exec -T caboose-host bash -ec '
   test -r /dev/kvm && test -w /dev/kvm
   CABOOSE_NO_FSTAB=1 setup-disks "$CABOOSE_IMAGE_ROOT" "$CABOOSE_DISK_SIZE"
