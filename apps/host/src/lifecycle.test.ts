@@ -1,0 +1,61 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ComputerLifecycle } from './lifecycle.js'
+import { authenticate } from './auth.js'
+
+afterEach(() => vi.useRealTimers())
+
+describe('computer lifecycle', () => {
+  it('coalesces wakes and parks after the final lease expires', async () => {
+    vi.useFakeTimers()
+    const driver = { wake: vi.fn(async () => 'desk'), park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 100)
+    const states: string[] = []
+    computer.subscribe(state => states.push(state))
+    expect(await Promise.all([computer.wake(), computer.wake()])).toEqual(['desk', 'desk'])
+    expect(driver.wake).toHaveBeenCalledTimes(1)
+    const a = computer.acquire(), b = computer.acquire()
+    await vi.advanceTimersByTimeAsync(200)
+    a(); a()
+    await vi.advanceTimersByTimeAsync(200)
+    expect(driver.park).not.toHaveBeenCalled()
+    b()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(driver.park).toHaveBeenCalledTimes(1)
+    expect(states).toEqual(['waking', 'running', 'parking', 'parked'])
+    await computer.wake()
+    expect(driver.wake).toHaveBeenCalledTimes(2)
+  })
+
+  it('serializes a wake behind an in-flight park', async () => {
+    let complete!: () => void
+    const driver = { wake: vi.fn(async () => 'desk'), park: vi.fn(() => new Promise<void>(r => { complete = r })) }
+    const computer = new ComputerLifecycle(driver, 10000)
+    await computer.wake()
+    const parked = computer.park()
+    await Promise.resolve()
+    const waking = computer.wake()
+    complete()
+    await parked
+    await waking
+    expect(driver.wake).toHaveBeenCalledTimes(2)
+    expect(computer.state).toBe('running')
+  })
+
+  it('reports failures and permits a later wake', async () => {
+    const driver = { wake: vi.fn().mockRejectedValueOnce(new Error('boot failed')).mockResolvedValue('desk'), park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle<string>(driver, 1000)
+    await expect(computer.wake()).rejects.toThrow('boot failed')
+    expect(computer.state).toBe('error')
+    expect(await computer.wake()).toBe('desk')
+  })
+})
+
+describe('bearer authentication', () => {
+  it('accepts only the owner bearer token', () => {
+    expect(authenticate('Bearer secret', 'secret')).toBe(true)
+    for (const header of [undefined, '', 'secret', 'Bearer ', 'Bearer secrets', 'bearer secret']) {
+      expect(authenticate(header, 'secret')).toBe(false)
+    }
+    expect(authenticate('Bearer x', '')).toBe(false)
+  })
+})
