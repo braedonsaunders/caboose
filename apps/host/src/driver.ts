@@ -26,6 +26,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
   let desk: DeskHandle | undefined
   let heartbeat: ReturnType<typeof setInterval> | undefined
   let displayToken = ''
+  let restartWarning: string | null = null
   const snapshotPath = join(config.imageRoot, 'overlays', `${COMPUTER_ID}.snapshot`)
   const resourcesPath = join(config.imageRoot, 'overlays', `${COMPUTER_ID}.resources.json`)
   let resources: ComputerResources | null = null
@@ -71,6 +72,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
     stats: () => ({ host: 'caboose-host', kvm: existsSync('/dev/kvm'), desk: host.stats() }),
     activeResources: () => desk || existsSync(snapshotPath) ? resources : null,
     hasSavedState: () => Boolean(desk) || existsSync(snapshotPath),
+    lastError: () => restartWarning,
     async wake(): Promise<Session> {
       const desired = settings()
       await Promise.all([
@@ -119,8 +121,16 @@ export function createController(config: Config, dependencies: { backend?: DeskB
       }
     },
     async restart() {
-      // Refuse destructive restart if the guest cannot flush its disk.
-      if (desk) await command('/bin/sync', [], 30_000)
+      restartWarning = null
+      // A wedged guest still needs a restart. Try to flush briefly, then surface the
+      // failure while proceeding with the explicitly confirmed cold restart.
+      if (desk) {
+        try { await command('/bin/sync', [], 5_000) }
+        catch (error) {
+          restartWarning = `The computer restarted without confirming a disk flush: ${error instanceof Error ? error.message : String(error)}`
+          console.error(restartWarning)
+        }
+      }
       clearHeartbeat()
       const lifecycleHost: typeof host & { shutdown?: (id: string) => Promise<void> } = host
       if (desk && lifecycleHost.shutdown) {

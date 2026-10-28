@@ -40,6 +40,10 @@ agent tasks, discards open application memory, and boots the existing disk. Save
 documents first. It does not restart the Linux host or delete the computer disk.
 The HTTP response waits for the computer's display to be ready; allow 300 seconds.
 Concurrent restart requests return 409. Park instead preserves application memory.
+Restart attempts a short disk flush, but an unresponsive guest can still be
+restarted. If the flush fails, the result retains a warning in `lastError`; as with
+a power interruption, the filesystem may need journal recovery and unsaved writes
+can be lost.
 
 The host serves the compiled `apps/web/dist` at its root, or the directory selected
 by `CABOOSE_WEB_ROOT`. Static assets and SPA routes are public; every `/v1` request

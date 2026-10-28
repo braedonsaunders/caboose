@@ -10,6 +10,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
   try {
     for (const file of ['base.raw', 'vmlinux', 'initrd']) await writeFile(join(root, file), '')
     const commands: string[] = []
+    let failSync = false
     const restores: boolean[] = []
     const backend: DeskBackend = {
       async boot(plan, hooks) {
@@ -19,6 +20,9 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
           deskId: plan.deskId,
           async request(command) {
             if (command.op === 'exec') commands.push([command.command, ...(command.args ?? [])].join(' '))
+            if (failSync && command.op === 'exec' && command.command === '/bin/sync') {
+              return { exitCode: 1, signal: null, stdout: '', stderr: 'guest is unresponsive', truncated: false }
+            }
             return { exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false }
           },
           subscribe: () => () => {},
@@ -52,6 +56,12 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
     expect(restarted.computer).toMatchObject({ memoryMb: 1024, vcpus: 2 })
     expect(controller.activeResources()).toEqual({ memoryMb: 1024, vcpus: 2 })
     expect(restores).toEqual([false, true, false])
+    expect(await readFile(join(root, 'overlays', 'owner.raw'), 'utf8')).toBe('persistent user data')
+    failSync = true
+    const recovered = await controller.restart!()
+    expect(recovered.state).toBe('running')
+    expect(restores).toEqual([false, true, false, false])
+    expect(controller.lastError?.()).toContain('without confirming a disk flush')
     expect(await readFile(join(root, 'overlays', 'owner.raw'), 'utf8')).toBe('persistent user data')
     await controller.park()
   } finally { await rm(root, { recursive: true, force: true }) }

@@ -21,6 +21,7 @@ export interface Controller extends ComputerDriver<Session> {
   guest(): AgentGuest | undefined
   activeResources(): ComputerResources | null
   hasSavedState(): boolean
+  lastError?(): string | null
 }
 
 async function readJson(request: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
@@ -60,7 +61,7 @@ export function createCabooseServer(options: { token: string; settings: Settings
       clients: { display: sockets.size - controls.size, control: controls.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
       capabilities: { restart: typeof controller.restart === 'function' },
-      lastError: computer.lastError,
+      lastError: computer.lastError ?? controller.lastError?.() ?? null,
     }
   }
   function broadcastSettings(): void { broadcast({ type: 'computer.settings', computer: managementStatus() }) }
@@ -97,9 +98,8 @@ export function createCabooseServer(options: { token: string; settings: Settings
         if (body.confirm !== true) throw new SettingsInputError('Restart closes apps and discards unsaved work; confirm must be true')
         await computer.restart(async () => {
           closeSockets()
-          for (const task of agents.list()) {
-            if (task.status === 'running' || task.status === 'paused') await agents.cancel(task.id)
-          }
+          // The cold boot stops every task. Do not wait for per-task cancellation:
+          // an unresponsive guest must not prevent its own restart.
         })
         agents.computerRestarted()
         broadcastSettings()

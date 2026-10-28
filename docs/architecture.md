@@ -118,7 +118,9 @@ with the user before sending `confirm: true`. Concurrent restart requests are re
 with 409 rather than scheduling repeated destructive reboots. A successful restart
 response is sent only after the computer and owner display are ready again (clients
 allow 300 seconds). Lifecycle failures are
-reported in `lastError`. The control socket broadcasts
+reported in `lastError`. A restart attempts a short disk flush; if the guest is
+unresponsive, the confirmed restart still proceeds and leaves a warning in
+`lastError` even when the new boot succeeds. The control socket broadcasts
 `{ type: "computer.settings", computer: <management status> }` when settings or their
 applied state change. An HTTP management poll does not prevent idle parking.
 
