@@ -193,10 +193,13 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
 
 - `frame.data` is Annex-B for H.264 and HEVC, with parameter sets on keyframes; for AV1 it is
   one temporal unit of low-overhead OBUs with the sequence header on keyframes.
-- `text` is text-input-v3. The server converts grapheme counts to the byte lengths of
-  `delete_surrounding_text` using the client's surrounding text. For a surface without an
-  enabled text-input-v3 (an X11 app through Xwayland, for example) it types the commit as
-  key presses and sends BackSpace/Delete for the deletions.
+- `text` is text-input-v3. Deletions (`delete_before`, `delete_after`, in grapheme
+  clusters) are sent to every surface as BackSpace and Delete presses, one per cluster,
+  before the commit; that removes one grapheme cluster in every toolkit, where
+  `delete_surrounding_text` depends on the application's surrounding-text bookkeeping
+  (Chromium drops it). The commit and pre-edit text go through text-input-v3 when the
+  focused surface has it enabled; otherwise (an X11 app through Xwayland, for example)
+  the commit is typed as key presses and pre-edit text is not shown.
 - `text_input` fires when the focused window's text-input-v3 is enabled or disabled. With
   the `text-input-v3` feature the client shows and hides the keyboard from it, and treats a
   `text` cursor shape only as a fallback.

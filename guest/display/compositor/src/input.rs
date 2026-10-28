@@ -272,21 +272,24 @@ impl State {
 
     pub fn text(&mut self, m: &proto::Text) {
         let Some(surface) = self.keyboard_focus_surface() else { return };
-        let delete = (m.delete_before.unwrap_or(0), m.delete_after.unwrap_or(0));
+        // Deletions are BackSpace and Delete presses, for every surface. They remove one
+        // grapheme cluster in every toolkit, which is what the client counts; text-input-v3's
+        // delete_surrounding_text instead needs the application's surrounding-text
+        // bookkeeping, and Chromium drops it. The presses go out before the commit in the
+        // same dispatch, so the application sees them first.
+        self.tap_keysym(keymap::sym::BACKSPACE, m.delete_before.unwrap_or(0));
+        self.tap_keysym(keymap::sym::DELETE, m.delete_after.unwrap_or(0));
         let preedit = m.preedit.as_deref().map(|p| {
             let [b, e] = m.cursor.unwrap_or([p.len() as u32; 2]);
             (p, b as i32, e as i32)
         });
-        let exact_delete = delete == (0, 0) || self.text_inputs.has_surrounding(&surface);
-        if exact_delete && self.text_inputs.send(&surface, m.commit.as_deref(), preedit, delete) {
+        if m.commit.is_none() && preedit.is_none() {
             return;
         }
-        // No text-input-v3 here (X11 through Xwayland, a terminal emulator without it),
-        // or deletions with no surrounding text to measure them against: keys.
-        self.tap_keysym(keymap::sym::BACKSPACE, delete.0);
-        self.tap_keysym(keymap::sym::DELETE, delete.1);
-        if let Some(commit) = &m.commit {
-            if !self.text_inputs.send(&surface, Some(commit), None, (0, 0)) {
+        if !self.text_inputs.send(&surface, m.commit.as_deref(), preedit) {
+            // No text-input-v3 here (X11 through Xwayland, a terminal emulator without it):
+            // the commit is typed. Pre-edit text has no key equivalent and is not shown.
+            if let Some(commit) = &m.commit {
                 self.type_text(commit);
             }
         }

@@ -45,9 +45,11 @@ This directory is a Cargo workspace:
   ones are offered. `--list-encoders` prints them.
 - **Input.** Pointer (buttons as a pressed set, precise and wheel scrolling), multitouch
   (`wl_touch`, one frame per message), keys by keysym (mapped to the keymap, with the
-  modifiers a level needs), and text: committed, pre-edit and deletions go to the focused
-  surface through text-input-v3, whose enable/disable is reported with `text_input`.
-  Surfaces without text-input-v3 (X11 apps, many terminals) get the text as key presses.
+  modifiers a level needs), and text: commits and pre-edit text go to the focused surface
+  through text-input-v3, whose enable/disable is reported with `text_input` (also to a
+  client that connects after a field was focused); deletions are BackSpace/Delete
+  presses, one per grapheme cluster. Surfaces without text-input-v3 (X11 apps, many
+  terminals) get the commit as key presses.
 - **Sessions.** One client at a time; a new authenticated client replaces the previous
   one. Window ids survive reconnects and every window restarts with a keyframe.
 
@@ -97,6 +99,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `replace` | a second client takes over; the first gets `bye(shutdown)` |
 | `popup` | a `<select>` list is its own popup window with the page as parent |
 | `text-input-on-connect` | a client that connects after a field was focused is still told text input is enabled |
+| `autocorrect` | `text` with `delete_before` (autocorrect, the delete key) edits a Chromium field exactly, one grapheme cluster per deletion |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 ### Measured

@@ -15,7 +15,6 @@ png = "0.17"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tungstenite = { version = "0.27", default-features = false, features = ["handshake"] }
-unicode-segmentation = "1.12"
 
 [dependencies.smithay]
 version = "0.7.0"

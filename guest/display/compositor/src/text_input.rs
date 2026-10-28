@@ -1,7 +1,7 @@
 //! text-input-v3, implemented here rather than with Smithay's, which routes everything
 //! through an input-method-v2 client. Caboose's input method is the phone's keyboard:
 //! the compositor needs to know when a focused surface enables text input (to show the
-//! keyboard) and to send commits, pre-edit text and deletions straight to it.
+//! keyboard) and to send commits and pre-edit text straight to it.
 
 use crate::state::State;
 use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::{
@@ -13,12 +13,10 @@ use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
 };
 use std::sync::Mutex;
-use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Pending {
     enabled: bool,
-    surrounding: Option<(String, u32, u32)>,
     purpose: Option<ContentPurpose>,
 }
 
@@ -66,17 +64,6 @@ pub fn purpose_name(p: ContentPurpose) -> &'static str {
         ContentPurpose::Terminal => "terminal",
         _ => "normal",
     }
-}
-
-/// UTF-8 byte lengths of `before` grapheme clusters before the cursor and `after`
-/// after it, as `delete_surrounding_text` wants them.
-pub fn grapheme_bytes(text: &str, cursor: usize, before: u32, after: u32) -> (u32, u32) {
-    let cursor = cursor.min(text.len());
-    let cursor = (0..=cursor).rev().find(|i| text.is_char_boundary(*i)).unwrap_or(0);
-    let (head, tail) = text.split_at(cursor);
-    let b: usize = head.graphemes(true).rev().take(before as usize).map(str::len).sum();
-    let a: usize = tail.graphemes(true).take(after as usize).map(str::len).sum();
-    (b as u32, a as u32)
 }
 
 impl TextInputs {
@@ -131,36 +118,19 @@ impl TextInputs {
             .collect()
     }
 
-    /// Sends one atomic text change to the surface's enabled text inputs. Returns false
-    /// if there were none (the caller falls back to key presses).
-    pub fn send(
-        &mut self,
-        surface: &WlSurface,
-        commit: Option<&str>,
-        preedit: Option<(&str, i32, i32)>,
-        delete: (u32, u32),
-    ) -> bool {
+    /// Sends one atomic text change (a commit and/or pre-edit text) to the surface's
+    /// enabled text inputs. Returns false if there were none (the caller types instead).
+    pub fn send(&mut self, surface: &WlSurface, commit: Option<&str>, preedit: Option<(&str, i32, i32)>) -> bool {
         let inputs = self.enabled_on(surface);
         for input in &inputs {
-            let mut inner = input.data::<InputData>().unwrap().inner.lock().unwrap();
-            if delete != (0, 0) {
-                let (before, after) = match &inner.current.surrounding {
-                    Some((text, cursor, _)) => grapheme_bytes(text, *cursor as usize, delete.0, delete.1),
-                    // Without surrounding text there is nothing to convert from; the
-                    // count is the best estimate of the byte length for ASCII text.
-                    None => delete,
-                };
-                input.delete_surrounding_text(before, after);
-            }
+            let serial = input.data::<InputData>().unwrap().inner.lock().unwrap().serial;
             if let Some((text, begin, end)) = preedit {
                 input.preedit_string(Some(text.to_owned()), begin, end);
             }
             if let Some(text) = commit {
                 input.commit_string(Some(text.to_owned()));
             }
-            input.done(inner.serial);
-            // Applied text changes the surrounding text the client will report next.
-            inner.current.surrounding = None;
+            input.done(serial);
         }
         !inputs.is_empty()
     }
@@ -172,13 +142,6 @@ impl TextInputs {
             (inner.current.enabled && inner.entered.as_ref() == Some(surface))
                 .then(|| inner.current.purpose.map(purpose_name))
         })
-    }
-
-    /// Whether the surface reported surrounding text (so deletions are exact).
-    pub fn has_surrounding(&mut self, surface: &WlSurface) -> bool {
-        self.enabled_on(surface)
-            .iter()
-            .any(|i| i.data::<InputData>().unwrap().inner.lock().unwrap().current.surrounding.is_some())
     }
 }
 
@@ -242,10 +205,9 @@ impl Dispatch<ZwpTextInputV3, InputData> for State {
                     inner.pending = Pending::default();
                     None
                 }
-                Request::SetSurroundingText { text, cursor, anchor } => {
-                    inner.pending.surrounding = Some((text, cursor.max(0) as u32, anchor.max(0) as u32));
-                    None
-                }
+                // Deletions are sent as key presses (see State::text), so the
+                // application's surrounding text is not needed.
+                Request::SetSurroundingText { .. } => None,
                 Request::SetContentType { purpose, .. } => {
                     if let WEnum::Value(p) = purpose {
                         inner.pending.purpose = Some(p);
@@ -282,28 +244,6 @@ impl Dispatch<ZwpTextInputV3, InputData> for State {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn grapheme_counts_become_byte_lengths() {
-        // "e" + combining acute is one grapheme of 3 bytes; the flag is one of 8.
-        let text = "cafe\u{301} 🇨🇦|end";
-        let cursor = text.find('|').unwrap();
-        assert_eq!(grapheme_bytes(text, cursor, 1, 0), (8, 0));
-        assert_eq!(grapheme_bytes(text, cursor, 3, 0), (8 + 1 + 3, 0));
-        assert_eq!(grapheme_bytes(text, cursor, 0, 2), (0, 2));
-    }
-
-    #[test]
-    fn deleting_past_the_ends_stops_there() {
-        assert_eq!(grapheme_bytes("ab", 1, 5, 5), (1, 1));
-        assert_eq!(grapheme_bytes("ab", 99, 1, 1), (1, 0));
-    }
-
-    #[test]
-    fn a_cursor_inside_a_character_moves_to_its_start() {
-        let text = "é!";
-        assert_eq!(grapheme_bytes(text, 1, 1, 0), (0, 0));
-    }
 
     #[test]
     fn purposes_have_protocol_names() {
