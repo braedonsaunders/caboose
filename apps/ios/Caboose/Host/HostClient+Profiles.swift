@@ -1,3 +1,4 @@
+#if CABOOSE_APP
 import CabooseKit
 import Foundation
 
@@ -68,3 +69,5 @@ extension AgentSchedule {
         return try value(JSONSerialization.jsonObject(with: data))
     }
 }
+
+#endif

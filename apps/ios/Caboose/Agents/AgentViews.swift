@@ -206,12 +206,19 @@ struct ChatComposer: View {
                     }
                     Button("Without a Teammate") { agents.library.selectedProfileId = nil }
                 }
-                Picker("Agent", selection: $target) {
-                    Text("Default Agent").tag("")
-                    ForEach(agents.installedAgents) { Text($0.name).tag($0.id) }
+                if let profile = agents.library.selectedProfile {
+                    Section("Teammate Settings") {
+                        Text(agents.listing(profile.agent)?.name ?? profile.agent)
+                        Text(profile.approvals == "ask" ? "Ask before acting" : "Automatic approvals")
+                    }
+                } else {
+                    Picker("Agent", selection: $target) {
+                        Text("Default Agent").tag("")
+                        ForEach(agents.installedAgents) { Text($0.name).tag($0.id) }
+                    }
+                    Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
+                    Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
                 }
-                Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }.disabled(agents.library.selectedProfileId != nil)
-                Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
             }
             Section {
                 Button(action: connectModel) { Label("Connect a Model…", systemImage: "key") }

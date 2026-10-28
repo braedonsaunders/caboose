@@ -40,6 +40,7 @@ public struct AgentRoutineRun: Codable, Equatable, Identifiable, Sendable {
     /// The stable conversation/task UUID, including while reservation is pending.
     public var id: String
     public var routineId: String
+    public var profileId: String?
     public var scheduledAt: String
     public var createdAt: String
     public var finishedAt: String?
@@ -124,7 +125,7 @@ public struct AgentSchedule: Codable, Equatable, Sendable {
         switch kind {
         case .once: if Self.date(at) == nil { return "Choose a date and time." }
         case .interval:
-            if (everyMs ?? 0) <= 0 || Self.date(anchor) == nil { return "Choose an interval and anchor date." }
+            if ((everyMs ?? 0) < 60000 || (everyMs ?? 0) > 9007199254740991) || Self.date(anchor) == nil { return "Choose an interval of at least one minute and an anchor date." }
         case .daily, .weekly, .monthly:
             if !Self.validTime(time ?? "") { return "Enter a time in 24-hour HH:mm format." }
             if kind == .weekly && (weekdays?.isEmpty != false || weekdays!.contains(where: { !(1...7).contains($0) })) { return "Choose at least one weekday." }
