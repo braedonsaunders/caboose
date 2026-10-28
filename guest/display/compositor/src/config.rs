@@ -31,7 +31,8 @@ OPTIONS:
     --refine-qp N          code areas that went quiet once more at this QP, so text
                            sharpens (H.264 software); 0 turns it off [default: 12]
     --refine-after MS      how long an area must be quiet first [default: 300]
-    --encoder-threads N    threads per software encoder; 0 = 1 up to 1080p, 4 above [default: 0]
+    --encoder-threads N    threads per software encoder; 0 = 1 up to 2560x1600, 2 above
+                           [default: 0]
     --display WxH@HZxS     the display used before a client connects [default: 1920x1080@60x1]
     --list-encoders        print the usable encoders and exit
     -h, --help             print this help

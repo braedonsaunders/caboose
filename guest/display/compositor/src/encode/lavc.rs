@@ -675,7 +675,7 @@ mod bench {
     #[ignore]
     fn bench_text_typing_and_scrolling() {
         ff::init().unwrap();
-        for (w, h) in [(1920u32, 1080u32), (1280, 720)] {
+        for (w, h) in [(1920u32, 1080u32), (1280, 720), (1180, 2556), (3840, 2160)] {
             let settings = Settings { threads: 1, refine_qp: 0, ..Settings::default() };
             let mut enc = LavcEncoder::new(Family::Software, Codec::H264, w, h, &settings).unwrap();
             let mut image = CpuImage::new(w, h);

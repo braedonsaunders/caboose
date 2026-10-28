@@ -110,8 +110,10 @@ pub struct Settings {
     /// Constant rate factor for the software encoders, constant quality for NVENC
     /// (lower is better quality).
     pub crf: u32,
-    /// Worker threads per software encoder; 0 picks by picture size (one up to 1080p,
-    /// where a second thread costs more CPU than it saves time, four above).
+    /// Worker threads per software encoder; 0 picks by picture size: one up to
+    /// 2560×1600 (a phone's 1179×2556 included), two above. Each extra thread costs CPU:
+    /// at 3840×2160, Chromium took 18% of a core to type with one thread, 22% with two
+    /// and 25% with four (scrolling: 26%, 34%, 38%); two halve the time per picture.
     pub threads: u32,
     /// x264 preset. `ultrafast` keeps the CPU cost per update lowest.
     pub preset: String,
@@ -130,7 +132,7 @@ impl Default for Settings {
 impl Settings {
     pub fn threads_for(&self, width: u32, height: u32) -> u32 {
         match self.threads {
-            0 if width as u64 * height as u64 > 1920 * 1088 => 4,
+            0 if width as u64 * height as u64 > 2560 * 1600 => 2,
             0 => 1,
             n => n,
         }
@@ -251,5 +253,14 @@ mod tests {
         assert_eq!(align_up(1179, 2), 1180);
         assert_eq!(align_up(2161, 16), 2176);
         assert_eq!(align_up(64, 16), 64);
+    }
+
+    #[test]
+    fn one_encoder_thread_up_to_2560x1600() {
+        let auto = Settings::default();
+        assert_eq!(auto.threads_for(1180, 2556), 1);
+        assert_eq!(auto.threads_for(2560, 1600), 1);
+        assert_eq!(auto.threads_for(3840, 2160), 2);
+        assert_eq!(Settings { threads: 4, ..Settings::default() }.threads_for(640, 480), 4);
     }
 }
