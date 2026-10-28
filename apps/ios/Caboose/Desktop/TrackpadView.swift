@@ -26,6 +26,11 @@ struct TrackpadScreen: View {
                 }
                 .glassEffect(.regular.interactive(), in: .circle)
                 .accessibilityLabel("Larger")
+                Button { model.toggleDesktopFull4K() } label: {
+                    Text(model.desktopFull4K ? "4K" : "HD").font(.caption.weight(.bold)).frame(width: 40, height: 40)
+                }
+                .glassEffect(model.desktopFull4K ? .regular.tint(.blue).interactive() : .regular.interactive(), in: .circle)
+                .accessibilityLabel(model.desktopFull4K ? "Render the desktop at 2560 by 1440" : "Render the desktop at full 4K")
                 Button { WallpaperStore.shared.next() } label: {
                     Image(systemName: "photo.on.rectangle.angled").frame(width: 40, height: 40)
                 }
