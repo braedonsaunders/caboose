@@ -44,6 +44,8 @@ struct RootView: View {
                 ParkedView()
             case .failed(let message):
                 FailureView(message: message)
+            case .displayElsewhere:
+                ElsewhereView()
             case .ready where model.externalDisplayActive:
                 TrackpadScreen(desktop: model.desktop)
             case .ready where model.deviceDesktopActive:
@@ -189,6 +191,29 @@ struct FailureView: View {
             // A computer that will not wake can often be fixed from its settings: less memory, or a restart.
             Button("Computer Settings", systemImage: "gearshape") { model.settingsPresented = true }
                 .buttonStyle(.glass)
+        }
+        .padding(32)
+    }
+}
+
+/// Another device (a TV, an iPad) took the computer's display over. Nothing reconnects on its
+/// own, so two devices never take it back and forth; Show Here takes it back on request.
+struct ElsewhereView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "rectangle.on.rectangle")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(.secondary)
+            Text("Showing on another device")
+                .font(.title3.weight(.semibold))
+            Text("Another device is showing this computer's display. Your apps keep running there.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Show Here") { Task { await model.wake() } }
+                .buttonStyle(.glassProminent)
         }
         .padding(32)
     }

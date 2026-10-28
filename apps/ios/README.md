@@ -194,6 +194,11 @@ Protocol instead of Xpra; the screens are the same. What changes:
   send is a gap the clock runs through. With no sound playing, pictures show as they
   arrive; window pictures always do. The display closes when the app goes to the
   background, and the sound with it.
+- **One device at a time.** The computer's display shows on one device. When another (a
+  TV, an iPad) takes it, this one gets `bye { reason: "replaced" }`, says it is showing on
+  another device, and does not reconnect on its own (not even on returning to the app),
+  so two devices never take it back and forth; Show Here takes it back. The session's ping
+  every 5 s keeps the server from closing it as idle (30 s).
 - **Not yet.** Window pictures are SDR:
   the hello reports `hdr: false` until the window surfaces render EDR.
 

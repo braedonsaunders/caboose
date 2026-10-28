@@ -19,6 +19,8 @@ final class AppModel {
         /// A cold restart is underway; open apps are closing.
         case restarting
         case failed(String)
+        /// Another device took the display over; it stays there until the person asks for it back.
+        case displayElsewhere
     }
 
     private(set) var phase: Phase
@@ -140,7 +142,7 @@ final class AppModel {
     func sceneBecameActive() {
         sceneActive = true
         offerPasteboardIfChanged()
-        if session == nil || session?.state != .ready { Task { await wake() } }
+        if phase != .displayElsewhere, session == nil || session?.state != .ready { Task { await wake() } }
     }
 
     /// Leaving the app closes the display; the computer keeps every app running and parks on idle.
@@ -229,8 +231,13 @@ final class AppModel {
             reconnectAttempts = 0
             if phase != .ready { phase = .ready }
         case .closed(let reason):
+            // Another device has the display: taking it back on our own would start a tug of war.
+            if session.isReplaced {
+                reconnectTask?.cancel()
+                reconnectTask = nil
+                phase = .displayElsewhere
             // A dropped connection while the app is in use is retried quietly; only give up after a few tries.
-            if sceneActive, reconnectAttempts < 4 {
+            } else if sceneActive, reconnectAttempts < 4 {
                 scheduleReconnect()
             } else if case .ready = phase {
                 phase = .failed(reason ?? "The display connection closed.")
