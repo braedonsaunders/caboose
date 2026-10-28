@@ -23,6 +23,8 @@ final class AppModel {
 
     private(set) var phase: Phase
     let agents = AgentCenter()
+    /// Videos playing on the computer that can move to the phone.
+    let media = MediaHandoff()
     /// A window on the agent seat being watched or taken over full screen.
     var presentedAgentWindowID: Int?
     private(set) var credentials: Credentials?
@@ -61,6 +63,8 @@ final class AppModel {
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
         agents.onComputer = { [weak self] status in self?.computerStatus = status }
+        agents.onEvent = { [weak self] type, event in self?.media.handle(type, event) }
+        media.attach(host: { [weak self] in self?.host })
     }
 
     var host: HostClient? { credentials.map { HostClient(baseURL: activeHostURL ?? $0.hostURL, token: $0.token) } }
@@ -95,6 +99,7 @@ final class AppModel {
         session?.disconnect()
         session = nil
         agents.reset()
+        media.reset()
         computerStatus = nil
         settingsPresented = false
         Credentials.clear()
@@ -123,6 +128,7 @@ final class AppModel {
             agents.detach()
             agents.attach(host: host)
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
+            Task { await media.refresh() }
             Task { await refreshApps() }
             Task { try? await refreshComputer() }
         } catch {

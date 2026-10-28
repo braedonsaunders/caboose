@@ -47,9 +47,19 @@ struct WindowScreen: View {
             }
         }
         .overlay(alignment: .top) {
-            ApprovalBanner().padding(.top, chromeVisible ? 56 : 8)
+            VStack(spacing: 8) {
+                ApprovalBanner()
+                MediaBanner()
+            }
+            .padding(.top, chromeVisible ? 56 : 8)
         }
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
+        .animation(.snappy, value: model.media.offer?.id)
+        .fullScreenCover(item: Binding(
+            get: { model.media.handedOff },
+            set: { if $0 == nil, model.media.handedOff != nil { Task { await model.media.finished(at: nil) } } })) { media in
+            MediaPlayerScreen(media: media).environment(model)
+        }
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }

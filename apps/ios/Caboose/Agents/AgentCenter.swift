@@ -45,6 +45,8 @@ final class AgentCenter {
 
     /// The computer's management status, whenever the host reports a change on the control socket.
     var onComputer: ((HostClient.ComputerStatus) -> Void)?
+    /// Other control-socket events (`media.*`), for whoever handles them.
+    var onEvent: ((String, [String: Any]) -> Void)?
 
     private var control: URLSessionWebSocketTask?
     private var host: HostClient?
@@ -225,6 +227,10 @@ final class AgentCenter {
            let body = try? JSONSerialization.data(withJSONObject: computer),
            let status = try? JSONDecoder().decode(HostClient.ComputerStatus.self, from: body) {
             onComputer?(status)
+            return
+        }
+        if !type.hasPrefix("agent.") {
+            onEvent?(type, event)
             return
         }
         guard let id = event["id"] as? String else { return }
