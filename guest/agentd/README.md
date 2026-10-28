@@ -175,19 +175,23 @@ a turn (including the history an agent replays on `session/load`) are not writte
     whose holder is gone, that stayed empty for 5 seconds, or that is older than two minutes
     is taken over, through `sign-in.lock.takeover` so only one process does it and only while
     the lock is unchanged. Progress is written only while `sign-in.json` still names this
-    attempt; a runner that finds another attempt there hangs up its terminal session, stops
-    its agent and exits 1. Stopping an attempt reads the recorded pid's command line (from
-    `/proc`, else `ps`) and signals its process group only when it is the sign-in runner of
-    that attempt: SIGTERM, then SIGKILL after three seconds. For tests,
+    attempt and it is still running; a runner that finds otherwise (replaced, cancelled or
+    finished) hangs up its terminal session, stops its agent, removes its own files and exits
+    1. Each attempt's files (its page list, browser commands, scripts, exit and environment
+    files) are in `agents/<id>/attempts/<attempt>/`, removed when it ends, so cleaning up
+    never touches another attempt's. Stopping an attempt reads the recorded pid's command line
+    (from `/proc`, else `ps`) and signals its process group only when it is the sign-in runner
+    of that attempt: SIGTERM, then SIGKILL after three seconds; once that runner is gone, its
+    attempt's directory is removed too. For tests,
     `CABOOSE_AGENTD_SIGN_IN_PAUSE_MS` makes every holder wait between reading the state and
     acting on it, so overlapping operations can be ordered exactly.
   - **On the display**, the agent starts with `env`, the owner display's launch environment
     from the host (its Wayland socket, Xwayland's `DISPLAY` and `XAUTHORITY`, toolkit
     hints), plus the owner's session bus, so the browser it opens is on the owner's screen;
     a `terminal` method opens `xfce4-terminal` (else `x-terminal-emulator`) there.
-  - **On the phone**, the desktop's variables are removed and `agents/<id>/sign-in-bin`
+  - **On the phone**, the desktop's variables are removed and the attempt's `bin`
     (`xdg-open`, `x-www-browser`, `www-browser`, `sensible-browser`, `gnome-www-browser`,
-    each appending the pages it is given to `sign-in.pages`) comes first on `PATH`, with
+    each appending the pages it is given to the attempt's `pages`) comes first on `PATH`, with
     `BROWSER` set to its `xdg-open`; the latest page is `url`. A `terminal` method runs in a
     session of the terminal service, started with its `/start` route and the token in
     `/run/caboose/display-token`, and the session id is `terminal`; its environment goes

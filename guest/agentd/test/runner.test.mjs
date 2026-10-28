@@ -422,6 +422,7 @@ describe('sign-in on the phone', () => {
   const A = '0a0a0a0a-0000-4000-8000-00000000000a'
   const B = '0b0b0b0b-0000-4000-8000-00000000000b'
   const statePath = box => join(box.home, '.local/share/caboose/agents/stand-in/sign-in.json')
+  const attempts = box => join(box.home, '.local/share/caboose/agents/stand-in/attempts')
   const alive = pid => { try { process.kill(pid, 0); return true } catch { return false } }
   /** The state once attempt `attempt` has handed over its page. */
   const page = (box, attempt) => until(`the page of ${attempt}`, async () => { const state = await signInState(box); return state?.attempt === attempt && state.url && state })
@@ -506,8 +507,8 @@ describe('sign-in on the phone', () => {
     expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-terminal', status: 'succeeded', on: 'phone', attempt: expect.stringMatching(/^[0-9a-f-]{36}$/), terminal: expect.stringMatching(/^[0-9a-f]{32}$/) })
     expect(await readFile(join(box.state, 'signed-in'), 'utf8')).toBe('terminal')
     expect(await readFile(join(box.state, 'sign-in-env'), 'utf8')).toBe('none 1')
-    // The environment file the session read is gone.
-    expect((await readdir(join(box.home, '.local/share/caboose/agents/stand-in'))).filter(name => name.endsWith('.env'))).toEqual([])
+    // The environment file the session read, and the rest of the attempt's files, are gone.
+    expect(await readdir(attempts(box))).toEqual([])
   })
 
   it('reports a computer whose terminal service cannot be reached', async () => {
@@ -537,6 +538,8 @@ describe('sign-in on the phone', () => {
     expect(cancelled).toMatchObject({ status: 'failed', attempt: B, message: 'Sign-in cancelled.' })
     expect(cancelled).not.toHaveProperty('pid')
     expect(JSON.parse((await runner(box, 'sign-in-cancel', 'stand-in', B)).stdout)).toEqual({ cancelled: false })
+    // Neither stopped attempt leaves its files behind.
+    expect(await readdir(attempts(box))).toEqual([])
   })
 
   it('serializes overlapping starts, so the later one always replaces the earlier', async () => {
@@ -569,17 +572,39 @@ describe('sign-in on the phone', () => {
     expect(await signInState(box)).toMatchObject({ status: 'running', attempt: B, pid: second.child.pid })
   })
 
-  it('stops a replaced runner that survived instead of letting it record over its replacement', async () => {
+  it('stops a replaced runner that survived, without recording over or cleaning up after its replacement', async () => {
     const box = await sandbox({ auth: true })
     box.env.STAND_IN_CALLBACK = '1'
     const first = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: A })
     await page(box, A)
-    // A newer attempt took over without stopping this runner.
+    // A newer attempt took over without stopping this runner, and has its own files.
     const newer = { methodId: 'stand-in-login', status: 'running', startedAt: 'later', on: 'phone', attempt: B, pid: 1 }
     await writeFile(statePath(box), JSON.stringify(newer))
-    await writeFile(join(statePath(box), '..', 'sign-in.pages'), 'https://example.com/a-later-page\n', { flag: 'a' })
+    await mkdir(join(attempts(box), B, 'bin'), { recursive: true })
+    await writeFile(join(attempts(box), B, 'pages'), 'https://example.com/the-newer-page\n')
+    await writeFile(join(attempts(box), B, 'bin', 'xdg-open'), '#!/bin/sh\n')
+    // The old runner's next record of progress finds it was replaced.
+    await writeFile(join(attempts(box), A, 'pages'), 'https://example.com/a-later-page\n', { flag: 'a' })
     expect(await first.exited).toBe(1)
     expect(await signInState(box)).toEqual(newer)
+    expect(await readdir(attempts(box))).toEqual([B])
+    expect(await readFile(join(attempts(box), B, 'pages'), 'utf8')).toBe('https://example.com/the-newer-page\n')
+    expect(await readdir(join(attempts(box), B, 'bin'))).toEqual(['xdg-open'])
+  })
+
+  it('never brings a cancelled or finished attempt back with a late report', async () => {
+    const box = await sandbox({ auth: true })
+    box.env.STAND_IN_CALLBACK = '1'
+    const first = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: A })
+    const waiting = await page(box, A)
+    // Cancelled as recorded, while its runner has not stopped yet.
+    const { pid: _pid, ...rest } = waiting
+    const cancelled = { ...rest, status: 'failed', message: 'Sign-in cancelled.', finishedAt: 'now' }
+    await writeFile(statePath(box), JSON.stringify(cancelled))
+    await writeFile(join(attempts(box), A, 'pages'), 'https://example.com/a-later-page\n', { flag: 'a' })
+    expect(await first.exited).toBe(1)
+    expect(await signInState(box)).toEqual(cancelled)
+    await expect(readdir(join(attempts(box), A))).rejects.toThrow()
   })
 
   it('refuses a stale sheet\'s callback once a newer attempt has replaced it', async () => {
