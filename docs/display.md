@@ -66,7 +66,8 @@ each one falls back to the one below it.
    as RDP and Citrix multimedia redirection, applied at the decode interface every Linux
    player shares. It gives the original quality, near-zero server CPU and no GPU. Content
    the client cannot decode, or that the app reads back (canvas, effects), falls back to
-   layer 2.
+   layer 2. The driver, its socket to the compositor and the on-screen marker that binds a
+   stream to its window are specified in [codec-passthrough.md](codec-passthrough.md).
 2. **Video surfaces (first class in the compositor).** On Wayland, players present video
    on its own subsurface in a YUV format (NV12/P010): the overlay path used by Chromium,
    Firefox, mpv, GStreamer and VLC. The compositor treats that subsurface as its own

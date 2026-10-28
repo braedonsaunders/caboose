@@ -1,0 +1,21 @@
+# name | lavfi source | encoder args | container
+# x265 codes every slice's short-term RPS inline unless multi-pass-opt-rps puts
+# the common ones in the SPS, which needs a second pass: hevc-sps-rps reads the
+# stats hevc-sps-rps-pass1 wrote (same source and settings, cases run in order).
+hevc-default        | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx265 -x265-params log-level=error | mp4
+hevc-closed-gop     | testsrc2=size=640x360:rate=30:duration=3   | -c:v libx265 -x265-params log-level=error:keyint=30:min-keyint=30:open-gop=0 | mp4
+hevc-open-gop-cra   | testsrc2=size=640x360:rate=30:duration=3   | -c:v libx265 -x265-params log-level=error:keyint=30:min-keyint=30:open-gop=1:bframes=4 | mp4
+hevc-main10         | testsrc2=size=640x360:rate=30:duration=2,format=yuv420p10le | -c:v libx265 -x265-params log-level=error | mp4
+hevc-slices         | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx265 -x265-params log-level=error:slices=4:pools=4:bframes=3 | mp4
+hevc-wpp-1080p      | mandelbrot=size=1920x1080:rate=30,trim=duration=1,format=yuv420p | -c:v libx265 -preset veryfast -x265-params log-level=error:wpp=1:slices=2:pools=4 | mp4
+hevc-no-wpp         | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx265 -x265-params log-level=error:wpp=0:pmode=0:frame-threads=1 | mp4
+hevc-scaling-list   | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx265 -x265-params log-level=error:scaling-list=default | mp4
+hevc-lossless       | testsrc2=size=320x240:rate=30:duration=1   | -c:v libx265 -x265-params log-level=error:lossless=1 | mp4
+hevc-tools          | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx265 -preset slow -x265-params log-level=error:tskip=1:deblock=-2,1:cbqpoffs=2:crqpoffs=-1:sao=0:signhide=0:amp=1:rect=1 | mp4
+hevc-crop           | testsrc2=size=650x366:rate=30:duration=2   | -c:v libx265 -x265-params log-level=error | mp4
+hevc-bpyramid-refs  | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx265 -x265-params log-level=error:ref=6:bframes=8:b-pyramid=1:b-adapt=2 | mp4
+hevc-weighted       | testsrc2=size=640x360:rate=30:duration=2,fade=in:0:30 | -c:v libx265 -x265-params log-level=error:weightp=1:weightb=1:bframes=3 | mp4
+hevc-temporal-layers | testsrc2=size=640x360:rate=30:duration=2  | -c:v libx265 -x265-params log-level=error:temporal-layers=3:bframes=3 | mp4
+hevc-pps-changes    | testsrc2=size=640x360:rate=30:duration=3   | -c:v libx265 -x265-params log-level=error:keyint=30:repeat-headers=1:opt-qp-pps=1:opt-ref-list-length-pps=1 | mp4
+hevc-sps-rps-pass1  | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx265 -b:v 400k -x265-params log-level=error:pass=1:stats=/tmp/cbva-hevc-x265.log:multi-pass-opt-rps=1 | mp4
+hevc-sps-rps        | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx265 -b:v 400k -x265-params log-level=error:pass=2:stats=/tmp/cbva-hevc-x265.log:multi-pass-opt-rps=1 | mp4

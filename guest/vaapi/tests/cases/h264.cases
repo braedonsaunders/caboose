@@ -1,0 +1,12 @@
+# name | lavfi source | encoder args | container
+h264-cbp            | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx264 -profile:v baseline -g 30                         | mp4
+h264-main-cabac     | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx264 -profile:v main -bf 3 -g 30                       | mp4
+h264-high-8x8       | mandelbrot=size=1280x720:rate=30,trim=duration=2,format=yuv420p | -c:v libx264 -profile:v high -bf 3 -refs 4 -g 60         | mp4
+h264-1080p-crop     | testsrc2=size=1920x1080:rate=30:duration=1 | -c:v libx264 -preset veryfast -g 15                            | mp4
+h264-slices         | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx264 -x264-params slices=4 -bf 2                        | mp4
+h264-weighted       | testsrc2=size=640x360:rate=30:duration=2,fade=in:0:30 | -c:v libx264 -x264-params weightb=1:weightp=2 -bf 3 | mp4
+h264-cqm-jvt        | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx264 -x264-params cqm=jvt -bf 3                         | mp4
+h264-bpyramid-refs  | testsrc2=size=640x360:rate=30:duration=2   | -c:v libx264 -x264-params b-pyramid=normal:ref=8:bframes=5      | mp4
+h264-interlaced     | testsrc2=size=720x576:rate=25:duration=2   | -c:v libx264 -flags +ildct+ilme -x264-params tff=1 -bf 2       | mp4
+h264-high10         | testsrc2=size=640x360:rate=30:duration=2,format=yuv420p10le | -c:v libx264 -profile:v high10 -bf 3       | mp4
+h264-openGOP-I      | testsrc2=size=640x360:rate=30:duration=3   | -c:v libx264 -x264-params open-gop=1:keyint=30 -bf 3           | mp4

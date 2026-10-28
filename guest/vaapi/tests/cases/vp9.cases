@@ -1,0 +1,5 @@
+# name | lavfi source | encoder args | container
+vp9-p0-altref       | mandelbrot=size=640x360:rate=30,trim=duration=3,format=yuv420p | 2pass -c:v libvpx-vp9 -auto-alt-ref 1 -lag-in-frames 25 -g 90 -b:v 300k -deadline good -cpu-used 4 | ivf
+vp9-p0-realtime     | testsrc2=size=640x360:rate=30:duration=2   | -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 500k | ivf
+vp9-p0-tiles        | mandelbrot=size=1280x720:rate=30,trim=duration=1,format=yuv420p | -c:v libvpx-vp9 -tile-columns 2 -row-mt 1 -deadline realtime -cpu-used 8 -b:v 1M | ivf
+vp9-p2-10bit        | testsrc2=size=640x360:rate=30:duration=2,format=yuv420p10le | -c:v libvpx-vp9 -profile:v 2 -deadline realtime -cpu-used 8 -b:v 800k | ivf

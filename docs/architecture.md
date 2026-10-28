@@ -77,6 +77,11 @@ base swap.
 - **Agent runner.** `caboose-agentd` (`/opt/caboose/agentd`, Node with the pinned ACP
   TypeScript SDK) runs any Agent Client Protocol agent for a task; `uv` is installed for
   agents published as Python packages. See Agents.
+- **Video decoding (with Caboose Display).** `guest/vaapi` is a VA-API driver that
+  forwards each video's compressed bitstream to the client instead of decoding it
+  ([codec-passthrough.md](codec-passthrough.md)). It is not built into the images yet: it
+  takes effect once Caboose Display's receiving side for it lands. Under Xpra, apps decode
+  as before.
 - **Guest agent.** The appkit-desk guest agent (vsock 5252) for exec, jobs,
   observe/a11y and agent input. Agents drive the machine through it; humans drive
   it through Xpra.
