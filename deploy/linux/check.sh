@@ -46,9 +46,10 @@ done
 
 pass() { printf 'ok: %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+health_port=7310
 health() {
   # shellcheck disable=SC2016 # expanded inside the container
-  inside bash -c 'curl -s -o /dev/null -w "%{http_code}" -H "authorization: Bearer $(cat /var/lib/caboose/disks/owner-token)" http://127.0.0.1:7310/v1/health'
+  inside bash -c 'curl -s -o /dev/null -w "%{http_code}" -H "authorization: Bearer $(cat /var/lib/caboose/disks/owner-token)" http://127.0.0.1:$1/v1/health' -- "$health_port"
 }
 
 out=$(inside bash /src/deploy/linux/install.sh --dry-run --bundle "/bundle/$asset" --force 2>&1)
@@ -66,12 +67,13 @@ if ! grep -q 'caboose://connect?host=http://.*&code=' <<<"$out"; then echo "$out
 pass 'install: service active, API up, private settings and token, XFS disk root, pairing link printed'
 token=$(inside cat /var/lib/caboose/disks/owner-token)
 
-inside bash -c 'echo CABOOSE_IDLE_MS=900000 >> /etc/caboose/host.env'
+inside bash -c 'echo CABOOSE_IDLE_MS=900000 >> /etc/caboose/host.env; sed -i "s/^CABOOSE_PORT=.*/CABOOSE_PORT=7317/" /etc/caboose/host.env'
+health_port=7317
 inside bash /src/deploy/linux/install.sh --bundle "/bundle/$asset" --force >/dev/null 2>&1 || fail 'reinstall'
 [[ $(health) == 200 ]] || fail 'the API is down after the upgrade'
 inside grep -q '^CABOOSE_IDLE_MS=900000$' /etc/caboose/host.env || fail 'the upgrade lost a setting'
 [[ $(inside grep -c '^CABOOSE_PORT=' /etc/caboose/host.env) == 1 ]] || fail 'the upgrade duplicated a setting'
-pass 'upgrade in place keeps settings'
+pass 'upgrade in place keeps settings and checks the saved non-default port'
 
 inside bash /src/deploy/linux/uninstall.sh >/dev/null || fail 'uninstall'
 inside test ! -e /etc/systemd/system/caboose-host.service || fail 'the service remains'

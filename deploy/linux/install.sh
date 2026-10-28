@@ -72,7 +72,7 @@ run() {
 if [[ -n $domain ]]; then
   # A server: Caddy with automatic HTTPS in front of the release image (deploy/server).
   here=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P || true)
-  server_args=(--domain "$domain")
+  server_args=(--domain "$domain" --version "$version")
   [[ -z $email ]] || server_args+=(--email "$email")
   [[ $dry_run == 0 ]] || server_args+=(--dry-run)
   if [[ -n $here && -f $here/../server/install.sh ]]; then exec bash "$here/../server/install.sh" "${server_args[@]}"; fi
@@ -80,6 +80,24 @@ if [[ -n $domain ]]; then
   [[ $version == latest ]] || ref=$version
   exec bash <(curl -fsSL "https://raw.githubusercontent.com/$REPO/$ref/deploy/server/install.sh") "${server_args[@]}"
 fi
+
+# The service keeps its settings across upgrades. Use the same settings for prerequisites,
+# mounts and health checks; command-line defaults must not silently select another computer.
+images=$state/disks
+env_file=/etc/caboose/host.env
+if [[ -f $env_file ]]; then
+  while IFS='=' read -r key value; do
+    case $value in \"*\") value=${value:1:${#value}-2} ;; \'*\') value=${value:1:${#value}-2} ;; esac
+    case $key in
+      CABOOSE_RUNTIME) runtime=$value ;;
+      CABOOSE_BIND) bind=$value ;;
+      CABOOSE_PORT) port=$value ;;
+      CABOOSE_IMAGE_ROOT) images=$value; state=$(dirname "$images") ;;
+    esac
+  done <"$env_file"
+fi
+[[ $state == /* && $state != *[$'\n\r\t ']* && $images == /* && $images != *[$'\n\r\t ']* ]] || die "state paths must be absolute and contain no whitespace"
+[[ $bind =~ ^[a-zA-Z0-9.:_-]+$ ]] || die "--bind must be an IP address or hostname"
 
 [[ $runtime == microvm || $runtime == container ]] || die "--runtime must be microvm or container"
 [[ $port =~ ^[0-9]+$ && $port -ge 1 && $port -le 65535 ]] || die "--port must be a port number"
@@ -181,7 +199,6 @@ fi
 
 # The disk root: reflink-capable for the microVM's copy-on-write disk (an XFS image file
 # when the filesystem is not), a plain directory for the container runtime.
-images=$state/disks
 run mkdir -p "$state"
 run chmod 0700 "$state"
 if [[ $runtime == microvm ]]; then
@@ -192,7 +209,6 @@ else
 fi
 
 # Settings: written once, then only missing keys are added, so edits survive upgrades.
-env_file=/etc/caboose/host.env
 run mkdir -p /etc/caboose
 run chmod 0755 /etc/caboose
 set_default() {
@@ -255,7 +271,13 @@ run systemctl restart caboose-host.service
 [[ $dry_run == 0 ]] || exit 0
 
 token_file=$images/owner-token
-url=http://127.0.0.1:$port
+case $bind in
+  0.0.0.0) health_host=127.0.0.1 ;;
+  ::) health_host='[::1]' ;;
+  *:*) health_host="[$bind]" ;;
+  *) health_host=$bind ;;
+esac
+url=http://$health_host:$port
 healthy=0
 for _ in $(seq 1 60); do
   if [[ -s $token_file ]] && [[ $(curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer $(cat "$token_file")" "$url/v1/health") == 200 ]]; then
@@ -278,8 +300,8 @@ if [[ $bind == 0.0.0.0 || $bind == :: ]]; then
     case $iface in lo | docker* | br-* | caboose* | veth* | tap* | virbr* | tailscale*) continue ;; esac
     addresses+=("http://${cidr%/*}:$port")
   done < <(ip -o -4 addr show scope global 2>/dev/null)
-elif [[ $bind != 127.0.0.1 && $bind != localhost ]]; then
-  addresses+=("http://$bind:$port")
+elif [[ $bind != 127.* && $bind != localhost && $bind != ::1 ]]; then
+  addresses+=("$url")
 fi
 
 echo
@@ -288,6 +310,10 @@ if [[ ${#addresses[@]} -gt 0 ]]; then
   echo "  Console:      ${addresses[0]}  (also $url on this machine)"
 else
   echo "  Console:      $url (this machine only: --bind is $bind)"
+fi
+if [[ -s $images/setup-code ]]; then
+  setup_code=$(cat "$images/setup-code")
+  echo "  Set up:       $url/setup?code=$setup_code"
 fi
 echo "  Owner token:  sudo cat $token_file"
 echo "  Settings:     $env_file (then: systemctl restart caboose-host)"

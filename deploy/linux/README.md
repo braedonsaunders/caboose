@@ -8,7 +8,8 @@ computer's image itself.
 curl -fsSL https://raw.githubusercontent.com/braedonsaunders/caboose/main/deploy/linux/install.sh | sudo bash
 ```
 
-At the end it prints the console's address, where to find the owner token, and a QR code.
+At the end it prints the console's address, the setup link while the host is unclaimed,
+where to find the owner token, and a QR code.
 Scan the QR code with the iPhone's Camera within 10 minutes to sign the Caboose app in. Make a
 new code later from **Computers › Owner › Phones** in the console.
 
@@ -66,6 +67,8 @@ curl -fsSL …/install.sh | sudo bash -s -- --runtime container --port 8080
 ## Upgrade, uninstall
 
 Run the installer again to upgrade. The computer, its settings and the owner token stay.
+Saved runtime, bind address, port and state directory take precedence over installer flags;
+edit `/etc/caboose/host.env` to change them.
 
 ```sh
 sudo bash deploy/linux/uninstall.sh            # removes the service and program, keeps the computer
