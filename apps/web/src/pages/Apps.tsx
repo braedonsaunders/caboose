@@ -150,9 +150,9 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
             {appsError ? (
               <Alert variant="destructive"><AlertDescription>{appsError}</AlertDescription></Alert>
             ) : launchable === null ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner size={16} />Listing apps…</div>
+              <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Listing apps…</div>
             ) : launchable.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{query ? 'No installed app matches your search.' : 'No apps with a desktop entry were found.'}</p>
+              <p className="text-sm text-fg-muted">{query ? 'No installed app matches your search.' : 'No apps with a desktop entry were found.'}</p>
             ) : (
               <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
                 {launchable.map(app => (
@@ -194,7 +194,7 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
             <Alert variant="destructive" className="mb-3"><AlertTitle>The catalog could not be read</AlertTitle><AlertDescription>{catalogError}</AlertDescription></Alert>
           ) : null}
           {!catalog ? (
-            catalogError ? null : <div className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner size={16} />Reading the catalog…</div>
+            catalogError ? null : <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Reading the catalog…</div>
           ) : shown.length === 0 ? (
             <EmptyState icon={<Package className="size-6" aria-hidden />} title="No apps match" description="Try another search or pack." />
           ) : (
@@ -219,11 +219,11 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
                           <AppIcon src={app.iconData ?? entry?.icon ?? null} name={app.name} size={32} />
                           <div className="min-w-0">
                             <div className="truncate font-medium">{app.name}</div>
-                            <div className="truncate text-xs text-muted-foreground">{app.summary}</div>
+                            <div className="truncate text-xs text-fg-muted">{app.summary}</div>
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell className="hidden text-sm text-muted-foreground md:table-cell">{app.category}</TableCell>
+                      <TableCell className="hidden text-sm text-fg-muted md:table-cell">{app.category}</TableCell>
                       <TableCell className="text-sm">
                         <VersionCell app={app} />
                       </TableCell>
@@ -268,11 +268,11 @@ function VersionCell({ app }: { app: CatalogApp }) {
     return (
       <div>
         <div title={app.installedVersion}>{displayVersion(app.installedVersion)}</div>
-        {app.updateAvailable && app.pinnedVersion ? <div className="text-xs text-muted-foreground">{app.pinnedVersion} available</div> : null}
+        {app.updateAvailable && app.pinnedVersion ? <div className="text-xs text-fg-muted">{app.pinnedVersion} available</div> : null}
       </div>
     )
   }
-  return <span className="text-muted-foreground">{app.pinnedVersion ?? 'Debian'}</span>
+  return <span className="text-fg-muted">{app.pinnedVersion ?? 'Debian'}</span>
 }
 
 function StatusCell({ app }: { app: CatalogApp }) {
@@ -295,10 +295,10 @@ function OperationRow({ app }: { app: CatalogApp }) {
       <div className="flex items-center gap-2 text-sm">
         <AppIcon src={app.iconData} name={app.name} size={20} />
         <span className="font-medium">{app.name}</span>
-        <span className={progress.phase === 'failed' ? 'text-destructive' : 'text-muted-foreground'}>{label}{percent !== undefined ? ` · ${percent}%` : ''}</span>
+        <span className={progress.phase === 'failed' ? 'text-danger' : 'text-fg-muted'}>{label}{percent !== undefined ? ` · ${percent}%` : ''}</span>
       </div>
       {progress.phase === 'failed' ? (
-        progress.message ? <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-2 font-mono text-xs">{progress.message}</pre> : null
+        progress.message ? <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-bg-subtle p-2 font-mono text-xs">{progress.message}</pre> : null
       ) : (
         <Progress value={progress.phase === 'queued' ? 0 : percent} aria-label={`${app.name}: ${label}`} />
       )}

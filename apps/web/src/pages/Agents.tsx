@@ -190,7 +190,7 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
               <Button type="submit" disabled={!running || starting || !prompt.trim() || !agent}>
                 {starting ? 'Starting…' : 'Start task'}
               </Button>
-              {!running ? <span className="text-sm text-muted-foreground">Wake the computer to start a task.</span> : null}
+              {!running ? <span className="text-sm text-fg-muted">Wake the computer to start a task.</span> : null}
             </div>
             {selected ? (
               <AgentDetails
@@ -225,9 +225,9 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant={taskTone(task.status)}>{task.status}</Badge>
                   <span className="text-sm font-medium">{agentLabel(task, catalog?.agents)}</span>
-                  <span className="text-xs text-muted-foreground">{new Date(task.startedAt).toLocaleString()}</span>
+                  <span className="text-xs text-fg-muted">{new Date(task.startedAt).toLocaleString()}</span>
                   {task.approvals === 'ask' ? <Badge variant="secondary">asks first</Badge> : null}
-                  {(task.turns ?? 1) > 1 ? <span className="text-xs text-muted-foreground">{task.turns} turns</span> : null}
+                  {(task.turns ?? 1) > 1 ? <span className="text-xs text-fg-muted">{task.turns} turns</span> : null}
                   <div className="ml-auto flex gap-2">
                     {task.status === 'running' ? (
                       <Button size="sm" variant="outline" onClick={() => void act(() => client.pauseAgentTask(task.id), 'Could not pause.')}>Pause</Button>
@@ -242,7 +242,7 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
                 </div>
                 <p className="whitespace-pre-wrap text-sm">{task.prompt}</p>
                 {task.attachments?.length ? (
-                  <p className="text-xs text-muted-foreground">Attached: {task.attachments.map(path => path.split('/').pop()).join(', ')}</p>
+                  <p className="text-xs text-fg-muted">Attached: {task.attachments.map(path => path.split('/').pop()).join(', ')}</p>
                 ) : null}
                 {task.pendingApproval ? (
                   <Alert>
@@ -267,7 +267,7 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
                   </Alert>
                 ) : null}
                 {task.summary ? (
-                  <p className="whitespace-pre-wrap rounded-md bg-muted p-3 text-sm text-muted-foreground">{task.summary}</p>
+                  <p className="whitespace-pre-wrap rounded-md bg-bg-subtle p-3 text-sm text-fg-muted">{task.summary}</p>
                 ) : null}
                 {task.signIn?.length && running ? (
                   <SignInButtons methods={task.signIn} onSignIn={method => void signIn(task.agent, method)} />
@@ -296,7 +296,7 @@ function AgentDetails({ agent, isDefault, running, installing, onInstall, onSign
     <div className="space-y-2 rounded-md border p-3 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">{agent.name}</span>
-        <span className="text-xs text-muted-foreground">{agent.version}</span>
+        <span className="text-xs text-fg-muted">{agent.version}</span>
         {isDefault ? <Badge variant="secondary">default</Badge> : null}
         {agent.installed ? <Badge variant="success">installed {agent.installed.version}</Badge> : <Badge variant="outline">runs on first use</Badge>}
         {agent.website || agent.repository ? (
@@ -310,10 +310,10 @@ function AgentDetails({ agent, isDefault, running, installing, onInstall, onSign
           ) : null}
         </div>
       </div>
-      {agent.description ? <p className="text-muted-foreground">{agent.description}</p> : null}
+      {agent.description ? <p className="text-fg-muted">{agent.description}</p> : null}
       {agent.signIn?.length ? <SignInButtons methods={agent.signIn} onSignIn={onSignIn} disabled={!running || status?.status === 'running'} /> : null}
       {status ? (
-        <p className={status.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}>
+        <p className={status.status === 'failed' ? 'text-danger' : 'text-fg-muted'}>
           {status.status === 'running' ? `Signing in with ${statusMethod}: finish it on your computer's screen.`
             : status.status === 'succeeded' ? `Signed in with ${statusMethod}.`
               : `Sign-in with ${statusMethod} failed${status.message ? `: ${status.message}` : '.'}`}
@@ -351,7 +351,7 @@ function EnvEditor({ names, disabled, onChange }: {
         {names.length ? names.map(entry => (
           <Badge key={entry} variant="outline" className="gap-1 font-mono">
             {entry}
-            <button type="button" className="ml-1 text-fg-muted hover:text-destructive" aria-label={`Remove ${entry}`} disabled={disabled}
+            <button type="button" className="ml-1 text-fg-muted hover:text-danger" aria-label={`Remove ${entry}`} disabled={disabled}
               onClick={() => void onChange({ remove: [entry] })}>×</button>
           </Badge>
         )) : <span className="text-xs text-fg-muted">None. Add an API key here instead of signing in, if the agent takes one.</span>}
@@ -365,7 +365,7 @@ function EnvEditor({ names, disabled, onChange }: {
           {saving ? 'Saving…' : names.includes(name.trim()) ? 'Replace' : 'Add'}
         </Button>
       </div>
-      {problem && name && value ? <p className="text-xs text-destructive">{problem}</p> : null}
+      {problem && name && value ? <p className="text-xs text-danger">{problem}</p> : null}
       <p className="text-xs text-fg-muted">Kept in the computer for this agent only (mode 0600) and never shown again.</p>
     </div>
   )
@@ -374,13 +374,13 @@ function EnvEditor({ names, disabled, onChange }: {
 function SignInButtons({ methods, onSignIn, disabled }: { methods: SignInMethod[]; onSignIn: (method: SignInMethod) => void; disabled?: boolean }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <KeyRound className="size-4 text-muted-foreground" aria-hidden />
+      <KeyRound className="size-4 text-fg-muted" aria-hidden />
       {methods.map(method => (
         <Button key={method.id} type="button" size="sm" variant="outline" disabled={disabled} title={method.description} onClick={() => onSignIn(method)}>
           Sign in: {method.name}
         </Button>
       ))}
-      <span className="text-xs text-muted-foreground">Opens on your computer's screen.</span>
+      <span className="text-xs text-fg-muted">Opens on your computer's screen.</span>
     </div>
   )
 }

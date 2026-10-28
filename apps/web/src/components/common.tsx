@@ -52,7 +52,7 @@ export function AppIcon({ src, name, size = 40 }: { src?: string | null; name: s
   return (
     <span
       aria-hidden
-      className="inline-flex shrink-0 items-center justify-center rounded-md bg-muted font-semibold text-muted-foreground"
+      className="inline-flex shrink-0 items-center justify-center rounded-md border border-border bg-bg-subtle font-semibold text-fg-muted"
       style={{ width: size, height: size, fontSize: Math.round(size * 0.38) }}
     >
       {initials}

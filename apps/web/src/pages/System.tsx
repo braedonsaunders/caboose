@@ -74,21 +74,21 @@ export function System({ client, computer, onUnauthorized }: { client: CabooseCl
         <div className="grid gap-6 xl:grid-cols-2">
           <DashboardPanel title="Computer" icon={<HardDrive className="size-4" aria-hidden />}>
             <dl className="grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-2 text-sm">
-              <dt className="text-muted-foreground">State</dt>
+              <dt className="text-fg-muted">State</dt>
               <dd>{status ? <Badge variant={stateTone(status.state)}>{stateLabel(status.state)}</Badge> : '—'}</dd>
-              <dt className="text-muted-foreground">Image</dt>
+              <dt className="text-fg-muted">Image</dt>
               <dd className="break-all">{host?.image ?? '—'}</dd>
-              <dt className="text-muted-foreground">Push notifications</dt>
+              <dt className="text-fg-muted">Push notifications</dt>
               <dd>{host ? (host.push ? 'Configured' : 'Not configured') : '—'}</dd>
-              <dt className="text-muted-foreground">Live Activities</dt>
+              <dt className="text-fg-muted">Live Activities</dt>
               <dd>{host ? (host.liveActivities ? 'Configured' : 'Not configured') : '—'}</dd>
               {upgrade ? (
                 <>
-                  <dt className="text-muted-foreground">Components</dt>
+                  <dt className="text-fg-muted">Components</dt>
                   <dd>
                     <Badge variant={upgrade.state === 'failed' ? 'destructive' : upgrade.state === 'succeeded' ? 'success' : 'info'}>{upgradeLabel(upgrade)}</Badge>
-                    {upgrade.version ? <div className="mt-1 font-mono text-xs text-muted-foreground" title="Hash of the bundled guest components">{upgrade.version.slice(0, 12)}</div> : null}
-                    {upgrade.message ? <p className="mt-1 text-xs text-muted-foreground">{upgrade.message}</p> : null}
+                    {upgrade.version ? <div className="mt-1 font-mono text-xs text-fg-muted" title="Hash of the bundled guest components">{upgrade.version.slice(0, 12)}</div> : null}
+                    {upgrade.message ? <p className="mt-1 text-xs text-fg-muted">{upgrade.message}</p> : null}
                   </dd>
                 </>
               ) : null}
@@ -105,13 +105,13 @@ export function System({ client, computer, onUnauthorized }: { client: CabooseCl
             {healthError ? (
               <Alert variant="destructive"><AlertDescription>{healthError}</AlertDescription></Alert>
             ) : !health ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner size={16} />Checking…</div>
+              <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Checking…</div>
             ) : (
               <dl className="grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-2 text-sm">
                 {healthFacts(health).map(fact => (
                   <React.Fragment key={fact.label}>
-                    <dt className="text-muted-foreground">{fact.label}</dt>
-                    <dd className={fact.problem ? 'break-words text-destructive' : 'break-words'}>{fact.value}</dd>
+                    <dt className="text-fg-muted">{fact.label}</dt>
+                    <dd className={fact.problem ? 'break-words text-danger' : 'break-words'}>{fact.value}</dd>
                   </React.Fragment>
                 ))}
               </dl>
@@ -121,7 +121,7 @@ export function System({ client, computer, onUnauthorized }: { client: CabooseCl
 
         {host ? (
           <DashboardPanel title="Configuration" icon={<SlidersHorizontal className="size-4" aria-hidden />}>
-            <p className="mb-3 text-sm text-muted-foreground">
+            <p className="mb-3 text-sm text-fg-muted">
               The host reads these when it starts. To change one, set it in the host's environment (<code>deploy/.env</code> for
               Docker Compose, or the service's environment file) and restart caboose-host; it parks the computer before it stops.
               Name, memory, vCPUs, auto-park and the default agent are edited in Settings instead.
@@ -140,7 +140,7 @@ export function System({ client, computer, onUnauthorized }: { client: CabooseCl
                     <TableCell>
                       <span className="break-all font-mono text-xs">{setting.value}</span>
                       {setting.default ? <Badge variant="outline" className="ml-2">default</Badge> : null}
-                      {INITIAL_ONLY.has(setting.name) ? <span className="ml-2 text-xs text-muted-foreground">initial value; Settings overrides it</span> : null}
+                      {INITIAL_ONLY.has(setting.name) ? <span className="ml-2 text-xs text-fg-muted">initial value; Settings overrides it</span> : null}
                     </TableCell>
                   </TableRow>
                 ))}

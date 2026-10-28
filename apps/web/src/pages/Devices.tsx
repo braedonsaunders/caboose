@@ -82,7 +82,7 @@ export function Devices({ client, computer, onUnauthorized }: { client: CabooseC
             {error ? (
               <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>
             ) : devices === null ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner size={16} />Loading…</div>
+              <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Loading…</div>
             ) : devices.length === 0 ? (
               <EmptyState
                 icon={<Smartphone className="size-6" aria-hidden />}
@@ -108,13 +108,13 @@ export function Devices({ client, computer, onUnauthorized }: { client: CabooseC
                           <div className="flex flex-wrap gap-1">
                             {KINDS.map(({ kind, label, description }) => (
                               <Badge key={kind} variant={device.kinds.includes(kind) ? 'success' : 'outline'} title={description}
-                                className={device.kinds.includes(kind) ? undefined : 'text-muted-foreground line-through'}>
+                                className={device.kinds.includes(kind) ? undefined : 'text-fg-muted line-through'}>
                                 {label}
                               </Badge>
                             ))}
                           </div>
                         </TableCell>
-                        <TableCell className="hidden text-sm text-muted-foreground sm:table-cell">
+                        <TableCell className="hidden text-sm text-fg-muted sm:table-cell">
                           {device.environment === 'sandbox' ? 'Development' : 'Production'}
                         </TableCell>
                         <TableCell>
@@ -126,7 +126,7 @@ export function Devices({ client, computer, onUnauthorized }: { client: CabooseC
                     ))}
                   </TableBody>
                 </Table>
-                <p className="mt-3 text-xs text-muted-foreground">
+                <p className="mt-3 text-xs text-fg-muted">
                   Phones are shown by a fingerprint of their push token; the host never sends the token itself. A phone that
                   deletes Caboose is removed the next time Apple reports it unregistered.
                 </p>

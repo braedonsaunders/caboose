@@ -208,11 +208,11 @@ export function Files({ client, computer, onUnauthorized }: { client: CabooseCli
               <nav aria-label="Folder" className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
                 {crumbs.map((crumb, index) => (
                   <React.Fragment key={crumb.path}>
-                    {index > 0 ? <ChevronRight className="size-3.5 text-muted-foreground" aria-hidden /> : null}
+                    {index > 0 ? <ChevronRight className="size-3.5 text-fg-muted" aria-hidden /> : null}
                     {index === crumbs.length - 1 ? (
                       <span className="font-semibold" aria-current="page">{crumb.name}</span>
                     ) : (
-                      <a href={filesHref(crumb.path)} className="text-muted-foreground hover:text-fg hover:underline"
+                      <a href={filesHref(crumb.path)} className="text-fg-muted hover:text-fg hover:underline"
                         onClick={event => { event.preventDefault(); navigate(filesHref(crumb.path)) }}>
                         {crumb.name}
                       </a>
@@ -223,7 +223,7 @@ export function Files({ client, computer, onUnauthorized }: { client: CabooseCli
             }
             actions={
               <div className="flex items-center gap-3">
-                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <label className="flex items-center gap-2 text-xs text-fg-muted">
                   <Switch checked={showHidden} onChange={event => setShowHidden(event.target.checked)} />
                   Hidden files
                 </label>
@@ -247,7 +247,7 @@ export function Files({ client, computer, onUnauthorized }: { client: CabooseCli
               }}
             >
               {uploads ? (
-                <div className="mb-3 flex items-center gap-2 text-sm text-muted-foreground">
+                <div className="mb-3 flex items-center gap-2 text-sm text-fg-muted">
                   <Spinner size={16} />Uploading {uploads.name}{uploads.total > 1 ? ` (${uploads.index} of ${uploads.total})` : ''}…
                 </div>
               ) : null}
@@ -263,7 +263,7 @@ export function Files({ client, computer, onUnauthorized }: { client: CabooseCli
                   </AlertDescription>
                 </Alert>
               ) : shown === null ? (
-                <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+                <div className="flex items-center gap-2 py-6 text-sm text-fg-muted">
                   <Spinner size={16} />{state === 'running' ? 'Listing…' : 'Waking your computer…'}
                 </div>
               ) : shown.length === 0 ? (
@@ -291,7 +291,7 @@ export function Files({ client, computer, onUnauthorized }: { client: CabooseCli
                             <div className="flex min-w-0 items-center gap-2">
                               {item.kind === 'directory'
                                 ? <Folder className="size-4 shrink-0 text-primary" aria-hidden />
-                                : <File className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
+                                : <File className="size-4 shrink-0 text-fg-muted" aria-hidden />}
                               {item.kind === 'directory' ? (
                                 <a href={filesHref(target)} className="truncate font-medium hover:underline"
                                   onClick={event => { event.preventDefault(); navigate(filesHref(target)) }}>
@@ -302,10 +302,10 @@ export function Files({ client, computer, onUnauthorized }: { client: CabooseCli
                               )}
                             </div>
                           </TableCell>
-                          <TableCell className="hidden text-sm text-muted-foreground tabular-nums sm:table-cell">
+                          <TableCell className="hidden text-sm text-fg-muted tabular-nums sm:table-cell">
                             {item.kind === 'file' ? formatBytes(item.size) : '—'}
                           </TableCell>
-                          <TableCell className="hidden text-sm text-muted-foreground md:table-cell">
+                          <TableCell className="hidden text-sm text-fg-muted md:table-cell">
                             {new Date(item.mtime).toLocaleString()}
                           </TableCell>
                           <TableCell>
