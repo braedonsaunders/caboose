@@ -10,15 +10,34 @@ import Testing
 ///
 ///     CABOOSE_HOST_URL=http://host:7310 CABOOSE_HOST_TOKEN=… swift test --filter LiveCabooseDisplay
 ///
+/// Or straight to a compositor, without a host (its dev container, `guest/display`):
+///
+///     CABOOSE_DISPLAY_URL=ws://box:14600/ CABOOSE_DISPLAY_TOKEN=… swift test --filter LiveCabooseDisplay
+///
 /// Prints the server's encoders and features, each window, frames per second, failed
-/// decodes and the round trip. Skipped without the URL.
-@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["CABOOSE_HOST_URL"] != nil))
+/// decodes and the round trip. Skipped without either URL.
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["CABOOSE_HOST_URL"] != nil
+    || ProcessInfo.processInfo.environment["CABOOSE_DISPLAY_URL"] != nil))
 @MainActor struct LiveCabooseDisplayTests {
     let host = URL(string: ProcessInfo.processInfo.environment["CABOOSE_HOST_URL"] ?? "http://127.0.0.1:1")!
     let token = ProcessInfo.processInfo.environment["CABOOSE_HOST_TOKEN"] ?? ""
     let seconds = Double(ProcessInfo.processInfo.environment["CABOOSE_VIDEO_SECONDS"] ?? "") ?? 10
 
     @Test func streamsWindowsOverTheRelay() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let session: CabooseDisplaySession
+        let capabilities = ClientCapabilities(desktopWidth: 2560, desktopHeight: 1600, dpi: 192, refreshRate: 120)
+        if let direct = environment["CABOOSE_DISPLAY_URL"].flatMap(URL.init(string:)) {
+            session = CabooseDisplaySession(displayURL: direct, token: "", password: environment["CABOOSE_DISPLAY_TOKEN"] ?? "",
+                                            capabilities: capabilities)
+        } else {
+            session = try await relayedSession(capabilities)
+        }
+        try await measure(session)
+    }
+
+    /// Wakes the computer through the host and opens its relayed display, as the app does.
+    private func relayedSession(_ capabilities: ClientCapabilities) async throws -> CabooseDisplaySession {
         var request = URLRequest(url: host.appendingPathComponent("v1/session"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -31,8 +50,10 @@ import Testing
         var socket = URLComponents(url: host.appendingPathComponent("v1/display"), resolvingAgainstBaseURL: false)!
         socket.scheme = host.scheme == "https" ? "wss" : "ws"
 
-        let capabilities = ClientCapabilities(desktopWidth: 2560, desktopHeight: 1600, dpi: 192, refreshRate: 120)
-        let session = CabooseDisplaySession(displayURL: socket.url!, token: token, password: password, capabilities: capabilities)
+        return CabooseDisplaySession(displayURL: socket.url!, token: token, password: password, capabilities: capabilities)
+    }
+
+    private func measure(_ session: CabooseDisplaySession) async throws {
         session.connect()
         try await until("hello", timeout: 20) { session.state == .ready }
         let server = try #require(session.server)
