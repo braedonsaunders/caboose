@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { DesktopNotification } from './desktop-notifications.js'
 import type { AgentEvent } from './agents.js'
 import { APNsSender, type APNsEnvironment, type APNsMessage, type APNsResult } from './apns.js'
@@ -12,6 +13,11 @@ export function parseDevice(input: unknown): PushDevice {
   if (Object.keys(value).some(key => !['token', 'environment', 'kinds'].includes(key)) || typeof value.token !== 'string' || !TOKEN.test(value.token) || (value.environment !== 'sandbox' && value.environment !== 'production') || !Array.isArray(value.kinds) || value.kinds.some(kind => kind !== 'approval' && kind !== 'task' && kind !== 'desktop') || new Set(value.kinds).size !== value.kinds.length) throw new SettingsInputError('invalid push device')
   return { token: value.token, environment: value.environment, kinds: value.kinds as Kind[] }
 }
+/** What a client may see of a registration: never the APNs token itself. */
+export interface PushDeviceSummary { id: string; environment: APNsEnvironment; kinds: Kind[] }
+/** A short, stable stand-in for a token: the first 16 hex digits of its SHA-256. */
+export function deviceFingerprint(token: string): string { return createHash('sha256').update(token).digest('hex').slice(0, 16) }
+const FINGERPRINT = /^[0-9a-f]{16}$/
 export class PushDevices {
   private pending: Promise<void> = Promise.resolve()
   private revisions = new Map<string, number>()
@@ -39,6 +45,18 @@ export class PushDevices {
       this.revisions.set(device.token, (this.revisions.get(device.token) ?? 0) + 1)
       return [...devices.filter(d => d.token !== device.token), device]
     })
+  }
+  summaries(): PushDeviceSummary[] { return this.devices.map(d => ({ id: deviceFingerprint(d.token), environment: d.environment, kinds: [...d.kinds] })) }
+  /** Remove the registration a summary describes; false when none (or, improbably, more than one) matches. */
+  async removeById(id: unknown): Promise<boolean> {
+    if (typeof id !== 'string' || !FINGERPRINT.test(id)) throw new SettingsInputError('invalid device id')
+    let removed = false
+    await this.mutate(devices => {
+      const matches = devices.filter(d => deviceFingerprint(d.token) === id)
+      removed = matches.length === 1
+      return removed ? devices.filter(d => d !== matches[0]) : devices
+    })
+    return removed
   }
   version(token: string): number { return this.revisions.get(token) ?? 0 }
   remove(token: unknown, environment?: APNsEnvironment, expectedRevision?: number): Promise<void> {

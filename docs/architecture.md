@@ -58,7 +58,10 @@ team ID and app topic. `GET /v1/computer` reports `capabilities.push` when confi
 An authenticated `POST /v1/devices/push` accepts `{ token, environment, kinds }`,
 where environment is `sandbox` or `production` and kinds is a subset of `approval`,
 `task`, and `desktop`; registration replaces the same token's settings. `DELETE` accepts
-`{ token }`. The private device list is persisted atomically beside the computer
+`{ token }`. `GET /v1/devices/push` lists registrations as `{ devices: [{ id, environment,
+kinds }] }`, where `id` is a fingerprint (the first 16 hex digits of the token's SHA-256); it
+never returns a token. `DELETE /v1/devices/push/:id` removes the registration with that
+fingerprint (404 when none matches). Without APNs configured these routes answer 503. The private device list is persisted atomically beside the computer
 settings. APNs 410 Unregistered responses remove the affected registration, unless it
 was registered again while the request was in flight. Provider JWTs are refreshed after
 50 minutes. With no foreground app control socket connected, new agent approvals and succeeded or
@@ -270,9 +273,12 @@ HTTP API (JSON except streamed file contents, all behind `Authorization: Bearer 
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/health` | host + KVM + desk host stats |
+| `GET` | `/v1/health` | microVM: `{ host, kvm, desk }` with appkit-desk's host stats; container: `{ host, runtime: "container", gpu, container, running }` |
+| `GET` | `/v1/host` | how this host was started (below); read-only |
+| `GET` | `/v1/devices/push` | registered push devices by fingerprint, never tokens (see Notifications) |
 | `POST` | `/v1/devices/push` | register or replace a push device and its enabled kinds |
 | `DELETE` | `/v1/devices/push` | unregister a push device by token |
+| `DELETE` | `/v1/devices/push/:id` | unregister a push device by its fingerprint |
 | `POST`, `DELETE` | `/v1/activities` | register an ActivityKit update token or remove an activity |
 | `POST`, `DELETE` | `/v1/activities/start-token` | register or remove a device's ActivityKit push-to-start token |
 | `POST` | `/v1/jobs/activity` | publish a generic job state to its Live Activities |
@@ -315,6 +321,27 @@ Management status has this shape (resources are MiB and idle time is millisecond
   lastError: string | null
 }
 ```
+
+`GET /v1/host` describes the deployment, which is fixed until the host process restarts:
+
+```ts
+{
+  version: string,                 // the caboose-host package version
+  node: string,                    // the Node.js version it runs on
+  runtime: "microvm" | "container",
+  display: "xpra-ws" | "caboose-display",
+  gpu: "wsl" | "nvidia" | "dri" | "none" | null,   // the container's GPU; null for a microVM
+  image: string,                   // the container image, or the microVM's golden image path
+  push: boolean, liveActivities: boolean,          // whether APNs is configured
+  settings: Array<{ name: string, value: string, default: boolean }>   // CABOOSE_* variables
+}
+```
+
+`settings` lists the non-secret `CABOOSE_*` variables the host read (runtime, display, GPU and
+container settings, image root, guest LAN policy, bind address and port, initial resources and
+idle time, agent registry URL and agent idle time), each with `default: true` when it was not
+set. It never includes the owner token, APNs credentials, extra container arguments, or a
+user name or password in the registry URL. Changing any of them requires restarting the host.
 
 The name is 1–80 characters without control characters, trimmed on save. Memory is
 512–65536 MiB, vCPUs 1–32, and idle time 60000–86400000 ms; numeric values are integers.

@@ -19,6 +19,7 @@ import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
 import { DesktopNotifications } from './desktop-notifications.js'
 import type { PushService } from './push.js'
+import type { HostInfo } from './host-info.js'
 import type { AgentEvent } from './agents.js'
 import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenType } from './screen.js'
 
@@ -68,6 +69,8 @@ export function createCabooseServer(options: {
   agentIdleMs?: number
   push?: PushService
   activities?: ActivityService
+  /** How this host was started, for `GET /v1/host`. */
+  host?: HostInfo
 }) {
   const { controller, token, settings } = options
   const computer = new ComputerLifecycle(controller, settings.get().idleMs)
@@ -210,6 +213,7 @@ export function createCabooseServer(options: {
         })
       }
       if (request.method === 'GET' && path === '/v1/health') return json(response, 200, controller.stats())
+      if (request.method === 'GET' && path === '/v1/host' && options.host) return json(response, 200, options.host)
       if (path === '/v1/activities' && request.method === 'POST') {
         if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
         const body = await readJson(request)
@@ -248,6 +252,16 @@ export function createCabooseServer(options: {
         if (!options.push) return json(response, 503, { error: 'push unavailable' })
         await options.push.devices.register(await readJson(request))
         return json(response, 200, { registered: true })
+      }
+      if (path === '/v1/devices/push' && request.method === 'GET') {
+        if (!options.push) return json(response, 503, { error: 'push unavailable' })
+        return json(response, 200, { devices: options.push.devices.summaries() })
+      }
+      const pushDevice = /^\/v1\/devices\/push\/([^/]+)$/.exec(path)
+      if (pushDevice?.[1] && request.method === 'DELETE') {
+        if (!options.push) return json(response, 503, { error: 'push unavailable' })
+        if (!await options.push.devices.removeById(decodeURIComponent(pushDevice[1]))) throw new AgentNotFoundError('device not found')
+        return json(response, 200, { removed: true })
       }
       if (path === '/v1/devices/push' && request.method === 'DELETE') {
         if (!options.push) return json(response, 503, { error: 'push unavailable' })
