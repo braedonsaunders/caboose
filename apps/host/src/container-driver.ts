@@ -6,6 +6,11 @@ import type { Config, GpuKind } from './config.js'
 import type { ComputerResources } from './driver.js'
 import type { App, Controller, Session } from './server.js'
 import type { ComputerSettings } from './settings.js'
+import { fenceBridge } from './network.js'
+
+/** The computer's own Docker network, so its bridge interface has a known name to fence. */
+export const CONTAINER_NETWORK = 'caboose'
+export const CONTAINER_BRIDGE = 'caboose-br0'
 
 /**
  * The computer as a container instead of a microVM, for hosts whose GPU a container can use
@@ -50,7 +55,7 @@ export function gpuArgs(kind: GpuKind): string[] {
   }
 }
 
-export function createContainerController(config: Config, dependencies: { docker?: Docker; exists?: (path: string) => boolean; settings?: () => ComputerSettings } = {}): Controller {
+export function createContainerController(config: Config, dependencies: { docker?: Docker; exists?: (path: string) => boolean; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void> } = {}): Controller {
   const docker = dependencies.docker ?? dockerCli()
   const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs }
   /** What the container was created with; settings changes apply on the next restart. */
@@ -72,9 +77,21 @@ export function createContainerController(config: Config, dependencies: { docker
     }
   }
 
+  /** The network and its fence, before the computer can send a packet. Idempotent. */
+  async function ensureNetwork(): Promise<void> {
+    try {
+      await docker(['network', 'inspect', CONTAINER_NETWORK], 15_000)
+    } catch {
+      await docker(['network', 'create', '--driver', 'bridge', '-o', `com.docker.network.bridge.name=${CONTAINER_BRIDGE}`, CONTAINER_NETWORK], 30_000)
+    }
+    await (dependencies.fence ?? fenceBridge)(CONTAINER_BRIDGE)
+  }
+
   function runArgs(size: ComputerResources): string[] {
     return [
       'run', '-d', '--name', name, '--hostname', 'caboose', '--init',
+      // Its own fenced network, and public DNS like the microVM, so nothing depends on the LAN.
+      '--network', CONTAINER_NETWORK, '--dns', '1.1.1.1', '--dns', '9.9.9.9',
       '--restart', 'no',
       '--label', `caboose.memory-mb=${size.memoryMb}`, '--label', `caboose.vcpus=${size.vcpus}`,
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
@@ -122,6 +139,7 @@ export function createContainerController(config: Config, dependencies: { docker
     hasSavedState: () => resources !== null,
     lastError: () => lastError,
     async wake(): Promise<Session> {
+      await ensureNetwork()
       const current = await state()
       if (current === 'missing') {
         const desired = settings()

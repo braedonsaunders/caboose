@@ -16,6 +16,7 @@ function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
       case 'start': case 'unpause': status = 'running'; return ''
       case 'pause': status = 'paused'; return ''
       case 'rm': status = 'missing'; return ''
+      case 'network': return ''
       case 'exec':
         if (args.includes('list')) return '[]'
         return ''
@@ -33,7 +34,7 @@ const settings = config({
 describe('createContainerController', () => {
   it('creates the computer with the GPU, its home and loopback-only displays, then starts the session', async () => {
     const fake = fakeDocker('missing')
-    const controller = createContainerController(settings, { docker: fake.docker, exists: path => path === '/dev/dxg' })
+    const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: path => path === '/dev/dxg' })
     const session = await controller.wake()
     expect(session.display.token).toMatch(/^[0-9a-f]{64}$/)
     const run = fake.calls.find(call => call[0] === 'run')!
@@ -48,7 +49,7 @@ describe('createContainerController', () => {
 
   it('parks by freezing and resumes with the same display token', async () => {
     const fake = fakeDocker('missing')
-    const controller = createContainerController(settings, { docker: fake.docker, exists: () => false })
+    const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
     const first = await controller.wake()
     await controller.park()
     expect(fake.calls.at(-1)).toEqual(['pause', 'caboose-owner'])
@@ -61,7 +62,7 @@ describe('createContainerController', () => {
 
   it('starts a stopped computer instead of recreating it', async () => {
     const fake = fakeDocker('exited')
-    const controller = createContainerController(settings, { docker: fake.docker, exists: () => false })
+    const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
     await controller.wake()
     expect(fake.calls.some(call => call[0] === 'start')).toBe(true)
     expect(fake.calls.some(call => call[0] === 'run')).toBe(false)
@@ -69,7 +70,7 @@ describe('createContainerController', () => {
 
   it('runs the agent seat and app commands inside the container', async () => {
     const fake = fakeDocker('running')
-    const controller = createContainerController(settings, { docker: fake.docker, exists: () => false })
+    const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
     await controller.wake()
     await controller.ensureAgentSeat()
     expect(fake.calls.at(-1)).toEqual(['exec', '-u', 'root', 'caboose-owner', '/usr/local/bin/caboose-session', 'start-agent'])
@@ -94,7 +95,7 @@ describe('GPU selection', () => {
 
   it('uses a configured GPU over detection', async () => {
     const fake = fakeDocker('missing')
-    const controller = createContainerController({ ...settings, gpu: 'none' }, { docker: fake.docker, exists: () => true })
+    const controller = createContainerController({ ...settings, gpu: 'none' }, { fence: async () => {}, docker: fake.docker, exists: () => true })
     await controller.wake()
     expect(fake.calls.find(call => call[0] === 'run')).toEqual(expect.arrayContaining(['CABOOSE_GPU=none']))
   })
@@ -104,7 +105,7 @@ describe('container settings and restart', () => {
   it('sizes a new computer from the settings and restarts cold into the new size', async () => {
     const fake = fakeDocker('missing')
     let desired = { name: 'Studio', memoryMb: 8192, vcpus: 6, idleMs: 60_000 }
-    const controller = createContainerController(settings, { docker: fake.docker, exists: () => false, settings: () => desired })
+    const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false, settings: () => desired })
     const first = await controller.wake()
     expect(first.computer).toMatchObject({ name: 'Studio', memoryMb: 8192, vcpus: 6 })
     expect(controller.activeResources()).toEqual({ memoryMb: 8192, vcpus: 6 })
@@ -117,8 +118,23 @@ describe('container settings and restart', () => {
 
   it('reads the size of a computer that existed before the host started', async () => {
     const fake = fakeDocker('paused')
-    const controller = createContainerController(settings, { docker: fake.docker, exists: () => false })
+    const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
     await controller.wake()
     expect(controller.activeResources()).toEqual({ memoryMb: 4096, vcpus: 2 })
+  })
+})
+
+describe('container network fence', () => {
+  it('puts the computer on its own fenced network with public DNS before it starts', async () => {
+    const fake = fakeDocker('missing')
+    const fenced: string[] = []
+    const controller = createContainerController(settings, { docker: fake.docker, exists: () => false, fence: async device => { fenced.push(device) } })
+    await controller.wake()
+    expect(fenced).toEqual(['caboose-br0'])
+    const network = fake.calls.findIndex(call => call[0] === 'network')
+    const run = fake.calls.findIndex(call => call[0] === 'run')
+    expect(network).toBeGreaterThanOrEqual(0)
+    expect(network).toBeLessThan(run)
+    expect(fake.calls[run]).toEqual(expect.arrayContaining(['--network', 'caboose', '--dns', '1.1.1.1']))
   })
 })
