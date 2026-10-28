@@ -1,0 +1,30 @@
+[Unit]
+Description=Caboose Display (agent seat): the agents' own display, streamed on :14601
+Documentation=https://github.com/braedonsaunders/caboose/blob/main/docs/display.md
+Requires=user@1000.service caboose-agent-bus.service caboose-agent-notification-daemon.service
+After=network.target user@1000.service caboose-agent-bus.service caboose-agent-notification-daemon.service
+
+[Service]
+Type=simple
+User=caboose
+Group=caboose
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Its own session bus, so the agents' notifications never reach the owner.
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/agent-bus
+Environment=CABOOSE_VIDEO_SOCKET=/run/user/1000/caboose-video-agent.sock
+Environment=ACCESSIBILITY_ENABLED=1
+Environment=GNOME_ACCESSIBILITY=1
+Environment=QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
+ExecStartPre=+/usr/bin/install -d -o caboose -g caboose -m 0700 /run/user/1000
+ExecStartPre=+/usr/bin/install -d -m 0755 /run/caboose
+ExecStartPre=+/usr/bin/install -o caboose -g caboose -m 0644 /dev/null /run/caboose/agent-display.env
+# Agents drive apps with X11 tools (xdotool, AT-SPI by X window), so the seat's apps run
+# on Xwayland alone. It plays no sound.
+ExecStart=/usr/local/bin/caboose-display --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --x11-only --no-audio --env-file /run/caboose/agent-display.env
+# Start the seat's accessibility bus before any app, so every app on it joins that bus.
+ExecStartPost=-/bin/sh -c 'caboose-display-ready 60 14601 && set -a && . /run/caboose/agent-display.env && exec python3 /opt/caboose/a11y.py bus --display "$DISPLAY" --wait 30'
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

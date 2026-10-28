@@ -60,10 +60,10 @@ impl Drop for Audio {
 }
 
 impl Audio {
-    /// Starts PulseAudio with the null sink. `None` (logged) if PulseAudio or parec is not
-    /// installed or does not come up.
-    pub fn start(runtime_dir: &Path) -> Option<Self> {
-        let dir = runtime_dir.join("caboose-display").join("pulse");
+    /// Starts PulseAudio with the null sink, its socket under the instance's private
+    /// directory. `None` (logged) if PulseAudio or parec is not installed or does not come up.
+    pub fn start(instance_dir: &Path) -> Option<Self> {
+        let dir = instance_dir.join("pulse");
         if let Err(e) = std::fs::create_dir_all(&dir) {
             tracing::warn!("no audio: {}: {e}", dir.display());
             return None;

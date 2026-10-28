@@ -1,8 +1,8 @@
 #!/bin/sh
 # Installs caboose-display into a Debian 13 guest (or chroot): the runtime libraries,
-# the binaries built by `cargo build --release`, the systemd unit and the readiness
-# check. It does not enable the unit: Xpra stays the default display until the host
-# chooses Caboose Display (CABOOSE_DISPLAY=caboose).
+# the binaries built by `cargo build --release`, the systemd units for the owner's
+# display and the agent seat, and the readiness check. The units are not enabled: the
+# host starts the owner's display at each wake and the agent seat when an agent needs it.
 #
 #   guest/display/install.sh [TARGET_DIR]     # default: guest/display/target/release
 set -eu
@@ -17,7 +17,7 @@ apt-get install -y --no-install-recommends xwayland libpixman-1-0 libxkbcommon0 
   libavcodec61 libavutil59 libavformat61 libswscale8 python3-gi dbus-user-session
 install -m 0755 "$bin/caboose-display" "$bin/caboose-display-probe" /usr/local/bin/
 install -m 0755 "$here/caboose-display-ready" /usr/local/bin/
-install -m 0644 "$here/systemd/caboose-display.service" /etc/systemd/system/
+install -m 0644 "$here/systemd/caboose-display.service" "$here/systemd/caboose-display-agent.service" /etc/systemd/system/
 # The display's D-Bus notification endpoint and monitor share the owner session bus.
 sh "$here/../notifications/install.sh"
 if id caboose >/dev/null 2>&1; then

@@ -1,0 +1,13 @@
+[Unit]
+Description=Caboose agent seat notification endpoint
+Requires=user@1000.service caboose-agent-bus.service
+After=user@1000.service caboose-agent-bus.service
+PartOf=caboose-display-agent.service
+
+[Service]
+User=caboose
+Group=caboose
+Environment=HOME=/home/caboose
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/agent-bus
+ExecStart=/usr/bin/python3 /opt/caboose/notifications/daemon.py
+Restart=on-failure

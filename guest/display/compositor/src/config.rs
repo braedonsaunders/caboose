@@ -12,11 +12,14 @@ USAGE:
 
 OPTIONS:
     --listen ADDR          WebSocket listen address [default: 0.0.0.0:14600]
-    --token-file PATH      per-wake token, re-read on every hello [default: /run/caboose/xpra-token]
+    --token-file PATH      per-wake token, re-read on every hello [default: /run/caboose/display-token]
     --no-auth              accept any token (development only)
     --socket NAME          Wayland socket name in $XDG_RUNTIME_DIR [default: wayland-caboose-0]
     --x-display N          Xwayland display number [default: 110]
     --no-xwayland          do not start Xwayland
+    --x11-only             point applications at Xwayland alone: the env file names DISPLAY
+                           and X11 toolkit backends, not WAYLAND_DISPLAY (for a seat driven
+                           by X11 tools, such as the agent seat)
     --no-audio             do not run PulseAudio or send sound
     --audio-bitrate BPS    Opus bitrate [default: 128000]
     --env-file PATH        write WAYLAND_DISPLAY/DISPLAY for launchers here once ready
@@ -83,6 +86,8 @@ pub struct Config {
     pub token_file: Option<PathBuf>,
     pub socket: String,
     pub x_display: Option<u32>,
+    /// Applications are pointed at Xwayland alone.
+    pub x11_only: bool,
     pub audio: bool,
     pub audio_bitrate: u32,
     pub env_file: Option<PathBuf>,
@@ -103,9 +108,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             listen: "0.0.0.0:14600".parse().unwrap(),
-            token_file: Some("/run/caboose/xpra-token".into()),
+            token_file: Some("/run/caboose/display-token".into()),
             socket: "wayland-caboose-0".into(),
             x_display: Some(110),
+            x11_only: false,
             audio: true,
             audio_bitrate: 128_000,
             env_file: None,
@@ -119,6 +125,15 @@ impl Default for Config {
             list_encoders: false,
             command: Vec::new(),
         }
+    }
+}
+
+impl Config {
+    /// This instance's private state (X11 authority, the Xwayland shim, PulseAudio) under
+    /// `runtime_dir`, named after its Wayland socket so that two instances (the owner's
+    /// display and the agent seat) never share it.
+    pub fn instance_dir(&self, runtime_dir: &std::path::Path) -> PathBuf {
+        runtime_dir.join("caboose-display").join(&self.socket)
     }
 }
 
@@ -147,6 +162,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             "--socket" => config.socket = value(&mut args, &arg)?,
             "--x-display" => config.x_display = Some(number(value(&mut args, &arg)?, &arg)?),
             "--no-xwayland" => config.x_display = None,
+            "--x11-only" => config.x11_only = true,
             "--no-audio" => config.audio = false,
             "--audio-bitrate" => config.audio_bitrate = number(value(&mut args, &arg)?, &arg)?,
             "--env-file" => config.env_file = Some(value(&mut args, &arg)?.into()),
@@ -210,7 +226,7 @@ mod tests {
         assert_eq!(c.listen.port(), 14600);
         assert_eq!(c.socket, "wayland-caboose-0");
         assert_eq!(c.x_display, Some(110));
-        assert_eq!(c.token_file.as_deref(), Some(std::path::Path::new("/run/caboose/xpra-token")));
+        assert_eq!(c.token_file.as_deref(), Some(std::path::Path::new("/run/caboose/display-token")));
     }
 
     #[test]
@@ -219,6 +235,16 @@ mod tests {
         assert!(c.token_file.is_none());
         assert_eq!((c.display.width, c.display.height, c.display.scale), (3840, 2160, 2.0));
         assert_eq!(c.command, ["weston-terminal", "--fullscreen"]);
+    }
+
+    #[test]
+    fn instances_are_kept_apart_by_socket() {
+        let runtime = std::path::Path::new("/run/user/1000");
+        let owner = run(&[]);
+        let agent = run(&["--socket", "wayland-caboose-agent", "--x-display", "101", "--x11-only"]);
+        assert!(!owner.x11_only && agent.x11_only);
+        assert_eq!(owner.instance_dir(runtime), runtime.join("caboose-display/wayland-caboose-0"));
+        assert_ne!(owner.instance_dir(runtime), agent.instance_dir(runtime));
     }
 
     #[test]
