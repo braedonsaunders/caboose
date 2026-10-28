@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { loadCatalog, parseCatalog } from './app-catalog-data.js'
 
@@ -7,6 +8,15 @@ describe('application catalog', () => {
     expect(data.apps.filter(a => a.packs.includes('creative-studio'))).toHaveLength(13)
     expect(data.apps.find(a => a.id === 'gridcraft')?.source.kind).toBe('deb')
     expect(data.apps.find(a => a.id === 'gimp')?.source).toEqual({ kind: 'apt', packages: ['gimp'] })
+  })
+  it('keeps all release assets aligned with the reviewed checksums', () => {
+    const releases = JSON.parse(readFileSync(new URL('../../../guest/catalog/craft-releases.json', import.meta.url), 'utf8')) as { releases: { id: string; version: string; sha256: string; size: number; url: string }[] }
+    const entries = loadCatalog().apps.filter(app => app.source.kind === 'deb')
+    expect(entries).toHaveLength(releases.releases.length)
+    for (const release of releases.releases) {
+      const source = entries.find(app => app.id === release.id)?.source
+      expect(source).toMatchObject({ kind: 'deb', version: release.version, sha256: release.sha256, size: release.size, url: release.url })
+    }
   })
   it('rejects malformed packages, URLs, duplicates and unknown packs', () => {
     for (const mutate of [

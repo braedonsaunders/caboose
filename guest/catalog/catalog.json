@@ -501,8 +501,19 @@
       "icon": "org.kde.krita",
       "desktopId": "org.kde.krita.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "kra",
+          "ora",
+          "psd",
+          "png",
+          "jpg",
+          "jpeg"
+        ],
+        "utTypes": [
+          "com.adobe.photoshop-image",
+          "public.png",
+          "public.jpeg"
+        ]
       },
       "source": {
         "kind": "apt",
@@ -522,8 +533,20 @@
       "icon": "org.darktable.darktable",
       "desktopId": "org.darktable.darktable.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "dng",
+          "jpg",
+          "jpeg",
+          "png",
+          "tif",
+          "tiff"
+        ],
+        "utTypes": [
+          "com.adobe.raw-image",
+          "public.jpeg",
+          "public.png",
+          "public.tiff"
+        ]
       },
       "source": {
         "kind": "apt",
@@ -543,8 +566,16 @@
       "icon": "org.inkscape.Inkscape",
       "desktopId": "org.inkscape.Inkscape.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "svg",
+          "pdf",
+          "png"
+        ],
+        "utTypes": [
+          "public.svg-image",
+          "com.adobe.pdf",
+          "public.png"
+        ]
       },
       "source": {
         "kind": "apt",
@@ -564,8 +595,23 @@
       "icon": "gimp",
       "desktopId": "gimp.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "xcf",
+          "psd",
+          "png",
+          "jpg",
+          "jpeg",
+          "tif",
+          "tiff",
+          "gif"
+        ],
+        "utTypes": [
+          "com.adobe.photoshop-image",
+          "public.png",
+          "public.jpeg",
+          "public.tiff",
+          "com.compuserve.gif"
+        ]
       },
       "source": {
         "kind": "apt",
@@ -585,8 +631,15 @@
       "icon": "org.kde.kdenlive",
       "desktopId": "org.kde.kdenlive.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "kdenlive",
+          "mp4",
+          "mov"
+        ],
+        "utTypes": [
+          "public.mpeg-4",
+          "com.apple.quicktime-movie"
+        ]
       },
       "source": {
         "kind": "apt",
@@ -606,8 +659,15 @@
       "icon": "org.shotcut.Shotcut",
       "desktopId": "org.shotcut.Shotcut.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "mlt",
+          "mp4",
+          "mov"
+        ],
+        "utTypes": [
+          "public.mpeg-4",
+          "com.apple.quicktime-movie"
+        ]
       },
       "source": {
         "kind": "apt",
@@ -627,8 +687,17 @@
       "icon": "audacity",
       "desktopId": "audacity.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "aup3",
+          "wav",
+          "aiff",
+          "mp3"
+        ],
+        "utTypes": [
+          "com.microsoft.waveform-audio",
+          "public.aiff-audio",
+          "public.mp3"
+        ]
       },
       "source": {
         "kind": "apt",
@@ -648,8 +717,16 @@
       "icon": "fr.handbrake.ghb",
       "desktopId": "fr.handbrake.ghb.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "mp4",
+          "mkv",
+          "mov"
+        ],
+        "utTypes": [
+          "public.mpeg-4",
+          "org.matroska.mkv",
+          "com.apple.quicktime-movie"
+        ]
       },
       "source": {
         "kind": "apt",
@@ -669,7 +746,12 @@
       "icon": "org.freecad.FreeCAD",
       "desktopId": "org.freecad.FreeCAD.desktop",
       "fileTypes": {
-        "extensions": [],
+        "extensions": [
+          "fcstd",
+          "step",
+          "stp",
+          "stl"
+        ],
         "utTypes": []
       },
       "source": {
@@ -690,7 +772,10 @@
       "icon": "openscad",
       "desktopId": "openscad.desktop",
       "fileTypes": {
-        "extensions": [],
+        "extensions": [
+          "scad",
+          "stl"
+        ],
         "utTypes": []
       },
       "source": {
@@ -711,7 +796,11 @@
       "icon": "org.kicad.kicad",
       "desktopId": "org.kicad.kicad.desktop",
       "fileTypes": {
-        "extensions": [],
+        "extensions": [
+          "kicad_pro",
+          "kicad_sch",
+          "kicad_pcb"
+        ],
         "utTypes": []
       },
       "source": {
@@ -732,7 +821,11 @@
       "icon": "PrusaSlicer",
       "desktopId": "PrusaSlicer.desktop",
       "fileTypes": {
-        "extensions": [],
+        "extensions": [
+          "stl",
+          "3mf",
+          "obj"
+        ],
         "utTypes": []
       },
       "source": {
@@ -774,8 +867,14 @@
       "icon": "calibre-gui",
       "desktopId": "calibre-gui.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "epub",
+          "pdf"
+        ],
+        "utTypes": [
+          "org.idpf.epub-container",
+          "com.adobe.pdf"
+        ]
       },
       "source": {
         "kind": "apt",
@@ -837,8 +936,20 @@
       "icon": "org.gnome.eog",
       "desktopId": "org.gnome.eog.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "png",
+          "jpg",
+          "jpeg",
+          "gif",
+          "tif",
+          "tiff"
+        ],
+        "utTypes": [
+          "public.png",
+          "public.jpeg",
+          "com.compuserve.gif",
+          "public.tiff"
+        ]
       },
       "source": {
         "kind": "apt",
@@ -879,8 +990,20 @@
       "icon": "vlc",
       "desktopId": "vlc.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "mp4",
+          "mkv",
+          "mov",
+          "mp3",
+          "wav"
+        ],
+        "utTypes": [
+          "public.mpeg-4",
+          "org.matroska.mkv",
+          "com.apple.quicktime-movie",
+          "public.mp3",
+          "com.microsoft.waveform-audio"
+        ]
       },
       "source": {
         "kind": "apt",
