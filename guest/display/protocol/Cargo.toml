@@ -1,0 +1,10 @@
+[package]
+name = "caboose-display-protocol"
+description = "Caboose Display Protocol v0: framing, canonical CBOR and every message"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]

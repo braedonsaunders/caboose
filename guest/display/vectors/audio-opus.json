@@ -1,0 +1,8 @@
+{
+  "name": "audio-opus",
+  "description": "One 20 ms Opus packet (a valid silence frame).",
+  "messages": [
+    {"direction": "server", "type": "audio", "type_id": 64, "fields": {"data": {"$bytes": "f8fffe"}, "codec": "opus", "pts_us": 1234580000}}
+  ],
+  "hex": "4021000000a3646461746143f8fffe65636f646563646f707573667074735f75731a49963220"
+}

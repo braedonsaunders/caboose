@@ -1,0 +1,8 @@
+{
+  "name": "pointer-scroll-precise",
+  "description": "Pixel scroll with no buttons held.",
+  "messages": [
+    {"direction": "client", "type": "pointer", "type_id": 146, "fields": {"x": {"$float": 640.0}, "y": {"$float": 480.0}, "id": 7, "scroll": {"dx": {"$float": 0.0}, "dy": {"$float": -42.5}, "precise": true}, "buttons": 0}}
+  ],
+  "hex": "924d000000a56178fb40840000000000006179fb407e00000000000062696407667363726f6c6ca3626478fb0000000000000000626479fbc0454000000000006770726563697365f567627574746f6e7300"
+}

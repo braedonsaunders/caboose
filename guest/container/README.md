@@ -24,6 +24,8 @@ waits for Xpra to answer, and `start` and `start-agent` are safe to repeat.
 With the host session running, run `docker exec -u root caboose-owner bash -s <
 guest/container/check.sh` to check the live Xpra encoder and MP3 dependencies.
 Use `apps/host/scripts/e2e.sh` to check the host/display protocol and parking.
+The image also installs media handoff (`guest/media-handoff/install.sh`); check it with
+`docker exec -u root caboose-owner bash -s < guest/media-handoff/check.sh`.
 Docker pause retains RAM only while Docker and WSL remain running; after a
 restart, home files persist but the process tree does not.
 

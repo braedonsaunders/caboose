@@ -34,7 +34,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
     const network = vi.fn(async () => {})
     const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const }
     const desired = { name: 'My computer', memoryMb: 512, vcpus: 1, idleMs: 60000 }
-    const dependencies = { backend, network, deviceExists: () => true, settings: () => desired }
+    const dependencies = { backend, network, deviceExists: () => true, snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} }, settings: () => desired }
     const controller = createController(config, dependencies)
     expect(controller.activeResources()).toBeNull()
     const first = await controller.wake()

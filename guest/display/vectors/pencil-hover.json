@@ -1,0 +1,8 @@
+{
+  "name": "pencil-hover",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "pencil", "type_id": 145, "fields": {"x": {"$float": 300.5}, "y": {"$float": 410.0}, "id": 7, "tilt": [{"$float": 12.5}, {"$float": -30.0}], "phase": "hover", "pressure": {"$float": 0.0}, "azimuth_deg": {"$float": 271.25}}}
+  ],
+  "hex": "9166000000a76178fb4072c800000000006179fb4079a00000000000626964076474696c7482fb4029000000000000fbc03e00000000000065706861736565686f766572687072657373757265fb00000000000000006b617a696d7574685f646567fb4070f40000000000"
+}

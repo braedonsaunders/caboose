@@ -1,0 +1,8 @@
+{
+  "name": "close",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "close", "type_id": 133, "fields": {"id": 7}}
+  ],
+  "hex": "8505000000a162696407"
+}

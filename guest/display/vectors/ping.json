@@ -1,0 +1,8 @@
+{
+  "name": "ping",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "ping", "type_id": 254, "fields": {"t_us": 98765432100}}
+  ],
+  "hex": "fe0f000000a164745f75731b00000016fee0e524"
+}

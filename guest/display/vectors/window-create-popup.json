@@ -1,0 +1,8 @@
+{
+  "name": "window-create-popup",
+  "description": "A popup above its parent; geometry is relative to the parent and may be negative.",
+  "messages": [
+    {"direction": "server", "type": "window.create", "type_id": 2, "fields": {"id": 9, "kind": "popup", "alpha": false, "title": "", "app_id": "chromium", "parent": 7, "display": 1, "geometry": [24, -310, 480, 300], "xwayland": false, "fullscreen": false}}
+  ],
+  "hex": "026a000000aa62696409646b696e6465706f70757065616c706861f4657469746c6560666170705f6964686368726f6d69756d66706172656e740767646973706c6179016867656f6d657472798418183901351901e019012c68787761796c616e64f46a66756c6c73637265656ef4"
+}

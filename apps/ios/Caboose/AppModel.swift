@@ -298,7 +298,9 @@ final class AppModel {
         guard !externalDisplayActive, size.width > 0, size.height > 0 else { return }
         deviceDesktopActive = true
         externalSize = size
-        desktop = DesktopModel(pixelsPerPoint: max(1, UIScreen.main.scale))
+        // The phone's own desktop renders at 2x like the rest of the app, not the screen's 3x:
+        // indistinguishable at arm's length, and under half the pixels to encode and send.
+        desktop = DesktopModel(pixelsPerPoint: min(2, max(1, UIScreen.main.scale)))
         desktop.directTouch = true
         desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
@@ -329,12 +331,51 @@ final class AppModel {
         // The TV takes the desktop over from the phone's own screen.
         deviceDesktopActive = false
         externalSize = size
-        desktop = DesktopModel(pixelsPerPoint: max(1, scale))
+        externalScale = scale
+        desktop = DesktopModel(pixelsPerPoint: tvPixelsPerPoint(width: size.width, scale: scale))
         externalDisplayActive = true
         desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
         desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
         presentedWindowID = nil
+        reconnectForDisplayChange()
+    }
+
+    private var externalScale: CGFloat = 1
+
+    /// The big screen's desktop renders at 2560x1440 by default and the TV scales it to its
+    /// own resolution: sharp from a couch, and under half the pixels of 4K for every scroll,
+    /// animation and window move. "4K" renders at the screen's full pixels instead. Video
+    /// never rides the desktop stream either way; it plays natively through media handoff.
+    private(set) var desktopFull4K = UserDefaults.standard.bool(forKey: "desktopFull4K")
+
+    private func tvPixelsPerPoint(width: CGFloat, scale: CGFloat) -> CGFloat {
+        let full = max(1, scale)
+        guard !desktopFull4K, width > 0 else { return full }
+        return min(full, max(1, 2560 / width))
+    }
+
+    func toggleDesktopFull4K() {
+        desktopFull4K.toggle()
+        UserDefaults.standard.set(desktopFull4K, forKey: "desktopFull4K")
+        guard externalDisplayActive else { return }
+        let old = desktop.pixelsPerPoint
+        let new = tvPixelsPerPoint(width: externalSize.width, scale: externalScale)
+        guard old != new else { return }
+        let replacement = DesktopModel(pixelsPerPoint: new)
+        replacement.ui = desktop.ui
+        replacement.size = desktop.size
+        replacement.cursor = desktop.cursor
+        replacement.sync(with: Array(session?.windows.values ?? [:].values))
+        desktop = replacement
+        // Windows keep their place and size on screen: rescale their Linux geometry.
+        if let session {
+            let ratio = new / old
+            for window in session.windows.values where !window.isOverrideRedirect {
+                let f = window.frame
+                session.configure(window, frame: CGRect(x: f.minX * ratio, y: f.minY * ratio, width: f.width * ratio, height: f.height * ratio))
+            }
+        }
         reconnectForDisplayChange()
     }
 
