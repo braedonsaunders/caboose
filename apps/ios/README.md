@@ -263,3 +263,26 @@ Protocol instead of Xpra; the screens are the same. What changes:
 - **Not yet.** Window pictures are SDR:
   the hello reports `hdr: false` until the window surfaces render EDR.
 
+
+## Notifications
+
+When the host has APNs configured, Computer settings lets this device choose approval,
+finished-task, and desktop alerts and request iOS notification permission. Approval
+actions answer the host's existing approval API; task alerts open the task. The app
+unregisters its token when changing computers. A development-signed app uses APNs
+sandbox and a release-signed app uses production; signing must include the push
+capability. Check on a real paired device by enabling each kind, backgrounding the app,
+triggering an approval and a task completion, and using Allow and Deny from notifications.
+A Linux notification has no portable window identifier and opens Caboose.
+
+## Live Activities
+
+The app starts a Live Activity for running agent tasks when the host has APNs, and the
+host updates and ends it while the app is closed. `CabooseWidgets` is the shared WidgetKit
+extension for these Lock Screen and Dynamic Island views; later widgets and controls belong
+in this target. Its shared `JobAttributes` also describes generic jobs, with the host API in
+`docs/architecture.md` § Notifications. Push-to-start uses ActivityKit's token stream.
+On a signed device with APNs configured, start a task, background the app, verify the Lock
+Screen/Dynamic Island updates and ends on completion, then start a task from another client
+and verify push-to-start. Real delivery depends on iOS and APNs and cannot be proved by a
+simulator build.

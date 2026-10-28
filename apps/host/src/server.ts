@@ -1,4 +1,5 @@
 import { proxyFiles, type FileService } from './fs-proxy.js'
+import { agentJob, parseJob, type ActivityService } from './activities.js'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
@@ -15,6 +16,9 @@ import { SettingsInputError, type SettingsStore } from './settings.js'
 import type { DisplayProtocol } from './config.js'
 import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
+import { DesktopNotifications } from './desktop-notifications.js'
+import type { PushService } from './push.js'
+import type { AgentEvent } from './agents.js'
 import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenType } from './screen.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
@@ -61,11 +65,14 @@ export function createCabooseServer(options: {
   registry?: AgentRegistry
   /** How long a task's runner keeps its agent after a turn, waiting for a reply. */
   agentIdleMs?: number
+  push?: PushService
+  activities?: ActivityService
 }) {
   const { controller, token, settings } = options
   const computer = new ComputerLifecycle(controller, settings.get().idleMs)
   const sockets = new Set<WebSocket>()
   const controls = new Set<WebSocket>()
+  const foregroundClients = new Set<WebSocket>()
   const phoneControls = new Set<WebSocket>()
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024, handleProtocols: protocols => protocols.has('binary') ? 'binary' : false })
   function broadcast(event: unknown): void {
@@ -74,8 +81,17 @@ export function createCabooseServer(options: {
   }
   const home = new HomeOwnership()
   const catalog = new AgentCatalog(options.registry ?? new AgentRegistry(), () => controller.guest(), settings, home)
-  const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), {
+  const agents = new AgentTasks(() => controller.guest(), event => {
+    broadcast(event)
+    if (options.push) void options.push.event(event as AgentEvent, foregroundClients.size > 0).catch(error => console.error('Push event failed:', error))
+    const job = agentJob(event as AgentEvent)
+    if (job && options.activities) void options.activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
+  }, () => computer.acquire(), {
     resolver: catalog, home, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
+  })
+  const desktopNotifications = new DesktopNotifications(() => controller.guest(), event => {
+    broadcast({ type: 'notification', ...event })
+    if (options.push) void options.push.desktop(event, foregroundClients.size > 0).catch(error => console.error('Desktop push failed:', error))
   })
   const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire())
   const media = new MediaHandoff(() => controller.guest(), broadcast)
@@ -129,7 +145,7 @@ export function createCabooseServer(options: {
       restartRequired: controller.hasSavedState() && (!active || active.memoryMb !== desired.memoryMb || active.vcpus !== desired.vcpus),
       clients: { display: sockets.size - controls.size, control: controls.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
-      capabilities: { restart: typeof controller.restart === 'function' },
+      capabilities: { restart: typeof controller.restart === 'function', push: !!options.push },
       lastError: computer.lastError ?? controller.lastError?.() ?? null,
     }
   }
@@ -150,6 +166,7 @@ export function createCabooseServer(options: {
     else { agents.pause(); media.computerStopped() }
     syncMedia()
     syncFiles()
+    desktopNotifications.setActive(state === 'running')
     broadcastSettings()
   })
   function json(response: ServerResponse, status: number, body: unknown): void {
@@ -188,6 +205,50 @@ export function createCabooseServer(options: {
         })
       }
       if (request.method === 'GET' && path === '/v1/health') return json(response, 200, controller.stats())
+      if (path === '/v1/activities' && request.method === 'POST') {
+        if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
+        const body = await readJson(request)
+        await options.activities.store.registerActivity(body)
+        void options.activities.reconcile(body.activityId as string).catch(error => console.error('Live Activity reconciliation failed:', error))
+        return json(response, 200, { registered: true })
+      }
+      if (path === '/v1/activities' && request.method === 'DELETE') {
+        if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
+        const body = await readJson(request)
+        if (typeof body.activityId !== 'string') throw new SettingsInputError('invalid activityId')
+        await options.activities.store.removeActivity(body.activityId)
+        return json(response, 200, { removed: true })
+      }
+      if (path === '/v1/activities/start-token' && request.method === 'POST') {
+        if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
+        await options.activities.store.registerStarter(await readJson(request))
+        return json(response, 200, { registered: true })
+      }
+      if (path === '/v1/activities/start-token' && request.method === 'DELETE') {
+        if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
+        const body = await readJson(request)
+        if (typeof body.deviceId !== 'string') throw new SettingsInputError('invalid deviceId')
+        await options.activities.store.removeStarter(body.deviceId)
+        return json(response, 200, { removed: true })
+      }
+      if (path === '/v1/jobs/activity' && request.method === 'POST') {
+        if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
+        const body = await readJson(request)
+        if (typeof body.start !== 'boolean') throw new SettingsInputError('start must be boolean')
+        const job = parseJob(body.job)
+        await options.activities.job(job, body.start, foregroundClients.size > 0)
+        return json(response, 200, { sent: true })
+      }
+      if (path === '/v1/devices/push' && request.method === 'POST') {
+        if (!options.push) return json(response, 503, { error: 'push unavailable' })
+        await options.push.devices.register(await readJson(request))
+        return json(response, 200, { registered: true })
+      }
+      if (path === '/v1/devices/push' && request.method === 'DELETE') {
+        if (!options.push) return json(response, 503, { error: 'push unavailable' })
+        await options.push.devices.remove((await readJson(request)).token)
+        return json(response, 200, { removed: true })
+      }
       if (request.method === 'GET' && path === '/v1/computer') return json(response, 200, managementStatus())
       if (request.method === 'PATCH' && path === '/v1/computer/settings') {
         const input = await readJson(request)
@@ -370,12 +431,13 @@ export function createCabooseServer(options: {
         sockets.add(client)
         if (path === '/v1/control') {
           controls.add(client)
+          if (url.searchParams.get('foreground') === '1') foregroundClients.add(client)
           if (url.searchParams.get('phone') === '1') phoneControls.add(client)
         }
         syncMedia()
         syncFiles()
         client.on('error', () => client.terminate())
-        client.once('close', () => { sockets.delete(client); controls.delete(client); phoneControls.delete(client); release(); syncMedia(); syncFiles() })
+        client.once('close', () => { sockets.delete(client); controls.delete(client); foregroundClients.delete(client); phoneControls.delete(client); release(); syncMedia(); syncFiles() })
         if (path === '/v1/control') {
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))

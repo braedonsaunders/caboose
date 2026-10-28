@@ -143,6 +143,16 @@ it as `caboose` after writing the per-wake display token. It listens on guest po
 serves home-confined file operations and inotify changes. See `docs/architecture.md` § Files
 and `apps/host/README.md` for the API and real-host check. Existing computer disks need a
 guest-side upgrade to install the service; rebuilding the golden image affects new disks.
+## Desktop notifications
+
+The owner session's D-Bus notification monitor writes a bounded private queue under
+`~/.cache/caboose/notifications`; the host drains it while the computer runs. The owner and agent seats use separate D-Bus session buses, so agent notifications do not enter the owner queue. The monitor needs the
+owner's user bus and `python3-gi`. To check a running guest with the owner display up,
+run `sudo bash guest/notifications/check.sh` inside it; the check sends a notification
+and waits for its queue record. APNs delivery needs the separate host and device check.
+
+`guest/notifications/check-container.sh` exercises the actual monitor and separate buses in
+a disposable Debian container without a VM or APNs credentials.
 
 ## iOS handoff and printing
 

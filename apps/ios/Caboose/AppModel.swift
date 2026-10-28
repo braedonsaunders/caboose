@@ -25,6 +25,7 @@ final class AppModel {
 
     private(set) var phase: Phase
     let agents = AgentCenter()
+    var notificationTaskID: String?
     let catalog = CatalogCenter()
     /// Videos playing on the computer that can move to the phone.
     let media = MediaHandoff()
@@ -72,10 +73,12 @@ final class AppModel {
             if let credentials = self?.credentials { FileDomains.register(credentials, name: status.settings.name) }
         }
         agents.onEvent = { [weak self] type, event in
-            self?.media.handle(type, event)
-            self?.catalog.handle(type, event)
-            self?.phone.handle(type, event)
-            if type == "fs.changed", let credentials = self?.credentials { FileDomains.signal(credentials) }
+            guard let self else { return }
+            self.media.handle(type, event)
+            self.catalog.handle(type, event)
+            self.phone.handle(type, event)
+            if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
+            if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials) }
         }
         catalog.onChange = { [weak self] in await self?.refreshApps() }
         media.attach(host: { [weak self] in self?.host })
@@ -105,6 +108,10 @@ final class AppModel {
 
     func connect(with credentials: Credentials) {
         if let old = self.credentials, old.fileDomainIdentifier != credentials.fileDomainIdentifier { FileDomains.remove(old) }
+        if self.credentials != nil && self.credentials != credentials {
+            PushCoordinator.shared.unregister(from: host)
+            LiveActivityCoordinator.shared.unregister(from: host)
+        }
         credentials.save()
         self.credentials = credentials
         activeHostURL = nil
@@ -112,6 +119,8 @@ final class AppModel {
     }
 
     func signOut() {
+        PushCoordinator.shared.unregister(from: host)
+        LiveActivityCoordinator.shared.unregister(from: host)
         session?.disconnect()
         session = nil
         agents.reset()
@@ -153,6 +162,8 @@ final class AppModel {
             startSession(host: host, display: wake.display)
             agents.detach()
             agents.attach(host: host)
+            PushCoordinator.shared.synchronize()
+            LiveActivityCoordinator.shared.connected()
             catalog.attach(host)
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await media.refresh() }
@@ -468,6 +479,7 @@ final class AppModel {
     func refreshComputer() async throws {
         guard let host else { return }
         computerStatus = try await host.computer()
+        LiveActivityCoordinator.shared.sync(agents.tasks)
     }
 
     /// Saves only the given changes. Name and auto-park apply at once; memory and cores at the next restart.
@@ -631,7 +643,17 @@ final class AppModel {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
+    private static func postDesktop(_ event: [String: Any]) {
+        requestNotificationPermission()
+        let content = UNMutableNotificationContent()
+        content.title = (event["summary"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (event["app"] as? String ?? "Caboose")
+        content.body = event["body"] as? String ?? ""
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "linux.\(event["id"] as? String ?? UUID().uuidString)", content: content, trigger: nil))
+    }
+
     private static func post(_ note: RemoteNotification) {
+        requestNotificationPermission()
         let content = UNMutableNotificationContent()
         content.title = note.summary.isEmpty ? note.appName : note.summary
         content.subtitle = note.summary.isEmpty ? "" : note.appName

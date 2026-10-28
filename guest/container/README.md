@@ -63,6 +63,16 @@ The image installs `guest/files/caboose-files.py`. `caboose-session start-files`
 as `caboose` after the host writes the wake token; the host publishes port 14700 on loopback
 only. See `docs/architecture.md` § Files and `apps/host/README.md` for the API and checks.
 Recreate a container from the updated image to install the service; its home volume remains.
+## Desktop notifications
+
+The owner session's D-Bus notification monitor writes a bounded private queue under
+`~/.cache/caboose/notifications`; the host drains it while the computer runs. The owner and agent seats use separate D-Bus session buses, so agent notifications do not enter the owner queue. The monitor needs the
+owner's user bus and `python3-gi`. To check a running guest with the owner display up,
+run `sudo bash guest/notifications/check.sh` inside it; the check sends a notification
+and waits for its queue record. APNs delivery needs the separate host and device check.
+
+`guest/notifications/check-container.sh` exercises the actual monitor and separate buses in
+a disposable Debian container without a VM or APNs credentials.
 
 Cold restart stops and starts the same container, preserving its installed packages and
 catalog rollback cache in the writable layer. Removing or replacing that container discards

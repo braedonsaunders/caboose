@@ -11,7 +11,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // The computer's sound plays like a media app's (and so follows AirPlay to the TV), mixed
         // with whatever else is playing rather than stopping it.
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        PushCoordinator.shared.configure()
+        LiveActivityCoordinator.shared.configure()
         return true
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        PushCoordinator.shared.received(token: deviceToken)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        PushCoordinator.shared.error = error.localizedDescription
     }
 
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,

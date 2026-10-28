@@ -1,13 +1,15 @@
 [Unit]
 Description=Caboose Display (owner seat): headless Wayland compositor and window stream on :14600
 Documentation=https://github.com/braedonsaunders/caboose/blob/main/docs/display.md
-After=network.target
+Requires=user@1000.service caboose-notification-daemon.service
+After=network.target user@1000.service caboose-notification-daemon.service
 
 [Service]
 Type=simple
 User=caboose
 Group=caboose
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 # The host writes the per-wake token to /run/caboose/xpra-token before starting this
 # unit; the compositor re-reads it on every hello.
 ExecStartPre=+/usr/bin/install -d -o caboose -g caboose -m 0700 /run/user/1000

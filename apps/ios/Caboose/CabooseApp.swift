@@ -13,8 +13,8 @@ struct CabooseApp: App {
                 .preferredColorScheme(.dark)
                 .onOpenURL { url in
                     if let credentials = Credentials(link: url) { model.connect(with: credentials) }
+                    else if url.scheme == "caboose", url.host == "task", let id = url.pathComponents.dropFirst().first { model.notificationTaskID = id }
                 }
-                .onAppear { AppModel.requestNotificationPermission() }
                 .externalDesktopAccessory(model)
         }
         .onChange(of: scenePhase) { _, phase in
@@ -68,6 +68,19 @@ struct RootView: View {
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
         .sheet(isPresented: Bindable(model).settingsPresented) {
             ComputerSettingsView().environment(model)
+        }
+        .sheet(item: Binding(get: { model.notificationTaskID.map(NotificationTask.init) }, set: { model.notificationTaskID = $0?.id })) { destination in
+            NavigationStack {
+                Group {
+                    if let task = model.agents.tasks.first(where: { $0.id == destination.id }) {
+                        ScrollView { TaskCard(task: task, lines: model.agents.output[task.id] ?? []).padding() }
+                    } else {
+                        ContentUnavailableView("Task unavailable", systemImage: "sparkles", description: Text("Reconnect to your computer to see this task."))
+                    }
+                }
+                .navigationTitle("Agent Task")
+                .toolbar { Button("Done") { model.notificationTaskID = nil } }
+            }
         }
         .sheet(isPresented: Bindable(model).showAgentSettings) {
             NavigationStack {
@@ -278,3 +291,5 @@ struct SetupView: View {
         model.connect(with: Credentials(hostURL: url, token: token.trimmingCharacters(in: .whitespacesAndNewlines)))
     }
 }
+
+private struct NotificationTask: Identifiable { let id: String }
