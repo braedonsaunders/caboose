@@ -50,6 +50,10 @@ struct AskBar: View {
         .padding(.vertical, 8)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24))
         .animation(.snappy, value: prompt.isEmpty)
+        .onAppear { if model.askFocusRequested { focused = true; model.askFocusRequested = false } }
+        .onChange(of: model.askFocusRequested) { _, requested in
+            if requested { focused = true; model.askFocusRequested = false }
+        }
     }
 
     private func send() {

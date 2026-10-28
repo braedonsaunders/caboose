@@ -26,6 +26,7 @@ final class AppModel {
     private(set) var phase: Phase
     let agents = AgentCenter()
     var notificationTaskID: String?
+    var askFocusRequested = false
     let catalog = CatalogCenter()
     /// Videos playing on the computer that can move to the phone.
     let media = MediaHandoff()
@@ -57,6 +58,7 @@ final class AppModel {
     private var frameCache: [Int: CGImage] = [:]
     private var reconnectAttempts = 0
     private var reconnectTask: Task<Void, Never>?
+    private var fileSearchTask: Task<Void, Never>?
     private var sceneActive = true
 
     private var launchStartedAt: Date?
@@ -77,6 +79,7 @@ final class AppModel {
             self.media.handle(type, event)
             self.catalog.handle(type, event)
             self.phone.handle(type, event)
+            if type == "fs.changed" { self.refreshFileSearch() }
             if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
             if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials) }
         }
@@ -109,6 +112,8 @@ final class AppModel {
     func connect(with credentials: Credentials) {
         if let old = self.credentials, old.fileDomainIdentifier != credentials.fileDomainIdentifier { FileDomains.remove(old) }
         if self.credentials != nil && self.credentials != credentials {
+            fileSearchTask?.cancel()
+            ComputerSearch.clear()
             PushCoordinator.shared.unregister(from: host)
             LiveActivityCoordinator.shared.unregister(from: host)
         }
@@ -119,6 +124,8 @@ final class AppModel {
     }
 
     func signOut() {
+        fileSearchTask?.cancel()
+        ComputerSearch.clear()
         PushCoordinator.shared.unregister(from: host)
         LiveActivityCoordinator.shared.unregister(from: host)
         session?.disconnect()
@@ -168,6 +175,7 @@ final class AppModel {
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await media.refresh() }
             Task { await refreshApps() }
+            refreshFileSearch()
             Task { try? await refreshComputer() }
         } catch {
             phase = .failed(error.localizedDescription)
@@ -531,11 +539,24 @@ final class AppModel {
     }
 
 
+    private func refreshFileSearch() {
+        guard let credentials else { return }
+        fileSearchTask?.cancel()
+        fileSearchTask = Task {
+            do {
+                try await Task.sleep(for: .seconds(1))
+                try await ComputerSearch.refreshFiles(credentials: credentials)
+            }
+            catch { /* Keep the previous index when the computer is unavailable. */ }
+        }
+    }
+
     func refreshApps() async {
         guard let host else { return }
         for attempt in 0 ..< 10 {
             do {
                 let list = try await host.apps()
+                ComputerSearch.indexApps(list)
                 apps = list.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 for app in list where appIcons[app.id] == nil {
                     if let data = app.iconData, let image = UIImage(data: data) { appIcons[app.id] = image }

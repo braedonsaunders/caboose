@@ -295,3 +295,25 @@ and `CABOOSE_OWNER_TOKEN`, then run `node apps/host/scripts/check-upgrade.mjs`; 
 the computer, waits for the upgrade, and runs the Files check. To exercise the installation
 rather than the up-to-date path, use an existing guest with an older marker. This check
 needs a real guest; the microVM path additionally needs KVM.
+
+## Craft jobs
+
+The host runs a fixed list of installed catalog CLI operations against files staged in
+`~/.caboose-jobs/<job>` through `/v1/fs`. The HTTP contract, accepted formats, progress
+events, Live Activities, warnings and retention are in `docs/architecture.md` under
+Shortcuts and Spotlight. The guest executes the CLI as `caboose`, not root.
+
+On a paired real host with the requested app installed and Node 22+, run:
+
+```sh
+export CABOOSE_URL=https://computer.example.com
+# Set CABOOSE_OWNER_TOKEN in the private environment.
+node apps/host/scripts/check-craft.mjs photocraft /path/to/example.jpg
+node apps/host/scripts/check-craft.mjs pdfcraft /path/to/one.pdf /path/to/two.pdf
+node apps/host/scripts/check-craft.mjs lightcraft /path/to/example.jpg
+node apps/host/scripts/check-craft.mjs filmcraft /path/to/project.fcproj
+```
+
+Each check wakes the computer, uploads its fixtures, validates the output signature
+and moves the staged job directory to Trash. FilmCraft media must already be present
+at the paths in the project on the computer. Failed jobs remain for inspection.
