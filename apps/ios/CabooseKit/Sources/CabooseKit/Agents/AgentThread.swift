@@ -185,6 +185,28 @@ public struct AgentThread: Equatable, Sendable {
         }
     }
 
+    /// The host clears its last-answer summary when another turn starts. Keep that
+    /// answer in the conversation if the transcript has not supplied it yet.
+    public mutating func retainAnswer(_ summary: String, turn number: Int) {
+        guard !summary.isEmpty, let index = turns.firstIndex(where: { $0.number == number }),
+              turns[index].lastText == nil else { return }
+        turns[index].items.append(.text(id: newID(), summary))
+        if turns[index].outcome == nil { turns[index].outcome = .finished(stopReason: "end_turn", summary: summary) }
+    }
+
+    /// Transcript snapshots are append-only but can lag control events. A stale read
+    /// must not erase an answer already displayed. Explicit truncation still wins.
+    public mutating func retainCompletedTurns(from previous: AgentThread) {
+        guard !truncated else { return }
+        for turn in previous.turns where turn.outcome != nil {
+            if let index = turns.firstIndex(where: { $0.number == turn.number }) {
+                if turns[index].outcome == nil { turns[index] = turn }
+            } else { turns.append(turn) }
+        }
+        turns.sort { $0.number < $1.number }
+        nextItem = max(nextItem, previous.nextItem)
+    }
+
     public mutating func append(_ entry: TranscriptEntry) {
         if entry.type == "user", let number = entry.turn {
             if let index = turns.firstIndex(where: { $0.number == number }) {

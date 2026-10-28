@@ -150,13 +150,14 @@ its texture into a `CAMetalLayer` only when a picture changed it.
 ## How input works
 
 Native Wayland windows take real multi-touch: every finger is a touch slot and each UIKit
-event is one touch frame, so pinch, swipe and long-press are the app's own. A two-finger tap
-cancels that native touch sequence and sends a right-click, with a brief ring and haptic.
+event is one touch frame, so pinch and swipe are the app's own. A two-finger tap or a
+stationary half-second hold cancels that native touch sequence and sends a right-click, with a brief ring and haptic.
 Apple Pencil is a
 tablet with pressure, tilt and azimuth on every coalesced sample, and hover on iPads that
 have it. X11 windows (through Xwayland) take pointer gestures, since X11 apps turn a touch
 drag into a selection: swipe scrolls with momentum, tap clicks, double-tap double-clicks, a
-two-finger tap or a long press right-clicks, and long press then move drags. A trackpad or
+two-finger tap or a stationary half-second hold right-clicks immediately, and tap then
+hold and move drags. Individual pointer taps retain their timing for double-clicks. A trackpad or
 mouse hovers, clicks and right-clicks precisely.
 
 With the desktop on a TV the phone is a trackpad: one finger moves the cursor, tap clicks,
@@ -369,3 +370,7 @@ The Agents toolbar's Model sheet reads available models from the computer's ACP 
 New chats pass the selected provider model with task creation; idle chats can choose the
 model for their next message. The sheet shows the current model separately until the
 agent confirms the requested selection. Model discovery may require agent sign-in.
+
+Each desktop tile has a visible Close Window button. Hold a dock icon for Open, Pin/Unpin
+and Close actions. Chat turns stay mounted while sending and changing keyboard height;
+stale transcript reads retain completed answers already shown.

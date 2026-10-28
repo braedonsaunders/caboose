@@ -272,6 +272,7 @@ final class AgentCenter {
             var thread = AgentThread(entries: read.entries, prompt: task.prompt, truncated: read.truncated)
             let recent = read.entries.suffix(64)
             for entry in pendingEntries[id] ?? [] where !recent.contains(entry) { thread.append(entry) }
+            if let previous = threads[id] { thread.retainCompletedTurns(from: previous) }
             threads[id] = thread
         } catch {
             // A parked computer or an older host: the live entries and the task's summary stand in.
@@ -400,6 +401,7 @@ final class AgentCenter {
         do {
             let updated = try await host.replyToAgentTask(task.id, prompt: prompt, attachments: attachments)
             let started = (updated.turns ?? 1) > (tasks.first { $0.id == task.id }?.turns ?? task.turns ?? 1)
+            preserveAnswer(of: task)
             replace(updated)
             if started {
                 output[task.id, default: []].append(Line(kind: "prompt", text: prompt))
@@ -411,6 +413,14 @@ final class AgentCenter {
             lastError = error.localizedDescription
             return false
         }
+    }
+
+    /// A summary may be the only answer available before the first transcript read.
+    /// Keep it in its turn before the next reply clears the host's summary field.
+    private func preserveAnswer(of task: Task) {
+        guard let summary = task.summary, !summary.isEmpty else { return }
+        if threads[task.id] == nil { threads[task.id] = AgentThread(entries: [], prompt: task.prompt) }
+        threads[task.id]?.retainAnswer(summary, turn: task.turns ?? 1)
     }
 
     /// Answers the task's waiting request: allow or deny, or one of the agent's own options.
@@ -600,6 +610,7 @@ final class AgentCenter {
             }
         case "agent.task.replied":
             if let index = tasks.firstIndex(where: { $0.id == id }) {
+                preserveAnswer(of: tasks[index])
                 tasks[index].status = "running"
                 tasks[index].summary = nil
                 tasks[index].draft = nil

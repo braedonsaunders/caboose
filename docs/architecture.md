@@ -1560,7 +1560,9 @@ the app card, and a detached view releases its layers.
   geometry while it is up. Its measured content area, including changes to its controls,
   rotation and folding, replaces the guest display size; the complete picture fits while
   the app redraws. A long press or the options button opens the tile's menu (full screen,
-  width, ask an agent, redraw, close). An app asking for full screen covers the desktop
+  width, ask an agent, redraw, close). Every tile also has a visible Close Window button
+  at its top-right edge. Holding a dock icon opens Open, Pin/Unpin and per-window Close
+  actions; tapping it focuses its existing desktop window. An app asking for full screen covers the desktop
   edge to edge: the bars, dock, status bar and home indicator step aside, and a pull down
   from the small tab at its top edge shrinks it back into its tile. The app is told when
   it is pulled back. Menus and
@@ -1633,11 +1635,15 @@ Pinned and recent apps are kept on the phone per computer.
 
 ### Input
 
-- **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap cancels
+- **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap or stationary
+  half-second hold cancels
   the touch sequence and sends a right-click with a brief amber ring and haptic. Xwayland windows get pointer
   gestures: tap, drag and long press, with a two-finger tap or a long press for a right
   click (an amber ring blooms where it lands, with a tick) and swipes that scroll with
-  momentum. A tap shows the keyboard when the app
+  momentum. Pointer taps are sent individually, retaining their real timing for double
+  clicks. A stationary half-second hold opens context immediately at the held point;
+  lifting or cancellation cannot send another click. Tap then hold and move drags with
+  the primary button. A tap shows the keyboard when the app
   answers it with a text cursor or text-input-v3 focus, and hides it otherwise. Dialogs are
   fitted and centred on the phone.
 - **Pointer.** A hardware trackpad and mouse work through `UIPointerInteraction` and
@@ -1953,3 +1959,7 @@ an advertised model for the next message when the chat and its queue are idle (4
 otherwise). Model selection does not change profile identity, routines, MCP scope, or
 sign-in attempts. The phone's Agents toolbar offers the provider's advertised models
 for new chats and the current chat.
+
+Agent chats keep their rendered turns mounted through keyboard and reply updates. A stale
+transcript read preserves completed turns already shown unless the host explicitly truncates
+the transcript; the last-answer summary is retained before a new reply clears it.

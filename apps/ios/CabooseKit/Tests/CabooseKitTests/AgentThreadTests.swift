@@ -6,6 +6,27 @@ final class AgentThreadTests: XCTestCase {
         try! JSONDecoder().decode(TranscriptEntry.self, from: Data(json.utf8))
     }
 
+    func testReplyPreservesPreviousAnswerBeforeTranscriptRead() {
+        var thread = AgentThread(entries: [], prompt: "First")
+        thread.retainAnswer("Previous answer", turn: 1)
+        thread.begin(turn: 2, prompt: "Follow up")
+        XCTAssertEqual(thread.turns.count, 2)
+        XCTAssertEqual(thread.turns[0].lastText, "Previous answer")
+        thread.retainAnswer("Previous answer", turn: 1)
+        XCTAssertEqual(thread.turns[0].items.count, 1)
+        var stale = AgentThread(entries: [], prompt: "First")
+        stale.retainCompletedTurns(from: thread)
+        XCTAssertEqual(stale.turns[0].lastText, "Previous answer")
+    }
+
+    func testTruncatedReadDoesNotRestoreIntentionallyOmittedHistory() {
+        var previous = AgentThread(entries: [], prompt: "First")
+        previous.retainAnswer("Previous answer", turn: 1)
+        var next = AgentThread(entries: [TranscriptEntry(type: "user", turn: 2, text: "Second")], truncated: true)
+        next.retainCompletedTurns(from: previous)
+        XCTAssertEqual(next.turns.map(\.number), [2])
+    }
+
     func testFoldsATurnGroupingToolsAndKeepingThePlanInPlace() {
         let thread = AgentThread(entries: [
             entry(#"{"type":"user","turn":1,"text":"Fix the tests"}"#),
