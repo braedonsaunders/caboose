@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { CONFIRM_JOURNAL, emptyJournal, JOURNAL_LIMIT, MAX_OPERATIONS, operationId, PUBLISH_PROMPT, READ_DELIVERY, readJournal, UUID, WRITE_JOURNAL, type DeliveryJournal, type QueuedReply, type StoredAttachment } from './agent-delivery.js'
+import { CONFIRM_JOURNAL, emptyJournal, JOURNAL_LIMIT, MAX_OPERATIONS, operationId, PUBLISH_PROMPT, READ_DELIVERY, readJournal, readPublishedPrompt, UUID, WRITE_JOURNAL, type DeliveryJournal, type QueuedReply, type StoredAttachment } from './agent-delivery.js'
 import type { HomeOwnership } from './home.js'
 import { decodeBase64, sanitizeFileName, uniqueName, writeGuestFile } from './files.js'
 import type { AgentLaunch } from './registry.js'
@@ -634,14 +634,17 @@ export class AgentTasks {
     return entry.task
   }
 
-  private async publish(entry: Tracked): Promise<void> {
+  private async publish(entry: Tracked, original?: string): Promise<void> {
     const intent = entry.journal.intent!
+    if (intent.turn === 1 && !original) throw new Error('The original admitted prompt is unavailable')
     const replies = entry.queue.filter(reply => intent.replies.includes(reply.id))
-    const prompt = intent.turn === 1 ? entry.task.prompt : replies.map(reply => reply.prompt).join('\n\n')
+    const prompt = original ? readPublishedPrompt(original, entry.task.id, intent).text : replies.map(reply => reply.prompt).join('\n\n')
     const attachments = replies.flatMap(reply => reply.attachments).map(({ bytes: _bytes, ...file }) => file)
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
-    const message = JSON.stringify({ type: 'prompt', turn: intent.turn, deliveryId: intent.id, text: prompt, ...(attachments.length ? { attachments } : {}) })
+    // Turn 1 has no reply queue entries. Its admitted envelope owns original file names,
+    // MIME types and paths, and must match the durable publication marker byte for byte.
+    const message = original ?? JSON.stringify({ type: 'prompt', turn: intent.turn, deliveryId: intent.id, text: prompt, ...(attachments.length ? { attachments } : {}) })
     const file = `.delivery-input-${intent.id}.json`
     await writeGuestFile(guest, `${HOME}/Agents/${entry.task.id}/${file}`, Buffer.from(message))
     const outcome = await asCaboose(guest, REPLY_SCRIPT, [`${HOME}/Agents/${entry.task.id}`, `@file:${file}`, String(intent.turn), String(intent.turn).padStart(6, '0'), PUBLISH_PROMPT], 40_000).catch(rethrowRunnerMissing)
@@ -733,7 +736,7 @@ export class AgentTasks {
       else if (!isLive(entry.task.status) || entry.task.turns < intent.turn) this.markRunning(entry, intent.turn)
       return
     }
-    if (allowPublish && (!evidence.published || !evidence.alive && evidence.inbox)) await this.publish(entry)
+    if (allowPublish && (!evidence.published || !evidence.alive && evidence.inbox)) await this.publish(entry, evidence.published || evidence.inbox || undefined)
     else if (allowPublish && evidence.inbox && intent.turn > entry.task.turns) {
       this.markRunning(entry, intent.turn)
     }

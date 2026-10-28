@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
-import { CONFIRM_JOURNAL, emptyJournal, JOURNAL_LIMIT, MAX_OPERATIONS, PUBLISH_PROMPT, READ_DELIVERY, readJournal, WRITE_JOURNAL } from './agent-delivery.js'
+import { CONFIRM_JOURNAL, emptyJournal, JOURNAL_LIMIT, MAX_OPERATIONS, PUBLISH_PROMPT, READ_DELIVERY, readJournal, readPublishedPrompt, WRITE_JOURNAL } from './agent-delivery.js'
 
 const exec = promisify(execFile)
 const roots: string[] = []
@@ -70,6 +70,29 @@ describe('atomic durable files', () => {
     const dir = await root()
     await writeFile(join(dir, 'delivery.json'), 'x'.repeat(JOURNAL_LIMIT + 1))
     await expect(node(READ_DELIVERY, [dir, ''])).rejects.toThrow('too large')
+  })
+})
+
+describe('retained prompt envelopes', () => {
+  const intent = { id: deliveryId, turn: 1, replies: [] }
+  const envelope = () => ({ type: 'prompt', turn: 1, deliveryId, text: 'inspect these',
+    attachments: [{ path: `/home/caboose/Agents/${id}/attachments/image.png`, name: 'image.png', mimeType: 'image/png' }] })
+
+  it('accepts the original name and MIME metadata without reconstructing the envelope', () => {
+    expect(readPublishedPrompt(JSON.stringify(envelope(), null, 2), id, intent)).toEqual({ text: 'inspect these' })
+  })
+
+  it.each([
+    (v: any) => { v.turn = 2 },
+    (v: any) => { v.deliveryId = id },
+    (v: any) => { v.text = 'x'.repeat(32001) },
+    (v: any) => { v.attachments[0].path = '/etc/passwd' },
+    (v: any) => { v.attachments[0].path += '/../outside' },
+    (v: any) => { v.attachments[0].mimeType = 'x'.repeat(256) },
+    (v: any) => { v.attachments = Array(5).fill(v.attachments[0]) },
+  ])('refuses an untrusted retained envelope with invalid identity or file metadata (%#)', mutate => {
+    const value = envelope(); mutate(value)
+    expect(() => readPublishedPrompt(JSON.stringify(value), id, intent)).toThrow()
   })
 })
 

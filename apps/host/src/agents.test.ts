@@ -100,6 +100,7 @@ function fakeGuest() {
   const calls: string[][] = []
   let polls = 0
   let beforeCancel: (() => Promise<void>) | undefined
+  let beforeLaunch: ((id: string) => void) | undefined
   let listing = ''
   const task = (id: string): FakeTask => {
     let entry = tasks.get(id)
@@ -174,12 +175,17 @@ function fakeGuest() {
         const message = state.files.get(`${rest[0]}/${rest[6]!.slice(6)}`)!
         state.published.set('000001', message)
         state.inbox.push(message)
+        beforeLaunch?.(idOf(rest[0]!))
       }
       if (script.includes('echo launched')) {
         const state = task(idOf(rest[0]!))
         const message = rest[1]!.startsWith('@file:') ? state.files.get(`${rest[0]}/${rest[1]!.slice(6)}`)! : rest[1]!
-        state.inbox.push(message)
-        state.published.set(rest[3]!, message)
+        const published = state.published.get(rest[3]!)
+        if (published !== undefined && published !== message) throw new Error('delivery conflict')
+        if (published === undefined) {
+          state.inbox.push(message)
+          state.published.set(rest[3]!, message)
+        }
         state.receipts.set(rest[3]!, { turn: Number(rest[2]), deliveryId: JSON.parse(message).deliveryId, state: 'claimed' })
         state.exitCode = ''; state.alive = true
         return 'claimed\n'
@@ -195,6 +201,7 @@ function fakeGuest() {
     guest, calls, task,
     get polls() { return polls },
     beforeCancel: (hook: () => Promise<void>) => { beforeCancel = hook },
+    beforeLaunch: (hook: (id: string) => void) => { beforeLaunch = hook },
     setListing: (value: string) => { listing = value; for (const row of value.split('\n')) { const f = row.split('\t'); if (f[0]) { task(f[0]).alive = f[4] === '1'; task(f[0]).exitCode = f[3] ?? '' } } },
     append: (id: string, event: object) => { const state = task(id); state.transcript = Buffer.concat([state.transcript, Buffer.from(JSON.stringify(event) + '\n')]) },
     exit: (id: string, code: string, message = '') => { task(id).exitCode = code; task(id).stderr = message },
@@ -870,6 +877,35 @@ describe('durable admission and recovery', () => {
     await expect(s.tasks.start({ prompt: 'work' }, { id })).rejects.toThrow('start response lost')
     await expect(s.tasks.start({ prompt: 'work' }, { id })).resolves.toMatchObject({ id, turns: 1 })
     expect(s.fake.task(id).inbox).toHaveLength(1)
+  })
+
+  it('recovers the exact initial attachment envelope after admission but before runner launch', async () => {
+    const s = setup()
+    const id = '11111111-1111-4111-8111-111111111111'
+    const input = { prompt: 'inspect these', attachments: [
+      { name: 'image.png', type: 'image/png', data: b64('image contents') },
+      { name: 'notes.txt', type: 'text/plain', data: b64('notes contents') },
+    ] }
+    s.fake.beforeLaunch(taskId => {
+      s.fake.task(taskId).alive = false
+      throw new Error('crash after directory rename, before launch')
+    })
+    await expect(s.tasks.start(input, { id })).rejects.toThrow('before launch')
+    const state = s.fake.task(id)
+    const admitted = state.published.get('000001')!
+    expect(JSON.parse(admitted).attachments).toEqual([
+      { path: `/home/caboose/Agents/${id}/attachments/image.png`, name: 'image.png', mimeType: 'image/png' },
+      { path: `/home/caboose/Agents/${id}/attachments/notes.txt`, name: 'notes.txt', mimeType: 'text/plain' },
+    ])
+    const r = await restart(s)
+    expect(r.tasks.list()[0]).toMatchObject({ id, status: 'running', turns: 1 })
+    expect(state.published.get('000001')).toBe(admitted)
+    expect(state.inbox).toEqual([admitted])
+    expect(state.files.get(`/home/caboose/Agents/${id}/attachments/image.png`)).toBe('image contents')
+    expect(state.files.get(`/home/caboose/Agents/${id}/attachments/notes.txt`)).toBe('notes contents')
+    await expect(r.tasks.start(input, { id })).resolves.toMatchObject({ id, status: 'running', turns: 1 })
+    await expect(r.tasks.reply(id, { prompt: 'later', operationId: 'later' })).resolves.toMatchObject({ queued: ['later'] })
+    expect(state.inbox).toEqual([admitted])
   })
 
   it('recovers a prepared intent whose publish command never ran', async () => {
