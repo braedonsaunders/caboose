@@ -1516,13 +1516,13 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   into editable text; it never sends automatically. Recognition availability depends on iOS
   and the selected language. Attachments without text use “Please look at the attached files.”
 - **Transcript.** A chat shows its whole conversation from
-  `GET /v1/agent/tasks/:id/transcript`, then follows `agent.task.event` and replaceable `agent.task.draft` snapshots: prompts, streamed messages,
+  `GET /v1/agent/tasks/:id/transcript`, then follows `agent.task.event` and replaceable
+  `agent.task.draft` snapshots: prompts, streamed messages,
   collapsible thoughts, tool calls grouped and updated in place, the plan as a checklist,
   permissions with their answers, and context use. Messages render native headings, lists,
   quotes, inline styles and links, plus selectable fenced code with Copy. The chat list is
   searchable by title and agent. A running chat shows a live preview when the shared agent
-  seat has an application window; Watch opens that real surface. A working agent can be stopped or
-  watched on the seat. Pending approvals show in the chat, on Home and as a banner over every screen, with the agent's always-allow option when it
+  seat has an application window; Watch opens that real surface. A working agent can be stopped. Pending approvals show in the chat, on Home and as a banner over every screen, with the agent's always-allow option when it
   has one. A task whose agent was signed out offers its sign-in methods, Connect a Model,
   and asking another agent the same thing in a new chat. A window's menu hands the window
   (screenshot, title, app) to an agent as an attachment.

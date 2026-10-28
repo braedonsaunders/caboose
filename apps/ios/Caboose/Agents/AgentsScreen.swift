@@ -9,7 +9,6 @@ struct AgentsScreen: View {
     @Environment(AppModel.self) private var model
     @State private var connectingModel = false
     @State private var showingChats = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let agents = model.agents
@@ -49,6 +48,9 @@ struct AgentsScreen: View {
                 ComputerToolbar()
             }
         }
+        .alert("Agent Action Failed", isPresented: Binding(get: { agents.lastError != nil }, set: { if !$0 { agents.lastError = nil } })) {
+            Button("OK") { agents.lastError = nil }
+        } message: { Text(agents.lastError ?? "") }
         .sheet(isPresented: $connectingModel) { ConnectModelView().environment(model) }
         .sheet(isPresented: $showingChats) { ChatList().environment(model) }
         .onChange(of: agents.focusedTask, initial: true) { _, id in

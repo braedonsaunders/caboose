@@ -118,6 +118,7 @@ final class AgentCenter {
     /// Forgets the computer entirely: a different one, or none, is next.
     func reset() {
         tookOver = false
+        pausedForTakeover = []
         detach()
         host = nil
         seatToken = nil
@@ -369,24 +370,53 @@ final class AgentCenter {
     }
 
     func cancel(_ task: Task) async {
-        try? await host?.cancelAgentTask(task.id)
+        guard let host else { return }
+        do {
+            try await host.cancelAgentTask(task.id)
+            if let index = tasks.firstIndex(where: { $0.id == task.id }) {
+                tasks[index].status = "cancelled"
+                tasks[index].draft = nil
+                tasks[index].queued = nil
+                tasks[index].queuedAttachments = nil
+            }
+        } catch { lastError = error.localizedDescription }
     }
 
     /// The owner is driving the agent seat: running agents are stopped so the two never
     /// type into the same app at once.
     private(set) var tookOver = false
+    private var takeoverChanging = false
+    private var pausedForTakeover: Set<String> = []
 
     func takeOver() async {
-        guard let host, !tookOver else { return }
-        tookOver = true
-        for task in tasks where task.status == "running" { try? await host.holdAgentTask(task.id, paused: true) }
-        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+        guard let host, !tookOver, !takeoverChanging else { return }
+        takeoverChanging = true
+        defer { takeoverChanging = false }
+        do {
+            for task in tasks where task.status == "running" {
+                try await host.holdAgentTask(task.id, paused: true)
+                pausedForTakeover.insert(task.id)
+            }
+            tookOver = true
+            UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+        } catch {
+            lastError = error.localizedDescription
+            for id in pausedForTakeover {
+                do { try await host.holdAgentTask(id, paused: false); pausedForTakeover.remove(id) }
+                catch { lastError = error.localizedDescription }
+            }
+        }
     }
 
     func handBack() async {
-        guard let host, tookOver else { return }
-        tookOver = false
-        for task in tasks where task.status == "paused" { try? await host.holdAgentTask(task.id, paused: false) }
+        guard let host, !takeoverChanging else { return }
+        takeoverChanging = true
+        defer { takeoverChanging = false }
+        for id in pausedForTakeover {
+            do { try await host.holdAgentTask(id, paused: false); pausedForTakeover.remove(id) }
+            catch { lastError = error.localizedDescription }
+        }
+        tookOver = !pausedForTakeover.isEmpty
     }
 
     /// Remembers how to reach the agent seat. The seat's display only starts once an agent is
@@ -576,10 +606,12 @@ extension HostClient {
     }
 
     func cancelAgentTask(_ id: String) async throws {
-        let _: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/cancel", timeout: 20)
+        let result: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/cancel", timeout: 20)
+        guard result["cancelled"] == true else { throw Failure.server(409, "This agent has already stopped.") }
     }
 
     func holdAgentTask(_ id: String, paused: Bool) async throws {
-        let _: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/\(paused ? "pause" : "resume")", timeout: 20)
+        let result: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/\(paused ? "pause" : "resume")", timeout: 20)
+        guard result[paused ? "paused" : "resumed"] == true else { throw Failure.server(409, "The agent's state changed. Refresh the conversation and try again.") }
     }
 }

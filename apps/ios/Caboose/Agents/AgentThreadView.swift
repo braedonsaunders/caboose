@@ -103,6 +103,7 @@ private struct QueuedView: View {
     @Environment(AppModel.self) private var model
     let task: AgentCenter.Task
     let queued: [String]
+    @State private var sending = false
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
@@ -113,7 +114,11 @@ private struct QueuedView: View {
                 Label("Waiting for \(model.agents.name(of: task)) to finish this step", systemImage: "clock")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("Send Now") { Task { await model.agents.sendNow(task) } }
+                Button(sending ? "Sending…" : "Send Now") {
+                    sending = true
+                    Task { await model.agents.sendNow(task); sending = false }
+                }
+                    .disabled(sending)
                     .font(.caption.weight(.semibold))
                     .buttonStyle(.glass)
             }
