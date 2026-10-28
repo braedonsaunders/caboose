@@ -5,6 +5,7 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     private let columns = [GridItem(.adaptive(minimum: 76, maximum: 96), spacing: 18)]
     @State private var showSystem = false
+    @State private var showLibrary = false
 
     private func tile(_ app: HostClient.App) -> some View {
         Button { model.open(app) } label: { AppTile(app: app, icon: model.appIcons[app.id], launching: model.launching == app) }
@@ -21,13 +22,14 @@ struct HomeView: View {
                 AgentSection()
                 if !model.appWindows.isEmpty { openWindows }
                 appsGrid
+                shelf
             }
             .padding(.horizontal, 22)
             .padding(.top, 12)
             .padding(.bottom, 40)
         }
         .scrollIndicators(.hidden)
-        .refreshable { await model.refreshApps(); await model.agents.refresh() }
+        .refreshable { await model.refreshApps(); await model.agents.refresh(); await model.catalog.refresh() }
         .safeAreaInset(edge: .bottom) {
             if model.agents.available {
                 AskBar().padding(.horizontal, 16).padding(.bottom, 6)
@@ -40,6 +42,10 @@ struct HomeView: View {
         } message: {
             Text(model.launchFailure ?? "")
         }
+        .sheet(isPresented: $showLibrary) { CatalogLibrary().environment(model) }
+        .alert("Catalog", isPresented: Binding(get: { model.catalog.error != nil }, set: { if !$0 { model.catalog.error = nil } })) {
+            Button("OK", role: .cancel) { model.catalog.error = nil }
+        } message: { Text(model.catalog.error ?? "") }
         .fullScreenCover(isPresented: Binding(
             get: { model.presentedAgentWindowID != nil },
             set: { if !$0 { model.presentedAgentWindowID = nil } })) {
@@ -99,6 +105,28 @@ struct HomeView: View {
                 }
             }
             .scrollIndicators(.hidden)
+        }
+    }
+
+    private var shelf: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Shelf").font(.headline).foregroundStyle(.secondary)
+                Spacer()
+                Button("Library") { showLibrary = true }.font(.subheadline.weight(.semibold))
+            }
+            let recent = model.catalog.apps.filter { model.catalog.recentInstalls.contains($0.id) }
+            let available = recent + model.catalog.apps.filter { $0.installedVersion == nil && !model.catalog.recentInstalls.contains($0.id) }
+            if !available.isEmpty {
+                LazyVGrid(columns: columns, spacing: 22) {
+                    ForEach(Array(available.prefix(12))) { app in
+                        ShelfTile(app: app) {
+                            if app.installedVersion != nil, let installed = model.apps.first(where: { $0.id == app.desktopId }) { model.open(installed) }
+                            else if app.installedVersion == nil { Task { await model.catalog.perform(app.id, action: "install") } }
+                        }
+                    }
+                }
+            }
         }
     }
 

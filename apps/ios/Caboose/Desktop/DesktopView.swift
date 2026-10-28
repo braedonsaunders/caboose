@@ -73,6 +73,7 @@ struct DesktopWindow: View {
                 .background(.regularMaterial)
             }
             RemoteWindowSurface(window: window, pixelsPerPoint: desktop.pixelsPerPoint)
+                .modifier(WindowDrop(window: window, pixelsPerPoint: desktop.pixelsPerPoint))
         }
         .frame(width: chrome.width, height: chrome.height)
         .clipShape(RoundedRectangle(cornerRadius: window.isFullscreen ? 0 : (window.isAuxiliary ? 6 : 11) * desktop.ui, style: .continuous))

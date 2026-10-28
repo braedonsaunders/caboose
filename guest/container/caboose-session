@@ -97,11 +97,15 @@ start_caboose_display() {
     DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" LD_LIBRARY_PATH="$libs" \
     setsid caboose-display --env-file /run/caboose/display.env >>"$log" 2>&1 < /dev/null &
 }
+start_printing() {
+  if ! lpstat -r 2>/dev/null | grep -q 'scheduler is running'; then /usr/sbin/cupsd; fi
+  /usr/local/libexec/caboose-phone-printer-setup
+}
 case ${1:-} in
-  start) start_display :100 14500 on ;;
+  start) start_printing; start_display :100 14500 on ;;
   start-agent) start_display :101 14501 off; ready :101 ;;
   ready) ready "${2:?display required}" ;;
-  start-display) start_caboose_display ;;
+  start-display) start_printing; start_caboose_display ;;
   ready-display) caboose-display-ready 120 ;;
   *) echo 'Usage: caboose-session start | start-agent | ready DISPLAY | start-display | ready-display' >&2; exit 2 ;;
 esac

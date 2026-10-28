@@ -126,8 +126,8 @@ export function createContainerController(config: Config, dependencies: { docker
   /** The size an existing container was created with (survives a host restart). */
   async function createdWith(): Promise<ComputerResources | null> {
     try {
-      const labels = JSON.parse(await docker(['inspect', '-f', '{{json .Config.Labels}}', name], 15_000)) as Record<string, string>
-      const memoryMb = Number(labels['caboose.memory-mb']), vcpus = Number(labels['caboose.vcpus'])
+      const limits = JSON.parse(await docker(['inspect', '-f', '{{json .HostConfig}}', name], 15_000)) as { Memory?: number; NanoCpus?: number }
+      const memoryMb = (limits.Memory ?? 0) / 1024 / 1024, vcpus = (limits.NanoCpus ?? 0) / 1_000_000_000
       return memoryMb > 0 && vcpus > 0 ? { memoryMb, vcpus } : null
     } catch {
       return null
@@ -187,10 +187,7 @@ export function createContainerController(config: Config, dependencies: { docker
       if ((await state()) === 'running') await docker(['pause', name], 60_000)
       running = false
     },
-    /**
-     * A cold restart at the current settings. The home is a volume, so removing the
-     * container loses only what was in memory.
-     */
+    /** Restart the same container so installed packages and their rollback cache survive. */
     async restart() {
       lastError = null
       if (running) {
@@ -200,11 +197,16 @@ export function createContainerController(config: Config, dependencies: { docker
           console.error(lastError)
         }
       }
-      if ((await state()) === 'paused') await docker(['unpause', name], 60_000).catch(() => '')
-      await docker(['rm', '-f', name], 120_000).catch(() => '')
+      const current = await state()
+      if (current === 'paused') await docker(['unpause', name], 60_000)
+      if (current === 'running' || current === 'paused') await docker(['stop', '-t', '10', name], 120_000)
       running = false
       displayToken = ''
-      resources = null
+      if (current !== 'missing') {
+        const desired = settings()
+        await docker(['update', '--memory', `${desired.memoryMb}m`, '--memory-swap', `${desired.memoryMb * 2}m`, '--cpus', String(desired.vcpus), name], 120_000)
+        resources = { memoryMb: desired.memoryMb, vcpus: desired.vcpus }
+      } else resources = null
       return controller.wake()
     },
     async apps(): Promise<App[]> {
