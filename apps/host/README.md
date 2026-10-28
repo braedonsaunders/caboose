@@ -293,6 +293,9 @@ The list is captured when the task is created.
 `/v1/fs` and shared files go through the guest's file service
 ([`guest/files`](../../guest/files/README.md), port 14700, authenticated with the per-wake
 token). Streaming requests wake the computer and hold a lease until the transfer finishes.
+Client disconnects cancel the relay; 60 seconds without transfer progress ends it with 504
+before response headers, or closes an incomplete response. Active transfers have no total
+duration limit.
 The route, precondition, Trash and change-feed contract is in `docs/architecture.md` § Files.
 
 `/v1/terminal` ([`src/terminal.ts`](src/terminal.ts), `docs/architecture.md` § Terminal) is a
