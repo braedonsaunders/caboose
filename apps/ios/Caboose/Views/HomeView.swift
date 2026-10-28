@@ -4,6 +4,24 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     private let columns = [GridItem(.adaptive(minimum: 76, maximum: 96), spacing: 18)]
+    @State private var showSystem = false
+
+    private func tile(_ app: HostClient.App) -> some View {
+        Button { model.open(app) } label: { AppTile(app: app, icon: model.appIcons[app.id], launching: model.launching == app) }
+            .buttonStyle(.plain)
+    }
+
+    /// Real applications first; desktop settings panels and system utilities in their own section.
+    private func partition(_ apps: [HostClient.App]) -> ([HostClient.App], [HostClient.App]) {
+        let systemCategories: Set<String> = ["Settings", "DesktopSettings", "HardwareSettings", "System", "Monitor", "PackageManager"]
+        let primary: Set<String> = ["WebBrowser", "TerminalEmulator", "TextEditor", "Office", "Development", "IDE", "Graphics", "AudioVideo", "FileManager"]
+        var main: [HostClient.App] = [], system: [HostClient.App] = []
+        for app in apps {
+            let categories = Set(app.categories)
+            if !categories.isDisjoint(with: primary) || categories.isDisjoint(with: systemCategories) { main.append(app) } else { system.append(app) }
+        }
+        return (main, system)
+    }
 
     var body: some View {
         ScrollView {
@@ -94,11 +112,23 @@ struct HomeView: View {
                 }
                 .padding(.vertical, 20)
             } else {
+                let (main, system) = partition(model.apps)
                 LazyVGrid(columns: columns, spacing: 22) {
-                    ForEach(model.apps) { app in
-                        Button { model.open(app) } label: { AppTile(app: app, icon: model.appIcons[app.id], launching: model.launching == app) }
-                            .buttonStyle(.plain)
+                    ForEach(main) { app in tile(app) }
+                }
+                if !system.isEmpty {
+                    DisclosureGroup(isExpanded: $showSystem) {
+                        LazyVGrid(columns: columns, spacing: 22) {
+                            ForEach(system) { app in tile(app) }
+                        }
+                        .padding(.top, 14)
+                    } label: {
+                        Label("System Settings & Tools", systemImage: "gearshape.2")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
                     }
+                    .tint(.secondary)
+                    .padding(.top, 8)
                 }
             }
         }

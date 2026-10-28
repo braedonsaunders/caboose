@@ -62,6 +62,9 @@ public struct ClientCapabilities: Sendable {
                     "workarea": [0, 0, .int(Int64(desktopWidth)), .int(Int64(desktopHeight))],
                 ])]),
             ]),
+            // Xpra 6.5's display subsystem reads the client DPI from the top level of hello;
+            // newer servers read display.dpi. Send both so Xft.dpi follows the phone.
+            pair("dpi", ["x": .int(Int64(dpi)), "y": .int(Int64(dpi))]),
             pair("digest", ["hmac+sha256"]),
             pair("salt-digest", ["hmac+sha256", "xor"]),
             // Packets are never compressed: everything that matters is already a codec.
