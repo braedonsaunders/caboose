@@ -71,7 +71,8 @@ base swap.
   `env`/file authenticator). The host writes it with `desk.exec` at wake and hands
   it to the client inside the authenticated `/v1/session` response.
 - **Apps** installed in the image: Chromium, Firefox ESR, VS Code, xfce4-terminal,
-  Thunar, Mousepad, LibreOffice, Obsidian, document, media and image tools; developer
+  Thunar, Mousepad, LibreOffice, Obsidian, document and media tools; optional apps
+  are installed on demand from the catalog; developer
   tools including Git, Neovim, Lazygit, Lazydocker, btop, mise and modern shell tools;
   and the Claude Code, Codex, OpenCode and Gemini CLI agents. Terminal tools and agents
   have desktop launchers. Mesa Vulkan and OpenGL software drivers are included. Fonts:
@@ -226,7 +227,9 @@ release where available. APT apps do not promise rollback. Package state and fai
 recorded in the guest and installed versions come from dpkg; interrupted operations are
 reported on the next listing. The catalog listing uses the last observed state while the
 computer is parked. It does not wake the computer. `/v1/apps` continues to discover
-installed desktop entries independently.
+installed desktop entries independently. Craft apps launch over the owner display’s X11
+socket (Xpra or Caboose Display’s Xwayland), avoiding their upstream Wayland drag-and-drop
+limitation. Mesa provides a software Vulkan and OpenGL fallback when the guest has no GPU.
 
 ### 3. App: Caboose for iOS (`apps/ios/`)
 

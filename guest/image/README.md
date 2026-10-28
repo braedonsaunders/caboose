@@ -61,8 +61,8 @@ the module, GL players fall back to decoding locally).
 ## Apps
 
 The image includes Mesa Vulkan and OpenGL software drivers for applications that need
-software rendering. The on-demand app catalog and Shelf are not yet available, so
-the existing base application lineup remains installed.
+software rendering. Optional applications are installed from the host catalog. Existing
+computers retain their current packages when the base lineup changes.
 
 `apps.sh` is the same idempotent installer used by the image builder and existing
 Debian 13 amd64 computers. To upgrade an existing guest, copy it into the guest and
@@ -79,7 +79,7 @@ published as Python packages and `bzip2` for agents shipped as `.tar.bz2`.
 | Category | Caboose lineup |
 | --- | --- |
 | Browsers and writing | Chromium, Firefox ESR, Obsidian, LibreOffice, Mousepad |
-| Desktop tools | Thunar, Evince, Eye of GNOME, GIMP, Inkscape, VLC, Audacity, Calculator, File Roller |
+| Desktop tools | Thunar, Evince, KeePassXC, File Roller; optional applications are in the catalog |
 | Development | VS Code, Neovim, Git, GitHub CLI, Docker, Lazygit, Lazydocker, btop, tmux, mise |
 | Shell | ripgrep, fd, bat, eza, fzf, zoxide, jq, ncdu, htop, fastfetch, yt-dlp, tealdeer, ffmpeg, ImageMagick |
 | Agents | Claude Code, Codex, OpenCode, Gemini CLI |
@@ -101,7 +101,7 @@ CABOOSE_OWNER_TOKEN=... node apps/host/scripts/check-lineup.mjs
 ```
 
 The check authenticates through the display relay, verifies PNG icons and opens
-Calculator, btop and OpenCode, then requires a new Xpra window for each. It
+Mousepad, btop and OpenCode, then requires a new Xpra window for each. It
 leaves those windows open and does not park or restart the computer. Agents can
 show a sign-in screen until configured. The check needs free capacity for three
 windows; close prior instances before rerunning if an app reuses its window.
@@ -114,7 +114,7 @@ Claude, Codex, OpenCode and many others lazily. Omarchy's hardware, Wayland,
 screen-recording and local gaming utilities do not suit the microVM. LocalSend
 is omitted because the default guest network fence blocks LAN discovery; the
 Xpra file-transfer path is intended for moving files instead. Pinta is not in
-Debian 13's repositories, so GIMP supplies image editing. This image does not
+Debian 13's repositories; GIMP and other editors are available in the catalog. This image does not
 claim to install Omarchy's optional commercial apps or all its lazy agents.
 
 To exercise KVM, the agent, Xpra authentication through the relay, the app
