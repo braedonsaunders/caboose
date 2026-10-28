@@ -124,6 +124,8 @@ pub struct Stats {
     pub frames: u64,
     pub bytes: u64,
     pub renders: u64,
+    /// Renders that copied a shm buffer instead of composing.
+    pub direct: u64,
     pub unchanged_renders: u64,
     /// Main-thread time spent rendering windows into their pictures.
     pub render_us: u64,
@@ -138,10 +140,11 @@ impl Stats {
     pub fn summary(&self) -> String {
         let per = |v: u64| if self.frames > 0 { v as f64 / self.frames as f64 / 1000.0 } else { 0.0 };
         format!(
-            "{} frames, {} kB, {} renders ({} unchanged), {:.0}% of pixels damaged; per frame: render {:.2} ms, encode {:.2} ms CPU",
+            "{} frames, {} kB, {} renders ({} direct from shm, {} unchanged), {:.0}% of pixels damaged; per frame: render {:.2} ms, encode {:.2} ms CPU",
             self.frames,
             self.bytes / 1000,
             self.renders,
+            self.direct,
             self.unchanged_renders,
             100.0 * self.damaged_px as f64 / self.picture_px.max(1) as f64,
             per(self.render_us),

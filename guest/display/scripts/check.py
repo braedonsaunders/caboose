@@ -261,6 +261,23 @@ def check_text_input_on_connect():
                                    f"--app={PAGES}/input.html"], run)
 
 
+def check_direct_matches_compose():
+    # A single-surface shm window is streamed from its buffer; the picture must be the
+    # one composition would have made. A static page, streamed both ways, decoded and
+    # saved: the PNGs must be identical (x264 on one thread is deterministic).
+    pictures = []
+    for extra in ((), ("--always-compose",)):
+        out = tempfile.mkdtemp(prefix="direct-")
+        def run(proc, token, out=out):
+            time.sleep(4)
+            probe(["--token-file", token, "--duration", "2", "--windows", "1", "--save", out])
+            return open(os.path.join(out, "window-1.png"), "rb").read()
+        pictures.append(with_server(CHROMIUM + ["--window-size=900,400", f"--app={PAGES}/popup.html"], run, extra=extra))
+    if pictures[0] != pictures[1]:
+        raise Failed("the directly streamed picture differs from the composed one")
+    return f"streaming straight from the shm buffer gives the composed picture exactly ({len(pictures[0])} byte PNG)"
+
+
 def check_idle():
     def run(proc, token):
         r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--server-pid", str(proc.pid)])
@@ -285,6 +302,7 @@ CHECKS = [
     ("popup", check_popup),
     ("text-input-on-connect", check_text_input_on_connect),
     ("autocorrect", check_autocorrect),
+    ("direct-matches-compose", check_direct_matches_compose),
     ("idle", check_idle),
 ]
 

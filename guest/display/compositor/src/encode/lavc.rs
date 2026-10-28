@@ -9,7 +9,7 @@
 //!   path on WSL2, where clients hand over wl_shm buffers and CUDA reaches the GPU
 //!   through /dev/dxg.
 
-use super::{convert, CpuImage, EncodeError, Encoder, Input, Picture, Settings};
+use super::{convert, CpuImage, EncodeError, Encoder, Input, Picture, Pixels, Settings};
 use caboose_display_protocol::Codec;
 use caboose_display_protocol::Rect;
 use ff::format::Pixel;
@@ -152,15 +152,14 @@ impl LavcEncoder {
         Ok(Self { family, codec, encoder, picture, shadow: Vec::new(), width, height, pts: 0 })
     }
 
-    /// Brings the encoder's picture up to date with `image`: only the damaged
-    /// rectangles, or all of it. Returns the macroblocks that really changed when that
-    /// is known (software encoders with damage).
-    fn convert(&mut self, image: &CpuImage, damage: Option<&[Rect]>) -> Result<Option<Vec<Rect>>, EncodeError> {
-        if image.width != self.width || image.height != self.height {
-            return Err(EncodeError(format!(
-                "input {}x{} does not match the encoder's {}x{}",
-                image.width, image.height, self.width, self.height
-            )));
+    /// Brings the encoder's picture up to date with `src`: only the damaged rectangles,
+    /// or all of it. Returns the macroblocks that really changed when that is known
+    /// (software encoders with damage).
+    fn convert(&mut self, src: &Pixels<'_>, damage: Option<&[Rect]>) -> Result<Option<Vec<Rect>>, EncodeError> {
+        let row = self.width as usize * 4;
+        let h = self.height as usize;
+        if src.stride < row || src.data.len() < (h - 1) * src.stride + row {
+            return Err(EncodeError("the input is smaller than the picture".into()));
         }
         // The encoder may still hold a reference to the last picture (it does not, for
         // libx264 and NVENC, which copy their input); if it is replaced, its old content
@@ -181,14 +180,13 @@ impl LavcEncoder {
                     let Some((x0, y0, x1, y1)) = convert::even_clip(*r, self.width, self.height) else { continue };
                     for y in y0..y1 {
                         dst[y * stride + x0 * 4..y * stride + x1 * 4]
-                            .copy_from_slice(&image.data[y * image.stride + x0 * 4..y * image.stride + x1 * 4]);
+                            .copy_from_slice(&src.data[y * src.stride + x0 * 4..y * src.stride + x1 * 4]);
                     }
                 }
                 Ok(None)
             }
             Family::Software => {
                 let (ys, us, vs) = (self.picture.stride(0), self.picture.stride(1), self.picture.stride(2));
-                let h = self.height as usize;
                 // SAFETY: the three planes are distinct allocations of at least
                 // `stride × rows` bytes each, as av_frame_get_buffer made them.
                 let (y, u, v) = unsafe {
@@ -200,31 +198,27 @@ impl LavcEncoder {
                     )
                 };
                 let planes = convert::I420 { y, y_stride: ys, u, u_stride: us, v, v_stride: vs };
-                let damage = damage.filter(|_| self.shadow.len() == image.data.len());
+                let damage = damage.filter(|_| self.shadow.len() == row * h);
                 Ok(match damage {
                     Some(d) => {
                         let changed = convert::changed_blocks(
-                            &image.data,
+                            src.data,
+                            src.stride,
                             &mut self.shadow,
-                            image.stride,
+                            row,
                             self.width,
                             self.height,
                             d,
                         );
-                        convert::bgrx_to_i420(
-                            &image.data,
-                            image.stride,
-                            self.width,
-                            self.height,
-                            Some(&changed),
-                            planes,
-                        );
+                        convert::bgrx_to_i420(src.data, src.stride, self.width, self.height, Some(&changed), planes);
                         Some(changed)
                     }
                     None => {
-                        convert::bgrx_to_i420(&image.data, image.stride, self.width, self.height, None, planes);
+                        convert::bgrx_to_i420(src.data, src.stride, self.width, self.height, None, planes);
                         self.shadow.clear();
-                        self.shadow.extend_from_slice(&image.data);
+                        for r in 0..h {
+                            self.shadow.extend_from_slice(&src.data[r * src.stride..r * src.stride + row]);
+                        }
                         None
                     }
                 })
@@ -283,10 +277,36 @@ impl Encoder for LavcEncoder {
     }
 
     fn encode(&mut self, input: Input<'_>, keyframe: bool, damage: Option<&[Rect]>) -> Result<Picture, EncodeError> {
-        let Input::Cpu(image) = input;
         let damage = if keyframe { None } else { damage };
         let t0 = std::time::Instant::now();
-        let changed = self.convert(image, damage)?;
+        let changed = match input {
+            Input::Cpu(image) => {
+                if image.width != self.width || image.height != self.height {
+                    return Err(EncodeError(format!(
+                        "input {}x{} does not match the encoder's {}x{}",
+                        image.width, image.height, self.width, self.height
+                    )));
+                }
+                self.convert(&Pixels { data: &image.data, stride: image.stride }, damage)?
+            }
+            Input::Shm(p) => {
+                let read = smithay::wayland::shm::with_buffer_contents(&p.buffer, |ptr, len, data| {
+                    let (w, h) = (self.width as i32, self.height as i32);
+                    if p.x < 0 || p.y < 0 || p.x + w > data.width || p.y + h > data.height {
+                        return Err(EncodeError("the picture is outside the buffer".into()));
+                    }
+                    let start = data.offset as usize + p.y as usize * data.stride as usize + p.x as usize * 4;
+                    if start > len {
+                        return Err(EncodeError("the buffer is outside its pool".into()));
+                    }
+                    // SAFETY: with_buffer_contents maps `len` bytes of the pool at `ptr`
+                    // for this closure and turns a truncated pool into an error.
+                    let pool = unsafe { std::slice::from_raw_parts(ptr, len) };
+                    self.convert(&Pixels { data: &pool[start..], stride: data.stride as usize }, damage)
+                });
+                read.map_err(|e| EncodeError(format!("shm buffer: {e:?}")))??
+            }
+        };
         let convert_us = t0.elapsed().as_micros();
         unsafe {
             ff::ffi::av_frame_remove_side_data(

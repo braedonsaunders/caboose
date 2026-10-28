@@ -28,8 +28,11 @@ This directory is a Cargo workspace:
   with `window.create` and streamed on its own. The compositor composes nothing across
   windows: each window's surface tree (with its subsurfaces) is rendered alone, cropped to
   its window geometry, at the buffer's own density.
-- **Cheap when nothing changes, and when little does.** Rendering is damage-tracked per
-  window, straight into the encoder's input image. The encoder keeps the previous picture
+- **Cheap when nothing changes, and when little does.** A window that is one surface with
+  one wl_shm buffer (most windows: terminals, Chromium, X11 apps) is not composed at all:
+  the encoder reads the client's buffer in place, holding it until it is done, and only the
+  client's own damage is looked at (a picture that needs encoder padding is copied, damage
+  only). Other windows are rendered damage-tracked, straight into the encoder's input image. The encoder keeps the previous picture
   and compares the damaged 16×16 blocks against it, converts only the blocks that really
   changed (applications often damage a whole widget for a blinking caret), and tells
   libx264 which macroblocks changed so it skips the rest. One picture per window is at the
@@ -100,6 +103,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `popup` | a `<select>` list is its own popup window with the page as parent |
 | `text-input-on-connect` | a client that connects after a field was focused is still told text input is enabled |
 | `autocorrect` | `text` with `delete_before` (autocorrect, the delete key) edits a Chromium field exactly, one grapheme cluster per deletion |
+| `direct-matches-compose` | a window streamed straight from its shm buffer is the picture composition makes, byte for byte |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 ### Measured
@@ -119,7 +123,9 @@ same machine (`scripts/check.py` and the probe's `--server-pid`):
 
 Comparing damaged blocks before converting took Chromium's 720p frames from 7.9 ms to
 3.6 ms of server CPU: Chromium damages about a quarter of the window per frame while the
-pixels that change cover about 1%.
+pixels that change cover about 1%. Reading single-buffer windows in place instead of
+composing them took full-window 1080p video from 13.1 to 12.0 ms of server CPU per frame
+(composition was 2.3 ms of it; `--always-compose` turns this off for comparisons).
 
 ## Run
 

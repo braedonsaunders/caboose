@@ -10,7 +10,7 @@
 //!   frame callbacks are held while the window is at that limit, so the application
 //!   slows to what the link and the client can show.
 
-use crate::encode::{Backend, CpuImage, EncodeError, Encoder, Input, Settings};
+use crate::encode::{Backend, CpuImage, EncodeError, Encoder, Input, Settings, ShmPicture};
 use crate::render::Canvas;
 use caboose_display_protocol::{Codec, Rect};
 use smithay::reexports::calloop::channel::Sender;
@@ -25,6 +25,8 @@ pub struct Job {
     pub generation: u64,
     pub pts_us: u64,
     pub image: CpuImage,
+    /// Read the picture from this client buffer instead of `image`.
+    pub shm: Option<ShmPicture>,
     pub keyframe: bool,
     /// What changed since the previous picture; `None` for everything.
     pub damage: Option<Vec<Rect>>,
@@ -99,8 +101,11 @@ impl Worker {
                     }
                     let (_, enc) = encoder.as_mut().unwrap();
                     let damage = if fresh { None } else { job.damage.as_deref() };
-                    let result: Result<_, EncodeError> =
-                        enc.encode(Input::Cpu(&job.image), job.keyframe || fresh, damage);
+                    let input = match &job.shm {
+                        Some(shm) => Input::Shm(shm),
+                        None => Input::Cpu(&job.image),
+                    };
+                    let result: Result<_, EncodeError> = enc.encode(input, job.keyframe || fresh, damage);
                     let result = result
                         .map(|p| Encoded {
                             codec: enc.codec(),
@@ -135,6 +140,8 @@ impl Worker {
 #[derive(Default)]
 pub struct Stream {
     pub canvas: Option<Canvas>,
+    /// Set while the window is streamed straight from its shm buffer (render::direct).
+    pub direct: Option<crate::render::DirectState>,
     /// The picture buffer; `None` while the worker has it.
     pub image: Option<CpuImage>,
     image_id: u64,

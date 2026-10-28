@@ -213,9 +213,10 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
 measurements and the scripted checks.
 
 - **Done:** the protocol and its vectors; the headless compositor with Xwayland, wl_shm and
-  linear dmabufs; one stream per toplevel, dialog, popup and X11 window; damage-tracked
-  rendering, changed-block detection and libx264 macroblock hints, so the server's CPU
-  follows what changes on screen; libx264, libx265 and NVENC (from system memory, the WSL2
+  linear dmabufs; one stream per toplevel, dialog, popup and X11 window; single-buffer
+  windows read in place without composition, the rest damage-tracked; changed-block
+  detection and libx264 macroblock hints, so the server's CPU follows what changes on
+  screen; libx264, libx265 and NVENC (from system memory, the WSL2
   path) behind one `Encoder` trait; pacing on vsync with acknowledgement-based flow
   control; pointer, multitouch, keys and text-input-v3 input; reconnect and replacement;
   the container and microVM integration (installed, not the default).

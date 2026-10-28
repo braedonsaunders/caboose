@@ -35,6 +35,22 @@ impl CpuImage {
 /// What an encoder consumes.
 pub enum Input<'a> {
     Cpu(&'a CpuImage),
+    /// A client's wl_shm buffer, read in place: the picture is the coded size at
+    /// (`x`, `y`) of the buffer. The buffer is not released to the client until the
+    /// encoder is done with it.
+    Shm(&'a ShmPicture),
+}
+
+pub struct ShmPicture {
+    pub buffer: smithay::backend::renderer::utils::Buffer,
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Pixels to read: `data` starts at the picture's top-left pixel, rows `stride` apart.
+pub struct Pixels<'a> {
+    pub data: &'a [u8],
+    pub stride: usize,
 }
 
 /// One encoded picture in Annex-B.
