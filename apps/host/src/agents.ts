@@ -119,6 +119,8 @@ export interface AgentResolver {
   launch(id: string): Promise<AgentLaunch>
   /** The owner's default agent, or null when none is chosen. */
   defaultAgent(): string | null
+  /** Advertised choices for a chat created before model state was recorded. */
+  models?(id: string): Promise<{ models?: AgentModels }>
 }
 
 export interface AgentTaskOptions {
@@ -139,6 +141,18 @@ const READ_MODEL_STATE = `const fs=require('fs'),p=require('path'),d=process.arg
 function read(n){try{const f=p.join(d,n);if(fs.statSync(f).size>262144)return {};return JSON.parse(fs.readFileSync(f,'utf8'))}catch{return {}}}
 const state=read('models.json'),config=read('task.json'),requested=read('requested-model.json');
 console.log(JSON.stringify({...state,requestedModel:typeof requested==='string'?requested:state.requestedModel??config.model}));`
+
+/** Retire only this task's idle pre-model runner before publishing a selected-model reply. */
+const RETIRE_MODEL_RUNNER = `// retire-model-runner
+const fs=require('fs'),d=process.argv[1];
+(async()=>{
+const pid=Number(fs.readFileSync(d+'/pid','utf8').trim());if(!Number.isSafeInteger(pid)||pid<2)throw Error('Invalid runner pid');
+let args,cwd;try{args=fs.readFileSync('/proc/'+pid+'/cmdline','utf8').split('\\0');cwd=fs.readlinkSync('/proc/'+pid+'/cwd')}catch(e){if(e.code==='ENOENT')return;throw e}
+if(!args.join(' ').includes('caboose-agentd.mjs run')||cwd!==d)throw Error('Cannot identify this chat runner');
+try{process.kill(-pid,'SIGTERM')}catch(e){if(e.code==='ESRCH')return;throw e}
+for(let i=0;i<50;i++){try{const stat=fs.readFileSync('/proc/'+pid+'/stat','utf8');if(stat.slice(stat.lastIndexOf(')')+2).startsWith('Z'))return}catch(e){if(e.code==='ENOENT')return;throw e}await new Promise(r=>setTimeout(r,100))}
+throw Error('The previous agent session is still stopping; try again');
+})().catch(e=>{console.error(e.message);process.exitCode=1});`
 
 const HOME = '/home/caboose'
 const RUNUSER = '/usr/sbin/runuser'
@@ -524,7 +538,7 @@ export class AgentTasks {
    * the agent is working the reply waits in the task's queue; when the turn ends, everything
    * waiting goes to the agent together as its next turn.
    */
-  async models(id: string, input?: Record<string, unknown>): Promise<{ requestedModel?: string; models?: AgentModels }> {
+  async models(id: string, input?: Record<string, unknown>): Promise<{ requestedModel?: string; models?: AgentModels; currentModelKnown?: boolean }> {
     await this.restoring
     const entry = TASK_ID.test(id) ? this.tracked.get(id) : undefined
     if (!entry) throw new AgentNotFoundError()
@@ -534,17 +548,23 @@ export class AgentTasks {
       const dir = `${HOME}/Agents/${id}`
       const raw = await asCaboose(guest, 'exec node -e "$2" "$1"', [dir, READ_MODEL_STATE])
       let state: any = {}; try { state = JSON.parse(raw) } catch {}
-      const models = publicModels(state.models)
+      const recordedModels = publicModels(state.models)
+      const models = recordedModels ?? (!isLive(entry.task.status) && this.resolver.models
+        ? publicModels((await this.resolver.models(entry.task.agent)).models) : undefined)
       if (models) entry.task.models = models
       if (typeof state.requestedModel === 'string') entry.task.requestedModel = modelId(state.requestedModel)
       if (input) {
         if (isLive(entry.task.status) || entry.queue.length) throw new AgentConflictError('Wait for the agent and its queued messages before changing models')
         const requested = modelId(input.model)
         if (!requested || !models?.availableModels.some(m => m.id === requested)) throw new AgentInputError('Choose a model advertised by this session')
+        if (!recordedModels) {
+          const evidence = await this.evidence(entry)
+          if (evidence.alive) await asCaboose(guest, 'exec node -e "$2" "$1"', [dir, RETIRE_MODEL_RUNNER])
+        }
         await asCaboose(guest, 'printf %s "$2" > "$1/requested-model.json.part" && sync -f "$1/requested-model.json.part" && mv "$1/requested-model.json.part" "$1/requested-model.json" && sync -f "$1"', [dir, JSON.stringify(requested)])
         entry.task.requestedModel = requested
       }
-      return { ...(entry.task.requestedModel ? { requestedModel: entry.task.requestedModel } : {}), ...(models ? { models } : {}) }
+      return { ...(entry.task.requestedModel ? { requestedModel: entry.task.requestedModel } : {}), ...(models ? { models } : {}), ...(!recordedModels && models ? { currentModelKnown: false } : {}) }
     })
   }
 

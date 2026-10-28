@@ -1963,3 +1963,8 @@ for new chats and the current chat.
 Agent chats keep their rendered turns mounted through keyboard and reply updates. A stale
 transcript read preserves completed turns already shown unless the host explicitly truncates
 the transcript; the last-answer summary is retained before a new reply clears it.
+
+For chats created before model-state reporting, idle model discovery reads provider choices
+without claiming to know that chat’s current model (`currentModelKnown: false`). Selecting a
+model retires only the identified idle runner before saving the request; the next reply
+resumes its conversation with the new runner and applies the choice before prompting.

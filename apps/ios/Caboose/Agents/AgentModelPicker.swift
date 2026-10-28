@@ -13,7 +13,7 @@ struct AgentModelPicker: View {
 
     private var selected: String? {
         taskID == nil ? model.agents.selectedModels[agentID] ?? state?.models?.currentModelId
-            : state?.requestedModel ?? state?.models?.currentModelId
+            : state?.requestedModel ?? (state?.currentModelKnown == false ? nil : state?.models?.currentModelId)
     }
     private var busy: Bool {
         guard let task = model.agents.tasks.first(where: { $0.id == taskID }) else { return false }
@@ -53,6 +53,7 @@ struct AgentModelPicker: View {
                         }
                     } footer: {
                         if busy { Text("Model selection is available after the agent and its queued messages finish.") }
+                        else if state?.currentModelKnown == false { Text("Your selection applies when this chat resumes for its next message.") }
                         else if taskID != nil { Text("Your selection applies to the next message. Current model: \(models.availableModels.first(where: { $0.id == models.currentModelId })?.name ?? models.currentModelId).") }
                     }
                 } else if error == nil {

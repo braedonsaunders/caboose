@@ -123,6 +123,7 @@ struct AgentModelState: Decodable, Equatable, Sendable {
     }
     var requestedModel: String?
     var models: Models?
+    var currentModelKnown: Bool?
 }
 
 extension HostClient {

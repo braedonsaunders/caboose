@@ -140,6 +140,7 @@ function fakeGuest() {
         const model = state.files.get('requested-model.json')
         return JSON.stringify({ ...JSON.parse(state.files.get('models.json') ?? '{}'), ...(model ? { requestedModel: JSON.parse(model) } : {}) })
       }
+      if (rest[1]?.startsWith('// retire-model-runner')) { task(idOf(rest[0]!)).alive = false; return '' }
       if (script.includes('requested-model.json.part')) {
         task(idOf(rest[0]!)).files.set('requested-model.json', rest[1]!)
         return ''
@@ -262,6 +263,19 @@ describe('AgentTasks', () => {
     fake.append(id, { type: 'models', requestedModel: 'provider/model-b', models: { currentModelId: 'provider/model-b', availableModels: [{ id: 'provider/model-b', name: 'Model B' }] } })
     await tasks.poll()
     expect(tasks.list()[0]?.models?.currentModelId).toBe('provider/model-b')
+  })
+
+  it('discovers choices for an old idle chat and retires its old runner before setting a model', async () => {
+    const { fake, tasks, agents } = setup()
+    const task = await tasks.start({ prompt: 'hello' })
+    fake.append(task.id, user(1)); fake.append(task.id, end(1, 'done')); await tasks.poll()
+    const models = { currentModelId: 'alpha', availableModels: [{ id: 'alpha', name: 'Alpha' }, { id: 'beta', name: 'Beta' }] }
+    agents.models = async () => ({ models })
+    expect(await tasks.models(task.id)).toEqual({ models, currentModelKnown: false })
+    expect(fake.task(task.id).alive).toBe(true)
+    expect(await tasks.models(task.id, { model: 'beta' })).toEqual({ requestedModel: 'beta', models, currentModelKnown: false })
+    expect(fake.task(task.id).alive).toBe(false)
+    expect(JSON.parse(fake.task(task.id).files.get('requested-model.json')!)).toBe('beta')
   })
 
   it('keeps requested model separate from confirmed current model and fences active changes', async () => {
