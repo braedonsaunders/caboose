@@ -5,7 +5,7 @@ import {
 } from '@braedonsaunders/appkit-ui'
 import { Bot, KeyRound, ShieldQuestion } from 'lucide-react'
 import {
-  CabooseApiError, agentLabel, alwaysAllowOption, canReply, hasUpdate, orderAgents,
+  CabooseApiError, agentLabel, alwaysAllowOption, canReply, envProblem, hasUpdate, orderAgents,
   type AgentListing, type AgentTask, type AgentsResponse, type CabooseClient, type SignInMethod,
 } from '../api.js'
 import { isLiveTask, taskTone } from '../state.js'
@@ -200,6 +200,7 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
                 installing={installing === selected.id}
                 onInstall={() => void install(selected)}
                 onSignIn={method => void signIn(selected.id, method)}
+                onSetEnv={changes => act(() => client.setAgentEnv(selected.id, changes), 'Could not change the environment.')}
               />
             ) : null}
           </form>
@@ -284,9 +285,10 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
 }
 
 /** What the chosen agent is, whether it is installed, and how to sign in to it. */
-function AgentDetails({ agent, isDefault, running, installing, onInstall, onSignIn }: {
+function AgentDetails({ agent, isDefault, running, installing, onInstall, onSignIn, onSetEnv }: {
   agent: AgentListing; isDefault: boolean; running: boolean; installing: boolean
   onInstall: () => void; onSignIn: (method: SignInMethod) => void
+  onSetEnv: (changes: { set?: Record<string, string>; remove?: string[] }) => Promise<boolean>
 }) {
   const status = agent.signInStatus
   const statusMethod = agent.signIn?.find(method => method.id === status?.methodId)?.name ?? status?.methodId
@@ -317,6 +319,54 @@ function AgentDetails({ agent, isDefault, running, installing, onInstall, onSign
               : `Sign-in with ${statusMethod} failed${status.message ? `: ${status.message}` : '.'}`}
         </p>
       ) : null}
+      <EnvEditor names={agent.env ?? []} disabled={!running} onChange={onSetEnv} />
+    </div>
+  )
+}
+
+/**
+ * The agent's environment in the computer, for an API key or a provider's base URL. Values
+ * are written there and never read back; only the names are shown.
+ */
+function EnvEditor({ names, disabled, onChange }: {
+  names: string[]; disabled: boolean
+  onChange: (changes: { set?: Record<string, string>; remove?: string[] }) => Promise<boolean>
+}) {
+  const [name, setName] = React.useState('')
+  const [value, setValue] = React.useState('')
+  const [saving, setSaving] = React.useState(false)
+  const problem = name || value ? envProblem(name, value) : undefined
+  async function save() {
+    if (envProblem(name, value)) return
+    setSaving(true)
+    if (await onChange({ set: { [name.trim()]: value } })) { setName(''); setValue('') }
+    setSaving(false)
+  }
+  return (
+    // Inside the task form, so a group of its own rather than a nested form; Enter saves here.
+    <div className="space-y-2 border-t pt-2" role="group" aria-label="Environment"
+      onKeyDown={event => { if (event.key === 'Enter' && (event.target as HTMLElement).tagName === 'INPUT') { event.preventDefault(); void save() } }}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium">Environment</span>
+        {names.length ? names.map(entry => (
+          <Badge key={entry} variant="outline" className="gap-1 font-mono">
+            {entry}
+            <button type="button" className="ml-1 text-fg-muted hover:text-destructive" aria-label={`Remove ${entry}`} disabled={disabled}
+              onClick={() => void onChange({ remove: [entry] })}>×</button>
+          </Badge>
+        )) : <span className="text-xs text-fg-muted">None. Add an API key here instead of signing in, if the agent takes one.</span>}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input className="h-8 w-56 rounded-md border bg-transparent px-2 font-mono text-xs" placeholder="OPENROUTER_API_KEY" aria-label="Variable name"
+          value={name} onChange={event => setName(event.target.value)} disabled={disabled} autoComplete="off" spellCheck={false} />
+        <input className="h-8 w-64 rounded-md border bg-transparent px-2 text-xs" type="password" placeholder="Value" aria-label="Value"
+          value={value} onChange={event => setValue(event.target.value)} disabled={disabled} autoComplete="new-password" />
+        <Button type="button" size="sm" variant="outline" disabled={disabled || saving || !name || !value || Boolean(problem)} onClick={() => void save()}>
+          {saving ? 'Saving…' : names.includes(name.trim()) ? 'Replace' : 'Add'}
+        </Button>
+      </div>
+      {problem && name && value ? <p className="text-xs text-destructive">{problem}</p> : null}
+      <p className="text-xs text-fg-muted">Kept in the computer for this agent only (mode 0600) and never shown again.</p>
     </div>
   )
 }
