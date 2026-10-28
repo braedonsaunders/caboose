@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Read and act on one X display's focused window through its accessibility tree.
 
-Caboose's computer has two displays: the owner's (:100) and the agent seat (:101). This
-helper gives an agent, or the owner's phone, the focused window's controls as JSON, with
+Caboose's computer has two displays, each a Caboose Display instance with its own
+Xwayland: the owner's (:110) and the agent seat (:101). This helper gives an agent, or the owner's phone, the focused window's controls as JSON, with
 no screenshot, and acts on them by id. It always prints one JSON object.
 
     a11y.py elements --display :101
@@ -29,11 +29,11 @@ When the list is empty for a reason (no window, an application without an access
 tree), "note" says why. Other failures exit 1 with {"error": ...} ({"ok": false, ...} for
 act); bad arguments exit 2.
 
-It runs as the desktop user with only DISPLAY known, so it finds the display's
-accessibility bus itself: the AT_SPI_BUS property at-spi-bus-launcher puts on the
-display's root window, else the a11y bus of the display's session bus (Xpra records that
-bus as DBUS_SESSION_BUS_ADDRESS on the root window), of $DBUS_SESSION_BUS_ADDRESS, or of
-/run/user/<uid>/bus. Displays may share a bus and a registry, so it keeps strictly to the
+It runs as the desktop user with the display's launch environment (DISPLAY, XAUTHORITY), so
+it finds the display's accessibility bus itself: the AT_SPI_BUS property at-spi-bus-launcher
+puts on the display's root window, else the a11y bus of a session bus started for the
+display (one that records DBUS_SESSION_BUS_ADDRESS on the root window, or D-Bus's X11
+autolaunch bus), of $DBUS_SESSION_BUS_ADDRESS, or of /run/user/<uid>/bus. Displays may share a bus and a registry, so it keeps strictly to the
 applications on the requested display: an application qualifies only if its process owns
 a window on that display (the window's _NET_WM_PID) and none on any other display.
 
@@ -279,8 +279,7 @@ class Display:
             window = parent
         for window in reversed(clients):
             attrs = self.attributes(window)
-            # Mapped, if not necessarily viewable: Xpra keeps windows in unmapped frames
-            # while no client is attached, as on the agent seat when nobody watches.
+            # Mapped, if not necessarily viewable: a window can be mapped before it is shown.
             if attrs is not None and attrs.map_state != IS_UNMAPPED:
                 return window
         return None
@@ -313,18 +312,55 @@ def local_displays():
     return numbers
 
 
+def display_authorities():
+    """Xauthority files to try for another display: the caller's, then each Caboose Display
+    instance's (every instance has its own cookie, in its private directory under the runtime
+    directory), so the owner's display and the agent seat can each see the other."""
+    files = [os.environ.get("XAUTHORITY")]
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    try:
+        for instance in sorted(os.listdir(os.path.join(runtime, "caboose-display"))):
+            files.append(os.path.join(runtime, "caboose-display", instance, "Xauthority"))
+    except OSError:
+        pass
+    seen = []
+    for path in files:
+        if path and path not in seen and os.path.isfile(path):
+            seen.append(path)
+    return seen or [None]
+
+
+def open_other(name):
+    """Opens another local display with whichever authority it accepts, or returns None.
+    libX11 reads XAUTHORITY when it connects, so it is set for each attempt and restored."""
+    saved = os.environ.get("XAUTHORITY")
+    try:
+        for path in display_authorities():
+            if path:
+                os.environ["XAUTHORITY"] = path
+            try:
+                return Display(name)
+            except Failure:
+                continue
+        return None
+    finally:
+        if saved is None:
+            os.environ.pop("XAUTHORITY", None)
+        else:
+            os.environ["XAUTHORITY"] = saved
+
+
 def pids_elsewhere(display):
     """Processes with a window on any other local X display we can open."""
     own = display_number(display.name)
     pids = set()
     for number in sorted(local_displays() - {own}):
-        try:
-            other = Display(f":{number}")
-        except Failure:
+        other = open_other(f":{number}")
+        if other is None:
             continue
         try:
-            # Every top-level window counts, mapped or not: a window being opened, or one
-            # Xpra keeps hidden while nobody watches, still means the process is there.
+            # Every top-level window counts, mapped or not: a window being opened still
+            # means the process is there.
             _, children = other.tree(other.root)
             for window in set(other.clients()) | set(children):
                 pid = other.pid(window)
@@ -411,12 +447,13 @@ def bus_sources(display):
 
 
 def display_session_buses(display):
-    """Session buses started for this display: Xpra's (it records the address on the root
-    window when it runs one) and D-Bus's X11 autolaunch bus for this user and machine."""
+    """Session buses started for this display: one recorded on the root window (a session
+    that runs its own bus records its address there) and D-Bus's X11 autolaunch bus for this
+    user and machine."""
     found = []
-    xpra = display.string(display.root, "DBUS_SESSION_BUS_ADDRESS")
-    if xpra and xpra.strip("\0").strip():
-        found.append(("Xpra session bus", xpra.strip("\0").strip()))
+    recorded = display.string(display.root, "DBUS_SESSION_BUS_ADDRESS")
+    if recorded and recorded.strip("\0").strip():
+        found.append(("display session bus", recorded.strip("\0").strip()))
     machine = ""
     for path in ("/var/lib/dbus/machine-id", "/etc/machine-id"):
         try:
@@ -944,8 +981,7 @@ def resolve(display_name, element):
 
 
 def pointer_click(screen, xid, bounds):
-    """Click the centre of `bounds`, which only lands while the window is actually shown:
-    Xpra keeps windows unviewable while no client is attached to the display."""
+    """Click the centre of `bounds`, which only lands while the window is actually shown."""
     attrs = screen.display.attributes(xid)
     if attrs is None or attrs.map_state != IS_VIEWABLE:
         raise Failure("element has no accessible action, and its window is not on screen to click")
@@ -993,7 +1029,7 @@ def act(display_name, element, action, text):
             pass
         # No EditableText (Chromium's and Electron's fields): focus it through AT-SPI, then
         # send the keys to its X window alone (xdotool --window). That reaches no other
-        # window, and works while Xpra shows nothing (no client attached to the display).
+        # window, whether or not anyone is watching the display.
         if not tree.has(states, "EDITABLE"):
             raise Failure("element is not editable")
         try:
@@ -1041,8 +1077,8 @@ def command_bus(display_name, wait):
     The goal is the AT_SPI_BUS property on the display's root window: every toolkit reads it
     before its session bus, so once it is set all applications on the display share that bus,
     whatever session bus they were started with. at-spi-bus-launcher sets it when it is
-    started by a session bus that has the display in its environment: Xpra's, the X11
-    autolaunch bus, or failing those one started here for the display."""
+    started by a session bus that has the display in its environment: one recorded on the
+    display, the X11 autolaunch bus, or failing those one started here for the display."""
     deadline = time.monotonic() + max(0.0, wait)
     launched = None
 

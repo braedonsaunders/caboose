@@ -108,56 +108,74 @@ check 'id from a closed window rejected (exit 3)' test "$code" = 3
 check 'replacement window untouched' bash -c "! grep -q 'clicked Save' $logs/agent2.log"
 pkill -u caboose -f fixture.py; pkill -u caboose mousepad; pkill Xvfb; sleep 1
 
-echo '== Xpra seamless :100 and :101 as the computer runs them, with Chromium'
-# The flags that matter here are the accessibility ones; the rest of the units' flags
-# (WebSocket, token, audio) do not bear on this check.
-for d in 100 101; do
-  as_user XPRA_BACKWARDS_COMPATIBLE=0 xpra seamless ":$d" --daemon=yes --html=off --mdns=off --printing=off \
-    --webcam=off --speaker=off --microphone=off --pulseaudio=no --notifications=off --file-transfer=off \
-    --env=NO_AT_BRIDGE=0 --start-env=GTK_A11Y=atspi >"$logs/xpra$d.log" 2>&1
-  a11y ":$d" bus --display ":$d" --wait 30 > "$logs/bus$d.json"  # as caboose-session and the units do
+echo '== Caboose Display: the owner display (:110) and the agent seat (:101), as the computer runs them'
+# The flags that bear on this check; the rest (token, encoder, sound) do not. Each instance
+# writes its launch environment once it is ready, as the computer's units do.
+install -d -o caboose -g caboose -m 0700 /run/user/1000
+for bus in bus agent-bus; do
+  [ -S "/run/user/1000/$bus" ] || runuser -u caboose -- dbus-daemon --session --address="unix:path=/run/user/1000/$bus" --fork >/dev/null
 done
-check 'each display gets its own accessibility bus' bash -c "[[ -n \$(cat $logs/bus100.json) && \$(python3 -c 'import json; print(json.load(open(\"$logs/bus100.json\"))[\"address\"] != json.load(open(\"$logs/bus101.json\"))[\"address\"])') == True ]]"
-check 'AT_SPI_BUS published on both displays' bash -c "for d in 100 101; do runuser -u caboose -- env -i HOME=/home/caboose DISPLAY=:\$d xprop -root AT_SPI_BUS | grep -q unix: || exit 1; done"
-printf '#!/bin/sh\nexec python3 /src/check/fixture.py --title "Owner window" --log %s/xpra-owner.log --dialog\n' "$logs" > "$logs/owner.sh"; chmod 755 "$logs/owner.sh"
-as_user xpra control :100 start "$logs/owner.sh" >/dev/null 2>&1
-as_user DISPLAY=:101 python3 /src/check/fixture.py --title 'Agent window' --log "$logs/xpra-agent.log" --dialog >/dev/null 2>&1 &
-wait_for "$logs/xpra-owner.log" ready; wait_for "$logs/xpra-agent.log" ready; sleep 2
-check 'app started by Xpra is accessible (the NO_AT_BRIDGE=1 in its config overridden)' yes "$(a11y :100 find --display :100 --query save --role button | py "[e['name'] for e in d['elements']] == ['Save']")"
-xsave=$(a11y :101 find --display :101 --query save --role button | py "d['elements'][0]['id'] if len(d['elements']) == 1 else ''")
-check 'agent app found with no client attached' test -n "$xsave"
-a11y :101 act --display :101 --element "$xsave" --action press >/dev/null
-check 'press on the agent seat' wait_for "$logs/xpra-agent.log" 'clicked Save'
-check 'owner window untouched' bash -c "! grep -q 'clicked Save' $logs/xpra-owner.log"
+display() {  # display NAME BUS ARGS...
+  local name=$1 bus=$2; shift 2
+  as_user XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/$bus" \
+    CABOOSE_VIDEO_SOCKET="/run/user/1000/caboose-video-$name.sock" \
+    caboose-display --no-auth --no-audio --env-file "$logs/$name.env" "$@" >"$logs/$name.log" 2>&1 &
+}
+display owner bus --listen 127.0.0.1:14600
+display agent agent-bus --listen 127.0.0.1:14601 --socket wayland-caboose-agent --x-display 101 --x11-only
+for name in owner agent; do for _ in $(seq 1 100); do [ -s "$logs/$name.env" ] && break; sleep 0.1; done; done
+check 'both instances wrote their launch environment' bash -c "[ -s $logs/owner.env ] && [ -s $logs/agent.env ]"
+check 'the agent seat names no Wayland socket' bash -c "! grep -q WAYLAND_DISPLAY $logs/agent.env && grep -q \"GDK_BACKEND='x11'\" $logs/agent.env"
+check 'each instance has its own X authority' bash -c "[ \"\$(grep XAUTHORITY $logs/owner.env)\" != \"\$(grep XAUTHORITY $logs/agent.env)\" ]"
+# As caboose-host and the agent runner run things: as caboose, with only the seat's launch
+# environment (and its session bus).
+on() {  # on owner|agent COMMAND...
+  local name=$1 bus=bus; shift; [ "$name" = agent ] && bus=agent-bus
+  runuser -u caboose -- env -i HOME=/home/caboose PATH=/usr/bin:/bin:/usr/local/bin DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/$bus" \
+    /bin/sh -c 'set -a; . "$0"; set +a; exec "$@"' "$logs/$name.env" "$@"
+}
+seat() { on agent /usr/bin/python3 /opt/caboose/a11y.py "$@"; }
+owner() { on owner /usr/bin/python3 /opt/caboose/a11y.py "$@"; }
+owner bus --display :110 --wait 30 > "$logs/bus110.json"; seat bus --display :101 --wait 30 > "$logs/bus101.json"
+check 'each display gets its own accessibility bus' bash -c "[[ \$(python3 -c 'import json; print(json.load(open(\"$logs/bus110.json\"))[\"address\"] != json.load(open(\"$logs/bus101.json\"))[\"address\"])') == True ]]"
+check 'AT_SPI_BUS published on both displays' bash -c "for n in owner agent; do runuser -u caboose -- env -i sh -c 'set -a; . \"\$0\"; xprop -root AT_SPI_BUS' $logs/\$n.env | grep -q unix: || exit 1; done"
+# The owner's screen tools reach X11 windows; a GTK app is pointed at Xwayland for this check.
+on owner env GDK_BACKEND=x11 python3 /src/check/fixture.py --title 'Owner window' --log "$logs/cd-owner.log" --dialog >/dev/null 2>&1 &
+on agent python3 /src/check/fixture.py --title 'Agent window' --log "$logs/cd-agent.log" --dialog >/dev/null 2>&1 &
+wait_for "$logs/cd-owner.log" ready; wait_for "$logs/cd-agent.log" ready; sleep 2
+check 'owner app on Xwayland is accessible' yes "$(owner find --display :110 --query save --role button | py "[e['name'] for e in d['elements']] == ['Save']")"
+xsave=$(seat find --display :101 --query save --role button | py "d['elements'][0]['id'] if len(d['elements']) == 1 else ''")
+check 'agent app found with nobody watching' test -n "$xsave"
+check 'agent seat lists no owner window' yes "$(seat find --display :101 --query owner | py "d['elements'] == []")"
+seat act --display :101 --element "$xsave" --action press >/dev/null
+check 'press on the agent seat' wait_for "$logs/cd-agent.log" 'clicked Save'
+check 'owner window untouched' bash -c "! grep -q 'clicked Save' $logs/cd-owner.log"
 pkill -u caboose -f 'title Agent window'; sleep 0.5
 
-echo '== Coordinate tools on the agent seat with no client attached'
-# Xpra parks a seamless window in an unmapped corral until a client shows it; the desktop
-# tools ask Xpra to map such windows first, so click, type, key and screenshot reach them.
-as_user DISPLAY=:101 python3 /src/check/fixture.py --title 'Seat window' --log "$logs/seat.log" --dialog >/dev/null 2>&1 &
-wait_for "$logs/seat.log" ready; sleep 1
+echo '== Coordinate tools on the agent seat with nobody watching'
 mcp() {  # one tool call per server process, so calls run strictly in order
   printf '%s\n' \
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"check","version":"0"}}}' \
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" |
-    runuser -u caboose -- env -i PATH=/usr/bin:/bin HOME=/home/caboose CABOOSE_AGENT_DISPLAY=:101 timeout 60 node /opt/caboose/desktop-mcp.mjs |
+    on agent env CABOOSE_AGENT_DISPLAY=:101 timeout 60 node /opt/caboose/desktop-mcp.mjs |
     python3 -c "import json, sys; [print(json.dumps(m)) for m in map(json.loads, sys.stdin) if m.get('id') == 2]"
 }
-seat=$(as_user DISPLAY=:101 xdotool search --name '^Save changes\?$' | tail -n 1)
-check 'the dialog starts unviewable (no client attached)' bash -c "runuser -u caboose -- env -i HOME=/home/caboose DISPLAY=:101 xwininfo -id $seat | grep -q IsUnviewable"
+on agent python3 /src/check/fixture.py --title 'Seat window' --log "$logs/seat.log" --dialog >/dev/null 2>&1 &
+wait_for "$logs/seat.log" ready; sleep 1
+win=$(on agent xdotool search --name '^Save changes\?$' | tail -n 1)
+check 'the dialog is viewable with no client attached' bash -c "runuser -u caboose -- env -i sh -c 'set -a; . \"\$0\"; xwininfo -id $win' $logs/agent.env | grep -q IsViewable"
 centre() {
-  a11y :101 find --display :101 --query "$1" ${2:+--role "$2"} |
+  seat find --display :101 --query "$1" ${2:+--role "$2"} |
     python3 -c "import json, sys; b = json.load(sys.stdin)['elements'][0]['bounds']; print(b['x'] + b['width'] // 2, b['y'] + b['height'] // 2)"
 }
 read -r ex ey <<< "$(centre 'File name')"; read -r sx sy <<< "$(centre Save button)"
 mcp click "{\"x\":$ex,\"y\":$ey}" >/dev/null
-check 'the dialog is viewable once a tool runs' bash -c "runuser -u caboose -- env -i HOME=/home/caboose DISPLAY=:101 xwininfo -id $seat | grep -q IsViewable"
 mcp key '{"combo":"ctrl+a"}' >/dev/null
 mcp type '{"text":"typed-by-agent.txt"}' >/dev/null
 check 'mcp click and type reach the field' wait_for "$logs/seat.log" 'text typed-by-agent.txt'
 mcp click "{\"x\":$sx,\"y\":$sy}" >/dev/null
 check 'mcp click presses Save' wait_for "$logs/seat.log" 'clicked Save'
-as_user DISPLAY=:101 python3 /src/check/fixture.py --title 'Seat window' --log "$logs/seat2.log" --dialog >/dev/null 2>&1 &
+on agent python3 /src/check/fixture.py --title 'Seat window' --log "$logs/seat2.log" --dialog >/dev/null 2>&1 &
 wait_for "$logs/seat2.log" ready; sleep 1
 mcp screenshot '{}' | python3 -c "import json, sys, base64; open('$logs/seat.png', 'wb').write(base64.b64decode(json.load(sys.stdin)['result']['content'][0]['data']))"
 colours=$(convert "$logs/seat.png" -format %k info: 2>&1); echo "screenshot: $(identify "$logs/seat.png" 2>&1 | cut -d' ' -f2-3), $colours colours"
@@ -165,33 +183,33 @@ check 'mcp screenshot shows the new window, not a blank seat' test "${colours:-0
 pkill -u caboose -f 'title Seat window'; sleep 0.5
 
 # Chromium reads /etc/chromium.d/caboose-accessibility; --no-sandbox only because this test
-# container has no user namespaces for its sandbox.
-as_user DISPLAY=:101 chromium --no-sandbox --no-first-run --disable-gpu --user-data-dir="$logs/chromium" \
+# container has no user namespaces for its sandbox. With no Wayland socket it runs on X11.
+on agent chromium --no-sandbox --no-first-run --disable-gpu --user-data-dir="$logs/chromium" \
   --window-size=900,700 file:///src/check/page.html >"$logs/chromium.log" 2>&1 &
-for _ in $(seq 1 60); do a11y :101 find --display :101 --query Subscribe | grep -q '"button"' && break; sleep 0.5; done
-page=$(a11y :101 elements --display :101)
+for _ in $(seq 1 60); do seat find --display :101 --query Subscribe | grep -q '"button"' && break; sleep 0.5; done
+page=$(seat elements --display :101)
 check 'chromium: link and button inside the page listed' yes "$(echo "$page" | py "{('link', 'Read the docs'), ('button', 'Subscribe'), ('entry', 'Email')} <= {(e['role'], e['name']) for e in d['elements']}")"
 email=$(echo "$page" | id_of Email entry)
-a11y :101 act --display :101 --element "$email" --action set-text --text 'first@example.com' >/dev/null
-a11y :101 act --display :101 --element "$email" --action set-text --text 'me@example.com' >/dev/null  # replaces
-a11y :101 act --display :101 --element "$(echo "$page" | id_of Subscribe button)" --action press >/dev/null
+seat act --display :101 --element "$email" --action set-text --text 'first@example.com' >/dev/null
+seat act --display :101 --element "$email" --action set-text --text 'me@example.com' >/dev/null  # replaces
+seat act --display :101 --element "$(echo "$page" | id_of Subscribe button)" --action press >/dev/null
 sleep 1
-check 'chromium: set-text and press ran the page' yes "$(a11y :101 elements --display :101 | py "d['window']['title'].startswith('Subscribed me@example.com')")"
-a11y :101 act --display :101 --element "$(echo "$page" | id_of 'Read the docs' link)" --action press >/dev/null
+check 'chromium: set-text and press ran the page' yes "$(seat elements --display :101 | py "d['window']['title'].startswith('Subscribed me@example.com')")"
+seat act --display :101 --element "$(echo "$page" | id_of 'Read the docs' link)" --action press >/dev/null
 sleep 1
-check 'chromium: page text, and the link followed' yes "$(a11y :101 text --display :101 | py "'PAGE-BODY-TEXT with Read the docs inside a sentence.' in d['text'] and 'page.html#docs' in d['text']")"
+check 'chromium: page text, and the link followed' yes "$(seat text --display :101 | py "'PAGE-BODY-TEXT with Read the docs inside a sentence.' in d['text'] and 'page.html#docs' in d['text']")"
 
 echo '== caboose-desktop-mcp over stdio, driving the page'
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"check","version":"0"}}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find","arguments":{"query":"read the docs","role":"link"}}}' \
   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_text","arguments":{}}}' |
-  runuser -u caboose -- env -i PATH=/usr/bin:/bin HOME=/home/caboose CABOOSE_AGENT_DISPLAY=:101 timeout 60 node /opt/caboose/desktop-mcp.mjs > "$logs/mcp.out"
+  on agent env CABOOSE_AGENT_DISPLAY=:101 timeout 60 node /opt/caboose/desktop-mcp.mjs > "$logs/mcp.out"
 answer() { python3 -c "import json, sys; [print(m['result']['content'][0]['text']) for m in map(json.loads, open('$logs/mcp.out')) if m.get('id') == $1]"; }
 check 'mcp find' yes "$(answer 2 | py "[(e['role'], e['name']) for e in d['elements']] == [('link', 'Read the docs')]")"
 check 'mcp read_text' yes "$(answer 3 | py "'PAGE-BODY-TEXT' in d['text']")"
 pkill -u caboose -f chromium; pkill -u caboose -f fixture.py
-for d in 100 101; do as_user xpra stop ":$d" >/dev/null 2>&1; done
+pkill -u caboose caboose-display
 
 echo
 if (( failures )); then echo "$failures assertion(s) failed"; exit 1; fi
