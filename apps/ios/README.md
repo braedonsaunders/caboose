@@ -216,7 +216,12 @@ OpenRouter key and see goose become the default and answer.
   scaled to 2048 px, at most 4 files and 10 MB).
 - **Files.** The paired computer is a Files location named after the computer: browse its
   home, download on demand, create folders, edit in place, rename, move and delete. A parked
-  computer wakes for file access.
+  computer wakes for file access. Setup runs independently of wake; Computer settings
+  shows Files registration errors and offers Retry Files Setup. Run
+  `python3 scripts/check-file-provider.py` for source metadata, or add `--app /path/to/Caboose.app`
+  to verify the signed package. `python3 scripts/test-file-domains.py` tests delayed registration,
+  switching, failure, retry and sign-out ordering. `sh scripts/check-files.sh` prints the
+  real-phone verification steps.
 - **Open in place.** Files and Open In send a supported document to an installed catalog app
   (or install a compatible one). External documents are uploaded to `Caboose Documents` and
   kept in sync with the original; if both copies changed, you choose which to keep. After

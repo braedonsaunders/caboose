@@ -1667,8 +1667,16 @@ removes its index on sign-out.
 
 ### Files
 
-The File Provider extension registers a domain named for the paired computer, enumerates
-its home through `/v1/fs`, downloads on demand, and uploads coordinated edits with
+The app registers the paired computer’s replicated File Provider domain at startup, after
+pairing, and on foreground entry, independently of host wake. The domain is named Caboose
+until the host supplies the computer’s name. Registration and removal run in order;
+enumerator signals follow successful registration. Computer settings shows registration
+errors and offers Retry Files Setup, even when the host is unreachable. Signing out or
+switching computers removes the previous domain. The extension declares enumeration support
+and its shared document group in its Info.plist. Files controls location visibility; a
+provider listed but switched off in Browse > More > Edit must be enabled there.
+
+The extension enumerates its home through `/v1/fs`, downloads on demand, and uploads coordinated edits with
 `If-Match` and `If-None-Match`. It keeps stable item identifiers in its extension storage
 across moves, signals the working set when the app receives `fs.changed`, and
 re-enumerates after an expired anchor. The system generates previews for downloaded files;
