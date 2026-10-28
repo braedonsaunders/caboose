@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { DashboardMetricCard, DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
 import {
-  Alert, AlertDescription, AlertTitle, Badge, Button, PageContainer, PageHeader, Spinner, toast,
+  Alert, AlertDescription, AlertTitle, Badge, Button, PageContainer, PageHeader, toast,
 } from '@braedonsaunders/appkit-ui'
 import { Bot, Cpu, MonitorSmartphone, Power, RotateCcw, Smartphone, Sunrise } from 'lucide-react'
 import { buildIosPairingUrl, formatMemoryMb, type CabooseClient } from '../api.js'
@@ -9,6 +9,7 @@ import { useComputerActions } from '../actions.js'
 import { availableActions, stateLabel, stateTone } from '../state.js'
 import type { ComputerHandle } from '../useComputer.js'
 import { navigate } from '../navigation.js'
+import { RollingCar } from '../brand/Logo.js'
 
 export function Overview({ client, computer, token }: { client: CabooseClient; computer: ComputerHandle; token: string }) {
   const { status, error } = computer
@@ -23,7 +24,7 @@ export function Overview({ client, computer, token }: { client: CabooseClient; c
             <AlertTitle>The host could not be reached</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
-        ) : <Spinner label="Loading your computer" />}
+        ) : <RollingCar label="Loading your computer" />}
       </PageContainer>
     )
   }
