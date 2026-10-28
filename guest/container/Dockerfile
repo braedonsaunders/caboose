@@ -41,6 +41,7 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     printf '[Settings]\ngtk-theme-name=WhiteSur-Dark\ngtk-icon-theme-name=WhiteSur-dark\ngtk-cursor-theme-name=WhiteSur-cursors\ngtk-font-name=Inter 10\ngtk-application-prefer-dark-theme=1\n' > /etc/xdg/gtk-3.0/settings.ini && \
     printf 'CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --use-gl=angle --use-angle=gl"\n' > /etc/chromium.d/caboose-gpu && \
     rm -rf /tmp/themes /tmp/desktop-mcp /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends chromium-sandbox && rm -rf /var/lib/apt/lists/*
 COPY container/chromium-gpu /etc/chromium.d/caboose-gpu
 COPY container/caboose-session /usr/local/bin/caboose-session
 COPY container/caboose-audio.sh /etc/profile.d/caboose-audio.sh
