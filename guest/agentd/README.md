@@ -56,6 +56,11 @@ The runner writes:
 
 - `transcript.jsonl` — one event per line, the same for every agent (below).
 - `approvals/<requestId>.json` — a permission request, `{ tool, kind, summary, input, options: [{ id, name, kind }], toolCallId, requestedAt }`; `requestId` is a UUID.
+- `draft.json` — `{ turn, after, kind: "text" | "thought", text }`, the message still arriving.
+  It is atomically replaced at most every 200 ms, carries the last 16000 characters, and
+  is removed before the complete message enters the transcript. `after` is the transcript
+  byte position before the message, so the host can reject stale or premature snapshots.
+  This is transient output, not another transcript event.
 - `session` — the ACP session id, for the next runner.
 - `agent.log` — the agent's stderr (first 4 MiB).
 
@@ -159,3 +164,7 @@ cancel (including an agent that ignores it), replies on the same session, `sessi
 a binary download with its checksum, the home-only file system, attachments and the owner's
 environment file. `apps/host/scripts/check-agent-shell.sh` runs it again in a Debian 13
 container through caboose-host's own guest scripts.
+
+The guest components installer also installs the runner on existing computers. Matching
+pinned runtime dependencies are reused; both image builders retain their image install.
+An already running task keeps its loaded script until its runner exits.

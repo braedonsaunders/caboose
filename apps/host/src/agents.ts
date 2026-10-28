@@ -30,6 +30,10 @@ export interface PendingApproval {
   options?: Array<{ id: string; name: string; kind: string }>
 }
 
+export interface AgentDraft { turn: number; kind: 'text' | 'thought'; text: string }
+interface StoredAttachment { path: string; name: string; mimeType?: string; bytes: number }
+interface QueuedReply { prompt: string; attachments: StoredAttachment[] }
+
 export interface AgentTask {
   id: string
   /** The ACP registry id of the agent. */
@@ -51,6 +55,9 @@ export interface AgentTask {
   signIn?: SignInMethod[]
   /** Replies sent while the agent was working, oldest first; they go to it together as its next turn. */
   queued?: string[]
+  /** File paths for each waiting reply, in the same order as queued. */
+  queuedAttachments?: string[][]
+  draft?: AgentDraft
 }
 
 export type AgentEvent =
@@ -63,7 +70,8 @@ export type AgentEvent =
   | { type: 'agent.task.approval.resolved'; id: string; requestId: string; allow: boolean }
   | { type: 'agent.task.replied'; id: string; prompt: string; turn: number }
   /** The replies waiting for the agent's turn to end changed. */
-  | { type: 'agent.task.queued'; id: string; queued: string[] }
+  | { type: 'agent.task.queued'; id: string; queued: string[]; queuedAttachments?: string[][] }
+  | { type: 'agent.task.draft'; id: string; draft: AgentDraft | null }
   /** One entry of the current turn's transcript, as `GET /v1/agent/tasks/:id/transcript` returns them. */
   | { type: 'agent.task.event'; id: string; turn: number; entry: TranscriptEntry }
 
@@ -338,7 +346,8 @@ interface Tracked {
   pending: Array<PendingApproval & { requestedAt: string }>
   replying?: boolean
   /** Replies waiting for the current turn to end. Kept in memory: a host restart drops them. */
-  queue: string[]
+  queue: QueuedReply[]
+  replyChain?: Promise<unknown>
 }
 
 export class AgentTasks {
@@ -442,23 +451,73 @@ export class AgentTasks {
   async reply(id: string, input: Record<string, unknown>): Promise<AgentTask> {
     const entry = TASK_ID.test(id) ? this.tracked.get(id) : undefined
     if (!entry) throw new AgentNotFoundError()
-    const prompt = readPrompt(input.prompt)
-    if (!entry.resumable) throw new AgentConflictError('This task was started by an earlier version of Caboose and cannot be continued.')
-    if (isLive(entry.task.status) || entry.replying) {
-      if (entry.queue.length >= MAX_QUEUED || [...entry.queue, prompt].join('\n\n').length > MAX_PROMPT) {
-        throw new AgentConflictError('Too much is already waiting for the agent; wait for its turn to end, or stop it.')
-      }
-      entry.queue.push(prompt)
-      this.syncQueue(entry)
-      return entry.task
-    }
-    return this.sendTurn(entry, [...entry.queue, prompt], entry.queue.length)
+    // Serialize uploads and queue admission for this task, including concurrent HTTP requests.
+    const operation = (entry.replyChain ?? Promise.resolve()).catch(() => {}).then(() => this.acceptReply(entry, input))
+    entry.replyChain = operation
+    return operation
   }
 
-  /** Starts the next turn with `prompts`, the first `fromQueue` of them taken from the queue. */
-  private async sendTurn(entry: Tracked, prompts: string[], fromQueue: number): Promise<AgentTask> {
+  private async acceptReply(entry: Tracked, input: Record<string, unknown>): Promise<AgentTask> {
+    const prompt = readPrompt(input.prompt)
+    const files = readAttachments(input.attachments)
+    if (!entry.resumable) throw new AgentConflictError('This task was started by an earlier version of Caboose and cannot be continued.')
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const check = () => {
+      const attachments = entry.queue.flatMap(reply => reply.attachments)
+      if (entry.queue.length >= MAX_QUEUED || [...entry.queue.map(reply => reply.prompt), prompt].join('\n\n').length > MAX_PROMPT
+          || attachments.length + files.length > MAX_ATTACHMENTS
+          || attachments.reduce((n, file) => n + file.bytes, 0) + files.reduce((n, file) => n + file.data.length, 0) > MAX_ATTACHMENT_BYTES) {
+        throw new AgentConflictError('Too much is already waiting for the agent; wait for its turn to end, or stop it.')
+      }
+    }
+    check()
+    // A distinct directory per message prevents two replies named photo.jpg overwriting each other.
+    const dir = `${HOME}/Agents/${entry.task.id}/attachments/${randomUUID()}`
+    const attachments: StoredAttachment[] = []
+    try {
+      for (const file of files) {
+        const path = `${dir}/${file.name}`
+        await writeGuestFile(guest, `${path}.part`, file.data)
+        await asCaboose(guest, 'mv -- "$1.part" "$1"', [path])
+        attachments.push({ path, name: file.name, bytes: file.data.length, ...(file.type ? { mimeType: file.type } : {}) })
+      }
+      check()
+      const reply = { prompt, attachments }
+      if (isLive(entry.task.status) || entry.replying) {
+        entry.queue.push(reply)
+        this.syncQueue(entry)
+        return entry.task
+      }
+      return await this.sendTurn(entry, [...entry.queue, reply], entry.queue.length)
+    } catch (error) {
+      if (files.length) await asCaboose(guest, 'rm -rf -- "$1"', [dir]).catch(() => {})
+      throw error
+    }
+  }
+
+  /** Stops the current turn and delivers the queued messages, including their files. */
+  async sendNow(id: string): Promise<AgentTask> {
+    const entry = TASK_ID.test(id) ? this.tracked.get(id) : undefined
+    if (!entry) throw new AgentNotFoundError()
+    const operation = (entry.replyChain ?? Promise.resolve()).catch(() => {}).then(async () => {
+      if (!entry.queue.length) throw new AgentConflictError('No messages are waiting.')
+      if (entry.replying) throw new AgentConflictError('The next turn is already starting.')
+      const replies = [...entry.queue]
+      if (isLive(entry.task.status)) await this.cancel(id)
+      else { entry.queue = []; this.syncQueue(entry) }
+      try { return await this.sendTurn(entry, replies, 0) }
+      catch (error) { entry.queue.unshift(...replies); this.syncQueue(entry); throw error }
+    })
+    entry.replyChain = operation
+    return operation
+  }
+
+  /** Starts the next turn; queued file payloads are already staged in the guest. */
+  private async sendTurn(entry: Tracked, replies: QueuedReply[], fromQueue: number): Promise<AgentTask> {
     const id = entry.task.id
-    const prompt = prompts.join('\n\n')
+    const prompt = replies.map(reply => reply.prompt).join('\n\n')
+    const attachments = replies.flatMap(reply => reply.attachments).map(({ bytes: _bytes, ...file }) => file)
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
     const turn = entry.task.turns + 1
@@ -466,7 +525,8 @@ export class AgentTasks {
     try {
       await this.prepareSeat(guest)
       const name = String(turn).padStart(6, '0')
-      await asCaboose(guest, REPLY_SCRIPT, [`${HOME}/Agents/${id}`, JSON.stringify({ type: 'prompt', turn, text: prompt }), String(turn), name], 40_000)
+      await asCaboose(guest, REPLY_SCRIPT, [`${HOME}/Agents/${id}`, JSON.stringify({ type: 'prompt', turn, text: prompt,
+        ...(attachments.length ? { attachments } : {}) }), String(turn), name], 40_000)
         .catch(rethrowRunnerMissing)
     } finally {
       entry.replying = false
@@ -475,7 +535,6 @@ export class AgentTasks {
       entry.queue.splice(0, fromQueue)
       this.syncQueue(entry)
     }
-    // Lines still to come from the earlier turn are read but not shown.
     entry.pending = []
     const task = entry.task
     task.status = 'running'
@@ -484,6 +543,7 @@ export class AgentTasks {
     delete task.summary
     delete task.pendingApproval
     delete task.signIn
+    this.setDraft(entry, null)
     this.releases.get(id)?.()
     this.releases.set(id, this.acquire())
     this.emit({ type: 'agent.task.replied', id, prompt, turn })
@@ -689,6 +749,10 @@ export class AgentTasks {
       if (interpreted.result?.turn === entry.task.turns) result ??= interpreted.result
     }
     entry.carry = Buffer.from(buffer.subarray(start))
+    // Ignore snapshots from an older turn or beyond the transcript bytes consumed this tick.
+    const draft = report.draft
+    this.setDraft(entry, !result && report.data.length < chunk && draft?.turn === entry.task.turns
+      && draft.after === entry.offset ? { turn: draft.turn, kind: draft.kind, text: draft.text } : null)
     if (result) return this.finishWith(entry, result)
     this.updatePending(entry, report.requests)
     // A full chunk means more transcript is waiting; finish only once it has all been read.
@@ -721,10 +785,22 @@ export class AgentTasks {
     this.syncPending(entry)
   }
 
+  private setDraft(entry: Tracked, draft: AgentDraft | null): void {
+    if (JSON.stringify(entry.task.draft ?? null) === JSON.stringify(draft)) return
+    if (draft) entry.task.draft = draft
+    else delete entry.task.draft
+    this.emit({ type: 'agent.task.draft', id: entry.task.id, draft })
+  }
+
   private syncQueue(entry: Tracked): void {
-    if (entry.queue.length) entry.task.queued = [...entry.queue]
+    const queued = entry.queue.map(reply => reply.prompt)
+    const files = entry.queue.map(reply => reply.attachments.map(file => file.path))
+    if (queued.length) entry.task.queued = queued
     else delete entry.task.queued
-    this.emit({ type: 'agent.task.queued', id: entry.task.id, queued: [...entry.queue] })
+    if (files.some(paths => paths.length)) entry.task.queuedAttachments = files
+    else delete entry.task.queuedAttachments
+    this.emit({ type: 'agent.task.queued', id: entry.task.id, queued,
+      ...(entry.task.queuedAttachments ? { queuedAttachments: files } : {}) })
   }
 
   private syncPending(entry: Tracked): void {
@@ -735,6 +811,7 @@ export class AgentTasks {
 
   private finish(entry: Tracked, status: TaskStatus, summary: string, announce = true, signIn?: SignInMethod[]): void {
     if (!isLive(entry.task.status)) return
+    this.setDraft(entry, null)
     entry.task.status = status
     entry.task.finishedAt = new Date().toISOString()
     entry.task.summary = summary.slice(0, 2000)
@@ -821,7 +898,7 @@ function decode(value: string | undefined): string {
   return value ? Buffer.from(value, 'base64').toString('utf8') : ''
 }
 
-interface PollReport { exitCode: string; stderr: string; data: Buffer; requests: Array<{ id: string; json: string }> }
+interface PollReport { draft?: AgentDraft & { after: number }; exitCode: string; stderr: string; data: Buffer; requests: Array<{ id: string; json: string }> }
 
 /**
  * The batched poll: $1 is the per-task byte budget, then pairs of task directory and
@@ -837,6 +914,7 @@ const POLL_SCRIPT = [
   "  printf 'T\\t%s\\t%s\\t%s\\t' \"$id\" \"$e\" \"$err\"",
   '  tail -c +"$((o + 1))" "$d/transcript.jsonl" 2>/dev/null | head -c "$max" | base64 -w0',
   "  printf '\\n'",
+  `  printf 'D\\t%s\\t%s\\n' "$id" "$(head -c 131072 "$d/draft.json" 2>/dev/null | base64 -w0)"`,
   '  for f in "$d"/approvals/*.json; do',
   '    [ -f "$f" ] || continue',
   '    r=${f##*/}; r=${r%.json}',
@@ -852,6 +930,15 @@ export function parsePoll(output: string): Map<string, PollReport> {
     const fields = line.split('\t')
     if (fields[0] === 'T' && fields[1] && TASK_ID.test(fields[1])) {
       reports.set(fields[1], { exitCode: (fields[2] ?? '').trim(), stderr: decode(fields[3]).replace(/\n/g, ' '), data: Buffer.from(fields[4] ?? '', 'base64'), requests: [] })
+    } else if (fields[0] === 'D' && fields[1]) {
+      const report = reports.get(fields[1])
+      try {
+        const value = JSON.parse(decode(fields[2]))
+        if (report && Number.isSafeInteger(value.turn) && value.turn > 0 && Number.isSafeInteger(value.after) && value.after >= 0
+            && (value.kind === 'text' || value.kind === 'thought') && typeof value.text === 'string' && value.text.length <= 16_000) {
+          report.draft = { turn: value.turn, after: value.after, kind: value.kind, text: value.text }
+        }
+      } catch { /* A missing, partial or malformed guest snapshot is not a draft. */ }
     } else if (fields[0] === 'A' && fields[1] && fields[2] && REQUEST_ID.test(fields[2])) {
       reports.get(fields[1])?.requests.push({ id: fields[2], json: decode(fields[3]) })
     }

@@ -7,7 +7,7 @@
 //   STAND_IN_AUTH   "1": session/new answers auth_required until signed in
 //   --login         terminal sign-in: marks the state signed in and exits 0
 //
-// Prompt words: tool, plan, env (reports STAND_IN_GREETING), ask, slow (waits for cancel), stubborn (ignores cancel),
+// Prompt words: tool, plan, env (reports STAND_IN_GREETING), ask, stream (one message in slow chunks), slow (waits for cancel), stubborn (ignores cancel),
 // write-home, write-outside, crash, refuse. Every turn answers "heard: <first line>" and a
 // line describing what it received.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -133,6 +133,12 @@ const app = acp.agent({ name: 'stand-in' })
         await say('outside write: allowed')
       } catch (error) {
         await say(`outside write: refused (${error.message})`)
+      }
+    }
+    if (/\bstream\b/.test(last)) {
+      for (const word of ['one', 'two', 'three', 'four', 'five', 'six']) {
+        await send({ sessionUpdate: 'agent_message_chunk', messageId: 'streamed', content: { type: 'text', text: `${word} ` } })
+        await sleep(150)
       }
     }
     if (/\bslow\b/.test(last)) {

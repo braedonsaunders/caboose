@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
-import { chooseOption, describeToolCall, launchCommand, Normaliser, publicAuthMethods, readSpec, recapFrom } from '../caboose-agentd.mjs'
+import { chooseOption, describeToolCall, Draft, launchCommand, Normaliser, publicAuthMethods, readSpec, recapFrom } from '../caboose-agentd.mjs'
 
 const RUNNER = new URL('../caboose-agentd.mjs', import.meta.url).pathname
 const STAND_IN = new URL('./stand-in-agent.mjs', import.meta.url).pathname
@@ -131,6 +131,25 @@ describe('a turn', () => {
     expect(events[1]).toMatchObject({ continuity: 'new', agent: { name: 'stand-in' }, modes: { currentModeId: 'default' } })
     expect(events[5]).toMatchObject({ id: 'call-1', title: 'Run echo hi', kind: 'execute', status: 'pending', detail: 'echo hi' })
     expect(events.at(-2)).toMatchObject({ type: 'usage', used: 100, size: 1000 })
+  })
+
+  it('saves the message being written as a draft, gone once the message is whole', async () => {
+    const t = await task()
+    await t.prompt(1, 'please stream')
+    t.start()
+    const draftPath = join(t.dir, 'draft.json')
+    let draft
+    for (let i = 0; i < 100 && !draft; i++) {
+      const read = JSON.parse(await readFile(draftPath, 'utf8').catch(() => 'null'))
+      if (read?.text?.startsWith('one two')) draft = read
+      else await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    expect(draft).toMatchObject({ kind: 'text', turn: 1 })
+    expect(Number.isSafeInteger(draft.after)).toBe(true)
+    expect(draft.after).toBeGreaterThan(0)
+    await t.turnEnd(1)
+    expect((await t.texts(1)).map(text => text.trim())).toContain('one two three four five six')
+    await expect(stat(draftPath)).rejects.toThrow()
   })
 
   it('answers permission requests itself with approvals "auto"', async () => {
@@ -473,5 +492,19 @@ describe('pure parts', () => {
     expect(written).toEqual([{ type: 'text', text: 'Hello' }, { type: 'text', text: 'Next' }])
     normaliser.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'after the turn' } })
     expect(written).toHaveLength(2)
+  })
+
+  it('keeps the draft out of the transcript and removes it before the whole message lands', async () => {
+    const steps = []
+    const transcript = { write: event => { steps.push(['write', event.type]) }, then: (_step, what) => { steps.push([what]) } }
+    const draft = new Draft(transcript, '/nowhere/draft.json')
+    const normaliser = new Normaliser(transcript, draft)
+    normaliser.begin()
+    normaliser.update({ sessionUpdate: 'agent_message_chunk', messageId: 'a', content: { type: 'text', text: 'Hel' } })
+    draft.save()
+    normaliser.update({ sessionUpdate: 'agent_message_chunk', messageId: 'a', content: { type: 'text', text: 'lo' } })
+    normaliser.update({ sessionUpdate: 'tool_call', toolCallId: 'x', title: 'Look' })
+    expect(steps).toEqual([['draft removal'], ['draft write'], ['draft removal'], ['write', 'text'], ['write', 'tool']])
+    normaliser.end()
   })
 })

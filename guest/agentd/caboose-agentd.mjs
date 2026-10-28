@@ -37,6 +37,10 @@ const DEFAULT_IDLE_MS = 10 * 60_000
 /** How long a freshly started runner waits for its first prompt before deciding it was started by mistake. */
 const STARTUP_WAIT_MS = 30_000
 const MAX_TEXT = 512 * 1024
+/** How often the message being written is saved for the host to stream, at most. */
+const DRAFT_MS = Number(process.env.CABOOSE_AGENTD_DRAFT_MS) || 200
+/** The most of a message being written that the draft carries: its end. */
+const MAX_DRAFT = 16_000
 const MAX_SUMMARY = 2000
 const MAX_READ_BYTES = 10 * 1024 * 1024
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -424,10 +428,56 @@ class Transcript {
   constructor(path) { this.path = path; this.chain = Promise.resolve() }
   write(event) {
     const line = JSON.stringify({ ...event, at: new Date().toISOString() }) + '\n'
-    this.chain = this.chain.then(() => appendFile(this.path, line)).catch(error => console.error('transcript write failed:', error))
+    return this.then(() => appendFile(this.path, line), 'transcript write')
+  }
+  /** Runs `step` after every write before it, so files written alongside stay in order. */
+  then(step, what) {
+    this.chain = this.chain.then(step).catch(error => console.error(`${what} failed:`, error))
     return this.chain
   }
   flushed() { return this.chain }
+}
+
+/**
+ * The message the agent is writing now, as `draft.json` `{ turn, after, kind, text }`, so the host can show
+ * it before it is whole. Saved at most every DRAFT_MS, and removed before the whole message is
+ * written to the transcript (on the transcript's own chain), so a reader that reads the
+ * transcript and then the draft never sees one message in both.
+ */
+export class Draft {
+  constructor(transcript, path) { this.transcript = transcript; this.path = path; this.pending = null; this.timer = null; this.saved = false }
+
+  set(kind, text) {
+    this.pending = { kind, text: text.length > MAX_DRAFT ? `…${text.slice(-(MAX_DRAFT - 1))}` : text }
+    this.timer ??= setTimeout(() => { this.timer = null; this.save() }, DRAFT_MS)
+  }
+
+  save() {
+    const value = this.pending && { ...this.pending, turn: this.turn }
+    this.pending = null
+    if (!value) return
+    this.saved = true
+    this.transcript.then(async () => {
+      const after = (await stat(this.transcript.path).catch(() => ({ size: 0 }))).size
+      await writeJson(this.path, { ...value, after })
+    }, 'draft write')
+  }
+
+  /** Forgets any draft, including one an earlier runner left behind. */
+  reset(turn = 1) {
+    this.turn = turn
+    this.saved = true
+    this.clear()
+  }
+
+  clear() {
+    clearTimeout(this.timer)
+    this.timer = null
+    this.pending = null
+    if (!this.saved) return
+    this.saved = false
+    this.transcript.then(() => rm(this.path, { force: true }), 'draft removal')
+  }
 }
 
 function clip(text, max = MAX_TEXT) { return text.length > max ? `${text.slice(0, max - 1)}…` : text }
@@ -437,8 +487,9 @@ function clip(text, max = MAX_TEXT) { return text.length > max ? `${text.slice(0
  * message, tool calls and their status changes, plans, mode changes, and the turn's usage.
  */
 export class Normaliser {
-  constructor(transcript) {
+  constructor(transcript, draft = null) {
     this.transcript = transcript
+    this.draft = draft
     this.tools = new Map()
     this.live = false
     this.buffers = { text: null, thought: null }
@@ -446,7 +497,12 @@ export class Normaliser {
     this.usage = null
   }
 
-  begin() { this.live = true; this.lastText = ''; this.usage = null }
+  begin(turn = 1) {
+    this.live = true
+    this.lastText = ''
+    this.usage = null
+    this.draft?.reset(turn)
+  }
 
   update(update) {
     if (!this.live || !update || typeof update !== 'object') return
@@ -493,11 +549,13 @@ export class Normaliser {
     if (buffer && buffer.id !== id) this.flushOne(kind)
     if (!this.buffers[kind]) this.buffers[kind] = { id, text: '' }
     this.buffers[kind].text += content.text
+    if (this.buffers[kind].text.trim()) this.draft?.set(kind, this.buffers[kind].text)
   }
 
   flushOne(kind) {
     const buffer = this.buffers[kind]
     this.buffers[kind] = null
+    if (buffer) this.draft?.clear()
     if (!buffer || !buffer.text.trim()) return
     if (kind === 'text') this.lastText = buffer.text.trim()
     this.transcript.write({ type: kind, text: clip(buffer.text) })
@@ -610,7 +668,7 @@ class Task {
     this.inbox = join(dir, 'inbox')
     this.approvals = join(dir, 'approvals')
     this.transcript = new Transcript(join(dir, 'transcript.jsonl'))
-    this.normaliser = new Normaliser(this.transcript)
+    this.normaliser = new Normaliser(this.transcript, new Draft(this.transcript, join(dir, 'draft.json')))
     this.agent = null
     this.sessionId = null
     this.recap = false
@@ -851,7 +909,7 @@ class Task {
       const blocks = await this.promptBlocks(message)
       const note = this.recap ? `${this.spec.name} cannot reload conversations, so this turn started a new session with a recap of the earlier ones.` : ''
       this.recap = false
-      this.normaliser.begin()
+      this.normaliser.begin(message.turn)
       const prompt = this.agent.connection.agent.request('session/prompt', { sessionId: this.sessionId, prompt: blocks })
       let forceStop
       const forced = new Promise(resolvePromise => { forceStop = resolvePromise })

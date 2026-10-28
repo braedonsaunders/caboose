@@ -89,6 +89,13 @@ it('routes agent replies, approvals, files and links with the right status codes
   const { id } = await (await post('/v1/agent/tasks', { prompt: 'hi' })).json() as { id: string }
   // A reply to a working agent waits for its turn to end.
   expect(await (await post(`/v1/agent/tasks/${id}/reply`, { prompt: 'more' })).json()).toMatchObject({ task: { id, status: 'running', queued: ['more'] } })
+  // Replies accept the same attachment body size as task start, beyond the ordinary 64 KiB limit.
+  const attached = await post(`/v1/agent/tasks/${id}/reply`, { prompt: 'read this', attachments: [{ name: 'notes.txt', type: 'text/plain', data: Buffer.alloc(70_000, 65).toString('base64') }] })
+  expect(attached.status).toBe(200)
+  expect(await attached.json()).toMatchObject({ task: { queued: ['more', 'read this'], queuedAttachments: [[], [expect.stringContaining('/notes.txt')]] } })
+  expect((await post(`/v1/agent/tasks/${missing}/send-now`, {})).status).toBe(404)
+  expect(await (await post(`/v1/agent/tasks/${id}/send-now`, {})).json()).toMatchObject({ task: { turns: 2, status: 'running' } })
+  expect((await post(`/v1/agent/tasks/${id}/send-now`, {})).status).toBe(409)
   expect((await post(`/v1/agent/tasks/${id}/approvals/${missing}`, { allow: 'yes' })).status).toBe(400)
   expect(await (await post(`/v1/agent/tasks/${id}/approvals/${missing}`, { allow: true })).json()).toEqual({ resolved: false })
   expect((await post('/v1/agent/tasks', { prompt: 'x', agent: 'codex', approvals: 'sometimes' })).status).toBe(400)
