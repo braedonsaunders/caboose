@@ -61,7 +61,7 @@ export function config(env: NodeJS.ProcessEnv): Config {
     imageRoot: resolve(env.CABOOSE_IMAGE_ROOT ?? '/var/lib/caboose'),
     memoryMb: integer(env.CABOOSE_MEMORY_MB, 6144, 'CABOOSE_MEMORY_MB', 1_048_576),
     vcpus: integer(env.CABOOSE_VCPUS, 4, 'CABOOSE_VCPUS', 256),
-    vmmPath: env.CABOOSE_VMM_PATH ?? '/usr/local/bin/cloud-hypervisor',
+    vmmPath: env.CABOOSE_VMM_PATH ?? (process.platform === 'darwin' ? '/usr/local/bin/appkit-desk-vz' : '/usr/local/bin/cloud-hypervisor'),
     runtime: runtime(env.CABOOSE_RUNTIME),
     containerImage: env.CABOOSE_CONTAINER_IMAGE ?? 'caboose-computer:latest',
     baseImage: env.CABOOSE_BASE_IMAGE || null,

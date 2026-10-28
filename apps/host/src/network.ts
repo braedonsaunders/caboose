@@ -132,9 +132,10 @@ export async function removeNetwork(slot: number): Promise<void> {
   if (await exists('ip', ['link', 'show', 'dev', tap])) await privileged('ip', ['link', 'del', 'dev', tap])
 }
 
-export async function configureGuest(desk: DeskHandle, slot = 0): Promise<void> {
-  const { host, guest } = networkSlot(slot)
-  const script = `set -eu\ndev=$(ls /sys/class/net | grep -E '^(en|eth)' | head -n 1)\ntest -n "$dev"\nip addr replace ${guest}/30 dev "$dev"\nip link set dev "$dev" up\nip route replace default via ${host} dev "$dev"\nrm -f /etc/resolv.conf\nprintf 'nameserver 1.1.1.1\\n' > /etc/resolv.conf\ndate -u -s @${(Date.now() / 1000).toFixed(3)} >/dev/null`
+export async function configureGuest(desk: DeskHandle, slot = 0, network?: { host: string; guest: string; prefix: number }): Promise<void> {
+  const { host, guest } = network ?? networkSlot(slot)
+  const prefix = network?.prefix ?? 30
+  const script = `set -eu\ndev=$(ls /sys/class/net | grep -E '^(en|eth)' | head -n 1)\ntest -n "$dev"\nip addr replace ${guest}/${prefix} dev "$dev"\nip link set dev "$dev" up\nip route replace default via ${host} dev "$dev"\nrm -f /etc/resolv.conf\nprintf 'nameserver 1.1.1.1\\n' > /etc/resolv.conf\ndate -u -s @${(Date.now() / 1000).toFixed(3)} >/dev/null`
   const result = await desk.exec({ command: '/bin/sh', args: ['-c', script], timeoutMs: 20_000 })
   if (result.exitCode !== 0) throw new Error(`Guest network/clock setup failed: ${result.stderr}`)
 }
