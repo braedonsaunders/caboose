@@ -29,6 +29,8 @@ export interface TenancyContext {
   diskBytes(id: string): Promise<number | null>
   /** Gives a newly set-up host's computers to its first tenant. */
   adoptUnassigned(tenantId: string): Promise<void>
+  /** Keeps cached computer ownership in step with identity transactions. */
+  synchronize?<T>(work: () => Promise<T>): Promise<T>
 }
 
 /** Copies a Better Auth answer's session cookie onto ours. */
@@ -72,7 +74,7 @@ export async function tenancyRoute(context: TenancyContext, request: IncomingMes
   }
   if (path === '/v1/setup' && method === 'POST') {
     const input = await readJson(request)
-    const claimed = await identity.claim(input)
+    const claimed = await (context.synchronize ? context.synchronize(() => identity.claim(input)) : identity.claim(input))
     await context.adoptUnassigned(claimed.tenantId)
     const signedIn = await identity.signIn(claimed.email, input.password as string, webHeaders(request))
     passCookies(signedIn, response)
@@ -89,7 +91,14 @@ export async function tenancyRoute(context: TenancyContext, request: IncomingMes
     return json(response, 404, { error: 'not found' })
   }
 
-  if (!path.startsWith('/v1/me') && !path.startsWith('/v1/tenants')) return NOT_FOUND
+  if (path === '/v1/setup/link' && method === 'POST') {
+    if (principal?.kind !== 'owner') return json(response, principal ? 403 : 401, { error: 'Only the owner token can open initial setup' })
+    const code = await identity.setupCode()
+    if (!code) throw new IdentityConflictError('This host is already set up')
+    response.setHeader('cache-control', 'no-store')
+    return json(response, 200, { path: `/setup?code=${encodeURIComponent(code)}` })
+  }
+  if (!path.startsWith('/v1/me') && !path.startsWith('/v1/tenants') && !path.startsWith('/v1/people/')) return NOT_FOUND
   if (!principal) return json(response, 401, { error: 'unauthorized' })
   if (principal.kind === 'phone') return json(response, 403, { error: 'forbidden' })
   const operator = isOperator(principal)
@@ -100,6 +109,7 @@ export async function tenancyRoute(context: TenancyContext, request: IncomingMes
       kind: principal.kind,
       user: principal.kind === 'admin' ? { id: principal.userId, name: principal.name, email: principal.email } : null,
       operator,
+      setupRequired: !await identity.claimed(),
       tenants: await visible(),
     })
   }
@@ -109,16 +119,39 @@ export async function tenancyRoute(context: TenancyContext, request: IncomingMes
   }
   if (path === '/v1/tenants' && method === 'POST') {
     if (!operator) return json(response, 403, { error: 'Only the operator makes tenants' })
+    if (!await identity.claimed()) throw new IdentityConflictError('Complete host setup first')
     const tenant = await identity.createTenant(await readJson(request))
     return json(response, 201, { ...tenant, usage: await tenantUsage(context, tenant.id) })
   }
 
-  const scoped = /^\/v1\/tenants\/([0-9a-f-]{36})(\/administrators|\/invites)?(?:\/([^/]+))?$/.exec(path)
+  const personPath = /^\/v1\/people\/([0-9a-f-]{36})$/.exec(path)
+  if (personPath) {
+    const person = await identity.person(personPath[1]!)
+    if (!administers(principal, person.tenantId)) return json(response, 404, { error: 'person not found' })
+    if (method === 'PATCH') {
+      const input = await readJson(request)
+      const work = () => identity.updatePerson(person.id, input)
+      const updated = await (context.synchronize ? context.synchronize(work) : work())
+      return json(response, 200, updated)
+    }
+    if (method === 'DELETE') {
+      const work = () => identity.deletePerson(person.id)
+      await (context.synchronize ? context.synchronize(work) : work())
+      return json(response, 200, { deleted: true })
+    }
+    return json(response, 404, { error: 'not found' })
+  }
+  const scoped = /^\/v1\/tenants\/([0-9a-f-]{36})(\/administrators|\/invites|\/people)?(?:\/([^/]+))?$/.exec(path)
   if (!scoped?.[1]) return json(response, 404, { error: 'not found' })
   const tenantId = scoped[1]
   if (!administers(principal, tenantId)) return json(response, 404, { error: 'tenant not found' })
   const section = scoped[2]
   const item = scoped[3] ? decodeURIComponent(scoped[3]) : undefined
+
+  if (section === '/people' && !item) {
+    if (method === 'GET') return json(response, 200, { people: await identity.people(tenantId) })
+    if (method === 'POST') return json(response, 201, await identity.createPerson(tenantId, await readJson(request)))
+  }
 
   if (!section && !item) {
     if (method === 'GET') return json(response, 200, { ...await identity.tenant(tenantId), usage: await tenantUsage(context, tenantId) })

@@ -5,7 +5,7 @@ import {
 } from '@braedonsaunders/appkit-ui'
 import { Monitor, Plus } from 'lucide-react'
 import {
-  effectiveLimits, formatIdleDuration, formatMemoryMb, validateSettingsInput, type CabooseClient, type ComputersResponse, type Me, type NewComputer,
+  effectiveLimits, formatIdleDuration, formatMemoryMb, validateSettingsInput, type CabooseClient, type ComputersResponse, type Me, type NewComputer, type Person,
 } from '../api.js'
 import { ComputersTable } from '../components/ComputersTable.js'
 import { errorMessage } from '../components/common.js'
@@ -61,6 +61,7 @@ export function Computers({ client, computers, me }: { client: CabooseClient; co
       </div>
 
       <NewComputerDialog
+        client={client}
         open={creating}
         list={list}
         me={me}
@@ -77,7 +78,8 @@ export function Computers({ client, computers, me }: { client: CabooseClient; co
   )
 }
 
-function NewComputerDialog({ open, list, me, onClose, onCreate }: {
+function NewComputerDialog({ client, open, list, me, onClose, onCreate }: {
+  client: CabooseClient
   open: boolean
   list: ComputersResponse
   me: Me
@@ -88,18 +90,34 @@ function NewComputerDialog({ open, list, me, onClose, onCreate }: {
   const limits = effectiveLimits(template)
   const initial = React.useCallback((): NewComputer => ({
     name: '',
-    person: '',
+    personId: '',
     ...(me.tenants[0] ? { tenantId: me.tenants[0].id } : {}),
     memoryMb: template?.settings.memoryMb ?? 4096,
     vcpus: template?.settings.vcpus ?? 2,
     idleMs: template?.settings.idleMs ?? 600_000,
   }), [template, me.tenants])
   const [draft, setDraft] = React.useState<NewComputer>(initial)
+  const [people, setPeople] = React.useState<Person[]>([])
+  const [peopleError, setPeopleError] = React.useState<string | null>(null)
+  const [peopleLoading, setPeopleLoading] = React.useState(false)
+  React.useEffect(() => {
+    let active = true
+    setPeople([]); setPeopleError(null)
+    if (!open || !draft.tenantId) { setPeopleLoading(false); return }
+    setPeopleLoading(true)
+    client.people(draft.tenantId).then(
+      result => { if (active) { setPeople(result.people); setPeopleLoading(false) } },
+      failure => { if (active) { setPeopleError(errorMessage(failure)); setPeopleLoading(false) } },
+    )
+    return () => { active = false }
+  }, [client, draft.tenantId, open])
   const [saving, setSaving] = React.useState(false)
   const [touched, setTouched] = React.useState(false)
 
+  const wasOpen = React.useRef(false)
   React.useEffect(() => {
-    if (open) { setDraft(initial()); setTouched(false) }
+    if (open && !wasOpen.current) { setDraft(initial()); setTouched(false) }
+    wasOpen.current = open
   }, [open, initial])
 
   const validation = validateSettingsInput(draft, limits)
@@ -109,10 +127,10 @@ function NewComputerDialog({ open, list, me, onClose, onCreate }: {
   async function submit(event?: React.FormEvent) {
     event?.preventDefault()
     setTouched(true)
-    if (!validation.ok) return
+    if (!validation.ok || !people.some(person => person.id === draft.personId && person.tenantId === draft.tenantId)) return
     setSaving(true)
     try {
-      await onCreate({ ...draft, name: draft.name.trim(), person: draft.person?.trim() || null })
+      await onCreate({ ...draft, name: draft.name.trim(), personId: draft.personId })
     } catch (failure) {
       toast.error(errorMessage(failure))
     } finally {
@@ -129,7 +147,7 @@ function NewComputerDialog({ open, list, me, onClose, onCreate }: {
       footer={
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose} disabled={saving}>Cancel</Button>
-          <Button onClick={() => void submit()} disabled={saving || (touched && !validation.ok)}>{saving ? 'Creating…' : 'Create computer'}</Button>
+          <Button onClick={() => void submit()} disabled={saving || !draft.personId || !people.some(person => person.id === draft.personId) || (touched && !validation.ok)}>{saving ? 'Creating…' : 'Create computer'}</Button>
         </div>
       }
     >
@@ -150,13 +168,17 @@ function NewComputerDialog({ open, list, me, onClose, onCreate }: {
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="new-computer-person">Whose computer</Label>
-            <Input id="new-computer-person" value={draft.person ?? ''} maxLength={80} placeholder="Sam" onChange={event => update({ person: event.target.value })} />
+            <Select id="new-computer-person" disabled={peopleLoading || saving} value={draft.personId ?? ''} onChange={event => update({ personId: event.target.value })}>
+              <option value="">{peopleLoading ? 'Loading people…' : 'Choose a person'}</option>
+              {people.map(person => <option key={person.id} value={person.id}>{person.name}</option>)}
+            </Select>
+            {peopleError ? <p role="alert" className="text-sm text-danger">{peopleError}</p> : !peopleLoading ? <a className="text-sm underline underline-offset-4" href="/people">{people.length ? 'Manage people' : 'Add a person on the People page first'}</a> : null}
             <p className="text-xs text-fg-muted">The person who uses it from their phone. No account needed.</p>
           </div>
           {me.tenants.length > 1 ? (
             <div className="space-y-1.5">
               <Label htmlFor="new-computer-tenant">Household or team</Label>
-              <Select id="new-computer-tenant" value={draft.tenantId ?? ''} onChange={event => update({ tenantId: event.target.value })}>
+              <Select id="new-computer-tenant" value={draft.tenantId ?? ''} onChange={event => update({ tenantId: event.target.value, personId: '' })}>
                 {me.tenants.map(tenant => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}
               </Select>
             </div>

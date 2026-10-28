@@ -34,7 +34,7 @@ beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), 'caboose-tenancy-'))
   database = await openIdentityDatabase({ dataDir: join(root, 'identity') })
   const identity = Identity.create({ database, baseURL: 'http://127.0.0.1:7310', secret: 's'.repeat(40), setupCodePath: join(root, 'setup-code') })
-  computers = await ComputerRegistry.open(root)
+  computers = await ComputerRegistry.open(root, database)
   async function open(record: ComputerRecord, initial?: ComputerSettings): Promise<ComputerPieces> {
     await mkdir(computers.dataDir(record.id), { recursive: true })
     await writeFile(join(computers.dataDir(record.id), 'caboose.json'), '{}')
@@ -95,6 +95,12 @@ describe('a host with accounts and tenants', () => {
     expect((await anonymous(`/setup?code=${code}`, { headers: proxied })).status).toBe(200)
     expect(existsSync(join(root, 'setup-code'))).toBe(true)
     expect((await anonymous('/v1/me')).status).toBe(401)
+    const tokenHeaders = { authorization: 'Bearer owner-token-for-tests' }
+    expect((await (await anonymous('/v1/me', { headers: tokenHeaders })).json()).setupRequired).toBe(true)
+    expect((await (await anonymous('/v1/computers', { headers: tokenHeaders })).json()).canCreate).toBe(false)
+    expect((await anonymous('/v1/computers', { method: 'POST', headers: tokenHeaders, body: { name: 'Unowned' } })).status).toBe(409)
+    expect((await anonymous('/v1/setup/link', { method: 'POST' })).status).toBe(401)
+    expect((await (await anonymous('/v1/setup/link', { method: 'POST', headers: tokenHeaders })).json()).path).toBe(`/setup?code=${code}`)
 
     const owner = { name: 'Braedon', email: 'owner@example.com', password: 'correct horse', tenantName: 'Home' }
     expect((await anonymous('/v1/setup', { method: 'POST', body: owner, headers: proxied })).status).toBe(400)
@@ -110,6 +116,10 @@ describe('a host with accounts and tenants', () => {
     expect(me).toMatchObject({ kind: 'admin', operator: true, user: { name: 'Braedon', email: 'owner@example.com' }, tenants: [{ name: 'Home' }] })
     home = me.tenants[0].id
     expect(computers.get(OWNER_COMPUTER)?.tenantId).toBe(home)
+    const persons = (await (await operator(`/v1/tenants/${home}/people`)).json()).people
+    expect(persons).toEqual([expect.objectContaining({ name: 'Braedon', userId: me.user.id, tenantId: home })])
+    expect(computers.get(OWNER_COMPUTER)?.personId).toBe(persons[0].id)
+    expect((await operator('/v1/setup/link', { method: 'POST' })).status).toBe(403)
     const listed = await (await operator('/v1/computers')).json()
     expect(listed.computers).toEqual([expect.objectContaining({ id: 'owner', tenantId: home })])
     expect((await operator('/v1/health')).status).toBe(200)
@@ -128,7 +138,7 @@ describe('a host with accounts and tenants', () => {
     expect((await operator('/v1/computers', { method: 'POST', body: { name: 'Sam' } })).status).toBe(400)
     const sam = await (await operator('/v1/computers', { method: 'POST', body: { name: 'Sam', tenantId: family, person: 'Sam', memoryMb: 2048, vcpus: 2 } })).json()
     expect(sam).toMatchObject({ tenantId: family, person: 'Sam', settings: { memoryMb: 2048 } })
-    const over = await operator('/v1/computers', { method: 'POST', body: { name: 'Alex', tenantId: family, memoryMb: 4096, vcpus: 2 } })
+    const over = await operator('/v1/computers', { method: 'POST', body: { name: 'Alex', person: 'Alex', tenantId: family, memoryMb: 4096, vcpus: 2 } })
     expect(over.status).toBe(409)
     expect((await over.json()).error).toMatch(/6144 MiB.*quota is 4096/)
     expect((await operator(`/v1/computers/${sam.id}/computer/settings`, { method: 'PATCH', body: { vcpus: 6 } })).status).toBe(409)
@@ -173,7 +183,21 @@ describe('a host with accounts and tenants', () => {
     expect((await parent(`/v1/tenants/${family}`, { method: 'PATCH', body: { name: 'The Family' } })).status).toBe(200)
     expect((await parent('/v1/computers', { method: 'POST', body: { name: 'Elsewhere', tenantId: home } })).status).toBe(400)
     expect((await parent(`/v1/computers/${theirs[0]!.id}`, { method: 'PATCH', body: { tenantId: home } })).status).toBe(400)
-    expect((await (await parent(`/v1/computers/${theirs[0]!.id}`, { method: 'PATCH', body: { person: 'Samuel' } })).json()).person).toBe('Samuel')
+    const theirComputer = await (await parent(`/v1/computers/${theirs[0]!.id}`)).json()
+    expect((await parent(`/v1/computers/${theirs[0]!.id}`, { method: 'PATCH', body: { person: 'Samuel' } })).status).toBe(400)
+    expect((await parent(`/v1/people/${theirComputer.personId}`, { method: 'PATCH', body: { name: 'Samuel' } })).status).toBe(200)
+    expect((await (await parent(`/v1/computers/${theirs[0]!.id}`)).json()).person).toBe('Samuel')
+    expect((await parent(`/v1/people/${theirComputer.personId}`, { method: 'DELETE' })).status).toBe(409)
+    const homePerson = (await (await operator(`/v1/tenants/${home}/people`)).json()).people[0]
+    expect((await parent(`/v1/people/${homePerson.id}`, { method: 'PATCH', body: { name: 'Wrong tenant' } })).status).toBe(404)
+    expect((await parent(`/v1/people/${homePerson.id}`, { method: 'DELETE' })).status).toBe(404)
+    expect((await parent(`/v1/tenants/${home}/people`)).status).toBe(404)
+    expect((await parent(`/v1/tenants/${home}/people`, { method: 'POST', body: { name: 'Wrong tenant' } })).status).toBe(404)
+    expect((await parent('/v1/computers', { method: 'POST', body: { name: 'Cross tenant', tenantId: family, personId: homePerson.id } })).status).toBe(400)
+    expect((await operator(`/v1/computers/${theirs[0]!.id}`, { method: 'PATCH', body: { tenantId: home } })).status).toBe(400)
+    expect((await operator(`/v1/computers/${theirs[0]!.id}`, { method: 'PATCH', body: { tenantId: home, personId: homePerson.id } })).status).toBe(200)
+    expect((await parent(`/v1/computers/${theirs[0]!.id}`)).status).toBe(404)
+    expect((await operator(`/v1/computers/${theirs[0]!.id}`, { method: 'PATCH', body: { tenantId: family, personId: theirComputer.personId } })).status).toBe(200)
     const pairing = await parent(`/v1/computers/${theirs[0]!.id}/pairing`, { method: 'POST' })
     expect(pairing.status).toBe(201)
     const { code } = await pairing.json()
@@ -183,6 +207,9 @@ describe('a host with accounts and tenants', () => {
     const phone = browser()
     const headers = { authorization: `Bearer ${phoneToken}` }
     expect((await phone('/v1/host/reach', { headers })).status).toBe(403)
+    expect((await phone(`/v1/tenants/${family}/people`, { headers })).status).toBe(403)
+    expect((await phone(`/v1/people/${theirComputer.personId}`, { headers, method: 'DELETE' })).status).toBe(403)
+    expect((await phone('/v1/setup/link', { headers, method: 'POST' })).status).toBe(403)
     expect((await phone('/v1/host/reach/tailscale', { method: 'PUT', body: { enabled: false }, headers })).status).toBe(403)
     expect((await (await parent(`/v1/tenants/${family}/administrators`)).json()).administrators.map((admin: { email: string }) => admin.email)).toEqual(['parent@example.com'])
 

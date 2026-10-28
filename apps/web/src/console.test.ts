@@ -182,7 +182,7 @@ describe('navigation and actions', () => {
     await client.invite('11111111-1111-4111-8111-111111111111', 'a@example.com')
     await client.invitation('tok')
     await client.signIn('a@example.com', 'pw')
-    await client.updateComputer('c-0123456789', { person: 'Sam' })
+    await client.updateComputer('c-0123456789', { tenantId: 'tenant', personId: 'person' })
     expect(seen).toEqual([
       '/v1/me', '/v1/tenants', '/v1/tenants/11111111-1111-4111-8111-111111111111/invites', '/v1/invites/tok', '/v1/auth/sign-in/email', '/v1/computers/c-0123456789',
     ])
@@ -318,6 +318,31 @@ describe('host surfaces', () => {
       ['DELETE', '/v1/devices/push/0123456789abcdef'],
       ['GET', '/v1/host'],
       ['GET', '/v1/health'],
+    ])
+  })
+})
+
+
+describe('ownership requests', () => {
+  it('sends people CRUD and an atomic tenant/person assignment to host routes', async () => {
+    const seen: Array<{ url: string; method: string; body: unknown }> = []
+    const client = new CabooseClient(() => '', '', async (url, init) => {
+      seen.push({ url: String(url), method: init?.method ?? '', body: init?.body ? JSON.parse(String(init.body)) : null })
+      return new Response('{}')
+    }).forComputer('computer')
+    await client.people('tenant')
+    await client.createPerson('tenant', 'Sam')
+    await client.renamePerson('person', 'Samuel')
+    await client.deletePerson('person')
+    await client.updateComputer('computer', { tenantId: 'destination', personId: 'person' })
+    await client.setupLink()
+    expect(seen).toEqual([
+      { url: '/v1/tenants/tenant/people', method: 'GET', body: null },
+      { url: '/v1/tenants/tenant/people', method: 'POST', body: { name: 'Sam' } },
+      { url: '/v1/people/person', method: 'PATCH', body: { name: 'Samuel' } },
+      { url: '/v1/people/person', method: 'DELETE', body: null },
+      { url: '/v1/computers/computer', method: 'PATCH', body: { tenantId: 'destination', personId: 'person' } },
+      { url: '/v1/setup/link', method: 'POST', body: null },
     ])
   })
 })

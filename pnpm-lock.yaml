@@ -13,7 +13,7 @@ importers:
     dependencies:
       '@braedonsaunders/appkit-auth':
         specifier: ^0.1.6
-        version: 0.1.6(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vitest@3.2.7(@types/node@22.20.5)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@2.4.0))(lightningcss@1.32.0)(tsx@4.23.15))
+        version: 0.1.6(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(@types/react@19.3.0)(kysely@0.29.7)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)(vitest@3.2.7(@types/node@22.20.5)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@2.4.0))(lightningcss@1.32.0)(tsx@4.23.15))
       '@braedonsaunders/appkit-db':
         specifier: ^0.2.0
         version: 0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)
@@ -68,13 +68,13 @@ importers:
     dependencies:
       '@braedonsaunders/appkit-dashboard':
         specifier: ^4.0.0
-        version: 4.0.0(@braedonsaunders/appkit-db@0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7))(@braedonsaunders/appkit-ui@0.4.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3))(drizzle-orm@0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1))(lucide-react@1.62.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 4.0.0(@braedonsaunders/appkit-db@0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7))(@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3))(drizzle-orm@0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1))(lucide-react@1.62.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@braedonsaunders/appkit-tokens':
         specifier: ^0.2.0
         version: 0.2.0(tailwindcss@4.3.3)
       '@braedonsaunders/appkit-ui':
-        specifier: ^0.4.0
-        version: 0.4.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)
+        specifier: ^0.4.1
+        version: 0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)
       lucide-react:
         specifier: ^1.24.0
         version: 1.62.0(@types/react@19.3.0)(react@19.3.1)
@@ -375,6 +375,13 @@ packages:
 
   '@braedonsaunders/appkit-ui@0.4.0':
     resolution: {integrity: sha512-PBPADxpkKAhSbe9kVtWjNrQ+zuAAnOoaNjgQSOehlh28fe1xMS6ywNOVonZmN4WVNMObEoJqP/F1i/WLEB331Q==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      react: ^19.0.0
+      react-dom: ^19.0.0
+
+  '@braedonsaunders/appkit-ui@0.4.1':
+    resolution: {integrity: sha512-b0JlnsJz7kvPbSQbeA63PLKap79j5Rs7+TiqBQV492qzU+lFMeK5jHJdxVcnZ9ZpXhiXHff06aQGRg6bHFNSWA==}
     engines: {node: '>=22'}
     peerDependencies:
       react: ^19.0.0
@@ -2329,7 +2336,7 @@ snapshots:
 
   '@braedonsaunders/appkit-analytics@0.2.0': {}
 
-  '@braedonsaunders/appkit-auth@0.1.6(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vitest@3.2.7(@types/node@22.20.5)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@2.4.0))(lightningcss@1.32.0)(tsx@4.23.15))':
+  '@braedonsaunders/appkit-auth@0.1.6(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(@types/react@19.3.0)(kysely@0.29.7)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)(vitest@3.2.7(@types/node@22.20.5)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@2.4.0))(lightningcss@1.32.0)(tsx@4.23.15))':
     dependencies:
       '@braedonsaunders/appkit-db': 0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)
       '@braedonsaunders/appkit-ui': 0.4.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)
@@ -2385,12 +2392,12 @@ snapshots:
       - vitest
       - vue
 
-  '@braedonsaunders/appkit-dashboard@4.0.0(@braedonsaunders/appkit-db@0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7))(@braedonsaunders/appkit-ui@0.4.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3))(drizzle-orm@0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1))(lucide-react@1.62.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@braedonsaunders/appkit-dashboard@4.0.0(@braedonsaunders/appkit-db@0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7))(@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3))(drizzle-orm@0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1))(lucide-react@1.62.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       '@braedonsaunders/appkit-analytics': 0.2.0
     optionalDependencies:
       '@braedonsaunders/appkit-db': 0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)
-      '@braedonsaunders/appkit-ui': 0.4.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)
+      '@braedonsaunders/appkit-ui': 0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)
       drizzle-orm: 0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1)
       lucide-react: 1.62.0(@types/react@19.3.0)(react@19.3.1)
       react: 19.3.1
@@ -2462,6 +2469,21 @@ snapshots:
       tailwindcss: 4.3.3
 
   '@braedonsaunders/appkit-ui@0.4.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)':
+    dependencies:
+      '@braedonsaunders/appkit-tokens': 0.2.0(tailwindcss@4.3.3)
+      class-variance-authority: 0.7.1
+      clsx: 2.1.1
+      framer-motion: 12.43.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      lucide-react: 1.62.0(@types/react@19.3.0)(react@19.3.1)
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
+      tailwind-merge: 3.7.0
+    transitivePeerDependencies:
+      - '@emotion/is-prop-valid'
+      - '@types/react'
+      - tailwindcss
+
+  '@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)':
     dependencies:
       '@braedonsaunders/appkit-tokens': 0.2.0(tailwindcss@4.3.3)
       class-variance-authority: 0.7.1

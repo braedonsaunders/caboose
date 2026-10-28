@@ -16,7 +16,7 @@
   "dependencies": {
     "@braedonsaunders/appkit-dashboard": "^4.0.0",
     "@braedonsaunders/appkit-tokens": "^0.2.0",
-    "@braedonsaunders/appkit-ui": "^0.4.0",
+    "@braedonsaunders/appkit-ui": "^0.4.1",
     "lucide-react": "^1.24.0",
     "qrcode-generator": "^1.5.2",
     "react": "^19.1.0",

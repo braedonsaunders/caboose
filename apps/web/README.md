@@ -117,3 +117,11 @@ The unit tests cover settings validation, the session token and API client, navi
 machine and open it: sign-in, `GET /v1/computer` and every page work while the computer is
 parked; Wake, Park and Restart need a host that can run the computer (KVM and a guest image,
 or the container runtime).
+
+People are tenant records independent of administrator accounts. The People page adds,
+renames and deletes them and lists their computers; administrator invitations remain a
+separate section. Creating or assigning a computer selects an existing person in its
+tenant. Changing the tenant clears the selected person, and ownership saves the tenant
+and person together. Unassigned computers display “Assignment required”. An unclaimed
+host keeps a setup banner until the operator completes account setup; existing computers
+remain on the host.

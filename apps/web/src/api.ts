@@ -55,6 +55,7 @@ export interface ComputerSummary extends ComputerStatus {
   /** The tenant the computer belongs to; null on a host that has not been set up. */
   tenantId: string | null
   /** The person whose computer it is, who uses it from their phone. */
+  personId: string | null
   person: string | null
 }
 
@@ -75,7 +76,7 @@ export interface NewComputer {
   idleMs: number
   /** Required on a host with accounts. */
   tenantId?: string
-  person?: string | null
+  personId?: string | null
 }
 
 /** Limits on what a tenant's computers are given between them; null is no limit. */
@@ -92,7 +93,10 @@ export interface Tenant {
 }
 
 /** Who the console is signed in as: the owner token, or an administrator's account. */
+export interface Person { id: string; tenantId: string; name: string; userId: string | null; createdAt: string }
+
 export interface Me {
+  setupRequired: boolean
   kind: 'owner' | 'admin'
   user: { id: string; name: string; email: string } | null
   /** The owner token and the operator's account see the host and every tenant. */
@@ -319,7 +323,7 @@ export class CabooseApiError extends Error {
 /** Routes about the host and its computers, never scoped to one computer. */
 function isHostPath(path: string): boolean {
   return path === '/v1/health' || path === '/v1/host' || path === '/v1/computers' || path === '/v1/me'
-    || ['/v1/host/', '/v1/computers/', '/v1/tenants', '/v1/setup', '/v1/invites/', '/v1/auth/'].some(prefix => path.startsWith(prefix))
+    || ['/v1/host/', '/v1/computers/', '/v1/tenants', '/v1/setup', '/v1/people/', '/v1/invites/', '/v1/auth/'].some(prefix => path.startsWith(prefix))
 }
 
 export class CabooseClient {
@@ -432,9 +436,15 @@ export class CabooseClient {
   }
 
   /** A computer's person, and (for the operator) its tenant. */
-  updateComputer(id: string, changes: { person?: string | null; tenantId?: string }): Promise<ComputerSummary> {
+  updateComputer(id: string, changes: { personId?: string | null; tenantId?: string }): Promise<ComputerSummary> {
     return this.request<ComputerSummary>('PATCH', `/v1/computers/${encodeURIComponent(id)}`, { body: changes, timeoutMs: 20_000 })
   }
+
+  people(tenantId: string): Promise<{ people: Person[] }> { return this.request('GET', `/v1/tenants/${encodeURIComponent(tenantId)}/people`) }
+  createPerson(tenantId: string, name: string): Promise<Person> { return this.request('POST', `/v1/tenants/${encodeURIComponent(tenantId)}/people`, { body: { name } }) }
+  renamePerson(id: string, name: string): Promise<Person> { return this.request('PATCH', `/v1/people/${encodeURIComponent(id)}`, { body: { name } }) }
+  deletePerson(id: string): Promise<{ deleted: true }> { return this.request('DELETE', `/v1/people/${encodeURIComponent(id)}`) }
+  setupLink(): Promise<{ path: string }> { return this.request('POST', '/v1/setup/link') }
 
   me(): Promise<Me> {
     return this.request<Me>('GET', '/v1/me', { timeoutMs: 15_000 })

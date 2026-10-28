@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { AccountMenu, AppShell, ConfirmRoot, PromptRoot, Toaster, type LinkRender } from '@braedonsaunders/appkit-ui'
+import { AccountMenu, Alert, AlertDescription, AlertTitle, Button, AppShell, ConfirmRoot, PromptRoot, Toaster, type LinkRender } from '@braedonsaunders/appkit-ui'
 import { CabooseApiError, CabooseClient, readSessionToken, writeSessionToken, type Me } from './api.js'
 import { navigate, navigationGroups, sidebarPath, useRoute } from './navigation.js'
 import { useComputers } from './useComputer.js'
@@ -85,6 +85,8 @@ export function App() {
 function Console({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const route = useRoute()
   const client = React.useMemo(() => new CabooseClient(() => session.kind === 'token' ? session.token : ''), [session])
+  const [setupOpening, setSetupOpening] = React.useState(false)
+  const [setupError, setSetupError] = React.useState<string | null>(null)
   const [me, setMe] = React.useState<Me | null>(null)
   const refreshMe = React.useCallback(async () => {
     try { setMe(await client.me()) }
@@ -130,6 +132,23 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
         />
       }
     >
+      {me.setupRequired ? (
+        <div className="px-4 pt-4 sm:px-6">
+          <Alert variant="warning">
+            <AlertTitle>Finish setting up ownership</AlertTitle>
+            <AlertDescription>
+              <p>Create your account, household and person record, and link your existing computer. Your apps, files and paired phones stay in place.</p>
+              {setupError ? <p className="mt-2 text-danger">{setupError}</p> : null}
+              <Button className="mt-3" disabled={setupOpening} onClick={() => {
+                setSetupOpening(true); setSetupError(null)
+                void client.setupLink().then(result => { window.location.assign(result.path) }, failure => {
+                  setSetupError(failure instanceof Error ? failure.message : String(failure)); setSetupOpening(false)
+                })
+              }}>{setupOpening ? 'Opening setup…' : 'Complete setup'}</Button>
+            </AlertDescription>
+          </Alert>
+        </div>
+      ) : null}
       {route.page === 'overview' ? <Overview computers={computers} host={host} me={me} /> : null}
       {route.page === 'computers' ? <Computers client={client} computers={computers} me={me} /> : null}
       {route.page === 'computer' ? (
@@ -137,7 +156,7 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
         <Computer key={route.id} client={client} computers={computers} id={route.id} host={host} me={me} tab={route.tab} onUnauthorized={onSignOut} />
       ) : null}
       {route.page === 'people' ? <People client={client} me={me} onUnauthorized={onSignOut} /> : null}
-      {route.page === 'tenants' && operator ? <Tenants client={client} onChanged={refreshMe} onUnauthorized={onSignOut} /> : null}
+      {route.page === 'tenants' && operator ? <Tenants setupRequired={me.setupRequired} client={client} onChanged={refreshMe} onUnauthorized={onSignOut} /> : null}
       {route.page === 'host' && operator ? <Host host={host} client={client} onUnauthorized={onSignOut} /> : null}
     </AppShell>
   )

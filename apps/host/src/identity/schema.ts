@@ -22,4 +22,16 @@ export const invites = pgTable('caboose_invites', {
   index('caboose_invites_tenant_idx').on(table.tenantId),
 ])
 
-export const schema = { tenants, users, sessions: authSessions, accounts: authAccounts, verifications: authVerifications, memberships, auditLog, invites }
+/** A computer user; a console login is optional and grants no rights through this table. */
+export const people = pgTable('caboose_people', {
+  id: id(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'restrict' }),
+  name: text('name').notNull(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  uniqueIndex('caboose_people_tenant_user_key').on(table.tenantId, table.userId),
+  uniqueIndex('caboose_people_id_tenant_key').on(table.id, table.tenantId),
+])
+
+export const schema = { tenants, users, sessions: authSessions, accounts: authAccounts, verifications: authVerifications, memberships, auditLog, invites, people }

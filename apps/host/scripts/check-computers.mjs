@@ -40,7 +40,7 @@ try {
     assert.ok(Array.isArray(tenancy.tenants), 'The host lists its tenants')
     tenant = await call('/v1/tenants', { method: 'POST', body: { name: 'Caboose computers check' }, expect: 201 })
   }
-  made = await call('/v1/computers', { method: 'POST', body: { name: 'Caboose check', memoryMb: 2048, vcpus: 2, ...(tenant ? { tenantId: tenant.id } : {}) }, expect: 201 })
+  made = await call('/v1/computers', { method: 'POST', body: { name: 'Caboose check', memoryMb: 2048, vcpus: 2, ...(tenant ? { tenantId: tenant.id, person: 'Check' } : {}) }, expect: 201 })
   console.log(`Made ${made.id}.`)
   assert.equal(made.state, 'parked')
   assert.deepEqual([made.settings.memoryMb, made.settings.vcpus], [2048, 2])
