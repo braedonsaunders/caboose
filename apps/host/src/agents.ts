@@ -106,6 +106,14 @@ export class AgentTasks {
     return [...this.tracked.values()].map(entry => entry.task).sort((a, b) => b.startedAt.localeCompare(a.startedAt))
   }
 
+  /** A cold restart cannot leave leases held by processes that no longer exist. */
+  computerRestarted(): void {
+    this.pause()
+    for (const entry of this.tracked.values()) {
+      if (isLive(entry.task.status)) this.finish(entry, 'failed', 'Stopped when the computer restarted.')
+    }
+  }
+
   async start(input: Record<string, unknown>): Promise<AgentTask> {
     const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : ''
     if (!prompt || prompt.length > MAX_PROMPT) throw new AgentInputError('prompt must be 1–32000 characters')

@@ -38,6 +38,10 @@ struct RootView: View {
                 SetupView()
             case .waking, .connecting:
                 WakeView(connecting: model.phase == .connecting)
+            case .restarting:
+                RestartingView()
+            case .parked:
+                ParkedView()
             case .failed(let message):
                 FailureView(message: message)
             case .ready where model.externalDisplayActive:
@@ -53,6 +57,9 @@ struct RootView: View {
             }
         }
         .animation(.smooth(duration: 0.35), value: model.phase)
+        .sheet(isPresented: Bindable(model).settingsPresented) {
+            ComputerSettingsView().environment(model)
+        }
     }
 }
 
@@ -96,6 +103,54 @@ struct WakeView: View {
     }
 }
 
+struct RestartingView: View {
+    var body: some View {
+        VStack(spacing: 22) {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 56, weight: .light))
+                .symbolEffect(.rotate, options: .repeating, isActive: true)
+                .foregroundStyle(.white.opacity(0.9))
+            VStack(spacing: 6) {
+                Text("Restarting your computer")
+                    .font(.title3.weight(.semibold))
+                Text("It starts fresh from its disk. Your files and apps are all still there.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            ProgressView().tint(.white)
+        }
+        .multilineTextAlignment(.center)
+        .padding(32)
+    }
+}
+
+struct ParkedView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(spacing: 22) {
+            Image(systemName: "moon.zzz")
+                .font(.system(size: 56, weight: .light))
+                .foregroundStyle(.white.opacity(0.9))
+            VStack(spacing: 6) {
+                Text("Your computer is parked")
+                    .font(.title3.weight(.semibold))
+                Text("Every app is saved exactly as you left it.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 12) {
+                Button("Wake") { Task { await model.wake() } }
+                    .buttonStyle(.glassProminent)
+                Button("Settings", systemImage: "gearshape") { model.settingsPresented = true }
+                    .buttonStyle(.glass)
+            }
+        }
+        .multilineTextAlignment(.center)
+        .padding(32)
+    }
+}
+
 struct FailureView: View {
     @Environment(AppModel.self) private var model
     let message: String
@@ -117,6 +172,9 @@ struct FailureView: View {
                 Button("Change Computer") { model.signOut() }
                     .buttonStyle(.glass)
             }
+            // A computer that will not wake can often be fixed from its settings: less memory, or a restart.
+            Button("Computer Settings", systemImage: "gearshape") { model.settingsPresented = true }
+                .buttonStyle(.glass)
         }
         .padding(32)
     }

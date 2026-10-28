@@ -145,6 +145,14 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
         addGestureRecognizer(doubleTap)
         tap.require(toFail: doubleTap)
 
+        // Two fingers tapped together right-click, as on a Mac trackpad. A single tap
+        // waits for it to fail, which it does the moment one finger lifts alone.
+        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleSecondaryClick(_:)))
+        twoFingerTap.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+        twoFingerTap.numberOfTouchesRequired = 2
+        addGestureRecognizer(twoFingerTap)
+        tap.require(toFail: twoFingerTap)
+
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         longPress.minimumPressDuration = 0.35
         longPress.allowableMovement = .greatestFiniteMagnitude

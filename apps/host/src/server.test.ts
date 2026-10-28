@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createCabooseServer, type Controller } from './server.js'
+import { SettingsStore, settingsLimits } from './settings.js'
 
 const close: Array<() => Promise<void>> = []
 afterEach(async () => { for (const f of close.splice(0)) await f() })
@@ -14,8 +15,9 @@ it('authenticates routes and relays binary websocket messages while holding a le
   upstream.on('connection', socket => socket.on('message', (data, binary) => socket.send(data, { binary })))
   const wake = vi.fn(async () => ({ state: 'running', display: { path: '/v1/display', token: 'display', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }))
   const park = vi.fn(async () => {})
-  const controller: Controller = { wake, park, stats: () => ({ ok: true }), apps: async () => [], launch: async () => {}, displayUrl: `ws://127.0.0.1:${(upstream.address() as AddressInfo).port}`, agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined }
-  const app = createCabooseServer({ token: 'owner', idleMs: 50, controller })
+  const controller: Controller = { wake, park, activeResources: () => null, hasSavedState: () => false, stats: () => ({ ok: true }), apps: async () => [], launch: async () => {}, displayUrl: `ws://127.0.0.1:${(upstream.address() as AddressInfo).port}`, agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 50 }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
   close.push(() => new Promise(resolve => app.server.close(() => resolve())))

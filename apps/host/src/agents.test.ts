@@ -160,4 +160,18 @@ describe('AgentTasks', () => {
     await expect(tasks.start({ prompt: 'x', agent: 'gpt' })).rejects.toBeInstanceOf(AgentInputError)
     await expect(tasks.start({ prompt: 'x', agent: 'claude' })).rejects.toThrow('computer is not running')
   })
+
+  it('releases running and paused task leases after a cold restart', async () => {
+    const fake = fakeGuest()
+    const release = vi.fn()
+    const tasks = new AgentTasks(() => fake.guest, () => {}, () => release, 60000)
+    const first = await tasks.start({ prompt: 'first' })
+    await tasks.start({ prompt: 'second' })
+    await tasks.pauseTask(first.id)
+    tasks.computerRestarted()
+    expect(tasks.list().every(task => task.status === 'failed' && task.summary?.includes('restarted'))).toBe(true)
+    expect(release).toHaveBeenCalledTimes(2)
+    tasks.computerRestarted()
+    expect(release).toHaveBeenCalledTimes(2)
+  })
 })

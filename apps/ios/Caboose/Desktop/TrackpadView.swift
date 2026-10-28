@@ -77,12 +77,7 @@ final class TrackpadSurface: UIView, UIKeyInput {
     weak var desktop: DesktopModel?
     weak var model: AppModel?
 
-    private var touchStart: TimeInterval = 0
-    private var maxTouches = 0
-    private var travel: CGFloat = 0
-    private var lastCentroid: CGPoint?
-    private var lastTapEnded: TimeInterval = 0
-    private var dragging = false
+    private var gestures = TrackpadGestures()
     private let haptics = UIImpactFeedbackGenerator(style: .light)
 
     override init(frame: CGRect) {
@@ -102,68 +97,50 @@ final class TrackpadSurface: UIView, UIKeyInput {
         return CGPoint(x: points.map(\.x).reduce(0, +) / CGFloat(points.count), y: points.map(\.y).reduce(0, +) / CGFloat(points.count))
     }
 
+    private func liveTouches(_ event: UIEvent?) -> Int {
+        event?.touches(for: self)?.filter { $0.phase != .ended && $0.phase != .cancelled }.count ?? 0
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        let active = event?.touches(for: self)?.count ?? touches.count
-        if maxTouches == 0 {
-            touchStart = event?.timestamp ?? 0
-            travel = 0
-            // Tap-and-a-half: a touch that lands just after a tap starts a drag.
-            if active == 1, (event?.timestamp ?? 0) - lastTapEnded < 0.3 {
-                dragging = true
-                desktop?.beginDrag(session: session)
-                haptics.impactOccurred()
-            }
-        }
-        maxTouches = max(maxTouches, active)
-        lastCentroid = centroid(event)
+        perform(gestures.began(touches: max(1, liveTouches(event)), centroid: centroid(event), at: event?.timestamp ?? 0))
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let point = centroid(event), let last = lastCentroid else { return }
-        let delta = CGPoint(x: point.x - last.x, y: point.y - last.y)
-        lastCentroid = point
-        travel += hypot(delta.x, delta.y)
-        let fingers = event?.touches(for: self)?.filter { $0.phase != .ended && $0.phase != .cancelled }.count ?? 1
-        if fingers >= 2 && !dragging {
-            desktop?.scroll(by: CGPoint(x: -delta.x * 2, y: -delta.y * 2), session: session)
-        } else {
-            // Acceleration: slow moves are precise, fast flicks cross the screen.
-            let speed = hypot(delta.x, delta.y)
-            let gain = 1.4 + min(speed * 0.12, 2.6)
-            desktop?.move(by: CGPoint(x: delta.x * gain, y: delta.y * gain), session: session)
-        }
+        guard let point = centroid(event) else { return }
+        perform(gestures.moved(touches: liveTouches(event), centroid: point, at: event?.timestamp ?? 0))
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        let remaining = event?.touches(for: self)?.filter { $0.phase != .ended && $0.phase != .cancelled }.count ?? 0
-        lastCentroid = centroid(event)
-        guard remaining == 0 else { return }
-        let duration = (event?.timestamp ?? 0) - touchStart
+        perform(gestures.ended(remaining: liveTouches(event), centroid: centroid(event), at: event?.timestamp ?? 0))
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        perform(gestures.cancelled())
+    }
+
+    private func perform(_ actions: [TrackpadGestures.Action]) {
         let open: (String) -> Void = { [weak self] id in
             guard let app = self?.model?.apps.first(where: { $0.id == id }) else { return }
             self?.model?.openOnDesktop(app)
         }
-        if dragging {
-            desktop?.endDrag(session: session)
-            dragging = false
-            // A second tap that never moved was a double-click, not a drag.
-            if duration < 0.25, travel < 10 {
+        for action in actions {
+            switch action {
+            case .move(let delta): desktop?.move(by: delta, session: session)
+            case .scroll(let delta): desktop?.scroll(by: delta, session: session)
+            case .beginDrag:
+                desktop?.beginDrag(session: session)
+                haptics.impactOccurred()
+            case .endDrag: desktop?.endDrag(session: session)
+            case .click(let button):
+                desktop?.click(button: button, session: session, open: open)
+                haptics.impactOccurred()
+            case .doubleClick:
+                // The second press and release reach the app; the desktop then handles its own double-click (title bar zoom).
+                desktop?.beginDrag(session: session)
+                desktop?.endDrag(session: session)
                 desktop?.doubleClick(session: session, open: open)
-                lastTapEnded = 0
             }
-        } else if duration < 0.25, travel < 10 {
-            desktop?.click(button: maxTouches >= 2 ? 3 : 1, session: session, open: open)
-            haptics.impactOccurred()
-            lastTapEnded = event?.timestamp ?? 0
         }
-        maxTouches = 0
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if dragging { desktop?.endDrag(session: session) }
-        dragging = false
-        maxTouches = 0
-        lastCentroid = nil
     }
 
     // MARK: Keyboard: typed text goes to the focused Linux window.

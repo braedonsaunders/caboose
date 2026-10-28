@@ -14,6 +14,10 @@ final class AppModel {
         case waking
         case connecting
         case ready
+        /// Parked on request: memory and every app saved, nothing running.
+        case parked
+        /// A cold restart is underway; open apps are closing.
+        case restarting
         case failed(String)
     }
 
@@ -56,6 +60,7 @@ final class AppModel {
         let saved = Credentials.load()
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
+        agents.onComputer = { [weak self] status in self?.computerStatus = status }
     }
 
     var host: HostClient? { credentials.map { HostClient(baseURL: $0.hostURL, token: $0.token) } }
@@ -85,6 +90,8 @@ final class AppModel {
         session?.disconnect()
         session = nil
         agents.reset()
+        computerStatus = nil
+        settingsPresented = false
         Credentials.clear()
         credentials = nil
         phase = .needsSetup
@@ -107,6 +114,7 @@ final class AppModel {
             agents.attach(host: host)
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await refreshApps() }
+            Task { try? await refreshComputer() }
         } catch {
             phase = .failed(error.localizedDescription)
         }
@@ -313,7 +321,65 @@ final class AppModel {
         startSession(host: host, display: lastDisplay)
     }
 
-    // MARK: Apps
+    // MARK: Computer settings
+
+    /// The host's management status: settings, what the machine runs with, and whether a restart applies them.
+    private(set) var computerStatus: HostClient.ComputerStatus?
+    var settingsPresented = false
+
+    func refreshComputer() async throws {
+        guard let host else { return }
+        computerStatus = try await host.computer()
+    }
+
+    /// Saves only the given changes. Name and auto-park apply at once; memory and cores at the next restart.
+    func saveSettings(_ changes: [String: JSONValue]) async throws {
+        guard let host, !changes.isEmpty else { return }
+        computerStatus = try await host.updateSettings(changes)
+    }
+
+    /// Parks the computer with its memory, so it resumes exactly as it was.
+    func parkComputer() async throws {
+        guard let host else { return }
+        closeDisplay()
+        do {
+            try await host.park()
+            phase = .parked
+        } catch {
+            phase = .failed(error.localizedDescription)
+            throw error
+        }
+        try? await refreshComputer()
+    }
+
+    /// Cold-restarts the computer and reconnects. The person has already confirmed that open apps close.
+    func restartComputer() async {
+        guard let host else { return }
+        settingsPresented = false
+        closeDisplay()
+        frameCache.removeAll() // the apps behind these frames are gone
+        phase = .restarting
+        do {
+            computerStatus = try await host.restart()
+        } catch {
+            phase = .failed(error.localizedDescription)
+            return
+        }
+        await wake()
+    }
+
+    /// Drops the display and the agent channel without parking; the host decides what happens next.
+    private func closeDisplay() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        presentedWindowID = nil
+        presentedAgentWindowID = nil
+        session?.disconnect()
+        session = nil
+        agents.detach()
+        knownWindowIDs.removeAll()
+    }
+
 
     func refreshApps() async {
         guard let host else { return }
