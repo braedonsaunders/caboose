@@ -33,6 +33,7 @@ import type { PushService } from './push.js'
 import type { HostInfo, MachineResources } from './host-info.js'
 import type { AgentEvent } from './agents.js'
 import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenType } from './screen.js'
+import { AgentProfiles } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
@@ -72,7 +73,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService }
+export interface ComputerPieces { settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles }
 
 
 /**
@@ -237,6 +238,31 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const phoneSockets = new Map<WebSocket, string>()
 
   async function handle(request: IncomingMessage, response: ServerResponse, path: string, principal: Principal): Promise<unknown> {
+    if (path === '/v1/agent/profiles' || path.startsWith('/v1/agent/profiles/')) {
+      const profiles = pieces.profiles
+      if (!profiles) return json(response, 503, { error: 'Agent profiles are unavailable' })
+      if (path === '/v1/agent/profiles' && request.method === 'GET') return json(response, 200, { profiles: profiles.list(true) })
+      if (path === '/v1/agent/profiles' && request.method === 'POST') {
+        const profile = await profiles.create(await readJson(request))
+        broadcast({ type: 'agent.profiles.changed' })
+        return json(response, 201, { profile })
+      }
+      const profilePath = /^\/v1\/agent\/profiles\/([0-9a-f-]{36})(?:\/memories(?:\/([0-9a-f-]{36}))?)?$/.exec(path)
+      if (profilePath) {
+        const [, id, memoryId] = profilePath
+        if (path.endsWith(id!) && request.method === 'GET') return json(response, 200, { profile: profiles.get(id!) })
+        let profile
+        if (path.endsWith(id!) && request.method === 'PATCH') profile = await profiles.update(id!, await readJson(request))
+        else if (path.endsWith('/memories') && request.method === 'POST') profile = await profiles.remember(id!, await readJson(request))
+        else if (memoryId && request.method === 'PATCH') profile = await profiles.remember(id!, await readJson(request), memoryId)
+        else if (memoryId && request.method === 'DELETE') profile = await profiles.forget(id!, memoryId)
+        if (profile) {
+          broadcast({ type: 'agent.profiles.changed' })
+          return json(response, 200, { profile })
+        }
+      }
+      return json(response, 404, { error: 'Profile route not found' })
+    }
     if (request.method === 'GET' && path === '/v1/terminal/sessions') {
       return json(response, 200, { sessions: await computer.run(async () => listTerminalSessions(await ensureTerminalReady())) })
     }
