@@ -2,6 +2,7 @@ import {
   AGENTD, AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentUnavailableError, RUNNER_MISSING, rethrowRunnerMissing,
   type AgentGuest, type AgentResolver, type SignInMethod,
 } from './agents.js'
+import type { HomeOwnership } from './home.js'
 import { AGENT_ID, type AgentLaunch, type AgentRegistry, type RegistryAgent } from './registry.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
 
@@ -101,6 +102,8 @@ export class AgentCatalog implements AgentResolver {
     private readonly registry: AgentRegistry,
     private readonly guest: () => AgentGuest | undefined,
     private readonly settings: SettingsStore,
+    /** Gives root-owned leftovers in the home back to caboose before npm, uv or an agent runs. */
+    private readonly home?: HomeOwnership,
   ) {}
 
   defaultAgent(): string | null { return this.settings.get().defaultAgent }
@@ -184,6 +187,7 @@ export class AgentCatalog implements AgentResolver {
     const catalog = await this.registry.catalog()
     const entry = catalog.agents.find(agent => agent.id === id)
     const launch = await this.registryLaunch(id)
+    await this.home?.ensure(guest)
     await agentd(guest, 'install', encode(launch), INSTALL_TIMEOUT_MS).catch(error => {
       if (error instanceof AgentConflictError) throw error
       throw new AgentOperationError(`Installing ${launch.name} failed: ${guestMessage(error)}`)
@@ -205,6 +209,7 @@ export class AgentCatalog implements AgentResolver {
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
     const launch = await this.launch(id)
+    await this.home?.ensure(guest)
     if (!this.guestAgents[id]?.authMethods) {
       // Not started yet in this computer: start it once to learn how it signs in.
       await agentd(guest, 'probe', encode(launch), PROBE_TIMEOUT_MS).catch(error => {

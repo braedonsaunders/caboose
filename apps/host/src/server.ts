@@ -5,6 +5,7 @@ import { AgentCatalog } from './agent-catalog.js'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { openUrl, saveDownload } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
+import { HomeOwnership } from './home.js'
 import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
 import { AgentRegistry } from './registry.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
@@ -67,9 +68,10 @@ export function createCabooseServer(options: {
     const message = JSON.stringify(event)
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
   }
-  const catalog = new AgentCatalog(options.registry ?? new AgentRegistry(), () => controller.guest(), settings)
+  const home = new HomeOwnership()
+  const catalog = new AgentCatalog(options.registry ?? new AgentRegistry(), () => controller.guest(), settings, home)
   const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), {
-    resolver: catalog, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
+    resolver: catalog, home, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
   })
   const media = new MediaHandoff(() => controller.guest(), broadcast)
   /** Media is polled only while the computer is already running and someone is watching it. */
