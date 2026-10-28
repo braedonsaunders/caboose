@@ -25,7 +25,7 @@ struct DesktopScreen: View {
                 } else if model.externalDisplayActive {
                     TrackpadScreen(desktop: model.desktop)
                 } else {
-                    DesktopStage(fullScreen: fullScreen)
+                    DesktopStage(fullScreen: immersive)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -40,17 +40,23 @@ struct DesktopScreen: View {
                 ComputerToolbar()
             }
             .keepsTabBarInVerticalBar()
-            .toolbarVisibility(fullScreen ? .hidden : .automatic, for: .navigationBar, .tabBar)
-            .statusBarHidden(fullScreen)
-            .persistentSystemOverlays(fullScreen ? .hidden : .automatic)
+            .toolbarVisibility(immersive ? .hidden : .automatic, for: .navigationBar, .tabBar)
+            .statusBarHidden(immersive)
+            .persistentSystemOverlays(immersive ? .hidden : .automatic)
             .overlay(alignment: .top) { if fullScreen { exitFullScreenHandle } }
-            .animation(.snappy, value: fullScreen)
+            .animation(.snappy, value: immersive)
             .onChange(of: model.phase) { _, phase in if phase != .ready { fullScreen = false } }
             .sheet(isPresented: $showAirPlay) {
                 AirPlaySheet().environment(model)
                     .presentationDetents([.medium])
             }
         }
+    }
+
+    /// Full Screen from the toolbar, or a Switchyard window covering the screen: the bars,
+    /// the status bar and the home indicator step aside.
+    private var immersive: Bool {
+        fullScreen || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil)
     }
 
     /// The desktop's own actions. Agents and Apps are tabs beside them and Launchpad is in

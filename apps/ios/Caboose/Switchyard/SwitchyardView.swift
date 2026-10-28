@@ -28,6 +28,10 @@ struct SwitchyardView: View {
                         .padding(.bottom, bottom)
                         .frame(maxWidth: .infinity)
                 }
+                if let id = yard.coverWindow, let window = model.session?.windows[id] {
+                    cover(window, screen: proxy.size)
+                        .zIndex(4)
+                }
                 if yard.overviewOpen {
                     YardOverview(yard: yard)
                         .frame(width: proxy.size.width, height: proxy.size.height)
@@ -42,6 +46,8 @@ struct SwitchyardView: View {
                 }
                 YardKeyCommands(yard: yard)
             }
+            .onAppear { yard.screenSize = proxy.size }
+            .onChange(of: proxy.size) { _, size in yard.screenSize = size }
         }
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
@@ -64,7 +70,7 @@ struct SwitchyardView: View {
                     .transition(.opacity)
                     .allowsHitTesting(false)
             }
-            ForEach(yard.layout.windows.filter { live.contains($0) && $0 != yard.fullscreenWindow }, id: \.self) { id in
+            ForEach(yard.layout.windows.filter { live.contains($0) && $0 != yard.coverWindow }, id: \.self) { id in
                 if let window = windows[id], let rect = tiles[id] {
                     let carried = yard.carry?.window == id
                     YardTile(window: window, yard: yard, rect: rect, focused: yard.layout.focused == id,
@@ -80,14 +86,6 @@ struct SwitchyardView: View {
                 }
             }
             handles
-            if let id = yard.fullscreenWindow, let window = windows[id] {
-                YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: false,
-                            keyboard: model.keyboardVisible && keyTarget == id) {}
-                    .frame(width: size.width, height: size.height)
-                    .overlay(alignment: .top) { leaveFullscreenHandle(id) }
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                    .zIndex(3)
-            }
             popups(windows, keyTarget: keyTarget)
             edges
             if yard.layout.isEmpty {
@@ -98,24 +96,55 @@ struct SwitchyardView: View {
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .coordinateSpace(name: Self.space)
         .clipped()
+        // While a window covers the screen the bars step aside and this space grows; the
+        // tiles keep their layout under it, so nothing behind relayouts.
         .onAppear { yard.resize(to: size) }
-        .onChange(of: size) { _, size in yard.resize(to: size) }
-        // An app going full screen, or leaving it, is laid out again at once.
-        .onChange(of: yard.fullscreenWindow) { _, _ in yard.apply() }
-        .animation(.smooth(duration: 0.35), value: yard.fullscreenWindow)
+        .onChange(of: size) { _, size in if yard.coverWindow == nil { yard.resize(to: size) } }
+        .onChange(of: yard.coverWindow) { _, cover in
+            if cover == nil { yard.resize(to: size) }
+            yard.apply()
+        }
     }
 
-    /// A small tab at the top of a full-screen window takes it back into its tile.
-    private func leaveFullscreenHandle(_ id: Int) -> some View {
+    // MARK: Full screen
+
+    /// The window covering the whole screen. Pulled down from its top edge it shrinks back
+    /// toward its tile under the finger, rounding its corners as it goes; let go, it settles
+    /// into the tile or springs back.
+    private func cover(_ window: RemoteWindow, screen: CGSize) -> some View {
+        let keyTarget = yard.keyTarget(in: model.session?.windows ?? [:])
+        let full = CGRect(origin: .zero, size: screen)
+        let tile = yard.tiles[window.id] ?? full
+        let p = yard.coverProgress
+        let rect = CGRect(x: full.minX + (tile.minX - full.minX) * p, y: full.minY + (tile.minY - full.minY) * p,
+                          width: full.width + (tile.width - full.width) * p, height: full.height + (tile.height - full.height) * p)
+        return YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: p > 0 || yard.stretches(window.id),
+                           keyboard: model.keyboardVisible && keyTarget == window.id) {}
+            .frame(width: rect.width, height: rect.height)
+            .clipShape(RoundedRectangle(cornerRadius: yard.metrics.cornerRadius * p + 28 * p * (1 - p), style: .continuous))
+            .shadow(color: .black.opacity(0.4 * p), radius: 24, y: 10)
+            .overlay(alignment: .top) { coverHandle(screen: screen).opacity(1 - p) }
+            .offset(x: rect.minX, y: rect.minY)
+    }
+
+    /// A small glass pull-tab at the top edge: pull down to put the window back in its tile.
+    private func coverHandle(screen: CGSize) -> some View {
         Capsule()
-            .fill(.white.opacity(0.5))
-            .frame(width: 36, height: 4)
-            .padding(.top, 5)
-            .frame(width: 96, height: 22, alignment: .top)
+            .fill(.white.opacity(0.7))
+            .frame(width: 40, height: 5)
+            .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
+            .padding(.top, 6)
+            .frame(width: 120, height: 26, alignment: .top)
             .contentShape(Rectangle())
-            .onTapGesture { yard.leaveFullscreen(id) }
+            .gesture(
+                DragGesture(minimumDistance: 4, coordinateSpace: .global)
+                    .onChanged { value in yard.dragCover(progress: max(0, value.translation.height) / max(1, screen.height * 0.5)) }
+                    .onEnded { value in yard.releaseCover(velocity: value.velocity.height) }
+            )
+            .onTapGesture { yard.toggleZoom() }
             .accessibilityLabel("Exit Full Screen")
             .accessibilityAddTraits(.isButton)
+            .accessibilityAction { yard.toggleZoom() }
     }
 
     // MARK: Gaps
@@ -219,7 +248,8 @@ private struct YardKeyCommands: View {
             key("Move Up", .upArrow, shift: true) { yard.moveFocused(.up) }
             key("Move Down", .downArrow, shift: true) { yard.moveFocused(.down) }
             key("Cycle Width", "r") { yard.cycleWidth() }
-            key("Full Width", "f") { yard.toggleFullWidth() }
+            key("Full Screen", "f") { yard.toggleZoom() }
+            key("Full Width", "f", shift: true) { yard.toggleFullWidth() }
             key("Close Window", "w") { if let id = yard.layout.focused { yard.close(id) } }
             key("Overview", "o") { withAnimation(.smooth(duration: 0.35)) { yard.overviewOpen.toggle() } }
             key("Open App", "a") { withAnimation(.smooth(duration: 0.3)) { yard.launcherOpen.toggle() } }

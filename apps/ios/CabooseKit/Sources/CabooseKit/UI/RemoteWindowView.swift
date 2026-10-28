@@ -186,6 +186,38 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         session.focus(window)
         session.pointerButton(in: window, button: button, pressed: true, at: lastPointer)
         session.pointerButton(in: window, button: button, pressed: false, at: lastPointer)
+        if button == 3 { showSecondaryClick(at: point) }
+    }
+
+    /// A right-click from a finger (two fingers tapped, or a long press) has no cursor to show
+    /// where it went: a ring blooms there for a moment, with a tick, so the menu that opens is
+    /// plainly the press's.
+    private func showSecondaryClick(at point: CGPoint) {
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.7)
+        guard !UIAccessibility.isReduceMotionEnabled else { return }
+        let ring = CAShapeLayer()
+        let radius: CGFloat = 22
+        ring.path = UIBezierPath(ovalIn: CGRect(x: -radius, y: -radius, width: 2 * radius, height: 2 * radius)).cgPath
+        ring.position = point
+        ring.fillColor = UIColor(red: 0.96, green: 0.65, blue: 0.14, alpha: 0.18).cgColor
+        ring.strokeColor = UIColor(red: 0.96, green: 0.65, blue: 0.14, alpha: 0.9).cgColor
+        ring.lineWidth = 1.5
+        ring.opacity = 0
+        layer.addSublayer(ring)
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.35
+        scale.toValue = 1
+        let fade = CAKeyframeAnimation(keyPath: "opacity")
+        fade.values = [0, 1, 0]
+        fade.keyTimes = [0, 0.25, 1]
+        let group = CAAnimationGroup()
+        group.animations = [scale, fade]
+        group.duration = 0.42
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { ring.removeFromSuperlayer() }
+        ring.add(group, forKey: "bloom")
+        CATransaction.commit()
     }
 
     // MARK: Gestures

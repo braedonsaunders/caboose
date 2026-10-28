@@ -58,14 +58,15 @@ enum YardStyle {
                                       center: .center, angle: .degrees(-90))
 }
 
-/// The handle at the top of each tile: tap for the tile's menu, drag to carry the tile to
-/// another place on the track.
+/// The handle at the top of each tile: tap twice for full screen, hold for the tile's menu,
+/// drag to carry the tile to another place on the track.
 struct YardGrabber: View {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let yard: YardModel
     let focused: Bool
     let onAsk: (RemoteWindow) -> Void
+    @State private var lastTap = Date.distantPast
 
     var body: some View {
         Menu {
@@ -77,6 +78,15 @@ struct YardGrabber: View {
                 .shadow(color: .black.opacity(0.45), radius: 2, y: 0.5)
                 .frame(width: 84, height: 20)
                 .contentShape(Rectangle())
+        } primaryAction: {
+            // Two taps, as on a Mac's title bar, zoom; one gives the tile the keyboard.
+            if Date().timeIntervalSince(lastTap) < 0.35 {
+                lastTap = .distantPast
+                yard.zoom(window.id)
+            } else {
+                lastTap = Date()
+                yard.focus(window.id)
+            }
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -86,6 +96,7 @@ struct YardGrabber: View {
                 .onEnded { _ in yard.drop() }
         )
         .accessibilityLabel("\(window.title.isEmpty ? "Window" : window.title) options")
+        .accessibilityAction(named: "Full Screen") { yard.zoom(window.id) }
     }
 
     @ViewBuilder private var menuContent: some View {
@@ -104,7 +115,8 @@ struct YardGrabber: View {
                     }
                 }
             }
-            Button("Open Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") {
+            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { yard.zoom(window.id) }
+            Button("Open as Card", systemImage: "rectangle.portrait.on.rectangle.portrait") {
                 model.show(windowID: window.id)
             }
             if model.agents.available {

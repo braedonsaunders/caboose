@@ -53,10 +53,21 @@ final class YardModel {
     /// Dialogs already fitted over their window.
     private var placedDialogs = Set<Int>()
     private var lastLiveApply = Date.distantPast
-    /// The tiled window that asked to cover the whole screen (a video, a slideshow, a game):
-    /// it covers the yard until it leaves full screen, then has its tile back.
+    /// The tiled window that asked to cover the whole screen (a video, a slideshow, a game).
     var fullscreenWindow: Int? {
         layout.windows.first { session?.windows[$0]?.isFullscreen == true }
+    }
+    /// The window zoomed to the whole screen by a double-tap on its grabber, ⌘⌥F or its menu.
+    private(set) var zoomed: Int?
+    /// The window covering the whole screen, edge to edge with no bars, until it is pulled
+    /// back into its tile: zoomed, or full screen at the app's own request.
+    var coverWindow: Int? { zoomed.flatMap { layout.contains($0) ? $0 : nil } ?? fullscreenWindow }
+    /// How far the covering window is back toward its tile: 0 covering, 1 in its tile.
+    private(set) var coverProgress: CGFloat = 0
+    /// The whole screen the covering window fills, in points; the display grows to it once
+    /// the bars are hidden.
+    var screenSize: CGSize = .zero {
+        didSet { if coverWindow != nil, screenSize != oldValue { apply() } }
     }
 
     // MARK: Screen
@@ -129,9 +140,10 @@ final class YardModel {
             lastLiveApply = Date()
         }
         let scale = pixelsPerPoint
+        let cover = coverWindow
         for (id, tile) in tiles {
             guard let window = session.windows[id] else { continue }
-            let rect = window.isFullscreen ? CGRect(origin: .zero, size: metrics.size) : tile
+            let rect = id == cover && screenSize != .zero ? CGRect(origin: .zero, size: screenSize) : tile
             send(window, CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale).integral, session)
         }
     }
@@ -390,13 +402,58 @@ final class YardModel {
         overviewOpen = false
     }
 
-    /// Takes a window out of full screen, back into its tile.
-    func leaveFullscreen(_ window: Int) {
-        guard let session, let remote = session.windows[window], let tile = tiles[window] else { return }
-        let scale = pixelsPerPoint
-        let target = CGRect(x: tile.minX * scale, y: tile.minY * scale, width: tile.width * scale, height: tile.height * scale).integral
-        sent[window] = target
-        session.configure(remote, frame: target, state: ["fullscreen": false])
+    // MARK: Full screen
+
+    /// Zooms a window to the whole screen: it grows out of its tile, and the bars, the dock
+    /// and the status bar step aside.
+    func zoom(_ window: Int) {
+        guard layout.contains(window), coverWindow == nil else { return }
+        focus(window, animated: false)
+        coverProgress = 1
+        zoomed = window
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        withAnimation(.smooth(duration: 0.45, extraBounce: 0.06)) { coverProgress = 0 }
+        apply()
+    }
+
+    func toggleZoom() {
+        if let cover = coverWindow { pullBack(cover) } else if let focused = layout.focused { zoom(focused) }
+    }
+
+    /// The covering window followed back toward its tile by a finger, 0...1.
+    func dragCover(progress: CGFloat) {
+        coverProgress = min(1, max(0, progress))
+    }
+
+    /// Lets go of the covering window: far enough (or flicked), it settles into its tile;
+    /// otherwise it springs back to the whole screen.
+    func releaseCover(velocity: CGFloat) {
+        guard let cover = coverWindow else { return }
+        if coverProgress > 0.22 || velocity > 600 {
+            pullBack(cover)
+        } else {
+            withAnimation(.smooth(duration: 0.35, extraBounce: 0.12)) { coverProgress = 0 }
+        }
+    }
+
+    /// Puts the covering window back in its tile.
+    private func pullBack(_ window: Int) {
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        withAnimation(.smooth(duration: 0.42, extraBounce: 0.04)) {
+            coverProgress = 1
+        } completion: { [weak self] in
+            guard let self else { return }
+            self.zoomed = nil
+            self.coverProgress = 0
+            if let session = self.session, let remote = session.windows[window], remote.isFullscreen, let tile = self.tiles[window] {
+                // The app asked for full screen; it is told it has left it.
+                let scale = self.pixelsPerPoint
+                let target = CGRect(x: tile.minX * scale, y: tile.minY * scale, width: tile.width * scale, height: tile.height * scale).integral
+                self.sent[window] = target
+                session.configure(remote, frame: target, state: ["fullscreen": false])
+            }
+            self.apply()
+        }
     }
 
     // MARK: Closing
