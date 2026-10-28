@@ -248,13 +248,13 @@ struct RoutineEditor: View {
     private var identity: some View {
         Section("Work") {
             AgentLibraryNotice(error: model.agents.library.profileError, unavailable: model.agents.library.profilesUnavailable, loading: model.agents.library.loadingProfiles, retry: { await model.agents.library.refreshProfiles() })
-            TextField("Routine name", text: $name)
+            NativeTextInput("Routine name", text: $name)
             Picker("Teammate", selection: $profileID) {
                 Text("Choose a teammate").tag("")
                 ForEach(model.agents.library.profiles.filter { !$0.archived || $0.id == profileID }) { Text($0.name + ($0.archived ? " (Archived)" : "")).tag($0.id) }
             }
             if model.agents.library.activeProfiles.isEmpty { Text("Create or restore a teammate before scheduling work.").font(.footnote).foregroundStyle(.secondary) }
-            TextField("What should happen each run?", text: $prompt, axis: .vertical).lineLimit(4...12)
+            NativeTextInput("What should happen each run?", text: $prompt, lines: 4...12)
         }
     }
     private var cadence: some View {
@@ -262,20 +262,19 @@ struct RoutineEditor: View {
             Picker("Frequency", selection: $schedule.kind) {
                 ForEach(AgentSchedule.Kind.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
             }
-            TextField("IANA timezone", text: $schedule.timeZone).textInputAutocapitalization(.never).autocorrectionDisabled()
+            NativeTextInput("IANA timezone", text: $schedule.timeZone, capitalization: .none, correction: false)
             if schedule.kind == .once || schedule.kind == .interval {
                 DatePicker(schedule.kind == .once ? "Run At" : "Interval Anchor", selection: $instant)
                     .environment(\.timeZone, TimeZone(identifier: schedule.timeZone) ?? .current)
             }
             if schedule.kind == .interval {
-                TextField("Every", text: $intervalAmount).keyboardType(.numberPad)
+                NativeTextInput("Every", text: $intervalAmount, keyboard: .numberPad)
                 Picker("Unit", selection: $intervalUnit) {
                     Text("Hours").tag(3600000); Text("Minutes").tag(60000); Text("Seconds").tag(1000); Text("Milliseconds").tag(1)
                 }
             }
             if [.daily, .weekly, .monthly].contains(schedule.kind) {
-                TextField("Local time (HH:mm)", text: Binding(get: { schedule.time ?? "09:00" }, set: { schedule.time = $0 }))
-                    .keyboardType(.numbersAndPunctuation)
+                NativeTextInput("Local time (HH:mm)", text: Binding(get: { schedule.time ?? "09:00" }, set: { schedule.time = $0 }), keyboard: .numbersAndPunctuation)
             }
             if schedule.kind == .weekly {
                 weekdayPicker(days: Binding(get: { schedule.weekdays ?? [6] }, set: { schedule.weekdays = $0 }))
@@ -294,8 +293,8 @@ struct RoutineEditor: View {
             if filterDays { weekdayPicker(days: $activeDays) }
             Toggle("Limit to Time Window", isOn: $filterWindow)
             if filterWindow {
-                TextField("Start (HH:mm)", text: $windowStart).keyboardType(.numbersAndPunctuation)
-                TextField("End (HH:mm)", text: $windowEnd).keyboardType(.numbersAndPunctuation)
+                NativeTextInput("Start (HH:mm)", text: $windowStart, keyboard: .numbersAndPunctuation)
+                NativeTextInput("End (HH:mm)", text: $windowEnd, keyboard: .numbersAndPunctuation)
             }
         } header: { Text("Active Period") } footer: {
             Text("Filters scheduled occurrences without shifting their cadence. The end is exclusive. An earlier end crosses midnight; weekdays belong to the day the window opens. Manual runs bypass this filter.")

@@ -46,12 +46,13 @@ struct AgentSignInView: View {
         NavigationStack {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background { ShellBackground() }
+                .toolbarBackground(.hidden, for: .navigationBar)
                 .navigationTitle("Sign In to \(name)")
                 .navigationSubtitle(method.name)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { toolbar }
         }
+        .presentationBackground(.ultraThinMaterial)
         .task(id: retryGeneration) { await run() }
         .onAppear { isPresented = true }
         .onDisappear {

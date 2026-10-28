@@ -125,8 +125,7 @@ struct ComputerSettingsView: View {
                 }
             }
             Section {
-                TextField("Name", text: binding(\.name))
-                    .textInputAutocapitalization(.words)
+                NativeTextInput("Name", text: binding(\.name), capitalization: .words)
                     .submitLabel(.done)
                 LabeledContent("State", value: Self.stateText(status.state))
                 LabeledContent("Running with", value: status.activeResources.map {

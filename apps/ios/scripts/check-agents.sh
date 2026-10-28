@@ -29,7 +29,26 @@ On an iPhone paired to a running computer with a signed-in ACP agent:
    Reconnect during a running turn and confirm transcript, live draft and approval state
    recover without duplicate messages. Switch chats while a send is pending: it must not
    redirect the active chat or copy its draft into another conversation.
-9. Check VoiceOver labels, large text, landscape, dark/light backgrounds and Reduce Motion.
+9. In a new chat type Hey, send, and wait for streaming and completion: the keyboard
+   closes once and stays closed. Repeat in an existing chat, queued reply and failed send.
+   Hide Keyboard, then trigger transcript/status updates, rotate and switch tabs: it stays
+   hidden until tapping the editor, choosing a suggestion or invoking Ask explicitly.
+   Reopen and confirm the SAME 88pt KeyBar as Desktop/Terminal, with Hide fixed top-right
+   even while scrolling or holding arrow keys. Check folded/unfolded Duo and iPad.
+10. Compose with Japanese and Chinese Pinyin; Return first commits the candidate without
+   sending. Test autocorrect, swipe typing, emoji, native dictation, hardware keyboard,
+   select/replace, undo and multiline paste. Grow past seven lines, scroll, delete back to
+   one line; no clipping or lost selection during streamed replies. Check arrow/Home/End,
+   Ctrl/Alt word navigation, Tab and symbols: no terminal escape/control bytes in drafts.
+11. In teammate, memory, routine, computer-name, pairing and API-key/environment forms,
+   verify the same KeyBar, native selection/paste, numeric/URL keyboard traits and secure
+   values staying obscured. Hide stays dismissed on validation/status updates; tap reopens.
+   Check normal prose autocorrect and the Aa toggle. Check disabled/saving forms cannot edit.
+12. Open agent sign-in from Settings and a signed-out chat. Waiting, success and failure
+   use translucent material over the presenting screen, with no duplicated wallpaper.
+   Verify readable controls in light/dark mode and Reduce Transparency. Browser content
+   and terminal sign-in still work in their own panes; dismissing cancels only this attempt.
+13. Check VoiceOver labels, large text, landscape, dark/light backgrounds and Reduce Motion.
    Capture the empty state, an actual streamed response, queued file reply, approval and
    live seat. Record the app commit, host commit and any unexercised item with the screenshots.
 CHECK

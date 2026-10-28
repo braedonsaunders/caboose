@@ -37,10 +37,7 @@ struct ConnectModelView: View {
                     Text("Runs \(agentName(provider)) on your computer with your key. Signing in to an account works too: Agents… in the composer's menu.")
                 }
                 Section {
-                    SecureField("\(provider.keyVariable)", text: $key)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.body.monospaced())
+                    NativeTextInput("\(provider.keyVariable)", text: $key, secure: true, capitalization: .none, correction: false, monospaced: true)
                     Link(destination: provider.keyURL) { Label("Get a Key from \(provider.name.replacingOccurrences(of: " API", with: ""))", systemImage: "arrow.up.right.square") }
                 } header: {
                     Text("API Key")
