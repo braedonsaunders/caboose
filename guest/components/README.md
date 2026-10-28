@@ -22,3 +22,18 @@ checks services (including terminal authentication and ownership), the runnable 
 replacement of a stale runner and a preserved user file, and repeats the version check. It needs Docker
 and network access. For a real microVM or container use `apps/host/scripts/check-upgrade.mjs`
 as documented in the host README. A real microVM check requires KVM.
+
+Container service replacement identifies the exact Python script as its owner, repairs
+stale or missing pid files, and verifies that the replacement process owns its listening
+socket. Another process listening on the port never counts as successful readiness.
+Container root can lack permission to inspect another user's process; identity and socket
+inspection therefore run as `caboose`.
+
+The real process regression checks run in an isolated Linux container:
+
+```sh
+docker run --rm --memory 512m --cpus 2 -v "$PWD/guest/components:/checks:ro" debian:trixie-slim bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 && useradd -m -u 1000 caboose && python3 /checks/test_container_services.py -v'
+```
+
+They check replacement of loaded code with a lost pid file, preservation on an ordinary
+start, and refusal to accept an unrelated listener as the replacement.

@@ -136,6 +136,9 @@ same installer to update computers whose disks predate the host:
   touches the owner's home, is safe to repeat, and writes the marker only after it succeeds.
 - The update runs in the background and does not block the display. While it runs it holds
   a lease, and park or restart is rejected with 409. A failure is retried on the next wake.
+- Container services are identified as their owner, including when restricted container
+  root cannot read that user's process arguments. A stale pid file is repaired from the
+  exact service script; readiness requires that process to own its listening socket.
 - `GET /v1/computer` reports `upgrade: null | { state, version?, message? }`, and
   `/v1/control` sends `computer.upgrade` with `state` `checking`, `updating`, `succeeded` or
   `failed`.
