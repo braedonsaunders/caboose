@@ -9,7 +9,7 @@ docker run --rm -v "$root/guest/notifications:/fixture:ro" debian:trixie-slim /b
   runuser -u caboose -- dbus-run-session -- /bin/bash -euc '\''
     python3 /fixture/daemon.py >/tmp/service.log 2>&1 &
     service=$!
-    CABOOSE_NOTIFICATION_DEBUG=1 python3 /fixture/monitor.py >/tmp/monitor.log 2>&1 &
+    python3 /fixture/monitor.py >/tmp/monitor.log 2>&1 &
     monitor=$!
     trap "kill $monitor $service 2>/dev/null || true; wait $monitor $service 2>/dev/null || true" EXIT
     sleep 1

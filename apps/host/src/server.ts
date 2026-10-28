@@ -79,15 +79,15 @@ export function createCabooseServer(options: {
   const catalog = new AgentCatalog(options.registry ?? new AgentRegistry(), () => controller.guest(), settings, home)
   const agents = new AgentTasks(() => controller.guest(), event => {
     broadcast(event)
-    if (options.push) void options.push.event(event as AgentEvent, foregroundClients.size > 0)
+    if (options.push) void options.push.event(event as AgentEvent, foregroundClients.size > 0).catch(error => console.error('Push event failed:', error))
     const job = agentJob(event as AgentEvent)
-    if (job && options.activities) void options.activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0)
+    if (job && options.activities) void options.activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
   }, () => computer.acquire(), {
     resolver: catalog, home, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
   })
   const desktopNotifications = new DesktopNotifications(() => controller.guest(), event => {
     broadcast({ type: 'notification', ...event })
-    if (options.push) void options.push.desktop(event, foregroundClients.size > 0)
+    if (options.push) void options.push.desktop(event, foregroundClients.size > 0).catch(error => console.error('Desktop push failed:', error))
   })
   const media = new MediaHandoff(() => controller.guest(), broadcast)
   /** Media is polled only while the computer is already running and someone is watching it. */
@@ -140,7 +140,9 @@ export function createCabooseServer(options: {
       if (request.method === 'GET' && path === '/v1/health') return json(response, 200, controller.stats())
       if (path === '/v1/activities' && request.method === 'POST') {
         if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
-        await options.activities.store.registerActivity(await readJson(request))
+        const body = await readJson(request)
+        await options.activities.store.registerActivity(body)
+        void options.activities.reconcile(body.activityId as string).catch(error => console.error('Live Activity reconciliation failed:', error))
         return json(response, 200, { registered: true })
       }
       if (path === '/v1/activities' && request.method === 'DELETE') {
@@ -158,8 +160,8 @@ export function createCabooseServer(options: {
       if (path === '/v1/activities/start-token' && request.method === 'DELETE') {
         if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
         const body = await readJson(request)
-        if (typeof body.deviceToken !== 'string') throw new SettingsInputError('invalid deviceToken')
-        await options.activities.store.removeStarter(body.deviceToken)
+        if (typeof body.deviceId !== 'string') throw new SettingsInputError('invalid deviceId')
+        await options.activities.store.removeStarter(body.deviceId)
         return json(response, 200, { removed: true })
       }
       if (path === '/v1/jobs/activity' && request.method === 'POST') {

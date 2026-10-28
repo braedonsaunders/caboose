@@ -117,7 +117,7 @@ it('routes Live Activity registrations and distinguishes foreground app sockets'
   close.unshift(() => app.shutdown())
   const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
   const request = (path: string, method: string, body?: object) => fetch(base + path, { method, headers: { authorization: 'Bearer owner', 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) })
-  const starter = { token: 'ab'.repeat(32), environment: 'sandbox', deviceToken: 'cd'.repeat(32) }
+  const starter = { token: 'ab'.repeat(32), environment: 'sandbox', deviceId: 'cd'.repeat(32) }
   expect((await request('/v1/activities/start-token', 'POST', starter)).status).toBe(200)
   expect((await request('/v1/activities', 'POST', { token: 'bad', environment: 'sandbox' })).status).toBe(400)
   await request('/v1/session', 'POST')
@@ -129,6 +129,6 @@ it('routes Live Activity registrations and distinguishes foreground app sockets'
   client.close(); await once(client, 'close')
   expect((await request('/v1/jobs/activity', 'POST', { start: true, job })).status).toBe(200)
   expect(send).toHaveBeenCalledOnce()
-  expect((await request('/v1/activities/start-token', 'DELETE', { deviceToken: starter.deviceToken })).status).toBe(200)
+  expect((await request('/v1/activities/start-token', 'DELETE', { deviceId: starter.deviceId })).status).toBe(200)
   expect(store.list().starters).toEqual([])
 })

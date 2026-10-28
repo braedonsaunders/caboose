@@ -74,7 +74,6 @@ ready() {
 # Xwayland, streaming each window on WebSocket port 14600. Launchers read the
 # application environment from /run/caboose/display.env once it is ready.
 start_caboose_display() {
-  if caboose-display-probe --check --token-file /run/caboose/xpra-token >/dev/null 2>&1; then return; fi
   # Caboose Display does not provide Xpra's notification D-Bus service.
   local notification_pid="$XDG_RUNTIME_DIR/caboose-notification-daemon.pid"
   if ! [ -f "$notification_pid" ] || ! kill -0 "$(cat "$notification_pid")" 2>/dev/null; then
@@ -82,6 +81,7 @@ start_caboose_display() {
       /bin/sh -c 'echo $$ > "$XDG_RUNTIME_DIR/caboose-notification-daemon.pid"; exec python3 /opt/caboose/notifications/daemon.py' \
       >>"$CABOOSE_HOME/.cache/caboose-notification-daemon.log" 2>&1 < /dev/null &
   fi
+  if caboose-display-probe --check --token-file /run/caboose/xpra-token >/dev/null 2>&1; then return; fi
   # The VA-API passthrough driver exports decode surfaces through /dev/udmabuf (passed in
   # on hosts with a render node); this container's node is the session user's to use.
   if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi

@@ -296,4 +296,8 @@ enabling them; Xpra stays the default display until the host selects Caboose Dis
   `caboose-display-ready [SECONDS]` waits until it answers a hello.
 
 On a Debian 13 system with the binaries built, `install.sh` installs the runtime
-libraries, the binaries, the unit and the readiness check.
+libraries, the binaries, the unit, the readiness check and the owner-session D-Bus
+notification endpoint and monitor from `guest/notifications`. The monitor forwards
+notifications through the host control channel, separately from the display protocol.
+Run `guest/notifications/check-container.sh` to exercise the monitor without a VM;
+`guest/notifications/check.sh` checks a running guest.

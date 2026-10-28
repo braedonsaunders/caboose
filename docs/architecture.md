@@ -38,9 +38,9 @@ The app starts one for each running agent task; it registers its ActivityKit upd
 `POST /v1/activities` with `{ activityId, jobId, token, environment }`. The host sends updates
 and an end over APNs with the `.push-type.liveactivity` topic as the agent changes state; the
 app also updates or ends an activity while foregrounded. A device can register a push-to-start
-token with `POST /v1/activities/start-token { deviceToken, token, environment }`; the host uses
+token with `POST /v1/activities/start-token { deviceId, token, environment }`; the host uses
 it when a task starts without a foreground app. The corresponding DELETE requests take
-`{ activityId }` and `{ deviceToken }`. Tokens are private and stored atomically beside settings.
+`{ activityId }` and `{ deviceId }`. Tokens and the latest 200 job states are private and stored atomically beside settings. A late update-token registration is reconciled with the latest saved job state.
 The app unregisters on sign-out. The shared widget extension renders the Lock Screen and
 Dynamic Island and opens agent tasks on tap.
 

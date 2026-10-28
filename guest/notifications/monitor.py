@@ -13,20 +13,26 @@ FLAGS = Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.
 monitor = Gio.DBusConnection.new_for_address_sync(BUS, FLAGS, None, None)
 QUEUE.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-def process(sender, args):
+def process(args):
     try:
         if len(args) != 8:
             return False
         app, _, _, summary, body, _, _, _ = args
         record = {'id': str(uuid.uuid4()), 'app': str(app)[:200], 'summary': str(summary)[:500], 'body': str(body)[:1000], 'created': int(time.time())}
-        # Drop oldest entries if the host is offline. No names or content leave the guest except through the authenticated host.
-        for path in sorted(QUEUE.glob('*.json'), key=lambda p: p.stat().st_mtime)[:-99]:
-            path.unlink(missing_ok=True)
         temporary = QUEUE / ('.' + record['id'])
         with temporary.open('x', encoding='utf-8') as file:
             os.chmod(temporary, 0o600)
             json.dump(record, file, ensure_ascii=True)
         temporary.rename(QUEUE / (record['id'] + '.json'))
+        # The host can drain concurrently; a disappearing file must not discard this event.
+        entries = []
+        for path in QUEUE.glob('*.json'):
+            try:
+                entries.append((path.stat().st_mtime_ns, path))
+            except FileNotFoundError:
+                pass
+        for _, path in sorted(entries)[:-100]:
+            path.unlink(missing_ok=True)
     except (OSError, ValueError, TypeError, GLib.Error) as error:
         print('notification monitor:', error, flush=True)
     return False
@@ -36,8 +42,8 @@ def receive(_connection, message, incoming, _data):
         return message
     # Monitors must never reply to observed calls; stop GDBus dispatching them.
     if message.get_interface() == 'org.freedesktop.Notifications' and message.get_member() == 'Notify':
-        # Filters run on GDBus's I/O thread: make the lookup on the main loop, never here.
-        GLib.idle_add(process, message.get_sender(), message.get_body().unpack())
+        # Filters run on GDBus's I/O thread: write the queue on the main loop.
+        GLib.idle_add(process, message.get_body().unpack())
     return None
 
 monitor.add_filter(receive, None)

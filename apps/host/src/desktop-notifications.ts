@@ -16,7 +16,7 @@ export const DRAIN_NOTIFICATIONS = `d=/home/caboose/.cache/caboose/notifications
 [ -d "$d" ] || exit 0
 for f in "$d"/*.json; do
   [ -f "$f" ] || continue
-  head -c 16384 "$f"
+  head -c 32768 "$f"
   printf '\\n'
   rm -f -- "$f"
 done`
