@@ -58,5 +58,10 @@ two fingers scroll, a two-finger tap right-clicks, two quick taps double-click a
 touch and move drags. Those rules live in `CabooseKit/Input/TrackpadGestures.swift` and are
 unit-tested with staggered fingers, because real fingers never land or lift together.
 On a device, check that a two-finger tap opens a context menu even right after a tap,
-that two fingers that move scroll without a click, and that tap-tap opens a desktop file. The iOS keyboard types through `UIKeyInput`; hardware
+that two fingers that move scroll without a click, and that tap-tap opens a desktop file. The iOS keyboard types through `UITextInput` (`CabooseKit/UI/RemoteTextInputView.swift`), with
+the edits turned into keystrokes by `CabooseKit/Input/TypingBuffer.swift`, which is unit-tested
+for autocorrect, swipe words, marked text and deletes. On a device, check in Chromium's address
+bar that a misspelt word is corrected in place, that a swiped word arrives whole, that the
+Japanese Romaji and Chinese Pinyin keyboards commit their candidates, and that the terminal
+gets no autocorrect until `Aa` on the key bar turns it on. Hardware
 keys are sent as X keys, with ⌘ mapped to Control so ⌘C/⌘V/⌘T do what Mac users expect.

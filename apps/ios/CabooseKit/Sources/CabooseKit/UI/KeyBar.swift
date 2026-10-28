@@ -9,10 +9,13 @@ final class KeyBar: UIInputView {
         case key(String)
         case text(String)
         case modifier(String)
+        /// Turns autocorrect, capitals and predictions on or off for this window.
+        case autocorrect
     }
 
     var onAction: ((Action) -> Void)?
     private var modifierButtons: [String: UIButton] = [:]
+    private var autocorrectButton: UIButton?
 
     init() {
         super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 48), inputViewStyle: .keyboard)
@@ -38,7 +41,7 @@ final class KeyBar: UIInputView {
             stack.heightAnchor.constraint(equalToConstant: 36),
         ])
         let items: [(String, Action)] = [
-            ("esc", .key("Escape")), ("tab", .key("Tab")), ("ctrl", .modifier("control")), ("alt", .modifier("mod1")),
+            ("Aa", .autocorrect), ("esc", .key("Escape")), ("tab", .key("Tab")), ("ctrl", .modifier("control")), ("alt", .modifier("mod1")),
             ("←", .key("Left")), ("↑", .key("Up")), ("↓", .key("Down")), ("→", .key("Right")),
             ("|", .text("|")), ("~", .text("~")), ("/", .text("/")), ("-", .text("-")), ("_", .text("_")),
             ("`", .text("`")), ("\\", .text("\\")), ("home", .key("Home")), ("end", .key("End")),
@@ -58,6 +61,10 @@ final class KeyBar: UIInputView {
                 self?.onAction?(action)
             })
             if case .modifier(let name) = action { modifierButtons[name] = button }
+            if case .autocorrect = action {
+                autocorrectButton = button
+                button.accessibilityLabel = String(localized: "Autocorrect")
+            }
             stack.addArrangedSubview(button)
         }
     }
@@ -65,15 +72,23 @@ final class KeyBar: UIInputView {
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     func show(activeModifiers: Set<String>) {
-        for (name, button) in modifierButtons {
-            button.configuration = {
-                var configuration = activeModifiers.contains(name) ? UIButton.Configuration.prominentGlass() : UIButton.Configuration.glass()
-                configuration.title = button.configuration?.title
-                configuration.contentInsets = button.configuration?.contentInsets ?? .zero
-                configuration.titleTextAttributesTransformer = button.configuration?.titleTextAttributesTransformer
-                return configuration
-            }()
-        }
+        for (name, button) in modifierButtons { highlight(button, activeModifiers.contains(name)) }
+    }
+
+    func show(autocorrect: Bool) {
+        guard let autocorrectButton else { return }
+        highlight(autocorrectButton, autocorrect)
+        autocorrectButton.accessibilityValue = autocorrect ? String(localized: "On") : String(localized: "Off")
+    }
+
+    private func highlight(_ button: UIButton, _ on: Bool) {
+        button.configuration = {
+            var configuration = on ? UIButton.Configuration.prominentGlass() : UIButton.Configuration.glass()
+            configuration.title = button.configuration?.title
+            configuration.contentInsets = button.configuration?.contentInsets ?? .zero
+            configuration.titleTextAttributesTransformer = button.configuration?.titleTextAttributesTransformer
+            return configuration
+        }()
     }
 }
 #endif
