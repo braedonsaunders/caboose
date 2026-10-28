@@ -47,7 +47,19 @@ if sys.argv[1] == 'launch':
     gi.require_version('Gio', '2.0')
     from gi.repository import Gio
     info = Gio.DesktopAppInfo.new_from_filename(str(entry))
-    if info is None or not info.launch([], None):
+    if info is None:
+        raise SystemExit('Application could not be started')
+    # The app inherits this process's stdio. Left as the exec pipes, they stay open for the
+    # app's lifetime and the host waits out its timeout before the launch returns.
+    devnull = os.open(os.devnull, os.O_RDWR)
+    saved = os.dup(2)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+    try:
+        launched = info.launch([], None)
+    finally:
+        os.dup2(saved, 2)
+    if not launched:
         raise SystemExit('Application could not be started')
 else:
     import gi
