@@ -76,7 +76,7 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 | | |
 | --- | --- |
 | **iOS app** (`apps/ios`) | SwiftUI shell over UIKit and Metal. Each Linux window is a Metal texture; H.264 and HEVC decode in VideoToolbox straight into GPU memory, and redraws present only what changed. Touch, hardware trackpad and mouse, the iOS keyboard with dictation, ⌘ shortcuts mapped for Mac hands, and a TV mode with the phone as a trackpad. |
-| **CabooseKit** (`apps/ios/CabooseKit`) | A native Xpra client as a Swift package: rencodeplus codec, packet framing, WebSocket transport, capabilities and HMAC auth, window registry, flow-controlled draw pipelines, clipboard and notifications. Unit-tested against captured protocol vectors. |
+| **CabooseKit** (`apps/ios/CabooseKit`) | Two display clients behind one window model, as a Swift package: Caboose Display (its own protocol, with native touch, IME text, video layers and Opus sound) and Xpra (rencodeplus, HMAC auth, flow-controlled draw pipelines). H.264, HEVC and AV1 decode in hardware. Unit-tested against golden protocol vectors from both servers. |
 | **Host** (`apps/host`) | `caboose-host`, TypeScript on Node 22. Owner-token auth, computer lifecycle (wake, lease, park with memory, cold restart), a display relay that never decodes a pixel, the agent task API, and the management API. |
 | **Console** (`apps/web`) | The self-host web console the host serves: state and resources, wake, park and restart, settings, agent tasks, and the link that signs an iPhone in. |
 | **The computer** (`guest/`) | A Debian 13 golden image on Cloud Hypervisor. Each computer is a copy-on-write clone, so it costs nothing up front and keeps its own installs. The image includes Chromium, Firefox, VS Code, LibreOffice, GIMP, Obsidian, Docker, a modern shell kit, and Claude Code, Codex, OpenCode and Gemini CLI. On a GPU host it can run as a container with NVENC, VA-API or D3D12 instead. |
@@ -90,20 +90,20 @@ lived and worked. Here it's the computer that comes along wherever your phone go
  │ Caboose (Swift)          │  HTTPS+WSS  │ caboose-host (Node 22)                │
  │  Home grid, app cards,   │ ──────────▶ │  wake · lease · park-with-memory      │
  │  windows on iPad / TV    │ /v1/session │  display relay (bytes, never pixels)  │
- │  CabooseKit: Xpra client │ /v1/display │  control: apps, agents, settings      │
+ │  CabooseKit: display     │ /v1/display │  control: apps, agents, settings      │
  │  VideoToolbox → Metal    │ /v1/control │           │ vsock + TAP               │
  └──────────────────────────┘             │ ┌─────────▼─────────────────────────┐ │
                                           │ │ microVM: Debian 13, CoW home      │ │
-                                          │ │  Xpra seamless :100  (you)        │ │
+                                          │ │  Caboose Display / Xpra  (you)    │ │
                                           │ │  Xpra seamless :101  (agents)     │ │
                                           │ │  Chromium, VS Code, Claude Code…  │ │
                                           │ └───────────────────────────────────┘ │
                                           └───────────────────────────────────────┘
 ```
 
-- **Per-window, not per-desktop.** Xpra in seamless mode streams every window with its
-  own title, icon, size hints and parent, and only re-encodes what changed. That's what
-  lets the phone show a Linux app as an app.
+- **Per-window, not per-desktop.** Every window is its own stream with its own title,
+  icon, size hints and parent, and only what changed is re-encoded. That's what lets the
+  phone show a Linux app as an app.
 - **Relay, don't transcode.** The host passes the stream through untouched, so latency
   is guest-to-phone and one host can serve many computers.
 - **Park with memory.** Cloud Hypervisor snapshots (via
@@ -112,9 +112,18 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 - **Fenced by default.** The guest can't open anything on the host, and it reaches only
   the public internet. Private, link-local, CGNAT and Tailscale ranges are blocked unless
   you allow your LAN.
-- **Next: Caboose Display.** A GPU-native per-window compositor that encodes straight from
-  GPU memory, aiming at 4K60 on the phone and TV. It's designed but not built yet; see
-  [docs/display.md](docs/display.md).
+- **Caboose Display.** Caboose's own display server ([guest/display](guest/display),
+  [docs/display.md](docs/display.md)): a headless Wayland compositor with Xwayland that
+  streams each window on its own, paced by the phone's screen. Nothing runs while nothing
+  changes. Video-rate regions become their own motion streams, still text sharpens once,
+  and the computer's sound goes as Opus in step with the pictures. Touch and the iOS
+  keyboard (autocorrect, dictation, CJK) arrive as native Wayland input, and the
+  clipboard works across the phone, Wayland and X11 apps. Players that decode through
+  VA-API hand their compressed video straight to the phone ([guest/vaapi](guest/vaapi)).
+  It encodes with NVENC where the host has an NVIDIA GPU, otherwise x264. On a
+  WSL2 RTX 4080 host, 1080p video reaches the phone at 51–54 fps with 11 ms latency,
+  typing costs about 9% of a core at phone size, and an idle window about 0.5%. Hosts opt
+  in with `CABOOSE_DISPLAY=caboose`; Xpra stays the default and serves the agents' seat.
 
 The full contract between app, host and guest is [docs/architecture.md](docs/architecture.md).
 
@@ -151,7 +160,7 @@ WSL2 and NVIDIA, are in [apps/host](apps/host/README.md) and
 **Pre-alpha, moving fast.** The host, guest image, iOS app and console have run together
 against a real KVM host, covering wake, park and resume, per-window H.264 and HEVC, the
 TV desktop, sound, agents on their own seat, and settings and restart. The Docker
-deployment hasn't been verified end to end yet, and Caboose Display is a design. Iteration
+deployment hasn't been verified end to end yet. Caboose Display runs alongside Xpra. Iteration
 1 is done when you can open the app, watch your computer wake, tap Chromium or the
 terminal, use it, leave, and come back to find it exactly as you left it.
 
@@ -159,12 +168,13 @@ terminal, use it, leave, and come back to find it exactly as you left it.
 
 | Path | What |
 | --- | --- |
-| [`apps/ios`](apps/ios) | The iPhone and iPad app, and `CabooseKit`, its Xpra client |
+| [`apps/ios`](apps/ios) | The iPhone and iPad app, and `CabooseKit`, its display clients |
 | [`apps/host`](apps/host) | `caboose-host`: computer lifecycle, display relay, agents and management API |
 | [`apps/web`](apps/web) | The self-host console the host serves (React, AppKit UI) |
-| [`guest/image`](guest/image) | The golden machine image: Debian 13, Xpra seamless, apps and agent CLIs |
+| [`guest/image`](guest/image) | The golden machine image: Debian 13, Caboose Display and Xpra, apps and agent runtimes |
 | [`guest/container`](guest/container) | The same computer as a GPU container, for WSL2 and Linux GPU hosts |
 | [`guest/display`](guest/display) | Caboose Display: the per-window display server, its protocol and golden vectors (Rust) |
+| [`guest/vaapi`](guest/vaapi) | The VA-API codec-passthrough driver that forwards apps' compressed video to the phone (C) |
 | [`guest/agentd`](guest/agentd) | `caboose-agentd`: the ACP client that runs any registry agent for a task |
 | [`guest/desktop-mcp`](guest/desktop-mcp) | GUI tools for agents on their own seat |
 | [`docs`](docs) | Architecture, the Xpra protocol notes and the Caboose Display design |
