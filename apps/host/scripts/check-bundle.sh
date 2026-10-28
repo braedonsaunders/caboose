@@ -22,6 +22,10 @@ for path in bin/caboose-host bin/caboose-setup-disks node/bin/node app/apps/host
   app/guest/components/manifest.json app/guest/catalog/catalog.json VERSION defaults.env; do
   [[ -e $host/$path ]] || { echo "FAIL: the bundle lacks $path" >&2; exit 1; }
 done
+missing=$(cd "$host/app/guest" && "$host/node/bin/node" -e '
+  const fs = require("fs")
+  console.log(JSON.parse(fs.readFileSync("components/manifest.json", "utf8")).filter(name => !fs.existsSync(name)).join(" "))')
+[[ -z $missing ]] || { echo "FAIL: the bundle lacks guest components: $missing" >&2; exit 1; }
 [[ $("$host/node/bin/node" --version) == v22.* ]] || { echo 'FAIL: the bundled Node is not 22' >&2; exit 1; }
 case $bundle in
   *linux-*) [[ -x $host/bin/cloud-hypervisor ]] || { echo 'FAIL: a Linux bundle lacks Cloud Hypervisor' >&2; exit 1; } ;;

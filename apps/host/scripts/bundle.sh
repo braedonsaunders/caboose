@@ -78,7 +78,13 @@ mkdir -p "$root/app/apps/host" "$root/app/apps/web" "$root/app/guest/catalog" "$
 cp -R "$work/host/node_modules" "$work/host/package.json" "$root/app/apps/host/"
 cp -R "$repo/apps/host/dist" "$root/app/apps/host/dist"
 cp -R "$repo/apps/web/dist" "$root/app/apps/web/dist"
-for dir in components files phone notifications; do cp -R "$repo/guest/$dir" "$root/app/guest/$dir"; done
+# The guest components the host installs: exactly the files their manifest lists.
+( cd "$repo/guest" && node -e '
+  const { cpSync } = require("fs"), { join } = require("path")
+  const out = process.argv[1]
+  for (const name of [...JSON.parse(require("fs").readFileSync("components/manifest.json", "utf8")), "components/manifest.json"]) {
+    cpSync(name, join(out, name), { recursive: true })
+  }' "$root/app/guest" )
 cp "$repo/guest/catalog/catalog.json" "$root/app/guest/catalog/"
 cp -R "$repo/guest/catalog/icons" "$root/app/guest/catalog/icons"
 cp "$repo/apps/host/scripts/setup-disks.sh" "$root/bin/caboose-setup-disks"
