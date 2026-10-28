@@ -144,7 +144,7 @@ implements it.
 - The client sends `vsync` once per refresh of each display that shows a window. Frame
   callbacks of a window are released on a vsync of its display, and only while fewer than
   2 of its frames are unacknowledged (`ack` matches by `pts_us`). A window whose display
-  sends no vsync is throttled like a minimised one.
+  sends no vsync is throttled like a minimised one: it gets frame callbacks once a second.
 - `ack.decoded_us` is the decode duration, or `-1` if decoding failed, after which the
   client also sends `request_keyframe`. The next frame after `request_keyframe`, a
   reconnect, or a size change is a keyframe with parameter sets.
@@ -203,6 +203,25 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
 - Clients keep pointer gestures (tap, long-press right-click, swipe to scroll) for
   `xwayland: true` windows and send real touch to native Wayland ones, because most X11
   apps turn a touch drag into a selection.
+
+## Status
+
+`guest/display` implements milestone 1 and the CPU path of the design; its README has the
+measurements and the scripted checks.
+
+- **Done:** the protocol and its vectors; the headless compositor with Xwayland, wl_shm and
+  linear dmabufs; one stream per toplevel, dialog, popup and X11 window; damage-tracked
+  rendering, changed-block detection and libx264 macroblock hints, so the server's CPU
+  follows what changes on screen; libx264, libx265 and NVENC (from system memory, the WSL2
+  path) behind one `Encoder` trait; pacing on vsync with acknowledgement-based flow
+  control; pointer, multitouch, keys and text-input-v3 input; reconnect and replacement;
+  the container and microVM integration (installed, not the default).
+- **Next:** a GPU renderer that composes into dmabufs, and the zero-copy encoders on it
+  (dmabuf → NVENC through CUDA external memory, dmabuf → VA-API); lossless tiles; clipboard,
+  cursor images, Pencil and audio; the `video.*` layers.
+- **Not measurable here yet:** milestone 2's success criterion needs a Linux host with an
+  encode-capable GPU. The development machine's GPU (Radeon HD 7450) has VA-API decode
+  only, and the RTX 4080 machine runs WSL2, which has no DRM render node.
 
 ## Milestones
 
