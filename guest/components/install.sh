@@ -13,7 +13,7 @@ done
 if ((${#missing[@]})); then
   log=$(mktemp /tmp/caboose-apt.XXXXXXXX)
   trap 'rm -f "$log"' EXIT
-  if ! apt-get update >"$log" 2>&1 || ! apt-get install -y --no-install-recommends "${missing[@]}" >>"$log" 2>&1; then
+  if ! dpkg --configure -a >"$log" 2>&1 || ! apt-get update >>"$log" 2>&1 || ! apt-get install -y --no-install-recommends "${missing[@]}" >>"$log" 2>&1; then
     tail -n 80 "$log" >&2
     exit 1
   fi
