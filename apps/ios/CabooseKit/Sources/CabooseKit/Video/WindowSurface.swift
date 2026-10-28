@@ -2,6 +2,7 @@ import CoreGraphics
 import CoreVideo
 import Foundation
 import Metal
+import MetalPerformanceShaders
 
 /// Shared Metal objects for every window surface.
 public final class SurfaceRenderer: @unchecked Sendable {
@@ -50,7 +51,7 @@ public final class WindowSurface: @unchecked Sendable {
         if let backing, backing.width == width, backing.height == height { return }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
-        descriptor.usage = [.shaderRead, .renderTarget]
+        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
         descriptor.storageMode = .shared
         guard let next = renderer.device.makeTexture(descriptor: descriptor) else { return }
         if let old = backing, let commands = renderer.queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder() {
@@ -94,14 +95,20 @@ public final class WindowSurface: @unchecked Sendable {
     }
 
     /// Copies a decoded video picture into a region on the GPU, without touching its pixels on the CPU.
-    public func upload(pixelBuffer: CVPixelBuffer, x: Int, y: Int, width: Int, height: Int) {
+    /// `encodedSize` is the picture's size when the server scaled the video down to keep its frame
+    /// rate (Xpra's `scaled_size`); it is drawn back up to the region on the GPU.
+    public func upload(pixelBuffer: CVPixelBuffer, x: Int, y: Int, width: Int, height: Int, encodedSize: CGSize? = nil) {
         guard let texture else { return }
         let sourceWidth = CVPixelBufferGetWidth(pixelBuffer), sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
         var cvTexture: CVMetalTexture?
         CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault, renderer.textureCache, pixelBuffer, nil, .bgra8Unorm, sourceWidth, sourceHeight, 0, &cvTexture)
-        guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture),
-              let region = clamp(x: x, y: y, width: min(width, sourceWidth), height: min(height, sourceHeight), in: texture),
+        guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture) else { return }
+        if let encodedSize, Int(encodedSize.width) < width || Int(encodedSize.height) < height {
+            scale(source, encoded: encodedSize, into: CGRect(x: x, y: y, width: width, height: height), keeping: cvTexture)
+            return
+        }
+        guard let region = clamp(x: x, y: y, width: min(width, sourceWidth), height: min(height, sourceHeight), in: texture),
               let commands = renderer.queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder()
         else { return }
         blit.copy(from: source, sourceSlice: 0, sourceLevel: 0,
@@ -111,6 +118,27 @@ public final class WindowSurface: @unchecked Sendable {
         commands.addCompletedHandler { _ in _ = cvTexture } // keep the CVMetalTexture alive until the copy lands
         commands.commit()
         // CPU uploads write the same texture; finish the GPU copy before the next draw lands.
+        commands.waitUntilCompleted()
+        bump()
+    }
+
+    private func scale(_ source: MTLTexture, encoded: CGSize, into rect: CGRect, keeping cvTexture: CVMetalTexture) {
+        guard let texture, let commands = renderer.queue.makeCommandBuffer(),
+              let region = clamp(x: Int(rect.minX), y: Int(rect.minY), width: Int(rect.width), height: Int(rect.height), in: texture)
+        else { return }
+        let scaler = MPSImageBilinearScale(device: renderer.device)
+        // Map the encoded picture (top-left `encoded` of the decoded buffer, which may be padded)
+        // onto `rect`, and write only inside it.
+        var transform = MPSScaleTransform(scaleX: Double(rect.width) / Double(encoded.width),
+                                          scaleY: Double(rect.height) / Double(encoded.height),
+                                          translateX: Double(rect.minX), translateY: Double(rect.minY))
+        scaler.clipRect = MTLRegion(origin: region.origin, size: region.size)
+        withUnsafePointer(to: &transform) { pointer in
+            scaler.scaleTransform = pointer
+            scaler.encode(commandBuffer: commands, sourceTexture: source, destinationTexture: texture)
+        }
+        commands.addCompletedHandler { _ in _ = cvTexture }
+        commands.commit()
         commands.waitUntilCompleted()
         bump()
     }

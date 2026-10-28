@@ -95,7 +95,12 @@ final class DrawPipeline: @unchecked Sendable {
             return
         case "h264":
             if let picture = try decoder.decode(data) {
-                surface.upload(pixelBuffer: picture, x: x, y: y, width: width, height: height)
+                let scaled = options["scaled_size"]?.list
+                let encoded = scaled.flatMap { size -> CGSize? in
+                    guard size.count == 2, let w = size[0].int, let h = size[1].int, w > 0, h > 0 else { return nil }
+                    return CGSize(width: w, height: h)
+                }
+                surface.upload(pixelBuffer: picture, x: x, y: y, width: width, height: height, encodedSize: encoded)
             }
         case "jpeg", "webp", "png", "png/P", "png/L":
             guard let source = CGImageSourceCreateWithData(data as CFData, nil),
