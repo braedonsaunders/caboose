@@ -105,7 +105,7 @@ struct YardGrabber: View {
                 }
             }
             Button("Open Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") {
-                model.openAsCard(window.id)
+                model.show(windowID: window.id)
             }
             if model.agents.available {
                 Button("Ask Agent About This Window", systemImage: "sparkle") { onAsk(window) }

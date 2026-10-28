@@ -764,13 +764,6 @@ final class AppModel {
         yard.learnAppClasses { [weak self] id in self?.session?.windows[id]?.appClass?.name }
     }
 
-    /// Takes a window out of the yard to its full-screen card, where the side edges swipe
-    /// between apps; the yard has it back on the Desktop tab.
-    func openAsCard(_ id: Int) {
-        selectedTab = .home
-        presentedWindowID = id
-    }
-
     /// ⌘⌥Return: a terminal, as on a Linux desktop.
     func openTerminalApp() {
         guard let terminal = partitionedApps.main.first(where: { $0.categories.contains("TerminalEmulator") }) else { return }
