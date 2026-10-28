@@ -4,7 +4,7 @@ use caboose_win_core::backoff::{delay, failures_after};
 use caboose_win_core::layout::{InstallConfig, Layout};
 use caboose_win_core::logfile::Log;
 use caboose_win_core::portproxy::{self, Rule};
-use caboose_win_core::process::{command, run, run_checked, system32};
+use caboose_win_core::process::{command, run_checked, system32};
 use caboose_win_core::status::{Networking, ServiceStatus};
 use caboose_win_core::wsl::{exec_as_root, parse_ipv4};
 use caboose_win_core::PORT;
@@ -235,8 +235,7 @@ fn forward_once(log: &Log, previous: Option<&str>) -> Result<String, String> {
     let address = parse_ipv4(&output.stdout)
         .ok_or_else(|| format!("the distribution has no IPv4 address: {}", output.stdout.trim()))?;
     let netsh = system32("netsh.exe");
-    let shown =
-        run(&netsh, &["interface", "portproxy", "show", "v4tov4"]).map_err(|error| format!("netsh: {error}"))?;
+    let shown = run_checked(&netsh, &["interface", "portproxy", "show", "v4tov4"])?;
     let desired = Rule::to_distro(&address.to_string(), PORT);
     let owned = previous.map(|address| Rule::to_distro(address, PORT));
     for change in portproxy::plan(Some(&desired), &portproxy::parse_show(&shown.stdout), owned.as_ref())? {
