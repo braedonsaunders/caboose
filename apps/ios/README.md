@@ -8,7 +8,7 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 | Path | What |
 | --- | --- |
 | `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input. |
-| `Caboose/` | The app: pairing, wake, Home (open windows and the computer's apps), window screens, the desktop on a TV or iPad, agents, settings, intents. |
+| `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and, when built in, Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
 | `Caboose/Brand/` | The logo drawn natively in SwiftUI. It shares geometry and timing with `apps/web/src/brand/brand.ts`; change both together. `scripts/render-app-icon.sh` renders the app icon from the same SVG (macOS). |
 | `Share/` | The share extension (target `CabooseShare`). |
 | `Files/` | The File Provider extension that shows the computer in the Files app. |
@@ -131,7 +131,7 @@ Control so ⌘C, ⌘V and ⌘T do what Mac users expect.
 
 ## Agents
 
-The Ask bar on Home starts a task with the computer's default agent or any agent installed
+The Ask bar on the Agents tab starts a task with the computer's default agent or any agent installed
 from the Agent Client Protocol registry. **Ask Before Acting** makes the agent stop before
 each action until you tap Allow (or the agent's always-allow option) or Deny, on the task
 card or on the banner that shows over any screen. A finished task takes a reply that
@@ -183,12 +183,19 @@ parks the computer, and hands anything bigger to a computer agent. A window's `�
 
 ## Computer settings
 
-Home's menu, the parked screen and the failure screen open **Computer**: the computer's name,
-the memory and cores it boots with (applied on the next restart), how long it waits before
-parking, Park Now, Restart, and Change Computer. It uses the host's management API
-(`docs/architecture.md`) and follows `computer.settings` events on the control socket.
-Home's Shelf offers optional applications from the computer's pinned catalog; Library groups
-them into packs and offers updates, rollback to a cached release, and removal.
+The cog in every tab's toolbar opens **Computer**: the computer's name, the memory and cores
+it boots with (applied on the next restart), how long it waits before parking, Park Now,
+Restart, the wallpaper, and Change Computer. Beside the cog, the lifecycle menu shows the
+computer's state and offers Turn On, Park and Restart as they apply. Both use the host's
+management API (`docs/architecture.md`) and follow `computer.settings` events on the control
+socket. The Apps tab's Shelf offers optional applications from the computer's pinned
+catalog; Library groups them into packs and offers updates, rollback to a cached release,
+and removal.
+
+The wallpaper lies behind every tab and the desktop, here and on a TV: the brand gradient,
+photographs that change every quarter hour, one photograph, or a picture of your own from
+Photos. Choose it in Computer settings, from the Desktop's overflow menu, or with a long
+press on Home's background.
 
 The same sheet shows the progress and any failure of a guest component update the host
 runs at wake. A container created without the Files port mapping shows that it must be
@@ -205,7 +212,7 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   and Chinese Pinyin keyboards commit their candidates; the terminal gets no autocorrect
   until `Aa` on the key bar turns it on.
 - **Share sheet.** Share a Safari page and pick Open on Computer; share a photo and pick Save
-  and Open; share a photo with a request to an agent and see the task appear on Home.
+  and Open; share a photo with a request to an agent and see the task appear on Home and in Agents.
 - **Files.** Create a folder, save and edit a document in place and verify it on Linux;
   rename and move from each side; delete in Files and check the guest's Trash; park the
   computer and open a file to verify wake; go offline and verify Files reports the host
@@ -228,3 +235,14 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   and check Spotlight; sign out and verify the entries disappear.
 - **Shelf and Library.** Install PhotoCraft from the Shelf, follow its progress, open it, and
   remove it from Library.
+- **Tabs and the vertical bar.** On iPhone Duo, closed and open in landscape, every tab's
+  bar is on the side with the tabs, the cog and the lifecycle menu; on the Desktop tab the
+  desktop fills the space beside the bar and resizes when the device folds or rotates; on a
+  phone without the bar, the tab bar and toolbar are horizontal. Open the Desktop's
+  Launchpad on the closed phone and check that it and the dock fit. Capture either display
+  with `xcrun devicectl device capture screenshot --display-unique-id <id>` (ids from
+  `devicectl device info displays`); `caboose://home`, `desktop`, `agents` and `apps`
+  select a tab.
+- **AirPlay.** With an AirPlay device in reach, play to it once from Home's route picker;
+  Home then names it, and its main control reconnects or offers it as the Automatically
+  AirPlay setting allows. Park, Turn On and Restart from the lifecycle menu.

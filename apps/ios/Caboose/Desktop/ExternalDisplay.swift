@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         // The computer's sound plays like a media app's (and so follows AirPlay to the TV), mixed
         // with whatever else is playing rather than stopping it.
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        AirPlayCenter.configureDefault()
         PushCoordinator.shared.configure()
         LiveActivityCoordinator.shared.configure()
         return true

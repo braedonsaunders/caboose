@@ -8,6 +8,7 @@ import SwiftUI
 //   CabooseWordmark(motion: .rolling)   wheels turning (waking)
 //   CabooseWordmark(lit: false)         hubs unlit: the computer is parked
 //   CabooseWheel()                      one wheel, a power button
+//   CabooseWheel(motion: .rolling)      one wheel turning: something is at work
 //
 // Ink is the environment's foreground style; lit hubs are amber. Motion stops under
 // Reduce Motion.
@@ -30,13 +31,14 @@ struct CabooseWordmark: View {
     }
 }
 
-/// One wheel of the wordmark: rim, spoke and amber hub. It reads as a power button,
-/// which is what it stands for where it appears (the computer menu).
+/// One wheel of the wordmark: rim, spoke and amber hub. It reads as a power button where it
+/// stands for the computer, and rolls (`motion: .rolling`) where something is at work.
 struct CabooseWheel: View {
+    var motion: BrandMotion = .still
     var lit = true
 
     var body: some View {
-        BrandCanvas(box: Brand.wheelBox, motion: .still) { context, frame in
+        BrandCanvas(box: Brand.wheelBox, motion: motion == .intro ? .still : motion) { context, frame in
             Brand.drawWheel(in: &context, x: 0, start: 0, frame: frame, lit: lit)
         }
         .accessibilityElement()

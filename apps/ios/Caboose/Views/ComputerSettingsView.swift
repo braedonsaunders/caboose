@@ -1,3 +1,4 @@
+import CabooseKit
 import SwiftUI
 
 /// The computer's own settings, kept by the host: its name, the memory and cores it boots
@@ -76,14 +77,12 @@ struct ComputerSettingsView: View {
     private func form(_ status: HostClient.ComputerStatus) -> some View {
         let limits = status.limits
         Form {
-            if let upgrade = status.upgrade, upgrade.state == "checking" || upgrade.state == "updating" || upgrade.state == "failed" || upgrade.message != nil {
+            if let upgrade = status.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
                 Section {
-                    if upgrade.state == "checking" || upgrade.state == "updating" {
-                        Label { Text("Updating Caboose components…") } icon: { ProgressView() }
-                    }
-                    if let message = upgrade.message {
-                        Label(message, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
+                    if upgrade.state == "failed" {
+                        StatusRow(title: title, systemImage: "exclamationmark.triangle", tint: .orange, message: upgrade.message)
+                    } else {
+                        Label { Text(title) } icon: { ProgressView() }
                     }
                 }
             }
@@ -185,6 +184,18 @@ struct ComputerSettingsView: View {
                 }
             }
 
+            Section {
+                NavigationLink {
+                    BackgroundPicker()
+                } label: {
+                    LabeledContent {
+                        Text(backgroundName)
+                    } label: {
+                        Label("Wallpaper", systemImage: "photo.on.rectangle")
+                    }
+                }
+            }
+
             Section("Connection") {
                 if let host = model.credentials?.hostURL.host() {
                     LabeledContent("Host", value: host)
@@ -197,8 +208,8 @@ struct ComputerSettingsView: View {
             }
 
             if let error = saveError ?? status.lastError {
-                Section("Last error") {
-                    Text(error).font(.footnote.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                Section {
+                    StatusRow(title: saveError != nil ? "Couldn't Save" : "Last Error", systemImage: "exclamationmark.circle", tint: .secondary, message: error)
                 }
             }
 
@@ -208,6 +219,15 @@ struct ComputerSettingsView: View {
         }
         .scrollContentBackground(.hidden)
         .refreshable { await load() }
+    }
+
+    private var backgroundName: String {
+        switch WallpaperStore.shared.choice {
+        case .gradient: "Gradient"
+        case .rotating: "Rotating"
+        case .photo: "Photograph"
+        case .custom: "Your Photo"
+        }
     }
 
     // MARK: Editing
@@ -302,5 +322,30 @@ struct ComputerSettingsView: View {
     static func idleChoices(_ range: ClosedRange<Int>, current: Int?) -> [Int] {
         let minutes = [1, 5, 10, 15, 30, 60, 120, 240, 480, 1440]
         return Set(minutes.map { $0 * 60_000 }.filter(range.contains) + [current].compactMap { $0 }).sorted()
+    }
+}
+
+/// A one-line status from the host; a tap shows its message, held to a few lines.
+struct StatusRow: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let message: String?
+    @State private var expanded = false
+
+    var body: some View {
+        if let message, !message.isEmpty {
+            DisclosureGroup(isExpanded: $expanded) {
+                Text(HostMessage.clipped(message))
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(6)
+                    .textSelection(.enabled)
+            } label: {
+                Label(title, systemImage: systemImage).foregroundStyle(tint)
+            }
+        } else {
+            Label(title, systemImage: systemImage).foregroundStyle(tint)
+        }
     }
 }

@@ -2,88 +2,142 @@ import CabooseKit
 import SwiftUI
 import UIKit
 
-/// The Mac-like desktop on this phone's or iPad's own screen. Home stays the launcher; this
-/// is the computer's whole desktop when you want windows side by side.
-struct DeviceDesktopScreen: View {
+/// The Desktop tab: the computer's whole desktop on this screen, windows side by side with
+/// the dock and Launchpad; or, while a TV shows the desktop, this phone as its trackpad.
+///
+/// Its actions sit in the toolbar, so on iPhone Duo they join the tab bar in the vertical bar
+/// on the side, which stays fully shown as on every tab. The desktop fills everything beside
+/// the vertical bar, or between horizontal bars, and the computer lays its windows out for
+/// exactly that space; when the bars change, so does the desktop. Full Screen gives it the
+/// whole display until the handle at the top brings the bars back. Behind it all, under the
+/// bar as well, is the desktop's photograph with a sheer of the brand gradient.
+struct DesktopScreen: View {
     @Environment(AppModel.self) private var model
+    @State private var showAirPlay = false
+    @State private var fullScreen = false
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .topTrailing) {
-                DesktopView(desktop: model.desktop)
-                DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
-                    .ignoresSafeArea()
-                controls
-                    .padding(.top, max(8, proxy.safeAreaInsets.top))
-                    .padding(.trailing, max(10, proxy.safeAreaInsets.trailing))
+        NavigationStack {
+            Group {
+                if model.phase != .ready {
+                    ComputerStateView()
+                } else if model.externalDisplayActive {
+                    TrackpadScreen(desktop: model.desktop)
+                } else {
+                    DesktopStage(fullScreen: fullScreen)
+                }
             }
-            .onChange(of: proxy.size) { _, _ in model.deviceDesktopResized(to: fullSize(proxy)) }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background { ShellBackground() }
+            .navigationTitle("Desktop")
+            .navigationBarTitleDisplayMode(.inline)
+            // The desktop needs the height more than a title: with the vertical bar the top
+            // edge then belongs to the desktop alone.
+            .toolbar(removing: .title)
+            .toolbar {
+                if model.phase == .ready { actions }
+                ComputerToolbar()
+            }
+            .keepsTabBarInVerticalBar()
+            .toolbarVisibility(fullScreen ? .hidden : .automatic, for: .navigationBar, .tabBar)
+            .statusBarHidden(fullScreen)
+            .persistentSystemOverlays(fullScreen ? .hidden : .automatic)
+            .overlay(alignment: .top) { if fullScreen { exitFullScreenHandle } }
+            .animation(.snappy, value: fullScreen)
+            .onChange(of: model.phase) { _, phase in if phase != .ready { fullScreen = false } }
+            .sheet(isPresented: $showAirPlay) {
+                AirPlaySheet().environment(model)
+                    .presentationDetents([.medium])
+            }
         }
-        .ignoresSafeArea()
-        .statusBarHidden()
-        .persistentSystemOverlays(.hidden)
     }
 
-    private func fullSize(_ proxy: GeometryProxy) -> CGSize {
-        CGSize(width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
-               height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom)
+    /// The desktop's own actions. Agents and Apps are tabs beside them and Launchpad is in
+    /// the dock, so they are not repeated here. Full Screen gives way first when room runs out.
+    @ToolbarContentBuilder private var actions: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button(model.keyboardVisible ? "Hide Keyboard" : "Keyboard",
+                   systemImage: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard") {
+                model.keyboardVisible.toggle()
+            }
+            Button("AirPlay", systemImage: model.airPlay.current != nil ? "airplay.audio" : "airplay.video") { showAirPlay = true }
+        }
+        if !model.externalDisplayActive {
+            if #available(iOS 27.0, *) {
+                fullScreenItem.visibilityPriority(.low)
+            } else {
+                fullScreenItem
+            }
+        }
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+        if #available(iOS 27.0, *) {
+            // The system's overflow menu, with whatever else did not fit.
+            ToolbarOverflowMenu {
+                Button("Wallpaper", systemImage: "photo.on.rectangle") { model.wallpaperPickerPresented = true }
+                if WallpaperStore.shared.choice.usesLibrary {
+                    Button("Next Photograph", systemImage: "arrow.triangle.2.circlepath") { WallpaperStore.shared.next() }
+                }
+            }
+        }
     }
 
-    private var controls: some View {
-        HStack(spacing: 8) {
-            Button { model.keyboardVisible.toggle() } label: {
-                Image(systemName: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
-                    .frame(width: 36, height: 36)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel(model.keyboardVisible ? "Hide keyboard" : "Show keyboard")
-            Button { withAnimation(.smooth) { model.closeDeviceDesktop() } } label: {
-                Image(systemName: "square.grid.2x2").frame(width: 36, height: 36)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel("Back to Home")
+    private var fullScreenItem: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { fullScreen = true }
         }
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(.white)
+    }
+
+    /// In full screen, a pull-down tab at the top edge brings the bars back.
+    private var exitFullScreenHandle: some View {
+        Capsule()
+            .fill(.white.opacity(0.45))
+            .frame(width: 44, height: 5)
+            .padding(.top, 6)
+            .frame(width: 120, height: 28, alignment: .top)
+            .contentShape(Rectangle())
+            .onTapGesture { fullScreen = false }
+            .gesture(DragGesture(minimumDistance: 8).onEnded { value in
+                if value.translation.height > 12 { fullScreen = false }
+            })
+            .accessibilityLabel("Exit Full Screen")
+            .accessibilityAddTraits(.isButton)
     }
 }
 
-/// Home's way in: a desktop, so it looks like one, apart from the app grid.
-struct DesktopCard: View {
+/// The phone's own desktop, edge to edge. Beside a vertical bar it takes the full height and
+/// everything up to the bar; with horizontal bars, the space between them; in full screen,
+/// the whole display. The computer is configured for exactly that size.
+private struct DesktopStage: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
+    let fullScreen: Bool
 
     var body: some View {
-        Button {
-            let bounds = UIScreen.main.bounds
-            withAnimation(.smooth) { model.openDeviceDesktop(size: bounds.size) }
-        } label: {
-            HStack(spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(red: 0.25, green: 0.35, blue: 0.6), Color(red: 0.55, green: 0.3, blue: 0.45)],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                    // Two little windows and a dock: the desktop at a glance.
-                    VStack(spacing: 3) {
-                        HStack(alignment: .top, spacing: 4) {
-                            RoundedRectangle(cornerRadius: 2).fill(.white.opacity(0.85)).frame(width: 26, height: 18)
-                            RoundedRectangle(cornerRadius: 2).fill(.white.opacity(0.6)).frame(width: 18, height: 24)
-                        }
-                        Capsule().fill(.white.opacity(0.45)).frame(width: 34, height: 5)
-                    }
-                }
-                .frame(width: 64, height: 46)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Desktop").font(.headline)
-                    Text("Your windows side by side, with the dock and Launchpad")
-                        .font(.footnote).foregroundStyle(.secondary).lineLimit(2)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+        GeometryReader { proxy in
+            ZStack {
+                DesktopView(desktop: model.desktop, fillsScreen: false)
+                DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
             }
-            .padding(12)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 20))
+            .onAppear { model.desktopStageResized(to: proxy.size) }
+            .onChange(of: proxy.size) { _, size in model.desktopStageResized(to: size) }
         }
-        .buttonStyle(.plain)
+        .ignoresSafeArea(edges: ignoredEdges)
+    }
+
+    private var ignoredEdges: Edge.Set {
+        if fullScreen { return .all }
+        switch barEdge {
+        case .trailing: return [.top, .bottom, .leading]
+        case .leading: return [.top, .bottom, .trailing]
+        case nil: return []
+        }
+    }
+}
+
+extension EnvironmentValues {
+    /// The edge of the vertical bar (iPhone Duo, iOS 27.1), or nil where bars are horizontal.
+    var toolbarVerticalEdgeIfAvailable: HorizontalEdge? {
+        if #available(iOS 27.1, *) { toolbarVerticalEdge } else { nil }
     }
 }
 
