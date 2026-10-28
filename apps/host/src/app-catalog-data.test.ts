@@ -4,6 +4,14 @@ import { loadCatalog, parseCatalog } from './app-catalog-data.js'
 import { catalogIcon } from './app-catalog.js'
 
 describe('application catalog', () => {
+  it('offers only compatible packages and nonempty packs on ARM64', () => {
+    const data = loadCatalog('arm64')
+    expect(data.apps.length).toBeGreaterThan(0)
+    expect(data.apps.every(app => app.source.kind === 'apt')).toBe(true)
+    expect(data.apps.some(app => app.id === 'gimp')).toBe(true)
+    expect(data.apps.some(app => app.id === 'photocraft')).toBe(false)
+    expect(data.packs.every(pack => data.apps.some(app => app.packs.includes(pack.id)))).toBe(true)
+  })
   it('loads the reviewed entries and their pack memberships', () => {
     const data = loadCatalog()
     expect(data.apps.filter(a => a.packs.includes('creative-studio'))).toHaveLength(13)

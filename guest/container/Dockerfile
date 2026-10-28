@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0
 COPY display /src
-RUN cd /src && cargo build --release --locked -p caboose-display -p caboose-display-probe
+ARG CARGO_BUILD_JOBS=2
+RUN cd /src && cargo build --release --locked --jobs "$CARGO_BUILD_JOBS" -p caboose-display -p caboose-display-probe
 # The codec passthrough VA-API driver (guest/vaapi).
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
@@ -20,10 +21,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN echo force-unsafe-io > /etc/dpkg/dpkg.cfg.d/02unsafe-io && \
     echo 'Acquire::http::Pipeline-Depth 8;' > /etc/apt/apt.conf.d/90fast && \
     apt-get update && apt-get install -y --no-install-recommends eatmydata ca-certificates curl gnupg
-ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libeatmydata.so.1
+RUN cp /usr/lib/*-linux-gnu/libeatmydata.so.1 /usr/local/lib/libeatmydata.so.1
+ENV LD_PRELOAD=/usr/local/lib/libeatmydata.so.1
 RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-free-firmware\ndeb https://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware\n' > /etc/apt/sources.list && \
     curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg && \
-    printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/code stable main\n' > /etc/apt/sources.list.d/vscode.list && \
+    printf 'deb [arch=%s signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/code stable main\n' "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/vscode.list && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg && \
     printf 'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\n' > /etc/apt/sources.list.d/nodesource.list && \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -64,7 +66,10 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
 RUN apt-get update && apt-get install -y --no-install-recommends chromium-sandbox && rm -rf /var/lib/apt/lists/*
 COPY container/chromium-gpu /etc/chromium.d/caboose-gpu
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /usr/local/bin/
-COPY --from=display /out/vaapi/caboose_drv_video.so /usr/lib/x86_64-linux-gnu/dri/caboose_drv_video.so
+COPY --from=display /out/vaapi/caboose_drv_video.so /tmp/caboose_drv_video.so
+RUN triplet=$(dpkg --print-architecture) && \
+    case "$triplet" in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) exit 1 ;; esac && \
+    install -D -m 0644 /tmp/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so" && rm /tmp/caboose_drv_video.so
 COPY display/caboose-display-ready /usr/local/bin/caboose-display-ready
 COPY container/caboose-session /usr/local/bin/caboose-session
 RUN chmod 0755 /usr/local/bin/caboose-session

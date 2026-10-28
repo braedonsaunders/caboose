@@ -1,6 +1,6 @@
 # Caboose guest image
 
-The computer's golden image for the microVM runtime: a Debian 13 (trixie, amd64) system that
+The computer's golden image for the microVM runtime: a Debian 13 (trixie, amd64 or arm64) system that
 `caboose-host` boots with Cloud Hypervisor. The builder produces three files, `base.raw`,
 `vmlinux` and `initrd`; the host clones `base.raw` copy-on-write for the computer's disk and
 boots it with `root=/dev/vda3 rw`. The container runtime uses
@@ -20,9 +20,11 @@ components.
 
 ## Build
 
-Build on an amd64 Linux machine with Docker, `/dev/loop-control`, network access, space for a
+Build on a native amd64 or arm64 Linux machine with Docker, `/dev/loop-control`, network access, space for a
 16 GiB raw image, and a reflink-capable target filesystem (XFS with reflink, or Btrfs).
-The builder runs privileged because it creates and mounts a loop device and chroots into the
+The output matches the build machine; it does not cross-compile. ARM64 kernels are
+written as an uncompressed Linux Image. Rust builds use two jobs by default
+(`CARGO_BUILD_JOBS` Docker build argument). The builder runs privileged because it creates and mounts a loop device and chroots into the
 image; it needs no host `sudo` or libguestfs. Docker's storage and the output directory need
 enough free space.
 
@@ -55,7 +57,7 @@ it (see [Updating a running computer](#updating-a-running-computer)).
 
 ## What the image contains
 
-- **System.** Debian 13 from its signed repositories, the `linux-image-cloud-amd64` kernel,
+- **System.** Debian 13 from its signed repositories, the `linux-image-cloud-amd64` or `linux-image-arm64` kernel,
   systemd, D-Bus with a user session, the `caboose` user (uid 1000, passwordless `sudo`,
   lingering enabled so its user manager runs at boot), Node 22 from NodeSource and VS Code
   from Microsoft's repository.
@@ -83,7 +85,7 @@ it (see [Updating a running computer](#updating-a-running-computer)).
   `/run/user/1000/caboose-display/<wayland socket>/`. As each display becomes ready, its
   unit starts that seat's accessibility bus (`a11y.py bus`).
 - **Video passthrough.** The Caboose VA-API driver ([`guest/vaapi`](../vaapi/README.md)) in
-  `/usr/lib/x86_64-linux-gnu/dri/caboose_drv_video.so`. The image loads the `udmabuf` module
+  `/usr/lib/<architecture-triplet>/dri/caboose_drv_video.so`. The image loads the `udmabuf` module
   at boot and gives `/dev/udmabuf` to the `caboose` group for the driver's decode surfaces; on
   a kernel without the module, GL players decode locally.
 - **Guest components**, each installed by its own `install.sh` or files:
@@ -110,11 +112,11 @@ built by `build.sh` do not include media handoff; install it on a running comput
 
 ## Apps
 
-`apps.sh` installs the lineup in a Debian 13 amd64 guest or chroot. It is idempotent, and
+`apps.sh` installs the lineup in a Debian 13 amd64 or arm64 guest or chroot. It is idempotent, and
 the image builder, the container image and a running computer all use it. Debian packages
 come from the signed repositories; OpenCode, mise, Lazydocker, uv and Obsidian are pinned to
 upstream release assets with checked SHA-256 hashes; the npm agents are pinned by version
-and registry integrity. Obsidian is proprietary software.
+and registry integrity. Obsidian is proprietary software; amd64 uses its `.deb`, arm64 its pinned Electron archive.
 
 | Category | Lineup |
 | --- | --- |
@@ -126,7 +128,7 @@ and registry integrity. Obsidian is proprietary software.
 | Rendering | Mesa Vulkan and OpenGL software drivers |
 | Fonts | Inter, JetBrains Mono, Noto (core, CJK, colour emoji) |
 
-Optional applications are installed from the host's catalog ([`guest/catalog`](../catalog/README.md)).
+The x86_64-only Craft packages are absent from the ARM64 catalog. Optional applications are installed from the host's catalog ([`guest/catalog`](../catalog/README.md)).
 
 Lazygit, Lazydocker, btop, Neovim and the four agents have desktop launchers that open them in
 Xfce Terminal, so they appear in the app's Home grid. The launcher icons are OpenCode's
