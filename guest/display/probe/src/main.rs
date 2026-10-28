@@ -34,6 +34,7 @@ OPTIONS:
     --server-pid PID       report the server's CPU time from /proc
     --type TEXT            once a window shows, send TEXT as a text commit to it
     --click X,Y            once a window shows, click there (window-local pixels)
+    --touch X,Y            once a window shows, tap there with one finger
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -50,6 +51,7 @@ struct Args {
     server_pid: Option<u32>,
     type_text: Option<String>,
     click: Option<(f64, f64)>,
+    touch: Option<(f64, f64)>,
     check: bool,
     json: bool,
 }
@@ -81,6 +83,7 @@ fn parse_args() -> Result<Args, String> {
         server_pid: None,
         type_text: None,
         click: None,
+        touch: None,
         check: false,
         json: false,
     };
@@ -100,7 +103,10 @@ fn parse_args() -> Result<Args, String> {
                 a.displays.push(parse_display(id, &v).ok_or_else(|| format!("bad --display {v}"))?);
             }
             "--decoders" => {
-                a.decoders = value()?.split(',').map(|c| Codec::parse(c.trim()).ok_or(format!("unknown codec {c}"))).collect::<Result<_, _>>()?;
+                a.decoders = value()?
+                    .split(',')
+                    .map(|c| Codec::parse(c.trim()).ok_or(format!("unknown codec {c}")))
+                    .collect::<Result<_, _>>()?;
             }
             "--duration" => a.duration = Duration::from_secs_f64(value()?.parse().map_err(|_| "bad --duration")?),
             "--windows" => a.windows = Some(value()?.parse().map_err(|_| "bad --windows")?),
@@ -108,10 +114,16 @@ fn parse_args() -> Result<Args, String> {
             "--save" => a.save = Some(value()?.into()),
             "--server-pid" => a.server_pid = Some(value()?.parse().map_err(|_| "bad --server-pid")?),
             "--type" => a.type_text = Some(value()?),
-            "--click" => {
+            "--click" | "--touch" => {
                 let v = value()?;
-                let (x, y) = v.split_once(',').ok_or("bad --click")?;
-                a.click = Some((x.parse().map_err(|_| "bad --click")?, y.parse().map_err(|_| "bad --click")?));
+                let bad = || format!("bad {arg} {v}");
+                let (x, y) = v.split_once(',').ok_or_else(bad)?;
+                let point = Some((x.parse().map_err(|_| bad())?, y.parse().map_err(|_| bad())?));
+                if arg == "--click" {
+                    a.click = point;
+                } else {
+                    a.touch = point;
+                }
             }
             "--check" => a.check = true,
             "--json" => a.json = true,
@@ -150,6 +162,8 @@ fn process_cpu_ms(pid: u32) -> Option<f64> {
 #[derive(Default)]
 struct WindowStats {
     title: String,
+    kind: &'static str,
+    parent: Option<u64>,
     geometry: proto::Rect,
     frames: u64,
     keyframes: u64,
@@ -161,6 +175,8 @@ struct WindowStats {
     last: Option<Instant>,
     codec: Option<Codec>,
     size: (u32, u32),
+    /// The first frame received was a keyframe.
+    first_keyframe: bool,
 }
 
 struct Decoder {
@@ -185,8 +201,16 @@ fn open_decoder(codec: Codec) -> Result<ff::decoder::Video, ff::Error> {
 
 fn save_png(frame: &ff::frame::Video, crop: proto::Rect, path: &std::path::Path) -> Result<(), String> {
     let (w, h) = (frame.width(), frame.height());
-    let mut scaler = ff::software::scaling::Context::get(frame.format(), w, h, ff::format::Pixel::RGB24, w, h, ff::software::scaling::Flags::POINT)
-        .map_err(|e| e.to_string())?;
+    let mut scaler = ff::software::scaling::Context::get(
+        frame.format(),
+        w,
+        h,
+        ff::format::Pixel::RGB24,
+        w,
+        h,
+        ff::software::scaling::Flags::POINT,
+    )
+    .map_err(|e| e.to_string())?;
     let mut rgb = ff::frame::Video::empty();
     scaler.run(frame, &mut rgb).map_err(|e| e.to_string())?;
     let cw = (crop.w.max(1) as u32).min(w);
@@ -237,7 +261,8 @@ fn main() {
 fn run(args: Args) -> Result<bool, String> {
     ff::init().map_err(|e| e.to_string())?;
     ff::util::log::set_level(ff::util::log::Level::Fatal);
-    let request = tungstenite::client::IntoClientRequest::into_client_request(args.url.as_str()).map_err(|e| e.to_string())?;
+    let request =
+        tungstenite::client::IntoClientRequest::into_client_request(args.url.as_str()).map_err(|e| e.to_string())?;
     let mut request = request;
     request.headers_mut().insert("sec-websocket-protocol", "binary".parse().unwrap());
     let (mut ws, _) = tungstenite::connect(request).map_err(|e| format!("connect {}: {e}", args.url))?;
@@ -299,7 +324,9 @@ fn run(args: Args) -> Result<bool, String> {
                 None => break,
                 Some(Decoded::Message(m)) => m,
                 Some(Decoded::Unknown { .. }) => continue,
-                Some(Decoded::Invalid { type_id, error }) => return Err(format!("server sent invalid 0x{type_id:02x}: {error}")),
+                Some(Decoded::Invalid { type_id, error }) => {
+                    return Err(format!("server sent invalid 0x{type_id:02x}: {error}"))
+                }
             };
             match message {
                 Message::ServerHello(h) => {
@@ -317,6 +344,8 @@ fn run(args: Args) -> Result<bool, String> {
                     let s = windows.entry(c.id).or_default();
                     s.title = if c.title.is_empty() { c.app_id.clone() } else { c.title.clone() };
                     s.geometry = c.geometry;
+                    s.kind = c.kind.as_str();
+                    s.parent = c.parent;
                 }
                 Message::WindowUpdate(u) => {
                     let s = windows.entry(u.id).or_default();
@@ -333,6 +362,9 @@ fn run(args: Args) -> Result<bool, String> {
                 Message::Frame(f) => {
                     let received = monotonic_us();
                     let s = windows.entry(f.id).or_default();
+                    if s.frames == 0 {
+                        s.first_keyframe = f.keyframe;
+                    }
                     s.frames += 1;
                     s.keyframes += f.keyframe as u64;
                     s.bytes += f.data.len() as u64;
@@ -345,11 +377,15 @@ fn run(args: Args) -> Result<bool, String> {
                         s.latency_us.push(received.saturating_sub(f.pts_us));
                     }
                     if !decoders.get(&f.id).is_some_and(|d| d.codec == f.codec) {
-                        let decoder = open_decoder(f.codec).map_err(|e| format!("decoder for {}: {e}", f.codec.as_str()))?;
+                        let decoder =
+                            open_decoder(f.codec).map_err(|e| format!("decoder for {}: {e}", f.codec.as_str()))?;
                         let stream = match &args.save {
                             Some(dir) => {
                                 std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-                                Some(std::fs::File::create(dir.join(format!("window-{}.{}", f.id, f.codec.as_str()))).map_err(|e| e.to_string())?)
+                                Some(
+                                    std::fs::File::create(dir.join(format!("window-{}.{}", f.id, f.codec.as_str())))
+                                        .map_err(|e| e.to_string())?,
+                                )
                             }
                             None => None,
                         };
@@ -392,20 +428,28 @@ fn run(args: Args) -> Result<bool, String> {
                         acted = true;
                         if let Some((x, y)) = args.click {
                             for buttons in [proto::buttons::LEFT, 0] {
-                                send(&mut ws, &Message::Pointer(proto::Pointer { id: f.id, x, y, buttons, scroll: None }))?;
+                                send(
+                                    &mut ws,
+                                    &Message::Pointer(proto::Pointer { id: f.id, x, y, buttons, scroll: None }),
+                                )?;
+                            }
+                        }
+                        if let Some((x, y)) = args.touch {
+                            for phase in [proto::TouchPhase::Down, proto::TouchPhase::Up] {
+                                let point = proto::TouchPoint { slot: 0, phase, x, y, force: None, radius: None };
+                                send(&mut ws, &Message::Touch(proto::Touch { id: f.id, points: vec![point] }))?;
                             }
                         }
                         if let Some(text) = &args.type_text {
-                            send(&mut ws, &Message::Text(proto::Text { commit: Some(text.clone()), ..Default::default() }))?;
+                            send(
+                                &mut ws,
+                                &Message::Text(proto::Text { commit: Some(text.clone()), ..Default::default() }),
+                            )?;
                         }
                     }
                 }
                 Message::TextInput(_) => text_input_events += 1,
-                Message::Pong { t_us } => {
-                    if Some(t_us) == ping_sent {
-                        rtt_us = Some(monotonic_us() - t_us);
-                    }
-                }
+                Message::Pong { t_us } if Some(t_us) == ping_sent => rtt_us = Some(monotonic_us() - t_us),
                 _ => {}
             }
         }
@@ -451,8 +495,15 @@ fn run(args: Args) -> Result<bool, String> {
                     _ => 0.0,
                 };
                 format!(
-                    "{{\"id\":{id},\"title\":{:?},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{}}}",
+                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{}}}",
                     w.title,
+                    w.kind,
+                    w.parent.map(|p| p.to_string()).unwrap_or("null".into()),
+                    w.geometry.x,
+                    w.geometry.y,
+                    w.geometry.w,
+                    w.geometry.h,
+                    w.first_keyframe,
                     w.codec.map(|c| c.as_str()).unwrap_or(""),
                     w.size.0,
                     w.size.1,
@@ -468,12 +519,13 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"bye\":{}}}",
             per.join(","),
             cpu_ms.map(|c| format!("{c:.0}")).unwrap_or("null".into()),
             cpu_ms.map(|c| format!("{:.1}", c / elapsed / 10.0)).unwrap_or("null".into()),
             cpu_ms.filter(|_| total_frames > 0).map(|c| format!("{:.2}", c / total_frames as f64)).unwrap_or("null".into()),
             rtt_us.map(|r| format!("{:.2}", r as f64 / 1000.0)).unwrap_or("null".into()),
+            bye.map(|b| format!("\"{}\"", b.as_str())).unwrap_or("null".into()),
         );
     } else {
         match &hello {
