@@ -47,11 +47,17 @@ public enum VideoCodec: String, Sendable {
     case hevc = "h265"
 }
 
+/// A per-window hardware video decoder: one access unit in, the picture it produced out.
+public protocol PictureDecoder: AnyObject {
+    func decode(_ accessUnit: Data) throws -> CVPixelBuffer?
+    func invalidate()
+}
+
 /// Decodes one window's H.264 or HEVC stream into IOSurface-backed BGRA pixel buffers that
 /// Metal can sample without a copy. Xpra is asked for no B-frames, so output order is
 /// decode order and every frame is displayed as soon as it decodes. HEVC is what a GPU
 /// encoder sends at 4K (Xpra's NVENC H.264 path stops at level 5.0, below 4K frame sizes).
-public final class H264Decoder {
+public final class H264Decoder: PictureDecoder {
     public let codec: VideoCodec
     private var session: VTDecompressionSession?
     private var format: CMVideoFormatDescription?
@@ -102,19 +108,7 @@ public final class H264Decoder {
             avcc.append(unit)
         }
         let sample = try makeSampleBuffer(avcc, format: format)
-        var output: CVPixelBuffer?
-        var decodeStatus: OSStatus = noErr
-        let status = VTDecompressionSessionDecodeFrame(session, sampleBuffer: sample, flags: [], infoFlagsOut: nil) {
-            status, _, imageBuffer, _, _ in
-            decodeStatus = status
-            output = imageBuffer
-        }
-        guard status == noErr else {
-            if status == kVTInvalidSessionErr { invalidate() }
-            throw H264DecoderError.decode(status)
-        }
-        guard decodeStatus == noErr else { throw H264DecoderError.decode(decodeStatus) }
-        return output
+        return try VideoToolboxSession.decode(sample, in: session) { invalidate() }
     }
 
     private func rebuildSession() throws {
@@ -144,6 +138,19 @@ public final class H264Decoder {
             }
         }
         guard status == noErr, let description else { throw H264DecoderError.formatDescription(status) }
+        session = try VideoToolboxSession.make(description)
+        format = description
+    }
+
+    private func makeSampleBuffer(_ avcc: Data, format: CMVideoFormatDescription) throws -> CMSampleBuffer {
+        try VideoToolboxSession.sampleBuffer(avcc, format: format)
+    }
+}
+
+/// The parts of a VideoToolbox decoder every codec shares: a real-time hardware session
+/// whose output Metal samples without a copy, and samples wrapped for it.
+enum VideoToolboxSession {
+    static func make(_ description: CMVideoFormatDescription) throws -> VTDecompressionSession {
         let attributes: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
             kCVPixelBufferMetalCompatibilityKey: true,
@@ -160,30 +167,46 @@ public final class H264Decoder {
             decompressionSessionOut: &created)
         guard sessionStatus == noErr, let created else { throw H264DecoderError.session(sessionStatus) }
         VTSessionSetProperty(created, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        format = description
-        session = created
+        return created
     }
 
-    private func makeSampleBuffer(_ avcc: Data, format: CMVideoFormatDescription) throws -> CMSampleBuffer {
+    static func sampleBuffer(_ bytes: Data, format: CMVideoFormatDescription) throws -> CMSampleBuffer {
         var block: CMBlockBuffer?
         var status = CMBlockBufferCreateWithMemoryBlock(
-            allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: avcc.count,
+            allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: bytes.count,
             blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0,
-            dataLength: avcc.count, flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block)
+            dataLength: bytes.count, flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block)
         guard status == noErr, let block else { throw H264DecoderError.sampleBuffer(status) }
-        status = avcc.withUnsafeBytes { bytes in
-            CMBlockBufferReplaceDataBytes(with: bytes.baseAddress!, blockBuffer: block, offsetIntoDestination: 0,
-                                          dataLength: avcc.count)
+        status = bytes.withUnsafeBytes { raw in
+            CMBlockBufferReplaceDataBytes(with: raw.baseAddress!, blockBuffer: block, offsetIntoDestination: 0,
+                                          dataLength: bytes.count)
         }
         guard status == noErr else { throw H264DecoderError.sampleBuffer(status) }
         var sample: CMSampleBuffer?
-        var size = avcc.count
+        var size = bytes.count
         status = CMSampleBufferCreateReady(
             allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format, sampleCount: 1,
             sampleTimingEntryCount: 0, sampleTimingArray: nil, sampleSizeEntryCount: 1, sampleSizeArray: &size,
             sampleBufferOut: &sample)
         guard status == noErr, let sample else { throw H264DecoderError.sampleBuffer(status) }
         return sample
+    }
+
+    /// Decodes one sample synchronously; the picture, or nil when the decoder held it back.
+    static func decode(_ sample: CMSampleBuffer, in session: VTDecompressionSession, invalidate: () -> Void) throws -> CVPixelBuffer? {
+        var output: CVPixelBuffer?
+        var decodeStatus: OSStatus = noErr
+        let status = VTDecompressionSessionDecodeFrame(session, sampleBuffer: sample, flags: [], infoFlagsOut: nil) {
+            status, _, imageBuffer, _, _ in
+            decodeStatus = status
+            output = imageBuffer
+        }
+        guard status == noErr else {
+            if status == kVTInvalidSessionErr { invalidate() }
+            throw H264DecoderError.decode(status)
+        }
+        guard decodeStatus == noErr else { throw H264DecoderError.decode(decodeStatus) }
+        return output
     }
 }
 

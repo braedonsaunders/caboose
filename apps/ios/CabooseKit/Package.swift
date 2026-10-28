@@ -9,7 +9,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "CabooseKit"),
-        .testTarget(name: "CabooseKitTests", dependencies: ["CabooseKit"]),
+        .testTarget(name: "CabooseKitTests", dependencies: ["CabooseKit"], exclude: ["Fixtures"]),
     ],
     swiftLanguageModes: [.v5]
 )
