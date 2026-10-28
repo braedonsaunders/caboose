@@ -2,3 +2,6 @@ packages:
   - apps/host
   - apps/web
   - guest/agentd
+
+# Required by pnpm's portable deployment from the shared workspace lockfile.
+injectWorkspacePackages: true

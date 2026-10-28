@@ -5,7 +5,7 @@
 #
 #   apps/host/scripts/bundle.sh <linux|darwin> <amd64|arm64> <outdir>
 #
-# Writes <outdir>/caboose-host-<os>-<arch>.tar.zst and appends its line to <outdir>/SHA256SUMS.
+# Writes a .tar.zst bundle on Linux or .tar.gz on macOS, plus SHA256SUMS.
 # CABOOSE_VERSION names the release (default: git describe). CABOOSE_BASE_IMAGE and
 # CABOOSE_CONTAINER_IMAGE, when set, become the bundle's pinned image defaults.
 # Downloads are cached in CABOOSE_BUNDLE_CACHE (default ~/.cache/caboose-bundle).
@@ -73,7 +73,7 @@ cp "$repo"/apps/host/src/*.py "$repo/apps/host/dist/"
 find "$repo/apps/host/dist" -name '*.test.js' -delete
 
 echo "Collecting production dependencies"
-( cd "$repo" && pnpm --filter caboose-host deploy --prod --legacy "$work/host" >/dev/null )
+( cd "$repo" && pnpm --filter caboose-host deploy --prod "$work/host" )
 mkdir -p "$root/app/apps/host" "$root/app/apps/web" "$root/app/guest/catalog" "$root/bin"
 cp -R "$work/host/node_modules" "$work/host/package.json" "$root/app/apps/host/"
 cp -R "$repo/apps/host/dist" "$root/app/apps/host/dist"
@@ -104,6 +104,13 @@ if [[ $os == linux ]]; then
   chmod 0755 "$root/bin/cloud-hypervisor"
 fi
 
+if [[ $os == darwin ]]; then
+  [[ $(uname -s) == Darwin && $arch == arm64 ]] || { echo 'Build the macOS bundle on Apple Silicon' >&2; exit 1; }
+  helper=$(bash "$repo/apps/host/node_modules/@braedonsaunders/appkit-desk/vz/build.sh")
+  cp "$helper" "$root/bin/appkit-desk-vz"
+  bash "$repo/apps/macos/scripts/build.sh" "$root" >/dev/null
+fi
+
 cat >"$root/bin/caboose-host" <<'EOF'
 #!/bin/sh
 # caboose-host from a bundle: the bundled Node, the bundled Cloud Hypervisor where there is
@@ -118,12 +125,15 @@ here=$(CDPATH='' cd -- "$(dirname -- "$self")/.." && pwd -P)
 if [ -f "$here/defaults.env" ]; then
   while IFS='=' read -r name value; do
     case $name in '' | '#'* | *[!A-Z0-9_]*) continue ;; esac
-    eval "current=\${$name-}"
-    [ -n "$current" ] || export "$name=$value"
+    eval "present=\${$name+x}"
+    [ "$present" = x ] || export "$name=$value"
   done <"$here/defaults.env"
 fi
 if [ -x "$here/bin/cloud-hypervisor" ] && [ -z "${CABOOSE_VMM_PATH-}" ]; then
   export CABOOSE_VMM_PATH="$here/bin/cloud-hypervisor"
+fi
+if [ -x "$here/bin/appkit-desk-vz" ] && [ -z "${CABOOSE_VMM_PATH-}" ]; then
+  export CABOOSE_VMM_PATH="$here/bin/appkit-desk-vz"
 fi
 exec "$here/node/bin/node" "$here/app/apps/host/dist/index.js" "$@"
 EOF
@@ -137,12 +147,18 @@ chmod 0755 "$root/bin/caboose-host" "$root/bin/caboose-setup-disks"
 printf '%s\n' "$version" >"$root/VERSION"
 cp "$repo/LICENSE" "$root/LICENSE"
 
-name=caboose-host-$os-$arch.tar.zst
+extension=tar.zst
+[[ $os != darwin ]] || extension=tar.gz
+name=caboose-host-$os-$arch.$extension
 echo "Packing $name"
 # No macOS metadata or extended attributes: they mean nothing on the target and GNU tar warns.
 tar_flags=()
 if tar --version 2>/dev/null | grep -q bsdtar; then tar_flags=(--no-mac-metadata --no-xattrs); fi
-COPYFILE_DISABLE=1 tar "${tar_flags[@]}" -C "$work" -cf - caboose-host | zstd -q -T0 -19 -o "$out/$name" -f
+if [[ $os == darwin ]]; then
+  COPYFILE_DISABLE=1 tar "${tar_flags[@]}" -C "$work" -czf "$out/$name" caboose-host
+else
+  COPYFILE_DISABLE=1 tar "${tar_flags[@]}" -C "$work" -cf - caboose-host | zstd -q -T2 -19 -o "$out/$name" -f
+fi
 touch "$out/SHA256SUMS"
 grep -v "  $name\$" "$out/SHA256SUMS" >"$out/SHA256SUMS.new" || true
 printf '%s  %s\n' "$(sha256 "$out/$name")" "$name" >>"$out/SHA256SUMS.new"

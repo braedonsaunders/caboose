@@ -45,7 +45,7 @@ export interface MachineResources {
 }
 
 export type HealthStatus = (
-  | { host: string; kvm: boolean; desk: DeskStats }
+  | { host: string; hypervisor?: 'virtualization' | 'cloud-hypervisor'; kvm: boolean; desk: DeskStats }
   | { host: string; runtime: 'container'; gpu: GpuKind; container: string; running: boolean }
 ) & { machine?: MachineResources }
 
@@ -76,7 +76,9 @@ export function healthFacts(health: HealthStatus): Array<{ label: string; value:
     const desk = health.desk
     const when = (value: string | null) => value ? new Date(value).toLocaleString() : 'Never'
     return [
-      { label: 'KVM', value: health.kvm ? 'Available' : 'Missing: /dev/kvm is not present', problem: !health.kvm },
+      ...(health.hypervisor === 'virtualization'
+        ? [{ label: 'Hypervisor', value: 'Apple Virtualization.framework' }]
+        : [{ label: 'KVM', value: health.kvm ? 'Available' : 'Missing: /dev/kvm is not present', problem: !health.kvm }]),
       { label: 'Running machines', value: `${desk.resident} of ${desk.capacity}${desk.queued ? `, ${desk.queued} waiting` : ''}` },
       { label: 'Last started', value: when(desk.lastStartedAt) },
       { label: 'Last parked', value: when(desk.lastSuspendedAt) },
@@ -104,7 +106,7 @@ export function upgradeLabel(upgrade: ComponentsUpgrade): string {
 export function healthProblems(health: HealthStatus): string[] {
   if (!('desk' in health)) return []
   return [
-    ...(health.kvm ? [] : ['/dev/kvm is not present, so the host cannot start a microVM.']),
+    ...(health.hypervisor === 'virtualization' || health.kvm ? [] : ['/dev/kvm is not present, so the host cannot start a microVM.']),
     ...(health.desk.lastError ? [health.desk.lastError] : []),
   ]
 }

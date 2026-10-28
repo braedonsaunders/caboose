@@ -10,12 +10,12 @@ import { createController } from './driver.js'
 it('resumes old resources but cold-restarts with saved settings and preserves the disk', async () => {
   const root = await mkdtemp(join(tmpdir(), 'caboose-test-'))
   try {
-    for (const file of ['base.raw', 'vmlinux', 'initrd']) await writeFile(join(root, file), '')
     const commands: string[] = []
     let failSync = false
     const restores: boolean[] = []
     const backend: DeskBackend = {
       async boot(plan, hooks) {
+        expect(plan.initramfsPath).toBe(join(root, 'initrd'))
         restores.push(plan.snapshot.restoring)
         await hooks?.onRestored?.()
         return {
@@ -39,6 +39,8 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
     const desired = { name: 'My computer', memoryMb: 512, vcpus: 1, idleMs: 60000, defaultAgent: null }
     const dependencies = { backend, network, deviceExists: () => true, snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} }, settings: () => desired }
     const controller = createController(config, dependencies)
+    // First-run provisioning happens after constructing the host pool.
+    for (const file of ['base.raw', 'vmlinux', 'initrd']) await writeFile(join(root, file), '')
     expect(controller.activeResources()).toBeNull()
     const first = await controller.wake()
     await writeFile(join(root, 'overlays', 'owner.raw'), 'persistent user data')

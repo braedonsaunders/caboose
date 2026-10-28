@@ -17,7 +17,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-zstd -dc "$bundle" | tar -xf - -C "$work"
+case $bundle in
+  *.tar.gz) tar -xzf "$bundle" -C "$work" ;;
+  *.tar.zst) zstd -dc "$bundle" | tar -xf - -C "$work" ;;
+  *) echo 'Expected a .tar.gz or .tar.zst bundle' >&2; exit 2 ;;
+esac
 host=$work/caboose-host
 for path in bin/caboose-host bin/caboose-setup-disks node/bin/node app/apps/host/dist/index.js app/apps/web/dist/index.html \
   app/guest/components/manifest.json app/guest/catalog/catalog.json app/apps/host/migrations/meta/_journal.json VERSION defaults.env; do
@@ -29,13 +33,18 @@ missing=$(cd "$host/app/guest" && "$host/node/bin/node" -e '
 [[ -z $missing ]] || { echo "FAIL: the bundle lacks guest components: $missing" >&2; exit 1; }
 [[ $("$host/node/bin/node" --version) == v22.* ]] || { echo 'FAIL: the bundled Node is not 22' >&2; exit 1; }
 case $bundle in
+  *darwin-*)
+    [[ -x $host/bin/appkit-desk-vz && -x $host/Caboose.app/Contents/MacOS/CabooseMenu ]] || { echo 'FAIL: macOS native helper or menu is missing' >&2; exit 1; }
+    codesign --verify --strict "$host/bin/appkit-desk-vz"
+    codesign --verify --strict "$host/Caboose.app"
+    ;;
   *linux-*) [[ -x $host/bin/cloud-hypervisor ]] || { echo 'FAIL: a Linux bundle lacks Cloud Hypervisor' >&2; exit 1; } ;;
 esac
 
 port=$("$host/node/bin/node" -e "const s=require('net').createServer().listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})")
 mkdir -p "$work/state" "$work/bin"
 ln -s "$host/bin/caboose-host" "$work/bin/caboose-host"
-env -i PATH=/usr/bin:/bin HOME="$work" CABOOSE_PORT="$port" CABOOSE_IMAGE_ROOT="$work/state" CABOOSE_MDNS=off \
+env -i PATH=/usr/bin:/bin CABOOSE_PORT="$port" CABOOSE_IMAGE_ROOT="$work/state" CABOOSE_MDNS=off CABOOSE_BASE_IMAGE= \
   "$work/bin/caboose-host" >"$work/host.log" 2>&1 &
 pid=$!
 
@@ -49,6 +58,11 @@ status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 [[ $(status "http://127.0.0.1:$port/") == 200 ]] || { echo 'FAIL: the console is not served' >&2; exit 1; }
 [[ $(status "http://127.0.0.1:$port/v1/health") == 401 ]] || { echo 'FAIL: /v1/health answers without a token' >&2; exit 1; }
 [[ $(status -H "authorization: Bearer $token" "http://127.0.0.1:$port/v1/health") == 200 ]] || { echo 'FAIL: /v1/health refuses the owner token' >&2; exit 1; }
+curl -fsS -H "authorization: Bearer $token" "http://127.0.0.1:$port/v1/health" > "$work/health.json"
+"$host/node/bin/node" -e '
+  const assert = require("node:assert/strict"), fs = require("node:fs")
+  assert.equal(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).image.reference, null, "An explicitly empty image override must disable bundle defaults")
+' "$work/health.json"
 base="http://127.0.0.1:$port"
 [[ $(status "$base/setup") == 403 ]] || { echo 'FAIL: setup opens without its code on loopback' >&2; exit 1; }
 curl -fsS "$base/v1/setup" >"$work/setup.json"
