@@ -281,9 +281,15 @@ owner's pointer or types into the owner's windows.
   use.
 - **Desktop tools.** `caboose-desktop-mcp` (stdio MCP server, in the image) gives an agent
   `screenshot`, `click`, `type`, `key`, `scroll`, `launch`, `list_windows` and `focus` on
-  `:101`, so a CLI agent can drive GUI apps as well as the shell. Claude Code and Codex
-  are configured to load it. It also carries `approve`, the permission-prompt tool behind
-  **Ask before acting** (below).
+  `:101`, so a CLI agent can drive GUI apps as well as the shell. Its accessibility tools
+  come first, because they need no screenshot and no model round trip: `elements` lists
+  the focused window's controls (role, name, state, bounds) from the AT-SPI tree, `find`
+  searches them by name and role, `click_element` and `set_text` act on one by id, and
+  `read_text` returns the window's text. Xpra keeps a seamless window unmapped until a client
+  shows it, so before a coordinate tool runs the server asks Xpra to map the seat's hidden
+  windows; `click`, `type` and `screenshot` work whether or not anyone is watching the seat.
+  Claude Code and Codex are configured to load it. It also carries `approve`, the
+  permission-prompt tool behind **Ask before acting** (below).
 - **Tasks.** The host starts a task detached (`setsid`), as user `caboose`, in
   `/home/caboose/Agents/<task-id>/`, with `DISPLAY=:101` and `CABOOSE_TASK_DIR` set to that
   directory: `claude -p <prompt> --output-format stream-json --verbose` or
@@ -366,6 +372,27 @@ computer is a server, and the host holds a lease while any task runs, so the com
 not parked under a working agent. Each task directory records its agent, prompt, approval
 mode, turn count, conversation id, pid and exit code, so a restarted host rebuilds the
 task list from the guest, re-takes the lease for tasks still running, and can still reply.
+
+### Screen
+
+The owner's display can be read and acted on through its accessibility tree, so a client —
+an agent running on the phone, or the web console — can work with what the owner sees
+without pixels:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/screen/elements` | `{ window: { title, app }, elements: [{ id, role, name, states, bounds: { x, y, width, height } }], note? }`: the focused window's visible controls on `:100`, at most 200, and `note` when there are none to say why |
+| `POST` | `/v1/screen/act` | `{ element: id, action: "press" \| "focus" \| "set-text", text? }` → `{ ok }`; 404 when the element is gone |
+| `POST` | `/v1/screen/type` | `{ text }` (1–10000 characters): type into the focused window on `:100` |
+| `POST` | `/v1/screen/keys` | `{ keys }`: press key combinations such as `ctrl+s` or `ctrl+shift+t Return` on `:100` |
+
+Element ids are opaque strings valid until the window changes. These routes act only on
+the owner's display, on the owner's own command, and answer 409 while the computer is not
+running. They run `/opt/caboose/a11y.py` in the guest as `caboose` — the AT-SPI helper
+behind the desktop tools — and `xdotool`. The helper finds each display's accessibility
+bus itself and reads only an application whose windows are all on the requested display,
+so the agent seat never reads or presses the owner's windows. Xpra, Chromium, VS Code and
+Firefox are started with their accessibility trees enabled so web content is included.
 
 ### Files
 

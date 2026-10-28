@@ -1,0 +1,7 @@
+# Installed as /etc/chromium.d/caboose-accessibility by guest/desktop-mcp/install.sh.
+# Chromium joins the AT-SPI accessibility bus only when ACCESSIBILITY_ENABLED=1 (or the
+# desktop asks for it), and builds web pages' trees only with
+# --force-renderer-accessibility. With both, a11y.py and the desktop tools see the links,
+# buttons, fields and text inside pages, not just the browser's frame.
+export ACCESSIBILITY_ENABLED=1
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --force-renderer-accessibility"
