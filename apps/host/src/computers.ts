@@ -13,10 +13,33 @@ import { readJsonFile, SettingsInputError, writePrivateJson } from './settings.j
 export const OWNER_COMPUTER = 'owner'
 export const COMPUTER_ID_PATTERN = /^(?:owner|c-[0-9a-f]{10})$/
 
-/** `createdAt` is null for an owner's computer made before the host recorded it. */
-export interface ComputerRecord { id: string; slot: number; createdAt: string | null }
+/**
+ * `createdAt` is null for an owner's computer made before the host recorded it. `tenantId` is
+ * the tenant the computer belongs to, null until the host is set up; `person` is the name of
+ * the one person whose computer it is, who uses it from their phone.
+ */
+export interface ComputerRecord { id: string; slot: number; createdAt: string | null; tenantId: string | null; person: string | null }
+
+/** What the registry keeps about a computer besides its identity. */
+export type ComputerAssignment = Pick<ComputerRecord, 'tenantId' | 'person'>
 
 export class ComputerCapacityError extends Error {}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+export function personName(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > 80 || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new SettingsInputError('person must be 1–80 characters without control characters, or null')
+  }
+  return value.trim()
+}
+
+function assignment(v: Record<string, unknown>): ComputerAssignment {
+  const tenantId = v.tenantId ?? null
+  if (tenantId !== null && (typeof tenantId !== 'string' || !UUID.test(tenantId))) throw new Error('Invalid computer tenant')
+  return { tenantId, person: personName(v.person) }
+}
 
 function record(value: unknown): ComputerRecord {
   const v = value as Record<string, unknown> | null
@@ -24,26 +47,30 @@ function record(value: unknown): ComputerRecord {
     || typeof v.slot !== 'number' || !Number.isSafeInteger(v.slot) || v.slot < 1 || v.slot >= MAX_SLOTS || typeof v.createdAt !== 'string') {
     throw new Error('Invalid computer record')
   }
-  return { id: v.id, slot: v.slot, createdAt: v.createdAt }
+  return { id: v.id, slot: v.slot, createdAt: v.createdAt, ...assignment(v) }
 }
+
+interface OwnerMeta extends ComputerAssignment { createdAt: string | null }
 
 export class ComputerRegistry {
   private pending: Promise<void> = Promise.resolve()
-  private constructor(readonly root: string, private path: string, private others: ComputerRecord[], private ownerCreatedAt: string | null) {}
+  private constructor(readonly root: string, private path: string, private others: ComputerRecord[], private owner: OwnerMeta) {}
 
   static async open(root: string): Promise<ComputerRegistry> {
     const path = join(root, 'computers.json')
     const value = await readJsonFile(path)
     if (value !== undefined && (!value || typeof value !== 'object' || !Array.isArray((value as { computers?: unknown }).computers))) throw new Error('Invalid computer registry')
-    const stored = value as { computers: unknown[]; ownerCreatedAt?: unknown } | undefined
+    const stored = value as { computers: unknown[]; owner?: Record<string, unknown>; ownerCreatedAt?: unknown } | undefined
     const others = (stored?.computers ?? []).map(record)
     if (new Set(others.map(c => c.id)).size !== others.length || new Set(others.map(c => c.slot)).size !== others.length) throw new Error('Duplicate computer in the registry')
-    const ownerCreatedAt = typeof stored?.ownerCreatedAt === 'string' ? stored.ownerCreatedAt : null
-    return new ComputerRegistry(root, path, others, ownerCreatedAt)
+    // Registries from before tenants kept only the owner's computer's creation time.
+    const meta = stored?.owner ?? {}
+    const createdAt = typeof meta.createdAt === 'string' ? meta.createdAt : typeof stored?.ownerCreatedAt === 'string' ? stored.ownerCreatedAt : null
+    return new ComputerRegistry(root, path, others, { createdAt, ...assignment(meta) })
   }
 
   list(): ComputerRecord[] {
-    return [{ id: OWNER_COMPUTER, slot: 0, createdAt: this.ownerCreatedAt }, ...this.others.map(c => ({ ...c }))]
+    return [{ id: OWNER_COMPUTER, slot: 0, ...this.owner }, ...this.others.map(c => ({ ...c }))]
   }
 
   get(id: string): ComputerRecord | undefined { return this.list().find(c => c.id === id) }
@@ -51,34 +78,57 @@ export class ComputerRegistry {
   /** Where a computer's own files live: the image root for the owner's, `computers/<id>` otherwise. */
   dataDir(id: string): string { return id === OWNER_COMPUTER ? this.root : join(this.root, 'computers', id) }
 
-  private save(change: (others: ComputerRecord[]) => ComputerRecord[]): Promise<void> {
+  private save(change: (others: ComputerRecord[], owner: OwnerMeta) => { others: ComputerRecord[]; owner: OwnerMeta }): Promise<void> {
     const work = this.pending.then(async () => {
-      const next = change(this.others.map(c => ({ ...c })))
-      await writePrivateJson(this.path, { ownerCreatedAt: this.ownerCreatedAt, computers: next })
-      this.others = next
+      const next = change(this.others.map(c => ({ ...c })), { ...this.owner })
+      await writePrivateJson(this.path, { owner: next.owner, computers: next.others })
+      this.others = next.others
+      this.owner = next.owner
     })
     this.pending = work.catch(() => {})
     return work
   }
 
-  async create(now = new Date()): Promise<ComputerRecord> {
+  async create(assigned: ComputerAssignment = { tenantId: null, person: null }, now = new Date()): Promise<ComputerRecord> {
     let made: ComputerRecord | undefined
-    await this.save(others => {
+    await this.save((others, owner) => {
       const taken = new Set([0, ...others.map(c => c.slot)])
       let slot = 1
       while (taken.has(slot)) slot++
       if (slot >= MAX_SLOTS) throw new ComputerCapacityError(`A host runs at most ${MAX_SLOTS} computers`)
       let id: string
       do id = `c-${randomBytes(5).toString('hex')}`; while (others.some(c => c.id === id))
-      made = { id, slot, createdAt: now.toISOString() }
-      return [...others, made]
+      made = { id, slot, createdAt: now.toISOString(), tenantId: assigned.tenantId, person: personName(assigned.person) }
+      return { others: [...others, made], owner }
     })
     return made!
   }
 
+  /** Moves a computer to a tenant, or names its person; fields left out are kept. */
+  async assign(id: string, change: Partial<ComputerAssignment>): Promise<ComputerRecord> {
+    const update = (current: ComputerAssignment): ComputerAssignment => ({
+      tenantId: change.tenantId !== undefined ? change.tenantId : current.tenantId,
+      person: change.person !== undefined ? personName(change.person) : current.person,
+    })
+    await this.save((others, owner) => {
+      if (id === OWNER_COMPUTER) return { others, owner: { ...owner, ...update(owner) } }
+      if (!others.some(c => c.id === id)) throw new SettingsInputError('computer not found')
+      return { others: others.map(c => c.id === id ? { ...c, ...update(c) } : c), owner }
+    })
+    return this.get(id)!
+  }
+
+  /** Puts every computer that has no tenant yet in this one, as setting the host up does. */
+  async adoptUnassigned(tenantId: string): Promise<void> {
+    await this.save((others, owner) => ({
+      others: others.map(c => c.tenantId ? c : { ...c, tenantId }),
+      owner: owner.tenantId ? owner : { ...owner, tenantId },
+    }))
+  }
+
   async remove(id: string): Promise<void> {
     if (id === OWNER_COMPUTER) throw new SettingsInputError("The owner's computer cannot be deleted")
-    await this.save(others => others.filter(c => c.id !== id))
+    await this.save((others, owner) => ({ others: others.filter(c => c.id !== id), owner }))
   }
 }
 

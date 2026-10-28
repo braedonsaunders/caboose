@@ -42,6 +42,8 @@ const SHOWN: Array<{ name: string; fallback: string; only?: Config['runtime'] }>
   { name: 'CABOOSE_CONTAINER_IMAGE', fallback: 'caboose-computer:latest', only: 'container' },
   { name: 'CABOOSE_CONTAINER_NAME', fallback: 'caboose-owner', only: 'container' },
   { name: 'CABOOSE_CONTAINER_HOME', fallback: 'caboose-home', only: 'container' },
+  { name: 'CABOOSE_PUBLIC_URL', fallback: 'http://127.0.0.1:<port>' },
+  { name: 'CABOOSE_DATABASE_URL', fallback: 'the embedded database in the image root' },
   { name: 'CABOOSE_BASE_IMAGE', fallback: 'none (the disk root must hold the image)', only: 'microvm' },
   { name: 'CABOOSE_IMAGE_ROOT', fallback: '/var/lib/caboose' },
   { name: 'CABOOSE_GUEST_LAN', fallback: 'deny' },

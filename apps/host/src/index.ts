@@ -9,7 +9,10 @@ import { createCabooseServer, type ComputerPieces, type Controller } from './ser
 import { describeHost, machineResources } from './host-info.js'
 import { AgentRegistry } from './registry.js'
 import { ComputerConflictError } from './lifecycle.js'
-import { ownerToken } from './owner-token.js'
+import { ownerToken, secretFile } from './owner-token.js'
+import { openIdentityDatabase } from './identity/database.js'
+import { Identity } from './identity/service.js'
+import { lstat, readdir } from 'node:fs/promises'
 import { containerImage, describeImage, microvmImage, type ImageProvisioner } from './provision.js'
 import { openSettings, type ComputerSettings } from './settings.js'
 import { join, resolve } from 'node:path'
@@ -26,6 +29,14 @@ if (!deployment.token) {
 const image = deployment.runtime === 'container'
   ? containerImage({ image: deployment.containerImage })
   : microvmImage({ imageRoot: deployment.imageRoot, reference: deployment.baseImage })
+// Accounts and tenants: Postgres when CABOOSE_DATABASE_URL names one, otherwise embedded.
+const identityDatabase = await openIdentityDatabase({ url: deployment.databaseUrl, dataDir: join(deployment.imageRoot, 'identity') })
+const identity = Identity.create({
+  database: identityDatabase,
+  baseURL: deployment.publicUrl,
+  secret: process.env.CABOOSE_AUTH_SECRET || (await secretFile(join(deployment.imageRoot, 'auth-secret'))).token,
+  setupCodePath: join(deployment.imageRoot, 'setup-code'),
+})
 const apns = await apnsFromEnvironment(process.env)
 const sender = apns ? new APNsSender(apns) : undefined
 const computers = await ComputerRegistry.open(deployment.imageRoot)
@@ -58,14 +69,23 @@ const host = describeHost(deployment, process.env, { push: !!sender, liveActivit
 const app = createCabooseServer({
   token: owner.token, ...ownerComputer, registry, host, agentIdleMs: deployment.agentIdleMs, webRoot,
   machine: () => machineResources(deployment.imageRoot),
-  fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null },
+  fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null, diskBytes },
+  identity,
 })
-app.server.listen(deployment.port, deployment.host, () => console.log(`caboose-host listening on ${deployment.host}:${deployment.port}`))
+app.server.listen(deployment.port, deployment.host, () => {
+  console.log(`caboose-host listening on ${deployment.host}:${deployment.port}`)
+  // An unclaimed host prints its one-time setup link; the installers read the same code from the file.
+  void identity.setupCode().then(code => {
+    if (!code) return
+    const address = deployment.host === '0.0.0.0' || deployment.host === '::' ? '127.0.0.1' : deployment.host
+    console.log(`Set up Caboose: http://${address.includes(':') ? `[${address}]` : address}:${deployment.port}/setup?code=${code}`)
+  }, error => console.error('Could not write the setup code:', error))
+})
 // Fetch a missing image now rather than on the first wake; a failure is retried by the next wake.
 void image.ensure().then(() => console.log(describeImage(image.status())), error => console.error(error instanceof Error ? error.message : error))
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
-    void app.shutdown().then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
+    void app.shutdown().then(() => identityDatabase.close()).then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
   })
 }
 
@@ -86,4 +106,21 @@ function withImage(controller: Controller, provisioner: ImageProvisioner): Contr
   }
   gated.stats = () => ({ ...(controller.stats() as object), image: provisioner.status() })
   return gated
+}
+
+/** The disk a microVM computer uses on the host: its overlay and any parked memory. Unknown for a container. */
+async function diskBytes(record: ComputerRecord): Promise<number | null> {
+  if (deployment.runtime !== 'microvm') return null
+  const overlays = join(deployment.imageRoot, 'overlays')
+  return await allocated(join(overlays, `${record.id}.raw`)) + await allocated(join(overlays, `${record.id}.snapshot`))
+}
+
+/** Bytes allocated to a file or directory tree (sparse files count only what they hold). */
+async function allocated(path: string): Promise<number> {
+  const info = await lstat(path).catch(() => null)
+  if (!info) return 0
+  if (!info.isDirectory()) return info.blocks * 512
+  let total = 0
+  for (const entry of await readdir(path)) total += await allocated(join(path, entry))
+  return total
 }

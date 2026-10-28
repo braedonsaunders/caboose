@@ -16,6 +16,10 @@ export interface Config {
   containerImage: string
   /** An OCI reference for the microVM image, fetched on first run when the disk root lacks it. */
   baseImage: string | null
+  /** Postgres for accounts and tenants; null keeps them in an embedded database in the image root. */
+  databaseUrl: string | null
+  /** Where people reach the console, for sign-in links and cookies; loopback when unset. */
+  publicUrl: string
   containerName: string
   /** A named volume or an absolute host path for /home/caboose. */
   containerHome: string
@@ -58,6 +62,8 @@ export function config(env: NodeJS.ProcessEnv): Config {
     runtime: runtime(env.CABOOSE_RUNTIME),
     containerImage: env.CABOOSE_CONTAINER_IMAGE ?? 'caboose-computer:latest',
     baseImage: env.CABOOSE_BASE_IMAGE || null,
+    databaseUrl: env.CABOOSE_DATABASE_URL || null,
+    publicUrl: publicUrl(env.CABOOSE_PUBLIC_URL, integer(env.CABOOSE_PORT, 7310, 'CABOOSE_PORT', 65535)),
     containerName: env.CABOOSE_CONTAINER_NAME ?? 'caboose-owner',
     containerHome: env.CABOOSE_CONTAINER_HOME ?? 'caboose-home',
     containerArgs: (env.CABOOSE_CONTAINER_ARGS ?? '').split(/\s+/).filter(Boolean),
@@ -66,6 +72,16 @@ export function config(env: NodeJS.ProcessEnv): Config {
     agentIdleMs: integer(env.CABOOSE_AGENT_IDLE_MS, 600_000, 'CABOOSE_AGENT_IDLE_MS', 86_400_000),
     maxRunning: integer(env.CABOOSE_MAX_RUNNING, 4, 'CABOOSE_MAX_RUNNING', 64),
   }
+}
+
+function publicUrl(value: string | undefined, port: number): string {
+  if (!value) return `http://127.0.0.1:${port}`
+  let url: URL
+  try { url = new URL(value) } catch { throw new Error('CABOOSE_PUBLIC_URL must be an http(s) URL') }
+  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username || url.password || url.search || url.hash) {
+    throw new Error('CABOOSE_PUBLIC_URL must be an http(s) origin, such as https://caboose.example.com')
+  }
+  return url.origin
 }
 
 function registryUrl(value: string | undefined): string {
