@@ -22,7 +22,7 @@ export interface AgentRoutine {
   revision: number; profileRevision: string | null; nextAt: string | null; createdAt: string; updatedAt: string
 }
 export interface AgentRoutineRun {
-  id: string; routineId: string; routineRevision: number; profileRevision: string
+  id: string; routineId: string; profileId: string; routineRevision: number; profileRevision: string
   scheduledAt: string; createdAt: string; finishedAt: string | null
   trigger: 'schedule' | 'manual'; status: 'reserved' | 'active' | 'succeeded' | 'failed' | 'skipped'
   input: Record<string, unknown>; detail?: string
@@ -90,7 +90,7 @@ function decode(value: unknown): RoutineState {
   const runs = state.runs.map(raw => {
     const r = obj(raw)
     if (!['reserved', 'active', 'succeeded', 'failed', 'skipped'].includes(String(r.status)) || !['schedule', 'manual'].includes(String(r.trigger))) throw new Error('Invalid routine run')
-    return { id: uuid(r.id), routineId: uuid(r.routineId), routineRevision: integer(r.routineRevision, 1, Number.MAX_SAFE_INTEGER), profileRevision: text(r.profileRevision, 'profile revision', 256), scheduledAt: instant(r.scheduledAt), createdAt: instant(r.createdAt), finishedAt: r.finishedAt === null ? null : instant(r.finishedAt), status: r.status as AgentRoutineRun['status'], trigger: r.trigger as AgentRoutineRun['trigger'], input: payload(r.input), ...(r.detail === undefined ? {} : { detail: text(r.detail, 'detail', 2000) }) }
+    return { id: uuid(r.id), routineId: uuid(r.routineId), profileId: uuid(r.profileId), routineRevision: integer(r.routineRevision, 1, Number.MAX_SAFE_INTEGER), profileRevision: text(r.profileRevision, 'profile revision', 256), scheduledAt: instant(r.scheduledAt), createdAt: instant(r.createdAt), finishedAt: r.finishedAt === null ? null : instant(r.finishedAt), status: r.status as AgentRoutineRun['status'], trigger: r.trigger as AgentRoutineRun['trigger'], input: payload(r.input), ...(r.detail === undefined ? {} : { detail: text(r.detail, 'detail', 2000) }) }
   })
   if (new Set(routines.map(r => r.id)).size !== routines.length || new Set(runs.map(r => r.id)).size !== runs.length || new Set(runs.filter(pending).map(r => r.routineId)).size !== runs.filter(pending).length) throw new Error('Duplicate routine or active run')
   return { version: 1, routines, runs }
@@ -203,7 +203,7 @@ export class AgentRoutines {
       r.profileRevision = revision; r.revision++; r.updatedAt = this.now()
       r.nextAt = nextOccurrence(r.schedule, r.updatedAt)
     }
-    const run: AgentRoutineRun = { id: randomUUID(), routineId: r.id, routineRevision: r.revision, profileRevision: revision, scheduledAt: due, createdAt: this.now(), finishedAt: null, trigger, status: 'reserved', input: payload(snapshot.input) }
+    const run: AgentRoutineRun = { id: randomUUID(), routineId: r.id, profileId: r.profileId, routineRevision: r.revision, profileRevision: revision, scheduledAt: due, createdAt: this.now(), finishedAt: null, trigger, status: 'reserved', input: payload(snapshot.input) }
     state.runs.push(run); return run
   }
   tick(): Promise<void> {

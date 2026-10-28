@@ -21,7 +21,11 @@ final class AgentLibrary {
 
     var selectedProfile: AgentProfile? { profiles.first { $0.id == selectedProfileId && !$0.archived } }
     var activeProfiles: [AgentProfile] { profiles.filter { !$0.archived } }
-    func attach(_ host: HostClient) { self.host = host; Task { await refreshProfiles(); await refreshRoutines() } }
+    func attach(_ host: HostClient) {
+        if let current = self.host, current.baseURL != host.baseURL || current.token != host.token { reset() }
+        self.host = host
+        Task { await refreshProfiles(); await refreshRoutines() }
+    }
     func reset() {
         generation = UUID(); host = nil; profiles = []; routines = []; runs = []; selectedProfileId = nil
         profileError = nil; routineError = nil; historyError = nil
@@ -79,12 +83,37 @@ final class AgentLibrary {
     func put(_ routine: AgentRoutine) {
         if let i = routines.firstIndex(where: { $0.id == routine.id }) { routines[i] = routine } else { routines.append(routine) }
     }
-    func saveProfile(_ id: String?, body: [String: JSONValue]) async throws { put(try await client().saveProfile(id, body: body)); await refreshRoutines() }
-    func saveMemory(profile: String, memory: String?, title: String, content: String) async throws {
-        put(try await client().saveMemory(profile: profile, memory: memory, title: title, content: content))
+    private func requireGeneration(_ expected: UUID) throws {
+        guard expected == generation else { throw CancellationError() }
     }
-    func deleteMemory(profile: String, memory: String) async throws { put(try await client().deleteMemory(profile: profile, memory: memory)) }
-    func saveRoutine(_ id: String?, body: [String: JSONValue]) async throws { put(try await client().saveRoutine(id, body: body)) }
-    func deleteRoutine(_ id: String) async throws { try await client().deleteRoutine(id); routines.removeAll { $0.id == id } }
-    func run(_ id: String) async throws { _ = try await client().runRoutine(id); await refreshHistory() }
+    func saveProfile(_ id: String?, body: [String: JSONValue]) async throws {
+        let generation = generation
+        let profile = try await client().saveProfile(id, body: body)
+        try requireGeneration(generation); put(profile); await refreshRoutines()
+    }
+    func saveMemory(profile: String, memory: String?, title: String, content: String) async throws {
+        let generation = generation
+        let result = try await client().saveMemory(profile: profile, memory: memory, title: title, content: content)
+        try requireGeneration(generation); put(result)
+    }
+    func deleteMemory(profile: String, memory: String) async throws {
+        let generation = generation
+        let result = try await client().deleteMemory(profile: profile, memory: memory)
+        try requireGeneration(generation); put(result)
+    }
+    func saveRoutine(_ id: String?, body: [String: JSONValue]) async throws {
+        let generation = generation
+        let result = try await client().saveRoutine(id, body: body)
+        try requireGeneration(generation); put(result)
+    }
+    func deleteRoutine(_ id: String) async throws {
+        let generation = generation
+        try await client().deleteRoutine(id)
+        try requireGeneration(generation); routines.removeAll { $0.id == id }
+    }
+    func run(_ id: String) async throws {
+        let generation = generation
+        _ = try await client().runRoutine(id)
+        try requireGeneration(generation); await refreshHistory()
+    }
 }

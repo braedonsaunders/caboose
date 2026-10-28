@@ -1,3 +1,5 @@
+import { AgentToolJournal } from './agent-tools-journal.js'
+import { AgentRoutines } from './agent-routines.js'
 import { ActivityService, ActivityStore } from './activities.js'
 import { APNsSender, apnsFromEnvironment } from './apns.js'
 import { PushDevices, PushService } from './push.js'
@@ -60,7 +62,7 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
     ? createContainerController(deployment, { identity, settings: () => settings.get() })
     : createController(deployment, { identity, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
-  return { settings, profiles, controller: withImage(controller, image), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  return { settings, profiles, openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
