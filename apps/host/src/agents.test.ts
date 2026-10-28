@@ -361,7 +361,6 @@ describe('AgentTasks', () => {
   it('continues a finished conversation through the runner and shows only the new turn', async () => {
     const { fake, events, acquire, tasks } = setup()
     const task = await tasks.start({ prompt: 'write a poem' })
-    await expect(tasks.reply(task.id, { prompt: 'shorter' })).rejects.toBeInstanceOf(AgentConflictError)
     fake.append(task.id, user(1))
     fake.append(task.id, end(1, 'A long poem.'))
     await tasks.poll()
@@ -396,6 +395,49 @@ describe('AgentTasks', () => {
     await expect(tasks.reply(task.id, { prompt: '' })).rejects.toBeInstanceOf(AgentInputError)
     // A cancelled task can still be continued.
     await expect(tasks.reply(task.id, { prompt: 'more' })).resolves.toMatchObject({ status: 'running', turns: 2 })
+  })
+
+  it('holds replies sent while the agent works and sends them together as its next turn', async () => {
+    const { fake, events, release, tasks } = setup()
+    const task = await tasks.start({ prompt: 'Tidy Downloads' })
+    fake.append(task.id, user(1))
+    await expect(tasks.reply(task.id, { prompt: 'how is it going?' })).resolves.toMatchObject({ status: 'running', turns: 1, queued: ['how is it going?'] })
+    await tasks.reply(task.id, { prompt: 'skip the PDFs' })
+    expect(tasks.list()[0]!.queued).toEqual(['how is it going?', 'skip the PDFs'])
+    expect(events.filter(event => event.type === 'agent.task.queued').at(-1)).toEqual({ type: 'agent.task.queued', id: task.id, queued: ['how is it going?', 'skip the PDFs'] })
+    fake.append(task.id, end(1, 'Moved 40 files.'))
+    await tasks.poll()
+    await vi.waitFor(() => expect(tasks.list()[0]).toMatchObject({ status: 'running', turns: 2 }))
+    expect(tasks.list()[0]!.queued).toBeUndefined()
+    expect(JSON.parse(fake.task(task.id).inbox.at(-1)!)).toEqual({ type: 'prompt', turn: 2, text: 'how is it going?\n\nskip the PDFs' })
+    // The turn in between is not announced as finished, and the lease is never let go.
+    expect(events.some(event => event.type === 'agent.task.finished')).toBe(false)
+    expect(events.at(-1)).toMatchObject({ type: 'agent.task.replied', turn: 2, prompt: 'how is it going?\n\nskip the PDFs' })
+    expect(release).toHaveBeenCalledTimes(1)
+    fake.append(task.id, user(2))
+    fake.append(task.id, end(2, 'Going well; PDFs left alone.'))
+    await tasks.poll()
+    expect(events.at(-1)).toEqual({ type: 'agent.task.finished', id: task.id, status: 'succeeded', summary: 'Going well; PDFs left alone.' })
+  })
+
+  it('drops waiting replies when stopped, and keeps them for the next reply after a sign-in', async () => {
+    const { fake, tasks } = setup()
+    const stopped = await tasks.start({ prompt: 'a' })
+    await tasks.reply(stopped.id, { prompt: 'b' })
+    await tasks.cancel(stopped.id)
+    expect(tasks.list().find(task => task.id === stopped.id)!.queued).toBeUndefined()
+    const signedOut = await tasks.start({ prompt: 'c' })
+    await tasks.reply(signedOut.id, { prompt: 'd' })
+    fake.append(signedOut.id, user(1))
+    fake.append(signedOut.id, { type: 'auth_required', turn: 1, authMethods: [{ id: 'a', name: 'Account', type: 'agent' }] })
+    await tasks.poll()
+    expect(tasks.list().find(task => task.id === signedOut.id)).toMatchObject({ status: 'failed', queued: ['d'] })
+    await tasks.reply(signedOut.id, { prompt: 'e' })
+    expect(JSON.parse(fake.task(signedOut.id).inbox.at(-1)!)).toEqual({ type: 'prompt', turn: 2, text: 'd\n\ne' })
+    expect(tasks.list().find(task => task.id === signedOut.id)!.queued).toBeUndefined()
+    const busy = await tasks.start({ prompt: 'f' })
+    for (let i = 0; i < 10; i++) await tasks.reply(busy.id, { prompt: `${i}` })
+    await expect(tasks.reply(busy.id, { prompt: 'one too many' })).rejects.toBeInstanceOf(AgentConflictError)
   })
 
   it('asks the owner before acting, for any agent, and passes the chosen option back', async () => {

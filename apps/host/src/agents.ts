@@ -49,6 +49,8 @@ export interface AgentTask {
   attachments?: string[]
   /** Set when the task failed because the agent is signed out: the ways to sign in. */
   signIn?: SignInMethod[]
+  /** Replies sent while the agent was working, oldest first; they go to it together as its next turn. */
+  queued?: string[]
 }
 
 export type AgentEvent =
@@ -60,6 +62,8 @@ export type AgentEvent =
   | { type: 'agent.task.approval'; id: string; request: PendingApproval }
   | { type: 'agent.task.approval.resolved'; id: string; requestId: string; allow: boolean }
   | { type: 'agent.task.replied'; id: string; prompt: string; turn: number }
+  /** The replies waiting for the agent's turn to end changed. */
+  | { type: 'agent.task.queued'; id: string; queued: string[] }
   /** One entry of the current turn's transcript, as `GET /v1/agent/tasks/:id/transcript` returns them. */
   | { type: 'agent.task.event'; id: string; turn: number; entry: TranscriptEntry }
 
@@ -123,6 +127,8 @@ const AGENT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const MAX_PROMPT = 32_000
 const MAX_ATTACHMENTS = 4
+/** Replies that can wait for a working agent. */
+const MAX_QUEUED = 10
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 /** Transcript bytes read per poll tick across all live tasks, shared between them. */
 const POLL_BUDGET = 1024 * 1024
@@ -331,6 +337,8 @@ interface Tracked {
   /** Approval requests the agent is waiting on, oldest first. */
   pending: Array<PendingApproval & { requestedAt: string }>
   replying?: boolean
+  /** Replies waiting for the current turn to end. Kept in memory: a host restart drops them. */
+  queue: string[]
 }
 
 export class AgentTasks {
@@ -405,7 +413,7 @@ export class AgentTasks {
       id, agent: agentId, agentName: launch.name, prompt, status: 'running', startedAt: new Date().toISOString(), turns: 1, approvals,
       ...(attachments.length ? { attachments } : {}),
     }
-    this.tracked.set(id, { task, offset: 0, carry: Buffer.alloc(0), turn: 0, resumable: true, pending: [] })
+    this.tracked.set(id, { task, offset: 0, carry: Buffer.alloc(0), turn: 0, resumable: true, pending: [], queue: [] })
     this.releases.set(id, this.acquire())
     this.emit({ type: 'agent.task.started', id, agent: agentId, agentName: launch.name, prompt })
     this.ensurePolling()
@@ -425,17 +433,32 @@ export class AgentTasks {
   }
 
   /**
-   * Continues a finished task's conversation with a new prompt. A runner still waiting keeps
-   * the same session; a new runner reopens it (session/resume or session/load) or, for an
-   * agent that can do neither, starts a new one with a recap. The turn appends to the same
-   * transcript.
+   * Continues the task's conversation with a new prompt. A runner still waiting keeps the same
+   * session; a new runner reopens it (session/resume or session/load) or, for an agent that can
+   * do neither, starts a new one with a recap. The turn appends to the same transcript. While
+   * the agent is working the reply waits in the task's queue; when the turn ends, everything
+   * waiting goes to the agent together as its next turn.
    */
   async reply(id: string, input: Record<string, unknown>): Promise<AgentTask> {
     const entry = TASK_ID.test(id) ? this.tracked.get(id) : undefined
     if (!entry) throw new AgentNotFoundError()
     const prompt = readPrompt(input.prompt)
-    if (isLive(entry.task.status) || entry.replying) throw new AgentConflictError('The task is still working; wait for it to finish or cancel it first.')
     if (!entry.resumable) throw new AgentConflictError('This task was started by an earlier version of Caboose and cannot be continued.')
+    if (isLive(entry.task.status) || entry.replying) {
+      if (entry.queue.length >= MAX_QUEUED || [...entry.queue, prompt].join('\n\n').length > MAX_PROMPT) {
+        throw new AgentConflictError('Too much is already waiting for the agent; wait for its turn to end, or stop it.')
+      }
+      entry.queue.push(prompt)
+      this.syncQueue(entry)
+      return entry.task
+    }
+    return this.sendTurn(entry, [...entry.queue, prompt], entry.queue.length)
+  }
+
+  /** Starts the next turn with `prompts`, the first `fromQueue` of them taken from the queue. */
+  private async sendTurn(entry: Tracked, prompts: string[], fromQueue: number): Promise<AgentTask> {
+    const id = entry.task.id
+    const prompt = prompts.join('\n\n')
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
     const turn = entry.task.turns + 1
@@ -447,6 +470,10 @@ export class AgentTasks {
         .catch(rethrowRunnerMissing)
     } finally {
       entry.replying = false
+    }
+    if (fromQueue) {
+      entry.queue.splice(0, fromQueue)
+      this.syncQueue(entry)
     }
     // Lines still to come from the earlier turn are read but not shown.
     entry.pending = []
@@ -524,6 +551,11 @@ export class AgentTasks {
     const guest = this.guest()
     if (!entry || !TASK_ID.test(id) || !isLive(entry.task.status) || !guest) return false
     await asCaboose(guest, CANCEL_SCRIPT, [`${HOME}/Agents/${id}`])
+    // Stopping stops everything: what was waiting for this turn is dropped with it.
+    if (entry.queue.length) {
+      entry.queue = []
+      this.syncQueue(entry)
+    }
     this.finish(entry, 'cancelled', 'Cancelled.')
     return true
   }
@@ -573,7 +605,7 @@ export class AgentTasks {
         turns, approvals: mode === 'ask' ? 'ask' : 'auto',
         ...(attachments.length ? { attachments } : {}),
       }
-      const entry: Tracked = { task, offset: Number(size) || 0, carry: Buffer.alloc(0), turn: turns, resumable: resumable === '1', pending: [] }
+      const entry: Tracked = { task, offset: Number(size) || 0, carry: Buffer.alloc(0), turn: turns, resumable: resumable === '1', pending: [], queue: [] }
       this.tracked.set(id, entry)
       const result = interpretLine(decode(last)).result
       if (result && result.turn === turns) {
@@ -689,6 +721,12 @@ export class AgentTasks {
     this.syncPending(entry)
   }
 
+  private syncQueue(entry: Tracked): void {
+    if (entry.queue.length) entry.task.queued = [...entry.queue]
+    else delete entry.task.queued
+    this.emit({ type: 'agent.task.queued', id: entry.task.id, queued: [...entry.queue] })
+  }
+
   private syncPending(entry: Tracked): void {
     const first = entry.pending[0]
     if (first) entry.task.pendingApproval = { id: first.id, tool: first.tool, summary: first.summary, ...(first.options ? { options: first.options } : {}) }
@@ -703,9 +741,33 @@ export class AgentTasks {
     if (signIn) entry.task.signIn = signIn
     entry.pending = []
     delete entry.task.pendingApproval
+    // Replies waited for this turn: they go to the agent now, as one turn, under the same lease.
+    if (announce && entry.queue.length && status !== 'cancelled' && !signIn) {
+      void this.continueQueue(entry, status)
+      return
+    }
     this.releases.get(entry.task.id)?.()
     this.releases.delete(entry.task.id)
-    if (announce) this.emit({ type: 'agent.task.finished', id: entry.task.id, status, summary: entry.task.summary, ...(signIn ? { signIn } : {}) })
+    if (announce) this.announceFinished(entry)
+  }
+
+  private async continueQueue(entry: Tracked, status: TaskStatus): Promise<void> {
+    try {
+      await this.sendTurn(entry, [...entry.queue], entry.queue.length)
+    } catch (error) {
+      // The queue stays, to go with the owner's next reply.
+      console.error('Queued reply was not delivered:', error)
+      if (entry.task.status === status) {
+        this.releases.get(entry.task.id)?.()
+        this.releases.delete(entry.task.id)
+        this.announceFinished(entry)
+      }
+    }
+  }
+
+  private announceFinished(entry: Tracked): void {
+    const { id, status, summary = '', signIn } = entry.task
+    this.emit({ type: 'agent.task.finished', id, status, summary, ...(signIn ? { signIn } : {}) })
   }
 }
 

@@ -87,7 +87,8 @@ it('routes agent replies, approvals, files and links with the right status codes
   expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(404)
   expect((await post(`/v1/agent/tasks/${missing}/approvals/${missing}`, { allow: true })).status).toBe(404)
   const { id } = await (await post('/v1/agent/tasks', { prompt: 'hi' })).json() as { id: string }
-  expect((await post(`/v1/agent/tasks/${id}/reply`, { prompt: 'more' })).status).toBe(409)
+  // A reply to a working agent waits for its turn to end.
+  expect(await (await post(`/v1/agent/tasks/${id}/reply`, { prompt: 'more' })).json()).toMatchObject({ task: { id, status: 'running', queued: ['more'] } })
   expect((await post(`/v1/agent/tasks/${id}/approvals/${missing}`, { allow: 'yes' })).status).toBe(400)
   expect(await (await post(`/v1/agent/tasks/${id}/approvals/${missing}`, { allow: true })).json()).toEqual({ resolved: false })
   expect((await post('/v1/agent/tasks', { prompt: 'x', agent: 'codex', approvals: 'sometimes' })).status).toBe(400)
