@@ -91,6 +91,7 @@ Management status has this shape (resources are MiB and idle time is millisecond
 {
   state: "parked" | "waking" | "running" | "parking" | "restarting" | "error",
   settings: { name: string, memoryMb: number, vcpus: number, idleMs: number },
+  limits: { memoryMb: { min: number, max: number }, vcpus: { min: number, max: number }, idleMs: { min: number, max: number } },
   activeResources: { memoryMb: number, vcpus: number } | null,
   restartRequired: boolean,
   clients: { display: number, control: number },
@@ -114,7 +115,9 @@ Restart closes client sockets, ends running/paused agent tasks, and discards uns
 application state; it never deletes the computer disk. Restart and park are serialized
 with wake and cannot race a new application/task launch. Clients must confirm restart
 with the user before sending `confirm: true`. Concurrent restart requests are rejected
-with 409 rather than scheduling repeated destructive reboots. Lifecycle failures are
+with 409 rather than scheduling repeated destructive reboots. A successful restart
+response is sent only after the computer and owner display are ready again (clients
+allow 300 seconds). Lifecycle failures are
 reported in `lastError`. The control socket broadcasts
 `{ type: "computer.settings", computer: <management status> }` when settings or their
 applied state change. An HTTP management poll does not prevent idle parking.
