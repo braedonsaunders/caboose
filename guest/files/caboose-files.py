@@ -123,23 +123,21 @@ class Changes:
         threading.Thread(target=self.run, daemon=True).start()
     def scan(self):
         found = {}
-        pending = [(os.dup(rootfd), ROOT)]
-        try:
-            while pending:
-                fd, base = pending.pop()
-                try:
-                    wd = self.add(self.fd, os.fsencode(f'/proc/self/fd/{fd}'), 0x00000FCE | 0x01000000)
-                    if wd < 0: raise OSError(ctypes.get_errno(), 'inotify_add_watch')
-                    found[wd] = base
-                    for name in os.listdir(fd):
-                        try:
-                            child = os.open(name, DIR, dir_fd=fd)
-                        except (FileNotFoundError, NotADirectoryError, PermissionError):
-                            continue
-                        pending.append((child, os.path.join(base, name)))
-                finally: os.close(fd)
-        finally:
-            for fd, _ in pending: os.close(fd)
+        pending = ['']
+        while pending:
+            relative = pending.pop()
+            try: fd = directory(parts(relative))
+            except (FileNotFoundError, NotADirectoryError, PermissionError): continue
+            try:
+                wd = self.add(self.fd, os.fsencode(f'/proc/self/fd/{fd}'), 0x00000FCE | 0x01000000)
+                if wd < 0: raise OSError(ctypes.get_errno(), 'inotify_add_watch')
+                found[wd] = os.path.join(ROOT, relative)
+                for name in os.listdir(fd):
+                    if name.startswith('.caboose-upload-'): continue
+                    try: mode = os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode
+                    except FileNotFoundError: continue
+                    if stat.S_ISDIR(mode): pending.append(f'{relative}/{name}' if relative else name)
+            finally: os.close(fd)
         for wd in self.watches.keys() - found.keys(): self.remove(self.fd, wd)
         self.watches = found
     def invalidate(self):
