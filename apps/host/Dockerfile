@@ -38,6 +38,7 @@ COPY --from=host-deps /src/node_modules ./node_modules
 COPY --from=host-deps /src/apps/host/node_modules ./apps/host/node_modules
 COPY --from=host-deps /src/apps/host/package.json ./apps/host/package.json
 COPY --from=host-build /src/apps/host/dist ./apps/host/dist
+COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
 COPY --from=web-build /src/apps/web/dist ./apps/web/dist
 COPY apps/host/scripts/setup-disks.sh /usr/local/bin/setup-disks
 COPY apps/host/scripts/container-entrypoint.sh /usr/local/bin/caboose-entrypoint
