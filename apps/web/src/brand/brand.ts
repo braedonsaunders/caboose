@@ -2,8 +2,8 @@
  * The Caboose brand, drawn from one set of numbers.
  *
  * "On the rails": a monoline wordmark standing on a rail whose two o's are wheels —
- * a spoke and an amber hub each, so at rest they double as power buttons — and the
- * app's car, a cupola caboose in the same stroke riding on those wheels.
+ * a spoke and an amber hub each, so at rest they double as power buttons. One of
+ * those wheels, alone on navy, is the app icon.
  *
  * Every rendering is built here: the README lockups and app icon in `.github/assets`,
  * the console's favicon, and the console's own logo components. `brand.test.ts` holds
@@ -70,8 +70,6 @@ export const LETTER_X: readonly number[] = WORD.reduce<number[]>((xs, _letter, i
 
 /** Wordmark view box: x, y, width, height. */
 export const WORDMARK_VIEWBOX = [-22, -50, 836, 185] as const
-/** Car (mark) view box. */
-export const CAR_VIEWBOX = [-34, -204, 406, 340] as const
 
 /** Intro timeline (seconds). The iOS port mirrors these. */
 export const TIMING = {
@@ -172,68 +170,41 @@ export function wordmarkSvg(options: BrandOptions & { lit?: boolean }): string {
     `</svg>`
 }
 
-interface CarParts {
-  ink: string
-  amber: string
-  /** Window colour; a parked car shows its windows dark. */
-  lights: boolean
-  stove: boolean
-  rail: [number, number]
-  clip: [number, number]
-  tieOpacity: number
+/** One o-wheel, as a mark: rim, spoke and amber hub, outer edge 0..100. Reads as ⏻. */
+function powerWheel(steel: string, hub: string): string {
+  return `<circle cx="50" cy="50" r="40" fill="none" stroke="${steel}" stroke-width="20"/>` +
+    // At icon size a round cap leaves a visible notch against the rim; a square end
+    // run into the rim merges cleanly.
+    `<path d="M50 50V15" stroke="${steel}" stroke-width="12"/>` +
+    `<circle cx="50" cy="50" r="10" fill="${hub}"/>`
+}
+
+function navyField(id: string): string {
+  return `<defs><linearGradient id="${id}-field" x1="0" y1="0" x2="1" y2="1">` +
+    `<stop offset="0" stop-color="${ICON_NAVY_TOP}"/><stop offset="1" stop-color="${ICON_NAVY_BOTTOM}"/></linearGradient></defs>`
 }
 
 /**
- * The car: a cupola caboose in the wordmark's 20-unit stroke on two o-wheels.
- * Body spans x 0..334, roof at y −120, cupola roof at −186; wheels centre on x 70
- * and 264; the rail runs at y 106 like the wordmark's.
- */
-function carBody({ ink, amber, lights, stove, rail, clip, tieOpacity }: CarParts, id: string): string {
-  const windows = lights ? amber : ink
-  const windowOpacity = lights ? '' : ' opacity=".22"'
-  return `<defs><clipPath id="${id}-track"><rect x="${clip[0]}" y="100" width="${clip[1] - clip[0]}" height="40"/></clipPath></defs>` +
-    `<g clip-path="url(#${id}-track)">${ties(clip[0] - ROLL, clip[1], ink, tieOpacity)}</g>` +
-    `<path class="rail" pathLength="1" d="M${rail[0]} 106H${rail[1]}" fill="none" stroke="${ink}" stroke-width="12" stroke-linecap="round"/>` +
-    `<g fill="none" stroke="${ink}" stroke-width="20" stroke-linecap="round" stroke-linejoin="round">` +
-    `<path class="st"${delay(0.1)} pathLength="1" d="M-16 -16H350"/>` +
-    `<path class="st"${delay(0.2)} pathLength="1" d="M20 -16V-120M0 -120H334M314 -120V-16"/>` +
-    `<path class="st"${delay(0.35)} pathLength="1" d="M122 -120V-186M106 -186H228M212 -186V-120"/>` +
-    `<path class="st"${delay(0.45)} pathLength="1" d="M20 -70H-16V-16M314 -70H350V-16"/>` +
-    (stove ? `<path class="st"${delay(0.5)} pathLength="1" stroke-width="16" d="M272 -120V-160M260 -160H284"/>` : '') +
-    wheel(20, amber, 0.55) + wheel(214, amber, 0.62) +
-    `</g>` +
-    `<g fill="${windows}"${windowOpacity}>` +
-    `<rect class="pop"${delay(1.0)} x="54" y="-90" width="56" height="44" rx="9"/>` +
-    `<rect class="pop"${delay(1.1)} x="139" y="-90" width="56" height="44" rx="9"/>` +
-    `<rect class="pop"${delay(1.2)} x="224" y="-90" width="56" height="44" rx="9"/>` +
-    `<rect class="pop"${delay(1.32)} x="143" y="-168" width="48" height="26" rx="6"/>` +
-    `</g>`
-}
-
-/**
- * The app icon, 1024 square: the car on a navy field, its rail running off both
- * edges. Static — iOS icons do not move, and the PNG is rendered from this file.
+ * The app icon, 1024 square: one wheel of the wordmark, large, on a navy field. It
+ * reads as a power button, which is what opening Caboose does. Static: iOS icons do
+ * not move, and the PNG is rendered from this file.
  */
 export function appIconSvg(): string {
   const id = 'caboose-icon'
-  return `<svg xmlns="http://www.w3.org/2000/svg" id="${id}" viewBox="0 0 1024 1024" width="1024" height="1024">` +
-    `<defs><linearGradient id="${id}-field" x1="0" y1="0" x2="1" y2="1">` +
-    `<stop offset="0" stop-color="${ICON_NAVY_TOP}"/><stop offset="1" stop-color="${ICON_NAVY_BOTTOM}"/></linearGradient></defs>` +
-    `<style>${styles(id, 'none')}</style>` +
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">` +
+    navyField(id) +
     `<rect width="1024" height="1024" fill="url(#${id}-field)"/>` +
-    `<g transform="translate(153 586) scale(2.15)">` +
-    carBody({ ink: ICON_STEEL, amber: AMBER, lights: true, stove: true, rail: [-400, 740], clip: [-400, 740], tieOpacity: 0.3 }, id) +
-    `</g></svg>`
+    `<g transform="translate(192 192) scale(6.4)">${powerWheel(ICON_STEEL, AMBER)}</g>` +
+    `</svg>`
 }
 
-/** Browser tab icon: the car pared down for 16–32 px, following the system theme. */
+/** Browser tab icon: the app icon as a rounded tile, legible on light and dark tab bars. */
 export function faviconSvg(): string {
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20 -214 374 374">` +
-    `<style>.i { stroke: ${INK_LIGHT}; } @media (prefers-color-scheme: dark) { .i { stroke: ${INK_DARK}; } }</style>` +
-    `<g class="i" fill="none" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">` +
-    `<path d="M0 -16H334M20 -16V-120M0 -120H334M314 -120V-16M110 -120V-190H224V-120"/>` +
-    `<circle cx="70" cy="52" r="42"/><circle cx="264" cy="52" r="42"/></g>` +
-    `<rect x="50" y="-92" width="234" height="48" rx="10" fill="${AMBER}"/>` +
+  const id = 'caboose-tab'
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
+    navyField(id) +
+    `<rect width="64" height="64" rx="14" fill="url(#${id}-field)"/>` +
+    `<g transform="translate(10 10) scale(.44)">${powerWheel(ICON_STEEL, AMBER)}</g>` +
     `</svg>`
 }
 
