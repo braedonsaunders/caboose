@@ -136,7 +136,22 @@ final class AppModel {
 
     private var lastDisplay: HostClient.Session.Display?
 
+    /// Temporary: the sound path's counters, every 5 s, in Documents/diag.log.
+    private var diagnostics: Timer?
+
+    private func logDiagnostics() {
+        guard let session else { return }
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("diag.log")
+        let line = Data("\(Date()) \(session.audioDiagnostics)\n".utf8)
+        if let handle = try? FileHandle(forWritingTo: url) { handle.seekToEndOfFile(); handle.write(line); try? handle.close() }
+        else { try? line.write(to: url) }
+    }
+
     private func startSession(host: HostClient, display: HostClient.Session.Display) {
+        diagnostics?.invalidate()
+        diagnostics = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+            Task { @MainActor in AppModel.shared.logDiagnostics() }
+        }
         session?.disconnect()
         lastDisplay = display
         let caps: ClientCapabilities

@@ -37,7 +37,19 @@ def read(path):
     except (OSError, ValueError, KeyError, configparser.Error):
         return None
 
+def xpra_pulse_server():
+    """Xpra runs a PulseAudio server per display and forwards it to the phone; apps must be
+    pointed at it, or their sound plays to nothing."""
+    display = os.environ.get('DISPLAY', ':100').lstrip(':').split('.')[0]
+    for root in (f'/run/user/{os.getuid()}/xpra', '/tmp/xpra'):
+        socket = pathlib.Path(root, display, 'pulse', 'native')
+        if socket.exists():
+            return f'unix:{socket}'
+    return None
+
 if sys.argv[1] == 'launch':
+    if 'PULSE_SERVER' not in os.environ and (pulse := xpra_pulse_server()):
+        os.environ['PULSE_SERVER'] = pulse
     entry = entries().get(sys.argv[2])
     if not entry or read(entry) is None:
         raise SystemExit('Application not found')
