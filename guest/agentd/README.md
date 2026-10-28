@@ -13,7 +13,7 @@ It is one file, `caboose-agentd.mjs`, on Node 22 with the official TypeScript SD
 
 | Command | What it does |
 | --- | --- |
-| `run <task dir>` | One task. Started detached (`setsid`) by the host as `caboose` with `DISPLAY=:101` and the agent seat D-Bus session at `/run/user/1000/agent-bus`. |
+| `run <task dir>` | One task. Started detached (`setsid`) by the host as `caboose` with the agent seat's launch environment (`/run/caboose/agent-display.env`: Xwayland `DISPLAY=:101`, its `XAUTHORITY`, X11 toolkit backends) and the seat's D-Bus session bus `/run/user/1000/agent-bus`. |
 | `install <spec>` | Prefetches the agent, starts it once to learn its sign-in methods, records it as installed. Prints `{ installed: { version }, signIn: [...] }`. |
 | `probe <spec>` | `initialize` only; records and prints the sign-in methods. |
 | `sign-in <spec>` | Runs one sign-in method on the owner's display (see below). |
@@ -92,11 +92,15 @@ turn number. Updates outside a turn (including the history an agent replays on
   symlinks included, and refused outside the home directory), `terminal: false`, and
   `auth.terminal: true`. The `authMethods` it returns are kept in
   `~/.local/share/caboose/agents/<id>/auth.json`.
-- **Session.** `session/new` with the task directory as `cwd` and one MCP server,
-  `caboose-desktop` (`node /opt/caboose/desktop-mcp.mjs`, `CABOOSE_AGENT_DISPLAY` set to the
-  runner's display), so every agent can drive GUI apps on the agent seat. The host also
-  snapshots installed catalog MCP commands into `task.json` and the runner passes them to
-  new, load and resume requests. `craftMcp: false` on task creation disables them for that
+- **Session.** `session/new` with the task directory as `cwd` and the MCP server
+  `caboose-desktop` (`node /opt/caboose/desktop-mcp.mjs`, see `guest/desktop-mcp`), so every
+  agent can drive GUI apps on the agent seat. Its environment carries the seat's X11
+  environment from the runner's: `CABOOSE_AGENT_DISPLAY` (the runner's `DISPLAY`),
+  `XAUTHORITY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `GDK_BACKEND`,
+  `QT_QPA_PLATFORM`, `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER` and
+  `ELECTRON_OZONE_PLATFORM_HINT`. The host also snapshots installed catalog MCP commands into
+  `task.json` and the runner passes them, with `caboose-desktop`, to new, load and resume
+  requests. `craftMcp: false` on task creation disables them for that
   task, including replies. See the Agents section of the architecture for the app list.
 - **Prompt.** A text block, then each attachment as an `image` block when the agent's
   `promptCapabilities.image` is set and the file is a PNG, JPEG, GIF or WebP under 10 MB, and
@@ -125,9 +129,9 @@ turn number. Updates outside a turn (including the history an agent replays on
   `~/.local/share/caboose/agents/<id>/sign-in.json` `{ methodId, status: "running" |
   "succeeded" | "failed", message?, startedAt, finishedAt? }`. An `agent` method is ACP
   `authenticate`, with the agent started with `env`, the owner display's launch environment
-  from the host (`{ DISPLAY: ":100" }` under Xpra, the default; `WAYLAND_DISPLAY`, Xwayland's
-  `DISPLAY` and toolkit hints under Caboose Display), so the browser it opens is on the
-  owner's screen; it waits up to 30 minutes. A `terminal` method opens
+  from the host (its Wayland socket, Xwayland's `DISPLAY` and `XAUTHORITY`, toolkit hints),
+  plus the owner's session bus, so the browser it opens is on the owner's screen; it waits
+  up to 30 minutes. A `terminal` method opens
   `xfce4-terminal` (else `x-terminal-emulator`) on that display running the agent's own
   program with the method's `args` in place of the registry's, and its `env` over the
   registry's; exit status 0 is success, after which the runner initializes the agent again.
@@ -137,8 +141,9 @@ turn number. Updates outside a turn (including the history an agent replays on
 `install.sh` (run as root by both image builds) copies the runner to `/opt/caboose/agentd`,
 checks the registry integrity of the pinned SDK and `zod`, and installs them there with npm.
 The image also gets `uv`/`uvx` (pinned, checksum-verified, in `guest/image/apps.sh`) and
-`bzip2` for `.tar.bz2` agents. A computer made from an older image gets the runner by
-running `guest/agentd/install.sh` as root inside it.
+`bzip2` for `.tar.bz2` agents. To install or update the runner on a running computer, run
+`guest/agentd/install.sh` as root inside it; it checks the result with
+`caboose-agentd --version`.
 
 ## Test
 

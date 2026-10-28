@@ -1,7 +1,7 @@
 //! The computer's sound, for the phone.
 //!
 //! The compositor runs its own PulseAudio server on a private socket
-//! (`$XDG_RUNTIME_DIR/caboose-display/pulse/native`), whose only sink is a null sink named
+//! (`pulse/native` in the instance's directory, `Config::instance_dir`), whose only sink is a null sink named
 //! `caboose`, so it is every application's default output. Launched applications get
 //! `PULSE_SERVER` pointing at it. While a client that plays Opus is connected, `parec`
 //! records the sink's monitor; each 20 ms of 48 kHz stereo is encoded with libopus on a

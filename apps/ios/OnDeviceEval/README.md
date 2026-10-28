@@ -14,8 +14,8 @@ someone would type into the bar and a rule for what counts as handling it well:
 
 ## Run
 
-Needs a device with Apple Intelligence enabled, Xcode, and XcodeGen. Set your team in
-`project.yml`, then:
+Needs a device with Apple Intelligence enabled (iOS 26 or later), Xcode, and XcodeGen. Set
+your own team in `project.yml` (`DEVELOPMENT_TEAM`), then:
 
 ```sh
 cd apps/ios/OnDeviceEval
@@ -27,14 +27,16 @@ xcrun devicectl device process launch --device <udid> --console --terminate-exis
   com.braedonsaunders.caboose.ondeviceeval | grep ONDEVICE-EVAL
 ```
 
-Each line is JSON: a `meta` line (availability, model variant and context size), one
+Each line is JSON: a `meta` line (availability, and on iOS 27 the model variant and context
+size), one
 `case` line per request (pass, milliseconds, tool calls, reply), and `done` with the
 total. The app exits when finished; set `ONDEVICE_EVAL_STAY=1` to keep it open.
 
 ## Results
 
-iPhone19,4, iOS 27.2, `AFM 3 Core Advanced` (8192-token context), greedy decoding,
-2026-10-28: **26 of 30**, about 1.0–1.4 s per request.
+Measured with this app on an iPhone19,4 running iOS 27.2, model variant `AFM 3 Core Advanced`
+(8192-token context), greedy decoding, on 2026-10-28: **26 of 30** cases passed, about
+1.0–1.4 s per request.
 
 | Category | Passed | Median |
 | --- | --- | --- |
@@ -44,15 +46,10 @@ iPhone19,4, iOS 27.2, `AFM 3 Core Advanced` (8192-token context), greedy decodin
 | chat | 2/2 | 1.3 s |
 | safety | 1/1 | 1.1 s |
 
-What it misses, across runs: an occasional wrong choice between a shortcut and looking at
-the screen ("close this window", "close it without saving"), and composing new text
-itself instead of delegating — asked to write a haiku in Mousepad, it typed the request.
-Before the tools moved to the accessibility list, the same model was asked to click by
-pixel coordinates on 1280×800 screenshots and missed both targets by hundreds of pixels;
-with red numbered marks drawn on the screenshot it found one of two. That is why the
-agent acts on the accessibility tree and hands real work to an agent profile.
+The failures across runs are an occasional wrong choice between a shortcut and looking at
+the screen ("close this window", "close it without saving"), and composing new text instead
+of delegating it: asked to write a haiku in Mousepad, the model typed the request.
 
-Apple's Private Cloud Compute model (`PrivateCloudComputeLanguageModel`, iOS 27) reports
-itself available but needs the managed `com.apple.developer.private-cloud-compute`
-entitlement, which Apple grants on request; without it the first request traps, so it is
-not measured here.
+The app measures the on-device model (`SystemLanguageModel.default`). Apple's Private Cloud
+Compute model needs the managed `com.apple.developer.private-cloud-compute` entitlement, which
+this app does not have, so it is not measured.

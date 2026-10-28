@@ -7,8 +7,9 @@ pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s: %s\n' "$1" "$2"; failures=$((failures + 1)); }
 check() { local name=$1; shift; if "$@"; then pass "$name"; else fail "$name" "${detail:-assertion failed}"; fi; detail=; }
 detail=
-# Exactly how caboose-host runs the helper: as caboose from a root exec channel, with
-# nothing in the environment but DISPLAY.
+# The helper as a root exec channel runs it: as caboose, with nothing in the environment
+# but DISPLAY (these Xvfb displays need no authority; the Caboose Display section below
+# passes each seat's full launch environment, as caboose-host and the agent runner do).
 a11y() { local display=$1; shift; runuser -u caboose -- env -i DISPLAY="$display" /usr/bin/python3 /opt/caboose/a11y.py "$@"; }
 # py EXPR: evaluate a Python expression over the JSON on stdin (as d).
 py() { python3 -c "import json, sys; d = json.load(sys.stdin); r = ($1); print(r if not isinstance(r, bool) else ('yes' if r else 'no'))"; }

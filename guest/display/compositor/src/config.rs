@@ -49,9 +49,7 @@ A COMMAND after `--` is started once the compositor is ready, with WAYLAND_DISPL
 DISPLAY set, and the compositor exits when it does.
 ";
 
-/// The renderer that composes each window's surface tree. Pixman (CPU) is the one this
-/// version has; a GPU renderer that composes into dmabufs for the zero-copy encoders
-/// is the next.
+/// The renderer that composes each window's surface tree: Pixman, on the CPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RendererChoice {
     Pixman,
@@ -93,7 +91,7 @@ pub struct Config {
     pub env_file: Option<PathBuf>,
     pub renderer: RendererChoice,
     pub always_compose: bool,
-    /// Send regions that update at video rates as their own video stream (layer 3).
+    /// Send regions that update at video rates as their own video stream.
     pub motion: bool,
     /// Close a client that has sent nothing for this long.
     pub client_timeout: Option<std::time::Duration>,

@@ -50,28 +50,30 @@ content.js (every http(s) frame) ──▶ service-worker.js ──native messag
   where `seq` must exceed the last one seen (a command already in the file when the host
   starts is not replayed). It watches the directory with inotify and also re-reads the
   file every second.
-- **`install.sh`** (root, image build, after Chromium and Node) copies the extension and
+- **`install.sh`** (root, after Chromium and Node, safe to repeat) copies the extension and
   host to `/opt/caboose/media-handoff`, registers the host in
   `/etc/chromium/native-messaging-hosts/com.caboose.media.json` for this extension only,
   and links the extension into `/usr/share/chromium/extensions/`, which Debian's
   `/usr/bin/chromium` loads for every profile through `/etc/chromium.d/extensions`.
-  `guest/container/Dockerfile` and `guest/image/apps.sh` run it.
+  `guest/container/Dockerfile` runs it, and `guest/image/apps.sh` runs it when the script
+  sits in a checkout beside this directory. The microVM image builder (`guest/image/build.sh`)
+  does not copy this directory, so microVM images built by it do not include media handoff;
+  run `sh guest/media-handoff/install.sh` as root inside the computer to add it.
 
 ## Extension ID
 
 `manifest.json` carries a fixed public `key`, so the extension ID is always
 **`cklinclacpchpdgickgonlhnldfmkhbh`** (SHA-256 of the key, first 32 hex digits written
-`a`–`p`). The private key was discarded: the extension is only ever loaded unpacked, and
-nothing needs to sign it. `selftest.mjs` recomputes the ID and checks the installer uses it.
+`a`–`p`). No private key is kept: the extension is only loaded unpacked, and nothing signs
+it. `selftest.mjs` recomputes the ID and checks the installer uses it.
 
-## Why not a `--load-extension` file of our own
+## Loading the extension
 
-Debian 13's Chromium (156) still honours `--load-extension` (the Chromium 137 removal
-applies to Google Chrome builds; no `--disable-features` is needed). But Chromium keeps only
-the **last** `--load-extension` switch, and Debian's `/etc/chromium.d/extensions` always
-adds one (for `/usr/share/chromium/extensions/*`) after any earlier file. A separate
-`/etc/chromium.d/caboose-media` was verified to be silently overridden, so the installer
-joins Debian's list instead.
+Debian's Chromium build honours `--load-extension` (the switch's removal applies to Google
+Chrome builds). Chromium keeps only the **last** `--load-extension` switch, and Debian's
+`/etc/chromium.d/extensions` always adds one for `/usr/share/chromium/extensions/*`, so a
+separate file in `/etc/chromium.d` would be overridden. The installer therefore links the
+extension into Debian's directory instead of adding its own switch.
 
 ## Test
 
@@ -86,6 +88,6 @@ joins Debian's list instead.
   docker exec -u root caboose-owner bash -s < guest/media-handoff/check.sh
   ```
 
-  Add `CABOOSE_CHECK_CHROMIUM_ARGS=--no-sandbox` only where the container has no
-  namespace sandbox. It passed against Debian 13's Chromium 156 in a plain
-  `debian:trixie-slim` container.
+  Inside a microVM computer, run `sudo bash guest/media-handoff/check.sh` from a checkout.
+  Add `CABOOSE_CHECK_CHROMIUM_ARGS=--no-sandbox` only where the container has no namespace
+  sandbox.

@@ -20,7 +20,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
   const host = createDeskHost({
     imageRoot: config.imageRoot, vmmPath: config.vmmPath,
     // No console=ttyS0: appkit-desk launches with --serial off, and a kernel told to use a
-    // serial console that does not exist can hang before userspace (the #18 image did, >160 s).
+    // serial console that does not exist can hang before userspace.
     kernelCmdline: 'root=/dev/vda3 rw',
     runtimeDir: join(config.imageRoot, 'runtime'), backend: dependencies.backend ?? createCloudHypervisorBackend({ connectTimeoutMs: 120_000 }),
     ...(dependencies.deviceExists ? { deviceExists: dependencies.deviceExists } : {}),

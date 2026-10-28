@@ -1,7 +1,7 @@
 #!/bin/bash
 # Run inside a started GPU computer. Does not restart or park it.
 set -euo pipefail
-/usr/local/bin/caboose-session ready-display
+/usr/local/bin/caboose-session ready
 libs=
 if [ "${CABOOSE_GPU:-none}" = wsl ]; then libs=/usr/lib/wsl/lib; fi
 encoders=$(runuser -u caboose -- env LD_LIBRARY_PATH="$libs" caboose-display --list-encoders)

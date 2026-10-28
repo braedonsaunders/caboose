@@ -1,104 +1,154 @@
 # Caboose Display
 
-Caboose's own display server and stream: every Linux window rendered on the GPU, encoded
-straight from GPU memory, and shown on the phone or TV as its own native surface. It
-replaces Xvfb + Xpra wherever a host has a GPU. Xpra stays as the fallback for hosts
-without one, behind the same window model in the app.
+Caboose Display is the computer's display server: a headless Wayland compositor, with
+Xwayland for X11 applications, that streams every window as its own encoded video for the
+phone or TV to show as a native surface. The code is in [guest/display](../guest/display);
+its README covers building, running and testing it. This document is the design and the
+wire contract, the Caboose Display Protocol.
 
-## Why
-
-Measured on an RTX 4080 under WSL (2026-10-28): a 4K Chromium video reached the phone at
-~16 fps. NVENC HEVC encoded every frame in a few milliseconds, and Xpra sent every frame
-Chromium painted. The limit was Xvfb. Chromium rendered on the GPU, read each 33 MB frame
-back to the CPU and wrote it into Xvfb's memory, and then Xpra read it out again. Parsec,
-Sunshine and Steam Link stream 4K60 from weaker GPUs because their frames never leave GPU
-memory between render and encode. Caboose Display does the same per window.
-
-## What it is
+## Design
 
 ```
  apps (Wayland, and X11 through Xwayland)
-   │ linux-dmabuf buffers, wl_surface damage, frame callbacks
+   │ wl_shm and linear dmabuf buffers, surface damage, frame callbacks
    ▼
  caboose-display   (headless Wayland compositor, Rust + Smithay, inside the computer)
-   ├ one Stream per toplevel / popup: its committed dmabuf + damage
-   ├ Encoder per stream, zero copy from the dmabuf:
-   │     NVENC (CUDA external memory) · VA-API (dmabuf import) · Vulkan Video ·
-   │     software (x264/x265, for hosts without a GPU; then the buffers are wl_shm)
-   ├ text mode: static content re-sent as lossless tiles once motion stops
-   ├ pacing: frame callbacks released on the client's vsync ticks
-   └ input: wl_touch, tablet-v2 (Pencil), text-input-v3 (IME), pointer, keyboard
-   │ Caboose Display Protocol (below) over the existing host relay
+   ├ one stream per toplevel, dialog, popup and X11 window
+   ├ an encoder per stream: libx264, libx265, or NVENC (h264/hevc/av1_nvenc)
+   ├ changed-block detection, lossless tiles for small changes, sharpening of quiet areas
+   ├ video: codec passthrough (the VA-API driver) and detected motion, as their own streams
+   ├ pacing: frame callbacks released on the client's vsync, at most two frames in flight
+   ├ input: pointer, wl_touch, keyboard by keysym, text-input-v3
+   └ sound: a private PulseAudio, sent as Opus on the pictures' clock
+   │ Caboose Display Protocol (below), relayed byte for byte by caboose-host
    ▼
- CabooseKit (iOS) · VideoToolbox HEVC/AV1 → CAMetalLayer (EDR/HDR), per window
+ CabooseKit (iOS): VideoToolbox HEVC / AV1 / H.264 → Metal, one surface per window
 ```
 
-The compositor composites nothing. It is a window and buffer broker. The phone and TV are
-the compositors, which is how each window stays a native surface.
+- **The compositor composites nothing across windows.** It is a window and buffer broker.
+  Each window's surface tree is rendered alone, cropped to its window geometry, and
+  encoded as its own stream. The phone and the TV are the compositors, which is how each
+  window stays a native surface with its own title, icon, size hints and parent.
+- **Nothing runs while nothing changes.** Only damaged 16×16 blocks are compared, only
+  blocks whose pixels really changed are converted, and the encoder is told which
+  macroblocks changed. A window that is one surface with one wl_shm buffer is read in
+  place without composition. With no client connected the server does no per-window work.
+- **The client paces the applications.** Frame callbacks are released on the client's
+  display refresh and only while fewer than two frames are unacknowledged, so
+  applications draw at the rate the link and the screen can show.
+- **Text stays sharp and cheap.** Small changes (typing, a caret) go as lossless PNG tiles
+  instead of pictures. Areas that have been quiet for 300 ms are coded once more at a low
+  QP and then cost nothing until they change.
 
-## Host requirements, and what each gets
+The renderer is pixman, on the CPU. Applications render themselves (with Mesa's D3D12
+driver on WSL2 hosts, for example), and their buffers reach the encoder through system
+memory.
 
-| Host | Rendering | Buffers | Encode | Expected |
-| --- | --- | --- | --- | --- |
-| Linux, NVIDIA (`CABOOSE_GPU=nvidia`) | EGL/Vulkan on the GPU | dmabuf | NVENC (zero copy) | 4K60+ |
-| Linux, Intel/AMD (`dri`) | Mesa | dmabuf | VA-API (zero copy) | 4K60 on recent parts |
-| Bare-metal microVM with VFIO GPU | as above, inside the VM | dmabuf | as above | 4K60, VM isolation |
-| WSL2 (`wsl`) | Mesa D3D12 on `/dev/dxg` | wl_shm (no DRM/GBM in WSL) | NVENC/D3D12-VA after a CPU copy | same ceiling as today |
-| No GPU (`none`, microVM default) | pixman / llvmpipe | wl_shm | x264/x265 | CPU-bound, like Xpra |
+## Hosts and encoders
 
-Zero copy on WSL waits on the cross-process buffer sharing that WSL does not have today
-(active work: a Cookiekira/niri issue to validate a GLES → D3D12-VA proof of concept,
-microsoft/wslg#469). A box that needs zero-copy 4K runs Linux natively.
+caboose-display probes its encoders at start-up by encoding a test picture and offers
+only those that work, hardware first (HEVC, then AV1, then H.264), then libx264 and
+libx265. The server picks the first codec in its order that the client decodes.
+
+| Host (`CABOOSE_GPU`) | Runtime | Encoders |
+| --- | --- | --- |
+| No GPU (`none`) | microVM (Cloud Hypervisor) or container | libx264, libx265 |
+| Linux, NVIDIA (`nvidia`) | container | NVENC, libx264, libx265 |
+| Linux, Intel or AMD render node (`dri`) | container | libx264, libx265 |
+| WSL2 (`wsl`) | container | NVENC through `/usr/lib/wsl/lib` on an NVIDIA GPU, libx264, libx265 |
+
+`caboose-display --list-encoders` prints what a machine offers.
+
+## Two instances
+
+The computer runs two instances of caboose-display, one for the owner and one for agents.
+
+| | Owner's display | Agent seat |
+| --- | --- | --- |
+| microVM unit | `caboose-display.service` | `caboose-display-agent.service` |
+| Container | `caboose-session start` | `caboose-session start-agent` |
+| WebSocket port | `14600` | `14601` |
+| Host relay | `/v1/display` | `/v1/display?seat=agent` |
+| Wayland socket | `wayland-caboose-0` | `wayland-caboose-agent` |
+| Xwayland | `:110` | `:101` |
+| Applications use | Wayland first, X11 through Xwayland second | Xwayland only (`--x11-only`) |
+| Sound | its own PulseAudio, Opus to the client | none (`--no-audio`) |
+| D-Bus session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus`, with its own notification endpoint |
+| Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
+| Video socket | `$XDG_RUNTIME_DIR/caboose-video.sock` | `$XDG_RUNTIME_DIR/caboose-video-agent.sock` |
+| Started | by the host at each wake | on demand, when an agent task or a watcher (the app's Agent space) needs it |
+
+- **Token.** At each wake the host writes a fresh token to `/run/caboose/display-token`
+  (mode 0600, owned by `caboose`). Both instances and the file service (port 14700) check
+  it, and caboose-display re-reads it on every `hello`. `/v1/session` wakes the computer
+  and returns `{ display: { path: '/v1/display', token, protocol: 'caboose-display' } }`.
+- **Relay.** The host relays bytes between the client and the instance and never decodes
+  them. In the container runtime both ports are published on host loopback only.
+- **Launch environment.** Once Wayland and Xwayland are ready, each instance writes the
+  environment its applications need (`WAYLAND_DISPLAY` unless `--x11-only`, `DISPLAY`,
+  `XAUTHORITY`, `XDG_RUNTIME_DIR`, toolkit backends, `PULSE_SERVER` when it plays sound,
+  the VA-API passthrough variables when the driver is installed) to its env file in sh
+  syntax.
+- **Per-instance state.** Each instance keeps its X authority (`Xauthority`), the
+  Xwayland shim that adds `-auth` (`bin/Xwayland`) and its PulseAudio socket
+  (`pulse/native`) under `$XDG_RUNTIME_DIR/caboose-display/<Wayland socket name>/`, so
+  the two never share them.
+- **Readiness.** `caboose-display-ready [TIMEOUT] [PORT]` exits 0 once the instance on
+  `PORT` (default 14600) answers a `hello` made with the per-wake token, trying for
+  `TIMEOUT` seconds (default 60).
+- **Why the agent seat is X11 only.** Agents drive applications with X11 tools (xdotool,
+  AT-SPI by X window, ImageMagick `import`), through caboose-agentd and
+  caboose-desktop-mcp. `--x11-only` makes the env file name `DISPLAY` and X11 toolkit
+  backends (`GDK_BACKEND=x11`, `QT_QPA_PLATFORM=xcb`, `MOZ_ENABLE_WAYLAND=0`,
+  `SDL_VIDEODRIVER=x11`, `ELECTRON_OZONE_PLATFORM_HINT=x11`) and no `WAYLAND_DISPLAY`, so
+  every application on the seat is reachable by those tools. The same tools serve the
+  owner's display through `/v1/screen/*`; there they reach X11 windows on Xwayland, and
+  native Wayland windows are not exposed to them.
 
 ## Video, for every app
 
-Video is not a special case for particular sites or apps. It is handled at the operating
-system's own seams, so any program that plays video benefits. There are three layers;
-each one falls back to the one below it.
+Video is handled at the operating system's own seams rather than for particular sites or
+apps, so any program that plays video benefits. caboose-display sends video as `video.*`
+streams (see "Video streams" below) in two ways, and everything else stays in the
+window's own picture.
 
-1. **Codec passthrough (zero server cost).** The computer ships a Caboose VA-API driver,
-   the standard Linux interface for hardware video decoding. Chromium, Firefox, mpv, VLC,
-   GStreamer and FFmpeg all decode through it. The driver does not decode. It
-   reconstitutes the compressed bitstream (H.264, HEVC, VP9, AV1) from the parameter and
-   slice buffers and forwards it, as is, to the client as a `video` stream bound to the
-   window and rectangle it plays in. The client decodes it in hardware and layers it into
-   the window at the app's own timestamps, with audio kept in sync. This is the same idea
-   as RDP and Citrix multimedia redirection, applied at the decode interface every Linux
-   player shares. It gives the original quality, near-zero server CPU and no GPU. Content
-   the client cannot decode, or that the app reads back (canvas, effects), falls back to
-   layer 2. The driver, its socket to the compositor and the on-screen marker that binds a
+1. **Codec passthrough.** The computer ships a Caboose VA-API driver, used through the
+   standard Linux interface for hardware video decoding. The driver does not decode. It
+   rebuilds the compressed bitstream (H.264, HEVC, VP9, AV1) from the parameter and slice
+   buffers and forwards it, as is, to caboose-display, which sends it to the client as a
+   `passthrough` stream bound to the window and rectangle it plays in. The client decodes
+   it in hardware and layers it into the window at the moment the application shows each
+   frame, so the application's own audio sync holds. It gives the original quality at
+   almost no server CPU. The driver, its socket, and the on-screen marker that binds a
    stream to its window are specified in [codec-passthrough.md](codec-passthrough.md).
-2. **Video surfaces (first class in the compositor).** On Wayland, players present video
-   on its own subsurface in a YUV format (NV12/P010): the overlay path used by Chromium,
-   Firefox, mpv, GStreamer and VLC. The compositor treats that subsurface as its own
-   stream, with a video codec at the video's own size and frame rate, hardware encoded
-   where available. The window around it keeps sharp, lossless UI updates, and the client
-   layers the two. No heuristics are involved.
-   **Deferred until there is a GPU renderer.** No application in the guests as shipped
-   presents video this way. Chromium runs with `--disable-gpu`, Firefox renders video
-   with software WebRender, and mpv and VLC use RGB shm or EGL outputs without a GPU.
-   GStreamer's `waylandsink` would, but it is in gst-plugins-bad, which no guest
-   installs. Overlay subsurfaces appear with GPU rendering, and on GPU hosts those players
-   decode through layer 1 already. Until then the compositor offers no YUV formats, so such
-   a player falls back to RGB buffers, which the window picture or layer 3 carries.
-3. **Detected motion (X11 and everything else).** A region that updates at video rates is
-   encoded as video, at the size it is actually shown on the client, as Xpra does today.
+2. **Detected motion.** A region of a window that updates at video rates is encoded as
+   its own `motion` stream, at the size it is shown on the client, and left out of the
+   window's pictures. This covers X11 players, canvas animation, and video that does not
+   decode through VA.
 
-On the wire these are the `video.*` messages (see "Video streams" below). "Play on
-iPhone / Apple TV" (media handoff) stays as a user action layered on top, not as the
-mechanism.
+Players that decode on the CPU through VA (mpv, GStreamer, FFmpeg) pass through wherever
+the driver runs. Chromium and Firefox decode through VA only with a working GPU process,
+which needs a DRM render node; on WSL2 and on hosts without a GPU their video stays in the
+window picture or becomes a `motion` stream. VA carries no HDR metadata, and AV1 is
+forwarded one picture late (see [guest/vaapi](../guest/vaapi/README.md)).
+
+The protocol also defines `surface` streams, for applications that present video on its
+own YUV (NV12/P010) subsurface. caboose-display's pixman renderer offers no YUV buffer
+formats, so applications present RGB buffers to it and it does not send `surface`
+streams.
 
 ## Caboose Display Protocol (v0)
 
-The server is `caboose-display` in the guest, on WebSocket `0.0.0.0:14600` (any path; it
-accepts the `binary` subprotocol). The host relays it exactly as it relays Xpra; `14601` is
-reserved for an agent seat. One client is served at a time: a new authenticated client
-replaces the previous one, which gets `bye { reason: "replaced" }` and is closed. A client
-should not reconnect on its own after `replaced`, or two devices would keep taking the
-display from each other. A client that sends nothing for 30 s (no `vsync`, `ack` or `ping`)
-is taken for suspended or gone and is closed. A client without a display to pace pings
-at least every 10 s. The Rust codec is
-`guest/display/protocol`, and `guest/display/vectors/` pins every message byte for byte.
+The server is `caboose-display` in the guest, on WebSocket `0.0.0.0:14600` for the
+owner's display and `0.0.0.0:14601` for the agent seat (any path; it accepts the `binary`
+subprotocol). The host relays it byte for byte. Each instance serves one client at a time:
+a new authenticated client replaces the previous one, which gets
+`bye { reason: "replaced" }` and is closed. A client should not reconnect on its own
+after `replaced`, or two devices would keep taking the display from each other. A client
+that sends nothing for 30 s (no `vsync`, `ack` or `ping`) is taken for suspended or gone
+and is closed. A client without a display to pace pings at least every 10 s. The Rust
+codec is `guest/display/protocol`, and `guest/display/vectors/` pins every message byte
+for byte.
 
 ### Framing and encoding
 
@@ -111,7 +161,9 @@ at least every 10 s. The Rust codec is
   `maxPayload` is 16 MiB). A larger announced length is a protocol error and closes the
   connection.
 - Unknown types are skipped by length. Unknown keys are ignored. A known type whose payload
-  does not decode is dropped and the stream continues.
+  does not decode is dropped and the stream continues. A message of the other direction's
+  type range, or a text WebSocket message, is a protocol error: the server sends
+  `bye { reason: "protocol" }` and closes.
 - **Encoders are canonical**, so vectors compare byte for byte in both directions:
   definite lengths, integers in the shortest form, every float as float64 (`0xfb`), map
   keys sorted bytewise on their encoded form (RFC 8949 §4.2.1; for short text keys, the
@@ -140,14 +192,18 @@ at least every 10 s. The Rust codec is
 The client speaks first, as soon as the socket opens, with `hello` carrying the
 `display.token` from `/v1/session`. The server re-reads the per-wake token file on every
 hello. On a mismatch it sends `bye { reason: "auth" }` and closes; on an unsupported
-version, `bye { reason: "version" }`. Otherwise it answers `hello` with the display ids it
-accepted, `encoders` = its encoders ∩ the client's decoders in the server's preference
-order, and its `features`; then sends `window.create` for every live window, followed by a
-keyframe of each.
+version, `bye { reason: "version" }`; when none of its encoders is in the client's
+`decoders`, `bye { reason: "protocol" }`. Otherwise it answers `hello` with the display
+ids it accepted, `encoders` = its encoders ∩ the client's decoders in the server's
+preference order, and its `features`; then sends `window.create` for every live window,
+followed by a keyframe of each.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
 `cursor-named`, `tiles`, `audio`, `xwayland`, `video`. A feature is listed only when the
-server implements it.
+server implements it. caboose-display always lists `vsync`, `ack`, `touch`,
+`text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
+when it can send video streams and the client lists `video_decoders`; `audio` when it
+plays sound; and `tiles` unless tiles are turned off. It does not list `pencil`.
 
 ### Pacing and flow control
 
@@ -237,6 +293,12 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
   `xwayland: true` windows and send real touch to native Wayland ones, because most X11
   apps turn a touch drag into a selection.
 
+caboose-display sends a subset of these messages. It sends named cursors (`cursor.named`)
+and no `cursor` images; tiles only as `png`; `video.create` and `video.update` without
+`z`, `color` or `extradata`; and no `notification` (the computer's notifications reach
+the app through the host, from [guest/notifications](../guest/notifications)). It ignores
+`pencil`. The clipboard carries text (`text/plain;charset=utf-8`).
+
 ### Audio
 
 The computer's sound is one Opus stream: each `audio` message is one 20 ms packet (960
@@ -264,17 +326,17 @@ window. Video ids are their own namespace, unique for the server's lifetime.
   H.264 and HEVC, a temporal unit of OBUs with the sequence header on keyframes for AV1,
   and a frame or superframe for VP9. `extradata` is only for a codec whose parameters
   cannot travel in band.
-- **`motion` streams** (layer 3) are regions of a window that the server finds updating
-  at video rates. A region qualifies once it has been a dense rectangle of at least
-  192×112 picture pixels for a second, with most of its macroblocks changing in most
-  pictures at 15 or more pictures a second. It is sent in the window stream's codec at the
-  window picture's pixel scale, and only to a client that lists that codec in
-  `video_decoders`; a window with a passthrough stream bound gets none. While the stream
-  exists, the window's `frame`s leave the region out; the client shows the stream over
-  it. Once the region has stopped looking like that for a second (the video paused,
-  moved, or closed), the server sends a window `frame` that repaints the region and then
-  `video.destroy`. The client keeps showing the stream until it has shown that frame. A
-  resize ends the stream with the keyframe that follows it.
+- **`motion` streams** are regions of a window that the server finds updating at video
+  rates. A region qualifies once it has been a dense rectangle of at least 192×112
+  picture pixels for a second, with most of its macroblocks changing in most pictures at
+  15 or more pictures a second. It is sent in the window stream's codec at the window
+  picture's pixel scale, and only to a client that lists that codec in `video_decoders`;
+  a window with a passthrough stream bound gets none. While the stream exists, the
+  window's `frame`s leave the region out; the client shows the stream over it. Once the
+  region has stopped looking like that for a second (the video paused, moved, or closed),
+  the server sends a window `frame` that repaints the region and then `video.destroy`.
+  The client keeps showing the stream until it has shown that frame. A resize ends the
+  stream with the keyframe that follows it.
 - **`surface` and `motion` streams** carry `pts_us` (server `CLOCK_MONOTONIC` at the
   commit, like `frame`), have no reordering, and are shown as soon as they are decoded.
 - **`passthrough` streams** carry no `pts_us`: the application's decoder is the server's
@@ -289,47 +351,66 @@ window. Video ids are their own namespace, unique for the server's lifetime.
   the flow control of the window stream (at most 2 unacknowledged), for `passthrough` it is
   only latency accounting, because the application paces itself. After a
   `video.keyframe` the server sends a keyframe (a passthrough stream is replayed from its
-  last one).
+  last one). A client that sends three `video.keyframe` for a passthrough stream within
+  10 s gets that stream decoded on the server instead.
 
-## Status
+## Measurements
 
-`guest/display` implements milestone 1 and the CPU path of the design; its README has the
-measurements and the scripted checks.
+All figures below are from an AMD Ryzen 7 2700X (8 cores), with software rendering,
+libx264 on one thread per window, and frames decoded and acknowledged by
+`caboose-display-probe` on the same machine. They are produced by the scripts named with
+each table, run in the dev container (`guest/display/scripts/dev.sh`).
 
-- **Done:** the protocol and its vectors; the headless compositor with Xwayland, wl_shm and
-  linear dmabufs; one stream per toplevel, dialog, popup and X11 window; single-buffer
-  windows read in place without composition, the rest damage-tracked; changed-block
-  detection and libx264 macroblock hints, so the server's CPU follows what changes on
-  screen; progressive refinement, where areas quiet for 300 ms are coded once more at
-  QP 12 (libx264), so text sharpens and then costs nothing; lossless tiles for small
-  changes (typing, carets) instead of pictures; video layer 3, where regions
-  that update at video rates become `motion` streams; libx264, libx265 and NVENC (from
-  system memory, the WSL2 path) behind one `Encoder` trait; pacing on vsync with acknowledgement-based flow
-  control; pointer, multitouch, keys and text-input-v3 input; the text clipboard between
-  the phone, Wayland and X11 applications; the computer's sound as Opus; reconnect and replacement;
-  video layer 1, codec passthrough ([codec-passthrough.md](codec-passthrough.md)): the
-  driver's socket, streams bound to windows by their marker, `video.*` out with
-  `video.present` at the moment the application shows each frame; the container and
-  microVM integration, with the driver (installed, not the default).
-- **Next:** a GPU renderer that composes into dmabufs, and the zero-copy encoders on it
-  (dmabuf → NVENC through CUDA external memory, dmabuf → VA-API), which also enables the
-  exact passthrough binding; video layer 2 (YUV subsurfaces); tiles from NVENC streams;
-  cursor images and Pencil.
-- **Passthrough reach:** Chromium and Firefox decode through VA only with a working GPU
-  process, which needs a DRM render node; on WSL2 and hosts without a GPU their video stays
-  in the window picture, or becomes a layer 3 `motion` stream. Players that decode on the CPU
-  through VA (mpv, GStreamer, FFmpeg) pass through anywhere the driver runs. VA carries no
-  HDR metadata, and AV1 is presented one picture late (docs in guest/vaapi).
-- **Not measurable here yet:** milestone 2's success criterion needs a Linux host with an
-  encode-capable GPU. The development machine's GPU (Radeon HD 7450) has VA-API decode
-  only, and the RTX 4080 machine runs WSL2, which has no DRM render node.
+`scripts/check.py` with the probe's `--server-pid`:
 
-## Milestones
+| Workload | Frame rate | Latency, commit → decoded (p50 / p95) | Server CPU |
+| --- | --- | --- | --- |
+| Chromium, 1280×720 animation (60 Hz) | 60.2 fps | 3.3 / 5.0 ms | 3.8 ms per frame |
+| Chromium, 1920×1080 animation (60 Hz) | 59.8 fps | 6.8 / 7.9 ms | 7.4 ms per frame, 43% of a core |
+| weston-simple-shm, 250×250 (60 Hz) | 60.2 fps | 0.7 / 1.2 ms | 0.94 ms per frame, 6% of a core |
+| The same with HEVC (x265) | 60.4 fps | 4.9 / 11.7 ms | 10.8 ms per frame |
+| An idle terminal, client ticking vsync at 60 Hz | — | — | 0.5% of a core |
+| No client connected | — | — | nothing measurable (one housekeeping timer a second) |
 
-1. **Compositor skeleton.** Headless Smithay compositor with Xwayland, wl_shm + dmabuf, and one stream per toplevel with a software encoder. The iOS client renders windows over the relay. Runs on any Linux.
-2. **Zero copy on a Linux GPU.** dmabuf → NVENC (CUDA) and dmabuf → VA-API, plus Vulkan Video where present. Success: Chromium 4K60 video at ≥55 fps on the phone/TV, under 30 ms from frame to decode on a LAN.
-3. **Input that is native.** wl_touch multitouch, Pencil via tablet-v2, text-input-v3 IME from the iOS keyboard.
-4. **Pacing and polish.** Frame callbacks paced on vsync (ProMotion 120 Hz), HDR/EDR, lossless text tiles, Opus audio in sync with video.
-5. **Video for every app.** Video surfaces (layer 2), then the VA-API codec-passthrough
-   driver (layer 1) with in-window layering and A/V sync on the client.
-6. **Default where it can be.** The host picks Caboose Display when the computer has a GPU and the image has it, and falls back to Xpra otherwise. The app supports both.
+- Chromium damages about a quarter of the window per frame while the pixels that change
+  cover about 1%, which is why changed blocks are compared before they are converted.
+- Reading a single-buffer window in place costs 12.0 ms of server CPU per frame for
+  full-window 1080p video; composing it (`--always-compose`) costs 13.1 ms.
+- `refine`: the sharpened picture of a quiet terminal is 42.4 → 50.3 dB against a
+  near-lossless reference, for one 34 kB picture. A blinking caret for 6 s costs 16
+  pictures, against 13 without sharpening.
+- `tiles`: 31 characters typed into Chromium at 1179×2556 take 6 pictures and 470 ms of
+  server CPU, against 77 pictures and 1180 ms with `--tile-max-px 0`; the final pictures
+  match at 66.6 dB.
+- `motion`: the check's 8 s canvas video in a 1280×720 Chromium window costs 5.1% of a
+  core, against 8.0% with `--no-motion`. The window stream sends about 50 pictures, most
+  of them before the region qualifies; each video frame is then a 480×288 encode instead
+  of a 1280×720 one.
+
+`scripts/profile.py [phone|tv] [type|scroll|caret]`, Chromium maximised on a phone's
+display (1179×2556 at 3×) or a TV's (3840×2160 at 2×), server CPU from process CPU over
+9 s of typing (about 25 keystrokes) minus the idle-caret baseline:
+
+| | With tiles | `--tile-max-px 0` |
+| --- | --- | --- |
+| phone, per keystroke | ≈0.8 ms | ≈17 ms |
+| TV, per keystroke | under 1 ms (below the 10 ms clock tick over the run) | ≈44 ms |
+| phone, idle caret | 1.1% of a core | 2.9% |
+| TV, idle caret | 1.0% | 7.1% |
+
+The encoder alone on one thread, with synthetic text
+(`cargo test -p caboose-display bench_text -- --ignored --nocapture`), libx264 in CRF mode
+at 23 with `qcomp=1`:
+
+| Picture | Time, size |
+| --- | --- |
+| 1080p, one glyph typed | 4.4 ms, 198 B |
+| 1080p, scrolled 18 px | 10.9 ms, 22 kB |
+| 720p, one glyph typed | 1.6 ms, 131 B |
+| 720p, scrolled 18 px | 5.2 ms, 12 kB |
+
+A whole picture has a cost floor that scales with its size, whatever changed: one typed
+glyph coded as a picture is 6.4 ms at 1179×2556 and 18.5 ms at 3840×2160, which is what
+tiles avoid. Sharpening 30 typed glyphs at 1080p is one 1.7 kB picture; the first
+sharpening of a whole window after its keyframe is the largest (a full screen of dense
+text: 470 kB, 15 ms).

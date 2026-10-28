@@ -1,12 +1,14 @@
 # Caboose Display Protocol golden vectors
 
-Exact wire bytes for every v0 message (docs/display.md), produced by
-`guest/display/protocol`. Every client implementation replays them: decode each `.bin`,
-compare against the `.json`, re-encode, and compare bytes.
+Exact wire bytes for every v0 message ([docs/display.md](../../../docs/display.md)),
+produced by `guest/display/protocol`. Every client implementation replays them: decode
+each `.bin`, compare against the `.json`, re-encode, and compare bytes. The Rust codec's
+tests do this in `guest/display`; CabooseKit's `DisplayVectorTests` do it on iOS
+(`swift test` in `apps/ios/CabooseKit`).
 
 Each vector is a pair:
 
-- `<name>.bin` — the exact bytes on the wire: one or more messages, each
+- `<name>.bin`: the exact bytes on the wire: one or more messages, each
   `type: u8, length: u32 LE, payload`.
 - `<name>.json`:
 
@@ -35,8 +37,9 @@ Three shapes of entry:
 - **Unknown** (`"type": null`, `payload_hex`). A type id v0 does not define; the decoder
   skips it by length and the next message still decodes.
 
-The frame vectors carry real pictures (`media/`): a 64x64 H.264 and a 64x64 HEVC keyframe
-that a hardware decoder must accept, and a 16x16 PNG for the icon, cursor and tile vectors.
+The frame and audio vectors carry real media (`media/`): a 64x64 H.264 and a 64x64 HEVC
+keyframe that a hardware decoder must accept, a 16x16 PNG for the icon, cursor and tile
+vectors, and one 20 ms stereo Opus packet.
 
 Regenerate after changing the protocol, then commit both:
 
@@ -45,5 +48,7 @@ guest/display/scripts/dev.sh cargo run -p caboose-display-protocol --example wri
 guest/display/scripts/dev.sh cargo test -p caboose-display-protocol
 ```
 
-`media/generate.sh` regenerates the media; their bytes depend on the x264/x265 versions,
-so only run it when the media need to change.
+`media/generate.sh` regenerates the media (run it in the dev container:
+`guest/display/scripts/dev.sh vectors/media/generate.sh`). Their bytes depend on the
+x264, x265 and libopus versions, so only run it when the media need to change, and re-run
+`write-vectors` afterwards.

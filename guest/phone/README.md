@@ -1,29 +1,54 @@
 # Phone handoff in the guest
 
-`install.sh` installs `caboose-open`, `caboose-share`, the phone URL desktop handler,
-a system default for Thunar's **Share to iPhone** custom action, and an `iPhone` CUPS queue. Both guest image
-builders install it. It can also be installed by the automatic host upgrade on an existing Debian guest. Log in again or restart Thunar to reload custom actions; a user's own MIME defaults or Thunar actions may override the system defaults.
+The guest half of opening, sharing and printing from Linux to the paired iPhone. Commands
+queue owner-initiated handoffs in `~/.cache/caboose/phone`; caboose-host reads the queue as
+`caboose` and relays each event to the phone's control socket (`docs/architecture.md`
+§ Phone handoff has the schema, expiry, confirmation and delivery rules).
 
-```
+| File | Installed as | What |
+| --- | --- | --- |
+| `caboose-phone` | `/usr/local/bin/caboose-phone`, with `caboose-open` and `caboose-share` linked to it | Queues `phone.open` (http, https, mailto, tel, sms, facetime, facetime-audio, maps and geo URLs), `phone.share` and `phone.print` events. |
+| `caboose-phone.desktop` | `/usr/local/share/applications/` | **Open on iPhone**, the default handler for the mailto, tel, sms, facetime, facetime-audio, maps and geo schemes (ordinary web links keep the browser). |
+| `caboose-share.desktop` | `/usr/local/share/applications/` | **Share to iPhone** for files. |
+| `uca.xml` | merged into `~/.config/Thunar/uca.xml` | Thunar's **Share to iPhone** custom action; the owner's other actions are kept. |
+| `cups-backend` | `/usr/lib/cups/backend/caboose-phone` | The `iPhone` printer's backend: stages the PDF as `caboose` and queues `phone.print`. |
+| `printer-setup`, `caboose-phone-printer.service` | `/usr/local/libexec/caboose-phone-printer-setup` and a systemd unit | Creates the `iPhone` CUPS queue. |
+
+```sh
 caboose-open 'mailto:person@example.com'
 caboose-open 'https://example.com/'
 caboose-share ~/Pictures/photo.png
 lp -d iPhone ~/Documents/report.pdf
 ```
 
-The printer uses Debian cups-filters' generic PDF PPD with its PJL wrapper removed. CUPS
-converts supported inputs to PDF, then the root backend stages the result as user caboose.
-This works independently of Xpra and Caboose Display. The container starts CUPS and
-configures the queue at owner-display startup; the microVM uses the installed systemd unit.
-Files must be regular and no larger than 10 MiB. The host and phone protocol, expiry,
-confirmation and delivery limits are in `../../docs/architecture.md` § iOS weave.
+The printer uses Debian cups-filters' generic PDF PPD with its PJL wrapper removed, so CUPS
+converts supported inputs to PDF before the backend runs. Files must be regular files of at
+most 10 MiB. Queued requests and staged files older than 24 hours are removed.
 
-For a scripted check on a disposable guest, run `sudo bash guest/phone/check.sh` after
-installation. It starts CUPS if necessary, configures the printer, checks MIME handlers,
-queues a sample URL and file, prints a PDF, and drains the guest handoff queue to verify
-all three events. Disconnect phone control clients first: the check consumes pending
-handoffs, so do not run it with requests you want to keep. It creates a real CUPS job.
-This can also be run in a disposable Debian 13 container with the source mounted at
-`/src`, a `caboose` user created, and the shared components installer run first; see `guest/components/README.md`. Full share-sheet,
-AirPrint and background behavior requires the paired iOS device and a real computer;
-follow the checks in `apps/ios/README.md`.
+## Install
+
+`install.sh`, as root on a Debian guest with the `caboose` user, installs CUPS, cups-filters
+and the files above, sets the scheme defaults in `/etc/xdg/mimeapps.list`, and enables
+`cups.service` and `caboose-phone-printer.service`. It is part of the guest components
+bundle (`guest/components`): both guest images run it, and the host runs it in existing
+computers when the bundle changes. In the
+container, `caboose-session start` starts CUPS and configures the queue. Log in again or
+restart Thunar to load the custom action; a user's own MIME defaults override the system
+defaults.
+
+## Test
+
+`check.sh`, as root in a guest where `install.sh` has run, starts CUPS if needed, configures
+the printer, checks the scheme handlers, queues a URL and a file, prints a PDF through the
+`iPhone` queue, and drains the handoff queue to verify all three events:
+
+```sh
+sudo bash guest/phone/check.sh                               # inside a microVM computer
+docker exec -u root caboose-owner bash -s < guest/phone/check.sh   # in the container runtime
+```
+
+It creates a real CUPS job and consumes pending handoffs, so disconnect the phone first and
+do not run it with requests you want to keep. It also runs in a disposable Debian 13
+container with this directory mounted at `/src`, a `caboose` user created, and
+`bash /src/install.sh` run first. The share sheet, AirPrint and background delivery need the
+paired device; see the device checks in [`apps/ios/README.md`](../../apps/ios/README.md).

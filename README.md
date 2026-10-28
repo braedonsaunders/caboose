@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/License-AGPL--3.0--or--later-f5a623" /></a>
-  <img alt="Status: pre-alpha" src="https://img.shields.io/badge/status-pre--alpha-ef4444" />
+  <img alt="Status: pre-release" src="https://img.shields.io/badge/status-pre--release-ef4444" />
   <img alt="iOS 26+" src="https://img.shields.io/badge/iOS-26%2B-1b2b4a" />
   <img alt="Self-hostable" src="https://img.shields.io/badge/self--host-Docker%20%2B%20KVM-1b2b4a" />
 </p>
@@ -25,7 +25,6 @@
   <a href="#whats-inside">What's inside</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#run-your-own">Run your own</a> ·
-  <a href="#status">Status</a> ·
   <a href="docs/architecture.md">Architecture</a>
 </p>
 
@@ -75,12 +74,13 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 
 | | |
 | --- | --- |
-| **iOS app** (`apps/ios`) | SwiftUI shell over UIKit and Metal. Each Linux window is a Metal texture; H.264 and HEVC decode in VideoToolbox straight into GPU memory, and redraws present only what changed. Touch, hardware trackpad and mouse, the iOS keyboard with dictation, ⌘ shortcuts mapped for Mac hands, and a TV mode with the phone as a trackpad. |
-| **CabooseKit** (`apps/ios/CabooseKit`) | Two display clients behind one window model, as a Swift package: Caboose Display (its own protocol, with native touch, IME text, video layers and Opus sound) and Xpra (rencodeplus, HMAC auth, flow-controlled draw pipelines). H.264, HEVC and AV1 decode in hardware. Unit-tested against golden protocol vectors from both servers. |
-| **Host** (`apps/host`) | `caboose-host`, TypeScript on Node 22. Owner-token auth, computer lifecycle (wake, lease, park with memory, cold restart), a display relay that never decodes a pixel, the agent task API, and the management API. |
-| **Console** (`apps/web`) | The self-host web console the host serves: state and resources, wake, park and restart, settings, agent tasks, and the link that signs an iPhone in. |
-| **The computer** (`guest/`) | A Debian 13 golden image on Cloud Hypervisor. Each computer is a copy-on-write clone, so it costs nothing up front and keeps its own installs. The image includes Chromium, Firefox, VS Code, LibreOffice, GIMP, Obsidian, Docker, a modern shell kit, and Claude Code, Codex, OpenCode and Gemini CLI. On a GPU host it can run as a container with NVENC, VA-API or D3D12 instead. |
-| **Agents** | Any agent in the [Agent Client Protocol registry](https://github.com/agentclientprotocol/registry), installed and signed in from the console, run by `caboose-agentd` in the computer on a second display only agents use, with `caboose-desktop-mcp` giving them screenshot, click, type, scroll and launch tools for GUI apps. |
+| **iOS app** (`apps/ios`) | SwiftUI shell over UIKit and Metal. Each Linux window is its own Metal surface; H.264, HEVC and, where the device has a decoder, AV1 decode in VideoToolbox straight into GPU memory. Touch, hardware trackpad and mouse, the iOS keyboard with autocorrect, dictation and CJK input, ⌘ shortcuts sent as Control, and a TV mode with the phone as a trackpad. Extensions put the computer in the Files app and the share sheet, and add widgets and Live Activities. |
+| **CabooseKit** (`apps/ios/CabooseKit`) | The display client as a Swift package: `CabooseDisplaySession` speaks the Caboose Display Protocol, with native touch, IME text, video layers and Opus sound. Unit-tested against the protocol's golden vectors. |
+| **Host** (`apps/host`) | `caboose-host`, TypeScript on Node 22. Owner-token auth, computer lifecycle (wake, lease, park with memory, cold restart), a display relay that never decodes a pixel, the app catalog, files, the agent task API, and the management API. |
+| **Console** (`apps/web`) | The self-host web console the host serves: state and resources, wake, park and restart, apps, files, agents, devices, settings, and the link that signs an iPhone in. |
+| **The computer** (`guest/`) | A Debian 13 golden image on Cloud Hypervisor. Each computer is a copy-on-write clone of it and keeps its own installs. The image includes Chromium, Firefox, VS Code, LibreOffice, Obsidian, Docker, a modern shell kit, and Claude Code, Codex, OpenCode and Gemini CLI; more apps, such as GIMP, install from the catalog. On a GPU host it can run as a container instead (WSL2, NVIDIA, or an Intel or AMD render node). |
+| **Caboose Display** (`guest/display`) | The computer's display server, in Rust: a headless Wayland compositor with Xwayland that streams each window on its own. |
+| **Agents** | Any agent in the [Agent Client Protocol registry](https://github.com/agentclientprotocol/registry), installed and signed in from the console, run by `caboose-agentd` in the computer on a second display only agents use, with `caboose-desktop-mcp` giving them accessibility-tree, screenshot, click, type, key, scroll, drag and launch tools for GUI apps. |
 
 ## How it works
 
@@ -94,8 +94,8 @@ lived and worked. Here it's the computer that comes along wherever your phone go
  │  VideoToolbox → Metal    │ /v1/control │           │ vsock + TAP               │
  └──────────────────────────┘             │ ┌─────────▼─────────────────────────┐ │
                                           │ │ microVM: Debian 13, CoW home      │ │
-                                          │ │  Caboose Display / Xpra  (you)    │ │
-                                          │ │  Xpra seamless :101  (agents)     │ │
+                                          │ │  Caboose Display :14600  (you)    │ │
+                                          │ │  Caboose Display :14601  (agents) │ │
                                           │ │  Chromium, VS Code, Claude Code…  │ │
                                           │ └───────────────────────────────────┘ │
                                           └───────────────────────────────────────┘
@@ -105,7 +105,7 @@ lived and worked. Here it's the computer that comes along wherever your phone go
   icon, size hints and parent, and only what changed is re-encoded. That's what lets the
   phone show a Linux app as an app.
 - **Relay, don't transcode.** The host passes the stream through untouched, so latency
-  is guest-to-phone and one host can serve many computers.
+  is guest-to-phone and the host spends nothing on pixels.
 - **Park with memory.** Cloud Hypervisor snapshots (via
   [`appkit-desk`](https://github.com/braedonsaunders/appkit)) make resuming the product
   rather than an optimisation.
@@ -120,10 +120,11 @@ lived and worked. Here it's the computer that comes along wherever your phone go
   keyboard (autocorrect, dictation, CJK) arrive as native Wayland input, and the
   clipboard works across the phone, Wayland and X11 apps. Players that decode through
   VA-API hand their compressed video straight to the phone ([guest/vaapi](guest/vaapi)).
-  It encodes with NVENC where the host has an NVIDIA GPU, otherwise x264. On a
-  WSL2 RTX 4080 host, 1080p video reaches the phone at 51–54 fps with 11 ms latency,
-  typing costs about 9% of a core at phone size, and an idle window about 0.5%. Hosts opt
-  in with `CABOOSE_DISPLAY=caboose`; Xpra stays the default and serves the agents' seat.
+  It encodes with NVENC where the host has an NVIDIA GPU, otherwise with x264.
+- **Two seats.** The owner's display and the agent seat are separate Caboose Display
+  instances, each with its own Wayland and X11 displays and its own D-Bus session. The
+  agent seat runs its apps on Xwayland so the agents' X11 tools can drive them, and the
+  app watches it, without sound, in the Agent space.
 
 The full contract between app, host and guest is [docs/architecture.md](docs/architecture.md).
 
@@ -143,8 +144,9 @@ docker compose -f deploy/compose.yaml up -d --build
 
 Then:
 
-1. **Build the computer's image** with `guest/image/build.sh` and copy `base.raw`,
-   `vmlinux` and `initrd` into the host's disk root ([guest/image](guest/image/README.md)).
+1. **Build the computer's image** with `guest/image/build.sh`. It writes `base.raw`,
+   `vmlinux` and `initrd` to `/data/caboose/disks`, the host's disk root
+   ([guest/image](guest/image/README.md)).
 2. **Open the console** at `http://localhost:7310` (or behind your HTTPS proxy), sign in
    with the owner token, and use **Connect your iPhone** to sign the app in.
 3. **Build the iOS app** with XcodeGen ([apps/ios](apps/ios/README.md)).
@@ -155,34 +157,30 @@ so run it on a host you trust. All the details, including the GPU container runt
 WSL2 and NVIDIA, are in [apps/host](apps/host/README.md) and
 [guest/container](guest/container/README.md).
 
-## Status
-
-**Pre-alpha, moving fast.** The host, guest image, iOS app and console have run together
-against a real KVM host, covering wake, park and resume, per-window H.264 and HEVC, the
-TV desktop, sound, agents on their own seat, and settings and restart. The Docker
-deployment hasn't been verified end to end yet. Caboose Display runs alongside Xpra. Iteration
-1 is done when you can open the app, watch your computer wake, tap Chromium or the
-terminal, use it, leave, and come back to find it exactly as you left it.
-
 ## Repository
 
 | Path | What |
 | --- | --- |
-| [`apps/ios`](apps/ios) | The iPhone and iPad app, and `CabooseKit`, its display clients |
+| [`apps/ios`](apps/ios) | The iPhone and iPad app, its extensions, and `CabooseKit`, its display client |
 | [`apps/host`](apps/host) | `caboose-host`: computer lifecycle, display relay, agents and management API |
 | [`apps/web`](apps/web) | The self-host console the host serves (React, AppKit UI) |
-| [`guest/image`](guest/image) | The golden machine image: Debian 13, Caboose Display and Xpra, apps and agent runtimes |
+| [`guest/image`](guest/image) | The golden machine image: Debian 13, Caboose Display, apps and agent runtimes |
 | [`guest/container`](guest/container) | The same computer as a GPU container, for WSL2 and Linux GPU hosts |
 | [`guest/display`](guest/display) | Caboose Display: the per-window display server, its protocol and golden vectors (Rust) |
 | [`guest/vaapi`](guest/vaapi) | The VA-API codec-passthrough driver that forwards apps' compressed video to the phone (C) |
 | [`guest/agentd`](guest/agentd) | `caboose-agentd`: the ACP client that runs any registry agent for a task |
-| [`guest/desktop-mcp`](guest/desktop-mcp) | GUI tools for agents on their own seat |
-| [`docs`](docs) | Architecture, the Xpra protocol notes and the Caboose Display design |
+| [`guest/desktop-mcp`](guest/desktop-mcp) | GUI tools for agents on their own seat, and the accessibility helper behind `/v1/screen` |
+| [`guest/catalog`](guest/catalog) | The optional apps and packs the computer can install |
+| [`guest/files`](guest/files) | The file service behind the Files app extension and the console |
+| [`guest/notifications`](guest/notifications) | The owner's desktop notifications, forwarded to the phone |
+| [`guest/phone`](guest/phone) | Opening, sharing and printing from the computer to the phone |
+| [`guest/media-handoff`](guest/media-handoff) | Play on iPhone / Apple TV for video playing in the computer's Chromium |
+| [`docs`](docs) | The architecture, and the Caboose Display design and protocol |
 
 Each component's README covers how to build, run and test it. Pure logic is unit-tested
-(`swift test` in `apps/ios/CabooseKit`, and `pnpm test` at the root for the host,
-console and agent runner). Anything that touches KVM, Xpra or a device has a scripted check next to the
-code.
+(`swift test` in `apps/ios/CabooseKit`, `cargo test` in `guest/display`, and `pnpm test`
+at the root for the host, console and agent runner). Anything that touches KVM, a display
+or a device has a scripted check next to the code.
 
 Caboose is built on [AppKit](https://github.com/braedonsaunders/appkit), notably
 `appkit-desk`, the Cloud Hypervisor microVM layer it shares with
