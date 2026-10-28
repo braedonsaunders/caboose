@@ -26,6 +26,10 @@ describe('host', () => {
   it('lifts host problems out of health, and shares a machine in whole percent', () => {
     const desk = { resident: 0, queued: 0, capacity: 1, suspended: 0, lastStartedAt: null, lastSuspendedAt: null, reconnects: 0, lastReconnectAt: null, lastError: null, snapshotCpuFallbacks: 0 }
     expect(healthProblems({ host: 'caboose-host', kvm: true, desk })).toEqual([])
+    const mac = { host: 'caboose-host', hypervisor: 'virtualization' as const, kvm: false, desk }
+    expect(healthProblems(mac)).toEqual([])
+    expect(healthFacts(mac)).toContainEqual({ label: 'Hypervisor', value: 'Apple Virtualization.framework' })
+    expect(healthFacts(mac).some(fact => fact.label === 'KVM')).toBe(false)
     expect(healthProblems({ host: 'caboose-host', kvm: false, desk: { ...desk, lastError: 'boot failed' } })).toEqual([
       '/dev/kvm is not present, so the host cannot start a microVM.', 'boot failed',
     ])

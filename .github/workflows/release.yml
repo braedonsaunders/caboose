@@ -157,7 +157,13 @@ jobs:
       - name: Build the native bundle
         run: bash apps/host/scripts/bundle.sh '${{ matrix.os }}' '${{ matrix.arch }}' dist/release
       - name: Check the native bundle
-        run: bash apps/host/scripts/check-bundle.sh 'dist/release/caboose-host-${{ matrix.os }}-${{ matrix.arch }}.tar.zst'
+        run: |
+          extension=tar.zst
+          [[ '${{ matrix.os }}' != darwin ]] || extension=tar.gz
+          bash apps/host/scripts/check-bundle.sh "dist/release/caboose-host-${{ matrix.os }}-${{ matrix.arch }}.$extension"
+      - name: Check the macOS installer
+        if: matrix.os == 'darwin'
+        run: bash deploy/macos/check.sh dist/release/caboose-host-darwin-arm64.tar.gz
       - uses: actions/upload-artifact@v4
         with: { name: 'bundle-${{ matrix.os }}-${{ matrix.arch }}', path: dist/release/ }
 
@@ -176,7 +182,9 @@ jobs:
         run: |
           mkdir release
           for bundle in bundles/*; do
-            cp "$bundle"/*.tar.zst release/
+            for archive in "$bundle"/*.tar.zst "$bundle"/*.tar.gz "$bundle"/*.sha256; do
+              [[ ! -f $archive ]] || cp "$archive" release/
+            done
             cat "$bundle/SHA256SUMS" >> release/SHA256SUMS
           done
           (cd release && sha256sum -c SHA256SUMS)

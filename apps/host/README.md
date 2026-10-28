@@ -1,7 +1,7 @@
 # caboose-host
 
 The server half of Caboose. `caboose-host` is a TypeScript service on Node 22 that runs on
-a Linux machine, runs computers (Debian 13 guests, the owner's and any others made in the
+Linux or Apple Silicon macOS, runs computers (Debian 13 guests, the owner's and any others made in the
 console), and gives the iOS app and the web console one authenticated API for them. It wakes
 a computer on demand, parks it when idle, relays its two Caboose Display instances over
 WebSocket, and runs apps, agent tasks, file operations and catalog installs inside it. The HTTP contract is in
@@ -15,7 +15,7 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | `src/index.ts`, `src/config.ts` | Startup and the environment it reads. |
 | `src/server.ts`, `src/lifecycle.ts` | The HTTP and WebSocket API, the owner and phone token checks, routing to each computer, and the wake/lease/park state machine. |
 | `src/computers.ts` | The computers a host runs, phone sign-ins and pairing codes. |
-| `src/driver.ts` | The microVM runtime: Cloud Hypervisor through `@braedonsaunders/appkit-desk`, parked with a memory snapshot. |
+| `src/driver.ts` | The microVM runtime: Cloud Hypervisor or Virtualization.framework through `@braedonsaunders/appkit-desk`, parked with a memory snapshot. |
 | `src/container-driver.ts` | The container runtime: the computer as a Docker container, parked by freezing it. |
 | `src/display.ts` | Display ports, the per-wake token, and the launch environment each display writes. |
 | `src/network.ts` | Each guest's TAP device and /30, NAT and the network fence. |
@@ -39,10 +39,13 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
   [`guest/image`](../../guest/image/README.md) or fetched on first run from
   `CABOOSE_BASE_IMAGE` (see [Images](#images)). The disk root should be on XFS with reflink or
   on Btrfs; `scripts/setup-disks.sh` prepares one.
+- On Apple Silicon macOS 14+, the microVM uses the signed AppKit Virtualization.framework
+  helper, an arm64 guest image, and APFS for copy-on-write disks. The
+  [macOS installer](../../deploy/macos/README.md) supplies the host, helper and menu app.
 - For the container runtime: Docker and an image built from
   [`guest/container`](../../guest/container/README.md), or a registry image that the host
   pulls on first run.
-- Root, or passwordless `sudo` for `ip`, `iptables` and `sysctl`. The host creates the TAP
+- On Linux: root, or passwordless `sudo` for `ip`, `iptables` and `sysctl`. The host creates the TAP
   device `caboose0` (microVM) or the Docker network `caboose` with bridge `caboose-br0`
   (container), and installs its forwarding, NAT and fence rules.
 
@@ -87,14 +90,17 @@ the non-interactive privileges above.
 ### Bundle
 
 `scripts/bundle.sh <linux|darwin> <amd64|arm64> <outdir>` builds a self-contained host for
-native installs, without Docker: `caboose-host-<os>-<arch>.tar.zst`, plus a line in
-`<outdir>/SHA256SUMS`. It needs pnpm and zstd and runs from a checkout on any OS. The archive
+native installs, without Docker: `caboose-host-<os>-<arch>.tar.zst` on Linux and
+`caboose-host-darwin-arm64.tar.gz` on macOS, plus a line in `<outdir>/SHA256SUMS`.
+It needs pnpm, and zstd for Linux archives. macOS bundles build on Apple Silicon with
+Xcode command-line tools; installation needs neither Xcode nor Homebrew. The archive
 holds one directory, `caboose-host/`:
 
 | Path | What |
 | --- | --- |
 | `bin/caboose-host` | The launcher: the bundled Node runs `app/apps/host/dist/index.js`. It follows symlinks, so `/usr/local/bin/caboose-host` can point at it. |
 | `bin/cloud-hypervisor` | Linux only: Cloud Hypervisor v54.0 (static, checked by SHA-256), used unless `CABOOSE_VMM_PATH` is set. |
+| `bin/appkit-desk-vz`, `Caboose.app` | macOS only: the signed Virtualization.framework helper and menu bar application. |
 | `bin/caboose-setup-disks` | `scripts/setup-disks.sh`, which prepares a reflink-capable disk root. |
 | `node/` | Node v22.23.4 for the target, checked against nodejs.org's SHA-256. |
 | `app/` | The compiled host with its production dependencies (`ws` and `appkit-desk`, plain JavaScript), the console, and the guest assets the host installs. |
@@ -104,7 +110,9 @@ holds one directory, `caboose-host/`:
 The release workflow attaches the `linux-amd64`, `linux-arm64` and `darwin-arm64` bundles and
 `SHA256SUMS` to each GitHub Release. `scripts/check-bundle.sh <bundle>` extracts one, starts it
 through a symlink with an empty environment and a fresh state directory, and expects the
-console, a generated owner token, and an API that refuses requests without it.
+console, a generated owner token, one-time account setup, and an API that refuses requests without authentication.
+`deploy/macos/check.sh <bundle>` checks installation and upgrade in an isolated home;
+[`apps/macos/README.md`](../macos/README.md) describes the real guest check.
 
 ### Self-host with Docker
 

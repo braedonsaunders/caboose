@@ -14,7 +14,7 @@ Caboose has three components:
 
 | Component | Path | What it is |
 | --- | --- | --- |
-| The computer | `guest/` | A Debian 13 (amd64 or arm64) machine, booted as a Cloud Hypervisor microVM or run as a container. It runs Caboose Display, the file service, the agent runner and the integration services. |
+| The computer | `guest/` | A Debian 13 (amd64 or arm64) machine, booted as a Cloud Hypervisor or Virtualization.framework microVM, or run as a container. It runs Caboose Display, the file service, the agent runner and the integration services. |
 | The host | `apps/host/` | `caboose-host`, TypeScript on Node 22. It owns the computer's lifecycle, authenticates clients, relays display streams, and serves the HTTP and WebSocket API and the web console (`apps/web/`). |
 | The app | `apps/ios/` | Caboose for iOS and iPadOS (Swift, iOS 26+). It renders each Linux window natively and integrates the computer with Files, Shortcuts, Spotlight, widgets, Live Activities and notifications. |
 
@@ -147,9 +147,19 @@ The bundle does not include Caboose Display or its units, which come with the im
 
 ### Runtimes
 
-The computer runs as a **microVM** by default: Cloud Hypervisor through appkit-desk, with
+The computer runs as a **microVM** by default: Cloud Hypervisor on Linux or
+Virtualization.framework on Apple Silicon macOS 14+, through appkit-desk, with
 the image files `base.raw`, `vmlinux` and `initrd` in `CABOOSE_IMAGE_ROOT`, its overlay at
 `overlays/owner.raw` and its memory snapshot at `overlays/owner.snapshot`.
+
+The macOS bundle includes a signed `appkit-desk-vz` helper and a menu bar app. A per-user
+LaunchAgent runs the host at login; its data lives under `~/Library/Application Support/Caboose`.
+It runs as the login user without root privileges. The helper gives each guest its own
+user-space network and presents a virtio serial device, even when console logging is off.
+Transient sockets live in a private `/tmp/caboose-<uid>/<image-root-hash>` directory to stay
+within macOS's Unix socket path limit. The installer retains settings, accounts, disks and
+memory snapshots across upgrades. The menu opens the local console with the one-time setup
+code while the host is unclaimed; it never puts the owner token in a link.
 
 Where a GPU can reach a container but not a VM, `CABOOSE_RUNTIME=container` runs the
 computer as a Docker container built from `guest/container/` (`caboose-computer:latest` by
@@ -191,7 +201,7 @@ survives host restarts.
 
 ### Network fencing
 
-Each microVM computer has its own persistent TAP device and /30 in `192.0.2.0/24`: the
+Each Linux microVM computer has its own persistent TAP device and /30 in `192.0.2.0/24`: the
 computer on slot *n* (see Computers) uses `caboose<n>`, with the host at `192.0.2.(4n+1)`
 and the guest at `192.0.2.(4n+2)`. The owner's computer is slot 0: `caboose0`,
 `192.0.2.1/30` and `192.0.2.2/30`. Each guest gets NAT to the host's other interfaces and
@@ -218,6 +228,14 @@ A container computer gets the same fence on its own Docker bridge network: `cabo
 (interface `caboose-br0`) for the owner's computer, `caboose-<n>` (`caboose-br<n>`) for
 the others, which Docker isolates from each other. `CABOOSE-CIN` hooks `INPUT` and
 `CABOOSE-CFWD` hooks `DOCKER-USER`, which Docker never rewrites.
+
+On macOS, each VM has an independent user-space network at `10.0.2.15/24` with gateway
+`10.0.2.2`. Its fence rejects guest connections to the host and private/reserved ranges;
+`CABOOSE_GUEST_LAN=allow` does not enable LAN access on this backend. Display, files and
+terminal use ephemeral listeners on host loopback that relay into the guest through
+appkit-desk. Those listeners and their active connections close when the computer parks,
+restarts, is deleted, or fails to wake. They reopen on wake; guest service tokens still
+authorize every connection.
 
 ### Displays
 
@@ -411,7 +429,7 @@ display logic: display streams are relayed, not parsed.
 Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mode 0600:
 
 - `owner-token` and `auth-secret` when generated, `setup-code` until the host is set up,
-  `identity/` (the embedded accounts database and its Unix socket, mode 0700),
+  `identity/` (the embedded accounts database, mode 0700),
   `computers.json` (the computers other than the owner's, with their slots, tenants and
   people),
   `phones.json` (phone sign-ins, by SHA-256 of their tokens) and `agent-registry.json`.
@@ -545,7 +563,8 @@ Accounts, sessions, tenants and memberships are AppKit's identity schema
 `@braedonsaunders/appkit-auth` (Better Auth, email and password); invitations are
 Caboose's own table. They live in Postgres when `CABOOSE_DATABASE_URL` is set, and
 otherwise in an embedded PGlite database in `identity/`, served to the host over a Unix
-socket only its user can open. Quotas are `tenants.settings.quotas`.
+socket only its user can open. The socket lives in a short, private temporary directory
+removed when the database closes. Quotas are `tenants.settings.quotas`.
 
 **Setting the host up.** Until the first account exists the host is unclaimed. It writes a
 one-time code to `${CABOOSE_IMAGE_ROOT}/setup-code` (mode 0600) and logs
@@ -635,7 +654,7 @@ guest answer 409 while it is not running.
 | `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec }]` |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }` |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`. Open an `http(s)` URL (at most 8192 characters, no spaces or control characters) with the default handler on the owner's display |
-| `GET` | `/v1/health` | microVM: `{ host, kvm, desk, machine }` with appkit-desk's stats; container: `{ host, runtime: "container", gpu, container, running, machine }`; both add `image`. `machine` is `{ memoryMb, availableMemoryMb, cpus, disk: { totalBytes, freeBytes } \| null }`: the machine the computers share, with `disk` the volume holding `CABOOSE_IMAGE_ROOT` (null when it cannot be read). `image` is `{ state: "ready" \| "fetching" \| "failed" \| "missing", reference: string \| null, receivedBytes?, totalBytes?, message? }`: the computer's image ([Published images](#published-images)); `missing` means no reference to fetch from |
+| `GET` | `/v1/health` | microVM: `{ host, hypervisor: "cloud-hypervisor" \| "virtualization", kvm, desk, machine }` with appkit-desk's stats (`kvm` applies only to Cloud Hypervisor); container: `{ host, runtime: "container", gpu, container, running, machine }`; both add `image`. `machine` is `{ memoryMb, availableMemoryMb, cpus, disk: { totalBytes, freeBytes } \| null }`: the machine the computers share, with `disk` the volume holding `CABOOSE_IMAGE_ROOT` (null when it cannot be read). `image` is `{ state: "ready" \| "fetching" \| "failed" \| "missing", reference: string \| null, receivedBytes?, totalBytes?, message? }`: the computer's image ([Published images](#published-images)); `missing` means no reference to fetch from |
 | `GET` | `/v1/host` | How the host was started (below) |
 
 A WebSocket upgrade answers 401 without the owner token, 404 for another path, 409 unless
@@ -1765,7 +1784,7 @@ app group and a Keychain access group.
   exposed outside the computer.
 - **Fencing.** The guest cannot open connections to the host, and by default cannot reach
   private, link-local, CGNAT or reserved ranges. Display, file and terminal ports are
-  reachable only from the host: over the TAP device for a microVM, on `127.0.0.1` for a container.
+  reachable only from the host: over the TAP device on Linux, or through loopback relays on macOS and containers.
 - **Guest input.** The host treats the guest as able to produce malformed data. Phone
   events, media state, notification records, task transcripts and approval requests are
   validated and bounded, and the host never relays a guest-supplied file path.

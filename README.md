@@ -131,15 +131,24 @@ The full contract between app, host and guest is [docs/architecture.md](docs/arc
 
 ## Run your own
 
-You need an amd64 Linux machine with hardware virtualization (`/dev/kvm`), Docker and
-Compose.
+Choose the installation for your machine. Each runs the same host and web console, with
+accounts, separate computers and phone pairing.
+
+| Machine | Install |
+| --- | --- |
+| Apple Silicon Mac, macOS 14+ | [Native Mac installer](deploy/macos/README.md): a menu bar app and host that starts at login, without Docker or administrator privileges. The Mac must stay awake and logged in. |
+| Linux PC, amd64 or arm64 | [Native Linux installer](deploy/linux/README.md): a systemd service, with `/dev/kvm` for microVMs or Docker for the GPU container runtime. |
+| Linux server with a domain | [Server installer](deploy/server/README.md): the host behind Caddy with automatic HTTPS, for households or teams. |
+
+Release installers download verified bundles and the matching computer image. To build
+the host from a checkout on Linux instead, use Docker and Compose with `/dev/kvm`:
 
 ```sh
 git clone https://github.com/braedonsaunders/caboose.git && cd caboose
 docker compose -f deploy/compose.yaml up -d --build
 
-# The owner token the host generated on first start
-docker compose -f deploy/compose.yaml exec caboose-host cat /data/caboose/disks/owner-token
+# Read the one-time setup link printed at first start
+docker compose -f deploy/compose.yaml logs caboose-host
 ```
 
 Then:
@@ -157,9 +166,12 @@ Then:
    households or teams with quotas.
 3. **Build the iOS app** with XcodeGen ([apps/ios](apps/ios/README.md)).
 
-The host listens on loopback by default and speaks plain HTTP. Put HTTPS in front of it
-before traffic crosses a network. The container is privileged for KVM and TAP networking,
-so run it on a host you trust. All the details, including the GPU container runtime for
+For access away from home, use **Remote Access** in the console to connect Tailscale and
+enable Serve for HTTPS, or use the server installer with your domain. Native installers
+listen on the local network; the Compose example publishes only to loopback. The host
+speaks plain HTTP, so use HTTPS before sending traffic over an untrusted network.
+The Compose container is privileged for KVM and TAP networking, so run it on a host you
+trust. All the details, including the GPU container runtime for
 WSL2 and NVIDIA, are in [apps/host](apps/host/README.md) and
 [guest/container](guest/container/README.md).
 
@@ -168,6 +180,7 @@ WSL2 and NVIDIA, are in [apps/host](apps/host/README.md) and
 | Path | What |
 | --- | --- |
 | [`apps/ios`](apps/ios) | The iPhone and iPad app, its extensions, and `CabooseKit`, its display client |
+| [`apps/macos`](apps/macos) | The native Mac menu bar app and real-guest check |
 | [`apps/host`](apps/host) | `caboose-host`: computer lifecycle, display relay, agents and management API |
 | [`apps/web`](apps/web) | The self-host console the host serves (React, AppKit UI) |
 | [`guest/image`](guest/image) | The golden machine image: Debian 13, Caboose Display, apps and agent runtimes |
@@ -182,6 +195,7 @@ WSL2 and NVIDIA, are in [apps/host](apps/host/README.md) and
 | [`guest/phone`](guest/phone) | Opening, sharing and printing from the computer to the phone |
 | [`guest/media-handoff`](guest/media-handoff) | Play on iPhone / Apple TV for video playing in the computer's Chromium |
 | [`docs`](docs) | The architecture, and the Caboose Display design and protocol |
+| [`deploy`](deploy) | Native Mac and Linux installers, and the HTTPS server deployment |
 
 Each component's README covers how to build, run and test it. Pure logic is unit-tested
 (`swift test` in `apps/ios/CabooseKit`, `cargo test` in `guest/display`, and `pnpm test`
@@ -189,7 +203,7 @@ at the root for the host, console and agent runner). Anything that touches KVM, 
 or a device has a scripted check next to the code.
 
 Caboose is built on [AppKit](https://github.com/braedonsaunders/appkit), notably
-`appkit-desk`, the Cloud Hypervisor microVM layer it shares with
+`appkit-desk`, the Cloud Hypervisor and Virtualization.framework microVM layer it shares with
 [Bunkhouse](https://github.com/braedonsaunders/bunkhouse), and it contributes its
 improvements upstream. To contribute, start with [AGENTS.md](AGENTS.md) and
 [docs/architecture.md](docs/architecture.md).
