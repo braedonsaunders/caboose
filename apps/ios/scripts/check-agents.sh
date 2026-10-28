@@ -39,7 +39,8 @@ On an iPhone paired to a running computer with a signed-in ACP agent:
    sending. Test autocorrect, swipe typing, emoji, native dictation, hardware keyboard,
    select/replace, undo and multiline paste. Grow past seven lines, scroll, delete back to
    one line; no clipping or lost selection during streamed replies. Check arrow/Home/End,
-   Ctrl/Alt word navigation, Tab and symbols: no terminal escape/control bytes in drafts.
+   one-shot Ctrl/Alt word navigation, Ctrl+A/C/X/V/Z/Y and secure Copy/Cut blocking.
+   Unsupported Ctrl/Alt chords announce unavailability and insert nothing. Tab and symbols: no terminal escape/control bytes in drafts.
 11. In teammate, memory, routine, computer-name, pairing and API-key/environment forms,
    verify the same KeyBar, native selection/paste, numeric/URL keyboard traits and secure
    values staying obscured. Hide stays dismissed on validation/status updates; tap reopens.
