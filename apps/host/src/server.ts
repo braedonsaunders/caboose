@@ -44,7 +44,7 @@ export function createCabooseServer(options: { token: string; idleMs: number; co
     const message = JSON.stringify(event)
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
   }
-  const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire())
+  const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), 1000, () => controller.ensureAgentSeat())
   computer.subscribe(state => {
     broadcast({ type: 'computer.state', state })
     if (state === 'running') agents.resume()

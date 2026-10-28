@@ -9,6 +9,14 @@ export interface Config {
   memoryMb: number
   vcpus: number
   vmmPath: string
+  /** "microvm" (Cloud Hypervisor, the default) or "container" (for a GPU only a container can use). */
+  runtime: 'microvm' | 'container'
+  containerImage: string
+  containerName: string
+  /** A named volume or an absolute host path for /home/caboose. */
+  containerHome: string
+  /** Extra `docker run` arguments, whitespace-separated. */
+  containerArgs: string[]
 }
 function integer(value: string | undefined, fallback: number, name: string, max: number): number {
   const parsed = value === undefined ? fallback : Number(value)
@@ -26,5 +34,16 @@ export function config(env: NodeJS.ProcessEnv): Config {
     memoryMb: integer(env.CABOOSE_MEMORY_MB, 2048, 'CABOOSE_MEMORY_MB', 1_048_576),
     vcpus: integer(env.CABOOSE_VCPUS, 2, 'CABOOSE_VCPUS', 256),
     vmmPath: env.CABOOSE_VMM_PATH ?? '/usr/local/bin/cloud-hypervisor',
+    runtime: runtime(env.CABOOSE_RUNTIME),
+    containerImage: env.CABOOSE_CONTAINER_IMAGE ?? 'caboose-computer:latest',
+    containerName: env.CABOOSE_CONTAINER_NAME ?? 'caboose-owner',
+    containerHome: env.CABOOSE_CONTAINER_HOME ?? 'caboose-home',
+    containerArgs: (env.CABOOSE_CONTAINER_ARGS ?? '').split(/\s+/).filter(Boolean),
   }
+}
+
+function runtime(value: string | undefined): 'microvm' | 'container' {
+  if (value === undefined || value === 'microvm') return 'microvm'
+  if (value === 'container') return 'container'
+  throw new Error('CABOOSE_RUNTIME must be "microvm" or "container"')
 }
