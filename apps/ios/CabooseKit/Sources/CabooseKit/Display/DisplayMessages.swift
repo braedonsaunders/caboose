@@ -260,6 +260,22 @@ public struct VideoFrame: Sendable {
     }
 }
 
+/// One packet of the computer's sound: 20 ms of Opus at 48 kHz, stamped with the server clock
+/// time of its first sample (the clock pictures are stamped with too).
+public struct AudioPacket: Sendable {
+    public var codec: String
+    public var ptsMicros: UInt64
+    public var channels: Int
+    public var data: Data
+
+    public init(codec: String = "opus", ptsMicros: UInt64, channels: Int = 2, data: Data) {
+        self.codec = codec
+        self.ptsMicros = ptsMicros
+        self.channels = channels
+        self.data = data
+    }
+}
+
 public struct ServerHello: Equatable, Sendable {
     public var version: Int
     public var displays: [Int]
@@ -287,7 +303,7 @@ public enum ServerMessage: Sendable {
     case textInput(window: Int, enabled: Bool, purpose: String?)
     case clipboard(mime: String, data: Data)
     case notification(id: Int, app: String, summary: String, body: String)
-    case audio(codec: String, ptsMicros: UInt64, data: Data)
+    case audio(AudioPacket)
     case pong(micros: UInt64)
     case bye(reason: String)
     case videoCreate(VideoStreamFields)
@@ -328,7 +344,7 @@ public enum ServerMessage: Sendable {
             }
         case .audio:
             if let codec = body["codec"]?.string, let pts = body["pts_us"]?.uint64, let data = body["data"]?.data {
-                parsed = .audio(codec: codec, ptsMicros: pts, data: data)
+                parsed = .audio(AudioPacket(codec: codec, ptsMicros: pts, channels: body["channels"]?.int ?? 2, data: data))
             } else {
                 parsed = nil
             }
@@ -439,7 +455,9 @@ public enum PointerButtons {
 
 public enum ClientMessage: Sendable {
     /// `videoDecoders`: what the client plays as video streams; absent, the server sends none.
-    case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil)
+    /// `audioDecoders`: the sound codecs the client plays ("opus"); absent, the server sends no sound.
+    case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
+               audioDecoders: [String]? = nil)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -468,11 +486,12 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
                 ("video_decoders", videoDecoders.map { .array($0.map { CBOR($0.rawValue) }) }),
+                ("audio_decoders", audioDecoders.map { .array($0.map { CBOR($0) }) }),
             ]))
         case .videoAck(let video, let seq):
             return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))

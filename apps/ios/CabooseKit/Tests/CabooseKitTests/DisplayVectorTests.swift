@@ -226,7 +226,8 @@ import Testing
         guard case .notification(3, "Chromium", "Download complete", "report.pdf\n2.1 MB") = try server("notification").first else {
             Issue.record("notification"); return
         }
-        guard case .audio("opus", 1_234_580_000, _) = try server("audio-opus").first else { Issue.record("audio"); return }
+        guard case .audio(let packet) = try server("audio-opus").first else { Issue.record("audio"); return }
+        #expect(packet.codec == "opus" && packet.ptsMicros == 1_234_580_000 && packet.channels == 2 && packet.data == Data([0xF8, 0xFF, 0xFE]))
     }
 
     // MARK: Client messages, byte for byte
@@ -261,6 +262,9 @@ import Testing
         "client-hello-video": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264]),
+        "client-hello-audio": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"]),
         "video-ack": .videoAck(video: 2, seq: 41),
         "video-keyframe": .videoKeyframe(video: 1),
     ]
