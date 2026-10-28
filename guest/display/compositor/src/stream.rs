@@ -26,11 +26,12 @@ pub struct Job {
     pub pts_us: u64,
     pub image: CpuImage,
     pub keyframe: bool,
+    /// What changed since the previous picture; `None` for everything.
+    pub damage: Option<Vec<Rect>>,
     pub rect: Rect,
     pub crop: Rect,
     pub backend: Backend,
     pub settings: Settings,
-    pub queued: Instant,
 }
 
 /// The worker's answer: the encoded picture (or why not) and the image back for reuse.
@@ -97,7 +98,8 @@ impl Worker {
                         fresh = true;
                     }
                     let (_, enc) = encoder.as_mut().unwrap();
-                    let result: Result<_, EncodeError> = enc.encode(Input::Cpu(&job.image), job.keyframe || fresh);
+                    let damage = if fresh { None } else { job.damage.as_deref() };
+                    let result: Result<_, EncodeError> = enc.encode(Input::Cpu(&job.image), job.keyframe || fresh, damage);
                     let result = result
                         .map(|p| Encoded {
                             codec: enc.codec(),

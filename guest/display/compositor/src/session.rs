@@ -294,7 +294,9 @@ impl State {
             let (coded_w, coded_h) = (align_up(pic_w as u32, align), align_up(pic_h as u32, align));
             let (mut image, image_id) = w.stream.take_image(coded_w, coded_h);
             let mut canvas = w.stream.canvas.take().unwrap();
+            let started = Instant::now();
             let rendered = canvas.render(&mut self.renderer, &root, local.loc, &mut image, image_id);
+            self.stats.render_us += started.elapsed().as_micros() as u64;
             let w = self.windows.get_mut(id).unwrap();
             w.stream.canvas = Some(canvas);
             self.stats.renders += 1;
@@ -309,8 +311,24 @@ impl State {
                     w.stream.return_image(image);
                     w.stream.dirty = false;
                 }
-                Ok(_) => {
-                    pad_edges(&mut image, pic_w as u32, pic_h as u32);
+                Ok(rendered) => {
+                    let damage = match rendered {
+                        // A new image (or a resize) has nothing to be partial against.
+                        Rendered::Picture(d) if !w.stream.need_keyframe => {
+                            pad_edges(&mut image, pic_w as u32, pic_h as u32, Some(&d));
+                            Some(d)
+                        }
+                        _ => {
+                            pad_edges(&mut image, pic_w as u32, pic_h as u32, None);
+                            None
+                        }
+                    };
+                    let picture = pic_w as u64 * pic_h as u64;
+                    self.stats.picture_px += picture;
+                    self.stats.damaged_px += damage
+                        .as_ref()
+                        .map(|d| d.iter().map(|r| r.w.max(0) as u64 * r.h.max(0) as u64).sum::<u64>().min(picture))
+                        .unwrap_or(picture);
                     let pts_us = w.stream.next_pts();
                     let job = Job {
                         window: id,
@@ -318,11 +336,11 @@ impl State {
                         pts_us,
                         image,
                         keyframe: w.stream.need_keyframe,
+                        damage,
                         rect,
                         crop: Rect::new(0, 0, pic_w, pic_h),
                         backend: backend.clone(),
                         settings: self.encoders.settings.clone(),
-                        queued: Instant::now(),
                     };
                     w.stream.submit(job, &self.done_tx);
                 }
@@ -373,10 +391,14 @@ impl State {
 }
 
 /// Repeats the picture's last column and row into the encoder's padding, so the
-/// padding compresses to nothing and never bleeds into the visible edge.
-fn pad_edges(image: &mut CpuImage, w: u32, h: u32) {
+/// padding compresses to nothing and never bleeds into the visible edge. With damage,
+/// only when the damage reaches the edge.
+fn pad_edges(image: &mut CpuImage, w: u32, h: u32, damage: Option<&[Rect]>) {
     let stride = image.stride;
-    if w < image.width {
+    let reaches = |right: bool| {
+        damage.is_none_or(|d| d.iter().any(|r| if right { r.x + r.w >= w as i32 } else { r.y + r.h >= h as i32 }))
+    };
+    if w < image.width && reaches(true) {
         for y in 0..h as usize {
             let row = y * stride;
             let last = row + (w as usize - 1) * 4;
@@ -386,7 +408,7 @@ fn pad_edges(image: &mut CpuImage, w: u32, h: u32) {
             }
         }
     }
-    if h < image.height {
+    if h < image.height && reaches(false) {
         let last = (h as usize - 1) * stride;
         let row: Vec<u8> = image.data[last..last + stride].to_vec();
         for y in h as usize..image.height as usize {
@@ -420,7 +442,7 @@ mod tests {
         for x in 0..3 {
             image.data[x * 4] = (x + 1) as u8;
         }
-        pad_edges(&mut image, 3, 1);
+        pad_edges(&mut image, 3, 1, None);
         assert_eq!(image.data[3 * 4], 3);
         assert_eq!(&image.data[16..32], &image.data[0..16]);
     }

@@ -12,6 +12,7 @@ mod state;
 mod stream;
 mod text_input;
 mod windows;
+mod xauth;
 mod xwm;
 
 use config::{Config, Parsed, RendererChoice};
@@ -54,6 +55,7 @@ const TOOLKIT_ENV: &[(&str, &str)] = &[
 ];
 
 fn main() {
+    xauth::shim_if_invoked();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("CABOOSE_DISPLAY_LOG")
@@ -88,13 +90,16 @@ fn first_render_node() -> Option<std::path::PathBuf> {
     nodes.into_iter().next()
 }
 
-fn launch_env(config: &Config, x_display: Option<u32>) -> Vec<(String, String)> {
+fn launch_env(config: &Config, x_display: Option<u32>, xauthority: Option<&std::path::Path>) -> Vec<(String, String)> {
     let mut env = vec![("WAYLAND_DISPLAY".to_owned(), config.socket.clone())];
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
         env.push(("XDG_RUNTIME_DIR".into(), dir));
     }
     if let Some(n) = x_display {
         env.push(("DISPLAY".into(), format!(":{n}")));
+        if let Some(a) = xauthority {
+            env.push(("XAUTHORITY".into(), a.display().to_string()));
+        }
     }
     env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     env
@@ -102,8 +107,8 @@ fn launch_env(config: &Config, x_display: Option<u32>) -> Vec<(String, String)> 
 
 /// Once the compositor (and Xwayland) are up: the env file for launchers, and the
 /// command to run, if any.
-fn ready(state: &mut State, x_display: Option<u32>) {
-    let env = launch_env(&state.config, x_display);
+fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::path::Path>) {
+    let env = launch_env(&state.config, x_display, xauthority);
     if let Some(path) = &state.config.env_file {
         let body: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
         let tmp = path.with_extension("tmp");
@@ -137,6 +142,41 @@ fn ready(state: &mut State, x_display: Option<u32>) {
             }
         }
     }
+}
+
+static SIGNAL_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+extern "C" fn on_signal(_: libc::c_int) {
+    let fd = SIGNAL_PIPE.load(std::sync::atomic::Ordering::Relaxed);
+    if fd >= 0 {
+        // SAFETY: write(2) is async-signal-safe; a full pipe already means "stop".
+        unsafe { libc::write(fd, b"x".as_ptr().cast(), 1) };
+    }
+}
+
+/// SIGTERM and SIGINT stop the loop cleanly (Xwayland and clients are told, the
+/// summary is logged).
+fn stop_on_signals(handle: &smithay::reexports::calloop::LoopHandle<'static, State>) -> Result<(), String> {
+    let mut fds = [0; 2];
+    // SAFETY: pipe2 fills the two descriptors it is given.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    // SAFETY: fds[0] is a new descriptor owned from here on.
+    let read = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fds[0]) };
+    SIGNAL_PIPE.store(fds[1], std::sync::atomic::Ordering::Relaxed);
+    for sig in [libc::SIGTERM, libc::SIGINT] {
+        // SAFETY: the handler only performs an async-signal-safe write.
+        unsafe { libc::signal(sig, on_signal as *const () as libc::sighandler_t) };
+    }
+    handle
+        .insert_source(Generic::new(read, Interest::READ, Mode::Level), |_, _, state: &mut State| {
+            tracing::info!("signal received, stopping");
+            state.signal.stop();
+            Ok(PostAction::Remove)
+        })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn run(config: Config) -> Result<(), String> {
@@ -294,16 +334,24 @@ fn run(config: Config) -> Result<(), String> {
                 tracing::warn!("cannot create {}", dir.display());
             }
         }
+        let runtime_dir = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
+        let prepared = match xauth::prepare(&runtime_dir, number) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!("cannot prepare X11 authorization: {e}; continuing without X11");
+                return None;
+            }
+        };
         match XWayland::spawn(
             &dh,
             Some(number),
-            std::iter::empty::<(String, String)>(),
+            prepared.env.clone(),
             true,
             std::process::Stdio::null(),
             std::process::Stdio::inherit(),
             |_| (),
         ) {
-            Ok(x) => Some(x),
+            Ok((x, client)) => Some((x, client, prepared.authority)),
             Err(e) => {
                 tracing::error!("cannot start Xwayland on :{number}: {e}; continuing without X11");
                 None
@@ -311,40 +359,33 @@ fn run(config: Config) -> Result<(), String> {
         }
     });
     match spawned {
-        Some((xwayland, client)) => {
+        Some((xwayland, client, authority)) => {
             handle
                 .insert_source(xwayland, move |event, _, state: &mut State| match event {
                     XWaylandEvent::Ready { x11_socket, display_number } => {
                         match X11Wm::start_wm(state.handle.clone(), x11_socket, client.clone()) {
                             Ok(wm) => {
                                 state.xwm = Some(wm);
-                                ready(state, Some(display_number));
+                                ready(state, Some(display_number), Some(&authority));
                             }
                             Err(e) => {
                                 tracing::error!("X11 window manager: {e}");
-                                ready(state, None);
+                                ready(state, None, None);
                             }
                         }
                     }
                     XWaylandEvent::Error => {
                         tracing::error!("Xwayland failed to start; continuing without X11");
-                        ready(state, None);
+                        ready(state, None, None);
                     }
                 })
                 .map_err(|e| e.to_string())?;
         }
-        None => ready(&mut state, None),
+        None => ready(&mut state, None, None),
     }
 
+    stop_on_signals(&handle)?;
     event_loop.run(None, &mut state, |state| state.tick()).map_err(|e| e.to_string())?;
-    let s = &state.stats;
-    tracing::info!(
-        "exiting: {} frames, {} bytes, {} renders ({} unchanged), {} ms encode CPU",
-        s.frames,
-        s.bytes,
-        s.renders,
-        s.unchanged_renders,
-        s.encode_cpu_us / 1000
-    );
+    tracing::info!("exiting: {}", state.stats.summary());
     Ok(())
 }

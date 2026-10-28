@@ -6,11 +6,12 @@
 //! zero-copy VA-API encoder (dmabuf in, when the render node has an encode entrypoint),
 //! and the software encoders (libx264, libx265), which always work.
 
+pub mod convert;
 pub mod lavc;
 #[cfg(feature = "vaapi")]
 pub mod vaapi;
 
-use caboose_display_protocol::Codec;
+use caboose_display_protocol::{Codec, Rect};
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use std::fmt;
 
@@ -75,8 +76,10 @@ pub trait Encoder: Send {
     fn input_kind(&self) -> InputKind;
     /// Coded size; the input must be exactly this size.
     fn coded_size(&self) -> (u32, u32);
-    /// Encodes one picture. `keyframe` forces an IDR with parameter sets.
-    fn encode(&mut self, input: Input<'_>, keyframe: bool) -> Result<Picture, EncodeError>;
+    /// Encodes one picture. `keyframe` forces an IDR with parameter sets. `damage`
+    /// lists what changed since the previous picture (in picture pixels); `None`
+    /// means everything.
+    fn encode(&mut self, input: Input<'_>, keyframe: bool, damage: Option<&[Rect]>) -> Result<Picture, EncodeError>;
 }
 
 /// Encoder settings shared by every stream.
@@ -240,7 +243,7 @@ mod tests {
     #[test]
     fn alignment_rounds_up() {
         assert_eq!(align_up(1179, 2), 1180);
-        assert_eq!(align_up(2160, 16), 2176);
+        assert_eq!(align_up(2161, 16), 2176);
         assert_eq!(align_up(64, 16), 64);
     }
 }
