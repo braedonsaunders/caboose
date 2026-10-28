@@ -34,6 +34,7 @@ struct AgentSignInView: View {
     @State private var answered: Set<String> = []
     @State private var delivering = false
     @State private var retryGeneration = 0
+    @State private var isPresented = true
 
     private var name: String { model.agents.listing(agentID)?.name ?? agentID }
     private var page: URL? {
@@ -52,7 +53,9 @@ struct AgentSignInView: View {
                 .toolbar { toolbar }
         }
         .task(id: retryGeneration) { await run() }
+        .onAppear { isPresented = true }
         .onDisappear {
+            isPresented = false
             terminal?.hide()
             // Leaving before it finished stops it, so nothing waits on the computer. Only this
             // sheet's attempt: a newer sign-in for the agent is left running.
@@ -180,7 +183,13 @@ struct AgentSignInView: View {
         // What the computer reported before this sign-in, so a stale result is not taken for its own.
         let before = try? await agents.signInStatus(of: agentID)
         do {
-            attempt = try await agents.signIn(agentID, with: method)
+            let started = try await agents.signIn(agentID, with: method)
+            guard !Task.isCancelled, isPresented else {
+                // Dismissal can precede the start response, when onDisappear has no id yet.
+                if let started { Task { await agents.cancelSignIn(agentID, attempt: started) } }
+                return
+            }
+            attempt = started
         } catch {
             phase = .failed(error.localizedDescription)
             return
