@@ -14,9 +14,23 @@ final class AgentCenter {
         var startedAt: String?
         var finishedAt: String?
         var summary: String?
+        var turns: Int?
+        var approvals: String?
+        var pendingApproval: Approval?
 
         var isRunning: Bool { status == "running" || status == "queued" || status == "paused" }
+        /// A finished task's conversation can be continued with a reply.
+        var canReply: Bool { !isRunning }
     }
+
+    /// The agent is waiting for the owner to allow or deny one action.
+    struct Approval: Identifiable, Decodable, Equatable {
+        var id: String
+        var tool: String
+        var summary: String
+    }
+
+    typealias Attachment = AgentAttachment
 
     struct Line: Identifiable, Equatable {
         let id = UUID()
@@ -75,16 +89,57 @@ final class AgentCenter {
         }
     }
 
-    func ask(_ prompt: String, agent: String) async {
+    /// Tasks waiting on the owner, oldest first.
+    var awaitingApproval: [Task] { tasks.filter { $0.pendingApproval != nil }.reversed() }
+
+    @discardableResult
+    func ask(_ prompt: String, agent: String, askFirst: Bool = false, attachments: [Attachment] = []) async -> Bool {
+        guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let approvals = askFirst && agent == "claude" ? "ask" : "auto"
+        do {
+            let id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments)
+            if !tasks.contains(where: { $0.id == id }) {
+                tasks.insert(Task(id: id, agent: agent, prompt: prompt, status: "running", turns: 1, approvals: approvals), at: 0)
+            }
+            openSeatIfNeeded()
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Continues a finished task's conversation.
+    func reply(to task: Task, _ prompt: String) async {
         guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         do {
-            let id = try await host.startAgentTask(prompt: prompt, agent: agent)
-            tasks.insert(Task(id: id, agent: agent, prompt: prompt, status: "running", startedAt: nil, finishedAt: nil, summary: nil), at: 0)
-            openSeatIfNeeded()
+            let updated = try await host.replyToAgentTask(task.id, prompt: prompt)
+            replace(updated)
+            output[task.id, default: []].append(Line(kind: "prompt", text: prompt))
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    func decide(_ task: Task, allow: Bool) async {
+        guard let host, let approval = task.pendingApproval else { return }
+        do {
+            try await host.decideAgentApproval(task.id, request: approval.id, allow: allow)
+            clearApproval(task.id, approval.id)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    private func replace(_ task: Task) {
+        if let index = tasks.firstIndex(where: { $0.id == task.id }) { tasks[index] = task } else { tasks.insert(task, at: 0) }
+    }
+
+    private func clearApproval(_ id: String, _ requestID: String) {
+        guard let index = tasks.firstIndex(where: { $0.id == id }), tasks[index].pendingApproval?.id == requestID else { return }
+        tasks[index].pendingApproval = nil
     }
 
     func cancel(_ task: Task) async {
@@ -177,7 +232,7 @@ final class AgentCenter {
         case "agent.task.started":
             if !tasks.contains(where: { $0.id == id }) {
                 tasks.insert(Task(id: id, agent: event["agent"] as? String ?? "agent", prompt: event["prompt"] as? String ?? "",
-                                  status: "running", startedAt: nil, finishedAt: nil, summary: nil), at: 0)
+                                  status: "running", turns: 1), at: 0)
             }
             openSeatIfNeeded()
         case "agent.task.output":
@@ -190,8 +245,26 @@ final class AgentCenter {
             if let index = tasks.firstIndex(where: { $0.id == id }) {
                 tasks[index].status = event["status"] as? String ?? "succeeded"
                 tasks[index].summary = event["summary"] as? String
+                tasks[index].pendingApproval = nil
                 notifyFinished(tasks[index])
             }
+        case "agent.task.replied":
+            if let index = tasks.firstIndex(where: { $0.id == id }) {
+                tasks[index].status = "running"
+                tasks[index].summary = nil
+                tasks[index].turns = event["turn"] as? Int ?? (tasks[index].turns ?? 1) + 1
+                let prompt = event["prompt"] as? String ?? ""
+                if output[id]?.last?.text != prompt { output[id, default: []].append(Line(kind: "prompt", text: prompt)) }
+            }
+            openSeatIfNeeded()
+        case "agent.task.approval":
+            guard let index = tasks.firstIndex(where: { $0.id == id }),
+                  let request = event["request"] as? [String: Any], let requestID = request["id"] as? String else { break }
+            tasks[index].pendingApproval = Approval(id: requestID, tool: request["tool"] as? String ?? "a tool",
+                                                    summary: request["summary"] as? String ?? "")
+            notifyApproval(tasks[index])
+        case "agent.task.approval.resolved":
+            if let requestID = event["requestId"] as? String { clearApproval(id, requestID) }
         default:
             break
         }
@@ -200,15 +273,24 @@ final class AgentCenter {
     private func notifyFinished(_ task: Task) {
         UINotificationFeedbackGenerator().notificationOccurred(task.status == "succeeded" ? .success : .error)
     }
+
+    private func notifyApproval(_ task: Task) {
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+    }
 }
 
 extension HostClient {
     func agentTasks() async throws -> [AgentCenter.Task] { try await request("GET", "/v1/agent/tasks", timeout: 20) }
 
-    func startAgentTask(prompt: String, agent: String) async throws -> String {
-        struct Started: Decodable { var id: String }
-        let started: Started = try await request("POST", "/v1/agent/tasks", body: ["prompt": .string(prompt), "agent": .string(agent)], timeout: 30)
-        return started.id
+    func replyToAgentTask(_ id: String, prompt: String) async throws -> AgentCenter.Task {
+        struct Replied: Decodable { var task: AgentCenter.Task }
+        let replied: Replied = try await request("POST", "/v1/agent/tasks/\(id)/reply", body: ["prompt": .string(prompt)], timeout: 30)
+        return replied.task
+    }
+
+    func decideAgentApproval(_ id: String, request requestID: String, allow: Bool) async throws {
+        let _: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/approvals/\(requestID)",
+                                                  body: ["allow": .bool(allow)], timeout: 20)
     }
 
     func cancelAgentTask(_ id: String) async throws {

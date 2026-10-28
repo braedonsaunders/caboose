@@ -6,6 +6,7 @@ import SwiftUI
 struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @State private var chromeVisible = true
+    @State private var askingAbout: RemoteWindow?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -44,6 +45,13 @@ struct WindowScreen: View {
             } else {
                 ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .overlay(alignment: .top) {
+            ApprovalBanner().padding(.top, chromeVisible ? 56 : 8)
+        }
+        .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
+        .sheet(item: $askingAbout) { window in
+            AskAboutWindowSheet(window: window).environment(model)
         }
         .statusBarHidden(!chromeVisible)
         .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
@@ -100,6 +108,9 @@ struct WindowScreen: View {
             Menu {
                 Section(model.connectionSummary) {}
                 Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
+                if model.agents.available {
+                    Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
+                }
                 Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
                 Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
             } label: {
