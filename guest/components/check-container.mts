@@ -15,6 +15,7 @@ try {
   const guest: AgentGuest = { run: async (cmd, args) => run(cmd, args) }
   await prepareContainerSession(guest)
   run('/usr/local/bin/caboose-session', ['start-printing'])
+  run('/bin/sh', ['-c', 'echo 1 > /run/caboose/files.pid'])
   const events: UpgradeStatus[] = []
   const bundle = await readBundle()
   await upgradeComponents(guest, 'container', s => events.push(s), bundle)
