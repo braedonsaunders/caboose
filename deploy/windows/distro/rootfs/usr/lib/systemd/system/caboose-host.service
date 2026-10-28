@@ -1,0 +1,24 @@
+[Unit]
+Description=Caboose host
+Documentation=https://github.com/braedonsaunders/caboose/tree/main/deploy/windows/distro
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+# The WSL distribution's settings: the container runtime with WSL's GPU, listening on every
+# interface (Windows forwards port 7310 to it), with its state in /var/lib/caboose.
+# /etc/caboose/host.env overrides any of them and is kept across upgrades.
+Environment=CABOOSE_RUNTIME=container
+Environment=CABOOSE_GPU=wsl
+Environment=CABOOSE_BIND=0.0.0.0
+Environment=CABOOSE_IMAGE_ROOT=/var/lib/caboose
+Environment=CABOOSE_CONTAINER_IMAGE=@CABOOSE_CONTAINER_IMAGE@
+EnvironmentFile=-/etc/caboose/host.env
+ExecStart=/opt/caboose/current/bin/caboose-host
+Restart=always
+RestartSec=3
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

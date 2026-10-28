@@ -1,0 +1,22 @@
+#!/bin/sh
+# Holds the Caboose distribution up. WSL stops a distribution soon after its last wsl.exe
+# session ends; on Windows, caboose-service runs
+#
+#   wsl.exe -d Caboose -u root --exec /usr/local/bin/caboose-keepalive
+#
+# at boot and restarts it whenever it exits, so this process is that session. It also asks
+# systemd to start caboose-host, in case it was stopped, then blocks for good.
+set -u
+
+# Wait (up to a minute) for systemd to finish booting, so the start below is not lost.
+i=0
+while [ "$i" -lt 60 ]; do
+  case $(systemctl is-system-running 2>/dev/null) in
+    initializing | starting | '') sleep 1; i=$((i + 1)) ;;
+    *) break ;;
+  esac
+done
+systemctl --no-block start docker.service caboose-host.service 2>/dev/null || true
+
+echo "caboose-keepalive: holding the distribution up"
+exec sleep infinity

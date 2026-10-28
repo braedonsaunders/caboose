@@ -1,0 +1,56 @@
+#!/bin/sh
+# Reports on caboose-host for the Windows side (CabooseSetup and the tray), as one line of JSON:
+#
+#   {"healthy":true,"service":"active","url":"http://127.0.0.1:7310","port":7310,
+#    "tokenPath":"/var/lib/caboose/owner-token","setupCodePath":null,"version":"v0.3.0"}
+#
+# healthy      GET /v1/health answered 200 with the owner token
+# service      `systemctl is-active caboose-host`
+# url          the host's address from this machine; Windows reaches the same port on
+#              127.0.0.1 through WSL's localhost forwarding or mirrored networking
+# tokenPath    the owner token the host generated, or null (none yet, or CABOOSE_OWNER_TOKEN set)
+# setupCodePath the first-run setup code, or null when there is none
+# version      the installed caboose-host bundle
+#
+# It always exits 0 once it has printed; the JSON says what is wrong.
+set -u
+
+# The settings the running host actually has: its process environment, else the unit's defaults.
+port=7310
+root=/var/lib/caboose
+pid=$(systemctl show -p MainPID --value caboose-host.service 2>/dev/null || echo 0)
+if [ -n "$pid" ] && [ "$pid" != 0 ] && [ -r "/proc/$pid/environ" ]; then
+  env_of() { tr '\0' '\n' <"/proc/$pid/environ" | sed -n "s/^$1=//p" | tail -n1; }
+  value=$(env_of CABOOSE_PORT); [ -n "$value" ] && port=$value
+  value=$(env_of CABOOSE_IMAGE_ROOT); [ -n "$value" ] && root=$value
+fi
+case $port in '' | *[!0-9]*) port=7310 ;; esac
+
+json_string() {
+  # A JSON string for a path or version: backslashes and quotes escaped, control characters dropped.
+  printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')"
+}
+
+service=$(systemctl is-active caboose-host.service 2>/dev/null)
+[ -n "$service" ] || service=unknown
+
+token_path=null
+healthy=false
+if [ -r "$root/owner-token" ]; then
+  token_path=$(json_string "$root/owner-token")
+  token=$(head -n1 "$root/owner-token")
+  # The token goes to curl on stdin, never on a command line.
+  if printf 'Authorization: Bearer %s\n' "$token" |
+    curl -fsS -o /dev/null -m 5 -H @- "http://127.0.0.1:$port/v1/health" 2>/dev/null; then
+    healthy=true
+  fi
+fi
+
+setup_code_path=null
+[ -s "$root/setup-code" ] && setup_code_path=$(json_string "$root/setup-code")
+
+version=null
+[ -r /opt/caboose/current/VERSION ] && version=$(json_string "$(head -n1 /opt/caboose/current/VERSION)")
+
+printf '{"healthy":%s,"service":%s,"url":"http://127.0.0.1:%s","port":%s,"tokenPath":%s,"setupCodePath":%s,"version":%s}\n' \
+  "$healthy" "$(json_string "$service")" "$port" "$port" "$token_path" "$setup_code_path" "$version"

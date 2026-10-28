@@ -1,0 +1,62 @@
+#!/bin/sh
+# caboose-upgrade <caboose-wsl-amd64.tar.gz>
+#
+# Upgrades this distribution in place from a newer Caboose rootfs. Only the files Caboose
+# owns are taken from it: the caboose-host bundle in /opt/caboose, caboose-host.service,
+# caboose-wsl-ready, caboose-keepalive, this script and /etc/wsl.conf. Everything else stays:
+# /var/lib/caboose (the host's state and owner token), /var/lib/docker (every computer's
+# container and home volume), /etc/caboose/host.env, and Debian and Docker as installed.
+#
+# CabooseSetup runs the copy of this script inside the new rootfs, so the release being
+# installed decides how it is installed. It keeps the previous bundle next to the new one,
+# so `ln -sfn <previous> /opt/caboose/current && systemctl restart caboose-host` rolls back.
+set -eu
+
+tarball=${1:?usage: caboose-upgrade <caboose-wsl-amd64.tar.gz>}
+[ "$(id -u)" = 0 ] || { echo "caboose-upgrade must run as root" >&2; exit 1; }
+[ -r "$tarball" ] || { echo "cannot read $tarball" >&2; exit 1; }
+
+work=$(mktemp -d /var/tmp/caboose-upgrade.XXXXXX)
+trap 'rm -rf "$work"' EXIT
+
+tar -xzf "$tarball" -C "$work" opt/caboose usr/lib/caboose usr/lib/systemd/system/caboose-host.service \
+  usr/local/bin/caboose-wsl-ready usr/local/bin/caboose-keepalive etc/wsl.conf
+
+version=$(readlink "$work/opt/caboose/current")
+case $version in '' | */* | .*) echo "the new rootfs has no usable /opt/caboose/current" >&2; exit 1 ;; esac
+[ -x "$work/opt/caboose/$version/bin/caboose-host" ] || { echo "the new rootfs has no caboose-host $version" >&2; exit 1; }
+previous=$(readlink /opt/caboose/current 2>/dev/null || true)
+
+# The new bundle beside the old one, then one atomic switch of the link.
+mkdir -p /opt/caboose
+rm -rf "/opt/caboose/.$version.new"
+cp -a "$work/opt/caboose/$version" "/opt/caboose/.$version.new"
+if [ "$version" = "$previous" ]; then
+  # Reinstalling the same version: replace it, keeping nothing half-written in its place.
+  rm -rf "/opt/caboose/.$version.old"
+  mv "/opt/caboose/$version" "/opt/caboose/.$version.old"
+fi
+rm -rf "/opt/caboose/$version"
+mv "/opt/caboose/.$version.new" "/opt/caboose/$version"
+ln -sfn "$version" /opt/caboose/.current.new
+mv -T /opt/caboose/.current.new /opt/caboose/current
+rm -rf "/opt/caboose/.$version.old"
+
+install -m 0644 "$work/usr/lib/systemd/system/caboose-host.service" /usr/lib/systemd/system/caboose-host.service
+install -m 0755 "$work/usr/local/bin/caboose-wsl-ready" /usr/local/bin/caboose-wsl-ready
+install -m 0755 "$work/usr/local/bin/caboose-keepalive" /usr/local/bin/caboose-keepalive
+install -m 0644 "$work/etc/wsl.conf" /etc/wsl.conf
+install -d /usr/lib/caboose
+for file in "$work"/usr/lib/caboose/*; do install -m 0755 "$file" /usr/lib/caboose/; done
+ln -sfn /opt/caboose/current/bin/caboose-host /usr/local/bin/caboose-host
+
+# Keep the running bundle and the one before it; older ones go.
+for dir in /opt/caboose/*; do
+  name=$(basename "$dir")
+  [ "$name" = current ] || [ "$name" = "$version" ] || [ "$name" = "$previous" ] || rm -rf "$dir"
+done
+
+systemctl daemon-reload
+systemctl enable caboose-host.service docker.service containerd.service >/dev/null 2>&1
+systemctl restart caboose-host.service
+echo "caboose-host ${previous:-(none)} -> $version"

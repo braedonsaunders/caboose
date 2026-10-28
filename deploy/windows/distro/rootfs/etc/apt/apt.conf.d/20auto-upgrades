@@ -1,0 +1,4 @@
+// Debian's security updates install on their own (unattended-upgrades' default origins).
+// Docker Engine is not among them: update it with apt, which restarts running computers.
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
