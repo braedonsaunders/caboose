@@ -713,12 +713,20 @@ async function selectModel(agent, sessionId, state, requested) {
 
 async function discoverModels(spec) {
   const agent = await startAgent(spec, { cwd: HOME })
+  let sessionId
   try {
     const response = await Promise.race([agent.connection.agent.request('session/new', { cwd: HOME, mcpServers: [] }), agent.died,
       sleep(60_000, undefined, { ref: false }).then(() => { throw new Error('Agent model discovery timed out') })])
+    sessionId = response.sessionId
     const models = sessionModels(response)
     return models ? { models } : {}
-  } finally { await agent.close() }
+  } finally {
+    if (sessionId && agent.init.agentCapabilities?.sessionCapabilities?.close) {
+      await Promise.race([agent.connection.agent.request('session/close', { sessionId }).catch(() => {}),
+        sleep(3000, undefined, { ref: false })])
+    }
+    await agent.close()
+  }
 }
 
 export class Task {
@@ -910,14 +918,20 @@ export class Task {
   async applyModel() {
     const requested = await readFile(join(this.dir, 'requested-model.json'), 'utf8').then(JSON.parse).catch(error => { if (error.code === 'ENOENT') return this.requestedModel; throw error })
     this.requestedModel = requested
+    await this.recordModels()
     this.models = await selectModel(this.agent, this.sessionId, this.models, requested)
     await this.recordModels()
   }
 
-  async recordModels() {
+  recordModels() {
     const state = { ...(this.requestedModel ? { requestedModel: this.requestedModel } : {}), ...(this.models ? { models: this.models } : {}) }
-    await writeJson(join(this.dir, 'models.json'), state)
-    await this.transcript.write({ type: 'models', ...state })
+    this.modelWrite = (this.modelWrite ?? Promise.resolve()).catch(() => {}).then(async () => {
+      await writeJson(join(this.dir, 'models.json'), state)
+      const text = JSON.stringify(state)
+      if (text !== this.lastModelState && text !== '{}') await this.transcript.write({ type: 'models', ...state })
+      this.lastModelState = text
+    })
+    return this.modelWrite
   }
 
   onUpdate(params) {
@@ -1063,6 +1077,7 @@ export class Task {
         if (!cancelled) throw error
         response = { stopReason: 'cancelled' }
       }
+      await this.modelWrite
       if (response.forced) { await this.agent?.close(); this.agent = null; this.sessionId = null }
       const stopReason = cancelled ? 'cancelled' : response.stopReason
       const last = this.normaliser.end()

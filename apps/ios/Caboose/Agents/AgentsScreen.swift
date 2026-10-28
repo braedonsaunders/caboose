@@ -10,6 +10,8 @@ struct AgentsScreen: View {
     @State private var connectingModel = false
     @State private var showingChats = false
     @State private var showingLibrary = false
+    @State private var showingModels = false
+    @AppStorage(AskTarget.key) private var target = ""
 
     var body: some View {
         let agents = model.agents
@@ -45,6 +47,11 @@ struct AgentsScreen: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Teammates and Routines", systemImage: "person.2") { showingLibrary = true }
                 }
+                if chat != nil || agents.library.selectedProfile == nil {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Model", systemImage: "cpu") { showingModels = true }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Agent Settings", systemImage: "slider.horizontal.3") { model.showAgentSettings = true }
                 }
@@ -57,6 +64,9 @@ struct AgentsScreen: View {
         } message: { Text(agents.lastError ?? "") }
         .sheet(isPresented: $connectingModel) { ConnectModelView().environment(model) }
         .sheet(isPresented: $showingChats) { ChatList().environment(model) }
+        .sheet(isPresented: $showingModels) {
+            AgentModelPicker(agentID: chat?.agent ?? (agents.listing(target)?.isInstalled == true ? target : agents.defaultAgent ?? ""), taskID: chat?.id).environment(model)
+        }
         .sheet(isPresented: $showingLibrary) { AgentLibraryView().environment(model) }
         .onChange(of: agents.focusedTask, initial: true) { _, id in
             guard let id else { return }

@@ -10,6 +10,8 @@ final class AgentCenter {
         var id: String
         /// The agent's registry id.
         var agent: String
+        var requestedModel: String?
+        var models: AgentModelState.Models?
         var agentName: String?
         var profileId: String?
         var prompt: String
@@ -97,6 +99,7 @@ final class AgentCenter {
 
     private var attached = false
     private var control: URLSessionWebSocketTask?
+    var selectedModels: [String: String] = [:]
     private var host: HostClient?
 
     /// The agent seat: a second display where agents run GUI apps without touching yours.
@@ -125,6 +128,7 @@ final class AgentCenter {
         tookOver = false
         pausedForTakeover = []
         detach()
+        selectedModels = [:]
         host = nil
         seatToken = nil
         tasks = []
@@ -160,6 +164,26 @@ final class AgentCenter {
     /// Tasks waiting on the owner, oldest first.
     var awaitingApproval: [Task] { tasks.filter { $0.pendingApproval != nil }.reversed() }
 
+    func modelState(agent: String, taskID: String?) async throws -> AgentModelState {
+        guard let host else { throw HostClient.Failure.unreachable("Connect to your computer first.") }
+        if let taskID { return try await host.taskModels(taskID) }
+        return try await host.agentModels(agent)
+    }
+
+    func selectModel(_ id: String, agent: String, taskID: String?) async throws -> AgentModelState? {
+        if let taskID {
+            guard let host else { throw HostClient.Failure.unreachable("Connect to your computer first.") }
+            let state = try await host.selectTaskModel(taskID, model: id)
+            if let index = tasks.firstIndex(where: { $0.id == taskID }) {
+                tasks[index].requestedModel = state.requestedModel
+                tasks[index].models = state.models
+            }
+            return state
+        }
+        selectedModels[agent] = id
+        return nil
+    }
+
     /// Starts a task with agent `agent` (a registry id), or the owner's default agent when nil.
     @discardableResult
     func ask(_ prompt: String, agent: String?, askFirst: Bool = false, attachments: [Attachment] = []) async -> Bool {
@@ -175,7 +199,7 @@ final class AgentCenter {
             if let profileId {
                 id = try await host.startProfileTask(profileId, prompt: prompt, attachments: attachments)
             } else {
-                id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments, craftMcp: UserDefaults.standard.object(forKey: "caboose.agent.craftMcp") as? Bool ?? true)
+                id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments, craftMcp: UserDefaults.standard.object(forKey: "caboose.agent.craftMcp") as? Bool ?? true, model: (agent ?? defaultAgent).flatMap { selectedModels[$0] })
             }
             if !tasks.contains(where: { $0.id == id }) {
                 let profile = library.profiles.first { $0.id == profileId }

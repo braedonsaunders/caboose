@@ -364,3 +364,8 @@ Hide and reopening, Ctrl/Alt, held arrows, Return and IME with `scripts/check-de
 
 Check native text entry with `scripts/check-agents.sh`; this includes keyboard focus,
 IME and selection, native form traits and the sign-in sheet material.
+
+The Agents toolbar's Model sheet reads available models from the computer's ACP agent.
+New chats pass the selected provider model with task creation; idle chats can choose the
+model for their next message. The sheet shows the current model separately until the
+agent confirms the requested selection. Model discovery may require agent sign-in.
