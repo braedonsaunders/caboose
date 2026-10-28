@@ -19,6 +19,8 @@ public final class CabooseDisplaySession: DisplaySession {
     public private(set) var server: ServerHello?
     /// Round trip to the computer, from ping and pong, in milliseconds.
     public private(set) var latencyMs: Double?
+    /// The server ended this session for another client (`bye { reason: "replaced" }`).
+    public private(set) var isReplaced = false
     public var typingEchoMs: Int? { echo.median }
 
     public var onClipboardText: ((String) -> Void)?
@@ -95,6 +97,7 @@ public final class CabooseDisplaySession: DisplaySession {
     public func connect() {
         guard state == .idle || isClosed else { return }
         state = .connecting
+        isReplaced = false
         let stream = makeStream()
         self.stream = stream
         pipelines = FramePipelineRegistry()
@@ -204,6 +207,7 @@ public final class CabooseDisplaySession: DisplaySession {
                 let now = Self.monotonicMicros()
                 if now >= sent { latencyMs = Double(now - sent) / 1000 }
             case .bye(let reason):
+                isReplaced = reason == "replaced"
                 fail(Self.describe(bye: reason))
             case .videoCreate(let fields): addVideo(fields.id)
             case .videoUpdate(let fields): updateVideo(fields)
@@ -219,6 +223,7 @@ public final class CabooseDisplaySession: DisplaySession {
         case "auth": "The computer's display did not accept this session's token."
         case "version": "The computer's display speaks a newer protocol. Update Caboose."
         case "shutdown": "The computer's display stopped."
+        case "replaced": "Another device is showing this computer's display."
         case "protocol": "The display connection broke: the computer could not understand the phone."
         default: reason.isEmpty ? "The computer's display closed the connection." : reason
         }

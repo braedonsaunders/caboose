@@ -127,6 +127,21 @@ final class FakeDecoder: PictureDecoder {
         #expect(stream.closed)
     }
 
+    @Test func replacedByAnotherDeviceIsToldApart() async throws {
+        let session = try await ready()
+        #expect(!session.isReplaced)
+        stream.server([(.bye, ["reason": "replaced"])])
+        try await until("closed") { if case .closed = session.state { true } else { false } }
+        #expect(session.isReplaced)
+        #expect(session.state == .closed(reason: "Another device is showing this computer's display."))
+
+        let other = CabooseDisplaySessionTests()
+        let shutDown = try await other.ready()
+        other.stream.server([(.bye, ["reason": "shutdown"])])
+        try await other.until("closed") { if case .closed = shutDown.state { true } else { false } }
+        #expect(!shutDown.isReplaced) // only "replaced" holds the app back from reconnecting
+    }
+
     @Test func anotherVersionIsRefused() async throws {
         let session = makeSession()
         session.connect()
