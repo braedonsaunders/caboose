@@ -438,7 +438,7 @@ use, best first, and a pairing link carries them all: the first as `host=`, the 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/v1/host/reach` | → `Reach` (below). Owner only |
-| `PUT` | `/v1/host/reach/tailscale` | `{ enabled: boolean }` (nothing else) → `Reach`. Turns Tailscale's HTTPS `serve` for this host on or off. 400 for any other body; 409 with the reason when Tailscale is not installed, is signed out, has HTTPS certificates off for the tailnet, or already serves something else on HTTPS port 443 (which is never replaced). Owner only |
+| `PUT` | `/v1/host/reach/tailscale` | `{ enabled: boolean }` (nothing else) → `Reach`. Turns Tailscale's HTTPS `serve` for this host on or off. 400 for any other body; 409 with the reason when Tailscale is not installed, is signed out, has HTTPS certificates off for the tailnet, cannot read its Serve configuration, or already serves something else on HTTPS port 443 (which is never replaced or removed, including routes sharing the port). Owner only |
 
 ```ts
 type Reach = {

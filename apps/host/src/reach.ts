@@ -112,10 +112,10 @@ export class Tailscale {
     if (parsed.BackendState !== 'Running') return { installed: true, loggedIn: false, serving: false, error: parsed.BackendState === 'NeedsLogin' ? 'Tailscale is signed out on this machine' : `Tailscale is ${parsed.BackendState ?? 'not running'}` }
     const name = parsed.Self?.DNSName?.replace(/\.$/, '')
     const certified = !!name && (parsed.CertDomains ?? []).includes(name)
-    const { serving, taken } = await this.serving(name)
-    const error = !certified ? `HTTPS certificates are not enabled for this tailnet; turn on MagicDNS and HTTPS at ${ADMIN_DNS}`
-      : taken ? 'Tailscale already serves something else on HTTPS port 443 of this machine; remove it with `tailscale serve reset` or turn this on yourself'
-      : undefined
+    const { serving, taken, error: serveError } = await this.serving(name)
+    const error = serveError ?? (!certified ? `HTTPS certificates are not enabled for this tailnet; turn on MagicDNS and HTTPS at ${ADMIN_DNS}`
+      : taken ? 'Tailscale already serves something else on HTTPS port 443 of this machine; manage its routes in Tailscale'
+      : undefined)
     return {
       installed: true, loggedIn: true, ...(name ? { name } : {}), serving,
       ...(serving && name ? { httpsUrl: `https://${name}` } : {}),
@@ -124,17 +124,24 @@ export class Tailscale {
   }
 
   /** Whether 443 on this machine's name proxies to this host, or is taken by something else. */
-  private async serving(name: string | undefined): Promise<{ serving: boolean; taken: boolean }> {
+  private async serving(name: string | undefined): Promise<{ serving: boolean; taken: boolean; error?: string }> {
     if (!this.command || !name) return { serving: false, taken: false }
     const result = await this.run(this.command, ['serve', 'status', '--json'])
-    if (result.code !== 0) return { serving: false, taken: false }
+    const unreadable = { serving: false, taken: false, error: 'Cannot read Tailscale Serve configuration; no routes were changed' }
+    if (result.code !== 0) return unreadable
     let parsed: ServeJson
-    try { parsed = JSON.parse(result.stdout || '{}') as ServeJson } catch { return { serving: false, taken: false } }
-    const handlers = Object.values(parsed.Web?.[`${name}:443`]?.Handlers ?? {})
-    const ours = handlers.some(handler => handler.Proxy !== undefined && proxiesTo(handler.Proxy, this.port))
-    // Another web handler on 443, or a raw TCP forward of 443, belongs to someone else.
-    const taken = (!ours && handlers.length > 0) || (!ours && parsed.TCP?.['443'] !== undefined && !parsed.TCP['443']?.HTTPS)
-    return { serving: ours, taken }
+    try {
+      parsed = JSON.parse(result.stdout) as ServeJson
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return unreadable
+    } catch { return unreadable }
+    const routes = Object.entries(parsed.Web ?? {}).filter(([address]) => address.endsWith(':443'))
+      .flatMap(([address, config]) => Object.entries(config.Handlers ?? {}).map(([path, handler]) => ({ address, path, handler })))
+    const ours = (route: typeof routes[number]) => route.address === `${name}:443` && route.path === '/'
+      && route.handler.Proxy !== undefined && proxiesTo(route.handler.Proxy, this.port)
+    const serving = parsed.TCP?.['443']?.HTTPS === true && routes.some(ours)
+    // Turning off 443 removes all its handlers. Never do that when another route shares it.
+    const taken = routes.some(route => !ours(route)) || (parsed.TCP?.['443'] !== undefined && !serving)
+    return { serving, taken }
   }
 
   async setServing(enabled: boolean): Promise<TailscaleStatus> {
@@ -142,7 +149,7 @@ export class Tailscale {
     if (!this.command || !before.installed) throw new ReachUnavailableError('Tailscale is not installed on this machine: https://tailscale.com/download')
     if (!before.loggedIn) throw new ReachUnavailableError(before.error ?? 'Tailscale is signed out on this machine')
     if (before.serving === enabled) return before
-    if (enabled && before.error) throw new ReachUnavailableError(before.error)
+    if (before.error) throw new ReachUnavailableError(before.error)
     const args = enabled ? ['serve', '--bg', '--https=443', `http://127.0.0.1:${this.port}`] : ['serve', '--https=443', 'off']
     const result = await this.run(this.command, args)
     if (result.code !== 0) throw new ReachUnavailableError(firstLine(result.stderr) || firstLine(result.stdout) || `tailscale serve exited with ${result.code}`)
@@ -153,7 +160,8 @@ export class Tailscale {
 function proxiesTo(proxy: string, port: number): boolean {
   try {
     const url = new URL(proxy)
-    return (url.hostname === '127.0.0.1' || url.hostname === 'localhost') && Number(url.port) === port
+    return url.protocol === 'http:' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost')
+      && Number(url.port) === port && url.pathname === '/' && !url.search && !url.hash && !url.username && !url.password
   } catch {
     return proxy === String(port) || proxy === `127.0.0.1:${port}` || proxy === `localhost:${port}`
   }

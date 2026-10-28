@@ -110,6 +110,33 @@ it('explains why Tailscale cannot serve', async () => {
   expect(other.calls.some(args => args.includes('--bg'))).toBe(false)
 })
 
+it('preserves shared Serve routes and refuses unreadable configuration', async () => {
+  const name = 'studio.tail1234.ts.net'
+  const own = { Proxy: 'http://127.0.0.1:7310' }
+  for (const handlers of [{ '/': own, '/other': { Proxy: 'http://127.0.0.1:9999' } }, { '/subpath': own }]) {
+    const calls: string[][] = []
+    const tailscale = new Tailscale(7310, 'tailscale', async (_, args) => {
+      calls.push(args)
+      return { code: 0, stderr: '', stdout: JSON.stringify(args[0] === 'status'
+        ? { BackendState: 'Running', Self: { DNSName: name }, CertDomains: [name] }
+        : { TCP: { 443: { HTTPS: true } }, Web: { [`${name}:443`]: { Handlers: handlers } } }) }
+    })
+    const status = await tailscale.status()
+    expect(status.error).toMatch(/already serves something else/)
+    await expect(tailscale.setServing(!status.serving)).rejects.toThrow(/already serves something else/)
+    expect(calls.every(args => args[0] === 'status' || args[1] === 'status')).toBe(true)
+  }
+  for (const result of [{ code: 1, stdout: '', stderr: 'denied' }, { code: 0, stdout: 'invalid', stderr: '' }]) {
+    const calls: string[][] = []
+    const tailscale = new Tailscale(7310, 'tailscale', async (_, args) => {
+      calls.push(args)
+      return args[0] === 'status' ? { code: 0, stderr: '', stdout: JSON.stringify({ BackendState: 'Running', Self: { DNSName: name }, CertDomains: [name] }) } : result
+    })
+    await expect(tailscale.setServing(true)).rejects.toThrow(/Cannot read/)
+    expect(calls.every(args => args[0] === 'status' || args[1] === 'status')).toBe(true)
+  }
+})
+
 it('keeps one host id', async () => {
   const root = await mkdtemp(join(tmpdir(), 'caboose-reach-'))
   close.push(() => rm(root, { recursive: true, force: true }))
