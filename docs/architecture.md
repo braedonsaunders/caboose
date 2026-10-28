@@ -256,7 +256,7 @@ owner's pointer or types into the owner's windows.
   directory: `claude -p <prompt> --output-format stream-json --verbose` or
   `codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox <prompt>`.
   Without approvals Claude runs with `--permission-mode acceptEdits` and the shell, file,
-  web and desktop tools pre-allowed; Codex always runs in its workspace-write sandbox.
+  web and desktop tools pre-allowed; Codex runs without its own sandbox, since the computer is one.
   Output is parsed into events; the raw JSONL transcript is kept in the task directory.
 - **Replies.** A finished task (succeeded, failed or cancelled) can be continued with a new
   prompt. The host records the conversation id from the transcript — Claude's
