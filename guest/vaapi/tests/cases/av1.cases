@@ -1,0 +1,20 @@
+# name | lavfi source | encoder args | container
+av1-aom-altref      | testsrc2=size=640x360:rate=30:duration=2   | -c:v libaom-av1 -cpu-used 8 -lag-in-frames 19 -auto-alt-ref 1 -g 60 -b:v 400k | ivf
+av1-aom-fwd-kf      | testsrc2=size=320x240:rate=30:duration=2   | -c:v libaom-av1 -cpu-used 6 -lag-in-frames 35 -aom-params fwd-kf-dist=16 -b:v 300k | ivf
+av1-aom-realtime    | testsrc2=size=640x360:rate=30:duration=2   | -c:v libaom-av1 -usage realtime -cpu-used 8 -aq-mode cyclic -b:v 300k | ivf
+av1-svt             | testsrc2=size=640x360:rate=30:duration=2   | -c:v libsvtav1 -preset 12 -g 32 | ivf
+av1-rav1e           | testsrc2=size=640x360:rate=30:duration=2   | -c:v librav1e -speed 10 -g 30 | ivf
+av1-aom-tiles       | mandelbrot=size=1280x720:rate=30,trim=duration=1,format=yuv420p | -c:v libaom-av1 -usage realtime -cpu-used 8 -tile-columns 2 -tile-rows 1 -row-mt 1 -b:v 1M | ivf
+av1-aom-tiles-sizes | mandelbrot=size=1280x720:rate=30,trim=duration=0.5,format=yuv420p | -c:v libaom-av1 -usage realtime -cpu-used 8 -tiles 3x3 -b:v 1M | ivf
+av1-aom-10bit       | testsrc2=size=640x360:rate=30:duration=2,format=yuv420p10le | -c:v libaom-av1 -cpu-used 8 -lag-in-frames 16 -b:v 400k | ivf
+av1-svt-filmgrain   | testsrc2=size=640x360:rate=30:duration=2,noise=alls=20:allf=t | -c:v libsvtav1 -preset 12 -svtav1-params film-grain=8 | ivf
+av1-aom-denoise     | testsrc2=size=640x360:rate=30:duration=1,noise=alls=20:allf=t | -c:v libaom-av1 -cpu-used 8 -lag-in-frames 10 -denoise-noise-level 25 -b:v 400k | ivf
+av1-aom-screen      | life=s=320x240:mold=10:r=30:ratio=0.1:death_color=#C83232:life_color=#00ff00,scale=640:360:flags=neighbor,format=yuv420p,trim=duration=1 | -c:v libaom-av1 -cpu-used 8 -aom-params tune-content=screen -enable-palette 1 -b:v 300k | ivf
+av1-aom-intrabc     | life=s=320x240:mold=10:r=30:ratio=0.1:death_color=#C83232:life_color=#00ff00,scale=640:360:flags=neighbor,format=yuv420p,trim=duration=0.3 | -c:v libaom-av1 -usage allintra -cpu-used 6 -aom-params tune-content=screen -enable-intrabc 1 -crf 30 | ivf
+av1-aom-resilient   | testsrc2=size=640x360:rate=30:duration=1   | -c:v libaom-av1 -usage realtime -cpu-used 8 -error-resilience default -b:v 300k | ivf
+av1-aom-gm-warp     | testsrc2=size=320x240:rate=30:duration=1,rotate=a=0.02*t*30:c=black | -c:v libaom-av1 -cpu-used 3 -lag-in-frames 10 -enable-global-motion 1 -b:v 200k | ivf
+av1-aom-sb128-qm    | testsrc2=size=640x360:rate=30:duration=1   | -c:v libaom-av1 -cpu-used 8 -lag-in-frames 10 -aom-params sb-size=128:enable-qm=1:deltaq-mode=1 -b:v 300k | ivf
+av1-aom-lossless    | testsrc2=size=320x240:rate=30:duration=1   | -c:v libaom-av1 -cpu-used 8 -lag-in-frames 0 -aom-params lossless=1 | ivf
+av1-svt-superres    | testsrc2=size=640x360:rate=30:duration=1   | -c:v libsvtav1 -preset 12 -svtav1-params superres-mode=1:superres-denom=12:superres-kf-denom=10 | ivf
+av1-svt-sframe      | testsrc2=size=640x360:rate=30:duration=1   | -c:v libsvtav1 -preset 12 -svtav1-params pred-struct=1:sframe-dist=8:sframe-mode=1:forced-max-frame-width=640:forced-max-frame-height=360 | ivf
+av1-svt-resize      | testsrc2=size=640x360:rate=30:duration=1 | -c:v libsvtav1 -preset 12 -svtav1-params resize-mode=2 | ivf
