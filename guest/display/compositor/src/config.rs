@@ -23,6 +23,8 @@ OPTIONS:
     --renderer KIND        pixman [default: pixman]
     --always-compose       compose every window, never copy a shm buffer directly (for
                            comparisons)
+    --no-motion            keep regions that update at video rates in the window picture
+                           instead of sending them as their own video stream
     --encoder KIND         auto | software | nvenc [default: auto]
     --crf N                encoder quality, lower is better [default: 23]
     --preset NAME          x264 preset [default: ultrafast]
@@ -80,6 +82,8 @@ pub struct Config {
     pub env_file: Option<PathBuf>,
     pub renderer: RendererChoice,
     pub always_compose: bool,
+    /// Send regions that update at video rates as their own video stream (layer 3).
+    pub motion: bool,
     pub encoder: Choice,
     pub settings: Settings,
     pub display: DisplaySpec,
@@ -99,6 +103,7 @@ impl Default for Config {
             env_file: None,
             renderer: RendererChoice::Pixman,
             always_compose: false,
+            motion: true,
             encoder: Choice::Auto,
             settings: Settings::default(),
             display: DisplaySpec { width: 1920, height: 1080, refresh_hz: 60.0, scale: 1.0 },
@@ -161,6 +166,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
                     DisplaySpec::parse(&v).ok_or_else(|| format!("--display: expected WxH@HZxSCALE, got {v}"))?;
             }
             "--always-compose" => config.always_compose = true,
+            "--no-motion" => config.motion = false,
             "--list-encoders" => config.list_encoders = true,
             "-h" | "--help" => return Ok(Parsed::Help),
             "--" => {

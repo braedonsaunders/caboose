@@ -86,10 +86,17 @@ This directory is a Cargo workspace:
   `video.present` when the application shows each frame. A client that keeps failing to
   decode a stream gets it decoded on the server. Launched applications get
   `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
+- **Detected motion** (video layer 3, `src/motion.rs`). Each window's changed
+  macroblocks feed a tracker. A dense rectangle of at least 192×112 pixels whose blocks
+  change in most pictures at 15 fps or more, for a second, becomes a `motion` video stream.
+  The window's encode worker encodes that crop with its own encoder (no sharpening) and
+  leaves it out of the window picture. Once the region has stopped looking like video
+  for a second, a window picture repaints it and the stream ends. Only for a client that
+  lists the stream's codec in `video_decoders`; `--no-motion` turns it off.
 
 Not yet here, and absent from `hello.features` until they are: non-text clipboard types, Pencil
 (tablet-v2), cursor images (named cursors are sent), notifications, the microphone, lossless
-tiles, video layers 2 and 3, a GPU renderer with the zero-copy encoders (dmabuf → NVENC or
+tiles, video layer 2, a GPU renderer with the zero-copy encoders (dmabuf → NVENC or
 VA-API) and the exact passthrough binding it enables, typing characters that are not on the
 keymap into X11 applications, and an agent seat on `14601`.
 
@@ -149,6 +156,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `clipboard-x11` | an X11 copy (xclip) reaches the phone on connect, and the phone's copy reaches X11 |
 | `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
 | `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
+| `motion` | Chromium plays a 480×270 canvas "video" in a page of text for 8 s: it becomes one `motion` stream at the canvas, every frame decodes with a pts, the window stream sends at most half as many pictures beside it, the stream ends after the video stops, and the final window picture matches the one streamed with `--no-motion` (≥ 40 dB) |
 | `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer (measured: 42.4 → 50.3 dB, one 34 kB picture); a blinking caret costs at most 4 extra pictures in 6 s, not one per blink (measured: 16 against 13) |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
@@ -191,6 +199,11 @@ column was measured the same way before the switch:
 The Chromium 720p check measures 3.8 ms per frame with it (3.6 ms in the table, before).
 Sharpening 30 typed glyphs at 1080p is one 1.7 kB picture; the first sharpening of a whole
 window after its keyframe is the largest (a full screen of dense text: 470 kB, 15 ms).
+
+Detected motion took the `motion` check's 8 s canvas video in a 1280×720 Chromium window
+from 8.0% to 5.1% of a core of server CPU. The window stream drops to about 50 pictures,
+most of them sent before the region qualifies. Each video frame then costs a 480×288
+encode instead of a 1280×720 one.
 
 ## Run
 
