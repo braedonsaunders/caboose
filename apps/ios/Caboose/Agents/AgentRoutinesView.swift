@@ -29,9 +29,11 @@ struct AgentRoutinesView: View {
                 if library.routines.isEmpty && !library.loadingRoutines && library.routineError == nil {
                     ContentUnavailableView("Make It a Routine", systemImage: "calendar.badge.plus", description: Text("Give a teammate recurring work. Your computer runs it even when your phone is away."))
                 }
-                NavigationLink("Run History", systemImage: "clock.arrow.circlepath") { RoutineHistory(routineID: nil, openChat: openChat) }
+                NavigationLink { RoutineHistory(routineID: nil, openChat: openChat) } label: { Label("Run History", systemImage: "clock.arrow.circlepath") }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background { ShellBackground() }
         .navigationTitle("Routines")
         .toolbar { ToolbarItem(placement: .primaryAction) { Button("New Routine", systemImage: "plus") { creating = true }.disabled(library.routinesUnavailable) } }
         .refreshable { await library.refreshRoutines(); await library.refreshProfiles() }
@@ -88,10 +90,12 @@ struct RoutineDetail: View {
                     Button(routine.paused ? "Resume" : "Pause", systemImage: routine.paused ? "play.circle" : "pause.circle") {
                         perform { try await library.saveRoutine(routine.id, body: ["paused": .bool(!routine.paused)]) }
                     }
-                    NavigationLink("Run History", systemImage: "clock.arrow.circlepath") { RoutineHistory(routineID: routine.id, openChat: openChat) }
+                    NavigationLink { RoutineHistory(routineID: routine.id, openChat: openChat) } label: { Label("Run History", systemImage: "clock.arrow.circlepath") }
                 } footer: { Text("Pausing stops new runs; a conversation already running continues. Resuming starts the schedule after now.") }
                 Section { Button("Delete Routine", role: .destructive) { deleting = true } }
             }
+            .scrollContentBackground(.hidden)
+            .background { ShellBackground() }
             .navigationTitle(routine.name).navigationBarTitleDisplayMode(.inline)
             .disabled(busy)
             .toolbar { ToolbarItem(placement: .primaryAction) { Button("Edit") { editing = true } } }
@@ -147,6 +151,8 @@ struct RoutineHistory: View {
                 ContentUnavailableView("No Runs Yet", systemImage: "clock", description: Text("Scheduled and manual runs appear here when the host reserves them."))
             }
         }
+        .scrollContentBackground(.hidden)
+        .background { ShellBackground() }
         .navigationTitle("Run History").navigationBarTitleDisplayMode(.inline)
         .task { await library.refreshHistory() }
         .refreshable { await library.refreshHistory() }
@@ -224,6 +230,8 @@ struct RoutineEditor: View {
                 if let message = prepared.validationMessage { Text(message).font(.footnote).foregroundStyle(.orange) }
                 if let error { Text(error).foregroundStyle(.orange) }
             }
+            .scrollContentBackground(.hidden)
+            .background { ShellBackground() }
             .navigationTitle(routine == nil ? "New Routine" : "Edit Routine").navigationBarTitleDisplayMode(.inline)
             .disabled(busy)
             .toolbar {
@@ -239,6 +247,7 @@ struct RoutineEditor: View {
     }
     private var identity: some View {
         Section("Work") {
+            AgentLibraryNotice(error: model.agents.library.profileError, unavailable: model.agents.library.profilesUnavailable, loading: model.agents.library.loadingProfiles, retry: { await model.agents.library.refreshProfiles() })
             TextField("Routine name", text: $name)
             Picker("Teammate", selection: $profileID) {
                 Text("Choose a teammate").tag("")

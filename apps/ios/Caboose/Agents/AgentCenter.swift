@@ -87,6 +87,7 @@ final class AgentCenter {
     private static let titlesKey = "caboose.agent.titles"
     private(set) var output: [String: [Line]] = [:]
     private(set) var available = true
+    private(set) var tasksError: String?
     var lastError: String?
 
     /// The computer's management status, whenever the host reports a change on the control socket.
@@ -127,6 +128,7 @@ final class AgentCenter {
         host = nil
         seatToken = nil
         tasks = []
+        tasksError = nil
         output = [:]
         threads = [:]
         composerDrafts = [:]
@@ -142,12 +144,15 @@ final class AgentCenter {
         guard let host else { return }
         do {
             tasks = try await host.agentTasks()
+            tasksError = nil
             LiveActivityCoordinator.shared.sync(tasks)
             available = true
             if !tasks.isEmpty { openSeatIfNeeded() }
         } catch HostClient.Failure.server(404, _) {
             available = false // a host without the agents API
+            tasksError = "Update caboose-host to list conversations."
         } catch {
+            tasksError = error.localizedDescription
             lastError = error.localizedDescription
         }
     }
@@ -173,9 +178,10 @@ final class AgentCenter {
                 id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments, craftMcp: UserDefaults.standard.object(forKey: "caboose.agent.craftMcp") as? Bool ?? true)
             }
             if !tasks.contains(where: { $0.id == id }) {
-                let chosen = agent ?? defaultAgent ?? ""
+                let profile = library.profiles.first { $0.id == profileId }
+                let chosen = profile?.agent ?? agent ?? defaultAgent ?? ""
                 tasks.insert(Task(id: id, agent: chosen, agentName: listing(chosen)?.name, profileId: profileId, prompt: prompt, status: "running",
-                                  startedAt: Self.timestamp(Date()), turns: 1, approvals: approvals), at: 0)
+                                  startedAt: Self.timestamp(Date()), turns: 1, approvals: profile?.approvals ?? approvals), at: 0)
             }
             if threads[id] == nil { threads[id] = AgentThread(entries: [], prompt: prompt) }
             nameChat(id, from: prompt)

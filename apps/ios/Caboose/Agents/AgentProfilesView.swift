@@ -21,6 +21,7 @@ struct AgentLibraryView: View {
             }
         }
         .tint(Brand.amber)
+        .background { ShellBackground() }
     }
     private func open(_ id: String?) {
         model.agents.currentChat = id
@@ -80,6 +81,8 @@ struct AgentProfilesView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background { ShellBackground() }
         .navigationTitle("Teammates")
         .searchable(text: $search, prompt: "Find a teammate")
         .toolbar { ToolbarItem(placement: .primaryAction) { Button("New Teammate", systemImage: "plus") { creating = true }.disabled(library.profilesUnavailable) } }
@@ -136,7 +139,10 @@ struct AgentProfileDetail: View {
                 } header: { Text("Saved Memories") } footer: { Text("Save preferences, facts, and working context this teammate should remember.") }
                 Section("Conversations") {
                     let linked = agents.tasks.filter { $0.profileId == profile.id }
-                    if linked.isEmpty { Text("No linked conversations yet.").foregroundStyle(.secondary) }
+                    if let error = agents.tasksError {
+                        Text(error).foregroundStyle(.orange)
+                        Button("Retry Conversations") { Task { await agents.refresh() } }
+                    } else if linked.isEmpty { Text("No linked conversations yet.").foregroundStyle(.secondary) }
                     ForEach(linked) { task in
                         Button { openChat(task.id) } label: {
                             HStack { Text(agents.title(of: task)).lineLimit(2); Spacer(); TaskStatusPill(task: task) }.foregroundStyle(.primary)
@@ -149,6 +155,8 @@ struct AgentProfileDetail: View {
                     }
                 } footer: { Text("Archiving prevents new conversations and routine runs. Existing conversations remain available.") }
             }
+            .scrollContentBackground(.hidden)
+            .background { ShellBackground() }
             .navigationTitle(profile.name).navigationBarTitleDisplayMode(.inline)
             .disabled(busy)
             .toolbar { ToolbarItem(placement: .primaryAction) { Button("Edit") { editing = true } } }
@@ -213,6 +221,8 @@ struct ProfileEditor: View {
                 }
                 if let error { Section { Text(error).foregroundStyle(.orange) } }
             }
+            .scrollContentBackground(.hidden)
+            .background { ShellBackground() }
             .navigationTitle(profile == nil ? "New Teammate" : "Edit Teammate")
             .navigationBarTitleDisplayMode(.inline)
             .disabled(busy)
@@ -261,6 +271,8 @@ struct MemoryEditor: View {
                 }
                 if let error { Text(error).foregroundStyle(.orange) }
             }
+            .scrollContentBackground(.hidden)
+            .background { ShellBackground() }
             .navigationTitle(memory == nil ? "New Memory" : "Edit Memory").navigationBarTitleDisplayMode(.inline)
             .disabled(busy)
             .toolbar {

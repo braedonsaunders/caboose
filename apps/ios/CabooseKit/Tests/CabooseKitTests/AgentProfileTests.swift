@@ -40,6 +40,14 @@ struct AgentProfileTests {
         #expect(AgentSchedule(kind: .interval, timeZone: "UTC", everyMs: 0, anchor: "2026-01-01T00:00:00Z").validationMessage != nil)
         #expect(AgentSchedule(timeZone: "UTC", active: .init(window: .init(start: "09:00", end: "09:00")), time: "02:00").validationMessage != nil)
     }
+    @Test func intervalBoundsMatchHost() {
+        for milliseconds in [60000, 300000, 3600000] {
+            #expect(AgentSchedule(kind: .interval, timeZone: "UTC", everyMs: milliseconds, anchor: "2026-10-28T13:00:00Z").validationMessage == nil)
+        }
+        for milliseconds in [59999, 9007199254740992] {
+            #expect(AgentSchedule(kind: .interval, timeZone: "UTC", everyMs: milliseconds, anchor: "2026-10-28T13:00:00Z").validationMessage != nil)
+        }
+    }
     @Test func dateRoundTripIsCanonicalMilliseconds() throws {
         let date = try #require(AgentSchedule.date("2026-10-28T09:00:00-04:00"))
         #expect(AgentSchedule.instant(date) == "2026-10-28T13:00:00.000Z")
