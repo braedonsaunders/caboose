@@ -18,9 +18,9 @@ Environment=QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 ExecStartPre=+/usr/bin/install -d -o caboose -g caboose -m 0700 /run/user/1000
 ExecStartPre=+/usr/bin/install -d -m 0755 /run/caboose
 ExecStartPre=+/usr/bin/install -o caboose -g caboose -m 0644 /dev/null /run/caboose/agent-display.env
-# Agents drive apps with X11 tools (xdotool, AT-SPI by X window), so the seat's apps run
-# on Xwayland alone. It plays no sound.
-ExecStart=/usr/local/bin/caboose-display --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --x11-only --no-audio --env-file /run/caboose/agent-display.env
+# Agents see and drive its apps, Wayland and X11 alike, through its control socket. It
+# plays no sound.
+ExecStart=/usr/local/bin/caboose-display --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio --env-file /run/caboose/agent-display.env
 # Start the seat's accessibility bus before any app, so every app on it joins that bus.
 ExecStartPost=-/bin/sh -c 'caboose-display-ready 60 14601 && set -a && . /run/caboose/agent-display.env && exec python3 /opt/caboose/a11y.py bus --display "$DISPLAY" --wait 30'
 Restart=on-failure

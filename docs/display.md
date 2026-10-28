@@ -71,11 +71,12 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 | Host relay | `/v1/display` | `/v1/display?seat=agent` |
 | Wayland socket | `wayland-caboose-0` | `wayland-caboose-agent` |
 | Xwayland | `:110` | `:101` |
-| Applications use | Wayland first, X11 through Xwayland second | Xwayland only (`--x11-only`) |
+| Applications use | Wayland first, X11 through Xwayland second | the same |
 | Sound | its own PulseAudio, Opus to the client | none (`--no-audio`) |
 | D-Bus session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus`, with its own notification endpoint |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Video socket | `$XDG_RUNTIME_DIR/caboose-video.sock` | `$XDG_RUNTIME_DIR/caboose-video-agent.sock` |
+| Control socket | `…/caboose-display/wayland-caboose-0/control.sock` | `…/caboose-display/wayland-caboose-agent/control.sock` |
 | Started | by the host at each wake | on demand, when an agent task or a watcher (the app's Agent space) needs it |
 
 - **Token.** At each wake the host writes a fresh token to `/run/caboose/display-token`
@@ -85,25 +86,27 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 - **Relay.** The host relays bytes between the client and the instance and never decodes
   them. In the container runtime both ports are published on host loopback only.
 - **Launch environment.** Once Wayland and Xwayland are ready, each instance writes the
-  environment its applications need (`WAYLAND_DISPLAY` unless `--x11-only`, `DISPLAY`,
-  `XAUTHORITY`, `XDG_RUNTIME_DIR`, toolkit backends, `PULSE_SERVER` when it plays sound,
-  the VA-API passthrough variables when the driver is installed) to its env file in sh
-  syntax.
+  environment its applications need (`WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`,
+  `XDG_RUNTIME_DIR`, toolkit backends, `CABOOSE_DISPLAY_CONTROL`, `PULSE_SERVER` when it
+  plays sound, the VA-API passthrough variables when the driver is installed) to its env
+  file in sh syntax.
 - **Per-instance state.** Each instance keeps its X authority (`Xauthority`), the
-  Xwayland shim that adds `-auth` (`bin/Xwayland`) and its PulseAudio socket
-  (`pulse/native`) under `$XDG_RUNTIME_DIR/caboose-display/<Wayland socket name>/`, so
-  the two never share them.
+  Xwayland shim that adds `-auth` (`bin/Xwayland`), its PulseAudio socket
+  (`pulse/native`) and its control socket (`control.sock`) under
+  `$XDG_RUNTIME_DIR/caboose-display/<Wayland socket name>/`, owner-only, so the two never
+  share them.
 - **Readiness.** `caboose-display-ready [TIMEOUT] [PORT]` exits 0 once the instance on
   `PORT` (default 14600) answers a `hello` made with the per-wake token, trying for
   `TIMEOUT` seconds (default 60).
-- **Why the agent seat is X11 only.** Agents drive applications with X11 tools (xdotool,
-  AT-SPI by X window, ImageMagick `import`), through caboose-agentd and
-  caboose-desktop-mcp. `--x11-only` makes the env file name `DISPLAY` and X11 toolkit
-  backends (`GDK_BACKEND=x11`, `QT_QPA_PLATFORM=xcb`, `MOZ_ENABLE_WAYLAND=0`,
-  `SDL_VIDEODRIVER=x11`, `ELECTRON_OZONE_PLATFORM_HINT=x11`) and no `WAYLAND_DISPLAY`, so
-  every application on the seat is reachable by those tools. The same tools serve the
-  owner's display through `/v1/screen/*`; there they reach X11 windows on Xwayland, and
-  native Wayland windows are not exposed to them.
+- **Control socket.** The computer's own tools see and act on a seat through its
+  control socket rather than through X: the window list (each window's process, geometry,
+  surface and focus, Wayland and X11 alike), the seat's pointer and keyboard, and pictures
+  of a window or the whole seat. The screen routes (`/v1/screen/*`) use it on the owner's
+  display and the agents' desktop tools on the agent seat, together with AT-SPI for the
+  windows' contents. The requests are in [architecture.md § Displays](architecture.md#displays);
+  the code is `compositor/src/control.rs`, and `guest/desktop-mcp/seat.py` is its client.
+  A seat nobody watches paces applications at one frame a second; `settle` lets them draw
+  before a picture is taken.
 
 ## Video, for every app
 

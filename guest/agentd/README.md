@@ -13,7 +13,7 @@ It is one file, `caboose-agentd.mjs`, on Node 22 with the official TypeScript SD
 
 | Command | What it does |
 | --- | --- |
-| `run <task dir>` | One task. Started detached (`setsid`) by the host as `caboose` with the agent seat's launch environment (`/run/caboose/agent-display.env`: Xwayland `DISPLAY=:101`, its `XAUTHORITY`, X11 toolkit backends) and the seat's D-Bus session bus `/run/user/1000/agent-bus`. |
+| `run <task dir>` | One task. Started detached (`setsid`) by the host as `caboose` with the agent seat's launch environment (`/run/caboose/agent-display.env`: its `WAYLAND_DISPLAY`, Xwayland `DISPLAY=:101` and `XAUTHORITY`, toolkit backends and control socket) and the seat's D-Bus session bus `/run/user/1000/agent-bus`. |
 | `install <spec>` | Prefetches the agent, starts it once to learn its sign-in methods, records it as installed. Prints `{ installed: { version }, signIn: [...] }`. |
 | `probe <spec>` | `initialize` only; records and prints the sign-in methods. |
 | `sign-in <spec>` | Runs one sign-in method on the owner's display (see below). |
@@ -94,11 +94,12 @@ turn number. Updates outside a turn (including the history an agent replays on
   `~/.local/share/caboose/agents/<id>/auth.json`.
 - **Session.** `session/new` with the task directory as `cwd` and the MCP server
   `caboose-desktop` (`node /opt/caboose/desktop-mcp.mjs`, see `guest/desktop-mcp`), so every
-  agent can drive GUI apps on the agent seat. Its environment carries the seat's X11
+  agent can drive GUI apps on the agent seat. Its environment carries the seat's launch
   environment from the runner's: `CABOOSE_AGENT_DISPLAY` (the runner's `DISPLAY`),
-  `XAUTHORITY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `GDK_BACKEND`,
-  `QT_QPA_PLATFORM`, `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER` and
-  `ELECTRON_OZONE_PLATFORM_HINT`. The host also snapshots installed catalog MCP commands into
+  `WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
+  `DBUS_SESSION_BUS_ADDRESS`, `GDK_BACKEND`, `QT_QPA_PLATFORM`, `MOZ_ENABLE_WAYLAND`,
+  `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`, `GALLIUM_DRIVER`, `LIBVA_DRIVER_NAME`,
+  `GST_VA_ALL_DRIVERS` and `CABOOSE_VIDEO_SOCKET`. The host also snapshots installed catalog MCP commands into
   `task.json` and the runner passes them, with `caboose-desktop`, to new, load and resume
   requests. `craftMcp: false` on task creation disables them for that
   task, including replies. See the Agents section of the architecture for the app list.

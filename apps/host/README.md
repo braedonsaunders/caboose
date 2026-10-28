@@ -234,10 +234,10 @@ token). Streaming requests wake the computer and hold a lease until the transfer
 The route, precondition, Trash and change-feed contract is in `docs/architecture.md` § Files.
 
 `/v1/screen/elements`, `act`, `type` and `keys` (`src/screen.ts`, `docs/architecture.md`
-§ Screen) read and drive the owner's display. They run `/opt/caboose/a11y.py`
-([`guest/desktop-mcp`](../../guest/desktop-mcp/README.md)) and `xdotool` as `caboose` with
-the owner display's launch environment, on its Xwayland. They reach X11 windows; native
-Wayland windows on the owner's display are not exposed to them.
+§ Screen) read and drive the owner's display, Wayland and X11 applications alike. They run
+`/opt/caboose/a11y.py` and `/opt/caboose/seat.py`
+([`guest/desktop-mcp`](../../guest/desktop-mcp/README.md)) as `caboose` with the owner
+display's launch environment, which names its control socket.
 
 ## Media handoff
 

@@ -248,8 +248,10 @@ function displayEnv(vars) {
   return env
 }
 
-/** The agent seat's X11 environment the runner was started with, as the desktop tools need it. */
-const SEAT_ENV = ['XAUTHORITY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'GDK_BACKEND', 'QT_QPA_PLATFORM', 'MOZ_ENABLE_WAYLAND', 'SDL_VIDEODRIVER', 'ELECTRON_OZONE_PLATFORM_HINT']
+/** The agent seat's launch environment the runner was started with, as the desktop tools need it. */
+const SEAT_ENV = ['WAYLAND_DISPLAY', 'CABOOSE_DISPLAY_CONTROL', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'GDK_BACKEND',
+  'QT_QPA_PLATFORM', 'MOZ_ENABLE_WAYLAND', 'SDL_VIDEODRIVER', 'ELECTRON_OZONE_PLATFORM_HINT', 'GALLIUM_DRIVER', 'LIBVA_DRIVER_NAME',
+  'GST_VA_ALL_DRIVERS', 'CABOOSE_VIDEO_SOCKET']
 
 function seatEnv() {
   return [

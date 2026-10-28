@@ -194,6 +194,7 @@ pub struct State {
     /// Windows in the order they were focused, most recent last.
     pub focus_history: Vec<u64>,
     pub videos: crate::video::server::Videos,
+    pub control: crate::control::Control,
     pub clipboard: crate::clipboard::Clipboard,
     /// The compositor's PulseAudio, when it runs.
     pub audio: Option<crate::audio::Audio>,

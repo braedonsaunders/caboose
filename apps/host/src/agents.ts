@@ -114,7 +114,7 @@ const DEFAULT_IDLE_MS = 10 * 60_000
 const LEGACY_AGENTS: Readonly<Record<string, string>> = { claude: 'claude-acp', codex: 'codex-acp' }
 
 const LAUNCH = [
-  // The seat's launch environment (Xwayland :101, its cookie, X11 toolkit backends), when it is up.
+  // The seat's launch environment (its Wayland socket, Xwayland :101 and cookie, control socket), when it is up.
   `if [ -r ${AGENT_DISPLAY_ENV_PATH} ]; then set -a; . ${AGENT_DISPLAY_ENV_PATH}; set +a; fi`,
   'export HOME=/home/caboose DISPLAY=:101 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/agent-bus PATH=/home/caboose/.local/bin:/usr/local/bin:/usr/bin:/bin CABOOSE_TASK_DIR="$PWD"',
   `[ -f ${AGENTD} ] || { echo "${RUNNER_MISSING}" >&2; exit 1; }`,

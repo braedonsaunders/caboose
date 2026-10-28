@@ -2,13 +2,16 @@
 
 An MCP server (stdio, newline-delimited JSON-RPC 2.0) that lets an agent see and drive GUI
 apps on the agent seat without touching the owner's display. The agent seat is its own
-Caboose Display instance whose apps run on Xwayland `:101`. Beside the server, `a11y.py`
-reads and acts on a display's accessibility tree; the desktop tools use it on the agent seat,
-and caboose-host's `/v1/screen` routes use it on the owner's display (Xwayland `:110`).
+Caboose Display instance. Beside the server are two helpers that caboose-host's `/v1/screen`
+routes use on the owner's display too:
 
-Both work on X11 windows. On the owner's display, apps prefer Wayland, and native Wayland
-windows are not exposed to `a11y.py` or the screen routes. The agent seat runs its apps on
-Xwayland alone, so every window there is reachable.
+- `a11y.py` reads and acts on a seat's focused window through its accessibility tree;
+- `seat.py` is the client of a seat's control socket (`CABOOSE_DISPLAY_CONTROL`): the
+  window list, the seat's own pointer and keyboard, and pictures.
+
+Wayland and X11 (Xwayland) applications are read and driven alike: windows, focus and
+processes come from the compositor, contents from AT-SPI, and input goes through the
+seat, never through X.
 
 ## Tools
 
@@ -23,29 +26,53 @@ control by id rather than by guessed coordinates.
 | `click_element` | `id` | press it: its AT-SPI action, else a click at its centre |
 | `set_text` | `id`, `text` | replace an editable element's text |
 | `read_text` | — | the focused window's readable text, page text included |
-| `screenshot` | `window?` | PNG of the display or one window |
-| `list_windows`, `focus` | `window` | windows with geometry; raise one |
-| `click`, `drag`, `type`, `key`, `scroll` | coordinates, text, keys | pointer and keyboard by coordinates (xdotool) |
+| `screenshot` | `window?` | PNG of the seat or one window |
+| `list_windows`, `focus` | `window` | windows bottom to top with id, kind, title, app, geometry and focus; give one the keyboard |
+| `click`, `drag`, `type`, `key`, `scroll` | coordinates, text, keys | the seat's pointer and keyboard; `click` takes `button` 1–3 and `count` 1–3, `scroll` wheel clicks |
 | `launch` | `command` | start an app on the agent seat with the accessibility environment below |
 
 A failure comes back as a tool error with a sentence the model can act on; an id that no
 longer resolves says to list the window again.
 
 caboose-agentd passes the server to every agent in ACP `session/new` (and on resume and
-load) as `caboose-desktop`, with the seat's X11 environment: `CABOOSE_AGENT_DISPLAY` (the
-display, default `:101`), `XAUTHORITY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` and the
-toolkit backends from `/run/caboose/agent-display.env`. The agent runner answers the agent's
-permission requests itself, so asking before acting needs nothing from this server.
+load) as `caboose-desktop`, with the seat's launch environment from
+`/run/caboose/agent-display.env`: `CABOOSE_AGENT_DISPLAY` (its X display, default `:101`),
+`WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
+`DBUS_SESSION_BUS_ADDRESS`, the toolkit backends and the video passthrough variables. The
+agent runner answers the agent's permission requests itself, so asking before acting needs
+nothing from this server.
 
-`screenshot` without a window composites each viewable window at its position, bottom to
-top, onto a dark background, because Xwayland runs rootless and its root window has no
-picture of its own. The seat's windows are viewable whether or not anyone is watching it,
-so every tool works with no client attached.
+Coordinates are the seat's logical pixels: the screenshot's pixels and the elements'
+bounds. `screenshot` without a window is every window composed bottom to top over the
+seat's displays on a dark background, rendered by the compositor. A seat nobody watches
+lets applications draw once a second, so `seat.py` asks the compositor to let them draw
+(`settle`) before it takes a picture. Every tool works with no client attached.
+
+## `seat.py`
+
+Python 3, standard library only. It talks to the control socket named by
+`CABOOSE_DISPLAY_CONTROL` (in each seat's launch environment) and prints one JSON object:
+
+```sh
+seat.py windows                          # {"windows": [...], "focused": ID, "bounds": [x, y, w, h]}
+seat.py click X Y [--button left|middle|right] [--count 1|2|3]
+seat.py drag X1 Y1 X2 Y2
+seat.py scroll X Y DX DY                 # wheel clicks; positive DY scrolls down
+seat.py key -- COMBO...                  # ctrl+s, alt+F4, shift+Tab, Return
+seat.py type -- TEXT
+seat.py focus ID
+seat.py screenshot [--window ID] --out FILE.png
+```
+
+A refusal (no window at that position, an unknown key) exits 1 with `{"error": …}`; bad
+arguments exit 2. As a module it is `Seat`, plus `pids_on_other_seats`, which `a11y.py` uses
+to keep to one seat. The request format is in
+[`docs/architecture.md` § Displays](../../docs/architecture.md#displays).
 
 ## `a11y.py`
 
 Python 3 with the AT-SPI bindings from `python3-pyatspi`, and libX11 through ctypes. It runs
-as user `caboose` and always prints one JSON object:
+as user `caboose` with the seat's launch environment and always prints one JSON object:
 
 ```sh
 a11y.py elements --display :101
@@ -62,17 +89,18 @@ a11y.py bus      --display :101 [--wait SECONDS]
   tree (reading) order. Roles are AT-SPI's names (`button`, `entry`, `link`, `check box`,
   `page tab`, …); states are drawn from `focused`, `checked`, `pressed`, `selected`,
   `expanded`, `collapsed`, `editable`, `mixed`, `required`, `invalid`, `read-only`,
-  `multi-line`, `visited` and `disabled`. Bounds are screen pixels on that display. An
+  `multi-line`, `visited` and `disabled`. Bounds are in the seat's logical pixels. An
   unnamed field takes the name of its label.
 - `find`: the same shape, for every showing element of the focused window whose name
   contains the query. A role matches when it equals the given role or contains it as a word,
   so `--role button` matches `button`, `toggle button` and `radio button`.
 - `act`: `{ "ok": true }`. `press` performs the element's own action (`click`, `press`,
   `activate`, `jump`, `toggle`, `open`); only an element with none is clicked at its centre
-  with xdotool. `focus` uses `Component.grab_focus`. `set-text` uses `EditableText`; a field
-  without it (Chromium's and Electron's) is focused through AT-SPI and typed into with
-  `xdotool --window`, which sends the keys to that one X window. An unknown, stale or
-  vanished id exits 3 with `{ "ok": false, "error": "element not found" }`.
+  with the seat's pointer. `focus` uses `Component.grab_focus`. `set-text` uses
+  `EditableText`; for a field without it (Chromium's and Electron's), its window gets the
+  keyboard, the field is focused through AT-SPI, and the seat's keyboard selects all,
+  deletes and types the text. An unknown, stale or vanished id exits 3 with
+  `{ "ok": false, "error": "element not found" }`.
 - `text`: `{ "window": {...}, "text": "..." }`: labels, field contents and documents, with
   each embedded object (a link in a paragraph, a paragraph in a page) expanded where it sits;
   at most 20000 characters, with `"truncated": true` when cut.
@@ -84,62 +112,68 @@ an application with windows on two displays), `note` says so, and the agent fall
 bad arguments exit 2. Walks are bounded (8000 nodes, depth 48, 8 seconds). Values that start
 with a dash are accepted (`--text -5` or `--text=-5`).
 
-**Element ids** look like `600007-1342-1.0.3.0.1-edc227`: the X window the element was
-listed from, the application's pid, the child-index path from the application, and a hash of
-the element's role and name. An id resolves only while that window is still on the display,
-owned by that pid, and the element at that path still has that role and name, so a stale id
-is rejected rather than pressing whatever now sits at that path. Treat ids as opaque.
+**Element ids** look like `2-1342-1.0.3.0.1-edc227`: the window the element was listed from
+(the seat's window id), the application's pid, the child-index path from the application,
+and a hash of the element's role and name. An id resolves only while that window is still
+on the seat, owned by that pid, and the element at that path still has that role and name,
+so a stale id is rejected rather than pressing whatever now sits at that path. Treat ids as
+opaque.
+
+### Windows and positions
+
+On a Caboose Display seat the helper takes the windows from the control socket: the focused
+window is the one with the keyboard (the window an open menu belongs to, when a menu has
+it), and its process is what the compositor knows of its client. The application's
+top-level accessible is matched to the window by title, size and activation. Element
+positions come from AT-SPI in window coordinates and are placed at the window's root
+surface for a Wayland window (client-side shadows included, as toolkits count them), and in
+screen coordinates for an X11 window, whose root window is the seat's logical space. A
+Wayland menu or popup is placed at the popup surface of the same size.
+
+Run with a plain X display and no control socket, the helper reads that display through X
+instead (`_NET_ACTIVE_WINDOW`, `_NET_WM_PID`, xdotool), as the first part of the Docker
+check does.
 
 ### Which accessibility bus
 
-Callers run the helper as `caboose` with the display's launch environment (`DISPLAY`,
-`XAUTHORITY`): caboose-host from its root exec channel with
-`runuser -u caboose -- env <owner launch environment> python3 /opt/caboose/a11y.py …`, the
-MCP server with the seat's environment. The helper finds the bus itself, trying in order:
+Callers run the helper as `caboose` with the seat's launch environment: caboose-host from
+its root exec channel with `runuser -u caboose -- env <owner launch environment> python3
+/opt/caboose/a11y.py …`, the MCP server with the agent seat's. On a seat the helper uses,
+in order:
 
 1. `AT_SPI_BUS_ADDRESS`, if the caller set it (then nothing else);
-2. the `AT_SPI_BUS` property on the display's root window, which at-spi-bus-launcher sets
-   when the session bus that started it knows the display; every toolkit (libatspi,
-   atk-bridge, GTK 4, Qt, Chromium) reads it before its session bus, so it is what makes all
-   apps on a display share one bus;
-3. the a11y bus of a session bus started for that display: one recorded as
-   `DBUS_SESSION_BUS_ADDRESS` on the root window, or D-Bus's X11 autolaunch bus for this
-   user;
+2. the `AT_SPI_BUS` property on the seat's Xwayland root window;
+3. the a11y bus of a session bus recorded on the X display, or D-Bus's X11 autolaunch bus;
 4. the a11y bus of `$DBUS_SESSION_BUS_ADDRESS`, then of `/run/user/<uid>/bus`.
 
 libatspi binds one bus per process, so when the focused window's application is not on the
 first bus found, the helper runs itself again against the next one.
 
-`a11y.py bus --display :N --wait 30` makes step 2 hold. If the display has no `AT_SPI_BUS`,
-it asks a session bus started for the display for its a11y bus, and failing that starts one
-with `dbus-launch --exit-with-x11` (it ends with the X server), whose at-spi-bus-launcher
-then publishes `AT_SPI_BUS`. The computer runs it as each display becomes ready, before any
-app: `ExecStartPost=` in `caboose-display.service` and `caboose-display-agent.service`, and
-`caboose-session ready` and `start-agent` in the container. So the owner's display and the
-agent seat each get their own bus. It is safe to repeat.
+`a11y.py bus --display :N --wait 30` sets this up as each seat becomes ready, before any app
+(`ExecStartPost=` in `caboose-display.service` and `caboose-display-agent.service`, and
+`caboose-session ready` and `start-agent` in the container). On a seat it gives the seat's
+session bus the seat's `DISPLAY`, `XAUTHORITY` and `XDG_RUNTIME_DIR` for the services it
+starts (and the systemd user manager, when the session bus is systemd's), so
+at-spi-bus-launcher names its socket after the seat's display and the two seats never share
+one; asks the session bus for its accessibility bus; and publishes that address as
+`AT_SPI_BUS` on the seat's Xwayland. Wayland applications find the bus through the session
+bus and X11 applications through `AT_SPI_BUS`, so all of a seat's applications share it. On a
+plain X display it publishes the bus of a session bus started for that display, starting one
+with `dbus-launch --exit-with-x11` if need be. It is safe to repeat.
 
-### Display isolation
+### Seat isolation
 
-Displays can still share a bus and its registry (an app may have joined a session bus
-before `AT_SPI_BUS` existed). So the helper keeps to applications on the requested display
-by process:
+Seats may share a bus registry (an app can join a bus before the seat's is published). So
+the helper keeps to applications on the requested seat by process: the focused window's
+application is the AT-SPI application with that window's pid, and that pid must own no
+window on any other Caboose Display seat of this user (each seat's control socket under
+`$XDG_RUNTIME_DIR/caboose-display/*/` is asked for its windows). On a plain X display the
+same rule holds across the local X displays the helper can open. A process with windows on
+two seats is not read at all, and `act` re-checks all of this, and that the id's window is
+still on the seat, before it touches anything.
 
-- the focused window is `_NET_ACTIVE_WINDOW` on that display, else its X input focus, else the
-  topmost mapped client;
-- its application is the AT-SPI application whose pid is that window's `_NET_WM_PID`;
-- that pid must own no top-level window, mapped or not, on any other local X display: every
-  display with a socket in `/tmp/.X11-unix` or an abstract one in `/proc/net/unix` (a server
-  can run with only the latter). Each Caboose Display instance has its own X cookie, so to
-  open another display the helper tries the caller's `XAUTHORITY` and then each instance's
-  `$XDG_RUNTIME_DIR/caboose-display/<instance>/Xauthority`. A process with windows on two
-  displays is not read at all;
-- `act` re-checks all of this, and that the id's window is still on the display, before it
-  touches anything.
-
-An agent therefore cannot list, read or press the owner's X11 windows, and an owner
-element's id passed with `--display :101` is "element not found". A display the helper
-cannot open with any of those authorities is not scanned; in Caboose both displays belong to
-`caboose`, whose runtime directory holds both cookies.
+An agent therefore cannot list, read or press the owner's windows, and an owner element's
+id passed on the agent seat is "element not found".
 
 ### Accessibility switched on
 
@@ -157,28 +191,31 @@ Apps build an accessibility tree only when asked. The computer asks them through
   shows its frame but not the page;
 - `~/.vscode/argv.json` `"force-renderer-accessibility": true` for VS Code.
 
-`press` on an element without an action whose window is not shown, and `set-text` on a field
+`press` on an element without an action that is not on screen, and `set-text` on a field
 that cannot take focus, say so instead of pretending.
 
 ## Install
 
 `install.sh` (run as root by the image and container builds, after Node and the apps):
 
-- copies `caboose-desktop-mcp.mjs` to `/opt/caboose/desktop-mcp.mjs` and `a11y.py` to
-  `/opt/caboose/a11y.py`;
+- copies `caboose-desktop-mcp.mjs` to `/opt/caboose/desktop-mcp.mjs`, and `a11y.py` and
+  `seat.py` to `/opt/caboose/`;
 - installs the Chromium flags file, the GSettings override and VS Code's `argv.json` (merged
   into an existing one, owned by `caboose`);
 - registers nothing per agent: caboose-agentd hands the server to each ACP agent.
 
 **Runtime:** Node (no packages), python3 with `python3-pyatspi` and `python3-gi`,
-at-spi2-core, dbus-x11 (`dbus-launch`), `xdotool`, `wmctrl`, `xprop`, `xwininfo` and
-ImageMagick (`import`, `convert`), all in both images. `CABOOSE_AGENT_DISPLAY` sets the
-display (default `:101`).
+at-spi2-core, and `xprop` (to publish `AT_SPI_BUS`), all in both images; on a plain X
+display, also dbus-x11 (`dbus-launch`) and `xdotool`. `CABOOSE_AGENT_DISPLAY` sets the X
+display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
 
 ## Test
 
 - `node selftest.mjs` checks the protocol, the tool list and its order, schemas, argument
-  validation, and that helper failures come back as tool errors, without an X server.
+  validation, and that helper failures come back as tool errors, without a display.
+- `python3 -m unittest test_seat.py` checks `seat.py` against a stand-in control socket:
+  single-line requests and text escapes, refusals, pictures read in pieces after `settle`,
+  and other seats' processes.
 - `./check-a11y.sh [--rmi]` exercises the helper and the server in real X sessions under
   Docker on any amd64 or arm64 machine; no KVM. It builds the image `caboose-a11y-check` from
   `check/Dockerfile` (Debian 13 with Xvfb, Xwayland, D-Bus, at-spi2-core, Mousepad, Chromium,
@@ -202,18 +239,24 @@ display (default `:101`).
     and a process with windows on both displays is not read.
   - **Stale ids**: a changed fingerprint, an unknown path, a malformed id and an id from a
     closed window are rejected with exit 3, and the replacement window is untouched.
-  - **Both Caboose Display instances as the computer runs them**: the owner's display
-    (Xwayland `:110`) and the agent seat (`--x11-only`, Xwayland `:101`), each with its own
-    session bus. Both write their launch environment; the seat's names no Wayland socket and
-    sets `GDK_BACKEND=x11`; each has its own X authority; `bus` gives each display its own
-    accessibility bus and `AT_SPI_BUS`. With each seat's launch environment, an owner app on
-    Xwayland is accessible, an agent app is found and pressed with nobody watching, the
-    agent seat lists no owner window, and the owner's window is untouched.
-  - **Coordinate tools on the agent seat with nobody watching**, through
-    `caboose-desktop-mcp` over stdio: the dialog is viewable with no client attached;
-    `click`, `key` and `type` fill its field; `click` presses Save; `screenshot` shows the
-    new window rather than a blank seat.
-  - **Chromium on the agent seat**, configured only by the installed flags file: a link, a
-    button and a field inside a local page are listed; `set-text` (twice, replacing) and
-    `press` run the page's script; `text` returns the page text and the followed link; and
-    the server's `find` and `read_text` work against the page.
+  - **Both Caboose Display instances as the computer runs them**, each on a session bus of
+    its own: each writes its launch environment with its own control socket and X
+    authority; `bus` gives each seat the accessibility bus of its session bus, a different
+    one per seat, published as `AT_SPI_BUS` on its Xwayland.
+  - **The owner's display**, through the helpers as the screen routes run them: a GTK dialog
+    running as a native Wayland window is listed with its Save and Cancel buttons, field
+    and check box, inside the window's bounds; `set-text`, `press` (toggling the check box
+    and pressing Save) work; the seat's keyboard (`seat.py key` and `type`) reaches the
+    focused Wayland field; the same dialog as an X11 window on Xwayland is found and
+    pressed.
+  - **The agent seat with nobody watching**: an agent app is found and pressed, the seat
+    lists no owner window, an owner element's id is rejected with exit 3, and the owner's
+    window is untouched.
+  - **Coordinate tools**, through `caboose-desktop-mcp` over stdio: `list_windows` shows the
+    dialog; `click`, `key` and `type` at the elements' bounds fill its field; `click`
+    presses Save; `screenshot` shows the new window rather than a blank seat.
+  - **Chromium as a native Wayland client on the agent seat**, configured only by the
+    installed flags file: a link, a button and a field inside a local page are listed;
+    `set-text` (twice, replacing) and `press` run the page's script; a `click` at the
+    link's bounds follows it; `text` returns the page text and the followed link; and the
+    server's `find` and `read_text` work against the page.

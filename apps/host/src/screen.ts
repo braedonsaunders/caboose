@@ -4,14 +4,17 @@ import { ownerEnv, x11Display } from './display.js'
 /**
  * The owner's display through its accessibility tree, for the iPhone's on-device agent and
  * the web console: list the focused window's controls, act on one, type, press a shortcut.
- * Everything runs as `caboose` with the owner display's launch environment, on its X display
- * (Caboose Display's Xwayland), through /opt/caboose/a11y.py (see
- * guest/desktop-mcp) and xdotool. See docs/architecture.md § Screen.
+ * Wayland and X11 applications alike: everything runs as `caboose` with the owner display's
+ * launch environment, through /opt/caboose/a11y.py and /opt/caboose/seat.py (see
+ * guest/desktop-mcp), which reach the seat through Caboose Display's control socket. See
+ * docs/architecture.md § Screen.
  */
 const A11Y = '/opt/caboose/a11y.py'
+/** The seat's pointer, keyboard and windows, through Caboose Display's control socket. */
+const SEAT = '/opt/caboose/seat.py'
 const ELEMENT_ID = /^[\x21-\x7e]{1,200}$/
 const ACTIONS = new Set(['press', 'focus', 'set-text'])
-/** One or more xdotool key combinations: `ctrl+s`, `alt+f4`, `ctrl+shift+t Return`. */
+/** One or more key combinations: `ctrl+s`, `alt+f4`, `ctrl+shift+t Return`. */
 const KEYS = /^[A-Za-z0-9_]+(\+[A-Za-z0-9_]+)*( [A-Za-z0-9_]+(\+[A-Za-z0-9_]+)*){0,9}$/
 const MAX_TEXT = 10_000
 
@@ -74,20 +77,20 @@ export async function screenAct(guest: AgentGuest | undefined, input: Record<str
 
 export async function screenType(guest: AgentGuest | undefined, input: Record<string, unknown>): Promise<{ ok: true }> {
   if (typeof input.text !== 'string' || !input.text || input.text.length > MAX_TEXT) throw new AgentInputError('text must be 1–10000 characters')
-  const { code, out } = await onDisplay(guest, () => ['/usr/bin/xdotool', 'type', '--clearmodifiers', '--delay', '4', '--', input.text as string])
-  if (code !== 0) throw new Error(`xdotool type failed (${code}): ${out.slice(0, 300)}`)
+  const { code, out } = await onDisplay(guest, () => ['/usr/bin/python3', SEAT, 'type', '--', input.text as string])
+  if (code !== 0) throw new Error(`seat.py type failed (${code}): ${out.slice(0, 300)}`)
   return { ok: true }
 }
 
 export async function screenKeys(guest: AgentGuest | undefined, input: Record<string, unknown>): Promise<{ ok: true }> {
   const keys = typeof input.keys === 'string' ? input.keys.trim() : ''
   if (!KEYS.test(keys)) throw new AgentInputError('keys must be key combinations such as "ctrl+s" or "ctrl+shift+t", separated by spaces')
-  const { code, out } = await onDisplay(guest, () => ['/usr/bin/xdotool', 'key', '--clearmodifiers', ...keys.split(' ').map(normalizeKey)])
-  if (code !== 0) throw new Error(`xdotool key failed (${code}): ${out.slice(0, 300)}`)
+  const { code, out } = await onDisplay(guest, () => ['/usr/bin/python3', SEAT, 'key', '--', ...keys.split(' ').map(normalizeKey)])
+  if (code !== 0) throw new Error(`seat.py key failed (${code}): ${out.slice(0, 300)}`)
   return { ok: true }
 }
 
-/** Common names to X keysyms: `enter` → `Return`, `esc` → `Escape`, `cmd`/`win` → `super`. */
+/** Common names to keysym names: `enter` → `Return`, `esc` → `Escape`, `cmd`/`win` → `super`. */
 export function normalizeKey(combo: string): string {
   const names: Record<string, string> = {
     enter: 'Return', return: 'Return', esc: 'Escape', escape: 'Escape', tab: 'Tab', space: 'space', backspace: 'BackSpace',

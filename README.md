@@ -123,8 +123,9 @@ lived and worked. Here it's the computer that comes along wherever your phone go
   It encodes with NVENC where the host has an NVIDIA GPU, otherwise with x264.
 - **Two seats.** The owner's display and the agent seat are separate Caboose Display
   instances, each with its own Wayland and X11 displays and its own D-Bus session. The
-  agent seat runs its apps on Xwayland so the agents' X11 tools can drive them, and the
-  app watches it, without sound, in the Agent space.
+  phone's on-device agent and the computer's agents read and drive them through the
+  accessibility tree and each seat's control socket, Wayland and X11 apps alike, and the
+  app watches the agent seat, without sound, in the Agent space.
 
 The full contract between app, host and guest is [docs/architecture.md](docs/architecture.md).
 

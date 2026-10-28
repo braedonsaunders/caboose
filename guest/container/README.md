@@ -83,16 +83,16 @@ owner runs as `caboose`, and every command is safe to repeat.
 | `start-files` | Starts the file service as `caboose` and waits until port 14700 listens. |
 | `start` | Starts CUPS and configures the `iPhone` queue; starts the owner's session bus (`/run/user/1000/bus`), its notification monitor and endpoint, and the owner's Caboose Display: port 14600, Wayland socket `wayland-caboose-0`, Xwayland `:110`, its own PulseAudio, launch environment in `/run/caboose/display.env`. |
 | `ready` | Waits up to 120 s for the owner's display to answer a hello with the host's token, then starts its accessibility bus. |
-| `start-agent` | Starts the agent seat: its own session bus (`/run/user/1000/agent-bus`) and notification endpoint, and a Caboose Display on port 14601 with Wayland socket `wayland-caboose-agent`, Xwayland `:101`, `--x11-only --no-audio`, launch environment in `/run/caboose/agent-display.env`. Waits until it is ready, then starts its accessibility bus. |
+| `start-agent` | Starts the agent seat: its own session bus (`/run/user/1000/agent-bus`) and notification endpoint, and a Caboose Display on port 14601 with Wayland socket `wayland-caboose-agent`, Xwayland `:101`, `--no-audio`, launch environment in `/run/caboose/agent-display.env`. Waits until it is ready, then starts its accessibility bus. |
 
 Both displays check the token the host writes to `/run/caboose/display-token` before
 `start`; the host keeps it while the container is paused and writes a new one when the
 container is created or restarted.
 
-Apps launched on the owner's display prefer Wayland and fall back to X11 through Xwayland; they play sound through the `PULSE_SERVER` in the display's launch
-environment. On the agent seat apps run on Xwayland alone, so the agents' X11 tools can
-drive them. Each display's own accessibility bus keeps the desktop tools and `/v1/screen`
-reading one display at a time (see [`guest/desktop-mcp`](../desktop-mcp/README.md)).
+Apps launched on either seat prefer Wayland and fall back to X11 through Xwayland; on the
+owner's display they play sound through the `PULSE_SERVER` in its launch environment. Each
+seat's own accessibility bus and control socket keep the desktop tools and `/v1/screen`
+reading and driving one seat at a time (see [`guest/desktop-mcp`](../desktop-mcp/README.md)).
 
 The displays and notification processes log to `/home/caboose/.cache/<name>.log`
 (`caboose-display.log`, `caboose-display-agent.log`, …).

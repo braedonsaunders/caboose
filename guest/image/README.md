@@ -77,11 +77,11 @@ it (see [Updating a running computer](#updating-a-running-computer)).
   waits until an instance answers a hello made with it. The owner's display runs its own
   PulseAudio, and its launch environment gives apps `PULSE_SERVER`, the Wayland socket,
   Xwayland's `DISPLAY` and `XAUTHORITY`, and toolkit hints that prefer Wayland and fall back
-  to X11. The agent seat runs `--x11-only --no-audio`: its apps run on Xwayland alone so
-  agents' X11 tools can drive them, it plays no sound, and it has its own D-Bus session bus
-  (`/run/user/1000/agent-bus`). Each instance keeps its X authority, Xwayland shim and
-  PulseAudio socket under `/run/user/1000/caboose-display/<wayland socket>/`. As each display
-  becomes ready, its unit starts that display's accessibility bus (`a11y.py bus`).
+  to X11. The agent seat runs `--no-audio`: its apps run the same way, it plays no sound, and
+  it has its own D-Bus session bus (`/run/user/1000/agent-bus`). Each instance keeps its X
+  authority, Xwayland shim, PulseAudio socket and control socket under
+  `/run/user/1000/caboose-display/<wayland socket>/`. As each display becomes ready, its
+  unit starts that seat's accessibility bus (`a11y.py bus`).
 - **Video passthrough.** The Caboose VA-API driver ([`guest/vaapi`](../vaapi/README.md)) in
   `/usr/lib/x86_64-linux-gnu/dri/caboose_drv_video.so`. The image loads the `udmabuf` module
   at boot and gives `/dev/udmabuf` to the `caboose` group for the driver's decode surfaces; on

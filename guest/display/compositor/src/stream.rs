@@ -87,7 +87,7 @@ pub struct TilesDone {
 }
 
 /// An RGB rectangle as a PNG, compressed for speed.
-fn png(w: u32, h: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn png(w: u32, h: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(rgb.len() / 4 + 64);
     let mut encoder = png::Encoder::new(&mut out, w, h);
     encoder.set_color(png::ColorType::Rgb);

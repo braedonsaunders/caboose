@@ -75,9 +75,9 @@ start_agent() {
   local bus="$XDG_RUNTIME_DIR/agent-bus"
   session_bus "$bus"
   notification_endpoint caboose-agent-notification-daemon "$bus" /opt/caboose/notifications/daemon.py
-  # Agents drive apps with X11 tools, so the seat's apps run on Xwayland alone; no sound.
+  # Agents see and drive its apps through its control socket; it plays no sound.
   start_display caboose-display-agent 14601 "$bus" /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/caboose-video-agent.sock" \
-    --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --x11-only --no-audio
+    --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio
 }
 
 start_printing() {
