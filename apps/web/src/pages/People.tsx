@@ -133,7 +133,7 @@ export function People({ client, me, onUnauthorized }: { client: CabooseClient; 
         />
 
         {!tenantId ? (
-          <EmptyState icon={<Users className="size-6" aria-hidden />} title="No household or team yet" description="The operator makes them under Tenants." />
+          <EmptyState icon={<Users className="size-6" aria-hidden />} title="No household or team yet" description={me.setupRequired ? "Use Complete setup above to create your household and person and link your existing computer." : "The operator makes them under Tenants."} />
         ) : null}
 
         {link ? (

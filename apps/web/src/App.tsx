@@ -156,7 +156,7 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
         <Computer key={route.id} client={client} computers={computers} id={route.id} host={host} me={me} tab={route.tab} onUnauthorized={onSignOut} />
       ) : null}
       {route.page === 'people' ? <People client={client} me={me} onUnauthorized={onSignOut} /> : null}
-      {route.page === 'tenants' && operator ? <Tenants client={client} onChanged={refreshMe} onUnauthorized={onSignOut} /> : null}
+      {route.page === 'tenants' && operator ? <Tenants setupRequired={me.setupRequired} client={client} onChanged={refreshMe} onUnauthorized={onSignOut} /> : null}
       {route.page === 'host' && operator ? <Host host={host} client={client} onUnauthorized={onSignOut} /> : null}
     </AppShell>
   )

@@ -14,7 +14,7 @@ import { quotaDraft, quotasFromDraft, type QuotaDraft } from '../tenants.js'
  * The operator's view of every household or team on the host: what its computers are given
  * and use against its quotas. A personal host has one tenant with no limits.
  */
-export function Tenants({ client, onChanged, onUnauthorized }: { client: CabooseClient; onChanged: () => Promise<void>; onUnauthorized: () => void }) {
+export function Tenants({ client, onChanged, onUnauthorized, setupRequired = false }: { setupRequired?: boolean; client: CabooseClient; onChanged: () => Promise<void>; onUnauthorized: () => void }) {
   const [tenants, setTenants] = React.useState<Tenant[] | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [editing, setEditing] = React.useState<Tenant | 'new' | null>(null)
@@ -33,7 +33,7 @@ export function Tenants({ client, onChanged, onUnauthorized }: { client: Caboose
   async function remove(tenant: Tenant) {
     if (!await confirmDialog({
       title: `Delete ${tenant.name}?`,
-      message: 'Its administrators lose access to it. Their accounts stay.',
+      message: 'Its people records are removed and administrators lose access to this tenant. Their login accounts stay. Computers must be moved or deleted first.',
       confirmLabel: 'Delete', tone: 'danger',
     })) return
     try {
@@ -53,7 +53,7 @@ export function Tenants({ client, onChanged, onUnauthorized }: { client: Caboose
         <PageHeader
           title="Tenants"
           description="Each household or team has its own computers and administrators, and quotas on what its computers are given between them. Quotas are checked when a computer is made, resized or woken."
-          actions={<Button onClick={() => setEditing('new')}><Plus className="size-4" aria-hidden />New tenant</Button>}
+          actions={<Button disabled={setupRequired} title={setupRequired ? 'Complete host setup first.' : undefined} onClick={() => setEditing('new')}><Plus className="size-4" aria-hidden />New tenant</Button>}
         />
         {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
         <DashboardPanel title="All tenants" icon={<Building2 className="size-4" aria-hidden />}>
