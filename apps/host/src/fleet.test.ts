@@ -98,16 +98,24 @@ it('lists, makes and serves several computers, each through its own routes', asy
 it('signs a phone in to one computer only, and signing it out closes what it has open', async () => {
   const host = await startHost()
   const kids = await (await host.call('/v1/computers', { method: 'POST', body: { name: 'Kids' } })).json()
-  expect((await host.call(`/v1/computers/${kids.id}/phones`, { method: 'POST', body: { name: '' } })).status).toBe(400)
-  const minted = await (await host.call(`/v1/computers/${kids.id}/phones`, { method: 'POST', body: { name: 'iPad' } })).json()
-  expect(minted).toMatchObject({ token: expect.stringMatching(/^cbp_/), phone: { name: 'iPad', lastUsedAt: null } })
+  const issued = await (await host.call(`/v1/computers/${kids.id}/pairing`, { method: 'POST' })).json()
+  expect(issued).toEqual({ code: expect.stringMatching(/^[A-Z2-9]{8}$/), expiresAt: expect.any(String) })
+  const pair = (body: unknown) => fetch(`${host.base}/v1/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  expect((await pair({ code: issued.code, deviceName: '' })).status).toBe(400)
+  expect((await pair({ code: 'WRONGCOD', deviceName: 'iPad' })).status).toBe(404)
+  const paired = await pair({ code: ` ${issued.code.slice(0, 4).toLowerCase()}-${issued.code.slice(4)} `, deviceName: 'iPad' })
+  expect(paired.status).toBe(201)
+  const minted = await paired.json()
+  expect(minted).toEqual({ token: expect.stringMatching(/^cbp_/), computer: { id: kids.id, name: 'Kids' } })
+  // A code pairs one phone, once.
+  expect((await pair({ code: issued.code, deviceName: 'Another' })).status).toBe(404)
   const phone = minted.token as string
 
   // The phone's own routes are its computer's; host and fleet routes are the owner's alone.
   expect((await host.call('/v1/session', { method: 'POST', token: phone })).status).toBe(200)
   expect(host.made.get(kids.id)!.calls).toEqual(['wake'])
   expect(host.made.get(OWNER_COMPUTER)!.calls).toEqual([])
-  for (const path of ['/v1/health', '/v1/computers', `/v1/computers/${kids.id}`, `/v1/computers/${kids.id}/phones`, `/v1/computers/${OWNER_COMPUTER}/computer`]) {
+  for (const path of ['/v1/health', '/v1/computers', `/v1/computers/${kids.id}`, `/v1/computers/${kids.id}/phones`, `/v1/computers/${kids.id}/pairing`, `/v1/computers/${OWNER_COMPUTER}/computer`]) {
     expect((await host.call(path, { token: phone })).status, path).toBe(403)
   }
   expect((await host.call('/v1/computer', { token: 'cbp_not-a-token' })).status).toBe(401)
@@ -123,10 +131,11 @@ it('signs a phone in to one computer only, and signing it out closes what it has
   expect((await once(socket, 'message'))[0]).toEqual(Buffer.from([7]))
 
   const listed = await (await host.call(`/v1/computers/${kids.id}/phones`)).json()
-  expect(listed.phones).toEqual([expect.objectContaining({ id: minted.phone.id, name: 'iPad', lastUsedAt: expect.any(String) })])
-  expect((await host.call(`/v1/computers/${OWNER_COMPUTER}/phones/${minted.phone.id}`, { method: 'DELETE' })).status).toBe(404)
+  expect(listed.phones).toEqual([expect.objectContaining({ name: 'iPad', lastUsedAt: expect.any(String) })])
+  const phoneId = listed.phones[0].id as string
+  expect((await host.call(`/v1/computers/${OWNER_COMPUTER}/phones/${phoneId}`, { method: 'DELETE' })).status).toBe(404)
   const closed = once(socket, 'close')
-  expect((await host.call(`/v1/computers/${kids.id}/phones/${minted.phone.id}`, { method: 'DELETE' })).status).toBe(200)
+  expect((await host.call(`/v1/computers/${kids.id}/phones/${phoneId}`, { method: 'DELETE' })).status).toBe(200)
   await closed
   expect((await host.call('/v1/computer', { token: phone })).status).toBe(401)
   expect((await (await host.call(`/v1/computers/${kids.id}/devices/push`)).json()).devices).toHaveLength(0)
@@ -135,7 +144,8 @@ it('signs a phone in to one computer only, and signing it out closes what it has
 it("deletes a computer with its disk, files and phones, but never the owner's", async () => {
   const host = await startHost()
   const kids = await (await host.call('/v1/computers', { method: 'POST', body: { name: 'Kids' } })).json()
-  const { token } = await (await host.call(`/v1/computers/${kids.id}/phones`, { method: 'POST', body: { name: 'iPad' } })).json()
+  const { token } = await host.phones.mint(kids.id, 'iPad')
+  const { code } = await (await host.call(`/v1/computers/${kids.id}/pairing`, { method: 'POST' })).json()
   const dir = host.computers.dataDir(kids.id)
   expect(existsSync(join(dir, 'caboose.json'))).toBe(true)
 
@@ -148,6 +158,7 @@ it("deletes a computer with its disk, files and phones, but never the owner's", 
   expect(host.computers.get(kids.id)).toBeUndefined()
   expect((await host.call(`/v1/computers/${kids.id}`)).status).toBe(404)
   expect((await host.call('/v1/computer', { token })).status).toBe(401)
+  expect((await fetch(`${host.base}/v1/pair`, { method: 'POST', body: JSON.stringify({ code, deviceName: 'Late' }) })).status).toBe(404)
   expect((await (await host.call('/v1/computers')).json()).computers.map((c: { id: string }) => c.id)).toEqual(['owner'])
   expect(host.made.get(OWNER_COMPUTER)!.calls).toEqual([])
 })
@@ -162,6 +173,6 @@ it('serves only the owner computer without a fleet', async () => {
   const headers = { authorization: 'Bearer owner', 'content-type': 'application/json' }
   expect(await (await fetch(`${base}/v1/computers`, { headers })).json()).toMatchObject({ canCreate: false, computers: [{ id: 'owner', createdAt: null }] })
   expect((await fetch(`${base}/v1/computers`, { method: 'POST', headers, body: JSON.stringify({ name: 'More' }) })).status).toBe(409)
-  expect((await fetch(`${base}/v1/computers/owner/phones`, { method: 'POST', headers, body: JSON.stringify({ name: 'Phone' }) })).status).toBe(409)
+  expect((await fetch(`${base}/v1/computers/owner/pairing`, { method: 'POST', headers })).status).toBe(409)
   expect((await fetch(`${base}/v1/computers/owner/computer`, { headers })).status).toBe(200)
 })

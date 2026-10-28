@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
 import { join } from 'node:path'
 import { MAX_SLOTS } from './network.js'
 import { readJsonFile, SettingsInputError, writePrivateJson } from './settings.js'
@@ -179,5 +179,60 @@ export class PhoneTokens {
       void this.save(entries => entries.map(e => e.id === id ? { ...e, lastUsedAt } : e)).catch(error => console.error('Could not record a phone sign-in:', error))
     }
     return { phoneId: entry.id, computerId: entry.computerId }
+  }
+}
+
+/**
+ * Single-use pairing codes. The console shows one as a link and a QR code; the phone trades it
+ * through `POST /v1/pair` for its own sign-in token, so no token is ever shown. Codes live
+ * in memory for ten minutes, and a burst of wrong codes pauses pairing for everyone briefly,
+ * which keeps guessing one hopeless.
+ */
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789'
+const CODE_LENGTH = 8
+const FAILURE_WINDOW_MS = 60_000
+const MAX_FAILURES = 20
+
+export class PairingRateLimitError extends Error {}
+
+export class PairingCodes {
+  private codes = new Map<string, { computerId: string; expiresAt: number }>()
+  private failures: number[] = []
+
+  constructor(private readonly ttlMs = 10 * 60_000, private readonly now: () => number = Date.now) {}
+
+  issue(computerId: string): { code: string; expiresAt: string } {
+    this.sweep()
+    let code: string
+    do code = Array.from({ length: CODE_LENGTH }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('')
+    while (this.codes.has(code))
+    const expiresAt = this.now() + this.ttlMs
+    this.codes.set(code, { computerId, expiresAt })
+    return { code, expiresAt: new Date(expiresAt).toISOString() }
+  }
+
+  /** The computer a code pairs with, once; spaces, dashes and case are forgiven. */
+  redeem(input: unknown): string | undefined {
+    const now = this.now()
+    this.failures = this.failures.filter(at => now - at < FAILURE_WINDOW_MS)
+    if (this.failures.length >= MAX_FAILURES) throw new PairingRateLimitError('Too many wrong pairing codes; try again in a minute')
+    this.sweep()
+    const code = typeof input === 'string' ? input.toUpperCase().replace(/[\s-]/g, '') : ''
+    const entry = this.codes.get(code)
+    if (!entry) {
+      this.failures.push(now)
+      return undefined
+    }
+    this.codes.delete(code)
+    return entry.computerId
+  }
+
+  revokeComputer(computerId: string): void {
+    for (const [code, entry] of this.codes) if (entry.computerId === computerId) this.codes.delete(code)
+  }
+
+  private sweep(): void {
+    const now = this.now()
+    for (const [code, entry] of this.codes) if (entry.expiresAt <= now) this.codes.delete(code)
   }
 }

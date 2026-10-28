@@ -18,7 +18,7 @@ import { AgentRegistry } from './registry.js'
 import { PhoneHandoff, readPhoneFile } from './phone.js'
 import { SettingsInputError, settingsLimits, updateSettings, type ComputerSettings, type SettingsStore } from './settings.js'
 import { MAX_SLOTS } from './network.js'
-import { ComputerCapacityError, OWNER_COMPUTER, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
+import { ComputerCapacityError, OWNER_COMPUTER, PairingCodes, PairingRateLimitError, phoneName, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
 import type { DisplayProtocol } from './config.js'
 import { DisplayNotReadyError } from './display.js'
 import type { ComputerResources } from './driver.js'
@@ -594,6 +594,7 @@ export function createCabooseServer(options: ComputerPieces & {
   const records = () => options.fleet?.computers.list() ?? [{ id: OWNER_COMPUTER, slot: 0, createdAt: null }]
   const describe = (runtime: ComputerRuntime) => ({ id: runtime.id, createdAt: records().find(c => c.id === runtime.id)?.createdAt ?? null, ...runtime.managementStatus() })
   const deleting = new Set<string>()
+  const pairing = new PairingCodes()
 
   function principalOf(request: IncomingMessage): Principal | undefined {
     if (authenticate(request.headers.authorization, options.token)) return { kind: 'owner' }
@@ -640,6 +641,7 @@ export function createCabooseServer(options: ComputerPieces & {
     deleting.add(runtime.id)
     try {
       await runtime.destroy()
+      pairing.revokeComputer(runtime.id)
       await fleet.phones.revokeComputer(runtime.id)
       await fleet.computers.remove(runtime.id)
       await rm(fleet.computers.dataDir(runtime.id), { recursive: true, force: true })
@@ -654,9 +656,21 @@ export function createCabooseServer(options: ComputerPieces & {
         if (options.webRoot) return serveWeb(request, response, options.webRoot, path)
         return json(response, 404, { error: 'not found' })
       }
+      if (request.method === 'POST' && path === '/v1/pair') {
+        // The one route without a token: a pairing code is the credential.
+        const input = await readJson(request)
+        const deviceName = phoneName(input.deviceName)
+        const fleet = options.fleet
+        if (!fleet) throw new ComputerConflictError('This host has no phone sign-ins')
+        const id = pairing.redeem(input.code)
+        const runtime = id ? runtimes.get(id) : undefined
+        if (!runtime || deleting.has(runtime.id)) return json(response, 404, { error: 'pairing code not found or expired' })
+        const { token } = await fleet.phones.mint(runtime.id, deviceName)
+        return json(response, 201, { token, computer: { id: runtime.id, name: runtime.settings.get().name } })
+      }
       const principal = principalOf(request)
       if (!principal) return json(response, 401, { error: 'unauthorized' })
-      const ownerOnly = path === '/v1/health' || path === '/v1/host' || path === '/v1/computers' || /^\/v1\/computers\/[^/]+(?:\/phones(?:\/[^/]+)?)?$/.test(path)
+      const ownerOnly = path === '/v1/health' || path === '/v1/host' || path === '/v1/computers' || /^\/v1\/computers\/[^/]+(?:\/pairing|\/phones(?:\/[^/]+)?)?$/.test(path)
       if (ownerOnly && principal.kind !== 'owner') return json(response, 403, { error: 'forbidden' })
       if (request.method === 'GET' && path === '/v1/health') {
         return json(response, 200, { ...(options.controller.stats() as object), ...(options.machine ? { machine: await options.machine() } : {}) })
@@ -669,7 +683,7 @@ export function createCabooseServer(options: ComputerPieces & {
         })
       }
       if (path === '/v1/computers' && request.method === 'POST') return json(response, 201, describe(await createComputer(await readJson(request))))
-      const computerPath = /^\/v1\/computers\/([^/]+)(?:\/phones(?:\/([^/]+))?)?$/.exec(path)
+      const computerPath = /^\/v1\/computers\/([^/]+)(?:\/pairing|\/phones(?:\/([^/]+))?)?$/.exec(path)
       if (computerPath?.[1]) {
         const runtime = runtimes.get(decodeURIComponent(computerPath[1]))
         if (!runtime || deleting.has(runtime.id)) return json(response, 404, { error: 'computer not found' })
@@ -682,9 +696,9 @@ export function createCabooseServer(options: ComputerPieces & {
         }
         const fleet = options.fleet
         if (phones === '/phones' && request.method === 'GET') return json(response, 200, { phones: fleet?.phones.list(runtime.id) ?? [] })
-        if (phones === '/phones' && request.method === 'POST') {
+        if (phones === '/pairing' && request.method === 'POST') {
           if (!fleet) throw new ComputerConflictError('This host has no phone sign-ins')
-          return json(response, 201, await fleet.phones.mint(runtime.id, (await readJson(request)).name))
+          return json(response, 201, pairing.issue(runtime.id))
         }
         if (computerPath[2] && request.method === 'DELETE') {
           const phoneId = decodeURIComponent(computerPath[2])
@@ -704,6 +718,7 @@ export function createCabooseServer(options: ComputerPieces & {
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError) return json(response, 409, { error: error.message })
+      if (error instanceof PairingRateLimitError) return json(response, 429, { error: error.message })
       if (error instanceof AgentOperationError) return json(response, 502, { error: error.message })
       console.error('Caboose request failed:', error)
       if (!response.headersSent) json(response, 500, { error: 'computer operation failed' })

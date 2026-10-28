@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens } from './computers.js'
+import { ComputerRegistry, OWNER_COMPUTER, PairingCodes, PhoneTokens } from './computers.js'
 
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
@@ -88,5 +88,32 @@ describe('PhoneTokens', () => {
     await expect(phones.mint('owner', '')).rejects.toThrow(/name/)
     await expect(phones.mint('owner', 'x'.repeat(61))).rejects.toThrow(/name/)
     await expect(phones.mint('owner', 'tab\there')).rejects.toThrow(/name/)
+  })
+})
+
+describe('PairingCodes', () => {
+  it('pairs once, within ten minutes, and forgets a deleted computer', () => {
+    let now = Date.parse('2026-10-28T12:00:00Z')
+    const codes = new PairingCodes(10 * 60_000, () => now)
+    const first = codes.issue('owner')
+    expect(first).toEqual({ code: expect.stringMatching(/^[ABCDEFGHJKMNPQRSTVWXYZ2-9]{8}$/), expiresAt: '2026-10-28T12:10:00.000Z' })
+    expect(codes.redeem(first.code.toLowerCase())).toBe('owner')
+    expect(codes.redeem(first.code)).toBeUndefined()
+    const late = codes.issue('owner')
+    now += 10 * 60_000
+    expect(codes.redeem(late.code)).toBeUndefined()
+    const gone = codes.issue('c-0123456789')
+    codes.revokeComputer('c-0123456789')
+    expect(codes.redeem(gone.code)).toBeUndefined()
+  })
+
+  it('pauses pairing after a burst of wrong codes', () => {
+    let now = 0
+    const codes = new PairingCodes(10 * 60_000, () => now)
+    const good = codes.issue('owner')
+    for (let attempt = 0; attempt < 20; attempt++) expect(codes.redeem('AAAAAAAA')).toBeUndefined()
+    expect(() => codes.redeem(good.code)).toThrow(/Too many/)
+    now += 60_000
+    expect(codes.redeem(good.code)).toBe('owner')
   })
 })
