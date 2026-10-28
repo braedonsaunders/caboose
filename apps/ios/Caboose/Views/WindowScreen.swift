@@ -207,6 +207,7 @@ struct RemoteWindowPreview: UIViewRepresentable {
         view.isInteractive = false
         view.pixelsPerPoint = max(1, window.frame.width / 150)
         view.pacer = model.session // a live preview is paced like any window on screen
+        view.showsVideo = false // the window's own screen plays its videos
         return view
     }
 

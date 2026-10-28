@@ -111,7 +111,8 @@ enum VideoToolboxSession {
         return created
     }
 
-    static func sampleBuffer(_ bytes: Data, format: CMVideoFormatDescription) throws -> CMSampleBuffer {
+    /// One sample of `bytes`; `timing` stamps it for a player (decoders take it untimed).
+    static func sampleBuffer(_ bytes: Data, format: CMVideoFormatDescription, timing: CMSampleTimingInfo? = nil) throws -> CMSampleBuffer {
         var block: CMBlockBuffer?
         var status = CMBlockBufferCreateWithMemoryBlock(
             allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: bytes.count,
@@ -125,10 +126,17 @@ enum VideoToolboxSession {
         guard status == noErr else { throw H264DecoderError.sampleBuffer(status) }
         var sample: CMSampleBuffer?
         var size = bytes.count
-        status = CMSampleBufferCreateReady(
-            allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format, sampleCount: 1,
-            sampleTimingEntryCount: 0, sampleTimingArray: nil, sampleSizeEntryCount: 1, sampleSizeArray: &size,
-            sampleBufferOut: &sample)
+        if var timing {
+            status = CMSampleBufferCreateReady(
+                allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format, sampleCount: 1,
+                sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 1, sampleSizeArray: &size,
+                sampleBufferOut: &sample)
+        } else {
+            status = CMSampleBufferCreateReady(
+                allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format, sampleCount: 1,
+                sampleTimingEntryCount: 0, sampleTimingArray: nil, sampleSizeEntryCount: 1, sampleSizeArray: &size,
+                sampleBufferOut: &sample)
+        }
         guard status == noErr, let sample else { throw H264DecoderError.sampleBuffer(status) }
         return sample
     }
