@@ -71,6 +71,10 @@ base swap.
   tools including Git, Neovim, Lazygit, Lazydocker, btop, mise and modern shell tools;
   and the Claude Code, Codex, OpenCode and Gemini CLI agents. Terminal tools and agents
   have desktop launchers. Fonts: Inter, JetBrains Mono and Noto (incl. CJK, emoji).
+- **Video decoding (with Caboose Display).** `guest/vaapi` is a VA-API driver that
+  forwards each video's compressed bitstream to the client instead of decoding it
+  ([codec-passthrough.md](codec-passthrough.md)). It is used only in sessions run by Caboose
+  Display, which is not in the images yet; under Xpra, apps decode as before.
 - **Guest agent.** The appkit-desk guest agent (vsock 5252) for exec, jobs,
   observe/a11y and agent input. Agents drive the machine through it; humans drive
   it through Xpra.
