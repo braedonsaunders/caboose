@@ -1,0 +1,183 @@
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { join } from 'node:path'
+import { MAX_SLOTS } from './network.js'
+import { readJsonFile, SettingsInputError, writePrivateJson } from './settings.js'
+
+/**
+ * The computers a host runs. The owner's computer is always there: it has id `owner` and
+ * slot 0, and keeps the files a host had before it ran several (`caboose.json`,
+ * `push-devices.json` and `activities.json` at the image root). Every other computer keeps its
+ * own under `computers/<id>/`. A slot names a computer's network and loopback ports; it is
+ * the lowest one free when the computer is made, and freed when it is deleted.
+ */
+export const OWNER_COMPUTER = 'owner'
+export const COMPUTER_ID_PATTERN = /^(?:owner|c-[0-9a-f]{10})$/
+
+/** `createdAt` is null for an owner's computer made before the host recorded it. */
+export interface ComputerRecord { id: string; slot: number; createdAt: string | null }
+
+export class ComputerCapacityError extends Error {}
+
+function record(value: unknown): ComputerRecord {
+  const v = value as Record<string, unknown> | null
+  if (!v || typeof v !== 'object' || typeof v.id !== 'string' || !COMPUTER_ID_PATTERN.test(v.id) || v.id === OWNER_COMPUTER
+    || typeof v.slot !== 'number' || !Number.isSafeInteger(v.slot) || v.slot < 1 || v.slot >= MAX_SLOTS || typeof v.createdAt !== 'string') {
+    throw new Error('Invalid computer record')
+  }
+  return { id: v.id, slot: v.slot, createdAt: v.createdAt }
+}
+
+export class ComputerRegistry {
+  private pending: Promise<void> = Promise.resolve()
+  private constructor(readonly root: string, private path: string, private others: ComputerRecord[], private ownerCreatedAt: string | null) {}
+
+  static async open(root: string): Promise<ComputerRegistry> {
+    const path = join(root, 'computers.json')
+    const value = await readJsonFile(path)
+    if (value !== undefined && (!value || typeof value !== 'object' || !Array.isArray((value as { computers?: unknown }).computers))) throw new Error('Invalid computer registry')
+    const stored = value as { computers: unknown[]; ownerCreatedAt?: unknown } | undefined
+    const others = (stored?.computers ?? []).map(record)
+    if (new Set(others.map(c => c.id)).size !== others.length || new Set(others.map(c => c.slot)).size !== others.length) throw new Error('Duplicate computer in the registry')
+    const ownerCreatedAt = typeof stored?.ownerCreatedAt === 'string' ? stored.ownerCreatedAt : null
+    return new ComputerRegistry(root, path, others, ownerCreatedAt)
+  }
+
+  list(): ComputerRecord[] {
+    return [{ id: OWNER_COMPUTER, slot: 0, createdAt: this.ownerCreatedAt }, ...this.others.map(c => ({ ...c }))]
+  }
+
+  get(id: string): ComputerRecord | undefined { return this.list().find(c => c.id === id) }
+
+  /** Where a computer's own files live: the image root for the owner's, `computers/<id>` otherwise. */
+  dataDir(id: string): string { return id === OWNER_COMPUTER ? this.root : join(this.root, 'computers', id) }
+
+  private save(change: (others: ComputerRecord[]) => ComputerRecord[]): Promise<void> {
+    const work = this.pending.then(async () => {
+      const next = change(this.others.map(c => ({ ...c })))
+      await writePrivateJson(this.path, { ownerCreatedAt: this.ownerCreatedAt, computers: next })
+      this.others = next
+    })
+    this.pending = work.catch(() => {})
+    return work
+  }
+
+  async create(now = new Date()): Promise<ComputerRecord> {
+    let made: ComputerRecord | undefined
+    await this.save(others => {
+      const taken = new Set([0, ...others.map(c => c.slot)])
+      let slot = 1
+      while (taken.has(slot)) slot++
+      if (slot >= MAX_SLOTS) throw new ComputerCapacityError(`A host runs at most ${MAX_SLOTS} computers`)
+      let id: string
+      do id = `c-${randomBytes(5).toString('hex')}`; while (others.some(c => c.id === id))
+      made = { id, slot, createdAt: now.toISOString() }
+      return [...others, made]
+    })
+    return made!
+  }
+
+  async remove(id: string): Promise<void> {
+    if (id === OWNER_COMPUTER) throw new SettingsInputError("The owner's computer cannot be deleted")
+    await this.save(others => others.filter(c => c.id !== id))
+  }
+}
+
+/**
+ * Sign-in tokens for phones, each bound to one computer. The host keeps only a SHA-256 of
+ * each token, so a token is shown once, when it is made; revoking one signs that phone out.
+ */
+export interface PhoneSummary { id: string; name: string; createdAt: string; lastUsedAt: string | null }
+interface PhoneEntry extends PhoneSummary { computerId: string; hash: string }
+
+const PHONE_ID = /^p-[0-9a-f]{12}$/
+const HASH = /^[0-9a-f]{64}$/
+const TOKEN_PREFIX = 'cbp_'
+const USE_PERSIST_MS = 60_000
+
+function digest(token: string): string { return createHash('sha256').update(token, 'utf8').digest('hex') }
+
+export function phoneName(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > 60 || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new SettingsInputError('name must be 1–60 characters without control characters')
+  }
+  return value.trim()
+}
+
+function phoneEntry(value: unknown): PhoneEntry {
+  const v = value as Record<string, unknown> | null
+  if (!v || typeof v !== 'object' || typeof v.id !== 'string' || !PHONE_ID.test(v.id) || typeof v.computerId !== 'string' || !COMPUTER_ID_PATTERN.test(v.computerId)
+    || typeof v.hash !== 'string' || !HASH.test(v.hash) || typeof v.createdAt !== 'string' || (v.lastUsedAt !== null && typeof v.lastUsedAt !== 'string')) {
+    throw new Error('Invalid phone sign-in')
+  }
+  return { id: v.id, computerId: v.computerId, name: phoneName(v.name), hash: v.hash, createdAt: v.createdAt, lastUsedAt: v.lastUsedAt as string | null }
+}
+
+export class PhoneTokens {
+  private pending: Promise<void> = Promise.resolve()
+  private lastPersisted = new Map<string, number>()
+  private constructor(private path: string, private entries: PhoneEntry[]) {}
+
+  static async open(path: string): Promise<PhoneTokens> {
+    const value = await readJsonFile(path)
+    if (value !== undefined && !Array.isArray(value)) throw new Error('Invalid phone sign-in store')
+    return new PhoneTokens(path, (value ?? []).map(phoneEntry))
+  }
+
+  /** An in-memory store, for a host that keeps none on disk (tests). */
+  static memory(): PhoneTokens { return new PhoneTokens('', []) }
+
+  private save(change: (entries: PhoneEntry[]) => PhoneEntry[]): Promise<void> {
+    const work = this.pending.then(async () => {
+      const next = change(this.entries.map(e => ({ ...e })))
+      if (this.path) await writePrivateJson(this.path, next)
+      this.entries = next
+    })
+    this.pending = work.catch(() => {})
+    return work
+  }
+
+  list(computerId: string): PhoneSummary[] {
+    return this.entries.filter(e => e.computerId === computerId).map(({ id, name, createdAt, lastUsedAt }) => ({ id, name, createdAt, lastUsedAt }))
+  }
+
+  async mint(computerId: string, name: unknown, now = new Date()): Promise<{ phone: PhoneSummary; token: string }> {
+    const entry: PhoneEntry = { id: `p-${randomBytes(6).toString('hex')}`, computerId, name: phoneName(name), hash: '', createdAt: now.toISOString(), lastUsedAt: null }
+    const token = `${TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`
+    entry.hash = digest(token)
+    await this.save(entries => [...entries, entry])
+    const { id, name: label, createdAt, lastUsedAt } = entry
+    return { phone: { id, name: label, createdAt, lastUsedAt }, token }
+  }
+
+  /** False when the phone is not signed in to this computer. */
+  async revoke(computerId: string, id: string): Promise<boolean> {
+    let removed = false
+    await this.save(entries => {
+      removed = entries.some(e => e.id === id && e.computerId === computerId)
+      return entries.filter(e => !(e.id === id && e.computerId === computerId))
+    })
+    return removed
+  }
+
+  async revokeComputer(computerId: string): Promise<void> {
+    await this.save(entries => entries.filter(e => e.computerId !== computerId))
+  }
+
+  /** Resolves once every write already started has finished. */
+  async settled(): Promise<void> { await this.pending }
+
+  /** The phone a bearer token signs in, if any. Its last use is kept, written at most once a minute. */
+  resolve(token: string, now = Date.now()): { phoneId: string; computerId: string } | undefined {
+    if (!token.startsWith(TOKEN_PREFIX)) return undefined
+    const candidate = Buffer.from(digest(token), 'hex')
+    const entry = this.entries.find(e => timingSafeEqual(Buffer.from(e.hash, 'hex'), candidate))
+    if (!entry) return undefined
+    entry.lastUsedAt = new Date(now).toISOString()
+    if (now - (this.lastPersisted.get(entry.id) ?? 0) >= USE_PERSIST_MS) {
+      this.lastPersisted.set(entry.id, now)
+      const { id, lastUsedAt } = entry
+      void this.save(entries => entries.map(e => e.id === id ? { ...e, lastUsedAt } : e)).catch(error => console.error('Could not record a phone sign-in:', error))
+    }
+    return { phoneId: entry.id, computerId: entry.computerId }
+  }
+}

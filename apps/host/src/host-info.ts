@@ -51,6 +51,7 @@ const SHOWN: Array<{ name: string; fallback: string; only?: Config['runtime'] }>
   { name: 'CABOOSE_IDLE_MS', fallback: '600000' },
   { name: 'CABOOSE_AGENT_REGISTRY_URL', fallback: 'the public ACP registry' },
   { name: 'CABOOSE_AGENT_IDLE_MS', fallback: '600000' },
+  { name: 'CABOOSE_MAX_RUNNING', fallback: '4', only: 'microvm' },
 ]
 
 export function describeHost(config: Config, env: NodeJS.ProcessEnv, options: { push: boolean; liveActivities: boolean; exists?: (path: string) => boolean }): HostInfo {

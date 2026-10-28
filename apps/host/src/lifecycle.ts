@@ -17,6 +17,7 @@ export class ComputerLifecycle<T> {
   private sequence: Promise<void> = Promise.resolve()
   private listeners = new Set<(state: ComputerState) => void>()
   private restartPending = false
+  private retired = false
   private failure: string | null = null
 
   constructor(private readonly driver: ComputerDriver<T>, private idleMs: number) {
@@ -58,7 +59,7 @@ export class ComputerLifecycle<T> {
 
   private armIdle(): void {
     this.clearIdle()
-    if (this.leases || this.current !== 'running') return
+    if (this.leases || this.current !== 'running' || this.retired) return
     this.idleTimer = setTimeout(() => {
       this.idleTimer = undefined
       void this.serialize(async () => {
@@ -69,6 +70,7 @@ export class ComputerLifecycle<T> {
   }
 
   wake(): Promise<T> {
+    if (this.retired) return Promise.reject(new ComputerConflictError('Computer is being deleted'))
     this.clearIdle()
     return this.serialize(() => this.wakeNow())
   }
@@ -94,6 +96,7 @@ export class ComputerLifecycle<T> {
 
   /** Wake and perform an operation in the same lifecycle turn, holding a lease throughout. */
   wakeAndRun<R>(work: () => Promise<R>): Promise<R> {
+    if (this.retired) return Promise.reject(new ComputerConflictError('Computer is being deleted'))
     if (this.restartPending) return Promise.reject(new ComputerConflictError('Computer is restarting'))
     const release = this.acquire()
     return this.serialize(async () => {
@@ -104,6 +107,7 @@ export class ComputerLifecycle<T> {
 
   /** Guest operations complete before a park/restart can close their transport. */
   run<R>(work: () => Promise<R>): Promise<R> {
+    if (this.retired) return Promise.reject(new ComputerConflictError('Computer is being deleted'))
     if (this.restartPending) return Promise.reject(new ComputerConflictError('Computer is restarting'))
     const release = this.acquire()
     return this.serialize(async () => {
@@ -113,6 +117,7 @@ export class ComputerLifecycle<T> {
   }
 
   restart(before: () => Promise<void> = async () => {}): Promise<T> {
+    if (this.retired) return Promise.reject(new ComputerConflictError('Computer is being deleted'))
     if (this.restartPending) return Promise.reject(new ComputerConflictError('Computer is already restarting'))
     if (!this.driver.restart) return Promise.reject(new ComputerConflictError('Restart is unavailable'))
     this.restartPending = true
@@ -168,5 +173,20 @@ export class ComputerLifecycle<T> {
   park(before: () => void = () => {}): Promise<void> {
     this.clearIdle()
     return this.serialize(async () => { before(); await this.parkNow() })
+  }
+
+  /**
+   * Ends the computer for good, when it is deleted: nothing new is accepted, and `work` runs
+   * once whatever is already queued has finished. The computer is not parked first, since its
+   * memory is about to be thrown away with its disk.
+   */
+  retire(work: () => Promise<void>): Promise<void> {
+    this.retired = true
+    this.clearIdle()
+    return this.serialize(async () => {
+      await work()
+      this.value = undefined
+      this.setState('parked')
+    })
   }
 }

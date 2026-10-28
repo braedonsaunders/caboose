@@ -24,6 +24,8 @@ export interface Config {
   agentRegistryUrl: string
   /** How long a task's agent stays running after a turn, waiting for a reply. */
   agentIdleMs: number
+  /** How many microVM computers may run at once; waking one more waits for another to park. */
+  maxRunning: number
 }
 
 /** What `/v1/session` tells the app to speak on `/v1/display` (docs/architecture.md, docs/display.md). */
@@ -59,6 +61,7 @@ export function config(env: NodeJS.ProcessEnv): Config {
     gpu: gpu(env.CABOOSE_GPU),
     agentRegistryUrl: registryUrl(env.CABOOSE_AGENT_REGISTRY_URL),
     agentIdleMs: integer(env.CABOOSE_AGENT_IDLE_MS, 600_000, 'CABOOSE_AGENT_IDLE_MS', 86_400_000),
+    maxRunning: integer(env.CABOOSE_MAX_RUNNING, 4, 'CABOOSE_MAX_RUNNING', 64),
   }
 }
 

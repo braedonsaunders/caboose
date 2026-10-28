@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -34,7 +35,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
       },
     }
     const network = vi.fn(async () => {})
-    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000 }
+    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4 }
     const desired = { name: 'My computer', memoryMb: 512, vcpus: 1, idleMs: 60000, defaultAgent: null }
     const dependencies = { backend, network, deviceExists: () => true, snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} }, settings: () => desired }
     const controller = createController(config, dependencies)
@@ -74,7 +75,7 @@ it('reports a legacy snapshot as having unknown active resources', async () => {
   try {
     await mkdir(join(root, 'overlays', 'owner.snapshot'), { recursive: true })
     const controller = createController({ token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000,
-      imageRoot: root, memoryMb: 2048, vcpus: 2, vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000 })
+      imageRoot: root, memoryMb: 2048, vcpus: 2, vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4 })
     expect(controller.hasSavedState()).toBe(true)
     expect(controller.activeResources()).toBeNull()
   } finally { await rm(root, { recursive: true, force: true }) }
@@ -101,7 +102,7 @@ it('serves the owner display and starts the agent seat on demand', async () => {
       },
     }
     const controller = createController({ token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1,
-      vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000 },
+      vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4 },
     { backend, network: async () => {}, deviceExists: () => true,
       snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} } })
     const session = await controller.wake()
@@ -117,5 +118,49 @@ it('serves the owner display and starts the agent seat on demand', async () => {
     expect(commands.at(-1)).toContain('DISPLAY=:110')
     expect(commands.at(-1)).toContain('XAUTHORITY=/run/user/1000/caboose-xauth')
     await controller.park()
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('runs another computer on its own disk and network, and deletes both with it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'caboose-test-'))
+  try {
+    for (const file of ['base.raw', 'vmlinux', 'initrd']) await writeFile(join(root, file), '')
+    const commands: string[] = []
+    const plans: Array<{ deskId: string }> = []
+    const backend: DeskBackend = {
+      async boot(plan) {
+        plans.push(plan)
+        return {
+          deskId: plan.deskId,
+          async request(command) {
+            if (command.op === 'exec') commands.push([command.command, ...(command.args ?? [])].join(' '))
+            const stdout = command.op === 'exec' && command.command === '/bin/cat' ? DISPLAY_ENV : ''
+            return { exitCode: 0, signal: null, stdout, stderr: '', truncated: false }
+          },
+          subscribe: () => () => {},
+          shutdown: async () => {},
+          park: async () => {},
+        }
+      },
+    }
+    const network = vi.fn(async () => {})
+    const removeNetwork = vi.fn(async () => {})
+    const controller = createController({ token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1,
+      vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4 },
+    { identity: { id: 'c-0123456789', slot: 2 }, backend, network, removeNetwork, deviceExists: () => true,
+      snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} } })
+    expect(controller.displayUrl).toBe('ws://192.0.2.10:14600/')
+    expect(controller.fileService?.().url).toBe('http://192.0.2.10:14700')
+    await controller.wake()
+    expect(plans.map(plan => plan.deskId)).toEqual(['c-0123456789'])
+    expect(commands.some(command => command.includes('ip addr replace 192.0.2.10/30') && command.includes('via 192.0.2.9'))).toBe(true)
+    await writeFile(join(root, 'overlays', 'c-0123456789.raw'), 'their files')
+    await writeFile(join(root, 'overlays', 'owner.raw'), 'the owner files')
+    await controller.destroy!()
+    expect(existsSync(join(root, 'overlays', 'c-0123456789.raw'))).toBe(false)
+    expect(existsSync(join(root, 'overlays', 'c-0123456789.resources.json'))).toBe(false)
+    expect(await readFile(join(root, 'overlays', 'owner.raw'), 'utf8')).toBe('the owner files')
+    expect(removeNetwork).toHaveBeenCalledOnce()
+    expect(controller.activeResources()).toBeNull()
   } finally { await rm(root, { recursive: true, force: true }) }
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { config } from './config.js'
-import { createContainerController, detectGpu, gpuArgs, type Docker } from './container-driver.js'
+import { containerPlacement, createContainerController, detectGpu, gpuArgs, type Docker } from './container-driver.js'
 import { DISPLAY_ENV } from './display.test.js'
 
 function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
@@ -171,5 +171,29 @@ describe('container network fence', () => {
     expect(network).toBeGreaterThanOrEqual(0)
     expect(network).toBeLessThan(run)
     expect(fake.calls[run]).toEqual(expect.arrayContaining(['--network', 'caboose', '--dns', '1.1.1.1']))
+  })
+
+  it("gives every other computer its own container, home, network and ports, and keeps the owner's", async () => {
+    expect(containerPlacement(settings, { id: 'owner', slot: 0 })).toEqual({
+      name: 'caboose-owner', home: '/srv/caboose/home', network: 'caboose', bridge: 'caboose-br0', ports: { display: 14600, agent: 14601, files: 14700 },
+    })
+    expect(containerPlacement(settings, { id: 'c-0123456789', slot: 3 })).toEqual({
+      name: 'caboose-c-0123456789', home: '/srv/caboose/home-c-0123456789', network: 'caboose-3', bridge: 'caboose-br3', ports: { display: 20030, agent: 20031, files: 20032 },
+    })
+    const fake = fakeDocker('missing')
+    const fenced: string[] = []
+    const controller = createContainerController({ ...settings, containerHome: 'caboose-home' }, { identity: { id: 'c-0123456789', slot: 3 }, fence: async device => { fenced.push(device) }, unfence: async device => { fenced.push(`-${device}`) }, docker: fake.docker, exists: () => false })
+    await controller.wake()
+    const run = fake.calls.find(call => call[0] === 'run')!
+    expect(run).toEqual(expect.arrayContaining(['--name', 'caboose-c-0123456789', '--network', 'caboose-3', '-v', 'caboose-home-c-0123456789:/home/caboose',
+      '-p', '127.0.0.1:20030:14600', '-p', '127.0.0.1:20031:14601', '-p', '127.0.0.1:20032:14700']))
+    expect(controller.displayUrl).toBe('ws://127.0.0.1:20030/')
+    expect(controller.fileService?.().url).toBe('http://127.0.0.1:20032')
+    await controller.destroy!()
+    expect(fake.calls.filter(call => ['rm', 'volume', 'network'].includes(call[0]!)).map(call => call.join(' '))).toEqual(expect.arrayContaining([
+      'rm -f caboose-c-0123456789', 'volume rm -f caboose-home-c-0123456789', 'network rm caboose-3',
+    ]))
+    expect(fenced).toEqual(['caboose-br3', '-caboose-br3'])
+    expect(controller.guest()).toBeUndefined()
   })
 })
