@@ -35,6 +35,9 @@ public final class RemoteVideo: @unchecked Sendable {
 
     private let queue: DispatchQueue
     private let send: @Sendable (ClientMessage) -> Void
+    /// The session's playback clock: with the computer's sound playing, pictures are shown at
+    /// their own times on it, in step with the sound.
+    private let clock: MediaClock?
     // On `queue`:
     private let bitstream: BitstreamFormatter
     private var session: VTDecompressionSession?
@@ -43,7 +46,7 @@ public final class RemoteVideo: @unchecked Sendable {
     private var awaitingKeyframe = false
     private var lastKeyframeRequest: UInt64 = 0
 
-    init?(_ fields: VideoStreamFields, send: @escaping @Sendable (ClientMessage) -> Void) {
+    init?(_ fields: VideoStreamFields, clock: MediaClock? = nil, send: @escaping @Sendable (ClientMessage) -> Void) {
         guard let window = fields.window, let rect = fields.rect, let codec = fields.codec else { return nil }
         id = fields.id
         self.window = window
@@ -51,6 +54,7 @@ public final class RemoteVideo: @unchecked Sendable {
         source = fields.source ?? .passthrough
         color = fields.color
         self.send = send
+        self.clock = clock
         queue = DispatchQueue(label: "caboose.display.video.\(fields.id)", qos: .userInteractive)
         bitstream = switch codec {
         case .h264: NALFormatter(codec: .h264)
@@ -66,6 +70,7 @@ public final class RemoteVideo: @unchecked Sendable {
         clip = fields.clip
         z = fields.z ?? 0
         if color?.isHDR == true { showHDR() }
+        clock?.add(layer.sampleBufferRenderer)
     }
 
     /// Stops playback; the window view drops the layer.
@@ -75,6 +80,7 @@ public final class RemoteVideo: @unchecked Sendable {
             session = nil
             kept.removeAll()
             layer.sampleBufferRenderer.flush()
+            clock?.remove(layer.sampleBufferRenderer)
         }
     }
 
@@ -88,7 +94,7 @@ public final class RemoteVideo: @unchecked Sendable {
                 guard let picture = try decode(frame.data) else { return }
                 awaitingKeyframe = false
                 if source.isLive {
-                    show(picture)
+                    show(picture, at: frame.ptsMicros)
                 } else {
                     kept.append((frame.seq, picture))
                     if kept.count > Self.keptPictures { kept.removeFirst(kept.count - Self.keptPictures) }
@@ -102,13 +108,13 @@ public final class RemoteVideo: @unchecked Sendable {
         }
     }
 
-    /// The app is showing frame `seq` now; earlier pictures it skipped are dropped.
-    func present(seq: Int) {
+    /// The app is showing frame `seq` at `pts` (server clock); earlier pictures it skipped are dropped.
+    func present(seq: Int, at pts: UInt64? = nil) {
         queue.async { [self] in
             guard let index = kept.firstIndex(where: { $0.seq == seq }) else { return }
             let picture = kept[index].picture
             kept.removeFirst(index + 1)
-            show(picture)
+            show(picture, at: pts)
         }
     }
 
@@ -128,8 +134,9 @@ public final class RemoteVideo: @unchecked Sendable {
         }
     }
 
-    /// Hands a decoded picture to the layer, to be shown at once.
-    private func show(_ picture: CVPixelBuffer) {
+    /// Hands a decoded picture to the layer: at its time on the session's clock while the
+    /// computer's sound is playing, otherwise (or when it is already late) at once.
+    private func show(_ picture: CVPixelBuffer, at pts: UInt64?) {
         let renderer = layer.sampleBufferRenderer
         if renderer.status == .failed || renderer.requiresFlushToResumeDecoding { renderer.flush() }
         if pictureFormat.map({ !CMVideoFormatDescriptionMatchesImageBuffer($0, imageBuffer: picture) }) ?? true {
@@ -137,13 +144,14 @@ public final class RemoteVideo: @unchecked Sendable {
             CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: picture, formatDescriptionOut: &pictureFormat)
         }
         guard let pictureFormat else { return }
-        var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
+        let scheduled = pts.flatMap { clock?.time(for: Int64($0)) }
+        var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: scheduled ?? CMClockGetTime(CMClockGetHostTimeClock()),
                                         decodeTimeStamp: .invalid)
         var sample: CMSampleBuffer?
         CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: picture, formatDescription: pictureFormat,
                                                  sampleTiming: &timing, sampleBufferOut: &sample)
         guard let sample else { return }
-        Self.attach(kCMSampleAttachmentKey_DisplayImmediately, to: sample)
+        if scheduled == nil { Self.attach(kCMSampleAttachmentKey_DisplayImmediately, to: sample) }
         renderer.enqueue(sample)
     }
 

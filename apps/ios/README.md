@@ -174,10 +174,21 @@ Protocol instead of Xpra; the screens are the same. What changes:
   to its `clip`, in `z` order over the window's picture. Frames come in decode order and
   are decoded in hardware as they arrive, in the decoder's own format. A live surface is
   shown as each picture decodes; an app's own stream keeps its pictures by `seq` and shows
-  each when `video.present` says the app is showing it, so it stays in step with the app's
-  own sound. HDR streams (PQ, HLG) are shown with the screen's extended dynamic range.
-  Home's thumbnails leave video to the window's own screen.
-- **Not yet.** No sound (the protocol's Opus `audio` is a later milestone of the
-  compositor), and window pictures are SDR:
+  each when `video.present` says the app is showing it. HDR streams (PQ, HLG) are shown
+  with the screen's extended dynamic range. Home's thumbnails leave video to the window's
+  own screen.
+- **Sound.** The hello asks for Opus (`audio_decoders`), and the computer's sound arrives
+  as 20 ms Opus packets stamped on the server's clock. Each is decoded by the system's Opus
+  decoder (AudioToolbox) and played by an `AVSampleBufferAudioRenderer`, so iOS routes it
+  like any app's sound: speaker, AirPods, AirPlay, mixed with other apps under the app's
+  `.playback` session. The renderer and every video layer share one
+  `AVSampleBufferRenderSynchronizer` per session, whose timeline is the server's clock, so
+  a video and its sound play in step. The clock starts 40 ms behind the first packet,
+  which absorbs a LAN's jitter while keeping a click's sound close to its picture. A late
+  packet adds 20 ms (up to 200 ms), a backlog is dropped, and silence the computer does not
+  send is a gap the clock runs through. With no sound playing, pictures show as they
+  arrive; window pictures always do. The display closes when the app goes to the
+  background, and the sound with it.
+- **Not yet.** Window pictures are SDR:
   the hello reports `hdr: false` until the window surfaces render EDR.
 

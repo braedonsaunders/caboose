@@ -29,7 +29,7 @@ public final class CabooseDisplaySession: DisplaySession {
     public var onOpenURL: ((URL) -> Void)?
     /// Window ids survive reconnects, so a cached last frame shows until the keyframe lands.
     public var cachedFrame: ((Int) -> CGImage?)?
-    /// Caboose Display carries no sound yet (Opus `audio` is a later milestone); kept for the shared model.
+    /// Whether to ask for the computer's sound (the agent seat, for one, stays silent). Set before `connect()`.
     public var playsAudio = true
 
     /// The pointer's shape by cursor-shape name ("default", "text", …), nil for an image cursor.
@@ -48,6 +48,8 @@ public final class CabooseDisplaySession: DisplaySession {
     /// a closed socket still delivers can reach the next.
     private var pipelines = FramePipelineRegistry()
     private var videos = VideoRegistry()
+    /// This connection's sound, on the clock its video layers share; nil when it plays none.
+    private(set) var sound: SoundPlayer?
     private let echo = EchoMeter()
     private var pingTimer: Timer?
     private var buttons = 0
@@ -97,7 +99,10 @@ public final class CabooseDisplaySession: DisplaySession {
         self.stream = stream
         pipelines = FramePipelineRegistry()
         videos = VideoRegistry()
-        let incoming = Incoming(pipelines: pipelines, videos: videos, echo: echo, makeDecoder: makeDecoder) { message in
+        let clock = MediaClock()
+        sound = playsAudio ? SoundPlayer(clock: clock) : nil
+        let incoming = Incoming(pipelines: pipelines, videos: videos, clock: clock, sound: sound, echo: echo,
+                                makeDecoder: makeDecoder) { message in
             stream.send(DisplayFraming.encode(message.frame))
         }
         stream.open { [weak self] event in
@@ -148,6 +153,8 @@ public final class CabooseDisplaySession: DisplaySession {
     private func tearDown() {
         for pipeline in pipelines.removeAll() { pipeline.close() }
         for video in videos.removeAll() { video.close() }
+        sound?.stop()
+        sound = nil
         windows.removeAll()
         placement.removeAll()
         pendingGeometry.removeAll()
@@ -163,7 +170,8 @@ public final class CabooseDisplaySession: DisplaySession {
 
     private func sendHello() {
         state = .authenticating
-        send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: decoders))
+        send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: decoders,
+                    audioDecoders: playsAudio ? ["opus"] : nil))
     }
 
     // MARK: Server messages
@@ -539,14 +547,18 @@ private final class Incoming: @unchecked Sendable {
     private var parser = DisplayFrameParser()
     private let pipelines: FramePipelineRegistry
     private let videos: VideoRegistry
+    private let clock: MediaClock
+    private let sound: SoundPlayer?
     private let echo: EchoMeter
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private let send: @Sendable (ClientMessage) -> Void
 
-    init(pipelines: FramePipelineRegistry, videos: VideoRegistry, echo: EchoMeter, makeDecoder: @escaping (DisplayCodec) -> PictureDecoder,
-         send: @escaping @Sendable (ClientMessage) -> Void) {
+    init(pipelines: FramePipelineRegistry, videos: VideoRegistry, clock: MediaClock, sound: SoundPlayer?, echo: EchoMeter,
+         makeDecoder: @escaping (DisplayCodec) -> PictureDecoder, send: @escaping @Sendable (ClientMessage) -> Void) {
         self.pipelines = pipelines
         self.videos = videos
+        self.clock = clock
+        self.sound = sound
         self.echo = echo
         self.makeDecoder = makeDecoder
         self.send = send
@@ -566,11 +578,13 @@ private final class Incoming: @unchecked Sendable {
                 pipelines[tile.window]?.tile(tile)
             case .videoFrame(let frame):
                 videos[frame.video]?.frame(frame)
-            case .videoPresent(let id, let seq, _):
-                videos[id]?.present(seq: seq)
+            case .videoPresent(let id, let seq, let pts):
+                videos[id]?.present(seq: seq, at: pts)
+            case .audio(let packet):
+                sound?.play(packet)
             case .videoCreate(let fields):
                 // Made here, like a window's pipeline, because its first picture follows at once.
-                if videos[fields.id] == nil, let video = RemoteVideo(fields, send: send) { videos[fields.id] = video }
+                if videos[fields.id] == nil, let video = RemoteVideo(fields, clock: clock, send: send) { videos[fields.id] = video }
                 others.append(message)
             case .windowCreate(let fields):
                 if pipelines[fields.id] == nil {
