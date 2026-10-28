@@ -30,7 +30,7 @@ export interface BrandOptions {
   ink: string
   amber?: string
   /**
-   * `intro` draws the logo in, rolls one wheel-turn, then rolls again every 12 s.
+   * `intro` draws the logo in, rolls three wheel-turns, then rolls three again every 12 s.
    * `rolling` keeps the wheels turning and the ties sliding (busy states).
    * `none` is the still logo. All motion stops under `prefers-reduced-motion`.
    */
@@ -78,27 +78,31 @@ export const TIMING = {
   draw: 0.55,
   hubAfter: 0.5,
   pop: 0.45,
-  roll: { delay: 0.7, duration: 2.2 },
+  roll: { delay: 0.7, duration: 3.2, turns: 3 },
   cycle: 12,
 } as const
 
 function styles(scope: string, motion: Motion): string {
   const s = `#${scope}`
+  const { turns } = TIMING.roll
+  const travel = round(ROLL * turns)
+  // The share of each cycle spent rolling; the rest of it the train is at rest.
+  const rolling = `${round((TIMING.roll.duration / TIMING.cycle) * 100)}%`
   const base = `${s} .wheel, ${s} .pop { transform-box: fill-box; transform-origin: center; }`
   if (motion === 'none') return base
   const common = `
     @keyframes cb-draw { from { stroke-dashoffset: 1; } }
     @keyframes cb-fade { from { opacity: 0; } }
     @keyframes cb-pop { from { opacity: 0; transform: scale(.2); } }
-    @keyframes cb-roll-in { from { transform: translateX(${ROLL}px); } }
-    @keyframes cb-turn-in { from { transform: rotate(-360deg); } }
+    @keyframes cb-roll-in { from { transform: translateX(${travel}px); } }
+    @keyframes cb-turn-in { from { transform: rotate(-${360 * turns}deg); } }
     @keyframes cb-roll-cycle {
-      0% { transform: translateX(${ROLL}px); animation-timing-function: cubic-bezier(.45,0,.2,1); }
-      18.33%, 100% { transform: translateX(0); }
+      0% { transform: translateX(${travel}px); animation-timing-function: cubic-bezier(.45,0,.2,1); }
+      ${rolling}, 100% { transform: translateX(0); }
     }
     @keyframes cb-turn-cycle {
-      0% { transform: rotate(-360deg); animation-timing-function: cubic-bezier(.45,0,.2,1); }
-      18.33%, 100% { transform: rotate(0); }
+      0% { transform: rotate(-${360 * turns}deg); animation-timing-function: cubic-bezier(.45,0,.2,1); }
+      ${rolling}, 100% { transform: rotate(0); }
     }
     @keyframes cb-roll { from { transform: translateX(${ROLL}px); } to { transform: translateX(0); } }
     @keyframes cb-turn { from { transform: rotate(-360deg); } to { transform: rotate(0); } }
@@ -164,7 +168,7 @@ export function wordmarkSvg(options: BrandOptions & { lit?: boolean }): string {
   return open(WORDMARK_VIEWBOX, id, height) +
     `<style>${styles(id, motion)}</style>` +
     `<defs><clipPath id="${id}-track"><rect x="-8" y="100" width="796" height="40"/></clipPath></defs>` +
-    `<g clip-path="url(#${id}-track)">${ties(-8 - ROLL, 788, ink, 0.32)}</g>` +
+    `<g clip-path="url(#${id}-track)">${ties(-8 - ROLL * TIMING.roll.turns, 788, ink, 0.32)}</g>` +
     `<path class="rail" pathLength="1" d="M-12 106H792" fill="none" stroke="${ink}" stroke-width="12" stroke-linecap="round"/>` +
     `<g fill="none" stroke="${ink}" stroke-width="20" stroke-linejoin="round">${letters}</g>` +
     `</svg>`
