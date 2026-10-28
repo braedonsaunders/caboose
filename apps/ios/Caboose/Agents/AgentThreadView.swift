@@ -9,6 +9,7 @@ struct AgentThreadView: View {
     @Environment(AppModel.self) private var model
     let taskID: String
     @State private var connectingModel = false
+    @State private var visibleTurns = 20
 
     var body: some View {
         let agents = model.agents
@@ -23,7 +24,11 @@ struct AgentThreadView: View {
                             Label("Earlier parts of this conversation are too long to show here.", systemImage: "text.append")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        ForEach(thread.turns) { turn in
+                        if thread.turns.count > visibleTurns {
+                            Button("Show Earlier Messages") { visibleTurns += 20 }
+                                .frame(maxWidth: .infinity)
+                        }
+                        ForEach(thread.turns.suffix(visibleTurns)) { turn in
                             TurnView(task: task, turn: turn, isLast: turn.number == thread.lastTurn?.number)
                         }
                         if thread.turns.last?.outcome == nil, !task.isRunning, let summary = task.summary, !summary.isEmpty, task.signIn?.isEmpty != false {
