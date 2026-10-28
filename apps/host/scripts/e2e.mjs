@@ -10,9 +10,10 @@ async function request(path, method = 'GET') {
   if (!response.ok) throw new Error(`${method} ${path}: HTTP ${response.status}: ${await response.text()}`)
   return response.json()
 }
-async function hello(session) {
+async function hello(session, seat = 'owner') {
   const bridge = createServer(socket => {
     const target = new URL(session.display.path, base)
+    if (seat === 'agent') target.searchParams.set('seat', 'agent')
     target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new WebSocket(target, 'binary', { headers })
     socket.pause()
@@ -33,18 +34,28 @@ async function hello(session) {
     const timer = setTimeout(() => child.kill('SIGKILL'), 60_000)
     const code = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve) }).finally(() => clearTimeout(timer))
     if (code !== 0) throw new Error(`Xpra authenticated info failed (${code}): ${output}`)
-    console.log('Xpra authenticated hello and info succeeded')
+    console.log(`Xpra authenticated hello and info succeeded for ${seat} seat`)
   } finally { await new Promise(resolve => bridge.close(resolve)) }
 }
 let started = performance.now()
 const first = await request('/v1/session', 'POST')
 console.log(`First wake (cold only without a snapshot): ${((performance.now() - started) / 1000).toFixed(2)} s`)
 await hello(first)
+await hello(first, 'agent')
 const apps = await request('/v1/apps')
-if (!Array.isArray(apps) || !apps.length || apps.some(app => !app.icon?.startsWith('data:image/png;base64,'))) {
-  throw new Error('Expected a nonempty app list with PNG icons')
+if (!Array.isArray(apps) || apps.length === 0 || apps.some(app => !app.icon?.startsWith('data:image/png;base64,'))) {
+  throw new Error('App list is empty or contains an app without a PNG icon')
 }
-console.log(`Found ${apps.length} applications with PNG icons`)
+for (const pattern of [/chromium/i, /firefox/i, /code/i, /terminal/i, /thunar/i, /mousepad/i, /libreoffice/i]) {
+  if (!apps.some(app => pattern.test(app.name) || pattern.test(app.id))) throw new Error(`Missing app: ${pattern}`)
+}
+console.log(`App list contains ${apps.length} entries with PNG icons, including the requested desktop applications`)
+const terminal = apps.find(app => /xfce4-terminal/i.test(app.id))
+if (!terminal) throw new Error('Xfce terminal desktop entry is missing')
+const launched = await request(`/v1/apps/${encodeURIComponent(terminal.id)}/launch`, 'POST')
+if (!launched.launched) throw new Error('Terminal launch was not confirmed')
+console.log('Terminal launch request succeeded')
+
 started = performance.now()
 await request('/v1/session/park', 'POST')
 console.log(`Park: ${((performance.now() - started) / 1000).toFixed(2)} s`)
