@@ -193,6 +193,8 @@ the three packages public in its package settings before anonymous pulls work.
 | `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
+| `CABOOSE_PUBLIC_URL` | unset | Where phones reach this host from anywhere, such as `https://caboose.example.com`; listed first in pairing links. |
+| `CABOOSE_MDNS` | `on` | `off` stops advertising `_caboose._tcp` on the LAN. |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor (microVM). |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container`. |
 | `CABOOSE_BASE_IMAGE` | empty (release: pinned) | OCI reference fetched when the disk root lacks the image (microVM). |

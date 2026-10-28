@@ -378,6 +378,8 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_AGENT_REGISTRY_URL` | the public ACP registry | `http(s)` URL of `registry.json` |
 | `CABOOSE_AGENT_IDLE_MS` | `600000` | How long a runner keeps its agent after a turn |
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park |
+| `CABOOSE_PUBLIC_URL` | unset | Where phones reach the host from anywhere (an `http(s)` URL, optionally with a path, without credentials, query or fragment); first in `/v1/host/reach` |
+| `CABOOSE_MDNS` | `on` | `off` stops the LAN advertisement ([Reachability](#reachability)) |
 | `CABOOSE_WEB_ROOT` | `apps/web/dist` | The built web console |
 | `CABOOSE_APNS_KEY_PATH`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC` | unset | APNs provider; all four or none |
 
@@ -426,6 +428,49 @@ host's memory. The app trades it through `POST /v1/pair` at the first of the lin
 addresses that answers, then keeps the token like any other. Phone tokens are `cbp_`
 followed by 43 base64url characters, shown only in the `/v1/pair` response; the host keeps
 their SHA-256.
+
+### Reachability
+
+How a phone finds and reaches the host. `GET /v1/host/reach` lists every address a phone can
+use, best first, and a pairing link carries them all: the first as `host=`, the rest as
+`alt=`. The app uses the first that answers.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/host/reach` | → `Reach` (below). Owner only |
+| `PUT` | `/v1/host/reach/tailscale` | `{ enabled: boolean }` (nothing else) → `Reach`. Turns Tailscale's HTTPS `serve` for this host on or off. 400 for any other body; 409 with the reason when Tailscale is not installed, is signed out, has HTTPS certificates off for the tailnet, or already serves something else on HTTPS port 443 (which is never replaced). Owner only |
+
+```ts
+type Reach = {
+  addresses: Array<{ url: string, kind: 'public' | 'tailscale' | 'lan' }>,  // public, then Tailscale, then LAN
+  mdns: { enabled: boolean, name: string | null },
+  tailscale: { installed: boolean, loggedIn: boolean, name?: string, serving: boolean, httpsUrl?: string, error?: string },
+}
+```
+
+- **Public:** `CABOOSE_PUBLIC_URL`, for a host behind its own domain and HTTPS.
+- **Tailscale:** `https://<machine>.<tailnet>.ts.net` while `serve` sends HTTPS on 443 to
+  `http://127.0.0.1:<port>`. Tailscale terminates TLS with the tailnet's certificate. The host
+  finds the `tailscale` CLI on `PATH` or in the macOS app and runs it as the host's user.
+  `error` explains what stops it from serving.
+- **LAN:** `http://<address>:<port>` for each IPv4 address on a real interface. Loopback,
+  link-local, container and VM bridges (`docker*`, `br-*`, `caboose*`, `veth*`, `tap*`,
+  `virbr*`, `vmnet*`, `bridge*`), VPN tunnels (`tailscale*`, `utun*`, `tun*`, `wg*`) and
+  Apple's peer-to-peer links are left out. A host bound to loopback has no LAN address; one
+  bound to a specific address lists only that address.
+
+While the host listens beyond loopback and `CABOOSE_MDNS` is on, it advertises DNS-SD
+service `_caboose._tcp` over mDNS, IPv4 only, on the same LAN interfaces:
+
+| TXT key | Value |
+| --- | --- |
+| `v` | `1`, the record's version |
+| `id` | 16 hex characters, random and kept in `${CABOOSE_IMAGE_ROOT}/host-id`, so a phone recognises a host whose address or name changed |
+| `name` | The owner computer's name, or `Caboose on <machine name>` while it is still `Caboose`; also the instance name |
+| `path` | `/`, the API's base path |
+
+The record's host name is `caboose-<first 8 characters of id>.local`. A client must treat
+unknown keys as reserved and a higher `v` as possibly incompatible.
 
 ### Lifecycle
 

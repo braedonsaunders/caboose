@@ -12,6 +12,7 @@ import { ComputerConflictError } from './lifecycle.js'
 import { ownerToken } from './owner-token.js'
 import { containerImage, describeImage, microvmImage, type ImageProvisioner } from './provision.js'
 import { openSettings, type ComputerSettings } from './settings.js'
+import { hostId, machineName, ReachService } from './reach.js'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -54,18 +55,30 @@ const existing = []
 for (const record of computers.list().filter(c => c.id !== OWNER_COMPUTER)) existing.push({ record, pieces: await open(record) })
 const registry = new AgentRegistry({ url: deployment.agentRegistryUrl, cachePath: join(deployment.imageRoot, 'agent-registry.json') })
 const webRoot = process.env.CABOOSE_WEB_ROOT ? resolve(process.env.CABOOSE_WEB_ROOT) : fileURLToPath(new URL('../../web/dist', import.meta.url))
+const reach = new ReachService({
+  bind: deployment.host, port: deployment.port, publicUrl: deployment.publicUrl, mdns: deployment.mdns,
+  id: await hostId(join(deployment.imageRoot, 'host-id')),
+  // Phones list hosts by name, so an unnamed host is told apart by its machine's name.
+  name: () => {
+    const name = ownerComputer.settings.get().name
+    return name === 'Caboose' ? `Caboose on ${machineName()}` : name
+  },
+})
 const host = describeHost(deployment, process.env, { push: !!sender, liveActivities: !!(apns && sender) })
 const app = createCabooseServer({
   token: owner.token, ...ownerComputer, registry, host, agentIdleMs: deployment.agentIdleMs, webRoot,
-  machine: () => machineResources(deployment.imageRoot),
+  machine: () => machineResources(deployment.imageRoot), reach,
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null },
 })
-app.server.listen(deployment.port, deployment.host, () => console.log(`caboose-host listening on ${deployment.host}:${deployment.port}`))
+app.server.listen(deployment.port, deployment.host, () => {
+  console.log(`caboose-host listening on ${deployment.host}:${deployment.port}`)
+  void reach.start().catch(error => console.error('Advertising on the LAN (mDNS) failed:', error instanceof Error ? error.message : error))
+})
 // Fetch a missing image now rather than on the first wake; a failure is retried by the next wake.
 void image.ensure().then(() => console.log(describeImage(image.status())), error => console.error(error instanceof Error ? error.message : error))
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
-    void app.shutdown().then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
+    void reach.stop().catch(() => undefined).then(() => app.shutdown()).then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
   })
 }
 

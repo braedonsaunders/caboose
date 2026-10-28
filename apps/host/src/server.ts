@@ -23,6 +23,7 @@ import type { DisplayProtocol } from './config.js'
 import { DisplayNotReadyError } from './display.js'
 import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
+import { ReachUnavailableError, type ReachService } from './reach.js'
 import { DesktopNotifications } from './desktop-notifications.js'
 import type { PushService } from './push.js'
 import type { HostInfo, MachineResources } from './host-info.js'
@@ -650,6 +651,8 @@ export function createCabooseServer(options: ComputerPieces & {
   host?: HostInfo
   /** The machine's memory, CPUs and disk, for `GET /v1/health`. */
   machine?: () => Promise<MachineResources>
+  /** How phones find and reach this host, for `/v1/host/reach`. */
+  reach?: ReachService
   fleet?: Fleet
 }) {
   const shared = { registry: options.registry ?? new AgentRegistry(), ...(options.agentIdleMs !== undefined ? { agentIdleMs: options.agentIdleMs } : {}) }
@@ -736,12 +739,18 @@ export function createCabooseServer(options: ComputerPieces & {
       }
       const principal = principalOf(request)
       if (!principal) return json(response, 401, { error: 'unauthorized' })
-      const ownerOnly = path === '/v1/health' || path === '/v1/host' || path === '/v1/computers' || /^\/v1\/computers\/[^/]+(?:\/pairing|\/phones(?:\/[^/]+)?)?$/.test(path)
+      const ownerOnly = path === '/v1/health' || path === '/v1/host' || path.startsWith('/v1/host/') || path === '/v1/computers' || /^\/v1\/computers\/[^/]+(?:\/pairing|\/phones(?:\/[^/]+)?)?$/.test(path)
       if (ownerOnly && principal.kind !== 'owner') return json(response, 403, { error: 'forbidden' })
       if (request.method === 'GET' && path === '/v1/health') {
         return json(response, 200, { ...(options.controller.stats() as object), ...(options.machine ? { machine: await options.machine() } : {}) })
       }
       if (request.method === 'GET' && path === '/v1/host' && options.host) return json(response, 200, options.host)
+      if (path === '/v1/host/reach' && request.method === 'GET' && options.reach) return json(response, 200, await options.reach.status())
+      if (path === '/v1/host/reach/tailscale' && request.method === 'PUT' && options.reach) {
+        const input = await readJson(request)
+        if (typeof input.enabled !== 'boolean' || Object.keys(input).some(key => key !== 'enabled')) throw new SettingsInputError('Send { "enabled": true } or { "enabled": false }')
+        return json(response, 200, await options.reach.setTailscale(input.enabled))
+      }
       if (path === '/v1/computers' && request.method === 'GET') {
         return json(response, 200, {
           computers: [...runtimes.values()].filter(r => !deleting.has(r.id)).map(describe),
@@ -783,7 +792,7 @@ export function createCabooseServer(options: ComputerPieces & {
     })().catch(error => {
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError) return json(response, 404, { error: error.message })
-      if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError) return json(response, 409, { error: error.message })
+      if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError || error instanceof ReachUnavailableError) return json(response, 409, { error: error.message })
       if (error instanceof PairingRateLimitError) return json(response, 429, { error: error.message })
       if (error instanceof AgentOperationError || error instanceof TerminalServiceError) return json(response, 502, { error: error.message })
       console.error('Caboose request failed:', error)

@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+import { publicUrl } from './reach.js'
 import { REGISTRY_URL } from './registry.js'
 
 export interface Config {
@@ -29,6 +30,10 @@ export interface Config {
   agentIdleMs: number
   /** How many microVM computers may run at once; waking one more waits for another to park. */
   maxRunning: number
+  /** `CABOOSE_PUBLIC_URL`: where phones reach this host from anywhere, first in every pairing link. */
+  publicUrl: string | null
+  /** `CABOOSE_MDNS`: advertise `_caboose._tcp` on the LAN (default on). */
+  mdns: boolean
 }
 
 /** What `/v1/session` tells the app to speak on `/v1/display` (docs/architecture.md, docs/display.md). */
@@ -65,7 +70,15 @@ export function config(env: NodeJS.ProcessEnv): Config {
     agentRegistryUrl: registryUrl(env.CABOOSE_AGENT_REGISTRY_URL),
     agentIdleMs: integer(env.CABOOSE_AGENT_IDLE_MS, 600_000, 'CABOOSE_AGENT_IDLE_MS', 86_400_000),
     maxRunning: integer(env.CABOOSE_MAX_RUNNING, 4, 'CABOOSE_MAX_RUNNING', 64),
+    publicUrl: publicUrl(env.CABOOSE_PUBLIC_URL),
+    mdns: mdns(env.CABOOSE_MDNS),
   }
+}
+
+function mdns(value: string | undefined): boolean {
+  if (value === undefined || value === 'on') return true
+  if (value === 'off') return false
+  throw new Error('CABOOSE_MDNS must be "on" or "off"')
 }
 
 function registryUrl(value: string | undefined): string {
