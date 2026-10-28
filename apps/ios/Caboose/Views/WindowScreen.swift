@@ -7,6 +7,8 @@ import SwiftUI
 struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @State private var chromeVisible = true
+    @State private var verticalEdge: HorizontalEdge?
+    @State private var detectedToolbar = false
     @State private var askingAbout: RemoteWindow?
     @State private var showingApps = false
     @State private var showingOptions = false
@@ -17,9 +19,9 @@ struct WindowScreen: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
-                Color.black.ignoresSafeArea()
+                ShellBackground()
                 if let window = model.window(model.presentedWindowID) {
-                    WindowCardViewport(controlsVisible: chromeVisible) { proxy in
+                    WindowCardViewport(controlsVisible: chromeVisible, verticalEdge: $verticalEdge) { proxy in
                         surface(for: window, size: proxy.size)
                     }
                     if !chromeVisible { exitFullScreenHandle }
@@ -34,6 +36,12 @@ struct WindowScreen: View {
                 if let window = model.window(model.presentedWindowID) { controls(for: window) }
             }
             .toolbarVisibility(chromeVisible ? .automatic : .hidden, for: .navigationBar)
+            .onChange(of: verticalEdge, initial: true) { _, edge in
+                if edge != nil && !detectedToolbar {
+                    detectedToolbar = true
+                    chromeVisible = false
+                }
+            }
             .overlay(alignment: .top) { ApprovalBanner().padding(.top, 8) }
             .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
             .statusBarHidden(!chromeVisible)
@@ -133,10 +141,29 @@ struct WindowScreen: View {
     /// Thin strips along the side edges, clear of the app, that swipe the card.
     private func cardEdges(from window: RemoteWindow, width: CGFloat) -> some View {
         HStack(spacing: 0) {
-            Color.clear.frame(width: 14).contentShape(Rectangle()).gesture(cardSwipe(from: window, width: width))
+            if verticalEdge == .leading {
+                Color.clear.frame(width: 24).contentShape(Rectangle()).gesture(sidebarSwipe)
+            } else {
+                Color.clear.frame(width: 14).contentShape(Rectangle()).gesture(cardSwipe(from: window, width: width))
+            }
             Spacer(minLength: 0).allowsHitTesting(false)
-            Color.clear.frame(width: 14).contentShape(Rectangle()).gesture(cardSwipe(from: window, width: width))
+            if verticalEdge == .trailing {
+                Color.clear.frame(width: 24).contentShape(Rectangle()).gesture(sidebarSwipe)
+            } else {
+                Color.clear.frame(width: 14).contentShape(Rectangle()).gesture(cardSwipe(from: window, width: width))
+            }
         }
+    }
+
+    /// The native toolbar is revealed from its edge and dismissed towards that edge.
+    private var sidebarSwipe: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onEnded { value in
+                guard abs(value.translation.width) > 30 else { return }
+                withAnimation(.snappy) {
+                    chromeVisible = verticalEdge == .leading ? value.translation.width > 0 : value.translation.width < 0
+                }
+            }
     }
 
     private func cardSwipe(from window: RemoteWindow, width: CGFloat) -> some Gesture {
@@ -196,6 +223,12 @@ struct WindowScreen: View {
             .labelStyle(.iconOnly)
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
+            if verticalEdge != nil {
+                Button("Hide window controls", systemImage: "rectangle.expand.vertical") {
+                    withAnimation(.snappy) { chromeVisible = false }
+                }
+                .labelStyle(.iconOnly)
+            }
             Button("Switch App", systemImage: "macwindow.on.rectangle") { showingApps = true }
                 .labelStyle(.iconOnly)
                 .accessibilityValue(window.title.isEmpty ? "Window" : window.title)
@@ -276,16 +309,21 @@ struct WindowScreen: View {
 private struct WindowCardViewport<Content: View>: View {
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
     let controlsVisible: Bool
+    @Binding var verticalEdge: HorizontalEdge?
     let content: (GeometryProxy) -> Content
 
     var body: some View {
         GeometryReader(content: content)
             .ignoresSafeArea(.container, edges: ignoredEdges)
+            .onAppear { if let barEdge { verticalEdge = barEdge } }
+            .onChange(of: barEdge) { _, edge in
+                if controlsVisible || edge != nil { verticalEdge = edge }
+            }
     }
 
     private var ignoredEdges: Edge.Set {
         if !controlsVisible { return .all }
-        return barEdge == nil ? [] : [.top, .bottom]
+        return barEdge == nil && verticalEdge == nil ? [] : .all
     }
 }
 

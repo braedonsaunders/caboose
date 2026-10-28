@@ -9,14 +9,11 @@ import UIKit
 /// Its actions sit in the toolbar, so on iPhone Duo they join the tab bar in the vertical bar
 /// on the side, which stays fully shown as on every tab. The desktop fills everything beside
 /// the vertical bar, or between horizontal bars, and the computer lays its windows out for
-/// exactly that space; when the bars change, so does the desktop. Full Screen gives it the
-/// whole display until the handle at the top brings the bars back. Behind it all, under the
+/// exactly that space; when the bars change, so does the desktop. Full Screen opens the focused app as a native card. Behind it all, under the
 /// bar as well, is the desktop's photograph with a sheer of the brand gradient.
 struct DesktopScreen: View {
     @Environment(AppModel.self) private var model
     @State private var showAirPlay = false
-    @State private var fullScreen = false
-    @State private var showingFullScreenActions = false
 
     var body: some View {
         NavigationStack {
@@ -44,17 +41,7 @@ struct DesktopScreen: View {
             .toolbarVisibility(immersive ? .hidden : .automatic, for: .navigationBar, .tabBar)
             .statusBarHidden(immersive)
             .persistentSystemOverlays(immersive ? .hidden : .automatic)
-            .overlay(alignment: .top) { if fullScreen && model.yard.coverWindow == nil { exitFullScreenHandle } }
             .animation(.snappy, value: immersive)
-            .onChange(of: model.phase) { _, phase in if phase != .ready { fullScreen = false } }
-            .confirmationDialog("Full Screen", isPresented: $showingFullScreenActions, titleVisibility: .visible) {
-                if model.yardActive, let window = model.window(model.yard.layout.focused) {
-                    Button("Open App Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") {
-                        model.show(windowID: window.id)
-                    }
-                }
-                Button("Hide Desktop Bars", systemImage: "rectangle.expand.vertical") { fullScreen = true }
-            }
             .sheet(isPresented: $showAirPlay) {
                 AirPlaySheet().environment(model)
                     .presentationDetents([.medium])
@@ -62,10 +49,10 @@ struct DesktopScreen: View {
         }
     }
 
-    /// Full Screen from the toolbar, or a Switchyard window covering the screen: the bars,
+    /// A Switchyard window covering the screen: the bars,
     /// the status bar and the home indicator step aside.
     private var immersive: Bool {
-        fullScreen || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil)
+        model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil
     }
 
     /// The desktop's own actions. Agents and Apps are tabs beside them and Launchpad is in
@@ -109,26 +96,15 @@ struct DesktopScreen: View {
 
     private var fullScreenItem: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { showingFullScreenActions = true }
+            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") {
+                if let window = model.window(model.yard.layout.focused) { model.show(windowID: window.id) }
+            }
+                .disabled(!model.yardActive || model.window(model.yard.layout.focused) == nil)
                 .labelStyle(.iconOnly)
         }
     }
 
-    /// In full screen, a pull-down tab at the top edge brings the bars back.
-    private var exitFullScreenHandle: some View {
-        Capsule()
-            .fill(.white.opacity(0.45))
-            .frame(width: 44, height: 5)
-            .padding(.top, 6)
-            .frame(width: 120, height: 28, alignment: .top)
-            .contentShape(Rectangle())
-            .onTapGesture { fullScreen = false }
-            .gesture(DragGesture(minimumDistance: 8).onEnded { value in
-                if value.translation.height > 12 { fullScreen = false }
-            })
-            .accessibilityLabel("Exit Full Screen")
-            .accessibilityAddTraits(.isButton)
-    }
+
 }
 
 /// The phone's own desktop, edge to edge. Beside a vertical bar it takes the full height and
