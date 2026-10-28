@@ -12,6 +12,7 @@ try {
   docker('run', '-d', '--name', name, '-v', `${source}:/bundle:ro`, 'debian:trixie-slim', 'sleep', 'infinity')
   const run = (command: string, args: string[]) => docker('exec', '-u', 'root', name, command, ...args)
   run('/bin/sh', ['-c', 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 iproute2 dbus && useradd -m -u 1000 caboose && mkdir -p /home/caboose/Documents /run/caboose && echo keep > /home/caboose/Documents/sentinel && echo token > /run/caboose/xpra-token && chown caboose:caboose /run/caboose/xpra-token'])
+  run('/bin/sh', ['-c', `mkdir -p /etc/xdg/Thunar /home/caboose/.config/Thunar; printf '%s' '<actions><action><unique-id>existing</unique-id></action></actions>' > /etc/xdg/Thunar/uca.xml; printf '%s' owner-custom > /home/caboose/.config/Thunar/uca.xml`])
   const guest: AgentGuest = { run: async (cmd, args) => run(cmd, args) }
   await prepareContainerSession(guest)
   run('/usr/local/bin/caboose-session', ['start-printing'])
@@ -21,6 +22,10 @@ try {
   await upgradeComponents(guest, 'container', s => events.push(s), bundle)
   assert.equal(events.at(-1)?.state, 'succeeded', JSON.stringify(events.at(-1)))
   assert.equal(run('/bin/cat', ['/home/caboose/Documents/sentinel']).trim(), 'keep')
+  assert.equal(run('/bin/cat', ['/home/caboose/.config/Thunar/uca.xml']).trim(), 'owner-custom')
+  const actions = run('/bin/cat', ['/etc/xdg/Thunar/uca.xml'])
+  assert.match(actions, /<unique-id>existing<\/unique-id>/)
+  assert.match(actions, /<unique-id>caboose-share-to-iphone<\/unique-id>/)
   assert.equal(run('/bin/cat', ['/usr/local/share/caboose/components.version']).trim(), bundle.version)
   run('/bin/sh', ['-c', 'test -x /usr/local/bin/caboose-open && test -f /opt/caboose/files/caboose-files.py && test -f /opt/caboose/notifications/monitor.py && lpstat -p iPhone && ss -lnt | grep -q :14700'])
   run('/bin/bash', ['/bundle/components/install.sh', 'container'])
