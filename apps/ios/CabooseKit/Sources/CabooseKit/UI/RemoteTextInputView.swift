@@ -17,7 +17,49 @@ open class RemoteTextInputView: UIView, UITextInput {
 
     /// Prose gets autocorrect, capitals and spell checking; code and terminals get none.
     public var prefersProse = false {
-        didSet { if prefersProse != oldValue, isFirstResponder { reloadInputViews() } }
+        didSet {
+            keyBar.show(autocorrect: prefersProse)
+            if prefersProse != oldValue, isFirstResponder { reloadInputViews() }
+        }
+    }
+
+    private var stickyModifiers = Set<String>()
+    public var hasStickyModifiers: Bool { !stickyModifiers.isEmpty }
+    public private(set) var autocorrectChoice: Bool?
+    private lazy var keyBar: KeyBar = {
+        let bar = KeyBar()
+        bar.onAction = { [weak self] action in self?.keyBarAction(action) }
+        return bar
+    }()
+
+    open override var inputAccessoryView: UIView? { keyBar }
+    /// Sends a complete press/release to the view's current remote target.
+    open func sendKey(_ stroke: KeyStroke, modifiers: [String]) {}
+    /// Subclasses also clear their shared visibility state or pending focus requests.
+    open func dismissKeyboard() { resignFirstResponder() }
+
+    private func keyBarAction(_ action: KeyBar.Action) {
+        switch action {
+        case .modifier(let name):
+            if stickyModifiers.contains(name) { stickyModifiers.remove(name) } else { stickyModifiers.insert(name) }
+            keyBar.show(activeModifiers: stickyModifiers)
+        case .autocorrect:
+            autocorrectChoice = !prefersProse
+            prefersProse.toggle()
+        case .dismissKeyboard:
+            dismissKeyboard()
+        case .key(let name):
+            guard let stroke = Keysyms.special[name] else { return }
+            resetTyping()
+            sendKey(stroke, modifiers: Array(stickyModifiers))
+            releaseSticky()
+        case .text(let text): insertText(text)
+        }
+    }
+
+    private func releaseSticky() {
+        stickyModifiers.removeAll()
+        keyBar.show(activeModifiers: stickyModifiers)
     }
 
     /// Delivers the keystrokes that make the remote text match the buffer.
@@ -59,10 +101,24 @@ open class RemoteTextInputView: UIView, UITextInput {
     /// Always true: the remote field has text from before the buffer, and delete must reach it.
     public var hasText: Bool { true }
     open func insertText(_ text: String) {
+        if !stickyModifiers.isEmpty {
+            resetTyping()
+            for character in text {
+                guard let stroke = Keysyms.stroke(for: Character(character.lowercased())) else { continue }
+                sendKey(stroke, modifiers: Array(stickyModifiers))
+            }
+            releaseSticky()
+            return
+        }
         if text == "\n" || text == "\r" || text == "\r\n" { unmarkText() }
         perform { $0.insert(text) }
     }
-    open func deleteBackward() { perform { $0.deleteBackward() } }
+    open func deleteBackward() {
+        guard !stickyModifiers.isEmpty else { perform { $0.deleteBackward() }; return }
+        resetTyping()
+        if let stroke = Keysyms.special["BackSpace"] { sendKey(stroke, modifiers: Array(stickyModifiers)) }
+        releaseSticky()
+    }
 
     // MARK: UITextInputTraits
 

@@ -344,3 +344,12 @@ Run `scripts/check-agents.sh` for the real-device checklist against a matching h
 covers streaming, same-named queued attachments and Send Now, approvals, seat takeover,
 speech permissions, failed sends and chat switching. No scheduled-task or cross-agent
 memory feature is implied by the composer; conversation continuity belongs to the ACP agent.
+
+### Shared keyboard controls
+
+App cards, Desktop, the display trackpad and Terminal use CabooseKit's `KeyBar`.
+Hide Keyboard stays above the key row at its right edge on iPhone, Duo and iPad;
+scrolling the keys never hides it. Remote inputs share `RemoteTextInputView` for
+composition, autocorrect and sticky modifiers. Terminal adapts the same accessory
+to SwiftTerm's cursor modes and byte protocol. Verify folded/unfolded/rotated layouts,
+Hide and reopening, Ctrl/Alt, held arrows, Return and IME with `scripts/check-desktop.sh`.

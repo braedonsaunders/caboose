@@ -1651,6 +1651,12 @@ Pinned and recent apps are kept on the phone per computer.
   pasted multiline text and hardware Return leave it open. Otherwise autocorrect and
   capitals are on for prose and off in terminals and code editors, with an `Aa` toggle on
   the key bar.
+- **Keyboard accessory.** Remote app cards, tiled and free desktops, the external-display
+  trackpad and the native Terminal use one shared accessory. Hide Keyboard stays at the
+  top right above the horizontally scrolling key row; it never enters toolbar overflow.
+  The row offers Escape, Tab, sticky Ctrl/Alt, repeating arrows, navigation and shell symbols.
+  Remote inputs share the same text/composition and modifier handling, with an Aa control
+  for autocorrect; Terminal keeps its own terminal-byte semantics without prose correction.
 - **Pencil.** The client defines `pencil` samples (pressure, tilt, azimuth, hover), but the
   compositor does not advertise the `pencil` feature, so Apple Pencil acts as touch and
   Linux applications receive no pressure or tilt.

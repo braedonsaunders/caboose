@@ -59,9 +59,8 @@ struct DesktopScreen: View {
     /// the dock, so they are not repeated here. Full Screen gives way first when room runs out.
     @ToolbarContentBuilder private var actions: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
-            Button(model.keyboardVisible ? "Hide Keyboard" : "Keyboard",
-                   systemImage: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard") {
-                model.keyboardVisible.toggle()
+            if !model.keyboardVisible {
+                Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible = true }
             }
             Button("AirPlay", systemImage: model.airPlay.current != nil ? "airplay.audio" : "airplay.video") { showAirPlay = true }
         }
@@ -180,7 +179,7 @@ struct DesktopTouchArea: UIViewRepresentable {
     }
 }
 
-final class DesktopTouchSurface: UIView, UIKeyInput {
+final class DesktopTouchSurface: RemoteTextInputView {
     weak var desktop: DesktopModel?
     weak var model: AppModel?
 
@@ -293,6 +292,8 @@ final class DesktopTouchSurface: UIView, UIKeyInput {
             desktop.click(session: session, open: open)
             lastTap = (now, desktop.cursor)
         }
+        resetTyping()
+        prefersProse = autocorrectChoice ?? !RemoteWindowView.isCodeApp(focusedWindow)
         haptics.impactOccurred()
     }
 
@@ -306,27 +307,31 @@ final class DesktopTouchSurface: UIView, UIKeyInput {
     // MARK: Keyboard
 
     override var canBecomeFirstResponder: Bool { true }
-    var hasText: Bool { true }
-    var autocorrectionType: UITextAutocorrectionType = .no
-    var autocapitalizationType: UITextAutocapitalizationType = .none
 
     private var focusedWindow: RemoteWindow? {
         guard let session, let desktop else { return nil }
         return desktop.stacking.reversed().compactMap { session.windows[$0] }.first { !$0.isAuxiliary && desktop.isVisible($0.id) }
     }
 
-    func insertText(_ text: String) {
-        let target = focusedWindow
-        session?.type(text, in: target)
-        if (text == "\n" || text == "\r"), !RemoteWindowView.isCodeApp(target) {
-            model?.keyboardVisible = false
-            resignFirstResponder()
+    override func insertText(_ text: String) {
+        let modified = hasStickyModifiers
+        super.insertText(text)
+        if !modified, (text == "\n" || text == "\r" || text == "\r\n"), !RemoteWindowView.isCodeApp(focusedWindow) {
+            dismissKeyboard()
         }
     }
 
-    func deleteBackward() {
-        guard let stroke = Keysyms.special["BackSpace"] else { return }
-        session?.key(stroke, pressed: true, in: focusedWindow)
-        session?.key(stroke, pressed: false, in: focusedWindow)
+    override func dismissKeyboard() {
+        model?.keyboardVisible = false
+        super.dismissKeyboard()
     }
+
+    override func send(_ edits: [TypingBuffer.Edit]) { session?.edit(edits, in: focusedWindow) }
+    override var sendsMarkedTextAsPreedit: Bool { session?.composesText ?? false }
+    override func sendPreedit(_ text: String, selection: NSRange) { session?.compose(text, selection: selection, in: focusedWindow) }
+    override func sendKey(_ stroke: KeyStroke, modifiers: [String]) {
+        session?.key(stroke, pressed: true, in: focusedWindow, extraModifiers: modifiers)
+        session?.key(stroke, pressed: false, in: focusedWindow, extraModifiers: modifiers)
+    }
+
 }

@@ -96,6 +96,16 @@ Native Terminal tab:
     fills the height again. Repeat unfolded and rotated; the session menu stays
     accessible. On devices with horizontal bars, the grid stays between the bars.
 
+Shared keyboard accessory:
+12. In app cards, tiled/free Desktop, external-display trackpad and Terminal on
+    iPhone, Duo outer/inner displays and iPad, show the keyboard. Hide Keyboard
+    is always above the key row at the right, never in the ellipsis menu. Scroll
+    the key row: Hide stays visible. Hide, reopen, fold and rotate; content fits
+    above both rows. Ctrl/Alt modify one subsequent key, arrows repeat while held,
+    Escape/Tab/navigation work, and Return submits/dismisses outside code apps.
+    In remote apps verify Aa, QuickPath and marked-text composition; in Terminal
+    verify application-cursor arrows and explicit ANSI backgrounds still work.
+
 Capture evidence with:
   xcrun devicectl device info displays --device DEVICE
   xcrun devicectl device capture screenshot --device DEVICE --destination shot.png

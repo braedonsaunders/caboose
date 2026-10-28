@@ -251,12 +251,11 @@ struct WindowScreen: View {
                 .accessibilityValue(window.title.isEmpty ? "Window" : window.title)
                 .simultaneousGesture(toolbarDismissSwipe)
 
-            Button(model.keyboardVisible ? "Hide Keyboard" : "Keyboard",
-                   systemImage: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard") {
-                model.keyboardVisible.toggle()
+            if !model.keyboardVisible {
+                Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible = true }
+                    .labelStyle(.iconOnly)
+                    .simultaneousGesture(toolbarDismissSwipe)
             }
-            .labelStyle(.iconOnly)
-            .simultaneousGesture(toolbarDismissSwipe)
 
             Button("Window Options", systemImage: "ellipsis") { showingOptions = true }
                 .labelStyle(.iconOnly)

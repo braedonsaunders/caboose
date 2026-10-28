@@ -36,11 +36,13 @@ struct TrackpadScreen: View {
                 }
                 .glassEffect(.regular.interactive(), in: .circle)
                 .accessibilityLabel("New wallpaper")
-                Button { model.keyboardVisible.toggle() } label: {
-                    Image(systemName: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
-                        .frame(width: 40, height: 40)
+                if !model.keyboardVisible {
+                    Button { model.keyboardVisible = true } label: {
+                        Image(systemName: "keyboard").frame(width: 40, height: 40)
+                    }
+                    .glassEffect(.regular.interactive(), in: .circle)
+                    .accessibilityLabel("Keyboard")
                 }
-                .glassEffect(.regular.interactive(), in: .circle)
             }
             Trackpad(desktop: desktop, keyboardVisible: model.keyboardVisible)
                 .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
@@ -138,7 +140,7 @@ final class TrackpadSurface: RemoteTextInputView {
             case .endDrag: desktop?.endDrag(session: session)
             case .click(let button):
                 resetTyping()
-                defer { prefersProse = !RemoteWindowView.isCodeApp(focusedWindow) }
+                defer { prefersProse = autocorrectChoice ?? !RemoteWindowView.isCodeApp(focusedWindow) }
                 desktop?.click(button: button, session: session, open: open)
                 haptics.impactOccurred()
             case .doubleClick:
@@ -161,11 +163,21 @@ final class TrackpadSurface: RemoteTextInputView {
     }
 
     override func insertText(_ text: String) {
+        let modified = hasStickyModifiers
         super.insertText(text)
-        if (text == "\n" || text == "\r" || text == "\r\n"), !RemoteWindowView.isCodeApp(focusedWindow) {
-            model?.keyboardVisible = false
-            resignFirstResponder()
+        if !modified, (text == "\n" || text == "\r" || text == "\r\n"), !RemoteWindowView.isCodeApp(focusedWindow) {
+            dismissKeyboard()
         }
+    }
+
+    override func dismissKeyboard() {
+        model?.keyboardVisible = false
+        super.dismissKeyboard()
+    }
+
+    override func sendKey(_ stroke: KeyStroke, modifiers: [String]) {
+        session?.key(stroke, pressed: true, in: focusedWindow, extraModifiers: modifiers)
+        session?.key(stroke, pressed: false, in: focusedWindow, extraModifiers: modifiers)
     }
 
     override func send(_ edits: [TypingBuffer.Edit]) { session?.edit(edits, in: focusedWindow) }

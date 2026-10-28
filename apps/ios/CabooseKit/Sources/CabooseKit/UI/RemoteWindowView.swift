@@ -53,14 +53,6 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// hides it when it lands anywhere else; leave it nil and every tap shows the keyboard.
     public var onKeyboardWanted: ((Bool) -> Void)?
     private var focusCheck: TapTextFocus?
-    /// Ctrl/Alt from the key bar, applied to the next key and then released.
-    private var stickyModifiers = Set<String>()
-    private lazy var keyBar: KeyBar = {
-        let bar = KeyBar()
-        bar.onAction = { [weak self] action in self?.keyBarAction(action) }
-        return bar
-    }()
-
     public init(session: (any DisplaySession)?, window: RemoteWindow?) {
         self.session = session
         super.init(frame: .zero)
@@ -623,14 +615,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     // MARK: Keyboard — the software keyboard through UITextInput, hardware keys through presses.
 
     public override var canBecomeFirstResponder: Bool { isInteractive }
-    public override var inputAccessoryView: UIView? { isInteractive ? keyBar : nil }
-
-    public override var prefersProse: Bool {
-        didSet { keyBar.show(autocorrect: prefersProse) }
-    }
-
-    /// The owner's autocorrect choice from the key bar; nil follows the app (off for code).
-    private var autocorrectChoice: Bool?
+    public override var inputAccessoryView: UIView? { isInteractive ? super.inputAccessoryView : nil }
 
     /// Terminals and code editors, where autocorrect and automatic capitals get in the way.
     public static func isCodeApp(_ window: RemoteWindow?) -> Bool {
@@ -653,58 +638,22 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func insertText(_ text: String) {
-        guard !stickyModifiers.isEmpty else {
-            super.insertText(text)
-            if (text == "\n" || text == "\r" || text == "\r\n"), !Self.isCodeApp(remoteWindow) {
-                focusCheck = nil
-                onKeyboardWanted?(false)
-                resignFirstResponder()
-            }
-            return
-        }
-        resetTyping()
-        for character in text {
-            guard let stroke = Keysyms.stroke(for: Character(character.lowercased())) else { continue }
-            pressAndRelease(stroke, modifiers: Array(stickyModifiers))
-        }
-        releaseSticky()
-    }
-
-    private func keyBarAction(_ action: KeyBar.Action) {
-        switch action {
-        case .modifier(let name):
-            if stickyModifiers.contains(name) { stickyModifiers.remove(name) } else { stickyModifiers.insert(name) }
-            keyBar.show(activeModifiers: stickyModifiers)
-        case .autocorrect:
-            autocorrectChoice = !prefersProse
-            prefersProse = !prefersProse
-        case .key(let name):
-            guard let stroke = Keysyms.special[name] else { return }
-            resetTyping()
-            pressAndRelease(stroke, modifiers: Array(stickyModifiers))
-            releaseSticky()
-        case .text(let text):
-            insertText(text)
+        let modified = hasStickyModifiers
+        super.insertText(text)
+        if !modified, (text == "\n" || text == "\r" || text == "\r\n"), !Self.isCodeApp(remoteWindow) {
+            dismissKeyboard()
         }
     }
 
-    private func pressAndRelease(_ stroke: KeyStroke, modifiers: [String]) {
+    public override func dismissKeyboard() {
+        focusCheck = nil
+        onKeyboardWanted?(false)
+        super.dismissKeyboard()
+    }
+
+    public override func sendKey(_ stroke: KeyStroke, modifiers: [String]) {
         session?.key(stroke, pressed: true, in: remoteWindow, extraModifiers: modifiers)
         session?.key(stroke, pressed: false, in: remoteWindow, extraModifiers: modifiers)
-    }
-
-    private func releaseSticky() {
-        guard !stickyModifiers.isEmpty else { return }
-        stickyModifiers.removeAll()
-        keyBar.show(activeModifiers: stickyModifiers)
-    }
-
-    public override func deleteBackward() {
-        guard !stickyModifiers.isEmpty else { return super.deleteBackward() }
-        resetTyping()
-        guard let stroke = Keysyms.special["BackSpace"] else { return }
-        pressAndRelease(stroke, modifiers: Array(stickyModifiers))
-        releaseSticky()
     }
 
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {

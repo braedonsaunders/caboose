@@ -51,7 +51,7 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
         optionAsMetaKey = true
         keyboardAppearance = .dark
         indicatorStyle = .white
-        inputAccessoryView = keyRow
+        inputAccessoryView = keyRow.view
         keyRow.onAction = { [weak self] action in self?.keyRowAction(action) }
 
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:)))
