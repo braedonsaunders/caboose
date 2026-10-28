@@ -1,0 +1,8 @@
+{
+  "name": "notification",
+  "description": "",
+  "messages": [
+    {"direction": "server", "type": "notification", "type_id": 49, "fields": {"id": 3, "app": "Chromium", "body": "report.pdf\n2.1 MB", "summary": "Download complete"}}
+  ],
+  "hex": "3143000000a46269640363617070684368726f6d69756d64626f6479717265706f72742e7064660a322e31204d426773756d6d61727971446f776e6c6f616420636f6d706c657465"
+}

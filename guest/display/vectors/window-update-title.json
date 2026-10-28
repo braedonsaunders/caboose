@@ -1,0 +1,8 @@
+{
+  "name": "window-update-title",
+  "description": "Only the changed fields are present.",
+  "messages": [
+    {"direction": "server", "type": "window.update", "type_id": 3, "fields": {"id": 7, "title": "vim notes.md — Terminal"}}
+  ],
+  "hex": "0326000000a262696407657469746c65781976696d206e6f7465732e6d6420e28094205465726d696e616c"
+}

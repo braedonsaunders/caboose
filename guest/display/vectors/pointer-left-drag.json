@@ -1,0 +1,8 @@
+{
+  "name": "pointer-left-drag",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "pointer", "type_id": 146, "fields": {"x": {"$float": 10.5}, "y": {"$float": 20.0}, "id": 7, "buttons": 1}}
+  ],
+  "hex": "9224000000a46178fb40250000000000006179fb40340000000000006269640767627574746f6e7301"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "displays",
+  "description": "The phone rotated and the TV unplugged.",
+  "messages": [
+    {"direction": "client", "type": "displays", "type_id": 135, "fields": {"displays": [{"id": 1, "hdr": true, "scale": {"$float": 3.0}, "width": 2556, "height": 1179, "refresh_hz": {"$float": 120.0}}]}}
+  ],
+  "hex": "874b000000a168646973706c61797381a66269640163686472f5657363616c65fb40080000000000006577696474681909fc6668656967687419049b6a726566726573685f687afb405e000000000000"
+}
