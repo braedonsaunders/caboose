@@ -34,7 +34,8 @@ Wayland `wayland-caboose-0`, Xwayland `:110`; with `CABOOSE_GPU=wsl` it can use 
 through `/usr/lib/wsl/lib`), and `caboose-session ready-display` waits until it answers
 a hello made with the per-wake token. Launchers read the application environment from
 `/run/caboose/display.env` (sh syntax). Under Caboose Display Chromium runs as a native
-Wayland client. Xpra remains the default display.
+Wayland client; on WSL with software raster, because its Wayland GPU path needs a DRM
+render node WSL does not have. Xpra remains the default display.
 
 With the host session running, run `docker exec -u root caboose-owner bash -s <
 guest/container/check.sh` to check the live Xpra encoder and MP3 dependencies.
