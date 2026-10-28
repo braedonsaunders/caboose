@@ -1,6 +1,7 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { loadCatalog, parseCatalog } from './app-catalog-data.js'
+import { catalogIcon } from './app-catalog.js'
 
 describe('application catalog', () => {
   it('loads the reviewed entries and their pack memberships', () => {
@@ -25,6 +26,18 @@ describe('application catalog', () => {
       const source = entries.find(app => app.id === release.id)?.source
       expect(source).toMatchObject({ kind: 'deb', version: release.version, sha256: release.sha256, size: release.size, url: release.url })
     }
+  })
+  it('gives every app a 128-pixel PNG icon with its licence, and keeps no other icons', () => {
+    const apps = loadCatalog().apps
+    const files = readdirSync(new URL('../../../guest/catalog/icons/', import.meta.url))
+    for (const app of apps) {
+      const png = Buffer.from(catalogIcon(app.id)?.split(',')[1] ?? '', 'base64')
+      expect(png.subarray(0, 8).toString('hex'), app.id).toBe('89504e470d0a1a0a')
+      expect([png.readUInt32BE(16), png.readUInt32BE(20)], app.id).toEqual([128, 128])
+      expect(files.some(file => file === `${app.id}.LICENSE.txt` || file === `${app.id}.MIT.txt`), `${app.id} licence`).toBe(true)
+    }
+    const ids = new Set(apps.map(app => app.id))
+    expect(files.filter(file => !ids.has(file.split('.')[0]!))).toEqual([])
   })
   it('rejects malformed packages, URLs, duplicates and unknown packs', () => {
     for (const mutate of [

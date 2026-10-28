@@ -10,10 +10,11 @@ computer (see [`apps/host`](../../apps/host/README.md#catalog-and-craft-jobs) an
 | `catalog.json` | The packs and apps. |
 | `schema.json` | A JSON Schema describing `catalog.json`. |
 | `craft-releases.json` | The reviewed Craft releases: version, URL, byte count and SHA-256 for each. |
-| `icons/` | Each Craft app's icon (`<id>.png`) and licence files. |
+| `icons/` | Each app's 128-pixel icon (`<id>.png`) and its licence files. |
+| `extract-icons.sh` | Regenerates the Debian apps' icons from their packages. |
 
 Each app has an `id`, `name`, `summary`, `category`, the `packs` it belongs to, an `icon`
-name, its `desktopId`, and `fileTypes` (`extensions` and iOS `utTypes`) for opening documents
+name (the `Icon` key of its desktop entry), its `desktopId`, and `fileTypes` (`extensions` and iOS `utTypes`) for opening documents
 in place. Craft apps also name their `cli` and `mcp` commands, which Craft jobs and agent
 tasks use. An app's `source` is either:
 
@@ -37,9 +38,28 @@ and [LightCraft v0.14.0](https://github.com/storytold/lightcraft/blob/v0.14.0/RE
 Adobe Illustrator support depends on the file's PDF-compatible representation, RAW support
 varies by camera, and project files may reference media that must also be on the computer.
 
-The Craft icons are the upstream 128-pixel Linux app icons from each pinned release tag, from
+caboose-host sends each app's `icons/<id>.png` with the catalog, so clients can show an app
+before it is installed; a test requires an icon and a licence file for every app. The Craft
+icons are the upstream 128-pixel Linux app icons from each pinned release tag, from
 <https://github.com/storytold>; the apps are MIT OR Apache-2.0. The upstream launcher
 describes the Craft package layout at <https://github.com/storytold/craft-launcher>.
+
+The Debian apps' icons are their own hicolor theme icons, taken from the Debian 13 package
+that ships them (the app's package, or one built from the same source such as its `-data`
+package): the 256-pixel PNG scaled to 128 pixels, else the 128-pixel PNG, else the scalable
+SVG rendered at 128 pixels. Each `<id>.LICENSE.txt` names the file, package and version, and
+reproduces that package's `debian/copyright`, which gives the icon's copyright and licence.
+To regenerate them, with Docker:
+
+```sh
+guest/catalog/extract-icons.sh
+```
+
+It runs in a pinned `debian:trixie` amd64 image against a pinned snapshot.debian.org date
+(`SNAPSHOT` in the script) and finds the packages through the archive's Contents indexes, so
+re-running it gives the same files. It fails if an app's desktop entry names a different icon
+than `catalog.json`, or if no icon is found. Run it after adding a Debian app or changing its
+packages, and move `SNAPSHOT` forward to take newer packages.
 
 ## Updating a release
 

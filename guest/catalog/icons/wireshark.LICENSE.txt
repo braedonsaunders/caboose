@@ -1,0 +1,314 @@
+Wireshark icon: /usr/share/icons/hicolor/256x256/apps/org.wireshark.Wireshark.png from the Debian 13 package wireshark-common 4.4.19-0+deb13u1, scaled from 256×256 to 128×128.
+Copyright and licence follow, from /usr/share/doc/wireshark-common/copyright in wireshark-common 4.4.19-0+deb13u1.
+
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Wireshark
+Source: https://www.wireshark.org/
+
+Files: *
+Copyright: Gerald Combs <gerald@wireshark.org> and contributors
+Comment: Wireshark and the "fin" logo are trademarks of Gerald Combs.
+License: GPL-2+
+
+Files: debian/*
+Copyright: 1998-2008 Frederic Peters <fpeters@debian.org>
+           2005-2009 Joost Yervante Damad <andete@debian.org>
+           2009-2017 Balint Reczey <balint@balintreczey.hu>
+           2017-     Balint Reczey <balint.reczey@canonical.com>
+License: GPL-2+
+
+Files: debian/po/*
+Copyright: 2009 Martin Sin <martin.sin@zshk.cz>
+           2010, 2019 Joe Hansen <joedalton2@yahoo.dk>
+           2009, 2010, 2017 Helge Kreutzmann <debian@helgefjell.de>
+           2009, 2010 Software in the Public Interest
+           2009, 2010 Francisco Javier Cuadrado <fcocuadrado@gmail.com>
+           2009 Piarres Beobide <pi@beobide.net>
+           2010 Iñaki Larrañaga Murgoitio <dooteo@euskalgnu.org>
+           2009 Esko Arajärvi <edu@iki.fi>
+           2009, 2018 Debian French l10n team <debian-l10n-french@lists.debian.org>
+           2009 Simon Paillard <spaillard@debian.org>
+           2018 Jean-Philippe MENGUAL <mengualjeanphi@free.fr>
+           2011 Balint Reczey <balint@balintreczey.hu>
+           2009-2010 Luca Monducci <luca.mo@tiscali.it>
+           2009-2010 Hideki Yamane <henrich@debian.org>
+           2011 Jeroen Schot <schot@a-eskwadraat.nl>
+           2017 Frans Spiesschaert <Frans.Spiesschaert@yucom.be>
+           2009 Rafael Henrique da Silva Correia <rafaelhenriqu@gmail.com>
+           2010 Adriano Rafael Gomes <adrianorg@gmail.com>
+           2010,2017 Pedro Ribeiro <p.m42.ribeiro@gmail.com>
+           2018 Gali Anikina <merilaga@yandex.ru>
+           2009, 2010, 2018 Yuri Kozlov <yuray@komyakino.ru>
+           2011 Slavko <linux@slavino.sk>
+           2009, 2010 Martin Ågren <martin.agren@gmail.com>
+           2019 Balint Reczey <balint.reczey@canonical.com>
+           2014 Mert Dirik
+           2010 Free Software Foundation, Inc
+           2009-2010 Clytie Siddall <clytie@riverland.net.au>
+           2023 Atila KOÇ <koc@artielektronik.com.tr>
+           2025 Carles Pina i Estany <carles@pina.cat>
+License: GPL-2+
+
+Files: resources/freedesktop/org.wireshark.*.metainfo.xml
+Copyright: 2014 Richard Hughes <richard@hughsie.com>
+License: CC0-1.0
+ To the extent possible under law, the author(s) have dedicated all copyright
+ and related and neighboring rights to this software to the public domain
+ worldwide. This software is distributed without any warranty.
+ .
+ You should have received a copy of the CC0 Public Domain Dedication along with
+ this software. If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
+ .
+ On Debian systems, the complete text of the CC0 1.0 Universal license can be
+ found in ‘/usr/share/common-licenses/CC0-1.0’.
+
+Files: wsutil/g711.c
+Copyright: Sun Microsystems, Inc.
+License: public-domain
+ This source code is a product of Sun Microsystems, Inc. and is provided
+ for unrestricted use.  Users may copy or modify this source code without
+ charge.
+ .
+ SUN SOURCE CODE IS PROVIDED AS IS WITH NO WARRANTIES OF ANY KIND INCLUDING
+ THE WARRANTIES OF DESIGN, MERCHANTIBILITY AND FITNESS FOR A PARTICULAR
+ PURPOSE, OR ARISING FROM A COURSE OF DEALING, USAGE OR TRADE PRACTICE.
+ .
+ Sun source code is provided with no support and without any obligation on
+ the part of Sun Microsystems, Inc. to assist in its use, correction,
+ modification or enhancement.
+ .
+ SUN MICROSYSTEMS, INC. SHALL HAVE NO LIABILITY WITH RESPECT TO THE
+ INFRINGEMENT OF COPYRIGHTS, TRADE SECRETS OR ANY PATENTS BY THIS SOFTWARE
+ OR ANY PART THEREOF.
+ .
+ In no event will Sun Microsystems, Inc. be liable for any lost revenue
+ or profits or other special, indirect and consequential damages, even if
+ Sun has been advised of the possibility of such damages.
+ .
+ Sun Microsystems, Inc.
+ 2550 Garcia Avenue
+ Mountain View, California  94043
+
+Files: wsutil/ws_strptime.c
+Copyright: 1997, 1998, 2005, 2008 The NetBSD Foundation, Inc.
+License: BSD-2-clause-NetBSD
+ All rights reserved.
+ .
+ This code was contributed to The NetBSD Foundation by Klaus Klein.
+ Heavily optimised by David Laight
+ .
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+ ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+ TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+ BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ POSSIBILITY OF SUCH DAMAGE.
+
+Files: tools/lemon/lempar.c
+Copyright: 1991-1995 by D. Richard Hipp.
+License: LGPL-2+
+
+Files: epan/except.c
+Copyright: 1999 Kaz Kylheku <kaz@ashi.footprints.net>
+License: FSL-Kaz
+ Free Software License:
+ .
+ All rights are reserved by the author, with the following exceptions:
+ Permission is granted to freely reproduce and distribute this software,
+ possibly in exchange for a fee, provided that this copyright notice appears
+ intact. Permission is also granted to adapt this software to produce
+ derivative works, as long as the modified versions carry this copyright
+ notice and additional notices stating that the work has been modified.
+ This source code may be translated into executable form and incorporated
+ into proprietary software; there is no requirement for such software to
+ contain a copyright notice related to this source.
+
+Files: epan/in_cksum.c
+Copyright: 1988, 1992, 1993 The Regents of the University of California.
+License: BSD-3-clause
+ All rights reserved.
+ .
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+ 3. Neither the name of the University nor the names of its contributors
+    may be used to endorse or promote products derived from this software
+    without specific prior written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ SUCH DAMAGE.
+
+Files: epan/dissectors/packet-enc.c
+       epan/dissectors/packet-etherip.c
+       epan/dissectors/packet-ipsec-udp.c
+Copyright: 2003 Markus Friedl
+License: BSD-2-clause
+
+Files: epan/dissectors/packet-pflog.c
+Copyright: 2001 Mike Frantzen
+License: BSD-2-clause-no-conditions
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ .
+    - Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+      with the distribution.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ POSSIBILITY OF SUCH DAMAGE.
+
+Files: wiretap/erf.c
+       wiretap/erf.h
+Copyright: 2003 Endace Technology Ltd, Hamilton, New Zealand.
+License: BSD-3-clause-Endance
+ This software and documentation has been developed by Endace Technology Ltd.
+ along with the DAG PCI network capture cards. For further information please
+ visit http://www.endace.com/.
+ .
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are met:
+ .
+  1. Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+ .
+  2. Redistributions in binary form must reproduce the above copyright
+  notice, this list of conditions and the following disclaimer in the
+  documentation and/or other materials provided with the distribution.
+ .
+  3. The name of Endace Technology Ltd may not be used to endorse or promote
+  products derived from this software without specific prior written
+  permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY ENDACE TECHNOLOGY LTD ``AS IS'' AND ANY EXPRESS
+ OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+ EVENT SHALL ENDACE TECHNOLOGY LTD BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+ BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+ IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ POSSIBILITY OF SUCH DAMAGE.
+
+Files: wiretap/i4b_trace.h
+Copyright: 1997, 1999 Hellmuth Michaelis
+License: BSD-2-clause
+
+Files: epan/dissectors/pidl/rfr/rfr.idl
+       epan/dissectors/pidl/mapi/mapi.idl
+Copyright: 2008 Julien Kerihuel, OpenChange Project
+Comment: Note that those are interface definitions thus are not copyrightable
+         in FSF's view
+         http://lkml.iu.edu//hypermail/linux/kernel/0301.1/0362.html
+License: GPL-3+
+
+Files: tools/pidl/idl.yp
+Copyright: Andrew Tridgell <tridge@samba.org>
+License: GPL-3+
+
+License: BSD-2-clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ SUCH DAMAGE.
+
+License: GPL-2+
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; version 2 dated June, 1991, or (at
+ your option) any later version.
+ .
+ On Debian systems, the complete text of version 2 of the GNU General
+ Public License can be found in '/usr/share/common-licenses/GPL-2'.
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ .
+ On Debian systems, the full text of the
+ GNU General Public License version 3 can be found in the file
+ `/usr/share/common-licenses/GPL-3'.
+
+License: LGPL-2+
+ Copyright (C) 1991, 1992, 1996, 1998 Free Software Foundation, Inc.
+ This file is part of the GNU C Library.
+ .
+ The GNU C Library is free software; you can redistribute it and/or
+ modify it under the terms of the GNU Library General Public License as
+ published by the Free Software Foundation; either version 2 of the
+ License, or (at your option) any later version.
+ .
+ The GNU C Library is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ Library General Public License for more details.
+ .
+ You should have received a copy of the GNU Library General Public
+ License along with the GNU C Library; see the file COPYING.LIB.  If not,
+ write to the Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
+ Boston, MA  02110-1301,  USA.
