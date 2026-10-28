@@ -7,6 +7,8 @@ import UserNotifications
 /// The phone's view of its computer: credentials, wake state, the live session, and apps.
 @MainActor @Observable
 final class AppModel {
+    static let shared = AppModel()
+
     enum Phase: Equatable {
         case needsSetup
         case waking
@@ -28,6 +30,12 @@ final class AppModel {
 
     /// Linux pixels per iOS point. 2 gives crisp text with the guest running at 192 dpi.
     let pixelsPerPoint: CGFloat = 2
+
+    /// A TV or monitor is showing the desktop; the phone is its trackpad.
+    private(set) var externalDisplayActive = false
+    private(set) var desktop = DesktopModel(pixelsPerPoint: 1)
+    private var externalSize: CGSize = .zero
+    private var placedWindowIDs = Set<Int>()
 
     private var launchStartedAt: Date?
     private var knownWindowIDs = Set<Int>()
@@ -101,14 +109,25 @@ final class AppModel {
         if case .ready = phase { phase = .waking }
     }
 
+    private var lastDisplay: HostClient.Session.Display?
+
     private func startSession(host: HostClient, display: HostClient.Session.Display) {
         session?.disconnect()
-        let bounds = UIScreen.main.bounds
-        let longSide = max(bounds.width, bounds.height), shortSide = min(bounds.width, bounds.height)
-        // A square-ish desktop that fits either orientation, so rotating never strands a window offscreen.
-        let caps = ClientCapabilities(
-            desktopWidth: Int(longSide * pixelsPerPoint), desktopHeight: Int(max(longSide, shortSide) * pixelsPerPoint),
-            dpi: Int(96 * pixelsPerPoint), refreshRate: UIScreen.main.maximumFramesPerSecond)
+        lastDisplay = display
+        let caps: ClientCapabilities
+        if externalDisplayActive {
+            // The big screen at its own pixels: a real desktop, not a scaled phone.
+            let scale = desktop.pixelsPerPoint
+            caps = ClientCapabilities(desktopWidth: Int(externalSize.width * scale), desktopHeight: Int(externalSize.height * scale),
+                                      dpi: Int(96 * scale), refreshRate: 60)
+        } else {
+            let bounds = UIScreen.main.bounds
+            let longSide = max(bounds.width, bounds.height)
+            // A square desktop that fits either orientation, so rotating never strands a window offscreen.
+            caps = ClientCapabilities(desktopWidth: Int(longSide * pixelsPerPoint), desktopHeight: Int(longSide * pixelsPerPoint),
+                                      dpi: Int(96 * pixelsPerPoint), refreshRate: UIScreen.main.maximumFramesPerSecond)
+        }
+        placedWindowIDs.removeAll()
         let session = XpraSession(displayURL: host.socketURL(display.path), token: host.token, password: display.token,
                                   capabilities: caps)
         session.onClipboardText = { text in UIPasteboard.general.string = text }
@@ -151,6 +170,14 @@ final class AppModel {
         let current = Set(session.windows.keys)
         let added = current.subtracting(knownWindowIDs)
         knownWindowIDs = current
+        if externalDisplayActive {
+            desktop.sync(with: Array(session.windows.values))
+            for (index, window) in appWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
+                placedWindowIDs.insert(window.id)
+                session.configure(window, frame: desktop.placement(for: window, index: index))
+                desktop.raise(window.id)
+            }
+        }
         if let presented = presentedWindowID, !current.contains(presented) {
             presentedWindowID = appWindows.first?.id
         }
@@ -158,6 +185,30 @@ final class AppModel {
             launching = nil
             presentedWindowID = newest.id
         }
+    }
+
+    // MARK: External display
+
+    func externalDisplayConnected(size: CGSize, scale: CGFloat) {
+        externalSize = size
+        desktop = DesktopModel(pixelsPerPoint: max(1, scale))
+        desktop.size = size
+        desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
+        externalDisplayActive = true
+        presentedWindowID = nil
+        reconnectForDisplayChange()
+    }
+
+    func externalDisplayDisconnected() {
+        externalDisplayActive = false
+        reconnectForDisplayChange()
+    }
+
+    /// The Linux apps keep running; only the display size the server lays them out for changes.
+    private func reconnectForDisplayChange() {
+        guard let host, let lastDisplay else { return }
+        phase = .connecting
+        startSession(host: host, display: lastDisplay)
     }
 
     // MARK: Apps
@@ -198,7 +249,7 @@ final class AppModel {
         }
     }
 
-    private func matches(_ window: RemoteWindow, _ app: HostClient.App) -> Bool {
+    func matches(_ window: RemoteWindow, _ app: HostClient.App) -> Bool {
         guard let appClass = window.appClass else { return false }
         let id = app.id.replacingOccurrences(of: ".desktop", with: "").lowercased()
         return [appClass.instance.lowercased(), appClass.name.lowercased()].contains { $0 == id || id.hasSuffix($0) || $0.hasSuffix(id) }

@@ -1,0 +1,195 @@
+import CabooseKit
+import Observation
+import SwiftUI
+
+/// The big-screen desktop: what is on a TV or monitor when the phone becomes its trackpad.
+///
+/// Linux windows keep the server's geometry (in Linux pixels); the desktop draws them at
+/// `frame / pixelsPerPoint` with a native title bar above each one, a dock, and a cursor.
+/// Every pointer action is hit-tested here, in desktop points, so the phone's trackpad,
+/// a mouse, or touch on an iPad all reach the same windows the same way.
+@MainActor @Observable
+final class DesktopModel {
+    enum Hit: Equatable {
+        case none
+        case dock(String)
+        case titleBar(Int)
+        case close(Int)
+        case minimize(Int)
+        case content(Int, CGPoint)  // window id, point in window pixels
+        case resize(Int)
+    }
+
+    static let titleBarHeight: CGFloat = 30
+    static let dockHeight: CGFloat = 76
+
+    let pixelsPerPoint: CGFloat
+    var size: CGSize = .zero
+    var cursor = CGPoint(x: 400, y: 300)
+    var hovered: Hit = .none
+    /// Back-to-front stacking order of window ids.
+    private(set) var stacking: [Int] = []
+    private(set) var minimized = Set<Int>()
+    var dockFrames: [String: CGRect] = [:]
+
+    private var drag: (hit: Hit, start: CGPoint, frame: CGRect)?
+
+    init(pixelsPerPoint: CGFloat) { self.pixelsPerPoint = pixelsPerPoint }
+
+    func sync(with windows: [RemoteWindow]) {
+        let ids = Set(windows.map(\.id))
+        stacking.removeAll { !ids.contains($0) }
+        for window in windows.sorted(by: { $0.id < $1.id }) where !stacking.contains(window.id) { stacking.append(window.id) }
+        minimized.formIntersection(ids)
+    }
+
+    func raise(_ id: Int) {
+        stacking.removeAll { $0 == id }
+        stacking.append(id)
+        minimized.remove(id)
+    }
+
+    func minimize(_ id: Int) { minimized.insert(id) }
+
+    func isVisible(_ id: Int) -> Bool { !minimized.contains(id) }
+
+    /// The window's content rect in desktop points.
+    func contentRect(_ window: RemoteWindow) -> CGRect {
+        CGRect(x: window.frame.minX / pixelsPerPoint, y: window.frame.minY / pixelsPerPoint + (window.isAuxiliary ? 0 : Self.titleBarHeight),
+               width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
+    }
+
+    func chromeRect(_ window: RemoteWindow) -> CGRect {
+        let content = contentRect(window)
+        return window.isAuxiliary ? content : content.inset(by: UIEdgeInsets(top: -Self.titleBarHeight, left: 0, bottom: 0, right: 0))
+    }
+
+    func hitTest(_ point: CGPoint, windows: [Int: RemoteWindow]) -> Hit {
+        for (id, frame) in dockFrames where frame.contains(point) { return .dock(id) }
+        for id in stacking.reversed() where isVisible(id) {
+            guard let window = windows[id] else { continue }
+            let chrome = chromeRect(window)
+            guard chrome.contains(point) else { continue }
+            let content = contentRect(window)
+            if content.contains(point) {
+                if !window.isAuxiliary, point.x > content.maxX - 18, point.y > content.maxY - 18 { return .resize(id) }
+                let local = CGPoint(x: (point.x - content.minX) * pixelsPerPoint, y: (point.y - content.minY) * pixelsPerPoint)
+                return .content(id, local)
+            }
+            let x = point.x - chrome.minX
+            if x < 26 { return .close(id) }
+            if x < 46 { return .minimize(id) }
+            return .titleBar(id)
+        }
+        return .none
+    }
+
+    // MARK: Pointer
+
+    func move(by delta: CGPoint, session: XpraSession?) {
+        cursor = CGPoint(x: min(max(0, cursor.x + delta.x), size.width), y: min(max(0, cursor.y + delta.y), size.height))
+        guard let session else { return }
+        if let drag {
+            dragMoved(drag, session: session)
+            return
+        }
+        hovered = hitTest(cursor, windows: session.windows)
+        if case .content(let id, let local) = hovered, let window = session.windows[id] {
+            session.pointerMove(in: window, to: local)
+        }
+    }
+
+    func click(button: Int = 1, session: XpraSession?, open: (String) -> Void) {
+        guard let session else { return }
+        let hit = hitTest(cursor, windows: session.windows)
+        switch hit {
+        case .dock(let id): open(id)
+        case .close(let id): if let window = session.windows[id] { session.close(window) }
+        case .minimize(let id): minimize(id)
+        case .titleBar(let id), .resize(let id): raise(id); focus(id, session)
+        case .content(let id, let local):
+            guard let window = session.windows[id] else { return }
+            if !window.isAuxiliary { raise(id) }
+            focus(id, session)
+            session.pointerMove(in: window, to: local)
+            session.pointerButton(in: window, button: button, pressed: true, at: local)
+            session.pointerButton(in: window, button: button, pressed: false, at: local)
+        case .none:
+            break
+        }
+    }
+
+    func beginDrag(session: XpraSession?) {
+        guard let session else { return }
+        let hit = hitTest(cursor, windows: session.windows)
+        switch hit {
+        case .titleBar(let id), .resize(let id):
+            guard let window = session.windows[id] else { return }
+            raise(id)
+            drag = (hit, cursor, window.frame)
+        case .content(let id, let local):
+            guard let window = session.windows[id] else { return }
+            raise(id)
+            focus(id, session)
+            session.pointerButton(in: window, button: 1, pressed: true, at: local)
+            drag = (hit, cursor, window.frame)
+        default:
+            break
+        }
+    }
+
+    func endDrag(session: XpraSession?) {
+        defer { drag = nil }
+        guard let drag, let session else { return }
+        if case .content(let id, _) = drag.hit, let window = session.windows[id] {
+            let content = contentRect(window)
+            let local = CGPoint(x: (cursor.x - content.minX) * pixelsPerPoint, y: (cursor.y - content.minY) * pixelsPerPoint)
+            session.pointerButton(in: window, button: 1, pressed: false, at: local)
+        }
+    }
+
+    func scroll(by delta: CGPoint, session: XpraSession?) {
+        guard let session, case .content(let id, let local) = hitTest(cursor, windows: session.windows),
+              let window = session.windows[id] else { return }
+        session.scroll(in: window, dx: delta.x * pixelsPerPoint, dy: delta.y * pixelsPerPoint, at: local)
+    }
+
+    private func dragMoved(_ drag: (hit: Hit, start: CGPoint, frame: CGRect), session: XpraSession) {
+        let dx = (cursor.x - drag.start.x) * pixelsPerPoint, dy = (cursor.y - drag.start.y) * pixelsPerPoint
+        switch drag.hit {
+        case .titleBar(let id):
+            guard let window = session.windows[id] else { return }
+            let top = DesktopModel.titleBarHeight * pixelsPerPoint
+            session.configure(window, frame: CGRect(x: drag.frame.minX + dx, y: max(top, drag.frame.minY + dy),
+                                                    width: drag.frame.width, height: drag.frame.height))
+        case .resize(let id):
+            guard let window = session.windows[id] else { return }
+            let minimum = window.minimumSize ?? CGSize(width: 240, height: 160)
+            session.configure(window, frame: CGRect(x: drag.frame.minX, y: drag.frame.minY,
+                                                    width: max(minimum.width, drag.frame.width + dx),
+                                                    height: max(minimum.height, drag.frame.height + dy)))
+        case .content(let id, _):
+            guard let window = session.windows[id] else { return }
+            let content = contentRect(window)
+            session.pointerMove(in: window, to: CGPoint(x: (cursor.x - content.minX) * pixelsPerPoint,
+                                                        y: (cursor.y - content.minY) * pixelsPerPoint))
+        default:
+            break
+        }
+    }
+
+    private func focus(_ id: Int, _ session: XpraSession) {
+        session.focus(session.windows[id])
+    }
+
+    /// A good first place for a new window: centred, cascading, clear of the dock.
+    func placement(for window: RemoteWindow, index: Int) -> CGRect {
+        let usable = CGSize(width: size.width, height: size.height - Self.dockHeight - Self.titleBarHeight)
+        let width = min(window.frame.width / pixelsPerPoint, usable.width * 0.8)
+        let height = min(window.frame.height / pixelsPerPoint, usable.height * 0.85)
+        let offset = CGFloat(index % 6) * 28
+        let origin = CGPoint(x: (size.width - width) / 2 - 84 + offset, y: Self.titleBarHeight + 40 + offset)
+        return CGRect(x: origin.x * pixelsPerPoint, y: origin.y * pixelsPerPoint,
+                      width: width * pixelsPerPoint, height: height * pixelsPerPoint).integral
+    }
+}
