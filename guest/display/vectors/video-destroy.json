@@ -1,0 +1,8 @@
+{
+  "name": "video-destroy",
+  "description": "",
+  "messages": [
+    {"direction": "server", "type": "video.destroy", "type_id": 21, "fields": {"id": 1}}
+  ],
+  "hex": "1505000000a162696401"
+}

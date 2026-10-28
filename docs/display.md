@@ -76,10 +76,9 @@ each one falls back to the one below it.
 3. **Detected motion (X11 and everything else).** A region that updates at video rates is
    encoded as video, at the size it is actually shown on the client, as Xpra does today.
 
-Protocol additions: `video.create { id, window, rect, codec, extradata?, source: passthrough|surface|motion }`,
-`video.frame { id, pts_us, keyframe, data }`, `video.update { id, rect, clip, z }`,
-`video.destroy { id }`, and client `video.ack`/`video.keyframe`. "Play on iPhone / Apple
-TV" (media handoff) stays as a user action layered on top, not as the mechanism.
+On the wire these are the `video.*` messages (see "Video streams" below). "Play on
+iPhone / Apple TV" (media handoff) stays as a user action layered on top, not as the
+mechanism.
 
 ## Caboose Display Protocol (v0)
 
@@ -135,8 +134,8 @@ order, and its `features`; then sends `window.create` for every live window, fol
 keyframe of each.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `audio`, `xwayland`. A feature is listed only when the server
-implements it.
+`cursor-named`, `tiles`, `audio`, `xwayland`, `video`. A feature is listed only when the
+server implements it.
 
 ### Pacing and flow control
 
@@ -161,6 +160,11 @@ Server → client (`0x01`–`0x7F`):
 | `0x04` | `window.destroy` | `id` |
 | `0x10` | `frame` | `id`, `codec: "hevc"\|"av1"\|"h264"`, `keyframe: bool`, `pts_us: uint`, `rect`, `crop`, `data: bytes` |
 | `0x11` | `tile` | `id`, `rect`, `format: "png"\|"webp-lossless"`, `data: bytes` |
+| `0x12` | `video.create` | `id`, `window`, `rect`, `clip?: rect`, `z?: int`, `codec: "h264"\|"hevc"\|"av1"\|"vp9"`, `source: "passthrough"\|"surface"\|"motion"`, `color?: { primaries, transfer, matrix, full_range }`, `extradata?: bytes` |
+| `0x13` | `video.frame` | `id`, `seq`, `keyframe: bool`, `pts_us?`, `data: bytes` |
+| `0x14` | `video.update` | `id`, `rect?`, `clip?`, `z?` |
+| `0x15` | `video.destroy` | `id` |
+| `0x16` | `video.present` | `id`, `seq`, `pts_us` |
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …) |
@@ -174,13 +178,15 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]` |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]` |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
 | `0x85` | `close` | `id` |
 | `0x86` | `request_keyframe` | `id` |
 | `0x87` | `displays` | `displays: [display]`; replaces the set on a live session (rotation, a TV plugged in, a zoom change). The server re-lays-out and answers with `window.update` |
+| `0x88` | `video.ack` | `id`, `seq`: the frame is queued for display |
+| `0x89` | `video.keyframe` | `id`: the decoder failed; frames are dropped until a keyframe |
 | `0x90` | `touch` | `id`, `points: [{ slot, phase: "down"\|"motion"\|"up"\|"cancel", x, y, force?, radius? }]`; one message is one `wl_touch.frame` |
 | `0x91` | `pencil` | `id`, `phase: "down"\|"motion"\|"up"\|"cancel"\|"hover"\|"leave"`, `x`, `y`, `pressure` (0…1), `tilt: [x_deg, y_deg]`, `azimuth_deg` |
 | `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool }` (pixels when precise, otherwise wheel clicks) |
@@ -206,6 +212,40 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
 - Clients keep pointer gestures (tap, long-press right-click, swipe to scroll) for
   `xwayland: true` windows and send real touch to native Wayland ones, because most X11
   apps turn a touch drag into a selection.
+
+### Video streams
+
+A video stream is layered into a window (`window`) by the client: it decodes it with its
+own decoder and draws it at `rect` (window-local display pixels, the whole picture,
+scaled to fit), showing only `clip` when present (a scrolled or cropped player, or an
+H.264 1088-line picture whose 1080 lines are visible). Every video stream is drawn above
+the window's own picture, ordered by `z` (higher on top); window pictures carry no alpha,
+so the server sends the visible region as `clip` instead of relying on a hole in the
+window. Video ids are their own namespace, unique for the server's lifetime.
+
+- The client lists in `hello.video_decoders` what it can play as a video stream. The server
+  creates streams only in those codecs and sends `video` in `features`; anything else
+  stays in the window's picture.
+- `video.frame` carries one access unit in **decode order**: `seq` starts at 0 for each
+  stream and increases by one. `data` is Annex-B with parameter sets on keyframes for
+  H.264 and HEVC, a temporal unit of OBUs with the sequence header on keyframes for AV1,
+  and a frame or superframe for VP9. `extradata` is only for a codec whose parameters
+  cannot travel in band.
+- **`surface` and `motion` streams** carry `pts_us` (server `CLOCK_MONOTONIC` at the
+  commit, like `frame`), have no reordering, and are shown as soon as they are decoded.
+- **`passthrough` streams** carry no `pts_us`: the application's decoder is the server's
+  VA-API driver, which sees no timestamps. The client decodes in order and keeps decoded
+  pictures by `seq`; `video.present { id, seq, pts_us }` says the application is showing
+  frame `seq` now, and the client shows it then. The application has already synchronised
+  that moment with its own audio clock.
+- `color` describes the stream in ITU-T H.273 code points (for example `9/16/9`, BT.2020
+  with PQ); with it a client whose display reports `hdr` shows HDR video with EDR. Window
+  pictures stay SDR.
+- `video.ack` says a frame is queued for display; for `surface` and `motion` streams it is
+  the flow control of the window stream (at most 2 unacknowledged), for `passthrough` it is
+  only latency accounting, because the application paces itself. After a
+  `video.keyframe` the server sends a keyframe (a passthrough stream is replayed from its
+  last one).
 
 ## Status
 

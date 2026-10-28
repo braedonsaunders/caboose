@@ -1,0 +1,8 @@
+{
+  "name": "video-create-passthrough",
+  "description": "A passthrough HEVC stream in BT.2020 PQ (H.273: primaries 9, transfer 16, matrix 9), clipped by the 1080 crop of a 1088-line picture.",
+  "messages": [
+    {"direction": "server", "type": "video.create", "type_id": 18, "fields": {"z": 0, "id": 1, "clip": [0, 120, 1179, 660], "rect": [0, 120, 1179, 663], "codec": "hevc", "color": {"matrix": 9, "transfer": 16, "primaries": 9, "full_range": false}, "source": "passthrough", "window": 7}}
+  ],
+  "hex": "127c000000a8617a006269640164636c69708400187819049b19029464726563748400187819049b19029765636f646563646865766365636f6c6f72a4666d617472697809687472616e7366657210697072696d6172696573096a66756c6c5f72616e6765f466736f757263656b706173737468726f7567686677696e646f7707"
+}

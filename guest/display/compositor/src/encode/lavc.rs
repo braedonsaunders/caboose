@@ -29,14 +29,16 @@ pub fn encoder_name(family: Family, codec: Codec) -> &'static str {
         (Family::Nvenc, Codec::H264) => "h264_nvenc",
         (Family::Nvenc, Codec::Hevc) => "hevc_nvenc",
         (Family::Nvenc, Codec::Av1) => "av1_nvenc",
+        (Family::Software, Codec::Vp9) => "libvpx-vp9",
+        (Family::Nvenc, Codec::Vp9) => "vp9 (NVENC has no VP9 encoder)",
     }
 }
 
 /// Opens a small encoder and encodes one picture, so a codec is offered only if it
 /// actually works in this build of libavcodec.
 pub fn probe(family: Family, codec: Codec) -> Result<(), EncodeError> {
-    if family == Family::Software && codec == Codec::Av1 {
-        return Err(EncodeError("AV1 software encoding is not offered".into()));
+    if codec == Codec::Vp9 || (family == Family::Software && codec == Codec::Av1) {
+        return Err(EncodeError(format!("{} is not offered for window streams", codec.as_str())));
     }
     let settings = Settings { threads: 1, ..Settings::default() };
     // NVENC's minimum is larger than 64x64 on some generations.
@@ -145,7 +147,9 @@ impl LavcEncoder {
                     &format!("keyint=-1:scenecut=0:repeat-headers=1:log-level=none:pools={pools}:frame-threads=1"),
                 );
             }
-            (Family::Software, Codec::Av1) => return Err(EncodeError("AV1 software encoding is not offered".into())),
+            (_, Codec::Vp9) | (Family::Software, Codec::Av1) => {
+                return Err(EncodeError(format!("{} is not offered for window streams", codec.as_str())))
+            }
         }
         let encoder = video.open_with(options)?;
         let picture = ff::frame::Video::new(format, width, height);
