@@ -82,8 +82,8 @@ its offset, is replaced by a second connection, exits, and checks the closes tha
 
 The layout and work-area geometry are unit-tested (`swift test --filter 'SwitchyardTests|DesktopGeometryTests'`).
 Run `sh scripts/check-desktop.sh` for the real-device checks, including external-display
-maximizing and browser controls. The gestures and picture need a device with the computer
-awake. On the Desktop tab, with three apps open:
+maximizing, browser controls and app-card toolbars on Duo and ordinary iPhones. The gestures
+and picture need a device with the computer awake. On the Desktop tab, with three apps open:
 
 1. Upright iPhone: one full-width column; the side edges and the dock's cars move between
    columns, and the lit car follows. Drag a grabber to the bottom quarter of another tile: they stack.
@@ -93,8 +93,9 @@ awake. On the Desktop tab, with three apps open:
    hardware keyboard (hold ⌘ to see them listed). Plain ⌘C still copies in the app.
 4. Open a menu and a dialog in a tile: both appear over that tile. Park and wake: the same
    columns come back.
-5. Tap a grabber twice, use its Full Screen button or menu, or press ⌘⌥F: the same app
-   card as Apps opens. Close the card: Desktop and its tile layout return. Rotate/fold while
+5. Tap a tile to focus it, then use the trailing toolbar's Full Screen control and Open App
+   Full Screen; double-tap the grabber, use its menu, or press ⌘⌥F: the same app card as
+   Apps opens. Close the card: Desktop and its tile layout return. Rotate/fold while
    the card is up, hide/show its controls, then dismiss: both card and desktop fit their
    available viewport. Browser content keeps its own double taps. Two fingers tapped on a
    window right-click, with a ring where they landed.
