@@ -1,10 +1,10 @@
 # caboose-host
 
 The server half of Caboose. `caboose-host` is a TypeScript service on Node 22 that runs on
-a Linux machine, owns one computer (a Debian 13 guest), and gives the iOS app and the web
-console one authenticated API for it. It wakes the computer on demand, parks it when idle,
-relays the computer's two Caboose Display instances over WebSocket, and runs apps, agent
-tasks, file operations and catalog installs inside it. The HTTP contract is in
+a Linux machine, runs computers (Debian 13 guests, the owner's and any others made in the
+console), and gives the iOS app and the web console one authenticated API for them. It wakes
+a computer on demand, parks it when idle, relays its two Caboose Display instances over
+WebSocket, and runs apps, agent tasks, file operations and catalog installs inside it. The HTTP contract is in
 [`docs/architecture.md`](../../docs/architecture.md); the display protocol it relays is in
 [`docs/display.md`](../../docs/display.md).
 
@@ -13,11 +13,12 @@ tasks, file operations and catalog installs inside it. The HTTP contract is in
 | Path | What |
 | --- | --- |
 | `src/index.ts`, `src/config.ts` | Startup and the environment it reads. |
-| `src/server.ts`, `src/lifecycle.ts` | The HTTP and WebSocket API, the owner token check, and the wake/lease/park state machine. |
+| `src/server.ts`, `src/lifecycle.ts` | The HTTP and WebSocket API, the owner and phone token checks, routing to each computer, and the wake/lease/park state machine. |
+| `src/computers.ts` | The computers a host runs, phone sign-ins and pairing codes. |
 | `src/driver.ts` | The microVM runtime: Cloud Hypervisor through `@braedonsaunders/appkit-desk`, parked with a memory snapshot. |
 | `src/container-driver.ts` | The container runtime: the computer as a Docker container, parked by freezing it. |
 | `src/display.ts` | Display ports, the per-wake token, and the launch environment each display writes. |
-| `src/network.ts` | The guest's TAP device, NAT and network fence. |
+| `src/network.ts` | Each guest's TAP device and /30, NAT and the network fence. |
 | `src/agents.ts`, `src/registry.ts`, `src/agent-catalog.ts` | Agent tasks, the Agent Client Protocol registry, and agent install and sign-in. |
 | `src/fs-proxy.ts`, `src/files.ts` | `/v1/fs` and `/v1/files`, through the guest's file service. |
 | `src/screen.ts` | `/v1/screen/*`, the owner's display through its accessibility tree. |
@@ -129,13 +130,14 @@ administrators can read the token from the container's configuration.
 | `CABOOSE_BIND` | `127.0.0.1` | Listen address (`0.0.0.0` for every IPv4 interface). |
 | `CABOOSE_PORT` | `7310` | Listen port. |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Guest image, overlays, snapshots and the host's state files. |
-| `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The computer's size until saved settings exist. |
-| `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, until saved settings exist. |
+| `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
+| `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
+| `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor (microVM). |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container`. |
 | `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` | The computer's image (container). |
-| `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The computer's container name (container). |
-| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume name or absolute host path for `/home/caboose` (container). |
+| `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The owner's computer's container name; others are `caboose-<id>` (container). |
+| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume name or absolute host path for the owner's `/home/caboose`; others append `-<id>` (container). |
 | `CABOOSE_CONTAINER_ARGS` | empty | Extra `docker run` arguments, whitespace-separated (container). |
 | `CABOOSE_GPU` | `auto` | `wsl`, `nvidia`, `dri` or `none`; `auto` detects `/dev/dxg`, then NVIDIA, then `/dev/dri/renderD128` (container). |
 | `CABOOSE_GUEST_LAN` | `deny` | `allow` lets the computer reach private networks. |
@@ -147,20 +149,39 @@ administrators can read the token from the container's configuration.
 Invalid values stop the host at startup. `GET /v1/host` reports the version, runtime, GPU,
 image and the non-secret settings the host started with.
 
-The computer's name, memory, CPUs, idle timeout and default agent are saved in
+The owner's computer's name, memory, CPUs, idle timeout and default agent are saved in
 `caboose.json` under `CABOOSE_IMAGE_ROOT` (atomic rename, mode 0600); saved values override
 the environment. Invalid or unreadable settings stop startup rather than reverting. Back the
-file up with the disks and do not edit it while the host runs. The agent registry cache
-(`agent-registry.json`), push devices (`push-devices.json`) and Live Activities
-(`activities.json`) live beside it.
+file up with the disks and do not edit it while the host runs. Its push devices
+(`push-devices.json`) and Live Activities (`activities.json`) live beside it, with the agent
+registry cache (`agent-registry.json`), the other computers (`computers.json`) and phone
+sign-ins (`phones.json`, SHA-256 digests only). Every other computer keeps its own
+`caboose.json`, `push-devices.json` and `activities.json` in `computers/<id>/`.
+
+## Computers
+
+The owner token manages every computer through `/v1/computers` (list, make, delete) and
+reaches any one under `/v1/computers/<id>/…`; the routes without an id serve the owner's
+computer, as they always have. Each computer has its own disk, settings, lifecycle, agents,
+catalog, notifications and phones, and its own network slot: a microVM on slot *n* gets TAP
+`caboose<n>` and `192.0.2.(4n+2)`, a container its own container, home, bridge network and
+loopback ports from 20000 + 10 × *n*. The owner's computer is slot 0 with the names and
+addresses below, and cannot be deleted. Deleting another computer removes its disk, files,
+network and phones.
+
+Phones sign in to one computer each. The console's **Sign in a phone** asks for a pairing
+code (`POST /v1/computers/<id>/pairing`), shown as a QR code; the app trades it once, within
+ten minutes, for its own token through `POST /v1/pair`. A phone token reaches only its own
+computer's routes and is signed out from the console. The owner token still works on a
+phone, as it did before.
 
 ## Runtimes
 
 **microVM** (default). The computer is a Cloud Hypervisor microVM managed by appkit-desk.
-Its disk is a reflink copy-on-write overlay of `base.raw` (`overlays/owner.raw`); parking
-writes a memory snapshot (`overlays/owner.snapshot`), so a parked computer survives a host
-restart. Commands run in the guest over vsock through the guest agent. The guest has address
-`192.0.2.2` on the TAP device `caboose0`.
+Its disk is a reflink copy-on-write overlay of `base.raw` (`overlays/<id>.raw`, `owner.raw`
+for the owner's); parking writes a memory snapshot (`overlays/<id>.snapshot`), so a parked
+computer survives a host restart. Commands run in the guest over vsock through the guest
+agent. The owner's guest has address `192.0.2.2` on the TAP device `caboose0`.
 
 **Container** (`CABOOSE_RUNTIME=container`). For a GPU a container can use but a VM cannot:
 WSL2's `/dev/dxg`, an NVIDIA GPU through the NVIDIA container toolkit, or Linux render nodes.
@@ -173,9 +194,10 @@ but a Docker or host restart loses the running session and the next wake starts 
 the home intact. A cold restart stops and starts the same container, so installed packages
 and the catalog's rollback cache survive; removing the container discards them.
 
-The computer is fenced in both runtimes: it can open no connection to the host and reaches
-only the public internet, not private, link-local (cloud metadata), CGNAT or Tailscale
-addresses. `CABOOSE_GUEST_LAN=allow` lets a self-hosted computer reach your LAN.
+A computer is fenced in both runtimes: it can open no connection to the host or to another
+computer, and reaches only the public internet, not private, link-local (cloud metadata),
+CGNAT or Tailscale addresses. `CABOOSE_GUEST_LAN=allow` lets a self-hosted computer reach
+your LAN, never another computer.
 
 ## Displays
 
@@ -204,7 +226,7 @@ The web console and the iOS app use `GET /v1/computer`, `PATCH /v1/computer/sett
 timeout changes apply immediately. CPU and memory changes apply on a cold restart; resuming
 a memory snapshot keeps its previous resources. The response reports `activeResources` and
 `restartRequired`, also while parked; the microVM records applied resources in
-`overlays/owner.resources.json`.
+`overlays/<id>.resources.json`.
 
 Restart requires `{ "confirm": true }`. It closes client connections, ends agent tasks,
 discards open application memory and boots the existing disk; it does not restart the Linux
@@ -214,7 +236,8 @@ guest is restarted anyway and the failure is kept in `lastError`, and, as after 
 loss, unsaved writes can be lost. Park instead keeps application memory.
 
 The host serves the built console at `/`. Static assets and console routes are public; every
-`/v1` request needs the owner token. Missing assets return 404.
+`/v1` request but `POST /v1/pair` needs the owner token or a phone token. Missing assets
+return 404.
 
 ## Agents, files and the screen
 
@@ -310,6 +333,7 @@ require `CABOOSE_URL`; the others default to `http://127.0.0.1:7310`. Run them f
 | `node apps/host/scripts/check-lineup.mjs` | Opens Mousepad, btop and OpenCode and requires a new window for each on the owner's display. Leaves them open and does not park. |
 | `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft if needed, launches it and requires a new window. Close any PhotoCraft window first. |
 | `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |
+| `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk; the owner's computer is only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
 | `node apps/host/scripts/check-fs.mjs` | Creates a temporary directory, uploads, lists, downloads a byte range, moves, and trashes its files and the directory. |
 | `node apps/host/scripts/check-agents.mjs [--agent <id>] [--install] [--open]` | Saves a file to `~/Downloads`, lists the registry, and runs a real task with the given agent (default: the computer's default agent) that asks before acting with an attachment, approves it through the API, and replies. The agent must be signed in; `--install` installs it first; `--open` also opens https://example.com on the owner's display. |

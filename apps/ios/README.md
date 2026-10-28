@@ -31,6 +31,15 @@ with the keychain group `<team>.com.braedonsaunders.caboose.shared`, through whi
 share the host address and token; the app, Files and Share extensions also share the
 application group `group.com.braedonsaunders.caboose`.
 
+## Sign in
+
+Open the console's **Phones** tab for a computer and choose **Sign in a phone**, then scan
+the QR code with the iPhone's camera (or open its `caboose://connect?host=…&code=…` link on
+the phone). The app trades the single-use code for its own token through `POST /v1/pair`
+(`Caboose/Host/Pairing.swift`) at the first of the link's addresses that answers. The
+sign-in screen also takes an address with a typed pairing code, or with a token, and older
+links that carry `token=` still work.
+
 ## Test
 
 ```sh
