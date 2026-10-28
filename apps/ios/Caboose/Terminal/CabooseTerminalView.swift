@@ -34,8 +34,7 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
         super.init(frame: .zero, font: nil, options: options)
         terminalDelegate = self
         applyFont()
-        // SwiftTerm's Metal renderer also clears with this color. Keep both the
-        // render surface and its layer transparent; TerminalScreen paints one navy field.
+        // TerminalScreen paints the navy field behind the transparent grid.
         nativeBackgroundColor = .clear
         nativeForegroundColor = TerminalTheme.foreground
         backgroundOpacity = 0
@@ -92,13 +91,6 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
 
     isolated deinit {
         observers.forEach(NotificationCenter.default.removeObserver)
-    }
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        // The GPU renderer draws the same picture with less CPU; the view falls back to Core
-        // Graphics on a device without Metal.
-        if window != nil { try? setUseMetal(true) }
     }
 
     @objc private func hideKeyboardForReading(_ tap: UITapGestureRecognizer) {
