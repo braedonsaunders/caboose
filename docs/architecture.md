@@ -806,7 +806,8 @@ The iOS build derives its alternate-handler document declarations from `guest/ca
 `apps/ios/scripts/document-types.py --write` updates the checked snapshot and the build checks it
 before generating the app Info.plist. Catalog extensions without a recorded system identifier get
 an imported Caboose UTI. The list is limited to associations recorded in the catalog; an empty
-file type list is not evidence that an app handles a type.
+file type list is not evidence that an app handles a type. Project files can reference media
+separately; opening one document does not upload those dependencies.
 
 A file URL delivered to the app opens a chooser of catalog applications that list its extension
 or type, including installable apps with progress, and other installed apps. For an external file,

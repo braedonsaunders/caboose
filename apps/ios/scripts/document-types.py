@@ -18,7 +18,7 @@ KNOWN = {
  'bmp':'com.microsoft.bmp', 'heic':'public.heic', 'heif':'public.heif', 'dng':'com.adobe.raw-image',
  'mp4':'public.mpeg-4', 'm4v':'com.apple.m4v-video', 'mov':'com.apple.quicktime-movie',
  'mkv':'org.matroska.mkv', 'webm':'org.webmproject.webm', 'avi':'public.avi', 'mpeg':'public.mpeg',
- 'svg':'public.svg-image', 'pdf':'com.adobe.pdf', 'idml':'com.adobe.indesign-idml',
+ 'svg':'public.svg-image', 'ai':'com.adobe.illustrator.ai-image', 'pdf':'com.adobe.pdf', 'idml':'com.adobe.indesign-idml',
  'docx':'org.openxmlformats.wordprocessingml.document', 'doc':'com.microsoft.word.doc',
  'odt':'org.oasis-open.opendocument.text', 'rtf':'public.rtf', 'md':'net.daringfireball.markdown',
  'html':'public.html', 'txt':'public.plain-text', 'xlsx':'org.openxmlformats.spreadsheetml.sheet',
