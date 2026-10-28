@@ -28,6 +28,17 @@ if [ ! -S /run/dbus/system_bus_socket ]; then dbus-daemon --system --fork; fi
 if [ ! -S "$XDG_RUNTIME_DIR/bus" ]; then
   runuser -u caboose -- dbus-daemon --session --address="unix:path=$XDG_RUNTIME_DIR/bus" --fork
 fi
+# One monitor per session bus; it does not own the notification service.
+start_notifications() {
+  local pidfile="$XDG_RUNTIME_DIR/caboose-notifications.pid"
+  if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then return; fi
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" \
+    /bin/sh -c 'echo $$ > "$XDG_RUNTIME_DIR/caboose-notifications.pid"; exec python3 /opt/caboose/notifications/monitor.py' \
+    >>"$CABOOSE_HOME/.cache/caboose-notifications.log" 2>&1 < /dev/null &
+}
+install -d -o caboose -g caboose -m 0700 "$CABOOSE_HOME/.cache"
+start_notifications
 # Start the display's accessibility bus before any app, so every app on it joins that bus
 # (see guest/desktop-mcp/README.md). Safe to repeat; an app still runs without it.
 a11y_bus() {
@@ -37,11 +48,17 @@ a11y_bus() {
 start_display() {
   local display=$1 port=$2 speaker=$3
   if runuser -u caboose -- env DISPLAY="$display" xpra info "$display" >/dev/null 2>&1; then a11y_bus "$display"; return; fi
+  # Each seat has its own session bus, so agent notifications never reach the owner.
+  local bus="$XDG_RUNTIME_DIR/bus"
+  if [ "$display" = :101 ]; then
+    bus="$XDG_RUNTIME_DIR/agent-bus"
+    if [ ! -S "$bus" ]; then runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork; fi
+  fi
   # Xpra's packaged config switches GTK's accessibility bridge off for the apps it starts.
-  runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
     xpra seamless "$display" --daemon=yes --bind-ws="0.0.0.0:$port" \
     --ws-auth=file:filename=/run/caboose/xpra-token --html=off --clipboard=on \
-    --notifications=on --file-transfer=on --mdns=off --printing=off --webcam=off \
+    --dbus-launch=no --notifications=on --file-transfer=on --mdns=off --printing=off --webcam=off \
     --speaker="$speaker" --microphone=off --env=NO_AT_BRIDGE=0 --start-env=GTK_A11Y=atspi
   a11y_bus "$display"
 }
@@ -57,6 +74,13 @@ ready() {
 # Xwayland, streaming each window on WebSocket port 14600. Launchers read the
 # application environment from /run/caboose/display.env once it is ready.
 start_caboose_display() {
+  # Caboose Display does not provide Xpra's notification D-Bus service.
+  local notification_pid="$XDG_RUNTIME_DIR/caboose-notification-daemon.pid"
+  if ! [ -f "$notification_pid" ] || ! kill -0 "$(cat "$notification_pid")" 2>/dev/null; then
+    runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" \
+      /bin/sh -c 'echo $$ > "$XDG_RUNTIME_DIR/caboose-notification-daemon.pid"; exec python3 /opt/caboose/notifications/daemon.py' \
+      >>"$CABOOSE_HOME/.cache/caboose-notification-daemon.log" 2>&1 < /dev/null &
+  fi
   if caboose-display-probe --check --token-file /run/caboose/xpra-token >/dev/null 2>&1; then return; fi
   # The VA-API passthrough driver exports decode surfaces through /dev/udmabuf (passed in
   # on hosts with a render node); this container's node is the session user's to use.

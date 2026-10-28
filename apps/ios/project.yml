@@ -26,10 +26,19 @@ targets:
     sources:
       - path: Caboose
         excludes: ["Config/*.xcconfig"]
+      - path: Shared
     dependencies:
       - package: CabooseKit
       - target: CabooseShare
+      - target: CabooseWidgets
     settings:
+      configs:
+        Debug:
+          APS_ENVIRONMENT: development
+          CABOOSE_APNS_ENVIRONMENT: sandbox
+        Release:
+          APS_ENVIRONMENT: production
+          CABOOSE_APNS_ENVIRONMENT: production
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.braedonsaunders.caboose
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -47,3 +56,17 @@ targets:
         PRODUCT_NAME: CabooseShare
         INFOPLIST_FILE: Share/Info.plist
         CODE_SIGN_ENTITLEMENTS: Share/Share.entitlements
+
+  CabooseWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widgets
+        excludes: ["Info.plist"]
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.braedonsaunders.caboose.widgets
+        PRODUCT_NAME: CabooseWidgets
+        INFOPLIST_FILE: Widgets/Info.plist
+        SKIP_INSTALL: YES

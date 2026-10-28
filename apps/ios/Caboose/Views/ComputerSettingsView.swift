@@ -5,6 +5,7 @@ import SwiftUI
 struct ComputerSettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @State private var push = PushCoordinator.shared
     @State private var draft: HostClient.ComputerStatus.Settings?
     @State private var loadError: String?
     @State private var saveError: String?
@@ -91,6 +92,19 @@ struct ComputerSettingsView: View {
                 }
             }
 
+            if status.capabilities.push == true {
+                Section {
+                    Toggle("Approval requests", isOn: $push.approvals)
+                    Toggle("Finished tasks", isOn: $push.tasks)
+                    Toggle("Desktop notifications", isOn: $push.desktop)
+                    if let error = push.error { Text(error).font(.footnote).foregroundStyle(.orange) }
+                    Button("Enable Notifications") { Task { await push.enable() } }
+                } header: {
+                    Text("Notifications on This Device")
+                } footer: {
+                    Text("Choose what can reach you when Caboose is closed. Enable notifications in iOS to receive them.")
+                }
+            }
             Section {
                 TextField("Name", text: binding(\.name))
                     .textInputAutocapitalization(.words)

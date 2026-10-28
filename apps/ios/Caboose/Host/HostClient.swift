@@ -59,6 +59,7 @@ struct HostClient: Sendable {
         }
         struct Capabilities: Decodable, Equatable, Sendable {
             var restart: Bool
+            var push: Bool?
         }
         struct Bounds: Decodable, Equatable, Sendable {
             var min: Int

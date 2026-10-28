@@ -8,6 +8,50 @@ remote desktop: each Linux application arrives as its own native iOS surface.
 This document is the contract every component is built against. Change it in the
 same pull request as the code that changes the contract.
 
+## Notifications
+
+The host has an optional APNs provider configured with a private .p8 path, key ID,
+team ID and app topic. `GET /v1/computer` reports `capabilities.push` when configured.
+An authenticated `POST /v1/devices/push` accepts `{ token, environment, kinds }`,
+where environment is `sandbox` or `production` and kinds is a subset of `approval`,
+`task`, and `desktop`; registration replaces the same token's settings. `DELETE` accepts
+`{ token }`. The private device list is persisted atomically beside the computer
+settings. APNs 410 Unregistered responses remove the affected registration, unless it
+was registered again while the request was in flight. Provider JWTs are refreshed after
+50 minutes. With no foreground app control socket connected, new agent approvals and succeeded or
+failed tasks generate grouped APNs alerts for devices that enabled the corresponding
+kind. The app identifies its foreground control socket with `?foreground=1` and closes it
+on backgrounding; other control clients do not suppress alerts. APNs delivery is best effort.
+
+The iOS Computer settings offer per-device switches when APNs is configured. Enabling
+notifications requests permission, registers the device and sends its APNs token; notification
+approval actions call the existing approval API and task taps open the task. Sign-out requests
+unregistration. The guest monitors owner-seat D-Bus notification calls and writes private,
+bounded transient records in its cache. The host drains them while the computer is running;
+old records expire. The agent seat uses its own session bus, so its notifications do not enter
+the owner's queue. Caboose Display runs a small D-Bus notification endpoint; Xpra provides
+its own. Linux notifications do not carry a reliable window identifier, so tapping one returns
+to the app.
+
+Live Activities use `JobAttributes { jobID, kind, title }` and `ContentState { status, detail }`.
+The app starts one for each running agent task; it registers its ActivityKit update token using
+`POST /v1/activities` with `{ activityId, jobId, token, environment }`. The host sends updates
+and an end over APNs with the `.push-type.liveactivity` topic as the agent changes state; the
+app also updates or ends an activity while foregrounded. A device can register a push-to-start
+token with `POST /v1/activities/start-token { deviceId, token, environment }`; the host uses
+it when a task starts without a foreground app. The corresponding DELETE requests take
+`{ activityId }` and `{ deviceId }`. Tokens and the latest 200 job states are private and stored atomically beside settings. A late update-token registration is reconciled with the latest saved job state.
+The app unregisters on sign-out. The shared widget extension renders the Lock Screen and
+Dynamic Island and opens agent tasks on tap.
+
+Other host jobs can call `POST /v1/jobs/activity` with `{ start, job: { id, kind, title, status,
+detail } }`; `start` is a boolean, status is `running`, `paused`, `succeeded`, `failed`, or
+`cancelled`, and the final three end an activity. Producers publish their own state and use the
+same identifiers when registering an activity. This is the interface for app installs and
+future exports; those producers have not been wired into it by this lane. APNs is best effort;
+real delivery and push-to-start need a signed device and configured credentials.
+
+
 ## iOS weave
 
 The guest installs `caboose-open URL` and `caboose-share FILE...` on both images.
@@ -184,6 +228,11 @@ HTTP API (all JSON, all behind `Authorization: Bearer <device token>`):
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/v1/health` | host + KVM + desk host stats |
+| `POST` | `/v1/devices/push` | register or replace a push device and its enabled kinds |
+| `DELETE` | `/v1/devices/push` | unregister a push device by token |
+| `POST`, `DELETE` | `/v1/activities` | register an ActivityKit update token or remove an activity |
+| `POST`, `DELETE` | `/v1/activities/start-token` | register or remove a device's ActivityKit push-to-start token |
+| `POST` | `/v1/jobs/activity` | publish a generic job state to its Live Activities |
 | `POST` | `/v1/session` | wake the user's computer (start or resume), ensure its display server is up, return `{ state, display: { path, token, protocol }, computer: { name, image, memoryMb, vcpus } }`. `protocol` is `"xpra-ws"` (the default) or `"caboose-display"` (`CABOOSE_DISPLAY=caboose`, docs/display.md); clients treat any other value as `"xpra-ws"` |
 | `GET` | `/v1/display` | **WebSocket.** Binary relay to the owner's display in the guest: Xpra's WS on 14500, or caboose-display's on 14600. Subprotocol passthrough (`binary`). One relay per client connection |
 | `GET` | `/v1/catalog` | catalog, packs, installed versions and operation state |
@@ -211,7 +260,7 @@ Management status has this shape (resources are MiB and idle time is millisecond
   restartRequired: boolean,
   clients: { display: number, control: number },
   tasks: { running: number, paused: number },
-  capabilities: { restart: boolean },
+  capabilities: { restart: boolean, push: boolean },
   lastError: string | null
 }
 ```
@@ -361,8 +410,8 @@ Swift, SwiftUI shell over UIKit surfaces, iOS 26+, project generated by XcodeGen
 - **Share extension.** `CabooseShare` takes pages, text, photos and files from the iOS
   share sheet: `POST /v1/open` for a page, `POST /v1/files` into Downloads, or a new agent
   task with them attached. The app and the extension share the pairing through a Keychain
-  access group. Push notifications need APNs credentials on the host and are not built:
-  approvals and results reach the phone while the app is open.
+  access group. Push alerts for agent approvals and results are available when configured on the host;
+  see Notifications.
 
 ### 4. AppKit upstream
 
