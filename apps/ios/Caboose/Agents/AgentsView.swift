@@ -1,10 +1,9 @@
 import SwiftUI
 
 /// Settings › Agents: the ACP registry's agents on this computer — install, sign in, give an
-/// API key, choose the default — and who the On iPhone agent hands work to.
+/// API key, choose the default.
 struct AgentsView: View {
     @Environment(AppModel.self) private var model
-    @AppStorage("caboose.agent.delegate") private var delegate = ""
     @State private var search = ""
 
     var body: some View {
@@ -23,16 +22,8 @@ struct AgentsView: View {
                     })) {
                         ForEach(agents.installedAgents) { Text($0.name).tag($0.id) }
                     }
-                    if OnDeviceAgent.isAvailable {
-                        Picker("On iPhone Hands Work To", selection: $delegate) {
-                            Text("The Default Agent").tag("")
-                            ForEach(agents.installedAgents) { Text($0.name).tag($0.id) }
-                        }
-                    }
                 } footer: {
-                    Text(OnDeviceAgent.isAvailable
-                         ? "The Ask bar uses the default agent unless you pick another. On iPhone runs Apple's on-device model: it opens apps and pages, types and presses buttons itself, and hands anything bigger to this agent."
-                         : "The Ask bar uses the default agent unless you pick another.")
+                    Text("A new chat goes to the default agent unless you pick another in the composer.")
                 }
             }
             let installed = shown.filter(\.isInstalled)

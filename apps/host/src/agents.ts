@@ -49,6 +49,8 @@ export interface AgentTask {
   attachments?: string[]
   /** Set when the task failed because the agent is signed out: the ways to sign in. */
   signIn?: SignInMethod[]
+  /** Replies sent while the agent was working, oldest first; they go to it together as its next turn. */
+  queued?: string[]
 }
 
 export type AgentEvent =
@@ -60,6 +62,26 @@ export type AgentEvent =
   | { type: 'agent.task.approval'; id: string; request: PendingApproval }
   | { type: 'agent.task.approval.resolved'; id: string; requestId: string; allow: boolean }
   | { type: 'agent.task.replied'; id: string; prompt: string; turn: number }
+  /** The replies waiting for the agent's turn to end changed. */
+  | { type: 'agent.task.queued'; id: string; queued: string[] }
+  /** One entry of the current turn's transcript, as `GET /v1/agent/tasks/:id/transcript` returns them. */
+  | { type: 'agent.task.event'; id: string; turn: number; entry: TranscriptEntry }
+
+/**
+ * One line of a task's transcript as clients see it: the runner's event (guest/agentd/README.md),
+ * checked and trimmed, without session bookkeeping.
+ */
+export type TranscriptEntry = { at?: string } & (
+  | { type: 'user'; turn: number; text: string; attachments?: string[] }
+  | { type: 'text' | 'thought' | 'notice'; text: string }
+  | { type: 'tool'; toolId: string; title: string; kind: string; status: string; detail?: string }
+  | { type: 'tool_update'; toolId: string; title: string; kind: string; status: string }
+  | { type: 'plan'; entries: Array<{ content: string; status: string }> }
+  | { type: 'permission'; requestId: string | null; tool: string; summary: string; auto: boolean }
+  | { type: 'permission_resolved'; requestId: string; allow: boolean; message?: string }
+  | { type: 'usage'; used: number; size: number; cost?: { amount: number; currency: string } }
+  | { type: 'turn_end'; turn: number; stopReason: string; summary: string }
+  | { type: 'turn_failed' | 'auth_required'; turn: number; message: string })
 
 export interface AgentGuest {
   /** Runs a command in the guest as root; resolves stdout, rejects on non-zero exit. */
@@ -105,11 +127,15 @@ const AGENT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const MAX_PROMPT = 32_000
 const MAX_ATTACHMENTS = 4
+/** Replies that can wait for a working agent. */
+const MAX_QUEUED = 10
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 /** Transcript bytes read per poll tick across all live tasks, shared between them. */
 const POLL_BUDGET = 1024 * 1024
 const MIN_TASK_CHUNK = 64 * 1024
 const DEFAULT_IDLE_MS = 10 * 60_000
+/** The most of a transcript `transcript()` reads, from its end. */
+const TRANSCRIPT_LIMIT = 2 * 1024 * 1024
 /** Clients that predate the registry name the two agents they knew. */
 const LEGACY_AGENTS: Readonly<Record<string, string>> = { claude: 'claude-acp', codex: 'codex-acp' }
 
@@ -222,6 +248,59 @@ function readSignIn(value: unknown): SignInMethod[] {
   })
 }
 
+const TEXT_LIMIT = 16_000
+
+/** The runner's transcript line as a client entry; undefined for bookkeeping and lines it cannot read. */
+export function transcriptEntry(line: string): TranscriptEntry | undefined {
+  let event: any
+  try { event = JSON.parse(line) } catch { return undefined }
+  if (!event || typeof event !== 'object') return undefined
+  const text = (value: unknown, limit = TEXT_LIMIT) => typeof value === 'string' ? value.slice(0, limit) : ''
+  const turn = Number.isSafeInteger(event.turn) ? event.turn as number : undefined
+  const at = typeof event.at === 'string' ? { at: event.at.slice(0, 40) } : {}
+  switch (event.type) {
+    case 'user': {
+      if (turn === undefined) return undefined
+      const attachments = Array.isArray(event.attachments) ? event.attachments.filter((path: unknown) => typeof path === 'string').slice(0, 4) : []
+      return { type: 'user', ...at, turn, text: text(event.text, 32_000), ...(attachments.length ? { attachments } : {}) }
+    }
+    case 'text': case 'thought': case 'notice':
+      return text(event.text).trim() ? { type: event.type, ...at, text: text(event.text) } : undefined
+    case 'tool': case 'tool_update': {
+      if (typeof event.id !== 'string' || !event.id) return undefined
+      const base = { ...at, toolId: event.id.slice(0, 200), title: text(event.title, 500) || 'Tool', kind: text(event.kind, 40) || 'other', status: text(event.status, 40) || 'pending' }
+      if (event.type === 'tool_update') return { type: 'tool_update', ...base }
+      return { type: 'tool', ...base, ...(typeof event.detail === 'string' && event.detail ? { detail: event.detail.slice(0, 1000) } : {}) }
+    }
+    case 'plan':
+      return {
+        type: 'plan', ...at,
+        entries: Array.isArray(event.entries) ? event.entries.slice(0, 50).map((entry: any) => ({ content: text(entry?.content, 500), status: text(entry?.status, 40) || 'pending' })) : [],
+      }
+    case 'permission':
+      return {
+        type: 'permission', ...at, requestId: typeof event.requestId === 'string' && REQUEST_ID.test(event.requestId) ? event.requestId : null,
+        tool: text(event.tool, 200) || 'Tool', summary: text(event.summary, 300), auto: event.auto === true,
+      }
+    case 'permission_resolved':
+      if (typeof event.requestId !== 'string' || !REQUEST_ID.test(event.requestId)) return undefined
+      return { type: 'permission_resolved', ...at, requestId: event.requestId, allow: event.allow === true, ...(typeof event.message === 'string' && event.message ? { message: event.message.slice(0, 2000) } : {}) }
+    case 'usage': {
+      if (!Number.isFinite(event.used) || !Number.isFinite(event.size)) return undefined
+      const cost = event.cost && Number.isFinite(event.cost.amount) && typeof event.cost.currency === 'string' ? { cost: { amount: event.cost.amount as number, currency: event.cost.currency.slice(0, 10) } } : {}
+      return { type: 'usage', ...at, used: event.used, size: event.size, ...cost }
+    }
+    case 'turn_end':
+      if (turn === undefined) return undefined
+      return { type: 'turn_end', ...at, turn, stopReason: text(event.stopReason, 40) || 'end_turn', summary: text(event.summary, 2000) }
+    case 'turn_failed': case 'auth_required':
+      if (turn === undefined) return undefined
+      return { type: event.type, ...at, turn, message: text(event.message, 2000) }
+    default:
+      return undefined
+  }
+}
+
 /** One line for the owner about what an approval request would do, when the runner gave none. */
 export function describeRequest(tool: string, input: unknown): string {
   const fields = input && typeof input === 'object' ? input as Record<string, unknown> : {}
@@ -258,6 +337,8 @@ interface Tracked {
   /** Approval requests the agent is waiting on, oldest first. */
   pending: Array<PendingApproval & { requestedAt: string }>
   replying?: boolean
+  /** Replies waiting for the current turn to end. Kept in memory: a host restart drops them. */
+  queue: string[]
 }
 
 export class AgentTasks {
@@ -332,7 +413,7 @@ export class AgentTasks {
       id, agent: agentId, agentName: launch.name, prompt, status: 'running', startedAt: new Date().toISOString(), turns: 1, approvals,
       ...(attachments.length ? { attachments } : {}),
     }
-    this.tracked.set(id, { task, offset: 0, carry: Buffer.alloc(0), turn: 0, resumable: true, pending: [] })
+    this.tracked.set(id, { task, offset: 0, carry: Buffer.alloc(0), turn: 0, resumable: true, pending: [], queue: [] })
     this.releases.set(id, this.acquire())
     this.emit({ type: 'agent.task.started', id, agent: agentId, agentName: launch.name, prompt })
     this.ensurePolling()
@@ -352,17 +433,32 @@ export class AgentTasks {
   }
 
   /**
-   * Continues a finished task's conversation with a new prompt. A runner still waiting keeps
-   * the same session; a new runner reopens it (session/resume or session/load) or, for an
-   * agent that can do neither, starts a new one with a recap. The turn appends to the same
-   * transcript.
+   * Continues the task's conversation with a new prompt. A runner still waiting keeps the same
+   * session; a new runner reopens it (session/resume or session/load) or, for an agent that can
+   * do neither, starts a new one with a recap. The turn appends to the same transcript. While
+   * the agent is working the reply waits in the task's queue; when the turn ends, everything
+   * waiting goes to the agent together as its next turn.
    */
   async reply(id: string, input: Record<string, unknown>): Promise<AgentTask> {
     const entry = TASK_ID.test(id) ? this.tracked.get(id) : undefined
     if (!entry) throw new AgentNotFoundError()
     const prompt = readPrompt(input.prompt)
-    if (isLive(entry.task.status) || entry.replying) throw new AgentConflictError('The task is still working; wait for it to finish or cancel it first.')
     if (!entry.resumable) throw new AgentConflictError('This task was started by an earlier version of Caboose and cannot be continued.')
+    if (isLive(entry.task.status) || entry.replying) {
+      if (entry.queue.length >= MAX_QUEUED || [...entry.queue, prompt].join('\n\n').length > MAX_PROMPT) {
+        throw new AgentConflictError('Too much is already waiting for the agent; wait for its turn to end, or stop it.')
+      }
+      entry.queue.push(prompt)
+      this.syncQueue(entry)
+      return entry.task
+    }
+    return this.sendTurn(entry, [...entry.queue, prompt], entry.queue.length)
+  }
+
+  /** Starts the next turn with `prompts`, the first `fromQueue` of them taken from the queue. */
+  private async sendTurn(entry: Tracked, prompts: string[], fromQueue: number): Promise<AgentTask> {
+    const id = entry.task.id
+    const prompt = prompts.join('\n\n')
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
     const turn = entry.task.turns + 1
@@ -374,6 +470,10 @@ export class AgentTasks {
         .catch(rethrowRunnerMissing)
     } finally {
       entry.replying = false
+    }
+    if (fromQueue) {
+      entry.queue.splice(0, fromQueue)
+      this.syncQueue(entry)
     }
     // Lines still to come from the earlier turn are read but not shown.
     entry.pending = []
@@ -423,12 +523,39 @@ export class AgentTasks {
     return true
   }
 
+  /**
+   * The task's conversation so far, read from its transcript in the guest: every turn, newest
+   * last. Only the last TRANSCRIPT_LIMIT bytes are read; `truncated` says earlier lines were left out.
+   */
+  async transcript(id: string): Promise<{ entries: TranscriptEntry[]; truncated: boolean }> {
+    const entry = TASK_ID.test(id) ? this.tracked.get(id) : undefined
+    if (!entry) throw new AgentNotFoundError()
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const output = await asCaboose(guest, TRANSCRIPT_SCRIPT, [`${HOME}/Agents/${id}/transcript.jsonl`, String(TRANSCRIPT_LIMIT)], 20_000)
+    const [size, data] = output.split('\t')
+    const truncated = Number(size) > TRANSCRIPT_LIMIT
+    const lines = decode(data).split('\n')
+    // A cut-off read starts mid-line.
+    if (truncated) lines.shift()
+    const entries = lines.flatMap(line => {
+      const parsed = line.trim() ? transcriptEntry(line) : undefined
+      return parsed ? [parsed] : []
+    })
+    return { entries, truncated }
+  }
+
   /** Cancels the running turn: the runner sends ACP session/cancel and answers waiting requests "cancelled". */
   async cancel(id: string): Promise<boolean> {
     const entry = this.tracked.get(id)
     const guest = this.guest()
     if (!entry || !TASK_ID.test(id) || !isLive(entry.task.status) || !guest) return false
     await asCaboose(guest, CANCEL_SCRIPT, [`${HOME}/Agents/${id}`])
+    // Stopping stops everything: what was waiting for this turn is dropped with it.
+    if (entry.queue.length) {
+      entry.queue = []
+      this.syncQueue(entry)
+    }
     this.finish(entry, 'cancelled', 'Cancelled.')
     return true
   }
@@ -478,7 +605,7 @@ export class AgentTasks {
         turns, approvals: mode === 'ask' ? 'ask' : 'auto',
         ...(attachments.length ? { attachments } : {}),
       }
-      const entry: Tracked = { task, offset: Number(size) || 0, carry: Buffer.alloc(0), turn: turns, resumable: resumable === '1', pending: [] }
+      const entry: Tracked = { task, offset: Number(size) || 0, carry: Buffer.alloc(0), turn: turns, resumable: resumable === '1', pending: [], queue: [] }
       this.tracked.set(id, entry)
       const result = interpretLine(decode(last)).result
       if (result && result.turn === turns) {
@@ -556,6 +683,8 @@ export class AgentTasks {
       if (interpreted.turn !== undefined) entry.turn = interpreted.turn
       if (entry.turn === entry.task.turns) {
         for (const output of interpreted.outputs) this.emit({ type: 'agent.task.output', id, ...output })
+        const transcript = transcriptEntry(line)
+        if (transcript) this.emit({ type: 'agent.task.event', id, turn: entry.turn, entry: transcript })
       }
       if (interpreted.result?.turn === entry.task.turns) result ??= interpreted.result
     }
@@ -592,6 +721,12 @@ export class AgentTasks {
     this.syncPending(entry)
   }
 
+  private syncQueue(entry: Tracked): void {
+    if (entry.queue.length) entry.task.queued = [...entry.queue]
+    else delete entry.task.queued
+    this.emit({ type: 'agent.task.queued', id: entry.task.id, queued: [...entry.queue] })
+  }
+
   private syncPending(entry: Tracked): void {
     const first = entry.pending[0]
     if (first) entry.task.pendingApproval = { id: first.id, tool: first.tool, summary: first.summary, ...(first.options ? { options: first.options } : {}) }
@@ -606,9 +741,33 @@ export class AgentTasks {
     if (signIn) entry.task.signIn = signIn
     entry.pending = []
     delete entry.task.pendingApproval
+    // Replies waited for this turn: they go to the agent now, as one turn, under the same lease.
+    if (announce && entry.queue.length && status !== 'cancelled' && !signIn) {
+      void this.continueQueue(entry, status)
+      return
+    }
     this.releases.get(entry.task.id)?.()
     this.releases.delete(entry.task.id)
-    if (announce) this.emit({ type: 'agent.task.finished', id: entry.task.id, status, summary: entry.task.summary, ...(signIn ? { signIn } : {}) })
+    if (announce) this.announceFinished(entry)
+  }
+
+  private async continueQueue(entry: Tracked, status: TaskStatus): Promise<void> {
+    try {
+      await this.sendTurn(entry, [...entry.queue], entry.queue.length)
+    } catch (error) {
+      // The queue stays, to go with the owner's next reply.
+      console.error('Queued reply was not delivered:', error)
+      if (entry.task.status === status) {
+        this.releases.get(entry.task.id)?.()
+        this.releases.delete(entry.task.id)
+        this.announceFinished(entry)
+      }
+    }
+  }
+
+  private announceFinished(entry: Tracked): void {
+    const { id, status, summary = '', signIn } = entry.task
+    this.emit({ type: 'agent.task.finished', id, status, summary, ...(signIn ? { signIn } : {}) })
   }
 }
 
@@ -699,6 +858,13 @@ export function parsePoll(output: string): Map<string, PollReport> {
   }
   return reports
 }
+
+/** Prints the transcript's size, a tab, and its last $2 bytes in base64; "0\t" when there is none. */
+const TRANSCRIPT_SCRIPT = [
+  '[ -f "$1" ] || { printf "0\\t"; exit 0; }',
+  'printf "%s\\t" "$(stat -c %s "$1")"',
+  'tail -c "$2" "$1" | base64 -w0',
+].join('\n')
 
 /**
  * One tab-separated line per task directory, newest 30: id, agent id, start time, the

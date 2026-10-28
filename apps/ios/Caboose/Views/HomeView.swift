@@ -266,13 +266,9 @@ struct WorkingAgents: View {
     var body: some View {
         let agents = model.agents
         let active = agents.tasks.filter { $0.isRunning || $0.pendingApproval != nil }
-        let local = agents.localRuns.filter { $0.status == .working }
-        if !active.isEmpty || !local.isEmpty {
+        if !active.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Agents at Work") { model.selectedTab = .agents }
-                ForEach(local) { run in
-                    AgentRow(title: run.prompt, detail: run.steps.last ?? "Working…", agent: "On iPhone", waiting: false)
-                }
                 ForEach(active.sorted { ($0.pendingApproval != nil ? 0 : 1) < ($1.pendingApproval != nil ? 0 : 1) }.prefix(4)) { task in
                     VStack(alignment: .leading, spacing: 10) {
                         AgentRow(title: task.prompt,
@@ -285,7 +281,10 @@ struct WorkingAgents: View {
                     .padding(14)
                     .glassEffect(.regular.tint(task.pendingApproval != nil ? Color.yellow.opacity(0.10) : .clear), in: .rect(cornerRadius: 20))
                     .contentShape(Rectangle())
-                    .onTapGesture { model.selectedTab = .agents }
+                    .onTapGesture {
+                        model.agents.focusedTask = task.id
+                        model.selectedTab = .agents
+                    }
                 }
             }
         }

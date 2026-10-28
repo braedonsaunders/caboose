@@ -403,6 +403,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       const task = await computer.run(() => agents.start(input))
       return json(response, 200, { id: task.id })
     }
+    const transcript = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/transcript$/.exec(path)
+    if (request.method === 'GET' && transcript?.[1]) {
+      return json(response, 200, await computer.run(() => agents.transcript(transcript[1]!)))
+    }
     const reply = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/reply$/.exec(path)
     if (request.method === 'POST' && reply?.[1]) {
       const input = await readJson(request)

@@ -13,7 +13,6 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 | `Share/` | The share extension (target `CabooseShare`). |
 | `Files/` | The File Provider extension that shows the computer in the Files app. |
 | `Widgets/`, `Shared/` | The WidgetKit extension: widgets, controls and Live Activities. |
-| `OnDeviceEval/` | A small app that measures the On iPhone agent on a device ([its README](OnDeviceEval/README.md)). |
 
 ## Build
 
@@ -131,24 +130,40 @@ Control so ⌘C, ⌘V and ⌘T do what Mac users expect.
 
 ## Agents
 
-The Ask bar on the Agents tab starts a task with the computer's default agent or any agent installed
-from the Agent Client Protocol registry. **Ask Before Acting** makes the agent stop before
-each action until you tap Allow (or the agent's always-allow option) or Deny, on the task
-card or on the banner that shows over any screen. A finished task takes a reply that
-continues the same conversation. Settings › Agents installs and updates agents, signs in to
-them on the computer's screen, gives one an API key or other environment, and sets the
-default. **Use Craft App Tools** controls whether new tasks offer installed catalog MCP
-servers to the agent.
+The Agents tab is a chat with an agent on your computer. A chat is one of the computer's
+agent tasks: the first message starts it with the default agent (or the one picked in the
+composer's menu), and everything after is the next turn of the same session, so the agent
+always has the whole conversation. Send while it is working and the message waits for its
+turn to end, shown as waiting with **Send Now**, which stops the turn and sends it at once.
+**New Chat** starts a fresh session; the chat list holds the rest, and other chats still
+working are pinned along the top. Where Apple Intelligence is available, the on-device model
+names each chat from its first message (`ChatTitler`); nothing you say goes through it.
+
+The chat shows what the agent does as it does it (`AgentThreadView`, folded by
+`AgentThread` in CabooseKit): its answers, collapsible thoughts, tool calls, its plan as a
+checklist, the permissions it asked for, and how much context it has used, read from the
+host's transcript route and then live. Stop it, watch its window on the agent seat, or ask
+another agent the same thing in a new chat. **Ask Before Acting** makes the agent stop
+before each action until you tap Allow (or its always-allow option) or Deny, in the chat, on
+Home or on the banner over any screen. **Use Craft App Tools** controls whether new chats
+offer installed catalog MCP servers to the agent.
+
+**Connect a Model** uses an API key instead of an account: an OpenRouter key and any of its
+tool-using models (run by the registry's goose), or an Anthropic or OpenAI key (Claude Agent
+or Codex). The app installs the agent, puts the key in its environment in the computer, and
+makes it the default. A chat whose agent is signed out offers its sign-in, Connect a Model,
+or another agent. Settings › Agents installs and updates any registry agent, signs in to
+them on the computer's screen, edits their environment, and sets the default.
 
 Agents run their GUI apps on the agent seat, a second display of the computer. The app
-connects to it as it does to the owner's display (`/v1/display?seat=agent`, without sound),
-and its windows appear in the Agent space, where you can watch them, take over and hand back.
+connects to it as it does to the owner's display (`/v1/display?seat=agent`, without sound);
+watch its windows from the chat, take over and hand back. A window's `…` menu has **Ask
+Agent About This Window**, which sends its screenshot, title and app with your request.
 
-Where Apple Intelligence is available the bar also offers **On iPhone**: Apple's on-device
-model (`Caboose/Agents/OnDevice*.swift`). It opens apps and pages, types, presses shortcuts,
-presses buttons in the focused window by name (through the host's accessibility routes),
-parks the computer, and hands anything bigger to a computer agent. A window's `…` menu has
-**Ask Agent About This Window**, which sends its screenshot, title and app with your request.
+On a device paired to a running computer, check: start a chat, then send "how's it going?"
+while the agent works and see it wait and go with the next turn; tap Send Now and see the
+turn stop and the message go at once; open the chat list and switch chats; connect an
+OpenRouter key and see goose become the default and answer.
 
 ## iOS integration
 
