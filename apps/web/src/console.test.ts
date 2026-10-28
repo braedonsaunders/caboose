@@ -89,6 +89,28 @@ describe('client', () => {
     expect(seen[0]?.init?.method).toBe('PATCH')
   })
 
+  it('calls fetch without a receiver, as browsers require of the native one', async () => {
+    const native = globalThis.fetch
+    let receiver: unknown = 'unset'
+    globalThis.fetch = function (this: unknown) {
+      receiver = this
+      if (this !== undefined && this !== globalThis) throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation")
+      return Promise.resolve(new Response('{"state":"parked"}', { status: 200 }))
+    } as typeof fetch
+    try {
+      await new CabooseClient(() => 't').computer()
+      expect(receiver === undefined || receiver === globalThis).toBe(true)
+      let injected: unknown = 'unset'
+      await new CabooseClient(() => 't', '', function (this: unknown) {
+        injected = this
+        return Promise.resolve(new Response('{}', { status: 200 }))
+      } as typeof fetch).computer()
+      expect(injected).toBeUndefined()
+    } finally {
+      globalThis.fetch = native
+    }
+  })
+
   it('confirms restarts in the request body', async () => {
     let body: unknown
     const client = new CabooseClient(() => 't', '', async (_url, init) => {

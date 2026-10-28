@@ -231,7 +231,8 @@ export class CabooseClient {
   constructor(
     private readonly getToken: () => string,
     private readonly baseUrl = '',
-    private readonly fetchImpl: typeof fetch = fetch,
+    // Browsers reject a native fetch called with any receiver but the window, so never call it as a method.
+    private readonly fetchImpl: typeof fetch = (input, init) => globalThis.fetch(input, init),
   ) {}
 
   private async request<T>(
@@ -255,7 +256,8 @@ export class CabooseClient {
         headers['Content-Type'] = 'application/json'
       }
 
-      const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      const fetchImpl = this.fetchImpl
+      const response = await fetchImpl(`${this.baseUrl}${path}`, {
         method,
         headers,
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
