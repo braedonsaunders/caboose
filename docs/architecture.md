@@ -65,6 +65,25 @@ base swap.
   agent never steals the user's pointer; its windows appear in the app's Agent
   space.
 
+### Runtimes
+
+The computer normally runs as a **microVM** (Cloud Hypervisor, below). Where a GPU can
+reach a container but not a VM — WSL2, whose GPU is the paravirtual `/dev/dxg` —
+`CABOOSE_RUNTIME=container` runs it as a Docker container instead:
+
+- the same Debian package set, `/dev/dxg` and the WSL GPU libraries, so Chromium renders
+  through Mesa D3D12 and Xpra encodes with NVENC (HEVC; Xpra 6.5.5's NVENC H.264 is fixed
+  at level 5.0, below 4K frame sizes);
+- `/home/caboose` on a volume or host path (`CABOOSE_CONTAINER_HOME`);
+- the displays published on loopback only, reached by the same relay;
+- the image's `caboose-session start | start-agent | ready <display>` brings up D-Bus,
+  PulseAudio and the Xpra displays with the per-wake token, as the VM's units do.
+
+Parking a container **freezes** it: memory stays in RAM and waking is instant, but a host
+restart loses it and the next wake boots fresh with the home intact. A microVM's
+park-with-memory survives host restarts. Isolation is a container's, not a VM's, so the
+hosted service keeps microVMs.
+
 ### 2. Host: `caboose-host` (`apps/host/`)
 
 TypeScript on Node 22, built on AppKit packages. It owns no display logic: the
