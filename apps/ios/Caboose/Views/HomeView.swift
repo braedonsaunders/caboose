@@ -57,14 +57,15 @@ struct HomeScreen: View {
 // MARK: The computer
 
 /// The computer at a glance, with the brand's wheels: rolling while it wakes or parks, lit
-/// while it runs, unlit while it is parked. Its lifecycle lives in the toolbar.
+/// and rolling now and then while it runs, unlit and still while it is parked. Its
+/// lifecycle lives in the toolbar.
 struct ComputerCard: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center) {
-                CabooseWordmark(motion: busy ? .rolling : .still, lit: lit)
+                CabooseWordmark(motion: busy ? .rolling : (lit ? .idle : .still), lit: lit)
                     .frame(height: 30)
                     .foregroundStyle(.white.opacity(0.92))
                 Spacer()
