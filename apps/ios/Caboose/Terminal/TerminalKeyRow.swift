@@ -78,10 +78,15 @@ final class TerminalKeyRow: UIInputView, UIInputViewAudioFeedback {
         if let altButton { highlight(altButton, alt) }
     }
 
+    /// A held modifier is amber glass with navy text, like the cursor.
     private func highlight(_ button: UIButton, _ on: Bool) {
-        var configuration = button.configuration
-        configuration?.baseForegroundColor = on ? UIColor(red: 0x0E / 255, green: 0x16 / 255, blue: 0x26 / 255, alpha: 1) : .label
-        configuration?.background.backgroundColor = on ? TerminalTheme.amber : nil
+        guard let current = button.configuration else { return }
+        var configuration = on ? UIButton.Configuration.prominentGlass() : UIButton.Configuration.glass()
+        configuration.title = current.title
+        configuration.titleTextAttributesTransformer = current.titleTextAttributesTransformer
+        configuration.contentInsets = current.contentInsets
+        configuration.baseForegroundColor = on ? TerminalTheme.background : .label
+        button.tintColor = on ? TerminalTheme.amber : nil
         button.configuration = configuration
         button.accessibilityTraits = on ? [.button, .selected] : .button
     }

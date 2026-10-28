@@ -240,12 +240,29 @@ private final class Recorder: @unchecked Sendable {
         }
     }
 
+    @Test func nothingArrivesAfterClose() {
+        let transport = FakeTransport(), recorder = Recorder()
+        let connection = TerminalConnection(transport: transport)
+        connection.start { recorder.record($0) }
+        drain(connection)
+        transport.emit(.message(.text("{\"type\":\"hello\",\"session\":\"\(session)\",\"offset\":0,\"reset\":true,\"modes\":{}}")))
+        drain(connection)
+        // Output already on its way when the owner switches sessions is dropped.
+        connection.queue.suspend()
+        transport.emit(.message(.data(Data("stale".utf8))))
+        connection.close()
+        connection.queue.resume()
+        drain(connection)
+        #expect(recorder.events == ["hello 0 true"])
+    }
+
     @Test func closingKeepsQuiet() {
         let transport = FakeTransport(), recorder = Recorder()
         let connection = TerminalConnection(transport: transport)
         connection.start { recorder.record($0) }
         drain(connection)
         transport.emit(.message(.text("{\"type\":\"hello\",\"session\":\"\(session)\",\"offset\":0,\"reset\":true,\"modes\":{}}")))
+        drain(connection)
         connection.close()
         transport.emit(.closed(code: 1000, reason: nil))
         drain(connection)
