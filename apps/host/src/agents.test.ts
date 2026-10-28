@@ -256,6 +256,23 @@ describe('AgentTasks', () => {
     tasks.pause()
   })
 
+  it('reports a signed-out CLI that says so in its result', async () => {
+    const fake = fakeGuest()
+    const events: AgentEvent[] = []
+    const tasks = new AgentTasks(() => fake.guest, event => events.push(event), () => () => {}, 60_000)
+    const claude = await tasks.start({ prompt: 'hello', agent: 'claude' })
+    fake.append(claude.id, { type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' })
+    const codex = await tasks.start({ prompt: 'hello', agent: 'codex' })
+    fake.append(codex.id, { type: 'turn.failed', error: { message: 'unexpected status 401 Unauthorized: Missing bearer or basic authentication in header' } })
+    await tasks.poll()
+    const summaries = events.filter(event => event.type === 'agent.task.finished').map(event => (event as { summary: string }).summary)
+    expect(summaries).toEqual([
+      'Claude Code is signed out. Open Terminal on your computer and run `claude` once to sign in.',
+      'Codex is signed out. Open Terminal on your computer and run `codex` once to sign in.',
+    ])
+    tasks.pause()
+  })
+
   it('continues a finished conversation and appends the turn to the same transcript', async () => {
     const fake = fakeGuest()
     const events: AgentEvent[] = []

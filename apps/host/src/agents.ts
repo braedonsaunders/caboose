@@ -450,13 +450,17 @@ export class AgentTasks {
     }
     entry.carry = Buffer.from(buffer.subarray(start))
     this.updatePending(entry, report.requests)
-    if (result) return this.finish(entry, result.ok ? 'succeeded' : 'failed', result.summary)
+    if (result) {
+      // A signed-out CLI reports it as its result ("Not logged in", an HTTP 401).
+      const summary = !result.ok && SIGNED_OUT.test(result.summary) ? signedOutSummary(entry.task.agent) : result.summary
+      return this.finish(entry, result.ok ? 'succeeded' : 'failed', summary)
+    }
     // A full chunk means more transcript is waiting; finish only once it has all been read.
     if (report.exitCode === '' || report.data.length >= chunk) return
     const stderr = report.stderr.trim()
-    const signedOut = /log ?in|sign ?in|authenticat|api key|unauthori[sz]ed/i.test(stderr)
+    const signedOut = SIGNED_OUT.test(stderr)
     const summary = signedOut
-      ? `${entry.task.agent === 'claude' ? 'Claude Code' : 'Codex'} is signed out. Open Terminal on your computer and run \`${entry.task.agent}\` once to sign in.`
+      ? signedOutSummary(entry.task.agent)
       : report.exitCode === '0' ? entry.lastText ?? 'Done.' : stderr || `The agent exited with code ${report.exitCode}.`
     this.finish(entry, report.exitCode === '0' && !signedOut ? 'succeeded' : 'failed', summary)
   }
@@ -494,6 +498,13 @@ export class AgentTasks {
     this.releases.delete(entry.task.id)
     if (announce) this.emit({ type: 'agent.task.finished', id: entry.task.id, status, summary: entry.task.summary })
   }
+}
+
+/** What a signed-out Claude Code or Codex says, on stderr or as its result. */
+const SIGNED_OUT = /log ?in|sign ?in|authenticat|api key|unauthori[sz]ed|\b401\b|missing bearer/i
+
+function signedOutSummary(agent: AgentKind): string {
+  return `${agent === 'claude' ? 'Claude Code' : 'Codex'} is signed out. Open Terminal on your computer and run \`${agent}\` once to sign in.`
 }
 
 function isLive(status: TaskStatus): boolean { return status === 'running' || status === 'paused' }
