@@ -339,8 +339,7 @@ struct OpenWindows: View {
                     }
                 }
             }
-            .scrollIndicators(.hidden)
-            .scrollClipDisabled()
+            .homeColumnRow(cornerRadius: WindowCard.cornerRadius, bottom: WindowCard.cornerRadius)
         }
     }
 }
@@ -362,10 +361,25 @@ struct AppRow: View {
                         }
                     }
                 }
-                .scrollIndicators(.hidden)
-                .scrollClipDisabled()
+                .homeColumnRow(cornerRadius: AppTile.cornerRadius, top: 8, bottom: 8)
             }
         }
+    }
+}
+
+extension View {
+    /// A sideways row on Home scrolls inside the content column, clipped to it like every card,
+    /// so it never runs past the screen's edge or under the vertical bar. The clip's corners
+    /// match the cards' as they slide out of view; it reaches `top` and `bottom` beyond the
+    /// row for what the cards draw outside their frames, such as a pressed tile's glass, and
+    /// takes no more room in the column than the row itself.
+    func homeColumnRow(cornerRadius: CGFloat, top: CGFloat = 0, bottom: CGFloat = 0) -> some View {
+        scrollIndicators(.hidden)
+            .contentMargins(.top, top, for: .scrollContent)
+            .contentMargins(.bottom, bottom, for: .scrollContent)
+            .padding(.top, -top)
+            .padding(.bottom, -bottom)
+            .clipShape(.rect(cornerRadius: cornerRadius, style: .continuous))
     }
 }
 
@@ -464,6 +478,7 @@ struct SectionHeader: View {
 }
 
 struct AppTile: View {
+    static let cornerRadius: CGFloat = 18
     let app: HostClient.App
     let icon: UIImage?
     let launching: Bool
@@ -471,7 +486,7 @@ struct AppTile: View {
     var body: some View {
         VStack(spacing: 8) {
             ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
                     .fill(.white.opacity(0.08))
                 if let icon {
                     Image(uiImage: icon).resizable().scaledToFit().padding(10)
@@ -479,12 +494,12 @@ struct AppTile: View {
                     Image(systemName: "app.dashed").font(.title)
                 }
                 if launching {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.black.opacity(0.45))
+                    RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous).fill(.black.opacity(0.45))
                     CabooseWheel(motion: .rolling).frame(width: 26, height: 26)
                 }
             }
             .frame(width: 68, height: 68)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: Self.cornerRadius))
             Text(app.name)
                 .font(.caption)
                 .lineLimit(2)
@@ -496,6 +511,7 @@ struct AppTile: View {
 
 /// A live, non-interactive preview of an open window.
 struct WindowCard: View {
+    static let cornerRadius: CGFloat = 16
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let icon: UIImage?
@@ -504,8 +520,8 @@ struct WindowCard: View {
         VStack(alignment: .leading, spacing: 8) {
             RemoteWindowPreview(window: window)
                 .frame(width: 150, height: 210)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.12)))
+                .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous).stroke(.white.opacity(0.12)))
             HStack(spacing: 6) {
                 if let icon { Image(uiImage: icon).resizable().frame(width: 16, height: 16) }
                 Text(window.title.isEmpty ? "Window" : window.title)
