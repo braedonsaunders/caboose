@@ -93,7 +93,8 @@ case ${1:-} in
   start-files)
     start-stop-daemon --start --oknodo --background --make-pidfile --pidfile /run/caboose/files.pid \
       --chuid caboose:caboose --exec /usr/bin/python3 -- /opt/caboose/files/caboose-files.py
-    for _ in $(seq 1 60); do ss -lnt | grep -Eq ':14700[[:space:]]' && exit 0; sleep 1; done
+    # Listening on 14700 (0x396C, state 0A), read from /proc: the image has no iproute2 for ss.
+    for _ in $(seq 1 60); do grep -Eq '^ *[0-9]+: [0-9A-F]+:396C [0-9A-F]+:[0-9A-F]+ 0A ' /proc/net/tcp /proc/net/tcp6 2>/dev/null && exit 0; sleep 1; done
     echo 'File service did not become ready' >&2; exit 1
     ;;
   *) echo 'Usage: caboose-session start | ready | start-agent | start-files' >&2; exit 2 ;;
