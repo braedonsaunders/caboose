@@ -1,0 +1,8 @@
+{
+  "name": "video-frame-surface",
+  "description": "A surface stream's frame, shown as soon as it is decoded; pts_us is the commit time.",
+  "messages": [
+    {"direction": "server", "type": "video.frame", "type_id": 19, "fields": {"id": 2, "seq": 41, "data": {"$bytes": "00000001419a02"}, "pts_us": 1234600000, "keyframe": false}}
+  ],
+  "hex": "132e000000a56269640263736571182964646174614700000001419a02667074735f75731a49968040686b65796672616d65f4"
+}

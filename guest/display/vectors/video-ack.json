@@ -1,0 +1,8 @@
+{
+  "name": "video-ack",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "video.ack", "type_id": 136, "fields": {"id": 2, "seq": 41}}
+  ],
+  "hex": "880b000000a262696402637365711829"
+}

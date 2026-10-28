@@ -1,0 +1,8 @@
+{
+  "name": "video-update",
+  "description": "Scrolled partly under the window's top edge.",
+  "messages": [
+    {"direction": "server", "type": "video.update", "type_id": 20, "fields": {"id": 1, "clip": [0, 0, 1179, 463], "rect": [0, -200, 1179, 663]}}
+  ],
+  "hex": "1422000000a36269640164636c697084000019049b1901cf6472656374840038c719049b190297"
+}

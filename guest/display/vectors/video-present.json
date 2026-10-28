@@ -1,0 +1,8 @@
+{
+  "name": "video-present",
+  "description": "The application is showing frame 17 of stream 1 now.",
+  "messages": [
+    {"direction": "server", "type": "video.present", "type_id": 22, "fields": {"id": 1, "seq": 17, "pts_us": 1234633333}}
+  ],
+  "hex": "1616000000a3626964016373657111667074735f75731a49970275"
+}
