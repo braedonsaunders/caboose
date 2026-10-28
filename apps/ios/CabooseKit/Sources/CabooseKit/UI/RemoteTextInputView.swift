@@ -23,6 +23,15 @@ open class RemoteTextInputView: UIView, UITextInput {
     /// Delivers the keystrokes that make the remote text match the buffer.
     open func send(_ edits: [TypingBuffer.Edit]) {}
 
+    /// Override to true when the remote side has a preedit (composition) of its own: marked
+    /// text then arrives through `sendPreedit` instead of being typed, and is committed as a
+    /// `.type` edit. Off for Xpra.
+    open var sendsMarkedTextAsPreedit: Bool { false }
+
+    /// The composition in progress and its selection, in UTF-16 units of `text`; called after
+    /// `send(_:)` whenever it changes, with "" once it is committed or cancelled.
+    open func sendPreedit(_ text: String, selection: NSRange) {}
+
     /// Forgets the typed text, e.g. when focus may have moved in the remote app.
     public func resetTyping() {
         guard buffer != TypingBuffer() else { return }
@@ -34,8 +43,15 @@ open class RemoteTextInputView: UIView, UITextInput {
     }
 
     private func perform(_ edit: (inout TypingBuffer) -> [TypingBuffer.Edit]) {
+        buffer.marksAsPreedit = sendsMarkedTextAsPreedit
+        let preedit = buffer.preedit
         let edits = edit(&buffer)
         if !edits.isEmpty { send(edits) }
+        if sendsMarkedTextAsPreedit, buffer.preedit != preedit {
+            let marked = buffer.marked ?? NSRange(location: 0, length: 0)
+            let caret = NSRange(location: max(0, buffer.selection.location - marked.location), length: buffer.selection.length)
+            sendPreedit(buffer.preedit ?? "", selection: buffer.preedit == nil ? NSRange(location: 0, length: 0) : caret)
+        }
     }
 
     // MARK: UIKeyInput
@@ -93,7 +109,7 @@ open class RemoteTextInputView: UIView, UITextInput {
         perform { $0.setMarked(markedText ?? "", selectedRange: selectedRange) }
     }
 
-    public func unmarkText() { buffer.unmark() }
+    public func unmarkText() { perform { $0.unmark() } }
 
     public var beginningOfDocument: UITextPosition { BufferPosition(0) }
     public var endOfDocument: UITextPosition { BufferPosition(buffer.length) }

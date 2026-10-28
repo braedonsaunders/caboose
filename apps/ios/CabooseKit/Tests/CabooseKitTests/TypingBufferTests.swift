@@ -106,3 +106,38 @@ import Testing
         #expect(buffer.text == "abc")
     }
 }
+
+@Suite struct TypingBufferPreeditTests {
+    @Test func markedTextStaysLocalAndIsTypedOnCommit() {
+        var buffer = TypingBuffer(marksAsPreedit: true)
+        _ = buffer.insert("a")
+        #expect(buffer.setMarked("ni", selectedRange: NSRange(location: 2, length: 0)) == [])
+        #expect(buffer.preedit == "ni")
+        #expect(buffer.insert("你") == [.type("你")])
+        #expect(buffer.preedit == nil)
+        #expect(buffer.text == "a你")
+    }
+
+    @Test func unmarkCommitsThePreedit() {
+        var buffer = TypingBuffer(marksAsPreedit: true)
+        _ = buffer.setMarked("かな", selectedRange: NSRange(location: 2, length: 0))
+        #expect(buffer.unmark() == [.type("かな")])
+        #expect(buffer.unmark() == [])
+    }
+
+    @Test func cancellingThePreeditSendsNothing() {
+        var buffer = TypingBuffer(marksAsPreedit: true)
+        _ = buffer.insert("x")
+        _ = buffer.setMarked("ka", selectedRange: NSRange(location: 2, length: 0))
+        #expect(buffer.setMarked("", selectedRange: NSRange(location: 0, length: 0)) == [])
+        #expect(buffer.text == "x")
+    }
+
+    @Test func markingOverCommittedTextDeletesItRemotely() {
+        var buffer = TypingBuffer(marksAsPreedit: true)
+        _ = buffer.insert("abc")
+        buffer.select(NSRange(location: 1, length: 2))
+        #expect(buffer.setMarked("z", selectedRange: NSRange(location: 1, length: 0)) == [.backspace(2)])
+        #expect(buffer.unmark() == [.type("z")])
+    }
+}
