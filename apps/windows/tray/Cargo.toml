@@ -1,6 +1,6 @@
 [package]
 name = "caboose-tray"
-description = "Caboose's notification-area icon: status, the console, iPhone pairing and startup"
+description = "Caboose's notification-area icon for opening the console"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,10 +11,6 @@ rust-version.workspace = true
 caboose-win-core.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-serde_json.workspace = true
-qrcode.workspace = true
-ureq.workspace = true
-winreg.workspace = true
 windows.workspace = true
 
 [build-dependencies]

@@ -2,9 +2,8 @@
 # Checks the Caboose WSL distribution without Windows: builds the rootfs, imports it into
 # Docker, boots it with systemd as PID 1, and requires that
 #   - caboose-host.service is active,
-#   - /v1/health answers 401 without a token and 200 with the owner token it keeps (or,
-#     while the host is unclaimed and has no owner token, /v1/setup answers 200),
-#   - caboose-wsl-ready reports it healthy, with the token's (or the setup code's) path,
+#   - /v1/health requires the owner token and /v1/setup requires the setup code,
+#   - caboose-wsl-ready reports the paths of the token and the one-time setup code,
 #   - caboose-keepalive blocks rather than exits,
 #   - caboose-upgrade reinstalls the same rootfs in place and keeps the host's state.
 #
