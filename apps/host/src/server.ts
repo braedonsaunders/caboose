@@ -28,6 +28,7 @@ import type { PushService } from './push.js'
 import type { HostInfo, MachineResources } from './host-info.js'
 import type { AgentEvent } from './agents.js'
 import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenType } from './screen.js'
+import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
@@ -45,6 +46,8 @@ export interface Controller extends ComputerDriver<Session> {
   /** Root command runner in the running computer, or undefined while parked. */
   guest(): AgentGuest | undefined
   fileService?(): FileService
+  /** The guest's caboose-terminal, once the computer has woken. */
+  terminalService?(): TerminalService
   activeResources(): ComputerResources | null
   hasSavedState(): boolean
   lastError?(): string | null
@@ -96,6 +99,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const controls = new Set<WebSocket>()
   const foregroundClients = new Set<WebSocket>()
   const phoneControls = new Set<WebSocket>()
+  /** Open terminals by who opened them (a phone, or the owner), for the per-client cap. */
+  const terminals = new Map<WebSocket, string>()
+  /** Terminal upgrades waiting for a wake, counted against the same cap. */
+  const pendingTerminals = new Map<string, number>()
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024, handleProtocols: protocols => protocols.has('binary') ? 'binary' : false })
   function broadcast(event: unknown): void {
     const message = JSON.stringify(event)
@@ -166,8 +173,15 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   })
   /** Media is polled only while the computer is already running and someone is watching it. */
   function syncMedia(): void {
-    media.setActive(computer.state === 'running' && sockets.size - controls.size > 0)
+    media.setActive(computer.state === 'running' && sockets.size - controls.size - terminals.size > 0)
     phone.setActive(computer.state === 'running' && phoneControls.size > 0)
+  }
+  /** The terminal service is a guest component: wait for a pending update to install it. */
+  async function ensureTerminalReady(): Promise<TerminalService> {
+    await upgradeWork
+    if (upgrade?.state === 'failed') throw new ComputerConflictError(upgrade.message ?? 'Caboose components could not be updated')
+    if (!controller.terminalService || !controller.guest()) throw new AgentUnavailableError()
+    return controller.terminalService()
   }
   async function ensureFilesReady(): Promise<void> {
     await upgradeWork
@@ -182,7 +196,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     return {
       state: computer.state, settings: desired, limits: settings.limits, activeResources: active,
       restartRequired: controller.hasSavedState() && (!active || active.memoryMb !== desired.memoryMb || active.vcpus !== desired.vcpus),
-      clients: { display: sockets.size - controls.size, control: controls.size },
+      clients: { display: sockets.size - controls.size - terminals.size, control: controls.size, terminal: terminals.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
       capabilities: { restart: typeof controller.restart === 'function', push: !!push },
       upgrade,
@@ -221,6 +235,14 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const phoneSockets = new Map<WebSocket, string>()
 
   async function handle(request: IncomingMessage, response: ServerResponse, path: string, principal: Principal): Promise<unknown> {
+    if (request.method === 'GET' && path === '/v1/terminal/sessions') {
+      return json(response, 200, { sessions: await computer.run(async () => listTerminalSessions(await ensureTerminalReady())) })
+    }
+    const terminalSession = /^\/v1\/terminal\/sessions\/([^/]+)$/.exec(path)
+    if (request.method === 'DELETE' && terminalSession?.[1]) {
+      await computer.run(async () => hangupTerminal(await ensureTerminalReady(), terminalSession[1]!))
+      return json(response, 200, { hungUp: true })
+    }
     if (request.method === 'POST' && path === '/v1/fs/open') {
       const input = await readJson(request)
       const relative = input.path
@@ -498,7 +520,40 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     client.once('close', () => upstream.terminate())
   }
 
+  /** Accepts a terminal upgrade once the computer runs, waking it first when asked to. */
+  function connectTerminal(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL, principal: Principal): void {
+    const refuse = (status: string) => { if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`) }
+    let query: TerminalQuery
+    try { query = parseTerminalQuery(url.searchParams) } catch { return refuse('400 Bad Request') }
+    const client = principal.phoneId ?? 'owner'
+    const open = [...terminals.values()].filter(owner => owner === client).length + (pendingTerminals.get(client) ?? 0)
+    if (open >= MAX_TERMINALS) return refuse('429 Too Many Requests')
+    if (!computer.acceptsConnections && !query.wake) return refuse('409 Conflict')
+    const release = computer.acquire()
+    socket.once('close', release)
+    pendingTerminals.set(client, (pendingTerminals.get(client) ?? 0) + 1)
+    const ready = computer.acceptsConnections ? Promise.resolve() : computer.wakeAndRun(async () => {})
+    ready.then(ensureTerminalReady).then(service => {
+      if (socket.destroyed) return
+      if (!computer.acceptsConnections) return refuse('409 Conflict')
+      wss.handleUpgrade(request, socket, head, ws => {
+        sockets.add(ws)
+        terminals.set(ws, client)
+        if (principal.phoneId) phoneSockets.set(ws, principal.phoneId)
+        ws.on('error', () => ws.terminate())
+        ws.once('close', () => { sockets.delete(ws); terminals.delete(ws); phoneSockets.delete(ws); release() })
+        relayTerminal(ws, guestTerminalUrl(service, query), service.token)
+      })
+    }, error => {
+      refuse(error instanceof ComputerConflictError || error instanceof AgentUnavailableError ? '409 Conflict' : '502 Bad Gateway')
+    }).finally(() => {
+      const left = (pendingTerminals.get(client) ?? 1) - 1
+      if (left > 0) pendingTerminals.set(client, left); else pendingTerminals.delete(client)
+    }).catch(() => socket.destroy())
+  }
+
   function connect(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL, path: string, principal: Principal): void {
+    if (path === '/v1/terminal') return connectTerminal(request, socket, head, url, principal)
     if (!computer.acceptsConnections) { socket.end('HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n'); return }
     const offered = request.headers['sec-websocket-protocol']?.split(',').map(value => value.trim()) ?? []
     if (path === '/v1/display' && !offered.includes('binary')) { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return }
@@ -727,10 +782,10 @@ export function createCabooseServer(options: ComputerPieces & {
       if (await routed.runtime.handle(request, response, routed.path, principal) === NOT_FOUND) return json(response, 404, { error: 'not found' })
     })().catch(error => {
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError) return json(response, 400, { error: error.message })
-      if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError) return json(response, 404, { error: error.message })
+      if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError) return json(response, 409, { error: error.message })
       if (error instanceof PairingRateLimitError) return json(response, 429, { error: error.message })
-      if (error instanceof AgentOperationError) return json(response, 502, { error: error.message })
+      if (error instanceof AgentOperationError || error instanceof TerminalServiceError) return json(response, 502, { error: error.message })
       console.error('Caboose request failed:', error)
       if (!response.headersSent) json(response, 500, { error: 'computer operation failed' })
       else response.destroy()
@@ -743,7 +798,7 @@ export function createCabooseServer(options: ComputerPieces & {
     if (!principal) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
     const routed = target(url.pathname, principal)
     if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
-    if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
+    if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
     routed.runtime.connect(request, socket, head, url, routed.path, principal)
   })
 

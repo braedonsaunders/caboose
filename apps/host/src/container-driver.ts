@@ -8,6 +8,7 @@ import type { ComputerIdentity, ComputerResources } from './driver.js'
 import type { App, Controller, Session } from './server.js'
 import type { ComputerSettings } from './settings.js'
 import { fenceBridge, unfenceBridge } from './network.js'
+import { TERMINAL_PORT } from './terminal.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 
 /** The owner computer's own Docker network, so its bridge interface has a known name to fence. */
@@ -23,13 +24,13 @@ const FILES_PORT = 14700
  */
 export function containerPlacement(config: Pick<Config, 'containerName' | 'containerHome'>, identity: ComputerIdentity) {
   if (identity.slot === 0) {
-    return { name: config.containerName, home: config.containerHome, network: CONTAINER_NETWORK, bridge: CONTAINER_BRIDGE, ports: { display: OWNER_DISPLAY_PORT, agent: AGENT_DISPLAY_PORT, files: FILES_PORT } }
+    return { name: config.containerName, home: config.containerHome, network: CONTAINER_NETWORK, bridge: CONTAINER_BRIDGE, ports: { display: OWNER_DISPLAY_PORT, agent: AGENT_DISPLAY_PORT, files: FILES_PORT, terminal: TERMINAL_PORT } }
   }
   const base = 20_000 + identity.slot * 10
   return {
     name: `caboose-${identity.id}`, home: `${config.containerHome}-${identity.id}`,
     network: `caboose-${identity.slot}`, bridge: `caboose-br${identity.slot}`,
-    ports: { display: base, agent: base + 1, files: base + 2 },
+    ports: { display: base, agent: base + 1, files: base + 2, terminal: base + 3 },
   }
 }
 
@@ -96,6 +97,8 @@ export function createContainerController(config: Config, dependencies: { docker
   let displayToken = ''
   let running = false
   let filesPortWarning: string | undefined
+  /** Where the terminal service is reached: its loopback port, or the computer's bridge address. */
+  let terminalUrl = `http://127.0.0.1:${place.ports.terminal}`
 
   async function state(): Promise<'missing' | 'running' | 'paused' | 'stopped'> {
     try {
@@ -126,7 +129,7 @@ export function createContainerController(config: Config, dependencies: { docker
       '--restart', 'no',
       '--label', `caboose.memory-mb=${size.memoryMb}`, '--label', `caboose.vcpus=${size.vcpus}`,
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
-      '-p', `127.0.0.1:${place.ports.files}:${FILES_PORT}`, '-p', `127.0.0.1:${place.ports.display}:${OWNER_DISPLAY_PORT}`, '-p', `127.0.0.1:${place.ports.agent}:${AGENT_DISPLAY_PORT}`,
+      '-p', `127.0.0.1:${place.ports.files}:${FILES_PORT}`, '-p', `127.0.0.1:${place.ports.terminal}:${TERMINAL_PORT}`, '-p', `127.0.0.1:${place.ports.display}:${OWNER_DISPLAY_PORT}`, '-p', `127.0.0.1:${place.ports.agent}:${AGENT_DISPLAY_PORT}`,
       '-v', `${place.home}:/home/caboose`,
       ...gpuArgs(gpu, dependencies.exists),
       ...config.containerArgs,
@@ -142,6 +145,19 @@ export function createContainerController(config: Config, dependencies: { docker
   async function guestApps(action: string, id?: string, path?: string): Promise<string> {
     const script = await readFile(new URL('./guest-apps.py', import.meta.url), 'utf8')
     return exec('caboose', '/usr/bin/env', [...launchEnv, 'HOME=/home/caboose', '/usr/bin/python3', '-c', script, action, ...(id ? [id] : []), ...(path ? [path] : [])], 60_000)
+  }
+
+  /**
+   * A container created before the terminal had no port for it. Docker cannot add one to an
+   * existing container, so the host reaches the service on the computer's own address on its
+   * bridge network instead, which the host can always open connections to.
+   */
+  async function terminalAddress(): Promise<string> {
+    const loopback = `http://127.0.0.1:${place.ports.terminal}`
+    const mapping = await docker(['port', name, `${TERMINAL_PORT}/tcp`], 15_000).catch(() => '')
+    if (mapping.split(/\r?\n/).some(line => line.trim() === `127.0.0.1:${place.ports.terminal}`)) return loopback
+    const address = (await docker(['inspect', '-f', `{{with index .NetworkSettings.Networks "${place.network}"}}{{.IPAddress}}{{end}}`, name], 15_000).catch(() => '')).trim()
+    return /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(address) ? `http://${address}:${TERMINAL_PORT}` : loopback
   }
 
   /** The size an existing container was created with (survives a host restart). */
@@ -161,6 +177,7 @@ export function createContainerController(config: Config, dependencies: { docker
     displayUrl: `ws://127.0.0.1:${place.ports.display}/`,
     agentDisplayUrl: `ws://127.0.0.1:${place.ports.agent}/`,
     fileService: () => ({ url: `http://127.0.0.1:${place.ports.files}`, token: displayToken }),
+    terminalService: () => ({ url: terminalUrl, token: displayToken }),
     async ensureAgentSeat() {
       await exec('root', '/usr/local/bin/caboose-session', ['start-agent'], 120_000)
     },
@@ -188,6 +205,7 @@ export function createContainerController(config: Config, dependencies: { docker
       try {
         const mapping = await docker(['port', name, `${FILES_PORT}/tcp`], 15_000).catch(() => '')
         filesPortWarning = mapping.split(/\r?\n/).some(line => line.trim() === `127.0.0.1:${place.ports.files}`) ? undefined : 'Recreate the container to enable Files.'
+        terminalUrl = await terminalAddress()
 
         if (!displayToken) {
           displayToken = randomBytes(32).toString('hex')
