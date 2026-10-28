@@ -176,10 +176,11 @@ struct FailureView: View {
                 .foregroundStyle(.orange)
             Text("Out of Reach")
                 .font(.title3.weight(.semibold))
-            Text(message)
+            Text(HostMessage.clipped(message, maxLines: 3, maxCharacters: 200))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .lineLimit(4)
             // A computer that will not wake can often be fixed from its settings: less memory, or a restart.
             HStack(spacing: 12) {
                 Button("Try Again") { Task { await model.wake() } }

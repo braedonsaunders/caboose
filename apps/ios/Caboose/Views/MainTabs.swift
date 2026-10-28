@@ -115,6 +115,12 @@ struct LifecycleMenu: View {
 
     var body: some View {
         Menu {
+            if let upgrade = model.computerStatus?.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
+                // The detail is in Computer settings, held to a few lines there.
+                Button(title, systemImage: upgrade.state == "failed" ? "exclamationmark.triangle" : "arrow.down.circle") {
+                    model.settingsPresented = true
+                }
+            }
             Section(state.title) {
                 switch model.phase {
                 case .ready:

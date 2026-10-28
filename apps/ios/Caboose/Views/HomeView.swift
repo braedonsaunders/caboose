@@ -127,7 +127,7 @@ struct ComputerCard: View {
             guard let computer = model.computer else { return nil }
             let line = "\(computer.image) · \(computer.vcpus) cores · \(computer.memoryMb / 1024) GB"
             return model.isRemote ? line + " · Remote" : line
-        case .failed(let message): return message
+        case .failed(let message): return HostMessage.clipped(message, maxLines: 2, maxCharacters: 160)
         default: return nil
         }
     }

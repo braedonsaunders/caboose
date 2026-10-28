@@ -118,3 +118,25 @@ final class LaunchpadLayoutTests: XCTestCase {
         }
     }
 }
+
+final class HostMessageTests: XCTestCase {
+    func testARepeatedLineAppearsOnce() {
+        let raw = Array(repeating: "docker exec failed: container caboose-owner is not running", count: 60).joined(separator: "\n")
+        XCTAssertEqual(HostMessage.clipped(raw), "docker exec failed: container caboose-owner is not running")
+    }
+
+    func testLongMessagesAreHeldToAFewLinesAndCharacters() {
+        let raw = (1 ... 10).map { "line \($0)" }.joined(separator: "\n")
+        XCTAssertEqual(HostMessage.clipped(raw, maxLines: 3), "line 1\nline 2\nline 3…")
+        let long = String(repeating: "x", count: 1000)
+        let clipped = HostMessage.clipped(long, maxCharacters: 100)
+        XCTAssertEqual(clipped.count, 100)
+        XCTAssertTrue(clipped.hasSuffix("…"))
+    }
+
+    func testUpgradeStates() {
+        XCTAssertEqual(HostMessage.upgradeStatus("failed"), "Update Failed")
+        XCTAssertEqual(HostMessage.upgradeStatus("updating"), "Updating")
+        XCTAssertNil(HostMessage.upgradeStatus("idle"))
+    }
+}
