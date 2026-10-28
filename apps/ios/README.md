@@ -64,6 +64,37 @@ pairing there on first launch, so it does not need pairing again. On a device, c
 Safari page and pick Open on Computer; share a photo and pick Save and Open; share a photo
 with "describe this" to an agent and see the task appear on Home.
 
+## Drop into Linux
+
+Drop text on an owner window to focus the drop point and type it. Drop a file or image to
+save it in `~/Downloads` and open it with Linux's default handler (up to 50 MiB); this does
+not deliver a native drag event to the target app. Dragging out of Linux is not implemented.
+
+On a real iPad, connect to the computer, open a text editor, then drop selected text from
+another app into its edit area. Check that the text appears at the drop point. Drop an image
+from Photos and a document from Files; check Downloads and the default viewer. Repeat with
+Xpra and Caboose Display, and with the app in its full-screen and desktop layouts. Try a
+file over 50 MiB and verify the error is shown. The iPhone can receive drops where iOS makes
+a drag source available. Device checks require a real computer and iOS device.
+
+## Open, share and print from Linux
+
+`caboose-open` opens a supported link on the phone after confirmation. In Thunar use
+**Share to iPhone**, or run `caboose-share FILE`; selecting **iPhone** in a Linux print
+dialog sends a PDF to the phone's print dialog. Share and print files are limited to
+10 MiB. Requests wait in the guest while the phone is disconnected, expire after 24 hours,
+and are delivered at most once. Every action asks first; no background URL opens. The
+`PhoneFileDownloading` protocol currently uses the bounded guest-command download and can
+switch to the streamed `/v1/fs` client when that lane lands.
+
+For a real-device check, connect to the computer, open a terminal, run
+`caboose-open 'mailto:person@example.com'`, and confirm only after verifying the URL.
+Share a photo from Thunar and verify the native share sheet can save it or AirDrop it;
+print a document to iPhone and verify the AirPrint preview and printer selection. Repeat
+with the phone backgrounded and with both Xpra and Caboose Display; no action should occur
+without a tap. Open the app again to receive queued requests. See `guest/phone/README.md`
+for the scripted guest check.
+
 ## Computer settings
 
 Home's menu, the parked screen and the failure screen open **Computer**: the computer's name,

@@ -60,3 +60,9 @@ reviewed against the Docker version and local security requirements.
 Cold restart stops and starts the same container, preserving its installed packages and
 catalog rollback cache in the writable layer. Removing or replacing that container discards
 those packages; back up the home volume separately.
+
+## iOS handoff and printing
+
+The container installs the same commands, desktop integration and iPhone CUPS queue as
+the microVM; `caboose-session` starts CUPS for either owner display. See
+[`guest/phone/README.md`](../phone/README.md) for behavior and the scripted guest check.

@@ -64,7 +64,7 @@ import Testing
 
     private func keyframe() throws -> Data {
         var parser = DisplayFrameParser()
-        guard case .frame(let frame) = try parser.append(try DisplayVectorTests.vector("frame-h264-keyframe").wire).first.map(ServerMessage.init) else {
+        guard case .frame(let frame)? = try parser.append(try DisplayVectorTests.vector("frame-h264-keyframe").wire).first.map(ServerMessage.init) else {
             throw CancellationError()
         }
         return frame.data

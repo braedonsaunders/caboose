@@ -19,6 +19,7 @@ struct WindowScreen: View {
                     ZStack(alignment: .topLeading) {
                         RemoteWindowCanvas(window: window, keyboardVisible: model.keyboardVisible && keyTarget == window.id)
                             .frame(width: proxy.size.width, height: proxy.size.height)
+                            .modifier(WindowDrop(window: window, pixelsPerPoint: model.pixelsPerPoint))
                         ForEach(popups) { popup in
                             RemoteWindowCanvas(window: popup, keyboardVisible: model.keyboardVisible && keyTarget == popup.id)
                                 .frame(width: popup.frame.width / model.pixelsPerPoint,

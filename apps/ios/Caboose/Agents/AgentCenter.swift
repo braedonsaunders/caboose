@@ -283,7 +283,9 @@ final class AgentCenter {
 
     private func openControl() {
         guard let host, control == nil else { return }
-        var request = URLRequest(url: host.socketURL("/v1/control"))
+        var components = URLComponents(url: host.socketURL("/v1/control"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "phone", value: "1")]
+        var request = URLRequest(url: components.url!)
         request.setValue("Bearer \(host.token)", forHTTPHeaderField: "Authorization")
         let task = URLSession.shared.webSocketTask(with: request)
         control = task

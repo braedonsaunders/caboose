@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+# The PDF PPD causes CUPS/cups-filters to convert jobs to PDF before the backend.
+lpadmin -p iPhone -v caboose-phone:/ -P /usr/local/share/caboose/phone.ppd -E

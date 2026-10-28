@@ -8,6 +8,57 @@ remote desktop: each Linux application arrives as its own native iOS surface.
 This document is the contract every component is built against. Change it in the
 same pull request as the code that changes the contract.
 
+## iOS weave
+
+The guest installs `caboose-open URL` and `caboose-share FILE...` on both images.
+The desktop registers the phone-specific `mailto`, `tel`, `sms`, `facetime`,
+`facetime-audio`, `maps` and `geo` scheme handlers, without changing the default web
+browser; `caboose-open` also accepts explicit `http(s)` links. Thunar has **Share to
+iPhone**. A local `iPhone` CUPS queue filters print jobs to PDF and uses the same
+handoff path, so it works with either display protocol rather than relying on Xpra's
+printing forwarding. The queue needs CUPS and cups-filters in the guest.
+
+The commands snapshot files in `/home/caboose/.cache/caboose/phone/files` and queue
+requests in its sibling `queue` directory, private to the owner. Files are limited to
+10 MiB, the queue to 100 pending requests, and both expire after 24 hours. The host polls
+only while the computer is running and an authenticated iOS control socket with
+`?phone=1` is connected. It validates each event and sends it to those sockets:
+
+- `phone.open { url }`;
+- `phone.share` and `phone.print` with `{ id, path, name, size, contentType }`; `id`
+  is a 32-character lowercase hex identifier and `path` is the corresponding private
+  staged file. Print content is PDF.
+
+Delivery is at most once: events claimed during a connection loss are not replayed.
+The owner token scopes the connection to the owner's computer. The phone prompts before
+opening, sharing or printing; it never acts silently, and defers prompts while inactive.
+On background the control connection is detached; queued guest events wait for a later
+foreground connection, subject to expiry. Xpra URL requests also require a prompt.
+
+After the user agrees, `GET /v1/phone/files/:id` reads the staged file in bounded chunks
+through the existing guest command channel and returns `{ data: base64 }`. It never
+accepts a guest-supplied arbitrary path or wakes a parked computer. The iOS
+`PhoneFileDownloading` protocol isolates this small-file fallback so it can be replaced
+with lane 2's streamed `/v1/fs` download. The native share sheet or AirPrint dialog opens
+only after the download and confirmation; temporary phone copies are deleted when the
+sheet finishes.
+
+Dropping text onto an owner window focuses and clicks at the drop point, then types it
+through the display session. Dropping a file or image saves it to `~/Downloads` through
+`POST /v1/files` (50 MiB limit) and opens it using Linux's default handler. The selected
+window is not necessarily that handler. Native file-drop delivery into a specific Linux
+app and dragging out of Linux are not implemented. Both display protocols use the same
+path. Transfer failures are shown on the phone.
+
+Xpra's client currently sends pointer and button packets, and the guest defaults to
+XTest, which has no tablet axes. Xpra 6.5.5's optional uinput touchpad sends constant
+pressure 255 and declares no tilt or pen tool (see its [device setup](https://github.com/Xpra-org/xpra/blob/v6.5.5/xpra/x11/uinput/setup.py)
+and [motion code](https://github.com/Xpra-org/xpra/blob/v6.5.5/xpra/x11/uinput/device.py)),
+so switching to it would still not deliver Pencil pressure/tilt as a tablet. A real X11 tablet device and a tested input path would
+be needed. Caboose Display defines and sends `pencil` samples in the client, but its
+compositor currently drops them and does not advertise `pencil` (see
+`guest/display/README.md`); neither protocol currently delivers pressure or tilt to apps.
+
 ## The pieces
 
 ```
