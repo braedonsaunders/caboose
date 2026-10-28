@@ -61,8 +61,8 @@ where environment is `sandbox` or `production` and kinds is a subset of `approva
 `{ token }`. `GET /v1/devices/push` lists registrations as `{ devices: [{ id, environment,
 kinds }] }`, where `id` is a fingerprint (the first 16 hex digits of the token's SHA-256); it
 never returns a token. `DELETE /v1/devices/push/:id` removes the registration with that
-fingerprint (404 when none matches). Without APNs configured these routes answer 503. The private device list is persisted atomically beside the computer
-settings. APNs 410 Unregistered responses remove the affected registration, unless it
+fingerprint (404 when none matches). Without APNs configured these routes answer 503.
+The private device list is persisted atomically beside the computer settings. APNs 410 Unregistered responses remove the affected registration, unless it
 was registered again while the request was in flight. Provider JWTs are refreshed after
 50 minutes. With no foreground app control socket connected, new agent approvals and succeeded or
 failed tasks generate grouped APNs alerts for devices that enabled the corresponding
@@ -322,26 +322,12 @@ Management status has this shape (resources are MiB and idle time is millisecond
 }
 ```
 
-`GET /v1/host` describes the deployment, which is fixed until the host process restarts:
-
-```ts
-{
-  version: string,                 // the caboose-host package version
-  node: string,                    // the Node.js version it runs on
-  runtime: "microvm" | "container",
-  display: "xpra-ws" | "caboose-display",
-  gpu: "wsl" | "nvidia" | "dri" | "none" | null,   // the container's GPU; null for a microVM
-  image: string,                   // the container image, or the microVM's golden image path
-  push: boolean, liveActivities: boolean,          // whether APNs is configured
-  settings: Array<{ name: string, value: string, default: boolean }>   // CABOOSE_* variables
-}
-```
-
-`settings` lists the non-secret `CABOOSE_*` variables the host read (runtime, display, GPU and
-container settings, image root, guest LAN policy, bind address and port, initial resources and
-idle time, agent registry URL and agent idle time), each with `default: true` when it was not
-set. It never includes the owner token, APNs credentials, extra container arguments, or a
-user name or password in the registry URL. Changing any of them requires restarting the host.
+`GET /v1/host` returns `{ version, node, runtime, display, gpu, image, push, liveActivities,
+settings }`: the host package and Node versions, `"microvm" | "container"`, the display
+protocol, the container's GPU kind (null for a microVM), the container or golden image, whether
+APNs and Live Activities are configured, and `settings: [{ name, value, default }]` for the
+non-secret `CABOOSE_*` variables read at startup. It never includes the owner token, APNs
+credentials, extra container arguments or URL credentials; changes need a host restart.
 
 The name is 1–80 characters without control characters, trimmed on save. Memory is
 512–65536 MiB, vCPUs 1–32, and idle time 60000–86400000 ms; numeric values are integers.
