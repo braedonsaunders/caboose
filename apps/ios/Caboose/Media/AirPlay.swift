@@ -98,7 +98,7 @@ final class AirPlayCenter {
                 self.connecting = false
                 self.refresh()
                 if selection != .external, self.current == nil {
-                    self.notice = "Choose a device to play your computer's sound on."
+                    self.notice = "Not connected"
                     Self.configureDefault()
                 }
             }
@@ -127,7 +127,8 @@ struct AirPlayRoutePicker: UIViewRepresentable {
 }
 
 /// AirPlay from the desktop's toolbar: the last device in one tap, any other through the
-/// system's picker, and what it takes to put the desktop itself on a TV.
+/// system's picker. The desktop itself reaches a TV only through Screen Mirroring, which
+/// the owner starts in Control Center.
 struct AirPlaySheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -138,7 +139,7 @@ struct AirPlaySheet: View {
             VStack(alignment: .leading, spacing: 18) {
                 AirPlayCard()
                 ZStack {
-                    Label("Choose Another Device", systemImage: "list.bullet")
+                    Label("Other Devices", systemImage: "list.bullet")
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 50)
                         .glassEffect(.regular.interactive(), in: .capsule)
@@ -149,13 +150,6 @@ struct AirPlaySheet: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Choose another AirPlay device")
                 .accessibilityAddTraits(.isButton)
-                Label {
-                    Text("To show the desktop on a TV, open Control Center and choose Screen Mirroring. The TV becomes a full desktop and this phone its trackpad.")
-                } icon: {
-                    Image(systemName: "rectangle.on.rectangle")
-                }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
             .padding(20)

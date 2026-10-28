@@ -557,9 +557,16 @@ final class AppModel {
         computerStatus = try await host.updateSettings(changes)
     }
 
+    /// A park is underway.
+    private(set) var parking = false
+    /// The owner asked to restart and is being asked to confirm.
+    var restartConfirmationPresented = false
+
     /// Parks the computer with its memory, so it resumes exactly as it was.
     func parkComputer() async throws {
         guard let host else { return }
+        parking = true
+        defer { parking = false }
         closeDisplay()
         do {
             try await host.park()
@@ -758,7 +765,7 @@ final class AppModel {
     /// Follows a `caboose://` shell link.
     func follow(_ link: ShellLink) {
         switch link {
-        case .tab(let tab): selectedTab = tab
+        case .tab(let tab): selectedTab = tab == .terminal && !TerminalSlot.isFilled ? .home : tab
         case .task(let id): notificationTaskID = id
         case .airPlay: selectedTab = .home; airPlay.connect()
         }

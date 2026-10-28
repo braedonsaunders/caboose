@@ -23,6 +23,11 @@ struct MainTabs: View {
             Tab("Apps", systemImage: "square.grid.2x2", value: ShellTab.apps) {
                 AppsScreen()
             }
+            if TerminalSlot.isFilled {
+                Tab("Terminal", systemImage: "apple.terminal", value: ShellTab.terminal) {
+                    TerminalSlot.screen()
+                }
+            }
         }
         .tint(Brand.amber)
         .onChange(of: model.selectedTab) { _, _ in model.updateDeviceDesktop() }
@@ -36,6 +41,11 @@ struct MainTabs: View {
             get: { model.presentedAgentWindowID != nil },
             set: { if !$0 { model.presentedAgentWindowID = nil } })) {
             AgentWindowScreen().environment(model)
+        }
+        .confirmationDialog("Restart your computer?", isPresented: $model.restartConfirmationPresented, titleVisibility: .visible) {
+            Button("Restart", role: .destructive) { Task { await model.restartComputer() } }
+        } message: {
+            Text("Open apps close. Files stay.")
         }
         .alert("Couldn't Open", isPresented: Binding(
             get: { model.launchFailure != nil },
@@ -67,6 +77,76 @@ struct ComputerStateView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Every tab's trailing pair: the Computer settings, and the lifecycle menu below it.
+struct ComputerToolbar: ToolbarContent {
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            ComputerSettingsButton()
+            LifecycleMenu()
+        }
+    }
+}
+
+private struct ComputerSettingsButton: View {
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
+    }
+}
+
+/// The computer's state as one control, offering what fits it: Turn On (`POST /v1/session`)
+/// when it is parked or out of reach, Park (`POST /v1/session/park`) and Restart
+/// (`POST /v1/computer/restart`, where the host can, after confirmation) while it runs.
+/// The host has no power-off: Park is the computer at rest.
+struct LifecycleMenu: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Menu {
+            Section(state.title) {
+                switch model.phase {
+                case .ready:
+                    Button("Park", systemImage: "moon.zzz") { Task { try? await model.parkComputer() } }
+                        .disabled(model.parking)
+                    if model.computerStatus?.capabilities.restart == true {
+                        Button("Restart…", systemImage: "arrow.clockwise", role: .destructive) { model.restartConfirmationPresented = true }
+                    }
+                case .parked, .failed:
+                    Button("Turn On", systemImage: "power") { Task { await model.wake() } }
+                case .displayElsewhere:
+                    Button("Show Here", systemImage: "iphone") { Task { await model.wake() } }
+                    Button("Park", systemImage: "moon.zzz") { Task { try? await model.parkComputer() } }
+                case .waking, .connecting, .restarting, .needsSetup:
+                    EmptyView()
+                }
+            }
+        } label: {
+            Label {
+                Text(state.title)
+            } icon: {
+                Image(systemName: state.symbol)
+                    .foregroundStyle(state.color)
+                    .symbolEffect(.pulse, isActive: state.busy)
+            }
+        }
+        .accessibilityLabel("Computer: \(state.title)")
+    }
+
+    private var state: (title: String, symbol: String, color: Color, busy: Bool) {
+        if model.parking { return ("Parking", "moon.zzz", Brand.amber, true) }
+        switch model.phase {
+        case .ready: return ("Running", "power", .green, false)
+        case .waking: return ("Waking", "power", Brand.amber, true)
+        case .connecting: return ("Connecting", "power", Brand.amber, true)
+        case .restarting: return ("Restarting", "arrow.clockwise", Brand.amber, true)
+        case .parked: return ("Parked", "moon.zzz", .secondary, false)
+        case .failed: return ("Out of Reach", "exclamationmark.triangle", .orange, false)
+        case .displayElsewhere: return ("On Another Device", "rectangle.on.rectangle", .secondary, false)
+        case .needsSetup: return ("Not Set Up", "power", .secondary, false)
+        }
     }
 }
 

@@ -36,6 +36,8 @@ struct AppsScreen: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Library", systemImage: "books.vertical") { showLibrary = true }
                 }
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                ComputerToolbar()
             }
             .sheet(isPresented: $showLibrary) { CatalogLibrary().environment(model) }
         }

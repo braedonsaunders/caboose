@@ -1,14 +1,14 @@
 import Foundation
 
-/// The app's four tabs.
+/// The app's tabs. Terminal appears only once the app has a native terminal to show.
 public enum ShellTab: String, CaseIterable, Hashable, Sendable {
-    case home, desktop, agents, apps
+    case home, desktop, agents, apps, terminal
 }
 
 /// A `caboose://` link the app's shell handles. Pairing links (`caboose://connect`) are
 /// parsed by the app's credentials and are not shell links.
 public enum ShellLink: Equatable, Sendable {
-    /// `caboose://home`, `caboose://desktop`, `caboose://agents`, `caboose://apps`.
+    /// `caboose://home`, `caboose://desktop`, `caboose://agents`, `caboose://apps`, `caboose://terminal`.
     case tab(ShellTab)
     /// `caboose://task/<id>`: an agent task.
     case task(String)

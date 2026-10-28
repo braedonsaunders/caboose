@@ -27,7 +27,13 @@ struct DesktopScreen: View {
             }
             .navigationTitle("Desktop")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { if model.phase == .ready { actions } }
+            // The desktop needs the height more than a title: with the vertical bar the top
+            // edge then belongs to the desktop alone.
+            .toolbar(removing: .title)
+            .toolbar {
+                if model.phase == .ready { actions }
+                ComputerToolbar()
+            }
             .prefersToolbarItemsInVerticalBar()
             .sheet(isPresented: $showAgents) {
                 AgentsScreen(dismiss: { showAgents = false }).environment(model)
@@ -54,10 +60,10 @@ struct DesktopScreen: View {
                 .badge(model.agents.awaitingApproval.count)
         }
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
-        ToolbarItemGroup(placement: .topBarTrailing) {
+        ToolbarItem(placement: .topBarTrailing) {
             Button("AirPlay", systemImage: model.airPlay.current != nil ? "airplay.audio" : "airplay.video") { showAirPlay = true }
-            Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
         }
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
     }
 }
 

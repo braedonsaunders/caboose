@@ -49,6 +49,7 @@ final class ShellLinkTests: XCTestCase {
         XCTAssertEqual(ShellLink(URL(string: "caboose://Desktop")!), .tab(.desktop))
         XCTAssertEqual(ShellLink(URL(string: "caboose://agents")!), .tab(.agents))
         XCTAssertEqual(ShellLink(URL(string: "caboose://apps")!), .tab(.apps))
+        XCTAssertEqual(ShellLink(URL(string: "caboose://terminal")!), .tab(.terminal))
         XCTAssertEqual(ShellLink(URL(string: "caboose://task/abc123")!), .task("abc123"))
         XCTAssertEqual(ShellLink(URL(string: "caboose://airplay")!), .airPlay)
     }

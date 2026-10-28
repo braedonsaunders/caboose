@@ -6,8 +6,6 @@ import UniformTypeIdentifiers
 /// and files the owner reaches for, and the actions they take most.
 struct HomeScreen: View {
     @Environment(AppModel.self) private var model
-    @State private var showLibrary = false
-
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -15,7 +13,7 @@ struct HomeScreen: View {
                     VStack(alignment: .leading, spacing: 26) {
                         ComputerCard()
                         AirPlayCard()
-                        QuickActions(showLibrary: $showLibrary)
+                        QuickActions()
                         WorkingAgents()
                         if model.phase == .ready, !model.appWindows.isEmpty { OpenWindows() }
                         AppRow(title: "Pinned", apps: model.pinnedApps)
@@ -36,12 +34,7 @@ struct HomeScreen: View {
                 await model.agents.refresh()
                 try? await model.refreshComputer()
             }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
-                }
-            }
-            .sheet(isPresented: $showLibrary) { CatalogLibrary().environment(model) }
+            .toolbar { ComputerToolbar() }
             .onAppear { model.airPlay.startWatching() }
             .onDisappear { model.airPlay.stopWatching() }
         }
@@ -50,39 +43,39 @@ struct HomeScreen: View {
 
 // MARK: The computer
 
-/// The computer's state, with the brand's wheels: rolling while it wakes, lit while it runs,
-/// unlit while it is parked. Wake and Park are right here.
+/// The computer at a glance, with the brand's wheels: rolling while it wakes or parks, lit
+/// while it runs, unlit while it is parked. Its lifecycle lives in the toolbar.
 struct ComputerCard: View {
     @Environment(AppModel.self) private var model
-    @State private var parking = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center) {
                 CabooseWordmark(motion: busy ? .rolling : .still, lit: lit)
                     .frame(height: 30)
                     .foregroundStyle(.white.opacity(0.92))
                 Spacer()
                 StatePill(text: stateText, color: stateColor)
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.computerStatus?.settings.name ?? model.computer?.name ?? "Your Computer")
-                    .font(.system(.title, design: .rounded, weight: .bold))
+            // The wordmark already says Caboose; a computer renamed in its settings shows its name.
+            if let name, name.caseInsensitiveCompare("Caboose") != .orderedSame {
+                Text(name)
+                    .font(.system(.title2, design: .rounded, weight: .bold))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+            }
+            if let detail {
                 Text(detail)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
-                if model.phase == .ready {
-                    TimelineView(.periodic(from: .now, by: 2)) { _ in
-                        Label(model.connectionSummary, systemImage: model.isRemote ? "network" : "wifi")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.tertiary)
-                    }
+            }
+            if model.phase == .ready {
+                TimelineView(.periodic(from: .now, by: 2)) { _ in
+                    Label(model.connectionSummary, systemImage: model.isRemote ? "network" : "wifi")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.tertiary)
                 }
             }
-            actions
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -90,19 +83,21 @@ struct ComputerCard: View {
         .animation(.smooth, value: model.phase)
     }
 
+    private var name: String? { model.computerStatus?.settings.name ?? model.computer?.name }
+
     private var busy: Bool {
-        parking || [.waking, .connecting, .restarting].contains(model.phase)
+        model.parking || [.waking, .connecting, .restarting].contains(model.phase)
     }
 
     private var lit: Bool {
         switch model.phase {
         case .parked, .failed: false
-        default: !parking
+        default: !model.parking
         }
     }
 
     private var stateText: String {
-        if parking { return "Parking" }
+        if model.parking { return "Parking" }
         switch model.phase {
         case .ready: return "Running"
         case .waking: return "Waking"
@@ -116,7 +111,7 @@ struct ComputerCard: View {
     }
 
     private var stateColor: Color {
-        if parking { return Brand.amber }
+        if model.parking { return Brand.amber }
         switch model.phase {
         case .ready: return .green
         case .waking, .connecting, .restarting: return Brand.amber
@@ -125,57 +120,15 @@ struct ComputerCard: View {
         }
     }
 
-    private var detail: String {
-        if parking { return "Saving every app exactly as it is." }
+    /// The machine's specs while it is up, or why it is not.
+    private var detail: String? {
         switch model.phase {
         case .ready, .displayElsewhere:
-            guard let computer = model.computer else { return "Awake" }
+            guard let computer = model.computer else { return nil }
             let line = "\(computer.image) · \(computer.vcpus) cores · \(computer.memoryMb / 1024) GB"
-            let remote = model.isRemote ? line + " · Remote" : line
-            return model.phase == .displayElsewhere ? "Another device is showing its display. " + remote : remote
-        case .waking: return "Every app comes back exactly as it was."
-        case .connecting: return "Opening your display."
-        case .restarting: return "Starting fresh from its disk. Your files and apps are still there."
-        case .parked: return "Every app is saved exactly as you left it."
+            return model.isRemote ? line + " · Remote" : line
         case .failed(let message): return message
-        case .needsSetup: return ""
-        }
-    }
-
-    @ViewBuilder private var actions: some View {
-        HStack(spacing: 10) {
-            switch model.phase {
-            case .ready:
-                Button("Park", systemImage: "moon.zzz") { park() }
-                    .buttonStyle(.glass)
-                    .disabled(parking)
-                Button("Desktop", systemImage: "macwindow.on.rectangle") { model.selectedTab = .desktop }
-                    .buttonStyle(.glass)
-            case .parked:
-                Button("Wake", systemImage: "power") { Task { await model.wake() } }
-                    .buttonStyle(.glassProminent)
-            case .failed:
-                Button("Try Again", systemImage: "arrow.clockwise") { Task { await model.wake() } }
-                    .buttonStyle(.glassProminent)
-                Button("Change Computer") { model.signOut() }
-                    .buttonStyle(.glass)
-            case .displayElsewhere:
-                Button("Show Here", systemImage: "iphone") { Task { await model.wake() } }
-                    .buttonStyle(.glassProminent)
-            case .waking, .connecting, .restarting, .needsSetup:
-                ProgressView().tint(.white)
-            }
-        }
-        .controlSize(.large)
-        .font(.subheadline.weight(.semibold))
-    }
-
-    private func park() {
-        parking = true
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        Task {
-            try? await model.parkComputer()
-            parking = false
+        default: return nil
         }
     }
 }
@@ -198,59 +151,58 @@ struct StatePill: View {
 
 // MARK: AirPlay
 
-/// One tap to play on the AirPlay device used last. See `AirPlayCenter` for what iOS lets an
-/// app do here.
+/// One tap to play on the AirPlay device used last; the picker beside it chooses another.
+/// See `AirPlayCenter` for what iOS lets an app do here.
 struct AirPlayCard: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         let airPlay = model.airPlay
         let onTV = model.externalDisplayActive
-        Button { if !onTV { airPlay.connect() } } label: {
-            HStack(spacing: 14) {
-                Image(systemName: onTV ? "tv" : airPlay.current != nil ? "airplay.audio" : "airplay.video")
-                    .font(.title2)
-                    .symbolEffect(.pulse, isActive: airPlay.connecting)
-                    .foregroundStyle(airPlay.current != nil || onTV ? Brand.amber : .white)
-                    .frame(width: 44, height: 44)
-                    .glassEffect(.regular, in: .circle)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.headline)
-                    Text(subtitle).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+        let playing = airPlay.current != nil || onTV
+        HStack(spacing: 14) {
+            Button { airPlay.connect() } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: onTV ? "tv" : "airplay.audio")
+                        .font(.title2)
+                        .symbolEffect(.pulse, isActive: airPlay.connecting)
+                        .foregroundStyle(playing ? Brand.amber : .white)
+                        .frame(width: 44, height: 44)
+                        .glassEffect(.regular, in: .circle)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(.headline).lineLimit(1)
+                        if let status { Text(status).font(.footnote).foregroundStyle(.secondary).lineLimit(1) }
+                    }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
-                if !onTV {
-                    // The system's own picker, to choose another device or come back to the phone.
-                    AirPlayRoutePicker()
-                        .frame(width: 36, height: 36)
-                        .accessibilityLabel("Choose an AirPlay device")
-                }
+                .contentShape(Rectangle())
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(.rect(cornerRadius: 22))
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
+            .buttonStyle(.plain)
+            .disabled(airPlay.connecting || onTV || airPlay.current != nil)
+            // The system's own picker: another device, or back to the phone.
+            AirPlayRoutePicker()
+                .frame(width: 36, height: 36)
+                .accessibilityLabel("AirPlay devices")
         }
-        .buttonStyle(.plain)
-        .disabled(airPlay.connecting)
+        .padding(14)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
     }
 
     private var title: String {
         let airPlay = model.airPlay
-        if model.externalDisplayActive { return "Desktop on Your TV" }
-        if let current = airPlay.current { return "Playing on \(current.name)" }
-        if airPlay.connecting { return "Connecting…" }
-        if let last = airPlay.last { return "AirPlay to \(last.name)" }
+        if model.externalDisplayActive { return "Desktop on TV" }
+        if let current = airPlay.current { return current.name }
+        if let last = airPlay.last { return last.name }
         return "AirPlay"
     }
 
-    private var subtitle: String {
+    private var status: String? {
         let airPlay = model.airPlay
-        if model.externalDisplayActive { return "This phone is its trackpad. Stop Screen Mirroring in Control Center to bring it back." }
+        if model.externalDisplayActive { return "Screen Mirroring" }
+        if airPlay.current != nil { return "Playing" }
+        if airPlay.connecting { return "Connecting" }
         if let notice = airPlay.notice { return notice }
-        if airPlay.current != nil { return "Your computer's sound plays there. For the desktop, start Screen Mirroring in Control Center." }
-        if !airPlay.devicesNearby && airPlay.last == nil { return "No AirPlay devices found nearby." }
-        return "Your computer's sound, in one tap. Screen Mirroring puts the desktop on a TV."
+        return airPlay.last != nil ? "AirPlay" : nil
     }
 }
 
@@ -258,10 +210,10 @@ struct AirPlayCard: View {
 
 struct QuickActions: View {
     @Environment(AppModel.self) private var model
-    @Binding var showLibrary: Bool
     private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
 
     var body: some View {
+        let terminal = model.partitionedApps.main.first { $0.categories.contains("TerminalEmulator") }
         LazyVGrid(columns: columns, spacing: 12) {
             if model.agents.available {
                 tile("Ask an Agent", "sparkles") {
@@ -269,11 +221,12 @@ struct QuickActions: View {
                     model.askFocusRequested = true
                 }
             }
-            tile("Desktop", "macwindow.on.rectangle") { model.selectedTab = .desktop }
-            if let terminal = model.partitionedApps.main.first(where: { $0.categories.contains("TerminalEmulator") }) {
-                tile("New Terminal", "apple.terminal") { model.open(terminal) }
+            // The native terminal when the app has one, else the computer's own terminal app.
+            if TerminalSlot.isFilled {
+                tile("Terminal", "apple.terminal") { model.selectedTab = .terminal }
+            } else if let terminal {
+                tile("Terminal", "apple.terminal") { model.open(terminal) }
             }
-            tile("Get Apps", "bag") { showLibrary = true }
         }
     }
 
@@ -308,7 +261,7 @@ struct WorkingAgents: View {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Agents at Work") { model.selectedTab = .agents }
                 ForEach(local) { run in
-                    AgentRow(title: run.prompt, detail: run.steps.last ?? "Working on iPhone…", agent: "On iPhone", waiting: false)
+                    AgentRow(title: run.prompt, detail: run.steps.last ?? "Working…", agent: "On iPhone", waiting: false)
                 }
                 ForEach(active.sorted { ($0.pendingApproval != nil ? 0 : 1) < ($1.pendingApproval != nil ? 0 : 1) }.prefix(4)) { task in
                     VStack(alignment: .leading, spacing: 10) {

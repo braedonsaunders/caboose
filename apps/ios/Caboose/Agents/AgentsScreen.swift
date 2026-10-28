@@ -13,11 +13,11 @@ struct AgentsScreen: View {
                 if model.phase != .ready {
                     ComputerStateView()
                 } else if !model.agents.available {
-                    ContentUnavailableView("Agents Unavailable", systemImage: "sparkles",
-                                           description: Text("This computer's host does not offer agents."))
+                    ContentUnavailableView("No Agents on This Host", systemImage: "sparkles")
                 } else {
                     AgentsList()
-                        .safeAreaInset(edge: .bottom) {
+                        // A bar, so the list blurs away beneath it as it scrolls.
+                        .safeAreaBar(edge: .bottom) {
                             AskBar().padding(.horizontal, 16).padding(.bottom, 8)
                         }
                 }
@@ -33,6 +33,8 @@ struct AgentsScreen: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Agent Settings", systemImage: "slider.horizontal.3") { model.showAgentSettings = true }
                 }
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                ComputerToolbar()
             }
         }
     }
@@ -51,8 +53,7 @@ private struct AgentsList: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 if waiting.isEmpty && running.isEmpty && finished.isEmpty && agents.localRuns.isEmpty && seatWindows.isEmpty {
-                    ContentUnavailableView("Nothing Yet", systemImage: "sparkles",
-                                           description: Text("Ask your computer to do something. Agents work on their own display, so they never take your pointer."))
+                    ContentUnavailableView("No Tasks", systemImage: "sparkles")
                         .padding(.top, 40)
                 }
                 section("Waiting for You", waiting)
@@ -89,6 +90,7 @@ private struct AgentsList: View {
             .frame(maxWidth: .infinity)
         }
         .scrollIndicators(.hidden)
+        .scrollEdgeEffectStyle(.hard, for: .bottom)
         .refreshable { await model.agents.refresh() }
     }
 
