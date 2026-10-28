@@ -2,7 +2,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { AgentInputError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
-import { ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
+import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
+import { SettingsInputError, type SettingsStore } from './settings.js'
+import type { ComputerResources } from './driver.js'
+import { serveWeb } from './static.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
 export interface Session { state: string; display: { path: string; token: string; protocol: 'xpra-ws' }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
@@ -16,6 +19,9 @@ export interface Controller extends ComputerDriver<Session> {
   ensureAgentSeat(): Promise<void>
   /** Root command runner in the running computer, or undefined while parked. */
   guest(): AgentGuest | undefined
+  activeResources(): ComputerResources | null
+  hasSavedState(): boolean
+  lastError?(): string | null
 }
 
 async function readJson(request: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
@@ -34,9 +40,9 @@ async function readJson(request: IncomingMessage, limit = 64 * 1024): Promise<Re
   throw new AgentInputError('request body must be a JSON object')
 }
 
-export function createCabooseServer(options: { token: string; idleMs: number; controller: Controller }) {
-  const { controller, token } = options
-  const computer = new ComputerLifecycle(controller, options.idleMs)
+export function createCabooseServer(options: { token: string; settings: SettingsStore; controller: Controller; webRoot?: string }) {
+  const { controller, token, settings } = options
+  const computer = new ComputerLifecycle(controller, settings.get().idleMs)
   const sockets = new Set<WebSocket>()
   const controls = new Set<WebSocket>()
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024, handleProtocols: protocols => protocols.has('binary') ? 'binary' : false })
@@ -45,10 +51,26 @@ export function createCabooseServer(options: { token: string; idleMs: number; co
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
   }
   const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), 1000, () => controller.ensureAgentSeat())
+  function managementStatus() {
+    const desired = settings.get()
+    const active = controller.activeResources()
+    const tasks = agents.list()
+    return {
+      state: computer.state, settings: desired, limits: settings.limits, activeResources: active,
+      restartRequired: controller.hasSavedState() && (!active || active.memoryMb !== desired.memoryMb || active.vcpus !== desired.vcpus),
+      clients: { display: sockets.size - controls.size, control: controls.size },
+      tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
+      capabilities: { restart: typeof controller.restart === 'function' },
+      lastError: computer.lastError ?? controller.lastError?.() ?? null,
+    }
+  }
+  function broadcastSettings(): void { broadcast({ type: 'computer.settings', computer: managementStatus() }) }
+  function closeSockets(): void { for (const socket of sockets) socket.terminate() }
   computer.subscribe(state => {
     broadcast({ type: 'computer.state', state })
     if (state === 'running') agents.resume()
     else agents.pause()
+    broadcastSettings()
   })
   function json(response: ServerResponse, status: number, body: unknown): void {
     response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
@@ -57,48 +79,67 @@ export function createCabooseServer(options: { token: string; idleMs: number; co
   function authorized(request: IncomingMessage): boolean { return authenticate(request.headers.authorization, token) }
   const server = createServer((request, response) => {
     void (async () => {
-      if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
       const path = new URL(request.url ?? '/', 'http://localhost').pathname
+      if (path !== '/v1' && !path.startsWith('/v1/')) {
+        if (options.webRoot) return serveWeb(request, response, options.webRoot, path)
+        return json(response, 404, { error: 'not found' })
+      }
+      if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
       if (request.method === 'GET' && path === '/v1/health') return json(response, 200, controller.stats())
-      if (request.method === 'POST' && path === '/v1/session') return json(response, 200, await computer.wake())
+      if (request.method === 'GET' && path === '/v1/computer') return json(response, 200, managementStatus())
+      if (request.method === 'PATCH' && path === '/v1/computer/settings') {
+        const updated = await settings.update(await readJson(request))
+        computer.setIdleMs(updated.idleMs)
+        broadcastSettings()
+        return json(response, 200, managementStatus())
+      }
+      if (request.method === 'POST' && path === '/v1/computer/restart') {
+        const body = await readJson(request)
+        if (body.confirm !== true) throw new SettingsInputError('Restart closes apps and discards unsaved work; confirm must be true')
+        await computer.restart(async () => {
+          closeSockets()
+          // The cold boot stops every task. Do not wait for per-task cancellation:
+          // an unresponsive guest must not prevent its own restart.
+        })
+        agents.computerRestarted()
+        broadcastSettings()
+        return json(response, 200, managementStatus())
+      }
+      if (request.method === 'POST' && path === '/v1/session') {
+        const session = await computer.wake()
+        return json(response, 200, { ...session, computer: { ...session.computer, name: settings.get().name } })
+      }
       if (request.method === 'POST' && path === '/v1/session/park') {
-        for (const socket of sockets) socket.terminate()
-        await computer.park()
+        await computer.park(closeSockets)
         return json(response, 200, { state: computer.state })
       }
       if (request.method === 'GET' && path === '/v1/apps') {
-        if (computer.state !== 'running') return json(response, 409, { error: 'computer is not running' })
-        const release = computer.acquire()
-        try { return json(response, 200, await controller.apps()) } finally { release() }
+        return json(response, 200, await computer.run(() => controller.apps()))
       }
       const match = /^\/v1\/apps\/([^/]+)\/launch$/.exec(path)
       if (request.method === 'POST' && match?.[1]) {
-        if (computer.state !== 'running') return json(response, 409, { error: 'computer is not running' })
-        const release = computer.acquire()
-        try {
-          await controller.launch(decodeURIComponent(match[1]))
-          return json(response, 200, { launched: true })
-        } finally { release() }
+        await computer.run(() => controller.launch(decodeURIComponent(match[1]!)))
+        return json(response, 200, { launched: true })
       }
       if (path === '/v1/agent/tasks' && request.method === 'GET') return json(response, 200, agents.list())
       if (path === '/v1/agent/tasks' && request.method === 'POST') {
-        if (computer.state !== 'running') return json(response, 409, { error: 'computer is not running' })
-        const task = await agents.start(await readJson(request))
+        const input = await readJson(request)
+        const task = await computer.run(() => agents.start(input))
         return json(response, 200, { id: task.id })
       }
       const cancel = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/cancel$/.exec(path)
       if (request.method === 'POST' && cancel?.[1]) {
-        return json(response, 200, { cancelled: await agents.cancel(cancel[1]) })
+        return json(response, 200, { cancelled: await computer.run(() => agents.cancel(cancel[1]!)) })
       }
       const hold = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/(pause|resume)$/.exec(path)
       if (request.method === 'POST' && hold?.[1]) {
         const id = hold[1]
-        return json(response, 200, hold[2] === 'pause' ? { paused: await agents.pauseTask(id) } : { resumed: await agents.resumeTask(id) })
+        return json(response, 200, await computer.run(async () => hold[2] === 'pause' ? { paused: await agents.pauseTask(id) } : { resumed: await agents.resumeTask(id) }))
       }
       return json(response, 404, { error: 'not found' })
     })().catch(error => {
-      if (error instanceof AgentInputError) return json(response, 400, { error: error.message })
-      if (error instanceof AgentUnavailableError) return json(response, 409, { error: error.message })
+      if (error instanceof AgentInputError || error instanceof SettingsInputError) return json(response, 400, { error: error.message })
+      if (error instanceof AgentUnavailableError || error instanceof ComputerConflictError) return json(response, 409, { error: error.message })
       console.error('Caboose request failed:', error)
       if (!response.headersSent) json(response, 500, { error: 'computer operation failed' })
       else response.destroy()
@@ -131,7 +172,7 @@ export function createCabooseServer(options: { token: string; idleMs: number; co
     const path = url.pathname
     if (!authorized(request)) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
     if (path !== '/v1/display' && path !== '/v1/control') { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
-    if (computer.state !== 'running') { socket.end('HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n'); return }
+    if (!computer.acceptsConnections) { socket.end('HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n'); return }
     const offered = request.headers['sec-websocket-protocol']?.split(',').map(value => value.trim()) ?? []
     if (path === '/v1/display' && !offered.includes('binary')) { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return }
     const release = computer.acquire()
@@ -144,6 +185,7 @@ export function createCabooseServer(options: { token: string; idleMs: number; co
         if (path === '/v1/control') {
           controls.add(client)
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
+          client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))
           return
         }
         if (url.searchParams.get('seat') === 'agent') {
@@ -159,8 +201,7 @@ export function createCabooseServer(options: { token: string; idleMs: number; co
     } catch { release(); socket.destroy() }
   })
   async function shutdown(): Promise<void> {
-    for (const socket of sockets) socket.terminate()
-    await computer.park()
+    await computer.park(closeSockets)
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }
   return { server, computer, shutdown }

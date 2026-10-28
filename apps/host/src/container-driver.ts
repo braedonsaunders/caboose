@@ -3,7 +3,9 @@ import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import type { Config, GpuKind } from './config.js'
+import type { ComputerResources } from './driver.js'
 import type { App, Controller, Session } from './server.js'
+import type { ComputerSettings } from './settings.js'
 
 /**
  * The computer as a container instead of a microVM, for hosts whose GPU a container can use
@@ -48,8 +50,12 @@ export function gpuArgs(kind: GpuKind): string[] {
   }
 }
 
-export function createContainerController(config: Config, dependencies: { docker?: Docker; exists?: (path: string) => boolean } = {}): Controller {
+export function createContainerController(config: Config, dependencies: { docker?: Docker; exists?: (path: string) => boolean; settings?: () => ComputerSettings } = {}): Controller {
   const docker = dependencies.docker ?? dockerCli()
+  const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs }
+  /** What the container was created with; settings changes apply on the next restart. */
+  let resources: ComputerResources | null = null
+  let lastError: string | null = null
   const name = config.containerName
   const gpu: GpuKind = config.gpu === 'auto' ? detectGpu(dependencies.exists) : config.gpu
   let displayToken = ''
@@ -66,11 +72,12 @@ export function createContainerController(config: Config, dependencies: { docker
     }
   }
 
-  function runArgs(): string[] {
+  function runArgs(size: ComputerResources): string[] {
     return [
       'run', '-d', '--name', name, '--hostname', 'caboose', '--init',
       '--restart', 'no',
-      '--memory', `${config.memoryMb}m`, '--cpus', String(config.vcpus), '--shm-size', '2g',
+      '--label', `caboose.memory-mb=${size.memoryMb}`, '--label', `caboose.vcpus=${size.vcpus}`,
+      '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
       '-p', '127.0.0.1:14500:14500', '-p', '127.0.0.1:14501:14501',
       '-v', `${config.containerHome}:/home/caboose`,
       ...gpuArgs(gpu),
@@ -89,7 +96,18 @@ export function createContainerController(config: Config, dependencies: { docker
     return exec('caboose', '/usr/bin/env', ['DISPLAY=:100', 'HOME=/home/caboose', '/usr/bin/python3', '-c', script, action, ...(id ? [id] : [])], 60_000)
   }
 
-  return {
+  /** The size an existing container was created with (survives a host restart). */
+  async function createdWith(): Promise<ComputerResources | null> {
+    try {
+      const labels = JSON.parse(await docker(['inspect', '-f', '{{json .Config.Labels}}', name], 15_000)) as Record<string, string>
+      const memoryMb = Number(labels['caboose.memory-mb']), vcpus = Number(labels['caboose.vcpus'])
+      return memoryMb > 0 && vcpus > 0 ? { memoryMb, vcpus } : null
+    } catch {
+      return null
+    }
+  }
+
+  const controller: Controller = {
     displayUrl: 'ws://127.0.0.1:14500/',
     agentDisplayUrl: 'ws://127.0.0.1:14501/',
     async ensureAgentSeat() {
@@ -100,11 +118,20 @@ export function createContainerController(config: Config, dependencies: { docker
       return { run: (command: string, args: string[], timeoutMs?: number) => exec('root', command, args, timeoutMs) }
     },
     stats: () => ({ host: 'caboose-host', runtime: 'container', gpu, container: name, running }),
+    activeResources: () => resources,
+    hasSavedState: () => resources !== null,
+    lastError: () => lastError,
     async wake(): Promise<Session> {
       const current = await state()
-      if (current === 'missing') await docker(runArgs(), 300_000)
-      else if (current === 'stopped') await docker(['start', name], 120_000)
-      else if (current === 'paused') await docker(['unpause', name], 60_000)
+      if (current === 'missing') {
+        const desired = settings()
+        resources = { memoryMb: desired.memoryMb, vcpus: desired.vcpus }
+        await docker(runArgs(resources), 300_000)
+      } else {
+        resources ??= await createdWith()
+        if (current === 'stopped') await docker(['start', name], 120_000)
+        else if (current === 'paused') await docker(['unpause', name], 60_000)
+      }
       running = true
       try {
         if (!displayToken) {
@@ -114,7 +141,8 @@ export function createContainerController(config: Config, dependencies: { docker
         }
         await exec('root', '/usr/local/bin/caboose-session', ['start'], 240_000)
         await exec('root', '/usr/local/bin/caboose-session', ['ready', ':100'], 240_000)
-        return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'xpra-ws' }, computer: { name: 'Caboose', image: gpu === 'none' ? 'Debian 13' : 'Debian 13 · GPU', memoryMb: config.memoryMb, vcpus: config.vcpus } }
+        const size = resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }
+        return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'xpra-ws' }, computer: { name: settings().name, image: gpu === 'none' ? 'Debian 13' : 'Debian 13 · GPU', ...size } }
       } catch (error) {
         running = false
         throw error
@@ -123,6 +151,26 @@ export function createContainerController(config: Config, dependencies: { docker
     async park() {
       if ((await state()) === 'running') await docker(['pause', name], 60_000)
       running = false
+    },
+    /**
+     * A cold restart at the current settings. The home is a volume, so removing the
+     * container loses only what was in memory.
+     */
+    async restart() {
+      lastError = null
+      if (running) {
+        try { await exec('root', '/bin/sync', [], 5_000) }
+        catch (error) {
+          lastError = `The computer restarted without confirming a disk flush: ${error instanceof Error ? error.message : String(error)}`
+          console.error(lastError)
+        }
+      }
+      if ((await state()) === 'paused') await docker(['unpause', name], 60_000).catch(() => '')
+      await docker(['rm', '-f', name], 120_000).catch(() => '')
+      running = false
+      displayToken = ''
+      resources = null
+      return controller.wake()
     },
     async apps(): Promise<App[]> {
       const apps: App[] = []
@@ -134,4 +182,5 @@ export function createContainerController(config: Config, dependencies: { docker
     },
     async launch(id: string): Promise<void> { await guestApps('launch', id) },
   }
+  return controller
 }

@@ -15,6 +15,60 @@ from the host. Use a dedicated trusted host and network namespace. HTTPS/WSS
 must be provided by a trusted reverse proxy before traffic crosses a network;
 the host service itself serves unencrypted HTTP/WebSocket.
 
+## Computer management
+
+The web console and iOS Settings use the same authenticated API:
+`GET /v1/computer`, `PATCH /v1/computer/settings`, and
+`POST /v1/computer/restart`. Status polling never wakes or leases the computer.
+The full response and request contract is in `../../docs/architecture.md`.
+
+Name, memory, CPUs and idle timeout are stored in `caboose.json` under
+`CABOOSE_IMAGE_ROOT`. Saves use an atomic rename and mode 0600. Environment values
+are defaults when no saved value exists; saved settings override them on startup.
+Invalid or unreadable settings fail startup rather than silently reverting. Back
+up this file with the disks. Do not edit it while the host is running.
+
+Name and idle timeout changes apply immediately. CPU and memory changes take effect
+on a cold restart; resuming a saved-memory snapshot retains its previous resources.
+The response reports `activeResources` and `restartRequired`, including while the
+machine is parked. An older snapshot without resource metadata has unknown active
+resources until restarted. Applied resources are saved beside the disk as
+`overlays/owner.resources.json`.
+
+Restart requires JSON `{ "confirm": true }`, closes client connections and ends
+agent tasks, discards open application memory, and boots the existing disk. Save
+documents first. It does not restart the Linux host or delete the computer disk.
+The HTTP response waits for the computer's display to be ready; allow 300 seconds.
+Concurrent restart requests return 409. Park instead preserves application memory.
+Restart attempts a short disk flush, but an unresponsive guest can still be
+restarted. If the flush fails, the result retains a warning in `lastError`; as with
+a power interruption, the filesystem may need journal recovery and unsaved writes
+can be lost.
+
+The host serves the compiled `apps/web/dist` at its root, or the directory selected
+by `CABOOSE_WEB_ROOT`. Static assets and SPA routes are public; every `/v1` request
+requires the owner bearer token. Missing web assets return 404. The Docker image
+must contain the built web app; a host-only checkout can still use the API without it.
+Do not point `CABOOSE_WEB_ROOT` at a source or data directory.
+
+Run the management contract check against a real host (Node 22+):
+
+```sh
+export CABOOSE_URL=https://computer.example.com
+# Supply CABOOSE_OWNER_TOKEN through your private environment.
+node apps/host/scripts/check-management.mjs
+node apps/host/scripts/check-management.mjs --write
+# This discards the guest's unsaved application state:
+node apps/host/scripts/check-management.mjs --restart
+```
+
+The default check is read-only; `--write` saves the existing name unchanged;
+`--restart` verifies a real cold boot and applied resources. For a device check,
+open Chromium, save a document, change CPU/RAM in Settings, verify the pending
+restart banner, and restart. Confirm the disk document remains, the old open
+applications are gone, and the display reconnects with the new resources. These
+real-machine checks require the built guest and are separate from unit tests.
+
 The unverified user-service template is `systemd/caboose-host.service`. Set
 `CABOOSE_HOST_DIR` to the absolute path of `apps/host` and `CABOOSE_NODE` to
 the absolute Node executable in `~/.config/caboose/host.env`, in addition to the

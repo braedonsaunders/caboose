@@ -13,8 +13,8 @@ RUN pnpm --filter caboose-host exec tsc --outDir dist && \
 
 FROM debian:bookworm-slim AS vmm
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL -o /cloud-hypervisor https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v49.0/cloud-hypervisor-static && \
-    echo '899bfad0113fddae440b03bc8eee6e806dd5188946d33cc06cfdf5e837221677  /cloud-hypervisor' | sha256sum -c - && chmod 0755 /cloud-hypervisor
+RUN curl -fsSL -o /cloud-hypervisor https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v54.0/cloud-hypervisor-static && \
+    echo '4f4f98a3d661a40f3e5272627cc895a1b2e525f2f6bedf5f895f9cd21ba5c65b  /cloud-hypervisor' | sha256sum -c - && chmod 0755 /cloud-hypervisor
 
 FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends iproute2 iptables procps qemu-utils xfsprogs util-linux && rm -rf /var/lib/apt/lists/*

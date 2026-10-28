@@ -10,10 +10,12 @@ function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
     switch (args[0]) {
       case 'inspect':
         if (status === 'missing') throw new Error('No such object')
+        if (args.includes('{{json .Config.Labels}}')) return '{"caboose.memory-mb":"4096","caboose.vcpus":"2"}'
         return `${status}\n`
       case 'run': status = 'running'; return 'id\n'
       case 'start': case 'unpause': status = 'running'; return ''
       case 'pause': status = 'paused'; return ''
+      case 'rm': status = 'missing'; return ''
       case 'exec':
         if (args.includes('list')) return '[]'
         return ''
@@ -95,5 +97,28 @@ describe('GPU selection', () => {
     const controller = createContainerController({ ...settings, gpu: 'none' }, { docker: fake.docker, exists: () => true })
     await controller.wake()
     expect(fake.calls.find(call => call[0] === 'run')).toEqual(expect.arrayContaining(['CABOOSE_GPU=none']))
+  })
+})
+
+describe('container settings and restart', () => {
+  it('sizes a new computer from the settings and restarts cold into the new size', async () => {
+    const fake = fakeDocker('missing')
+    let desired = { name: 'Studio', memoryMb: 8192, vcpus: 6, idleMs: 60_000 }
+    const controller = createContainerController(settings, { docker: fake.docker, exists: () => false, settings: () => desired })
+    const first = await controller.wake()
+    expect(first.computer).toMatchObject({ name: 'Studio', memoryMb: 8192, vcpus: 6 })
+    expect(controller.activeResources()).toEqual({ memoryMb: 8192, vcpus: 6 })
+    desired = { ...desired, memoryMb: 12288 }
+    const second = await controller.restart!()
+    expect(fake.calls.some(call => call[0] === 'rm')).toBe(true)
+    expect(second.computer.memoryMb).toBe(12288)
+    expect(second.display.token).not.toBe(first.display.token)
+  })
+
+  it('reads the size of a computer that existed before the host started', async () => {
+    const fake = fakeDocker('paused')
+    const controller = createContainerController(settings, { docker: fake.docker, exists: () => false })
+    await controller.wake()
+    expect(controller.activeResources()).toEqual({ memoryMb: 4096, vcpus: 2 })
   })
 })

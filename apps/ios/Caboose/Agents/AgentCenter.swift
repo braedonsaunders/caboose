@@ -29,6 +29,9 @@ final class AgentCenter {
     private(set) var available = true
     var lastError: String?
 
+    /// The computer's management status, whenever the host reports a change on the control socket.
+    var onComputer: ((HostClient.ComputerStatus) -> Void)?
+
     private var control: URLSessionWebSocketTask?
     private var host: HostClient?
 
@@ -162,7 +165,14 @@ final class AgentCenter {
     private func handle(_ text: String) {
         guard let data = text.data(using: .utf8),
               let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = event["type"] as? String, let id = event["id"] as? String else { return }
+              let type = event["type"] as? String else { return }
+        if type == "computer.settings", let computer = event["computer"],
+           let body = try? JSONSerialization.data(withJSONObject: computer),
+           let status = try? JSONDecoder().decode(HostClient.ComputerStatus.self, from: body) {
+            onComputer?(status)
+            return
+        }
+        guard let id = event["id"] as? String else { return }
         switch type {
         case "agent.task.started":
             if !tasks.contains(where: { $0.id == id }) {
@@ -197,7 +207,7 @@ extension HostClient {
 
     func startAgentTask(prompt: String, agent: String) async throws -> String {
         struct Started: Decodable { var id: String }
-        let started: Started = try await request("POST", "/v1/agent/tasks", body: ["prompt": prompt, "agent": agent], timeout: 30)
+        let started: Started = try await request("POST", "/v1/agent/tasks", body: ["prompt": .string(prompt), "agent": .string(agent)], timeout: 30)
         return started.id
     }
 
