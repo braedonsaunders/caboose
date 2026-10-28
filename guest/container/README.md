@@ -26,3 +26,11 @@ guest/container/check.sh` to check the live Xpra encoder and MP3 dependencies.
 Use `apps/host/scripts/e2e.sh` to check the host/display protocol and parking.
 Docker pause retains RAM only while Docker and WSL remain running; after a
 restart, home files persist but the process tree does not.
+
+Chromium keeps its sandbox enabled. On Docker hosts whose default seccomp policy
+blocks Chromium's namespace sandbox, use `--security-opt seccomp=<absolute path
+to guest/container/chromium-seccomp.json>` in `CABOOSE_CONTAINER_ARGS`. This
+profile is based on the [Moby seccomp v0.2.1 default](https://github.com/moby/profiles/blob/seccomp/v0.2.1/seccomp/default.json)
+(Apache-2.0), with clone/unshare allowed for user, PID and network namespaces;
+mount, UTS, IPC and cgroup namespace creation remains blocked. It must be
+reviewed against the Docker version and local security requirements.
