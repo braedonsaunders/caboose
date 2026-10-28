@@ -36,6 +36,16 @@ same pull request as the code that changes the contract.
 
 ### 1. Guest: the computer (`guest/`)
 
+On a WSL2 host that exposes its GPU through `/dev/dxg`, the host can instead run
+the computer as a Debian container using `CABOOSE_RUNTIME=container`. Mesa's
+D3D12 driver renders on the WSL GPU and Xpra can use NVENC; display ports,
+authentication, application discovery and the two-seat protocol remain the
+same. The home directory is a persistent host bind mount or volume. Parking
+pauses the container in RAM, and waking unpauses it; a Docker or WSL restart
+loses the process tree, but not the home directory. This volatile pause does
+not claim the durable microVM snapshot semantics described below. The runtime
+and its build and checks are documented in `guest/container/README.md`.
+
 A Debian 13 (trixie, amd64) golden image booted by Cloud Hypervisor. Each computer's
 disk is a reflink copy-on-write clone of the base, exactly the appkit-desk model: it
 costs no space up front and each user's installs and home persist. A clone is

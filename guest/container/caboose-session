@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+export HOME=/home/caboose
+export XDG_RUNTIME_DIR=/run/user/1000
+install -d -o caboose -g caboose -m 0700 "$XDG_RUNTIME_DIR"
+start_display() {
+  local display=$1 port=$2 speaker=$3
+  if runuser -u caboose -- env DISPLAY="$display" xpra info "$display" >/dev/null 2>&1; then return; fi
+  runuser -u caboose -- env HOME="$HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    xpra seamless "$display" --daemon=yes --bind-ws="0.0.0.0:$port" \
+    --ws-auth=file:filename=/run/caboose/xpra-token --html=off --clipboard=on \
+    --notifications=on --file-transfer=on --mdns=off --printing=off --webcam=off \
+    --speaker="$speaker" --microphone=off
+}
+ready() {
+  local display=$1
+  for _ in $(seq 1 120); do
+    if runuser -u caboose -- env DISPLAY="$display" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" xpra info "$display" >/dev/null 2>&1; then return; fi
+    sleep 1
+  done
+  echo "Xpra $display did not become ready" >&2; return 1
+}
+case ${1:-} in
+  start) start_display :100 14500 on ;;
+  start-agent) start_display :101 14501 off; ready :101 ;;
+  ready) ready "${2:?display required}" ;;
+  *) echo 'Usage: caboose-session start | start-agent | ready DISPLAY' >&2; exit 2 ;;
+esac
