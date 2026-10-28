@@ -3,6 +3,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { AgentInputError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
+import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
 import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
@@ -51,6 +52,9 @@ export function createCabooseServer(options: { token: string; settings: Settings
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
   }
   const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), 1000, () => controller.ensureAgentSeat())
+  const media = new MediaHandoff(() => controller.guest(), broadcast)
+  /** Media is polled only while the computer is already running and someone is watching it. */
+  function syncMedia(): void { media.setActive(computer.state === 'running' && sockets.size - controls.size > 0) }
   function managementStatus() {
     const desired = settings.get()
     const active = controller.activeResources()
@@ -69,7 +73,8 @@ export function createCabooseServer(options: { token: string; settings: Settings
   computer.subscribe(state => {
     broadcast({ type: 'computer.state', state })
     if (state === 'running') agents.resume()
-    else agents.pause()
+    else { agents.pause(); media.computerStopped() }
+    syncMedia()
     broadcastSettings()
   })
   function json(response: ServerResponse, status: number, body: unknown): void {
@@ -136,9 +141,18 @@ export function createCabooseServer(options: { token: string; settings: Settings
         const id = hold[1]
         return json(response, 200, await computer.run(async () => hold[2] === 'pause' ? { paused: await agents.pauseTask(id) } : { resumed: await agents.resumeTask(id) }))
       }
+      if (request.method === 'GET' && path === '/v1/media') {
+        return json(response, 200, { media: await media.read(computer.state === 'running') })
+      }
+      const control = /^\/v1\/media\/([^/]+)\/control$/.exec(path)
+      if (request.method === 'POST' && control?.[1]) {
+        const command = parseMediaCommand(control[1], await readJson(request))
+        await computer.run(() => media.send(command))
+        return json(response, 200, { sent: true })
+      }
       return json(response, 404, { error: 'not found' })
     })().catch(error => {
-      if (error instanceof AgentInputError || error instanceof SettingsInputError) return json(response, 400, { error: error.message })
+      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof ComputerConflictError) return json(response, 409, { error: error.message })
       console.error('Caboose request failed:', error)
       if (!response.headersSent) json(response, 500, { error: 'computer operation failed' })
@@ -180,12 +194,15 @@ export function createCabooseServer(options: { token: string; settings: Settings
     try {
       wss.handleUpgrade(request, socket, head, client => {
         sockets.add(client)
+        if (path === '/v1/control') controls.add(client)
+        syncMedia()
         client.on('error', () => client.terminate())
-        client.once('close', () => { sockets.delete(client); controls.delete(client); release() })
+        client.once('close', () => { sockets.delete(client); controls.delete(client); release(); syncMedia() })
         if (path === '/v1/control') {
-          controls.add(client)
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))
+          const playing = media.watched()
+          if (playing) client.send(JSON.stringify({ type: 'media.playing', media: playing }))
           return
         }
         if (url.searchParams.get('seat') === 'agent') {
