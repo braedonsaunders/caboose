@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { config } from './config.js'
-import { describeHost } from './host-info.js'
+import { describeHost, machineResources } from './host-info.js'
 
 it('describes a microVM host with defaults marked, and never shows the owner token', () => {
   const env = { CABOOSE_OWNER_TOKEN: 'very-secret', CABOOSE_IMAGE_ROOT: '/srv/caboose' }
@@ -23,4 +23,11 @@ it('reports the GPU a container is given, detected unless set, and hides credent
   expect(JSON.stringify(info)).not.toContain('hidden')
   const fixed = { ...env, CABOOSE_GPU: 'nvidia' }
   expect(describeHost(config(fixed), fixed, { push: false, liveActivities: false, exists: () => true }).gpu).toBe('nvidia')
+})
+
+it('reports the machine computers share, in MiB and bytes, and a null disk it cannot read', async () => {
+  const probe = { totalmem: () => 32 * 1024 ** 3, freemem: () => 20 * 1024 ** 3 + 5, cpus: () => 16, statfs: async () => ({ bsize: 4096, blocks: 1000, bavail: 250 }) }
+  expect(await machineResources('/srv/caboose', probe)).toEqual({ memoryMb: 32768, availableMemoryMb: 20480, cpus: 16, disk: { totalBytes: 4_096_000, freeBytes: 1_024_000 } })
+  const missing = { ...probe, statfs: async () => { throw Object.assign(new Error('no such volume'), { code: 'ENOENT' }) } }
+  expect((await machineResources('/nowhere', missing)).disk).toBeNull()
 })

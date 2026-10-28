@@ -5,7 +5,7 @@ import { config } from './config.js'
 import { createContainerController } from './container-driver.js'
 import { createController } from './driver.js'
 import { createCabooseServer } from './server.js'
-import { describeHost } from './host-info.js'
+import { describeHost, machineResources } from './host-info.js'
 import { AgentRegistry } from './registry.js'
 import { openSettings } from './settings.js'
 import { join, resolve } from 'node:path'
@@ -23,6 +23,7 @@ const registry = new AgentRegistry({ url: deployment.agentRegistryUrl, cachePath
 const webRoot = process.env.CABOOSE_WEB_ROOT ? resolve(process.env.CABOOSE_WEB_ROOT) : fileURLToPath(new URL('../../web/dist', import.meta.url))
 const host = describeHost(deployment, process.env, { push: !!push, liveActivities: !!activities })
 const app = createCabooseServer({ token: deployment.token, settings, registry, push, activities, host, agentIdleMs: deployment.agentIdleMs,
+  machine: () => machineResources(deployment.imageRoot),
   controller: deployment.runtime === 'container'
     ? createContainerController(deployment, { settings: () => settings.get() })
     : createController(deployment, { settings: () => settings.get() }), webRoot })
