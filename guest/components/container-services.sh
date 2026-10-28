@@ -31,8 +31,10 @@ if [ -s "$file_pid" ]; then
 fi
 start-stop-daemon --start --oknodo --background --make-pidfile --pidfile "$file_pid" \
   --chuid caboose:caboose --exec /usr/bin/python3 -- /opt/caboose/files/caboose-files.py
-for _ in $(seq 1 60); do ss -lnt | grep -Eq ':14700[[:space:]]' && break; sleep 1; done
-ss -lnt | grep -Eq ':14700[[:space:]]' || { echo 'File service did not become ready' >&2; exit 1; }
+# Listening on 14700 (0x396C, state 0A), read from /proc: the image has no iproute2 for ss.
+file_service_listening() { grep -Eq '^ *[0-9]+: [0-9A-F]+:396C [0-9A-F]+:[0-9A-F]+ 0A ' /proc/net/tcp /proc/net/tcp6 2>/dev/null; }
+for _ in $(seq 1 60); do file_service_listening && break; sleep 1; done
+file_service_listening || { echo 'File service did not become ready' >&2; exit 1; }
 monitor_pid="$runtime/caboose-notifications.pid"
 monitor_running=false
 if [ -s "$monitor_pid" ]; then

@@ -11,7 +11,7 @@ try {
   const source = fileURLToPath(new URL('..', import.meta.url))
   docker('run', '-d', '--name', name, '-v', `${source}:/bundle:ro`, 'debian:trixie-slim', 'sleep', 'infinity')
   const run = (command: string, args: string[]) => docker('exec', '-u', 'root', name, command, ...args)
-  run('/bin/sh', ['-c', 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 iproute2 dbus && useradd -m -u 1000 caboose && mkdir -p /home/caboose/Documents /run/caboose && echo keep > /home/caboose/Documents/sentinel && echo token > /run/caboose/display-token && chown caboose:caboose /run/caboose/display-token'])
+  run('/bin/sh', ['-c', 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 dbus && useradd -m -u 1000 caboose && mkdir -p /home/caboose/Documents /run/caboose && echo keep > /home/caboose/Documents/sentinel && echo token > /run/caboose/display-token && chown caboose:caboose /run/caboose/display-token'])
   run('/bin/sh', ['-c', `mkdir -p /etc/xdg/Thunar /home/caboose/.config/Thunar; printf '%s' '<actions><action><unique-id>existing</unique-id></action></actions>' > /etc/xdg/Thunar/uca.xml; printf '%s' owner-custom > /home/caboose/.config/Thunar/uca.xml`])
   const guest: AgentGuest = { run: async (cmd, args) => run(cmd, args) }
   run('/bin/sh', ['-c', `printf '%s\n' '#!/bin/bash' 'start_printing() {' '  /usr/local/libexec/caboose-phone-printer-setup' '}' 'start_printing; true' > /usr/local/bin/caboose-session`])
@@ -29,7 +29,7 @@ try {
   assert.match(actions, /<unique-id>existing<\/unique-id>/)
   assert.match(actions, /<unique-id>caboose-share-to-iphone<\/unique-id>/)
   assert.equal(run('/bin/cat', ['/usr/local/share/caboose/components.version']).trim(), bundle.version)
-  run('/bin/sh', ['-c', 'test -x /usr/local/bin/caboose-open && test -f /opt/caboose/files/caboose-files.py && test -f /opt/caboose/notifications/monitor.py && lpstat -p iPhone && ss -lnt | grep -q :14700'])
+  run('/bin/sh', ['-c', 'test -x /usr/local/bin/caboose-open && test -f /opt/caboose/files/caboose-files.py && test -f /opt/caboose/notifications/monitor.py && lpstat -p iPhone && grep -Eq "^ *[0-9]+: [0-9A-F]+:396C [0-9A-F]+:[0-9A-F]+ 0A " /proc/net/tcp /proc/net/tcp6'])
   run('/bin/sh', ['-c', 'runuser -u caboose -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /usr/bin/python3 /opt/caboose/notifications/daemon.py >/tmp/notification-endpoint.log 2>&1 < /dev/null & sleep 1'])
   run('/bin/sh', ['-c', `runuser -u caboose -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus notify-send caboose-upgrade-check hello || true; for i in $(seq 1 20); do grep -ql caboose-upgrade-check /home/caboose/.cache/caboose/notifications/*.json 2>/dev/null && exit 0; sleep 0.5; done; echo 'Notification monitor did not receive a message' >&2; exit 1`])
   run('/bin/bash', ['/bundle/components/install.sh', 'container'])
