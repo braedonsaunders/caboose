@@ -5,20 +5,32 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 mode=${1:?expected image-vm, image-container, vm or container}
 case "$mode" in image-vm|image-container|vm|container) ;; *) exit 2;; esac
 export DEBIAN_FRONTEND=noninteractive
-packages=(nodejs npm cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1)
+packages=(cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1)
 missing=()
 for pkg in "${packages[@]}"; do
   [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || :)" = installed ] || missing+=("$pkg")
 done
-if ((${#missing[@]})); then
+# NodeSource's nodejs includes npm without a separate Debian npm package. Check the
+# commands themselves, and let a newly installed nodejs supply npm before asking APT.
+node --version >/dev/null 2>&1 || missing+=(nodejs)
+install_packages() {
+  (($#)) || return 0
   log=$(mktemp /tmp/caboose-apt.XXXXXXXX)
   trap 'rm -f "$log"' EXIT
-  if ! dpkg --configure -a >"$log" 2>&1 || ! apt-get update >>"$log" 2>&1 || ! apt-get install -y --no-install-recommends "${missing[@]}" >>"$log" 2>&1; then
+  if ! dpkg --configure -a >"$log" 2>&1 || ! apt-get update >>"$log" 2>&1 || ! apt-get install -y --no-install-recommends "$@" >>"$log" 2>&1; then
     tail -n 80 "$log" >&2
     exit 1
   fi
   rm -f "$log"
   trap - EXIT
+}
+if ((${#missing[@]})); then
+  install_packages "${missing[@]}"
+fi
+npm --version >/dev/null 2>&1 || install_packages npm
+if ! node --version >/dev/null 2>&1 || ! npm --version >/dev/null 2>&1; then
+  echo 'Guest components require working node and npm commands after package installation' >&2
+  exit 1
 fi
 install -Dm755 "$root/files/caboose-files.py" /opt/caboose/files/caboose-files.py
 install -Dm644 "$root/files/caboose-files.service" /etc/systemd/system/caboose-files.service
