@@ -31,7 +31,7 @@ public struct ClientCapabilities: Sendable {
     /// Encodings Caboose decodes natively: H.264 through VideoToolbox, stills through ImageIO.
     /// No "scroll": Xpra 6.5.5's scroll encoder calls queue_damage_packet without its options
     /// argument and raises, so every scroll it tried to send as a copy was lost instead.
-    public static let encodings: [RValue] = ["h264", "jpeg", "png", "png/P", "png/L", "webp", "rgb32", "rgb24", "void"]
+    public static let encodings: [RValue] = ["h264", "h265", "jpeg", "png", "png/P", "png/L", "webp", "rgb32", "rgb24", "void"]
 
     static let metadataSupported: [RValue] = [
         "fullscreen", "maximized", "iconic", "above", "below", "title", "size-hints", "class-instance",
@@ -106,7 +106,7 @@ public struct ClientCapabilities: Sendable {
                 // Typing and pointer feedback: let the server's adaptive batching go as low as a
                 // phone frame and no higher than 150 ms, instead of the 500 ms default ceiling.
                 "batch": ["min_delay": .int(Int64(max(4, 1000 / max(30, refreshRate)))), "max_delay": 150, "delay": 16],
-                "full_csc_modes": ["h264": ["YUV420P"], "jpeg": ["BGRX", "BGRA", "YUV420P"], "webp": ["BGRX", "BGRA"]],
+                "full_csc_modes": ["h264": ["YUV420P"], "h265": ["YUV420P"], "jpeg": ["BGRX", "BGRA", "YUV420P"], "webp": ["BGRX", "BGRA"]],
                 "h264": [
                     "score-delta": 80,
                     "fast-decode": false,

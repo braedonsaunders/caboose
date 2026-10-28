@@ -31,7 +31,8 @@ final class DrawPipeline: @unchecked Sendable {
     let windowID: Int
     let surface = WindowSurface()
     private let queue: DispatchQueue
-    private let decoder = H264Decoder()
+    /// One decoder per window, recreated when the server switches the window's codec.
+    private var decoder = H264Decoder() // on `queue`
     private let send: @Sendable (XpraPacket) -> Void
     private var lastRefresh: UInt64 = 0 // on `queue`
 
@@ -52,7 +53,7 @@ final class DrawPipeline: @unchecked Sendable {
     }
 
     func close() {
-        queue.async { [decoder] in decoder.invalidate() }
+        queue.async { [self] in decoder.invalidate() }
     }
 
     /// `window-draw`: wid, x, y, width, height, coding, data, sequence, rowstride, options.
@@ -93,7 +94,12 @@ final class DrawPipeline: @unchecked Sendable {
         switch coding {
         case "void":
             return
-        case "h264":
+        case "h264", "h265":
+            let codec = VideoCodec(rawValue: coding) ?? .h264
+            if decoder.codec != codec {
+                decoder.invalidate()
+                decoder = H264Decoder(codec: codec)
+            }
             if let picture = try decoder.decode(data) {
                 let scaled = options["scaled_size"]?.list
                 let encoded = scaled.flatMap { size -> CGSize? in
