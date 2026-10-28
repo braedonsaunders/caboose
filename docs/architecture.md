@@ -1360,7 +1360,12 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
 - **Windows.** A Linux window opened from Home or Apps is an app card: full screen, sized
   to the phone, and a swipe in from either side edge goes to the next or previous open app
-  in the order they opened. An external display shows the windows floating, resizing and
+  in the order they opened. Back, the app switcher, Keyboard and Window Options use the
+  system toolbar: on a vertical-bar device they sit on the side and the app uses the full
+  height beside it; elsewhere they occupy a compact horizontal toolbar within the safe
+  area. The window title is in the switcher; Options includes Ask Agent, redraw and close.
+  Full Screen hides the controls; its accessible top handle brings them back.
+  An external display shows the windows floating, resizing and
   stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
   The green title-bar button maximizes above the dock: its title bar meets the desktop's
   top edge, and its content ends eight UI-scaled points above the dock. Rotation and UI

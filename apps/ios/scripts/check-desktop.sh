@@ -30,25 +30,41 @@ Switchyard (Desktop tab, no external display):
    fingers must not open a menu. Long-press in Thunar also right-clicks.
 5. Enter and leave the browser's own full screen (F11). Browser chrome returns
    on exit. After pulling back to a tile, another app can enter full screen.
-6. Switch Desktop -> Home -> Desktop. Columns retain their positions. Open an app
+6. Open a card from Apps and Home on the Duo, closed/open and rotated, with the
+   sidebar on either side. Back, Switch App, Keyboard and Window Options are in
+   the side toolbar; no window title or custom controls row takes app height.
+   The app fills the height beside the bar, with no content under either side's
+   safe area. Switch App lists the current title and every open app; select one,
+   then edge-swipe back. Back returns to the originating tab without closing Linux.
+   On an ordinary iPhone, repeat upright and landscape with large accessibility
+   text: the compact horizontal toolbar and all four icon controls stay usable,
+   clear of the sensor housing, home indicator and app content.
+   Show/hide the keyboard and rotate/fold: the whole app fits above the keyboard
+   and accessory row, and Hide Keyboard remains reachable. In Window Options,
+   check Ask Agent About This Window (when available), Redraw and Close Window.
+   Enter Full Screen: controls disappear and the viewport grows. Tap or pull its
+   top handle to restore controls; VoiceOver can activate Show window controls,
+   Back, Switch App, Keyboard and Window Options. Open a dialog and a submenu in
+   both modes: they fit and accept input. Dismiss the card: Desktop fits again.
+7. Switch Desktop -> Home -> Desktop. Columns retain their positions. Open an app
    from Apps: it opens as a card and edge-swiping moves to the next app.
    On Home, scroll Open, Pinned and Recent all the way right in every folded and
    rotated/sidebar state: live previews and icons stay inside the content column.
    Long Recent Files names/paths truncate inside the same column.
 
 External display, then iPad Desktop set to Free:
-7. Use the green title-bar button to maximize Chromium. The title bar meets the
+8. Use the green title-bar button to maximize Chromium. The title bar meets the
    top edge; left/right edges fill the desktop; the bottom clears the dock.
    The address bar, refresh button and window buttons remain visible. Restore:
    the previous size/position returns. Repeat with a second Chrome window.
-8. Resize/rotate the display and change UI scale while maximized: the window
+9. Resize/rotate the display and change UI scale while maximized: the window
    still fits above the dock. Drag/resize it manually, then maximize and restore:
    it returns to that new manual frame.
-9. Use F11 in Chromium: browser full screen covers the display and hides the dock.
+10. Use F11 in Chromium: browser full screen covers the display and hides the dock.
    Use F11 again: all browser and window controls return. Repeat after maximizing.
 
 Native Terminal tab:
-10. On a Duo with a vertical sidebar, open Terminal: the grid reaches the top,
+11. On a Duo with a vertical sidebar, open Terminal: the grid reaches the top,
     bottom and outer edge beside the sidebar, without a Terminal title strip.
     Open the keyboard: the grid ends above its accessory keys. Hide it: the grid
     fills the height again. Repeat unfolded and rotated; the session menu stays
