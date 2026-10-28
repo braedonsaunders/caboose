@@ -73,6 +73,18 @@ disk is kept) and Change Computer. It reads and writes the host's management API
 (`GET /v1/computer`, `PATCH /v1/computer/settings`, `POST /v1/computer/restart`, see
 `docs/architecture.md`) and follows `computer.settings` events on the control socket.
 
+## Shelf and Library
+
+Home's Shelf offers optional applications from the computer's pinned catalog. Tap Get
+and follow its live install indicator; the installed application appears in the app grid.
+Library groups applications into packs and offers updates, rollback when an older release
+is cached, and removal. Debian applications come from Debian 13; Craft release versions
+change only when this repository's catalog pin is changed, then the owner chooses Update.
+
+On a device connected to a deployed computer, install PhotoCraft from the Shelf, verify
+progress and that Open launches a window, then check Library's pack and Remove actions.
+An update and rollback check needs a computer with an older pinned Craft release cached.
+
 ## Build
 
 ```sh

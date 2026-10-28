@@ -25,6 +25,7 @@ final class AppModel {
 
     private(set) var phase: Phase
     let agents = AgentCenter()
+    let catalog = CatalogCenter()
     /// Videos playing on the computer that can move to the phone.
     let media = MediaHandoff()
     /// A window on the agent seat being watched or taken over full screen.
@@ -66,7 +67,11 @@ final class AppModel {
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
         agents.onComputer = { [weak self] status in self?.computerStatus = status }
-        agents.onEvent = { [weak self] type, event in self?.media.handle(type, event) }
+        agents.onEvent = { [weak self] type, event in
+            self?.media.handle(type, event)
+            self?.catalog.handle(type, event)
+        }
+        catalog.onChange = { [weak self] in await self?.refreshApps() }
         media.attach(host: { [weak self] in self?.host })
     }
 
@@ -102,6 +107,7 @@ final class AppModel {
         session?.disconnect()
         session = nil
         agents.reset()
+        catalog.reset()
         media.reset()
         computerStatus = nil
         settingsPresented = false
@@ -130,6 +136,7 @@ final class AppModel {
             startSession(host: host, display: wake.display)
             agents.detach()
             agents.attach(host: host)
+            catalog.attach(host)
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await media.refresh() }
             Task { await refreshApps() }

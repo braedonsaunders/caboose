@@ -1,9 +1,10 @@
 import { readFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { AgentConflictError, AgentNotFoundError, AgentOperationError, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { loadCatalog, type CatalogData, type CatalogEntry } from './app-catalog-data.js'
 
 type State = { installedVersion: string | null; canRollback: boolean; lastError: string | null; interrupted: boolean }
-type Progress = { id: string; operation: string; phase: 'queued' | 'installing' | 'finished' | 'failed'; message?: string }
+type Progress = { id: string; operation: string; phase: 'queued' | 'installing' | 'finished' | 'failed'; message?: string; stage?: string; value?: number | null }
 const EMPTY: State = { installedVersion: null, canRollback: false, lastError: null, interrupted: false }
 
 /** Catalog operations are serialized and execute entirely inside the guest as root. */
@@ -26,7 +27,8 @@ export class AppCatalog {
       const state = this.states[app.id] ?? EMPTY
       const pinnedVersion = app.source.kind === 'deb' ? app.source.version : null
       const installedVersion = state.installedVersion
-      return { ...app, ...state, pinnedVersion, updateAvailable: !!(pinnedVersion && installedVersion && installedVersion.split('-')[0] !== pinnedVersion), progress: this.progress.get(app.id) ?? null }
+      const iconData = app.source.kind === 'deb' ? 'data:image/png;base64,' + readFileSync(new URL(`../../../guest/catalog/icons/${app.id}.png`, import.meta.url)).toString('base64') : null
+      return { ...app, ...state, iconData, pinnedVersion, updateAvailable: !!(pinnedVersion && installedVersion && installedVersion.split('-')[0] !== pinnedVersion), progress: this.progress.get(app.id) ?? null }
     }) }
   }
   private find(id: string): CatalogEntry {
@@ -55,7 +57,18 @@ export class AppCatalog {
           try {
             if (action === 'rollback' && !state.canRollback) throw new Error('No previous release is available')
             if ((action === 'update' || action === 'remove') && !state.installedVersion) throw new Error('Application is not installed')
-            await this.invoke(action, app, 30 * 60_000)
+            let polling = false
+            const timer = setInterval(() => {
+              if (polling) return
+              polling = true
+              void this.invoke('progress', app.id).then(output => {
+                if (this.progress.get(app.id)?.phase !== 'installing') return
+                const info = JSON.parse(output) as { stage: string; value: number | null }
+                this.setProgress({ id: app.id, operation: action, phase: 'installing', ...info })
+              }).catch(() => {}).finally(() => { polling = false })
+            }, 2000)
+            timer.unref()
+            try { await this.invoke(action, app, 30 * 60_000) } finally { clearInterval(timer) }
             this.setProgress({ id: app.id, operation: action, phase: 'finished' })
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)

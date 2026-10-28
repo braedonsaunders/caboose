@@ -156,11 +156,11 @@ export function createCabooseServer(options: {
       }
       if (request.method === 'GET' && path === '/v1/catalog') return json(response, 200, await appCatalog.list())
       const packInstall = /^\/v1\/catalog\/packs\/([^/]+)\/install$/.exec(path)
-      if (request.method === 'POST' && packInstall?.[1]) { appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
+      if (request.method === 'POST' && packInstall?.[1]) { if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
       const appAction = /^\/v1\/catalog\/([^/]+)\/(install|update|rollback)$/.exec(path)
-      if (request.method === 'POST' && appAction?.[1]) { appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
+      if (request.method === 'POST' && appAction?.[1]) { if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
       const removeApp = /^\/v1\/catalog\/([^/]+)$/.exec(path)
-      if (request.method === 'DELETE' && removeApp?.[1]) { appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
+      if (request.method === 'DELETE' && removeApp?.[1]) { if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
       if (request.method === 'GET' && path === '/v1/apps') {
         return json(response, 200, await computer.run(() => controller.apps()))
       }

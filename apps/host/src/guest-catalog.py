@@ -57,6 +57,19 @@ def listing():
 if action == 'list':
     listing()
     sys.exit(0)
+if action == 'progress':
+    record = load(ROOT / (args + '.json'))
+    stage = record.get('stage', 'installing')
+    progress = None
+    if stage == 'downloading' and record.get('downloadFile') and record.get('size'):
+        try:
+            progress = min(0.75, (ROOT / record['downloadFile']).stat().st_size / record['size'] * 0.75)
+        except FileNotFoundError:
+            progress = 0
+    elif stage == 'verifying': progress = 0.8
+    elif stage == 'installing': progress = 0.85
+    print(json.dumps({'stage': stage, 'value': progress}))
+    sys.exit(0)
 
 app = args
 ident, source = app['id'], app['source']
@@ -64,7 +77,7 @@ path = ROOT / (ident + '.json')
 with (ROOT / 'install.lock').open('w') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     record = load(path)
-    record.update(running=True, error=None)
+    record.update(running=True, error=None, stage='installing')
     save(path, record)
     try:
         if action == 'remove':
@@ -89,15 +102,21 @@ with (ROOT / 'install.lock').open('w') as lock:
                 if not artifact.is_file() or artifact.stat().st_size != source['size'] or checksum(artifact) != source['sha256']:
                     fd, temporary = tempfile.mkstemp(prefix=ident + '-', suffix='.download', dir=ROOT)
                     os.close(fd)
+                    record.update(stage='downloading', downloadFile=Path(temporary).name, size=source['size'])
+                    save(path, record)
                     try:
                         run(['curl', '--fail', '--location', '--silent', '--show-error', '--retry', '3', '--output', temporary, source['url']])
                         downloaded = Path(temporary)
+                        record['stage'] = 'verifying'
+                        save(path, record)
                         if downloaded.stat().st_size != source['size'] or checksum(downloaded) != source['sha256']:
                             raise RuntimeError('Downloaded release size or SHA-256 does not match the catalog')
                         os.replace(temporary, artifact)
                     finally:
                         Path(temporary).unlink(missing_ok=True)
                 target = {'file': artifact.name, 'sha256': source['sha256'], 'version': source['version']}
+            record['stage'] = 'installing'
+            save(path, record)
             run(['apt-get', 'update'])
             run(['apt-get', 'install', '-y', '--no-install-recommends', '--allow-downgrades', str(artifact)])
             if current and current != target:

@@ -44,12 +44,21 @@
         "extensions": [
           "psd",
           "png",
-          "jpg"
+          "jpg",
+          "jpeg",
+          "tiff",
+          "webp",
+          "gif",
+          "bmp"
         ],
         "utTypes": [
           "com.adobe.photoshop-image",
           "public.png",
-          "public.jpeg"
+          "public.jpeg",
+          "public.tiff",
+          "org.webmproject.webp",
+          "com.compuserve.gif",
+          "com.microsoft.bmp"
         ]
       },
       "cli": "photocraft-cli",
@@ -74,8 +83,25 @@
       "icon": "ai.storyteller.lightcraft",
       "desktopId": "ai.storyteller.lightcraft.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "heic",
+          "heif",
+          "jpg",
+          "jpeg",
+          "png",
+          "tiff",
+          "webp",
+          "dng"
+        ],
+        "utTypes": [
+          "public.heic",
+          "public.heif",
+          "public.jpeg",
+          "public.png",
+          "public.tiff",
+          "org.webmproject.webp",
+          "com.adobe.raw-image"
+        ]
       },
       "cli": "lightcraft-cli",
       "mcp": "lightcraft-cli mcp",
@@ -99,8 +125,24 @@
       "icon": "ai.storyteller.filmcraft",
       "desktopId": "ai.storyteller.filmcraft.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "mp4",
+          "m4v",
+          "mov",
+          "mkv",
+          "webm",
+          "avi",
+          "mpeg"
+        ],
+        "utTypes": [
+          "public.mpeg-4",
+          "com.apple.m4v-video",
+          "com.apple.quicktime-movie",
+          "org.matroska.mkv",
+          "org.webmproject.webm",
+          "public.avi",
+          "public.mpeg"
+        ]
       },
       "cli": "filmcraft-cli",
       "mcp": "filmcraft-cli mcp",
@@ -125,10 +167,23 @@
       "desktopId": "ai.storyteller.vectorcraft.desktop",
       "fileTypes": {
         "extensions": [
-          "svg"
+          "svg",
+          "pdf",
+          "png",
+          "jpg",
+          "jpeg",
+          "gif",
+          "webp",
+          "tiff"
         ],
         "utTypes": [
-          "public.svg-image"
+          "public.svg-image",
+          "com.adobe.pdf",
+          "public.png",
+          "public.jpeg",
+          "com.compuserve.gif",
+          "org.webmproject.webp",
+          "public.tiff"
         ]
       },
       "cli": "vectorcraft-cli",
@@ -207,8 +262,12 @@
       "icon": "ai.storyteller.designcraft",
       "desktopId": "ai.storyteller.designcraft.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "idml"
+        ],
+        "utTypes": [
+          "com.adobe.indesign-idml"
+        ]
       },
       "cli": "designcraft-cli",
       "mcp": "designcraft-cli mcp",
@@ -232,8 +291,24 @@
       "icon": "ai.storyteller.wordcraft",
       "desktopId": "ai.storyteller.wordcraft.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "docx",
+          "doc",
+          "odt",
+          "rtf",
+          "md",
+          "html",
+          "txt"
+        ],
+        "utTypes": [
+          "org.openxmlformats.wordprocessingml.document",
+          "com.microsoft.word.doc",
+          "org.oasis-open.opendocument.text",
+          "public.rtf",
+          "net.daringfireball.markdown",
+          "public.html",
+          "public.plain-text"
+        ]
       },
       "cli": "wordcraft-cli",
       "mcp": "wordcraft-cli mcp",
@@ -259,6 +334,9 @@
       "fileTypes": {
         "extensions": [
           "xlsx",
+          "xlsm",
+          "xlsb",
+          "ods",
           "csv",
           "tsv"
         ],
@@ -290,8 +368,14 @@
       "icon": "ai.storyteller.deckcraft",
       "desktopId": "ai.storyteller.deckcraft.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "pptx",
+          "potx",
+          "ppsx"
+        ],
+        "utTypes": [
+          "org.openxmlformats.presentationml.presentation"
+        ]
       },
       "cli": "deckcraft-cli",
       "mcp": "deckcraft-cli mcp",
@@ -315,8 +399,14 @@
       "icon": "ai.storyteller.cadcraft",
       "desktopId": "ai.storyteller.cadcraft.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "dxf",
+          "dwg"
+        ],
+        "utTypes": [
+          "com.autodesk.dxf",
+          "com.autodesk.dwg"
+        ]
       },
       "cli": "cadcraft-cli",
       "mcp": "cadcraft-cli mcp",
@@ -340,8 +430,20 @@
       "icon": "ai.storyteller.soundcraft",
       "desktopId": "ai.storyteller.soundcraft.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "wav",
+          "aiff",
+          "flac",
+          "mp3",
+          "mid"
+        ],
+        "utTypes": [
+          "com.microsoft.waveform-audio",
+          "public.aiff-audio",
+          "org.xiph.flac",
+          "public.mp3",
+          "public.midi-audio"
+        ]
       },
       "cli": "soundcraft-cli",
       "mcp": "soundcraft-cli mcp",
@@ -365,8 +467,17 @@
       "icon": "ai.storyteller.figcraft",
       "desktopId": "ai.storyteller.figcraft.desktop",
       "fileTypes": {
-        "extensions": [],
-        "utTypes": []
+        "extensions": [
+          "svg",
+          "png",
+          "jpg",
+          "jpeg"
+        ],
+        "utTypes": [
+          "public.svg-image",
+          "public.png",
+          "public.jpeg"
+        ]
       },
       "cli": "figcraft-cli",
       "mcp": "figcraft-cli mcp",
