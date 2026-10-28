@@ -49,9 +49,17 @@ patches every computer on its next boot; each user's installs and home persist.
   desktop. Xpra also already carries clipboard, notifications, file transfer,
   audio, printing, webcam and cursor shapes. A Wayland compositor of our own can
   replace it later behind the same client window model.
+- **Xpra protocol and scaling.** The server runs with `XPRA_BACKWARDS_COMPATIBLE=0`
+  to emit modern packet names. `GDK_SCALE=1` leaves scaling to the client DPI;
+  the server does not force a DPI.
 - **Session auth.** Xpra requires a per-boot token (`tcp-auth`/`ws-auth` via an
-  `env`/file authenticator). The host writes it with `desk.exec` at wake and hands
-  it to the client inside the authenticated `/v1/session` response.
+  `env`/file authenticator). The image uses Xpra file authentication at
+  `/run/caboose/xpra-token`: the host writes a fresh token without a newline,
+  owned by `caboose` and mode `0600`, then starts `caboose-xpra.service` at
+  wake and hands the token to the client inside the authenticated `/v1/session`
+  response. The runtime directory and token must be recreated after a cold boot.
+  A parked session retains its display and token; the host must keep the token
+  available for that session on resume.
 - **Apps** installed in the image: Chromium, Firefox ESR, VS Code, a terminal
   (xfce4-terminal), Thunar, Mousepad, LibreOffice, Node 22, git, ripgrep, Claude
   Code, Codex CLI. Fonts: Inter, JetBrains Mono, Noto (incl. CJK, emoji).

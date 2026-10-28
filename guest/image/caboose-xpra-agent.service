@@ -1,0 +1,12 @@
+[Unit]
+Description=Caboose agent-seat display
+After=network.target
+
+[Service]
+User=caboose
+Group=caboose
+Environment=HOME=/home/caboose
+Environment=XPRA_BACKWARDS_COMPATIBLE=0
+Environment=GDK_SCALE=1
+ExecStart=/usr/bin/xpra start :101 --daemon=no --html=off --exit-with-children=no
+Restart=on-failure

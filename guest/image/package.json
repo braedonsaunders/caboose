@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@braedonsaunders/appkit-desk": "0.6.0"
+  }
+}

@@ -1,0 +1,16 @@
+[Unit]
+Description=Caboose seamless application display
+After=network.target
+ConditionPathExists=/run/caboose/xpra-token
+
+[Service]
+User=caboose
+Group=caboose
+Environment=HOME=/home/caboose
+Environment=XPRA_BACKWARDS_COMPATIBLE=0
+Environment=GDK_SCALE=1
+ExecStart=/usr/bin/xpra start :100 --daemon=no --bind-ws=0.0.0.0:14500,auth=file:filename=/run/caboose/xpra-token --html=off --encoding=h264 --video-encoders=x264 --quality=70 --speed=70 --notifications=yes --clipboard=yes --file-transfer=yes --speaker=on --microphone=on --exit-with-children=no
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
