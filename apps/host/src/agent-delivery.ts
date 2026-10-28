@@ -20,6 +20,23 @@ const hash = (value: unknown): value is string => typeof value === 'string' && /
 const turn = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= 999999
 export const emptyJournal = (): DeliveryJournal => ({ version: 1, queue: [], operations: [] })
 
+/** Validate a retained envelope without rebuilding it: publication compares the original bytes. */
+export function readPublishedPrompt(text: string, id: string, intent: DeliveryIntent): { text: string } {
+  if (Buffer.byteLength(text) > 262144) throw new Error('Published agent prompt exceeds its limit')
+  const value = JSON.parse(text)
+  const prefix = `/home/caboose/Agents/${id}/attachments/`
+  if (!value || value.type !== 'prompt' || value.turn !== intent.turn || value.deliveryId !== intent.id
+      || typeof value.text !== 'string' || !value.text.trim() || value.text.length > 32000 || value.text.includes('\0')
+      || (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.length > 4
+        || value.attachments.some((file: any) => !file || typeof file.path !== 'string' || file.path.length > 1024
+          || !file.path.startsWith(prefix) || file.path.split('/').some((part: string) => part === '..' || part === '.' || /[\u0000-\u001f]/.test(part))
+          || typeof file.name !== 'string' || !file.name || file.name.length > 255 || /[\/\u0000-\u001f]/.test(file.name)
+          || (file.mimeType !== undefined && (typeof file.mimeType !== 'string' || file.mimeType.length > 255)))))) {
+    throw new Error('Invalid original published agent prompt')
+  }
+  return { text: value.text }
+}
+
 export function readJournal(text: string, id: string): DeliveryJournal {
   if (Buffer.byteLength(text) > JOURNAL_LIMIT) throw new Error('Agent delivery journal exceeds its limit')
   const value = JSON.parse(text)
