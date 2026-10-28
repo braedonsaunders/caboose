@@ -259,7 +259,8 @@ measurements and the scripted checks.
   detection and libx264 macroblock hints, so the server's CPU follows what changes on
   screen; libx264, libx265 and NVENC (from system memory, the WSL2
   path) behind one `Encoder` trait; pacing on vsync with acknowledgement-based flow
-  control; pointer, multitouch, keys and text-input-v3 input; reconnect and replacement;
+  control; pointer, multitouch, keys and text-input-v3 input; the text clipboard between
+  the phone, Wayland and X11 applications; reconnect and replacement;
   video layer 1, codec passthrough ([codec-passthrough.md](codec-passthrough.md)): the
   driver's socket, streams bound to windows by their marker, `video.*` out with
   `video.present` at the moment the application shows each frame; the container and
@@ -267,7 +268,7 @@ measurements and the scripted checks.
 - **Next:** a GPU renderer that composes into dmabufs, and the zero-copy encoders on it
   (dmabuf → NVENC through CUDA external memory, dmabuf → VA-API), which also enables the
   exact passthrough binding; video layers 2 (YUV subsurfaces) and 3 (detected motion);
-  lossless tiles; clipboard, cursor images, Pencil and audio.
+  lossless tiles; cursor images, Pencil and audio.
 - **Passthrough reach:** Chromium and Firefox decode through VA only with a working GPU
   process, which needs a DRM render node; on WSL2 and hosts without a GPU their video stays
   in the window picture (layers 2 and 3 are for that). Players that decode on the CPU

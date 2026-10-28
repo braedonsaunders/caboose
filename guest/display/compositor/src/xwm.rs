@@ -208,6 +208,17 @@ impl XwmHandler for State {
     }
 
     fn send_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
+        // The phone's text is the compositor's own selection: write it directly.
+        if selection == SelectionTarget::Clipboard {
+            let phone = current_data_device_selection_userdata(&self.seat).and_then(|owner| match &*owner {
+                crate::clipboard::Owner::Phone(data) => Some(data.clone()),
+                crate::clipboard::Owner::X11 => None,
+            });
+            if let Some(data) = phone {
+                crate::clipboard::write_to(fd, data);
+                return;
+            }
+        }
         let result = match selection {
             SelectionTarget::Clipboard => {
                 request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|e| e.to_string())
@@ -222,9 +233,13 @@ impl XwmHandler for State {
     }
 
     fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
+        use crate::clipboard::Owner;
         match selection {
-            SelectionTarget::Clipboard => set_data_device_selection(&self.dh, &self.seat, mime_types, ()),
-            SelectionTarget::Primary => set_primary_selection(&self.dh, &self.seat, mime_types, ()),
+            SelectionTarget::Clipboard => {
+                set_data_device_selection(&self.dh, &self.seat, mime_types.clone(), Owner::X11);
+                self.clipboard_from_x11(&mime_types);
+            }
+            SelectionTarget::Primary => set_primary_selection(&self.dh, &self.seat, mime_types, Owner::X11),
         }
     }
 

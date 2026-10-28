@@ -21,3 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       xwayland weston chromium x11-apps xterm ffmpeg mesa-utils libgl1-mesa-dri \
       mesa-va-drivers vainfo fonts-dejavu-core python3 procps && \
     rm -rf /var/lib/apt/lists/*
+# Clipboard tools for the clipboard check (X11 and Wayland).
+RUN apt-get update && apt-get install -y --no-install-recommends xclip wl-clipboard && \
+    rm -rf /var/lib/apt/lists/*

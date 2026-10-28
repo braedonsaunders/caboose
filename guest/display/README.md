@@ -53,6 +53,11 @@ This directory is a Cargo workspace:
   client that connects after a field was focused); deletions are BackSpace/Delete
   presses, one per grapheme cluster. Surfaces without text-input-v3 (X11 apps, many
   terminals) get the commit as key presses.
+- **Clipboard** (text). The phone's `clipboard` becomes the selection Wayland and X11
+  applications paste; what they copy reaches the phone (and a new client is sent the
+  current text on connect). Copying between Wayland and X11 applications on the computer
+  works through Xwayland's window manager. When a focused window closes, focus returns to
+  the window focused before it.
 - **Sessions.** One client at a time; a new authenticated client replaces the previous
   one. Window ids survive reconnects and every window restarts with a keyframe.
 
@@ -68,7 +73,7 @@ This directory is a Cargo workspace:
   decode a stream gets it decoded on the server. Launched applications get
   `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
 
-Not yet here, and absent from `hello.features` until they are: clipboard, Pencil
+Not yet here, and absent from `hello.features` until they are: non-text clipboard types, Pencil
 (tablet-v2), cursor images (named cursors are sent), notifications, audio, lossless
 tiles, video layers 2 and 3, a GPU renderer with the zero-copy encoders (dmabuf → NVENC or
 VA-API) and the exact passthrough binding it enables, typing characters that are not on the
@@ -125,6 +130,9 @@ probe. Every check asserts on what arrived, not on a picture:
 | `autocorrect` | `text` with `delete_before` (autocorrect, the delete key) edits a Chromium field exactly, one grapheme cluster per deletion |
 | `direct-matches-compose` | a window streamed straight from its shm buffer is the picture composition makes, byte for byte |
 | `passthrough` | a stand-in VA-API driver (`scripts/fake-video-driver.py`, the real socket protocol, real H.264) streams while Chromium shows its marker: the stream is bound to the right window and rectangle, every frame decodes on the client, presents name frames the client has, and the driver's own detector agrees on the rectangle |
+| `clipboard-wayland` | the phone's text pastes into Chromium (Ctrl+V), and Chromium's copy (Ctrl+A, Ctrl+C) reaches the phone |
+| `clipboard-x11` | an X11 copy (xclip) reaches the phone on connect, and the phone's copy reaches X11 |
+| `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 ### Measured

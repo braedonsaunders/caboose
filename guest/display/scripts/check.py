@@ -316,6 +316,53 @@ def check_passthrough():
     return with_server(["python3", f"{HERE}/fake-video-driver.py", "25", *CHROMIUM, "--window-size=900,600"], run)
 
 
+def check_clipboard_wayland():
+    # Phone -> Chromium: the phone's text is pasted with Ctrl+V. Chromium -> phone: typed
+    # text is selected and copied with Ctrl+A, Ctrl+C and arrives as a clipboard message.
+    actions = "copy:from the phone ✓;key:76+control;wait:600;text: and back;key:61+control;key:63+control;wait:800"
+    def run(proc, token):
+        time.sleep(4)
+        r = probe(["--token-file", token, "--duration", "8", "--windows", "1", "--actions", actions])
+        title, clip = r["windows"][0]["title"], r["clipboard"]
+        if title != "none|from the phone ✓ and back":
+            raise Failed(f"the page has {title!r}: the phone's clipboard did not paste")
+        if clip != "from the phone ✓ and back":
+            raise Failed(f"the phone got {clip!r} from Chromium's copy")
+        return "the phone's text pastes into Chromium, and Chromium's copy reaches the phone"
+    return with_server(CHROMIUM + ["--window-size=900,400", f"--app={PAGES}/input.html"], run)
+
+
+def check_clipboard_x11():
+    # X11 -> phone: xclip owns the clipboard before the phone connects; the phone is sent it
+    # on hello. Phone -> X11: the phone copies, and xclip reads it back from Xwayland.
+    out = os.path.join(tempfile.mkdtemp(), "pasted")
+    script = (f"xterm & sleep 2; printf 'from X11' | xclip -i -selection clipboard; "
+              f"while sleep 0.3; do t=$(xclip -o -selection clipboard 2>/dev/null); "
+              f"[ \"$t\" = 'from the phone' ] && printf %s \"$t\" > {out} && break; done; exec sleep 60")
+    def run(proc, token):
+        time.sleep(2)
+        r = probe(["--token-file", token, "--duration", "3", "--windows", "1", "--actions", "copy:from the phone;wait:500"])
+        if r["clipboard"] != "from X11":
+            raise Failed(f"the phone got {r['clipboard']!r} from X11's clipboard")
+        got = wait_for_file(out)
+        return f"X11's clipboard reaches the phone, and the phone's ({got!r}) reaches X11"
+    return with_server(["sh", "-c", script], run)
+
+
+def check_clipboard_bridge():
+    # Inside the computer: a Wayland copy pastes into X11, and an X11 copy into Wayland.
+    out = os.path.join(tempfile.mkdtemp(), "bridge")
+    script = (f"xterm & sleep 2; wl-copy 'from wayland'; sleep 0.5; a=$(xclip -o -selection clipboard); "
+              f"printf 'from x11' | xclip -i -selection clipboard; sleep 0.5; b=$(wl-paste --no-newline); "
+              f"printf '%s|%s' \"$a\" \"$b\" > {out}; exec sleep 60")
+    def run(proc, token):
+        got = wait_for_file(out, 15)
+        if got != "from wayland|from x11":
+            raise Failed(f"X11 read the Wayland copy / Wayland read the X11 copy as {got!r}")
+        return "a Wayland copy pastes into X11 and an X11 copy into Wayland"
+    return with_server(["sh", "-c", script], run)
+
+
 def check_idle():
     def run(proc, token):
         r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--server-pid", str(proc.pid)])
@@ -342,6 +389,9 @@ CHECKS = [
     ("autocorrect", check_autocorrect),
     ("direct-matches-compose", check_direct_matches_compose),
     ("passthrough", check_passthrough),
+    ("clipboard-wayland", check_clipboard_wayland),
+    ("clipboard-x11", check_clipboard_x11),
+    ("clipboard-bridge", check_clipboard_bridge),
     ("idle", check_idle),
 ]
 

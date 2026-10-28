@@ -1,5 +1,6 @@
 //! caboose-display: Caboose's headless Wayland compositor. See docs/display.md.
 
+mod clipboard;
 mod config;
 mod displays;
 mod encode;
@@ -269,6 +270,14 @@ fn run(config: Config) -> Result<(), String> {
     let net = net::Net::listen(config.listen, &handle).map_err(|e| format!("listen on {}: {e}", config.listen))?;
     tracing::info!("listening on ws://{}", net.local);
 
+    let (clip_tx, clip_rx) = channel::<Vec<u8>>();
+    handle
+        .insert_source(clip_rx, |event, _, state: &mut State| {
+            if let ChannelEvent::Msg(data) = event {
+                state.clipboard_read(data);
+            }
+        })
+        .map_err(|e| e.to_string())?;
     let (done_tx, done_rx) = channel();
     handle
         .insert_source(done_rx, |event, _, state: &mut State| {
@@ -343,7 +352,9 @@ fn run(config: Config) -> Result<(), String> {
         session: None,
         done_tx,
         input,
+        focus_history: Vec::new(),
         videos: Default::default(),
+        clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
         generation: 0,
         stats: Default::default(),
         cursor: None,

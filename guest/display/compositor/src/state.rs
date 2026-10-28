@@ -39,7 +39,7 @@ use smithay::wayland::selection::data_device::{
 use smithay::wayland::selection::primary_selection::{
     set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
 };
-use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState};
 use smithay::wayland::shm::{ShmHandler, ShmState};
@@ -180,7 +180,10 @@ pub struct State {
     pub session: Option<Session>,
     pub done_tx: Sender<Done>,
     pub input: InputState,
+    /// Windows in the order they were focused, most recent last.
+    pub focus_history: Vec<u64>,
     pub videos: crate::video::server::Videos,
+    pub clipboard: crate::clipboard::Clipboard,
     /// Bumped per client session; stale encoder results are discarded.
     pub generation: u64,
     pub stats: Stats,
@@ -267,8 +270,17 @@ impl State {
     }
 
     fn forget_window(&mut self, id: u64) {
+        let focused = self.focus_history.last() == Some(&id);
+        self.focus_history.retain(|f| *f != id);
         let Some(w) = self.windows.remove(id) else { return };
         self.input.forget_window(id);
+        // Closing the focused window (a dialog, a transient surface) gives focus back to
+        // the window focused before it, as a desktop does.
+        if focused {
+            if let Some(previous) = self.focus_history.pop() {
+                self.focus_window(previous);
+            }
+        }
         self.video_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
@@ -588,6 +600,8 @@ impl State {
 
     pub fn focus_window(&mut self, id: u64) {
         let Some(w) = self.windows.get(id) else { return };
+        self.focus_history.retain(|f| *f != id);
+        self.focus_history.push(id);
         let focus = match &w.surface {
             Surface::Toplevel(t) => KeyboardFocus::Wayland(t.wl_surface().clone()),
             Surface::Popup(p) => KeyboardFocus::Wayland(p.wl_surface().clone()),
@@ -699,7 +713,32 @@ impl SeatHandler for State {
 }
 
 impl SelectionHandler for State {
-    type SelectionUserData = ();
+    type SelectionUserData = crate::clipboard::Owner;
+
+    fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
+        self.clipboard_from_wayland(ty, source);
+    }
+
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: std::os::fd::OwnedFd,
+        _seat: Seat<Self>,
+        owner: &crate::clipboard::Owner,
+    ) {
+        match owner {
+            crate::clipboard::Owner::Phone(data) => crate::clipboard::write_to(fd, data.clone()),
+            crate::clipboard::Owner::X11 => {
+                let handle = self.handle.clone();
+                if let Some(xwm) = self.xwm.as_mut() {
+                    if let Err(e) = xwm.send_selection(ty, mime_type, fd, handle) {
+                        tracing::debug!("X11 selection: {e}");
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl DataDeviceHandler for State {

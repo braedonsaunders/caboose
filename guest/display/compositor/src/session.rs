@@ -29,7 +29,7 @@ pub struct Session {
 
 /// Features this server implements (docs/display.md, Handshake).
 pub fn features(xwayland: bool, video: bool) -> Vec<String> {
-    let mut f = vec!["vsync", "ack", "touch", "text-input-v3", "cursor-named"];
+    let mut f = vec!["vsync", "ack", "touch", "text-input-v3", "cursor-named", "clipboard"];
     if xwayland {
         f.push("xwayland");
     }
@@ -165,7 +165,8 @@ impl State {
             Message::Text(t) => self.text(&t),
             Message::VideoKeyframe { id } => self.video_keyframe(id),
             Message::VideoAck { id, seq } => tracing::trace!("video {id}: frame {seq} queued for display"),
-            Message::Pencil(_) | Message::ClientClipboard(_) => {
+            Message::ClientClipboard(c) => self.clipboard_from_phone(c),
+            Message::Pencil(_) => {
                 // Not implemented yet; the features are absent from hello.
             }
             other => tracing::debug!("connection {conn}: ignoring {}", other.name()),
@@ -226,6 +227,14 @@ impl State {
             self.net.send(conn, &cursor);
         }
         self.video_session_started();
+        // What the computer's clipboard holds, so the phone can paste it.
+        if let Some(text) = self.clipboard.last_sent.clone() {
+            let message = Message::ServerClipboard(proto::Clipboard {
+                mime: crate::clipboard::MIME.into(),
+                data: (*text).clone(),
+            });
+            self.net.send(conn, &message);
+        }
         // Text input enabled before this client connected still needs the keyboard; the
         // toggle itself went to no one (or to the previous client).
         if let Some(surface) = self.keyboard_focus_surface() {
