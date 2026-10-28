@@ -91,15 +91,31 @@ public final class WindowSurface: @unchecked Sendable {
 
     /// Draws a decoded image (png/jpeg/webp) into a region.
     public func upload(image: CGImage, x: Int, y: Int) {
-        let width = image.width, height = image.height
+        upload(image: image, into: CGRect(x: x, y: y, width: image.width, height: image.height))
+    }
+
+    /// The image's own RGB space, so its pixel values land unchanged (lossless tiles stay
+    /// lossless, and match decoded video, which is not colour-managed either).
+    static func rgbSpace(of image: CGImage) -> CGColorSpace {
+        if let space = image.colorSpace, space.model == .rgb { return space }
+        return CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+    }
+
+    /// Draws an image scaled to fill `rect` (a whole number of pixels), e.g. a lossless tile
+    /// of a window whose picture is shown at another size.
+    public func upload(image: CGImage, into rect: CGRect) {
+        let rect = rect.integral
+        let x = Int(rect.minX), y = Int(rect.minY), width = Int(rect.width), height = Int(rect.height)
+        guard width > 0, height > 0 else { return }
         let rowBytes = width * 4
         var pixels = [UInt8](repeating: 0, count: rowBytes * height)
         let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
             guard let context = CGContext(
                 data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: rowBytes,
-                space: CGColorSpaceCreateDeviceRGB(),
+                space: Self.rgbSpace(of: image),
                 bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
             else { return false }
+            context.interpolationQuality = width == image.width && height == image.height ? .none : .medium
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
         }

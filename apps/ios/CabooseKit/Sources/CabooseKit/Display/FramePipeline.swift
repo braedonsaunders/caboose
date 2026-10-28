@@ -20,6 +20,9 @@ final class FramePipeline: @unchecked Sendable {
     private var awaitingKeyframe = false
     private var lastKeyframeRequest: UInt64 = 0
     private var showsLivePicture = false
+    /// How the window's picture maps into the window: the last frame's `crop` (picture pixels)
+    /// and `rect` (window pixels). Tiles are in picture pixels and go through the same mapping.
+    private var placement: (crop: CGRect, rect: CGRect)?
 
     init(windowID: Int, width: Int, height: Int,
          makeDecoder: @escaping (DisplayCodec) -> PictureDecoder = FramePipeline.hardwareDecoder,
@@ -94,11 +97,22 @@ final class FramePipeline: @unchecked Sendable {
             // A picture the decoder holds back (none here: the server sends no B-frames) is not a failure.
             guard let picture = try decoder.decoder.decode(frame.data) else { return true }
             surface.upload(pixelBuffer: picture, crop: frame.crop, into: frame.rect)
+            placement = (frame.crop, frame.rect)
             showsLivePicture = true
             return true
         } catch {
             return false
         }
+    }
+
+    /// Where a picture-pixel rectangle is shown in the window, through the last frame's
+    /// crop → rect mapping (1:1 before the first frame).
+    static func window(_ picture: CGRect, placement: (crop: CGRect, rect: CGRect)?) -> CGRect {
+        guard let placement, placement.crop.width > 0, placement.crop.height > 0 else { return picture }
+        let sx = placement.rect.width / placement.crop.width, sy = placement.rect.height / placement.crop.height
+        return CGRect(x: placement.rect.minX + (picture.minX - placement.crop.minX) * sx,
+                      y: placement.rect.minY + (picture.minY - placement.crop.minY) * sy,
+                      width: picture.width * sx, height: picture.height * sy)
     }
 
     /// At most one request every half second while the stream is broken.
@@ -108,7 +122,8 @@ final class FramePipeline: @unchecked Sendable {
         send(.requestKeyframe(window: windowID))
     }
 
-    /// A lossless tile: static content repainted exactly once motion stops.
+    /// A lossless tile (a caret, a typed letter, a small widget): pixels of the window's
+    /// picture, in picture pixels, drawn where that part of the picture is shown.
     func tile(_ tile: LosslessTile) {
         queue.async { [self] in
             guard let source = CGImageSourceCreateWithData(tile.data as CFData, nil),
@@ -116,7 +131,7 @@ final class FramePipeline: @unchecked Sendable {
                 DrawStatistics.shared.record("tile-\(tile.format)", failed: true)
                 return
             }
-            surface.upload(image: image, x: Int(tile.rect.minX), y: Int(tile.rect.minY))
+            surface.upload(image: image, into: Self.window(tile.rect, placement: placement))
             showsLivePicture = true
             DrawStatistics.shared.record("tile-\(tile.format)", failed: false)
         }
