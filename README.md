@@ -44,6 +44,7 @@ every component is built against.
 | --- | --- |
 | `apps/ios` | The iPhone/iPad app (Swift, SwiftUI + UIKit) and `CabooseKit`, its Xpra client |
 | `apps/host` | `caboose-host`: accounts, computer lifecycle, display relay (TypeScript, AppKit) |
+| `apps/web` | The self-host console the host serves: computer settings, park and restart, agents (React, AppKit UI) |
 | `guest/image` | The golden machine image: Debian 13, Xpra seamless, apps, agent CLIs |
 | `docs` | Architecture and decisions |
 
