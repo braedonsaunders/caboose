@@ -353,3 +353,8 @@ scrolling the keys never hides it. Remote inputs share `RemoteTextInputView` for
 composition, autocorrect and sticky modifiers. Terminal adapts the same accessory
 to SwiftTerm's cursor modes and byte protocol. Verify folded/unfolded/rotated layouts,
 Hide and reopening, Ctrl/Alt, held arrows, Return and IME with `scripts/check-desktop.sh`.
+
+The Agents toolbar's Model sheet reads available models from the computer's ACP agent.
+New chats pass the selected provider model with task creation; idle chats can choose the
+model for their next message. The sheet shows the current model separately until the
+agent confirms the requested selection. Model discovery may require agent sign-in.

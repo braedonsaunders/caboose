@@ -271,3 +271,9 @@ ids and unconfirmed config selections fail the turn before prompting. `models.js
 atomically records `{ requestedModel?, models? }`; `models` transcript events report the
 same state. Config-option notifications update the recorded actual selection. Choices
 and labels come from the agent, never from environment variables or a built-in list.
+
+The schema comes from the pinned `@agentclientprotocol/sdk` dependency. The upstream
+[session config contract](https://agentclientprotocol.com/protocol/v1/session-config-options)
+defines grouped select values, the model category, setter responses and update notifications.
+The [Codex ACP implementation](https://github.com/zed-industries/codex-acp/blob/main/src/codex_agent.rs)
+returns this configuration from session creation/resume and implements the config setter.

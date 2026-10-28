@@ -106,8 +106,8 @@ async function pendingApproval(dir) {
 }
 
 describe('advertised models', () => {
-  for (const caps of ['models', 'legacy-models']) it(`negotiates ${caps} before prompting and restores selection`, async () => {
-    const t = await task({ caps: caps + ',resume', model: 'beta' })
+  for (const caps of ['models,resume', 'models,load', 'legacy-models,resume']) it(`negotiates ${caps} before prompting and restores selection`, async () => {
+    const t = await task({ caps, model: 'beta' })
     await t.prompt(1, 'model'); const first = t.start(); await t.turnEnd(1)
     expect(await t.texts(1)).toContain('model: beta')
     const state = JSON.parse(await readFile(join(t.dir, 'models.json'), 'utf8'))
@@ -116,6 +116,24 @@ describe('advertised models', () => {
     await writeFile(join(t.dir, 'requested-model.json'), JSON.stringify('alpha'))
     await t.prompt(2, 'model'); t.start(); await t.turnEnd(2)
     expect(await t.texts(2)).toContain('model: alpha')
+  })
+  it('records provider-driven model changes before finishing the turn', async () => {
+    const t = await task({ caps: 'models', model: 'alpha' })
+    await t.prompt(1, 'switch-model'); t.start(); await t.turnEnd(1)
+    const state = JSON.parse(await readFile(join(t.dir, 'models.json'), 'utf8'))
+    expect(state.requestedModel).toBe('alpha')
+    expect(state.models.currentModelId).toBe('beta')
+    const events = await t.events()
+    expect(events.filter(e => e.type === 'models').at(-1).models.currentModelId).toBe('beta')
+  })
+  it('discovers advertised models without prompting or adding MCP servers', async () => {
+    const t = await sandbox({ caps: 'models' })
+    const result = await promisify(execFile)(process.execPath, [RUNNER, 'models', Buffer.from(JSON.stringify(AGENT)).toString('base64')], { env: t.env, timeout: 10_000 })
+    expect(JSON.parse(result.stdout).models.availableModels.map(m => m.id)).toEqual(['alpha', 'beta'])
+    const files = (await readdir(t.state)).filter(name => name.startsWith('session-'))
+    expect(files).toHaveLength(1)
+    const session = JSON.parse(await readFile(join(t.state, files[0]), 'utf8'))
+    expect(session.history).toEqual([]); expect(session.mcp).toEqual([])
   })
   it('fails an unadvertised selection before the agent receives a prompt', async () => {
     const t = await task({ caps: 'models', model: 'invented' })

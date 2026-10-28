@@ -56,7 +56,7 @@ function modelState(session) {
 }
 const sessions = new Map()
 const sessionFile = id => join(state, `session-${id}.json`)
-const save = session => writeFileSync(sessionFile(session.id), JSON.stringify({ id: session.id, history: session.history, mcp: session.mcp }))
+const save = session => writeFileSync(sessionFile(session.id), JSON.stringify({ id: session.id, history: session.history, mcp: session.mcp, model: session.model }))
 const restore = id => existsSync(sessionFile(id)) ? { ...JSON.parse(readFileSync(sessionFile(id), 'utf8')), cancelled: false } : undefined
 const needsSignIn = () => process.env.STAND_IN_AUTH === '1' && !existsSync(signedInFile)
 
@@ -114,7 +114,7 @@ const app = acp.agent({ name: 'stand-in' })
     session.model = params.value; save(session)
     return modelState(session)
   })
-  .onRequest('session/set_model', ({ params }) => {
+  .onRequest('session/set_model', value => value, ({ params }) => {
     const session = sessions.get(params.sessionId)
     if (!caps.has('legacy-models') || !['alpha', 'beta'].includes(params.modelId)) throw acp.RequestError.invalidParams()
     session.model = params.modelId; save(session); return {}
@@ -144,6 +144,10 @@ const app = acp.agent({ name: 'stand-in' })
       await send({ sessionUpdate: 'tool_call', toolCallId: 'call-1', title: 'Run echo hi', kind: 'execute', status: 'pending', rawInput: { command: 'echo hi' } })
       await send({ sessionUpdate: 'tool_call_update', toolCallId: 'call-1', status: 'in_progress' })
       await send({ sessionUpdate: 'tool_call_update', toolCallId: 'call-1', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'hi' } }] })
+    }
+    if (last.includes('switch-model') && caps.has('models')) {
+      session.model = 'beta'; save(session)
+      await send({ sessionUpdate: 'config_option_update', ...modelState(session) })
     }
     if (/\bmodel\b/.test(last)) await say(`model: ${session.model ?? 'alpha'}`)
     if (/\benv\b/.test(last)) await say(`env: ${process.env.STAND_IN_GREETING ?? 'unset'}`)
