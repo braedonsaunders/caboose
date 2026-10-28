@@ -30,12 +30,7 @@ final class AgentCenter {
         var summary: String
     }
 
-    /// A file handed to an agent with its task, e.g. a screenshot of a window.
-    struct Attachment {
-        var name: String
-        var type: String
-        var data: Data
-    }
+    typealias Attachment = AgentAttachment
 
     struct Line: Identifiable, Equatable {
         let id = UUID()
@@ -286,19 +281,6 @@ final class AgentCenter {
 
 extension HostClient {
     func agentTasks() async throws -> [AgentCenter.Task] { try await request("GET", "/v1/agent/tasks", timeout: 20) }
-
-    func startAgentTask(prompt: String, agent: String, approvals: String = "auto",
-                        attachments: [AgentCenter.Attachment] = []) async throws -> String {
-        struct Started: Decodable { var id: String }
-        var body: [String: JSONValue] = ["prompt": .string(prompt), "agent": .string(agent), "approvals": .string(approvals)]
-        if !attachments.isEmpty {
-            body["attachments"] = .array(attachments.map {
-                .object(["name": .string($0.name), "type": .string($0.type), "data": .string($0.data.base64EncodedString())])
-            })
-        }
-        let started: Started = try await request("POST", "/v1/agent/tasks", body: body, timeout: 60)
-        return started.id
-    }
 
     func replyToAgentTask(_ id: String, prompt: String) async throws -> AgentCenter.Task {
         struct Replied: Decodable { var task: AgentCenter.Task }

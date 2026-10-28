@@ -11,6 +11,26 @@ The iPhone and iPad app, and **CabooseKit**, its native Xpra client.
   `UI/RemoteWindowView` (presentation and touch/trackpad/keyboard input).
 - `Caboose/` — the app: setup, wake, Home (open windows and the computer's apps), and the
   full-screen window screen.
+- `Share/` — the share extension (target `CabooseShare`).
+
+## Agents
+
+The Ask bar on Home starts a Claude Code or Codex task; its menu has **Ask Before Acting**
+(Claude only), which makes the agent stop before each action until you tap Allow or Deny,
+on the task card or on the banner that shows over any screen. A finished task takes a reply
+that continues the same conversation. A window's `…` menu has **Ask Agent About This
+Window**, which sends its screenshot, title and app with your request.
+
+## Share sheet
+
+Caboose appears in the iOS share sheet. A web page can be opened in the computer's browser;
+photos, files and text can be saved in `~/Downloads` (and opened there); any of them can be
+handed to an agent with a request (photos are scaled to 2048 px, at most 4 files and 10 MB).
+The app and the extension share the host address and token through the Keychain access group
+`<team>.com.braedonsaunders.caboose.shared`; an install that paired before this moves its
+pairing there on first launch, so it does not need pairing again. On a device, check: share a
+Safari page and pick Open on Computer; share a photo and pick Save and Open; share a photo
+with "describe this" to an agent and see the task appear on Home.
 
 ## Computer settings
 
@@ -31,7 +51,9 @@ xcodegen generate
 open Caboose.xcodeproj
 ```
 
-Set your own team in `project.yml` (`DEVELOPMENT_TEAM`) to run on a device.
+Set your own team in `project.yml` (`DEVELOPMENT_TEAM`) to run on a device. The share
+extension's bundle id is the app's plus `.share`, and both sign with the keychain group in
+`Caboose/Caboose.entitlements`.
 
 ## Test
 
