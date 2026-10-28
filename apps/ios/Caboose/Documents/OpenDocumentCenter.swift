@@ -54,6 +54,7 @@ final class OpenDocumentCenter {
         busy = true; installing = app.id; error = nil
         defer { busy = false; installing = nil }
         await model.catalog.perform(app.id, action: "install")
+        if let message = model.catalog.error { error = message; return }
         for _ in 0..<1800 {
             if Task.isCancelled { return }
             await model.catalog.refresh()
