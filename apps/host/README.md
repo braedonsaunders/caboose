@@ -80,7 +80,7 @@ returns the current state (null unless running; it never wakes or leases the com
 `{ "action": "play", "position": 42.5 }` writes a command for the guest as user `caboose`
 and returns `{ "sent": true }`, or 409 while the computer is not running. The contract is
 in `../../docs/architecture.md` § Media handoff. Unit tests fake the guest; check a real
-guest with `guest/media-handoff/check.sh`, then play a YouTube video in Chromium and watch
+guest with `guest/media-handoff/check.sh`, then play a video in Chromium and watch
 `GET /v1/media` while the app is connected.
 
 The unverified user-service template is `systemd/caboose-host.service`. Set

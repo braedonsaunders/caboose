@@ -23,22 +23,19 @@ assert.match(readFileSync(join(here, 'check.sh'), 'utf8'), new RegExp(`extension
 const context = { URL }
 context.globalThis = context
 runInNewContext(readFileSync(join(here, 'media-kind.js'), 'utf8'), context)
-const { classify, youtubeVideoId, cleanTitle, duration, ID_PATTERN } = context.CabooseMedia
+const { classify, cleanTitle, duration, ID_PATTERN } = context.CabooseMedia
 const plain = value => JSON.parse(JSON.stringify(value))
-assert.deepEqual(plain(classify('https://www.youtube.com/watch?v=jNQXAC9IVRw&t=4', 'blob:https://www.youtube.com/0b1c')), { kind: 'youtube', videoId: 'jNQXAC9IVRw' })
-for (const page of ['https://youtu.be/jNQXAC9IVRw', 'https://www.youtube-nocookie.com/embed/jNQXAC9IVRw?autoplay=1',
-  'https://m.youtube.com/shorts/jNQXAC9IVRw', 'https://www.youtube.com/live/jNQXAC9IVRw']) {
-  assert.equal(youtubeVideoId(page), 'jNQXAC9IVRw', page)
-}
-assert.equal(youtubeVideoId('https://www.youtube.com/'), undefined)
-assert.equal(youtubeVideoId('https://notyoutube.com/watch?v=jNQXAC9IVRw'), undefined)
-assert.equal(youtubeVideoId('https://www.youtube.com/watch?v=short'), undefined)
+// The same rule for every site: an MSE stream hands over its page, an http(s) source itself.
+assert.deepEqual(plain(classify('https://videos.example.com/watch/42', 'blob:https://videos.example.com/0b1c')), { kind: 'page' })
+assert.equal(classify('https://example.com/a', 'data:video/mp4,'), undefined)
+assert.equal(classify('file:///tmp/a.html', 'blob:null/1'), undefined)
+assert.equal(classify('https://example.com/a', ''), undefined)
 assert.deepEqual(plain(classify('https://example.com/a', 'https://cdn.example.com/live/index.M3U8?token=x')), { kind: 'hls', src: 'https://cdn.example.com/live/index.M3U8?token=x' })
 assert.deepEqual(plain(classify('https://example.com/a', 'http://cdn.example.com/movie.mp4')), { kind: 'video', src: 'http://cdn.example.com/movie.mp4' })
-assert.equal(classify('https://example.com/a', 'blob:https://example.com/9f2c'), undefined)
+assert.deepEqual(plain(classify('https://example.com/a', 'blob:https://example.com/9f2c')), { kind: 'page' })
 assert.equal(classify('https://example.com/a', 'data:video/mp4;base64,AAAA'), undefined)
 assert.equal(classify('https://example.com/a', ''), undefined)
-assert.equal(cleanTitle('(3) A talk - YouTube'), 'A talk')
+assert.equal(cleanTitle('(3) A talk'), 'A talk')
 assert.equal(cleanTitle(undefined), '')
 assert.equal(duration(Infinity), null)
 assert.equal(duration(Number.NaN), null)
@@ -93,8 +90,8 @@ await wait('the pid file', () => existsSync(join(dir, 'media-host.pid')))
 assert.equal(existsSync(state), false, 'a new host clears the previous session state')
 assert.equal(readFileSync(join(dir, 'media-host.pid'), 'utf8').trim(), String(host.pid))
 
-const media = { id: '7.0.k3j9x2-1', page: 'https://www.youtube.com/watch?v=jNQXAC9IVRw', title: 'Me at the zoo', kind: 'youtube',
-  videoId: 'jNQXAC9IVRw', position: 4.25, duration: 19.02, paused: false, updatedAt: 1793161915640 }
+const media = { id: '7.0.k3j9x2-1', page: 'https://videos.example.com/watch/42', title: 'A talk', kind: 'page',
+  position: 4.25, duration: 19.02, paused: false, updatedAt: 1793161915640 }
 // Two messages in one write, and one split across writes, exercise the framing.
 const two = Buffer.concat([frame({ type: 'media', media: { ...media, position: 1 } }), frame({ type: 'media', media })])
 host.stdin.write(two.subarray(0, 7))
@@ -103,8 +100,8 @@ host.stdin.write(two.subarray(7))
 assert.deepEqual(await wait('the state file', () => read()?.position === 4.25 && read()), media)
 
 host.stdin.write(frame({ type: 'media', media: { ...media, id: 'bad/id', position: 9 } }))
-host.stdin.write(frame({ type: 'media', media: { ...media, kind: 'video', videoId: undefined, src: 'blob:x' } }))
-host.stdin.write(frame({ type: 'media', media: { ...media, kind: 'hls', videoId: undefined, src: 'https://cdn.example.com/a.m3u8', duration: null } }))
+host.stdin.write(frame({ type: 'media', media: { ...media, kind: 'video', src: 'blob:x' } }))
+host.stdin.write(frame({ type: 'media', media: { ...media, kind: 'hls', src: 'https://cdn.example.com/a.m3u8', duration: null } }))
 assert.equal((await wait('the hls state', () => read()?.kind === 'hls' && read())).duration, null)
 assert.match(stderr, /malformed media state/)
 

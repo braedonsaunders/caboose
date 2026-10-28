@@ -271,9 +271,11 @@ lease for tasks still running.
 
 ## Media handoff
 
-When a video plays in the computer's Chromium, the app offers **Play on iPhone / Apple
-TV**: it plays the video natively, pauses the Linux copy, and afterwards resumes the Linux
-copy at the phone's position.
+Video reaches the phone the way every window does (see `docs/display.md`, "Video, for
+every app"). Media handoff is only a user action on top of that: from a window's menu,
+**Play on iPhone / Apple TV** moves a video playing in the computer's Chromium to the phone,
+pauses the Linux copy, and afterwards resumes the Linux copy at the phone's position. It
+treats every site the same way; there are no per-site rules.
 
 **Guest** (`guest/media-handoff/`, installed in the image): a Chromium extension, ID
 `cklinclacpchpdgickgonlhnldfmkhbh` (fixed by the public key in its manifest), and its native
@@ -285,13 +287,13 @@ records its pid in `media-host.pid`, and forwards commands from `media-command.j
 
 | Offered as | When | Played on the phone from |
 | --- | --- | --- |
-| `kind: "youtube"`, `videoId` | the frame is a YouTube watch, shorts, live or embed page, or `youtu.be` | the video id |
-| `kind: "hls"`, `src` | `currentSrc` is http(s) and its path ends in `.m3u8` | `src` |
-| `kind: "video"`, `src` | any other http(s) `currentSrc` | `src` |
+| `kind: "hls"`, `src` | `currentSrc` is http(s) and its path ends in `.m3u8` | `src`, natively |
+| `kind: "video"`, `src` | any other http(s) `currentSrc` | `src`, natively |
+| `kind: "page"` | `currentSrc` is a `blob:` the page assembled (MediaSource) | the page, in the phone's browser; the position does not carry over |
 
-Not supported: `blob:`/MSE players other than YouTube (most streaming sites, hls.js and
-dash.js players), DRM (EME) video, `data:` and MediaStream sources, muted looping videos
-(page decoration), YouTube ads, videos inside shadow roots, and other browsers. `src` is
+Not supported: DRM (EME) playback off the computer, `data:` and MediaStream sources (calls,
+cameras), muted looping videos (page decoration), videos inside shadow roots, and other
+browsers. `src` is
 the page's own URL for the media; cookies, headers and short-lived signed URLs may not
 work off the computer, which the phone reports as a playback failure.
 
@@ -303,9 +305,8 @@ The media state, in the guest file and as the host sends it:
                            // tab, frame, element and source; a new source is a new id
   page: string,            // the tab's http(s) URL
   title: string,           // media session title, else the document or tab title; "" if none
-  src?: string,            // http(s) only, never blob:; present for "hls" and "video"
-  kind: "youtube" | "hls" | "video",
-  videoId?: string,        // 11-character YouTube id, present for "youtube"
+  src?: string,            // http(s) only, never blob:; present for "hls" and "video", absent for "page"
+  kind: "page" | "hls" | "video",
   position: number,        // seconds
   duration: number | null, // seconds; null for live or not yet known
   paused: boolean,

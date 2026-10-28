@@ -19,7 +19,6 @@ const STATE = join(DIR, 'media.json')
 const COMMAND = join(DIR, 'media-command.json')
 const PID = join(DIR, 'media-host.pid')
 const ID = /^[A-Za-z0-9._-]{1,64}$/
-const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/
 // Chromium refuses messages over 1 MiB from a host; it never sends us anything near 1 MiB.
 const MAX_MESSAGE = 1024 * 1024
 const log = message => process.stderr.write(`caboose-media-host: ${message}\n`)
@@ -33,14 +32,14 @@ function seconds(value) { return typeof value === 'number' && Number.isFinite(va
 /** The state file's contents, or undefined if the extension sent something malformed. */
 function validState(media) {
   if (!media || typeof media !== 'object') return undefined
-  const { id, page, title, src, kind, videoId, position, duration, paused, updatedAt } = media
+  const { id, page, title, src, kind, position, duration, paused, updatedAt } = media
   if (typeof id !== 'string' || !ID.test(id) || !http(page, 4096) || typeof title !== 'string') return undefined
-  if (!['youtube', 'hls', 'video'].includes(kind) || typeof paused !== 'boolean') return undefined
-  if (kind === 'youtube' ? !VIDEO_ID.test(videoId ?? '') : videoId !== undefined || !http(src, 4096)) return undefined
-  if (src !== undefined && !http(src, 4096)) return undefined
+  if (!['page', 'hls', 'video'].includes(kind) || typeof paused !== 'boolean') return undefined
+  // A page hands over the page; hls and video hand over their source.
+  if (kind === 'page' ? src !== undefined : !http(src, 4096)) return undefined
   if (!seconds(position) || !(duration === null || seconds(duration)) || !Number.isSafeInteger(updatedAt) || updatedAt < 0) return undefined
   return {
-    id, page, title: title.slice(0, 300), ...(src ? { src } : {}), kind, ...(videoId ? { videoId } : {}),
+    id, page, title: title.slice(0, 300), ...(src ? { src } : {}), kind,
     position, duration, paused, updatedAt,
   }
 }

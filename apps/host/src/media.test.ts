@@ -7,15 +7,15 @@ import { MediaHandoff, MediaInputError, parseMediaCommand, parseMediaState, READ
 import { createCabooseServer, type Controller } from './server.js'
 import { SettingsStore, settingsLimits } from './settings.js'
 
-const youtube = {
-  id: '1944008823.0.0gqc72sh-1', page: 'https://www.youtube.com/watch?v=jNQXAC9IVRw', title: 'Me at the zoo',
-  kind: 'youtube', videoId: 'jNQXAC9IVRw', position: 10, duration: 19, paused: false, updatedAt: 1_793_161_915_000,
+const pageVideo = {
+  id: '1944008823.0.0gqc72sh-1', page: 'https://videos.example.com/watch/42', title: 'A talk',
+  kind: 'page', position: 10, duration: 19, paused: false, updatedAt: 1_793_161_915_000,
 }
 
 /** A guest whose state file and clock the test sets; it records every command it runs. */
 function fakeGuest() {
   let file = ''
-  let clock = youtube.updatedAt
+  let clock = pageVideo.updatedAt
   const calls: string[][] = []
   const guest: AgentGuest = {
     async run(command, args) {
@@ -35,7 +35,7 @@ function fakeGuest() {
 
 describe('parseMediaState', () => {
   it('accepts the guest contract', () => {
-    expect(parseMediaState(youtube)).toEqual(youtube)
+    expect(parseMediaState(pageVideo)).toEqual(pageVideo)
     const hls = { id: '4.2.ab-1', page: 'https://example.com/live', title: 'Live', src: 'https://cdn.example.com/a.m3u8', kind: 'hls', position: 0, duration: null, paused: true, updatedAt: 1 }
     expect(parseMediaState(hls)).toEqual(hls)
     expect(parseMediaState({ ...hls, title: undefined })?.title).toBe('')
@@ -43,11 +43,11 @@ describe('parseMediaState', () => {
 
   it('rejects anything malformed', () => {
     for (const bad of [
-      null, [], {}, { ...youtube, id: 'a/b' }, { ...youtube, id: 'x'.repeat(65) }, { ...youtube, videoId: 'short' },
-      { ...youtube, kind: 'dash' }, { ...youtube, page: 'javascript:alert(1)' }, { ...youtube, position: -1 },
-      { ...youtube, position: Number.NaN }, { ...youtube, duration: 'long' }, { ...youtube, paused: 'no' },
-      { ...youtube, updatedAt: 1.5 }, { ...youtube, kind: 'video', videoId: undefined, src: 'blob:https://example.com/1' },
-      { ...youtube, kind: 'video', videoId: undefined }, { ...youtube, src: 'data:video/mp4,' },
+      null, [], {}, { ...pageVideo, id: 'a/b' }, { ...pageVideo, id: 'x'.repeat(65) }, { ...pageVideo, src: 'https://cdn.example.com/a.mp4' },
+      { ...pageVideo, kind: 'dash' }, { ...pageVideo, page: 'javascript:alert(1)' }, { ...pageVideo, position: -1 },
+      { ...pageVideo, position: Number.NaN }, { ...pageVideo, duration: 'long' }, { ...pageVideo, paused: 'no' },
+      { ...pageVideo, updatedAt: 1.5 }, { ...pageVideo, kind: 'video', src: 'blob:https://example.com/1' },
+      { ...pageVideo, kind: 'video' }, { ...pageVideo, kind: 'video', src: 'data:video/mp4,' },
     ]) expect(parseMediaState(bad), JSON.stringify(bad)).toBeNull()
   })
 })
@@ -76,12 +76,12 @@ describe('MediaHandoff', () => {
     const fake = fakeGuest()
     const events: MediaEvent[] = []
     const media = new MediaHandoff(() => fake.guest, event => events.push(event), 60_000, () => 5_000)
-    fake.set(youtube)
+    fake.set(pageVideo)
     await media.poll()
     await media.poll()
-    fake.set({ ...youtube, position: 15, updatedAt: youtube.updatedAt + 5000 })
+    fake.set({ ...pageVideo, position: 15, updatedAt: pageVideo.updatedAt + 5000 })
     await media.poll()
-    fake.set({ ...youtube, id: '1944008823.0.0gqc72sh-2', videoId: 'dQw4w9WgXcQ', position: 0 })
+    fake.set({ ...pageVideo, id: '1944008823.0.0gqc72sh-2', page: 'https://videos.example.com/watch/43', position: 0 })
     await media.poll()
     fake.set('')
     await media.poll()
@@ -91,14 +91,14 @@ describe('MediaHandoff', () => {
       'playing 1944008823.0.0gqc72sh-1', 'playing 1944008823.0.0gqc72sh-1',
       'stopped 1944008823.0.0gqc72sh-1', 'playing 1944008823.0.0gqc72sh-2', 'stopped 1944008823.0.0gqc72sh-2',
     ])
-    expect(events[0]).toEqual({ type: 'media.playing', media: { ...youtube, updatedAt: 5_000 } })
+    expect(events[0]).toEqual({ type: 'media.playing', media: { ...pageVideo, updatedAt: 5_000 } })
   })
 
   it('extrapolates a playing position on the host clock, whatever the guest clock says', async () => {
     const fake = fakeGuest()
     let now = 1_000_000
     const media = new MediaHandoff(() => fake.guest, () => {}, 60_000, () => now)
-    fake.set(youtube)
+    fake.set(pageVideo)
     fake.tick(2_000) // sampled 2 s before the read, by the guest's own (skewed) clock
     await media.poll()
     expect(media.current()).toMatchObject({ position: 12, updatedAt: 1_000_000 })
@@ -106,11 +106,11 @@ describe('MediaHandoff', () => {
     expect(media.current()).toMatchObject({ position: 15.5, updatedAt: 1_003_500 })
     now += 60_000
     expect(media.current()?.position).toBe(19)
-    fake.set({ ...youtube, paused: true })
+    fake.set({ ...pageVideo, paused: true })
     await media.poll()
     now += 10_000
     expect(media.current()?.position).toBe(10)
-    fake.set({ ...youtube, duration: null, position: 100 })
+    fake.set({ ...pageVideo, duration: null, position: 100 })
     await media.poll()
     now += 60_000
     expect(media.current()?.position).toBe(162)
@@ -121,7 +121,7 @@ describe('MediaHandoff', () => {
     const fake = fakeGuest()
     const events: MediaEvent[] = []
     const media = new MediaHandoff(() => fake.guest, event => events.push(event), 1000)
-    fake.set(youtube)
+    fake.set(pageVideo)
     await vi.advanceTimersByTimeAsync(5_000)
     expect(fake.reads()).toBe(0)
     media.setActive(true)
@@ -136,20 +136,20 @@ describe('MediaHandoff', () => {
     media.setActive(true)
     await vi.advanceTimersByTimeAsync(0)
     expect(events.map(event => event.type)).toEqual(['media.playing', 'media.playing'])
-    expect(media.watched()?.id).toBe(youtube.id)
+    expect(media.watched()?.id).toBe(pageVideo.id)
     media.computerStopped()
     expect(media.active).toBe(false)
-    expect(events.at(-1)).toEqual({ type: 'media.stopped', id: youtube.id })
+    expect(events.at(-1)).toEqual({ type: 'media.stopped', id: pageVideo.id })
     expect(media.current()).toBeNull()
   })
 
   it('reads on demand only from a running computer', async () => {
     const fake = fakeGuest()
     const media = new MediaHandoff(() => fake.guest, () => {}, 60_000)
-    fake.set(youtube)
+    fake.set(pageVideo)
     expect(await media.read(false)).toBeNull()
     expect(fake.reads()).toBe(0)
-    expect((await media.read(true))?.id).toBe(youtube.id)
+    expect((await media.read(true))?.id).toBe(pageVideo.id)
     expect(fake.reads()).toBe(1)
     expect(await new MediaHandoff(() => undefined, () => {}).read(true)).toBeNull()
   })
@@ -160,22 +160,22 @@ describe('MediaHandoff', () => {
     const guest: AgentGuest = { run: async (command, args) => { if (broken) throw new Error('guest gone'); return fake.guest.run(command, args) } }
     const events: MediaEvent[] = []
     const media = new MediaHandoff(() => guest, event => events.push(event), 60_000)
-    fake.set(youtube)
+    fake.set(pageVideo)
     await media.poll()
     broken = true
     await expect(media.poll()).resolves.toBeUndefined()
-    expect(media.current()?.id).toBe(youtube.id)
+    expect(media.current()?.id).toBe(pageVideo.id)
     expect(events).toHaveLength(1)
   })
 
   it('writes commands as caboose with an increasing seq', async () => {
     const fake = fakeGuest()
     const media = new MediaHandoff(() => fake.guest, () => {}, 60_000, () => 1_000)
-    await media.send({ id: youtube.id, action: 'pause' })
-    await media.send({ id: youtube.id, action: 'play', position: 42.5 })
+    await media.send({ id: pageVideo.id, action: 'pause' })
+    await media.send({ id: pageVideo.id, action: 'play', position: 42.5 })
     expect(fake.writes()).toEqual([
-      { seq: 1_000, id: youtube.id, action: 'pause' },
-      { seq: 1_001, id: youtube.id, action: 'play', position: 42.5 },
+      { seq: 1_000, id: pageVideo.id, action: 'pause' },
+      { seq: 1_001, id: pageVideo.id, action: 'play', position: 42.5 },
     ])
     expect(fake.calls[0]!.slice(0, 4)).toEqual(['/usr/sbin/runuser', '-u', 'caboose', '--'])
     await expect(new MediaHandoff(() => undefined, () => {}).send({ id: 'a', action: 'pause' })).rejects.toThrow('computer is not running')
@@ -188,7 +188,7 @@ describe('media routes', () => {
 
   async function fixture() {
     const fake = fakeGuest()
-    fake.set(youtube)
+    fake.set(pageVideo)
     const upstream = new WebSocketServer({ port: 0 })
     await once(upstream, 'listening')
     close.push(() => new Promise(resolve => upstream.close(() => resolve())))
@@ -238,20 +238,20 @@ describe('media routes', () => {
     const control = await socket('/v1/control')
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(fake.reads()).toBe(0)
-    expect((await (await request('/v1/media')).json()).media).toMatchObject({ id: youtube.id, kind: 'youtube', videoId: 'jNQXAC9IVRw' })
+    expect((await (await request('/v1/media')).json()).media).toMatchObject({ id: pageVideo.id, kind: 'page', page: 'https://videos.example.com/watch/42' })
     expect(fake.reads()).toBe(1)
 
     const display = await socket('/v1/display', 'binary')
     await vi.waitFor(() => expect(control.messages.some(message => message.type === 'media.playing')).toBe(true))
-    expect(control.messages.find(message => message.type === 'media.playing')).toMatchObject({ media: { id: youtube.id, title: 'Me at the zoo' } })
+    expect(control.messages.find(message => message.type === 'media.playing')).toMatchObject({ media: { id: pageVideo.id, title: 'A talk' } })
     const second = await socket('/v1/control')
     await vi.waitFor(() => expect(second.messages.map(message => message.type)).toEqual(['computer.state', 'computer.settings', 'media.playing']))
 
-    expect(await (await request(`/v1/media/${youtube.id}/control`, 'POST', { action: 'play', position: 12 })).json()).toEqual({ sent: true })
-    expect(fake.writes()).toEqual([expect.objectContaining({ id: youtube.id, action: 'play', position: 12 })])
+    expect(await (await request(`/v1/media/${pageVideo.id}/control`, 'POST', { action: 'play', position: 12 })).json()).toEqual({ sent: true })
+    expect(fake.writes()).toEqual([expect.objectContaining({ id: pageVideo.id, action: 'play', position: 12 })])
 
     fake.set('')
-    await vi.waitFor(() => expect(control.messages.at(-1)).toEqual({ type: 'media.stopped', id: youtube.id }), { timeout: 3000 })
+    await vi.waitFor(() => expect(control.messages.at(-1)).toEqual({ type: 'media.stopped', id: pageVideo.id }), { timeout: 3000 })
     display.client.close()
     await once(display.client, 'close')
     await new Promise(resolve => setTimeout(resolve, 50))

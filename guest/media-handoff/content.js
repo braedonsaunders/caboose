@@ -25,14 +25,8 @@
   /** Muted looping videos are page decoration (hero backgrounds, previews), not media. */
   function decorative(video) { return video.muted && video.loop }
 
-  /** A YouTube ad plays in the same element; the phone is offered the video, not the ad. */
-  function adShowing(video) {
-    const player = video.closest('.html5-video-player')
-    return Boolean(player && player.classList.contains('ad-showing'))
-  }
-
   function describe(video) {
-    if (!video.isConnected || decorative(video) || adShowing(video)) return undefined
+    if (!video.isConnected || decorative(video) || video.srcObject) return undefined
     const source = classify(location.href, video.currentSrc)
     if (!source) return undefined
     const metadata = navigator.mediaSession && navigator.mediaSession.metadata
@@ -57,9 +51,9 @@
   /** Reports a video; `start` is true when it has just started playing. */
   function report(video, start) {
     const media = describe(video)
-    const ident = media && (media.videoId || media.src)
+    const ident = media && (media.src || location.href)
     const entry = tracked.get(video)
-    // A new source in the same element (the next YouTube video, an ad ending) is new media.
+    // A new source or page in the same element (the next video in a playlist) is new media.
     if (entry && (!media || entry.ident !== ident)) forget(video)
     if (!media) return
     if (!tracked.has(video)) {
@@ -89,7 +83,7 @@
     if (!(video instanceof HTMLVideoElement)) return
     switch (event.type) {
       case 'play': report(video, true); break
-      // A video can start being offerable mid-play (a YouTube ad ending, say).
+      // A video can start being offerable mid-play (its source changes, say).
       case 'playing': report(video, !tracked.has(video)); break
       case 'pause': case 'seeked': report(video, false); break
       case 'ended': case 'emptied': forget(video); schedule(); break

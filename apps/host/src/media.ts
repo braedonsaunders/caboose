@@ -8,7 +8,7 @@ import { AgentUnavailableError, type AgentGuest } from './agents.js'
  * go straight to the guest: they never wake the computer, hold a lease or delay parking.
  * Commands go back through media-command.json. See docs/architecture.md § Media handoff.
  */
-export type MediaKind = 'youtube' | 'hls' | 'video'
+export type MediaKind = 'page' | 'hls' | 'video'
 
 export interface MediaState {
   id: string
@@ -16,7 +16,6 @@ export interface MediaState {
   title: string
   src?: string
   kind: MediaKind
-  videoId?: string
   /** Seconds; in what the host sends, extrapolated to `updatedAt` while playing. */
   position: number
   /** Seconds, or null for a live stream or a duration not yet known. */
@@ -33,7 +32,6 @@ export type MediaEvent =
 export interface MediaCommand { id: string; action: 'pause' | 'play'; position?: number }
 
 export const MEDIA_ID = /^[A-Za-z0-9._-]{1,64}$/
-const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/
 const MAX_POSITION = 1e7
 const NOW_MARKER = '\n__CABOOSE_NOW__'
 
@@ -72,16 +70,16 @@ function seconds(value: unknown): value is number {
 /** The guest's state file, checked field by field: the guest is not trusted to be well formed. */
 export function parseMediaState(value: unknown): MediaState | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const { id, page, title, src, kind, videoId, position, duration, paused, updatedAt } = value as Record<string, unknown>
+  const { id, page, title, src, kind, position, duration, paused, updatedAt } = value as Record<string, unknown>
   if (typeof id !== 'string' || !MEDIA_ID.test(id) || !httpUrl(page) || typeof paused !== 'boolean') return null
-  if (kind !== 'youtube' && kind !== 'hls' && kind !== 'video') return null
-  if (kind === 'youtube' ? typeof videoId !== 'string' || !VIDEO_ID.test(videoId) : videoId !== undefined || !httpUrl(src)) return null
-  if (src !== undefined && !httpUrl(src)) return null
+  if (kind !== 'page' && kind !== 'hls' && kind !== 'video') return null
+  // A page hands over the page itself; hls and video hand over their source.
+  if (kind === 'page' ? src !== undefined : !httpUrl(src)) return null
   if (!seconds(position) || !(duration === null || seconds(duration))) return null
   if (typeof updatedAt !== 'number' || !Number.isSafeInteger(updatedAt) || updatedAt < 0) return null
   return {
     id, page, title: typeof title === 'string' ? title.slice(0, 300) : '',
-    ...(src !== undefined ? { src } : {}), kind, ...(kind === 'youtube' ? { videoId: videoId as string } : {}),
+    ...(typeof src === 'string' ? { src } : {}), kind,
     position, duration, paused, updatedAt,
   }
 }

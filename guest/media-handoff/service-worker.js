@@ -69,7 +69,6 @@ function toMedia(entry) {
     title: media.title || cleanTitle(entry.tabTitle),
     ...(media.src ? { src: media.src } : {}),
     kind: media.kind,
-    ...(media.videoId ? { videoId: media.videoId } : {}),
     position: media.position,
     duration: media.duration,
     paused: media.paused,
@@ -100,14 +99,13 @@ function publish() {
 /** Only what the content script is expected to send survives; anything else is dropped. */
 function sanitize(media) {
   if (!media || typeof media !== 'object') return undefined
-  const { kind, videoId, src, position, paused, sampledAt, frameUrl } = media
-  if (!['youtube', 'hls', 'video'].includes(kind) || typeof paused !== 'boolean') return undefined
-  if (kind === 'youtube' ? !/^[A-Za-z0-9_-]{11}$/.test(videoId) : !isHttp(src)) return undefined
-  if (src !== undefined && (!isHttp(src) || src.length > 4096)) return undefined
+  const { kind, src, position, paused, sampledAt, frameUrl } = media
+  if (!['page', 'hls', 'video'].includes(kind) || typeof paused !== 'boolean') return undefined
+  if (kind === 'page' ? src !== undefined : !isHttp(src) || src.length > 4096) return undefined
   if (typeof position !== 'number' || !Number.isFinite(position) || position < 0) return undefined
   if (typeof sampledAt !== 'number' || !Number.isFinite(sampledAt)) return undefined
   return {
-    kind, ...(kind === 'youtube' ? { videoId } : {}), ...(src ? { src } : {}),
+    kind, ...(src ? { src } : {}),
     title: cleanTitle(media.title), frameUrl: isHttp(frameUrl) ? frameUrl : '',
     position, duration: duration(media.duration), paused, sampledAt,
   }

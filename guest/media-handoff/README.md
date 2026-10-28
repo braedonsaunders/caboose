@@ -15,16 +15,15 @@ content.js (every http(s) frame) ──▶ service-worker.js ──native messag
 - **`content.js` + `media-kind.js`** watch every `<video>` in the frame (capture listeners
   for `play`, `playing`, `pause`, `seeked`, `ended`, `emptied`) and report each one that
   has played, with a heartbeat every 5 s while it plays. A video is offered when it is
-  - **YouTube**: the frame is `youtube.com/watch?v=…`, `/shorts/…`, `/live/…`, `/embed/…`,
-    `youtu.be/…` or `youtube-nocookie.com/embed/…`; `kind: "youtube"` with `videoId`
-    (YouTube plays an MSE `blob:`, so there is no `src`). Ads are skipped;
   - **HLS**: `currentSrc` is http(s) and its path ends in `.m3u8`; `kind: "hls"`;
-  - **a file**: any other http(s) `currentSrc`; `kind: "video"`.
+  - **a file**: any other http(s) `currentSrc`; `kind: "video"`;
+  - **a page-built stream**: `currentSrc` is a `blob:` MediaSource; `kind: "page"`, no
+    `src` (the phone opens the page).
 
-  Anything else — `blob:`/MSE players other than YouTube, `data:`, MediaStream (calls,
-  cameras), DRM — is not offered, and nor are muted looping videos (page decoration).
+  The rule is the same for every site. `data:` and MediaStream sources (calls, cameras)
+  are not offered, and nor are muted looping videos (page decoration).
   Videos inside closed or open shadow roots are not seen, since media events do not leave
-  a shadow tree. A new source in the same element (the next YouTube video) is new media
+  a shadow tree. A new source or page in the same element (the next video in a playlist) is new media
   with a new id.
 - **`service-worker.js`** keeps every reported video (in `chrome.storage.session`, so a
   restarted worker remembers them), offers the most recently started *playing* video (or,
@@ -36,12 +35,12 @@ content.js (every http(s) frame) ──▶ service-worker.js ──native messag
   `$HOME/.cache/caboose/media.json` with the offered video:
 
   ```json
-  { "id": "1944008823.0.0gqc72sh-1", "page": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
-    "title": "Me at the zoo", "kind": "youtube", "videoId": "jNQXAC9IVRw",
+  { "id": "1944008823.0.0gqc72sh-1", "page": "https://videos.example.com/watch/42",
+    "title": "A talk", "kind": "page",
     "position": 9.8, "duration": 19.02, "paused": false, "updatedAt": 1793161915640 }
   ```
 
-  `src` is present for `hls` and `video` (and for YouTube only if it was ever http(s));
+  `src` is present for `hls` and `video`, absent for `page`;
   `duration` is seconds or `null` (live, or not yet known); `updatedAt` is when `position`
   was sampled, in ms since the epoch on the guest clock. The file is removed when nothing
   is offered, when a new host starts, and when the browser closes. `media-host.pid` names
@@ -89,5 +88,4 @@ joins Debian's list instead.
 
   Add `CABOOSE_CHECK_CHROMIUM_ARGS=--no-sandbox` only where the container has no
   namespace sandbox. It passed against Debian 13's Chromium 156 in a plain
-  `debian:trixie-slim` container; a YouTube watch page reported
-  `kind: "youtube"`, its `videoId` and title in the same setup.
+  `debian:trixie-slim` container.
