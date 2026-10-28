@@ -9,19 +9,26 @@ struct AgentThreadView: View {
     @Environment(AppModel.self) private var model
     let taskID: String
     @State private var connectingModel = false
+    @State private var visibleTurns = 20
 
     var body: some View {
         let agents = model.agents
         Group {
             if let task = agents.tasks.first(where: { $0.id == taskID }) {
                 let thread = agents.threads[taskID] ?? AgentThread(entries: [], prompt: task.prompt)
+                // Keep the existing turns mounted while the keyboard changes the viewport
+                // and a new live turn changes height. Lazy eviction caused a blank relayout.
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 18) {
                         if thread.truncated {
                             Label("Earlier parts of this conversation are too long to show here.", systemImage: "text.append")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        ForEach(thread.turns) { turn in
+                        if thread.turns.count > visibleTurns {
+                            Button("Show Earlier Messages") { visibleTurns += 20 }
+                                .frame(maxWidth: .infinity)
+                        }
+                        ForEach(thread.turns.suffix(visibleTurns)) { turn in
                             TurnView(task: task, turn: turn, isLast: turn.number == thread.lastTurn?.number)
                         }
                         if thread.turns.last?.outcome == nil, !task.isRunning, let summary = task.summary, !summary.isEmpty, task.signIn?.isEmpty != false {

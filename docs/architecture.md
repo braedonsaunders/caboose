@@ -1560,7 +1560,9 @@ the app card, and a detached view releases its layers.
   geometry while it is up. Its measured content area, including changes to its controls,
   rotation and folding, replaces the guest display size; the complete picture fits while
   the app redraws. A long press or the options button opens the tile's menu (full screen,
-  width, ask an agent, redraw, close). An app asking for full screen covers the desktop
+  width, ask an agent, redraw, close). Every tile also has a visible Close Window button
+  at its top-right edge. Holding a dock icon opens Open, Pin/Unpin and per-window Close
+  actions; tapping it focuses its existing desktop window. An app asking for full screen covers the desktop
   edge to edge: the bars, dock, status bar and home indicator step aside, and a pull down
   from the small tab at its top edge shrinks it back into its tile. The app is told when
   it is pulled back. Menus and
@@ -1633,11 +1635,15 @@ Pinned and recent apps are kept on the phone per computer.
 
 ### Input
 
-- **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap cancels
+- **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap or stationary
+  half-second hold cancels
   the touch sequence and sends a right-click with a brief amber ring and haptic. Xwayland windows get pointer
   gestures: tap, drag and long press, with a two-finger tap or a long press for a right
   click (an amber ring blooms where it lands, with a tick) and swipes that scroll with
-  momentum. A tap shows the keyboard when the app
+  momentum. Pointer taps are sent individually, retaining their real timing for double
+  clicks. A stationary half-second hold opens context immediately at the held point;
+  lifting or cancellation cannot send another click. Tap then hold and move drags with
+  the primary button. A tap shows the keyboard when the app
   answers it with a text cursor or text-input-v3 focus, and hides it otherwise. Dialogs are
   fitted and centred on the phone.
 - **Pointer.** A hardware trackpad and mouse work through `UIPointerInteraction` and
@@ -1655,11 +1661,17 @@ Pinned and recent apps are kept on the phone per computer.
   capitals are on for prose and off in terminals and code editors, with an `Aa` toggle on
   the key bar.
 - **Keyboard accessory.** Remote app cards, tiled and free desktops, the external-display
-  trackpad and the native Terminal use one shared accessory. Hide Keyboard stays at the
+  trackpad, Terminal, the Agents composer and app-owned native form fields use
+  CabooseKit’s shared `KeyBar` accessory. Hide Keyboard stays at the
   top right above the horizontally scrolling key row; it never enters toolbar overflow.
   The row offers Escape, Tab, sticky Ctrl/Alt, repeating arrows, navigation and shell symbols.
   Remote inputs share the same text/composition and modifier handling, with an Aa control
   for autocorrect; Terminal keeps its own terminal-byte semantics without prose correction.
+  Native fields use UIKit text editing, selection and IME; navigation moves native text
+  positions and never inserts terminal escape sequences. Ctrl/Alt apply to the next key;
+  Ctrl+A/C/X/V/Z/Y use native editing commands, with Copy/Cut blocked in secure fields.
+  Unsupported chords announce their unavailability without inserting text. Send and Hide clear composer
+  focus; updates and send completion leave it hidden until a tap or explicit focus request.
 - **Pencil.** The client defines `pencil` samples (pressure, tilt, azimuth, hover), but the
   compositor does not advertise the `pencil` feature, so Apple Pencil acts as touch and
   Linux applications receive no pressure or tilt.
@@ -1726,7 +1738,22 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   collapsible thoughts, tool calls grouped and updated in place, the plan as a checklist,
   permissions with their answers, and context use. Messages render native headings, lists,
   quotes, inline styles and links, plus selectable fenced code with Copy. The chat list is
-  searchable by title and agent. A running chat shows a live preview when the shared agent
+  searchable by title and agent. Generated-file links beneath `/home/caboose` (including
+  guest `file://` links), `~/` paths and home-relative paths download through the authenticated
+  `/v1/fs/content` service, never the phone's filesystem. Downloads reject redirects and stop
+  at 25 MiB. Standalone image Markdown shows a downsampled inline preview; tapping opens
+  Quick Look with Share. Unsupported preview formats offer sharing. Download failures are
+  visible in the chat.
+  Complete `html` and `inline-html` fences up to 512 KiB render self-contained interactive
+  HTML/CSS/JavaScript/SVG; incomplete or oversized fences remain selectable code. Each widget
+  uses an ephemeral WKWebView and an opaque-origin sandbox frame, with CSP and content rules
+  blocking network and file access, navigation, external dependencies, frames and popups.
+  Widgets resize with their content, expand in place without losing JavaScript state, and
+  offer source and HTML export. No bearer token enters the web view. The sole native bridge,
+  `window.Caboose.compose(message)`, accepts at most 32,000 characters after a widget touch
+  and active JavaScript user activation, then shows a native proposed-message review sheet.
+  Use in Composer prefills the chat draft; it never sends a message or executes tools.
+  A running chat shows a live preview when the shared agent
   seat has an application window; Watch opens that real surface. A working agent can be stopped. Pending approvals show in the chat, on Home and as a banner over every screen, with the agent's always-allow option when it
   has one. A task whose agent was signed out offers Sign In and Ask Another (another agent
   the same thing in a new chat, or Connect a Model). Sign In, there and in Settings › Agents,
@@ -1734,6 +1761,7 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   whose return to the computer's localhost goes to the agent, and a terminal sign-in's
   terminal, with Sign In on Computer's Screen as the other way. A window's menu hands the window
   (screenshot, title, app) to an agent as an attachment.
+  The sign-in sheet uses translucent material over the presenting screen.
 - **Connect a Model.** An API key instead of an account: OpenRouter (through the registry's
   `goose`, with `GOOSE_PROVIDER=openrouter`, `GOOSE_MODEL` from OpenRouter's public model
   list of tool-using models, and `OPENROUTER_API_KEY`), Anthropic (`claude-acp`,
@@ -1927,3 +1955,31 @@ app group and a Keychain access group.
   so bulk file transfer uses a token-authenticated streaming service that the host relays
   without buffering.
 - **AGPL-3.0-or-later.** Caboose is self-hostable and open source.
+
+### Agent model selection
+
+`POST /v1/agents/:id/models` opens a bounded ACP discovery session in the computer,
+without a prompt or MCP servers, and returns `{ models? }`. The optional capability is
+`{ currentModelId, availableModels: [{ id, name, description? }] }`. Model configuration
+options advertised by ACP take precedence over legacy session model state. Providers
+that advertise neither omit the capability. Discovery can require signing in.
+
+Task creation accepts an optional `model` id, included in the durable admission
+fingerprint and task configuration. The runner validates it against the session's actual
+advertisement and negotiates it after new/load/resume, before sending any prompt.
+An unavailable requested model fails explicitly. Tasks expose `requestedModel` separately
+from the agent-confirmed `models.currentModelId`; both survive runner/host restart.
+`GET /v1/agent/tasks/:id/models` reads the durable state. `PUT` with `{ model }` selects
+an advertised model for the next message when the chat and its queue are idle (409
+otherwise). Model selection does not change profile identity, routines, MCP scope, or
+sign-in attempts. The phone's Agents toolbar offers the provider's advertised models
+for new chats and the current chat.
+
+Agent chats keep their rendered turns mounted through keyboard and reply updates. A stale
+transcript read preserves completed turns already shown unless the host explicitly truncates
+the transcript; the last-answer summary is retained before a new reply clears it.
+
+For chats created before model-state reporting, idle model discovery reads provider choices
+without claiming to know that chat’s current model (`currentModelKnown: false`). Selecting a
+model retires only the identified idle runner before saving the request; the next reply
+resumes its conversation with the new runner and applies the choice before prompting.

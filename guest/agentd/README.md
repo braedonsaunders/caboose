@@ -255,3 +255,31 @@ the host. Stdio close cancels pending waits; a timeout reports that an operation
 have completed. The mailbox carries no owner or phone bearer token. All guest agent
 processes share the `caboose` user; the host enforces profile scope independently.
 See [agent routines](../../docs/agent-routines.md#agent-tools-and-durability).
+
+### Model selection
+
+`models <spec base64>` initializes the installed agent and opens a discovery session with
+no MCP servers or prompt. It prints `{ models? }` from ACP session config options
+(`category: model`, `type: select`, including grouped values), or the legacy `models`
+field. The child process closes on success, failure, or the 60-second session timeout.
+An agent without either advertisement returns `{}`.
+
+`task.json.model` is the requested model id. Before each prompt, including after
+new/load/resume, the runner reads `requested-model.json` if present and negotiates the
+selection with `session/set_config_option` (or legacy `session/set_model`). Unadvertised
+ids and unconfirmed config selections fail the turn before prompting. `models.json`
+atomically records `{ requestedModel?, models? }`; `models` transcript events report the
+same state. Config-option notifications update the recorded actual selection. Choices
+and labels come from the agent, never from environment variables or a built-in list.
+
+The schema comes from the pinned `@agentclientprotocol/sdk` dependency. The upstream
+[session config contract](https://agentclientprotocol.com/protocol/v1/session-config-options)
+defines grouped select values, the model category, setter responses and update notifications.
+The [Codex ACP implementation](https://github.com/zed-industries/codex-acp/blob/main/src/codex_agent.rs)
+returns this configuration from session creation/resume and implements the config setter.
+
+The runner supplies Caboose presentation guidance with each prompt: downloadable guest-file
+links, image previews, and complete self-contained `inline-html` widgets with responsive,
+accessible controls. Widgets have no network or file access; data comes from the agent’s
+computer tools. `window.Caboose.compose(message)` proposes a native follow-up for the owner
+to review and send, and cannot execute a tool itself.

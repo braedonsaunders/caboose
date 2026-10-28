@@ -477,3 +477,11 @@ available while the computer is parked. Tasks select `profileId`; new conversati
 its current context snapshot and share `~/AgentWorkspaces/<profile UUID>`. Existing
 conversations retain their snapshot. Archiving a profile prevents new starts and preserves
 its workspace. See the architecture contract for endpoints and limits.
+
+Agent model discovery uses `POST /v1/agents/:id/models`, backed by an ACP session with
+no prompts or MCP servers. Task creation accepts an advertised `model` id. Read a chat's
+requested and confirmed selection with `GET /v1/agent/tasks/:id/models`; `PUT` with
+`{ "model": "<advertised id>" }` selects the next-message model while the chat and queue
+are idle. Providers without an advertisement omit `models`. The runner checks the id
+against fresh session options before prompting; the host does not infer models from keys
+or environment variables. See `guest/agentd/README.md` for persistence and ACP negotiation.

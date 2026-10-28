@@ -147,9 +147,8 @@ struct AgentDetailView: View {
                         Text(name).font(.body.monospaced())
                             .swipeActions { Button("Remove", role: .destructive) { perform { try await agents.setEnv(agent.id, remove: [name]) } } }
                     }
-                    TextField("Name, e.g. OPENROUTER_API_KEY", text: $newName)
-                        .font(.body.monospaced()).textInputAutocapitalization(.characters).autocorrectionDisabled()
-                    SecureField("Value", text: $newValue)
+                    NativeTextInput("Name, e.g. OPENROUTER_API_KEY", text: $newName, capitalization: .allCharacters, correction: false, monospaced: true)
+                    NativeTextInput("Value", text: $newValue, secure: true, capitalization: .none, correction: false)
                     Button((agent.env ?? []).contains(newName.trimmingCharacters(in: .whitespaces)) ? "Replace" : "Add") {
                         let name = newName.trimmingCharacters(in: .whitespaces), value = newValue
                         perform {

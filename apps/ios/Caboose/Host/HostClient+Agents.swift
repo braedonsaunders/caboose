@@ -110,3 +110,30 @@ extension HostClient {
         value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? value
     }
 }
+
+struct AgentModelState: Decodable, Equatable, Sendable {
+    struct Models: Decodable, Equatable, Sendable {
+        struct Choice: Decodable, Equatable, Identifiable, Sendable {
+            var id: String
+            var name: String
+            var description: String?
+        }
+        var currentModelId: String
+        var availableModels: [Choice]
+    }
+    var requestedModel: String?
+    var models: Models?
+    var currentModelKnown: Bool?
+}
+
+extension HostClient {
+    func agentModels(_ id: String) async throws -> AgentModelState {
+        try await request("POST", "/v1/agents/\(Self.pathComponent(id))/models", timeout: 180)
+    }
+    func taskModels(_ id: String) async throws -> AgentModelState {
+        try await request("GET", "/v1/agent/tasks/\(Self.pathComponent(id))/models", timeout: 30)
+    }
+    func selectTaskModel(_ id: String, model: String) async throws -> AgentModelState {
+        try await request("PUT", "/v1/agent/tasks/\(Self.pathComponent(id))/models", body: ["model": .string(model)], timeout: 30)
+    }
+}

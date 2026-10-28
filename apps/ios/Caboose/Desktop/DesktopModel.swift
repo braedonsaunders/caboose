@@ -59,6 +59,7 @@ final class DesktopModel {
     private(set) var stacking: [Int] = []
     private(set) var minimized = Set<Int>()
     var dockFrames: [String: CGRect] = [:]
+    var contextDockID: String?
     /// Launchpad: every app, in a grid over the desktop.
     var launchpadOpen = false
     var launchpadButtonFrame: CGRect = .null
@@ -160,7 +161,8 @@ final class DesktopModel {
         switch hit {
         case .launchpadButton: launchpadOpen.toggle()
         case .launcher(let id): open(id)
-        case .dock(let id): open(id)
+        case .dock(let id):
+            if button == 3 { contextDockID = id } else { contextDockID = nil; open(id) }
         case .close(let id): if let window = session.windows[id] { session.close(window) }
         case .minimize(let id): minimize(id)
         case .zoom(let id): toggleZoom(id, session)
@@ -247,8 +249,8 @@ final class DesktopModel {
         guard let session else { return }
         switch hitTest(cursor, windows: session.windows) {
         case .titleBar(let id): toggleZoom(id, session)
-        case .content: break
-        default: click(session: session, open: open)
+        case .content: click(session: session, open: open)
+        default: break
         }
     }
 

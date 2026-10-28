@@ -49,9 +49,14 @@ function browserSignIn() {
   })
 }
 const caps = new Set((process.env.STAND_IN_CAPS ?? '').split(',').filter(Boolean))
+function modelState(session) {
+  if (caps.has('models')) return { configOptions: [{ id: 'engine', name: 'Model', category: 'model', type: 'select', currentValue: session.model ?? 'alpha', options: [{ group: 'test', name: 'Test', options: [{ value: 'alpha', name: 'Alpha' }, { value: 'beta', name: 'Beta' }] }] }] }
+  if (caps.has('legacy-models')) return { models: { currentModelId: session.model ?? 'alpha', availableModels: [{ id: 'alpha', name: 'Alpha' }, { id: 'beta', name: 'Beta' }] } }
+  return {}
+}
 const sessions = new Map()
 const sessionFile = id => join(state, `session-${id}.json`)
-const save = session => writeFileSync(sessionFile(session.id), JSON.stringify({ id: session.id, history: session.history, mcp: session.mcp }))
+const save = session => writeFileSync(sessionFile(session.id), JSON.stringify({ id: session.id, history: session.history, mcp: session.mcp, model: session.model }))
 const restore = id => existsSync(sessionFile(id)) ? { ...JSON.parse(readFileSync(sessionFile(id), 'utf8')), cancelled: false } : undefined
 const needsSignIn = () => process.env.STAND_IN_AUTH === '1' && !existsSync(signedInFile)
 
@@ -81,7 +86,7 @@ const app = acp.agent({ name: 'stand-in' })
     const session = { id: `stand-in-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`, history: [], mcp: params.mcpServers.map(server => server.name), cancelled: false }
     sessions.set(session.id, session)
     save(session)
-    return { sessionId: session.id, modes: { currentModeId: 'default', availableModes: [{ id: 'default', name: 'Default' }] } }
+    return { ...modelState(session), sessionId: session.id, modes: { currentModeId: 'default', availableModes: [{ id: 'default', name: 'Default' }] } }
   })
   .onRequest('session/load', async ({ params, client }) => {
     if (!caps.has('load')) throw acp.RequestError.methodNotFound('session/load')
@@ -93,7 +98,7 @@ const app = acp.agent({ name: 'stand-in' })
     }
     session.mcp = params.mcpServers.map(server => server.name)
     sessions.set(session.id, session)
-    return {}
+    return modelState(session)
   })
   .onRequest('session/resume', ({ params }) => {
     if (!caps.has('resume')) throw acp.RequestError.methodNotFound('session/resume')
@@ -101,7 +106,18 @@ const app = acp.agent({ name: 'stand-in' })
     if (!session) throw acp.RequestError.resourceNotFound(params.sessionId)
     session.mcp = (params.mcpServers ?? []).map(server => server.name)
     sessions.set(session.id, session)
-    return {}
+    return modelState(session)
+  })
+  .onRequest('session/set_config_option', ({ params }) => {
+    const session = sessions.get(params.sessionId)
+    if (!caps.has('models') || params.configId !== 'engine' || !['alpha', 'beta'].includes(params.value)) throw acp.RequestError.invalidParams()
+    session.model = params.value; save(session)
+    return modelState(session)
+  })
+  .onRequest('session/set_model', value => value, ({ params }) => {
+    const session = sessions.get(params.sessionId)
+    if (!caps.has('legacy-models') || !['alpha', 'beta'].includes(params.modelId)) throw acp.RequestError.invalidParams()
+    session.model = params.modelId; save(session); return {}
   })
   .onNotification('session/cancel', ({ params }) => {
     const session = sessions.get(params.sessionId)
@@ -129,6 +145,11 @@ const app = acp.agent({ name: 'stand-in' })
       await send({ sessionUpdate: 'tool_call_update', toolCallId: 'call-1', status: 'in_progress' })
       await send({ sessionUpdate: 'tool_call_update', toolCallId: 'call-1', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'hi' } }] })
     }
+    if (last.includes('switch-model') && caps.has('models')) {
+      session.model = 'beta'; save(session)
+      await send({ sessionUpdate: 'config_option_update', ...modelState(session) })
+    }
+    if (/\bmodel\b/.test(last)) await say(`model: ${session.model ?? 'alpha'}`)
     if (/\benv\b/.test(last)) await say(`env: ${process.env.STAND_IN_GREETING ?? 'unset'}`)
     if (/\bplan\b/.test(last)) {
       await send({ sessionUpdate: 'plan', entries: [{ content: 'Look around', priority: 'high', status: 'completed' }, { content: 'Do the thing', priority: 'medium', status: 'pending' }] })

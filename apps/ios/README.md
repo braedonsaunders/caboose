@@ -150,13 +150,14 @@ its texture into a `CAMetalLayer` only when a picture changed it.
 ## How input works
 
 Native Wayland windows take real multi-touch: every finger is a touch slot and each UIKit
-event is one touch frame, so pinch, swipe and long-press are the app's own. A two-finger tap
-cancels that native touch sequence and sends a right-click, with a brief ring and haptic.
+event is one touch frame, so pinch and swipe are the app's own. A two-finger tap or a
+stationary half-second hold cancels that native touch sequence and sends a right-click, with a brief ring and haptic.
 Apple Pencil is a
 tablet with pressure, tilt and azimuth on every coalesced sample, and hover on iPads that
 have it. X11 windows (through Xwayland) take pointer gestures, since X11 apps turn a touch
 drag into a selection: swipe scrolls with momentum, tap clicks, double-tap double-clicks, a
-two-finger tap or a long press right-clicks, and long press then move drags. A trackpad or
+two-finger tap or a stationary half-second hold right-clicks immediately, and tap then
+hold and move drags. Individual pointer taps retain their timing for double-clicks. A trackpad or
 mouse hovers, clicks and right-clicks precisely.
 
 With the desktop on a TV the phone is a trackpad: one finger moves the cursor, tap clicks,
@@ -347,9 +348,52 @@ memory feature is implied by the composer; conversation continuity belongs to th
 
 ### Shared keyboard controls
 
-App cards, Desktop, the display trackpad and Terminal use CabooseKit's `KeyBar`.
+App cards, Desktop, the display trackpad, Terminal, Agents and app-owned native
+form fields use CabooseKit's `KeyBar`. `Caboose/NativeTextInput.swift` bridges UIKit
+text editing into SwiftUI, retaining marked text, selection, paste, secure entry and
+Dynamic Type. Its multiline fields grow to their line cap, then scroll. Native Ctrl/Alt apply to the next key, including word navigation. Ctrl+A/C/X/V/Z/Y
+use native Select All, Copy, Cut, Paste, Undo and Redo; secure fields block Copy/Cut.
+Unsupported chords announce their unavailability without inserting text or control bytes. Composer Send
+and Hide clear focus; rendering and send completion do not reopen the keyboard. A tap,
+suggestion or Ask shortcut explicitly requests it again. The agent sign-in sheet uses
+translucent material over the presenting screen.
 Hide Keyboard stays above the key row at its right edge on iPhone, Duo and iPad;
 scrolling the keys never hides it. Remote inputs share `RemoteTextInputView` for
 composition, autocorrect and sticky modifiers. Terminal adapts the same accessory
 to SwiftTerm's cursor modes and byte protocol. Verify folded/unfolded/rotated layouts,
 Hide and reopening, Ctrl/Alt, held arrows, Return and IME with `scripts/check-desktop.sh`.
+
+Check native text entry with `scripts/check-agents.sh`; this includes keyboard focus,
+IME and selection, native form traits and the sign-in sheet material.
+
+The Agents toolbar's Model sheet reads available models from the computer's ACP agent.
+New chats pass the selected provider model with task creation; idle chats can choose the
+model for their next message. The sheet shows the current model separately until the
+agent confirms the requested selection. Model discovery may require agent sign-in.
+
+Each desktop tile has a visible Close Window button. Hold a dock icon for Open, Pin/Unpin
+and Close actions. Chat turns stay mounted while sending and changing keyboard height;
+stale transcript reads retain completed answers already shown.
+
+
+## Checking chat artifacts on a device
+
+Pure parser/path/sandbox policy checks run with `swift test --filter 'ChatArtifactTests|ChatMarkdownTests'`
+in `CabooseKit`. In an agent chat, generate a PDF and PNG beneath `/home/caboose/Agents/<task>/artifacts`
+and return Markdown links plus standalone image Markdown. Tap the PDF and image: both show
+Quick Look and Share; save a copy to Files. A missing file shows an error; a file above 25 MiB
+fails without finishing its download. Guest `file://` links use the computer's file service.
+Traversal and files outside the computer home never open on the phone.
+
+Return a complete fenced `inline-html` block with an inline SVG chart, a button that changes
+it, a growing/shrinking section and a CSS animation. Check touch, VoiceOver labels, rotation,
+Expand/Collapse, source and HTML export. Append prose after the fence while streaming: the
+widget retains its interactive state. An incomplete fence stays code. External script/image,
+fetch, WebSocket, navigation, popup and `file://` attempts must fail; self-contained data images
+and inline scripts/styles work. A widget button calling `window.Caboose.compose("Explain this chart")`
+shows a native proposed-message sheet; Cancel changes nothing, and Use in Composer fills the
+draft without sending. Calls without user activation or above 32,000 characters do nothing.
+The bridge requires a recent touch; keyboard-only activation is not supported.
+
+Quick Look, WebKit isolation, actual file download/share, touch and VoiceOver require the app
+on a device; unit tests cover the pure policy and fence parsing.

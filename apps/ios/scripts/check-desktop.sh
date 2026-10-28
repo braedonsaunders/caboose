@@ -106,6 +106,16 @@ Shared keyboard accessory:
     In remote apps verify Aa, QuickPath and marked-text composition; in Terminal
     verify application-cursor arrows and explicit ANSI backgrounds still work.
 
+Desktop touch and close controls:
+13. Open Files on a tiled Duo and an iPad Free desktop. Two quick taps on a folder
+    open it once. A single tap selects once. Hold an item: its context menu appears
+    before lifting, at that item, and lifting does not choose a menu action. Small
+    finger jitter must not drag; moving away before the hold cancels context.
+    Tap then hold and move performs a primary drag. Native app pinch still works.
+14. Hold a dock app icon: Open, Pin/Unpin and its Close Window actions appear. Open
+    focuses its existing desktop window. GridCraft and other tiles have a visible
+    top-right Close Window button; closing still permits the app's unsaved-work dialog.
+
 Capture evidence with:
   xcrun devicectl device info displays --device DEVICE
   xcrun devicectl device capture screenshot --device DEVICE --destination shot.png

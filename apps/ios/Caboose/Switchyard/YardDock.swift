@@ -25,7 +25,7 @@ struct YardDock: View {
         let apps = Array(model.dockApps.prefix(max(2, Int((width - 32 - fixed) / (icon + 10)))))
         HStack(spacing: 10) {
             ForEach(apps) { app in
-                Button { model.open(app) } label: {
+                Button { model.openOnDesktop(app) } label: {
                     VStack(spacing: 3) {
                         Group {
                             if let image = model.appIcons[app.id] {
@@ -43,6 +43,7 @@ struct YardDock: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(app.name)
+                .contextMenu { DockAppActions(app: app) }
             }
             if !columns.isEmpty {
                 Divider().frame(height: 34).overlay(.white.opacity(0.3))
@@ -142,5 +143,20 @@ private struct Car: View {
         .buttonStyle(.plain)
         .accessibilityLabel(column.windows.compactMap { model.session?.windows[$0]?.title }.joined(separator: ", "))
         .accessibilityAddTraits(focused ? .isSelected : [])
+    }
+}
+
+/// The same actions for a held dock icon in tiled and free desktops.
+struct DockAppActions: View {
+    @Environment(AppModel.self) private var model
+    let app: HostClient.App
+    var body: some View {
+        Button("Open", systemImage: "arrow.up.forward.app") { model.openOnDesktop(app) }
+        Button(model.pinnedApps.contains(where: { $0.id == app.id }) ? "Unpin" : "Pin", systemImage: "pin") { model.togglePin(app) }
+        ForEach(model.appWindows.filter { model.matches($0, app) }) { window in
+            Button("Close \(window.title.isEmpty ? app.name : window.title)", systemImage: "xmark", role: .destructive) {
+                model.session?.close(window)
+            }
+        }
     }
 }

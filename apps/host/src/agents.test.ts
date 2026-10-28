@@ -135,6 +135,16 @@ function fakeGuest() {
       if (script.includes('ls -1t')) return listing || [...tasks.entries()].flatMap(([id, state]) => state.metadata ? [[id, state.metadata[2], '1790000500', state.exitCode, state.alive ? '1' : '0', state.transcript.length,
         b64(state.metadata[1]!), b64(state.transcript.toString().trim().split('\n').reverse().find(line => /"type":"(turn_end|turn_failed|auth_required)"/.test(line)) ?? ''), state.metadata[4],
         Math.max(1, ...state.inbox.filter(x => x !== 'cancel').map(x => JSON.parse(x).turn)), '1', '', b64(state.metadata[3]!), state.files.get(`/home/caboose/Agents/${id}/profile-id`) ?? ''].join('\t')] : []).join('\n')
+      if (rest[1]?.startsWith("const fs=require('fs'),p=require('path')")) {
+        const state = task(idOf(rest[0]!))
+        const model = state.files.get('requested-model.json')
+        return JSON.stringify({ ...JSON.parse(state.files.get('models.json') ?? '{}'), ...(model ? { requestedModel: JSON.parse(model) } : {}) })
+      }
+      if (rest[1]?.startsWith('// retire-model-runner')) { task(idOf(rest[0]!)).alive = false; return '' }
+      if (script.includes('requested-model.json.part')) {
+        task(idOf(rest[0]!)).files.set('requested-model.json', rest[1]!)
+        return ''
+      }
       if (rest[1]?.startsWith('// caboose confirm journal')) return 'confirmed'
       if (rest[1]?.startsWith('// caboose delivery journal write')) {
         task(idOf(rest[0]!)).files.set('delivery.json', Buffer.from(rest.slice(2).join(''), 'base64').toString('utf8'))
@@ -241,6 +251,51 @@ function setup(options: { defaultAgent?: string | null; craftServers?: () => Pro
 }
 
 describe('AgentTasks', () => {
+  it('persists requested models and fences stable task retries by model', async () => {
+    const { fake, tasks } = setup()
+    const id = '11111111-1111-4111-8111-111111111111'
+    const task = await tasks.start({ prompt: 'hello', model: 'provider/model-b' }, { id })
+    expect(task.requestedModel).toBe('provider/model-b')
+    expect(JSON.parse(fake.task(id).files.get('task.json')!).model).toBe('provider/model-b')
+    await expect(tasks.start({ prompt: 'hello', model: 'provider/model-a' }, { id })).rejects.toThrow('different original payload')
+    await expect(tasks.start({ prompt: 'hello', model: 'bad\nmodel' })).rejects.toThrow('model must')
+    fake.append(id, user(1))
+    fake.append(id, { type: 'models', requestedModel: 'provider/model-b', models: { currentModelId: 'provider/model-b', availableModels: [{ id: 'provider/model-b', name: 'Model B' }] } })
+    await tasks.poll()
+    expect(tasks.list()[0]?.models?.currentModelId).toBe('provider/model-b')
+  })
+
+  it('discovers choices for an old idle chat and retires its old runner before setting a model', async () => {
+    const { fake, tasks, agents } = setup()
+    const task = await tasks.start({ prompt: 'hello' })
+    fake.append(task.id, user(1)); fake.append(task.id, end(1, 'done')); await tasks.poll()
+    const models = { currentModelId: 'alpha', availableModels: [{ id: 'alpha', name: 'Alpha' }, { id: 'beta', name: 'Beta' }] }
+    agents.models = async () => ({ models })
+    expect(await tasks.models(task.id)).toEqual({ models, currentModelKnown: false })
+    expect(fake.task(task.id).alive).toBe(true)
+    expect(await tasks.models(task.id, { model: 'beta' })).toEqual({ requestedModel: 'beta', models, currentModelKnown: false })
+    expect(fake.task(task.id).alive).toBe(false)
+    expect(JSON.parse(fake.task(task.id).files.get('requested-model.json')!)).toBe('beta')
+  })
+
+  it('keeps requested model separate from confirmed current model and fences active changes', async () => {
+    const { fake, tasks } = setup()
+    const task = await tasks.start({ prompt: 'hello' })
+    const models = { currentModelId: 'alpha', availableModels: [{ id: 'alpha', name: 'Alpha' }, { id: 'beta', name: 'Beta' }] }
+    fake.task(task.id).files.set('models.json', JSON.stringify({ models }))
+    await expect(tasks.models(task.id, { model: 'beta' })).rejects.toThrow('Wait for')
+    fake.append(task.id, user(1)); fake.append(task.id, end(1, 'done')); await tasks.poll()
+    await expect(tasks.models(task.id, { model: 'invented' })).rejects.toThrow('advertised')
+    expect(await tasks.models(task.id, { model: 'beta' })).toEqual({ requestedModel: 'beta', models })
+    expect(await tasks.models(task.id)).toEqual({ requestedModel: 'beta', models })
+    expect(JSON.parse(fake.task(task.id).files.get('requested-model.json')!)).toBe('beta')
+    const restored = new AgentTasks(() => fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000 })
+    await restored.restore()
+    expect(restored.list().find(item => item.id === task.id)?.requestedModel).toBe('beta')
+    expect(restored.list().find(item => item.id === task.id)?.models).toEqual(models)
+    restored.pause()
+  })
+
   it('records catalog servers and honors the per-task opt-out', async () => {
     const server = { name: 'caboose-photo', command: 'photocraft-cli', args: ['mcp'], env: [] }
     const lookup = vi.fn(async () => [server])

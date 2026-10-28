@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
-import { chooseOption, describeToolCall, Draft, isStaleLock, latestPage, launchCommand, loopbackURL, Normaliser, publicAuthMethods, readSpec, recapFrom } from '../caboose-agentd.mjs'
+import { PRESENTATION_GUIDANCE, chooseOption, describeToolCall, Draft, isStaleLock, latestPage, launchCommand, loopbackURL, Normaliser, publicAuthMethods, readSpec, recapFrom } from '../caboose-agentd.mjs'
 
 const RUNNER = new URL('../caboose-agentd.mjs', import.meta.url).pathname
 const STAND_IN = new URL('./stand-in-agent.mjs', import.meta.url).pathname
@@ -46,7 +46,7 @@ async function task(options = {}) {
   const box = await sandbox(options)
   const dir = join(box.home, 'Agents', 'task-1')
   await mkdir(join(dir, 'inbox'), { recursive: true })
-  await writeFile(join(dir, 'task.json'), JSON.stringify({ agent: options.agent ?? AGENT, cwd: dir, approvals: options.approvals ?? 'auto', idleMs: options.idleMs ?? 20_000, craftServers: options.craftServers }))
+  await writeFile(join(dir, 'task.json'), JSON.stringify({ agent: options.agent ?? AGENT, cwd: dir, approvals: options.approvals ?? 'auto', idleMs: options.idleMs ?? 20_000, model: options.model, craftServers: options.craftServers }))
   let runner
   const t = {
     ...box, dir,
@@ -105,6 +105,48 @@ async function pendingApproval(dir) {
   throw new Error('no approval request')
 }
 
+describe('advertised models', () => {
+  for (const caps of ['models,resume', 'models,load', 'legacy-models,resume']) it(`negotiates ${caps} before prompting and restores selection`, async () => {
+    const t = await task({ caps, model: 'beta' })
+    await t.prompt(1, 'model'); const first = t.start(); await t.turnEnd(1)
+    expect(await t.texts(1)).toContain('model: beta')
+    const state = JSON.parse(await readFile(join(t.dir, 'models.json'), 'utf8'))
+    expect(state.requestedModel).toBe('beta'); expect(state.models.currentModelId).toBe('beta')
+    first.child.kill('SIGTERM'); await first.exited
+    await writeFile(join(t.dir, 'requested-model.json'), JSON.stringify('alpha'))
+    await t.prompt(2, 'model'); t.start(); await t.turnEnd(2)
+    expect(await t.texts(2)).toContain('model: alpha')
+  })
+  it('records provider-driven model changes before finishing the turn', async () => {
+    const t = await task({ caps: 'models', model: 'alpha' })
+    await t.prompt(1, 'switch-model'); t.start(); await t.turnEnd(1)
+    const state = JSON.parse(await readFile(join(t.dir, 'models.json'), 'utf8'))
+    expect(state.requestedModel).toBe('alpha')
+    expect(state.models.currentModelId).toBe('beta')
+    const events = await t.events()
+    expect(events.filter(e => e.type === 'models').at(-1).models.currentModelId).toBe('beta')
+  })
+  it('discovers advertised models without prompting or adding MCP servers', async () => {
+    const t = await sandbox({ caps: 'models' })
+    const result = await promisify(execFile)(process.execPath, [RUNNER, 'models', Buffer.from(JSON.stringify(AGENT)).toString('base64')], { env: t.env, timeout: 10_000 })
+    expect(JSON.parse(result.stdout).models.availableModels.map(m => m.id)).toEqual(['alpha', 'beta'])
+    const files = (await readdir(t.state)).filter(name => name.startsWith('session-'))
+    expect(files).toHaveLength(1)
+    const session = JSON.parse(await readFile(join(t.state, files[0]), 'utf8'))
+    expect(session.history).toEqual([]); expect(session.mcp).toEqual([])
+  })
+  it('fails an unadvertised selection before the agent receives a prompt', async () => {
+    const t = await task({ caps: 'models', model: 'invented' })
+    await t.prompt(1, 'hello'); t.start()
+    expect((await t.turnEnd(1)).message).toContain('not advertised')
+    expect((await t.events()).some(e => e.type === 'text')).toBe(false)
+  })
+  it('omits the capability for a provider without model advertisement', async () => {
+    const t = await task(); await t.prompt(1, 'hello'); t.start(); await t.turnEnd(1)
+    expect(JSON.parse(await readFile(join(t.dir, 'models.json'), 'utf8'))).toEqual({})
+  })
+})
+
 describe('a turn', () => {
   it('offers profile tools only when the host enables them on a profile task', async () => {
     const t = await task()
@@ -127,7 +169,7 @@ describe('a turn', () => {
     await t.prompt(1, 'hello')
     t.start()
     await t.turnEnd(1)
-    expect(await t.texts(1)).toContain('turns in session: 1; mcp: caboose-desktop,caboose-photocraft; blocks: text; recap: no; display: :101')
+    expect(await t.texts(1)).toContain('turns in session: 1; mcp: caboose-desktop,caboose-photocraft; blocks: text,text; recap: no; display: :101')
   })
 
   it('streams an agent-neutral transcript', async () => {
@@ -140,7 +182,7 @@ describe('a turn', () => {
     expect(events.map(event => event.type)).toEqual(['user', 'session', 'thought', 'text', 'text', 'tool', 'tool_update', 'tool_update', 'plan', 'text', 'usage', 'turn_end'])
     // Chunks of one message are one line; the agent got the desktop tools on the agent seat.
     expect(events[3].text).toBe('heard: hello tool plan')
-    expect(events[4].text).toBe('turns in session: 1; mcp: caboose-desktop; blocks: text; recap: no; display: :101')
+    expect(events[4].text).toBe('turns in session: 1; mcp: caboose-desktop; blocks: text,text; recap: no; display: :101')
     expect(events[1]).toMatchObject({ continuity: 'new', agent: { name: 'stand-in' }, modes: { currentModeId: 'default' } })
     expect(events[5]).toMatchObject({ id: 'call-1', title: 'Run echo hi', kind: 'execute', status: 'pending', detail: 'echo hi' })
     expect(events.at(-2)).toMatchObject({ type: 'usage', used: 100, size: 1000 })
@@ -231,7 +273,7 @@ describe('a turn', () => {
     await t.turnEnd(1)
     await t.prompt(2, 'second')
     await t.turnEnd(2)
-    expect(await t.texts(2)).toContain('turns in session: 2; mcp: caboose-desktop; blocks: text; recap: no; display: :101')
+    expect(await t.texts(2)).toContain('turns in session: 2; mcp: caboose-desktop; blocks: text,text; recap: no; display: :101')
     expect((await t.events()).filter(event => event.type === 'session')).toHaveLength(1)
   })
 
@@ -319,7 +361,7 @@ describe('a turn', () => {
       await t.prompt(1, 'look', { attachments: [{ path: photo, name: 'photo.png', mimeType: 'image/png' }, { path: notes, name: 'notes.txt' }] })
       t.start()
       await t.turnEnd(1)
-      const blocks = caps ? 'text,image:image/png,link:notes.txt' : 'text,link:photo.png,link:notes.txt'
+      const blocks = caps ? 'text,text,image:image/png,link:notes.txt' : 'text,text,link:photo.png,link:notes.txt'
       expect((await t.texts(1)).some(text => text.includes(`blocks: ${blocks};`))).toBe(true)
     }
   })
@@ -342,21 +384,21 @@ describe('a later runner', () => {
     const t = await secondRunner('load')
     const events = await t.events()
     expect(events.filter(event => event.type === 'session').map(event => event.continuity)).toEqual(['new', 'load'])
-    expect(await t.texts(2)).toContain('turns in session: 2; mcp: caboose-desktop; blocks: text; recap: no; display: :101')
+    expect(await t.texts(2)).toContain('turns in session: 2; mcp: caboose-desktop; blocks: text,text; recap: no; display: :101')
     expect(events.filter(event => event.type === 'text' && event.text === 'heard: first')).toHaveLength(1)
   })
 
   it('resumes the session when the agent can', async () => {
     const t = await secondRunner('resume,load')
     expect((await t.events()).filter(event => event.type === 'session').map(event => event.continuity)).toEqual(['new', 'resume'])
-    expect(await t.texts(2)).toContain('turns in session: 2; mcp: caboose-desktop; blocks: text; recap: no; display: :101')
+    expect(await t.texts(2)).toContain('turns in session: 2; mcp: caboose-desktop; blocks: text,text; recap: no; display: :101')
   })
 
   it('starts a new session with a recap, and says so, when the agent cannot reload', async () => {
     const t = await secondRunner('')
     const events = await t.events()
     expect(events.filter(event => event.type === 'session').map(event => event.continuity)).toEqual(['new', 'recap'])
-    expect(await t.texts(2)).toContain('turns in session: 1; mcp: caboose-desktop; blocks: text; recap: yes; display: :101')
+    expect(await t.texts(2)).toContain('turns in session: 1; mcp: caboose-desktop; blocks: text,text; recap: yes; display: :101')
     expect(events.at(-1).summary).toMatch(/^Stand-in cannot reload conversations, so this turn started a new session with a recap/)
   })
 })
@@ -872,6 +914,6 @@ it('supplies persistent profile instructions on every turn without rewriting the
   await t.turnEnd(2)
   const sessionName = (await readdir(t.state)).find(name => name.startsWith('session-'))
   const session = JSON.parse(await readFile(join(t.state, sessionName), 'utf8'))
-  expect(session.history.map(turn => turn.user)).toEqual(['You are the weekly research teammate.\nFirst report', 'You are the weekly research teammate.\nSecond report'])
+  expect(session.history.map(turn => turn.user)).toEqual([PRESENTATION_GUIDANCE + '\nYou are the weekly research teammate.\nFirst report', PRESENTATION_GUIDANCE + '\nYou are the weekly research teammate.\nSecond report'])
   expect((await t.events()).filter(e => e.type === 'user').map(e => e.text)).toEqual(['First report', 'Second report'])
 })

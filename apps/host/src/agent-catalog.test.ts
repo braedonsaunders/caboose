@@ -59,6 +59,7 @@ function fakeGuest(options: { missing?: boolean; failInstall?: string } = {}) {
       }
       const argument = args[at + 2] ? decode(args[at + 2]!) as AgentLaunch : undefined
       calls.push({ mode, argument })
+      if (mode === 'models') return JSON.stringify({ models: { currentModelId: 'advertised', availableModels: [{ id: 'advertised', name: 'From ACP' }] } })
       if (mode === 'state') return JSON.stringify({ runner: '0.1.0', agents })
       if (mode === 'install') {
         if (options.failInstall) throw new Error(`Guest command failed: ${options.failInstall}`)
@@ -85,6 +86,13 @@ function settingsStore() {
 }
 
 describe('AgentCatalog', () => {
+  it('discovers models through the runner using the resolved launch spec', async () => {
+    const fake = fakeGuest()
+    const catalog = new AgentCatalog(registry(), () => fake.guest, settingsStore())
+    expect(await catalog.models('codex-acp')).toEqual({ models: { currentModelId: 'advertised', availableModels: [{ id: 'advertised', name: 'From ACP' }] } })
+    expect(fake.calls.find(call => call.mode === 'models')?.argument).toMatchObject({ id: 'codex-acp' })
+  })
+
   it('lists the registry while parked, without touching the computer', async () => {
     const settings = settingsStore()
     const catalog = new AgentCatalog(registry(), () => undefined, settings)

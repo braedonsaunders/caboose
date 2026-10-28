@@ -166,6 +166,11 @@ struct Dock: View {
                         .frame(width: 4 * ui, height: 4 * ui)
                 }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.dockFrames[app.id] = $0 }
+                .popover(isPresented: Binding(get: { desktop.contextDockID == app.id }, set: { if !$0 { desktop.contextDockID = nil } })) {
+                    VStack(alignment: .leading, spacing: 16) { DockAppActions(app: app) }
+                        .padding(20)
+                        .presentationCompactAdaptation(.popover)
+                }
             }
             Divider().frame(height: 44 * ui).overlay(.white.opacity(0.25))
             let hot = desktop.hovered == .launchpadButton

@@ -14,9 +14,10 @@ struct AgentAttachment: Sendable {
 extension HostClient {
     /// `agent` is a registry id; nil runs the owner's default agent.
     func startAgentTask(prompt: String, agent: String?, approvals: String = "auto",
-                        attachments: [AgentAttachment] = [], craftMcp: Bool = true) async throws -> String {
+                        attachments: [AgentAttachment] = [], craftMcp: Bool = true, model: String? = nil) async throws -> String {
         struct Started: Decodable { var id: String }
         var body: [String: JSONValue] = ["prompt": .string(prompt), "approvals": .string(approvals), "craftMcp": .bool(craftMcp)]
+        if let model { body["model"] = .string(model) }
         if let agent, !agent.isEmpty { body["agent"] = .string(agent) }
         if !attachments.isEmpty {
             body["attachments"] = .array(attachments.map(\.json))

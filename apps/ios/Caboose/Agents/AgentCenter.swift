@@ -10,6 +10,8 @@ final class AgentCenter {
         var id: String
         /// The agent's registry id.
         var agent: String
+        var requestedModel: String?
+        var models: AgentModelState.Models?
         var agentName: String?
         var profileId: String?
         var prompt: String
@@ -97,6 +99,7 @@ final class AgentCenter {
 
     private var attached = false
     private var control: URLSessionWebSocketTask?
+    var selectedModels: [String: String] = [:]
     private var host: HostClient?
 
     /// The agent seat: a second display where agents run GUI apps without touching yours.
@@ -125,6 +128,7 @@ final class AgentCenter {
         tookOver = false
         pausedForTakeover = []
         detach()
+        selectedModels = [:]
         host = nil
         seatToken = nil
         tasks = []
@@ -160,6 +164,26 @@ final class AgentCenter {
     /// Tasks waiting on the owner, oldest first.
     var awaitingApproval: [Task] { tasks.filter { $0.pendingApproval != nil }.reversed() }
 
+    func modelState(agent: String, taskID: String?) async throws -> AgentModelState {
+        guard let host else { throw HostClient.Failure.unreachable("Connect to your computer first.") }
+        if let taskID { return try await host.taskModels(taskID) }
+        return try await host.agentModels(agent)
+    }
+
+    func selectModel(_ id: String, agent: String, taskID: String?) async throws -> AgentModelState? {
+        if let taskID {
+            guard let host else { throw HostClient.Failure.unreachable("Connect to your computer first.") }
+            let state = try await host.selectTaskModel(taskID, model: id)
+            if let index = tasks.firstIndex(where: { $0.id == taskID }) {
+                tasks[index].requestedModel = state.requestedModel
+                tasks[index].models = state.models
+            }
+            return state
+        }
+        selectedModels[agent] = id
+        return nil
+    }
+
     /// Starts a task with agent `agent` (a registry id), or the owner's default agent when nil.
     @discardableResult
     func ask(_ prompt: String, agent: String?, askFirst: Bool = false, attachments: [Attachment] = []) async -> Bool {
@@ -175,7 +199,7 @@ final class AgentCenter {
             if let profileId {
                 id = try await host.startProfileTask(profileId, prompt: prompt, attachments: attachments)
             } else {
-                id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments, craftMcp: UserDefaults.standard.object(forKey: "caboose.agent.craftMcp") as? Bool ?? true)
+                id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments, craftMcp: UserDefaults.standard.object(forKey: "caboose.agent.craftMcp") as? Bool ?? true, model: (agent ?? defaultAgent).flatMap { selectedModels[$0] })
             }
             if !tasks.contains(where: { $0.id == id }) {
                 let profile = library.profiles.first { $0.id == profileId }
@@ -248,6 +272,7 @@ final class AgentCenter {
             var thread = AgentThread(entries: read.entries, prompt: task.prompt, truncated: read.truncated)
             let recent = read.entries.suffix(64)
             for entry in pendingEntries[id] ?? [] where !recent.contains(entry) { thread.append(entry) }
+            if let previous = threads[id] { thread.retainCompletedTurns(from: previous) }
             threads[id] = thread
         } catch {
             // A parked computer or an older host: the live entries and the task's summary stand in.
@@ -376,6 +401,7 @@ final class AgentCenter {
         do {
             let updated = try await host.replyToAgentTask(task.id, prompt: prompt, attachments: attachments)
             let started = (updated.turns ?? 1) > (tasks.first { $0.id == task.id }?.turns ?? task.turns ?? 1)
+            preserveAnswer(of: task)
             replace(updated)
             if started {
                 output[task.id, default: []].append(Line(kind: "prompt", text: prompt))
@@ -387,6 +413,14 @@ final class AgentCenter {
             lastError = error.localizedDescription
             return false
         }
+    }
+
+    /// A summary may be the only answer available before the first transcript read.
+    /// Keep it in its turn before the next reply clears the host's summary field.
+    private func preserveAnswer(of task: Task) {
+        guard let summary = task.summary, !summary.isEmpty else { return }
+        if threads[task.id] == nil { threads[task.id] = AgentThread(entries: [], prompt: task.prompt) }
+        threads[task.id]?.retainAnswer(summary, turn: task.turns ?? 1)
     }
 
     /// Answers the task's waiting request: allow or deny, or one of the agent's own options.
@@ -576,6 +610,7 @@ final class AgentCenter {
             }
         case "agent.task.replied":
             if let index = tasks.firstIndex(where: { $0.id == id }) {
+                preserveAnswer(of: tasks[index])
                 tasks[index].status = "running"
                 tasks[index].summary = nil
                 tasks[index].draft = nil

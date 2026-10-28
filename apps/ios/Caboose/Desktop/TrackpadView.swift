@@ -145,9 +145,6 @@ final class TrackpadSurface: RemoteTextInputView {
                 haptics.impactOccurred()
             case .doubleClick:
                 resetTyping()
-                // The second press and release reach the app; the desktop then handles its own double-click (title bar zoom).
-                desktop?.beginDrag(session: session)
-                desktop?.endDrag(session: session)
                 desktop?.doubleClick(session: session, open: open)
             }
         }
