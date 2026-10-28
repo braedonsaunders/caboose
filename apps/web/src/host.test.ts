@@ -4,7 +4,7 @@ import { displayLabel, gpuLabel, healthFacts, runtimeLabel, upgradeLabel } from 
 describe('host', () => {
   it('names the runtime, display protocol and GPU', () => {
     expect(runtimeLabel('container')).toBe('Container')
-    expect(runtimeLabel('microvm')).toMatch(/microVM/)
+    expect(runtimeLabel('microvm')).toBe('microVM')
     expect(displayLabel('caboose-display')).toBe('Caboose Display')
     expect(displayLabel('xpra-ws')).toBe('Xpra')
     expect(gpuLabel(null)).toMatch(/microVM/)

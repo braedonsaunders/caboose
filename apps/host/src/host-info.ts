@@ -43,7 +43,7 @@ const SHOWN: Array<{ name: string; fallback: string; only?: Config['runtime'] }>
   { name: 'CABOOSE_CONTAINER_NAME', fallback: 'caboose-owner', only: 'container' },
   { name: 'CABOOSE_CONTAINER_HOME', fallback: 'caboose-home', only: 'container' },
   { name: 'CABOOSE_IMAGE_ROOT', fallback: '/var/lib/caboose' },
-  { name: 'CABOOSE_GUEST_LAN', fallback: 'blocked' },
+  { name: 'CABOOSE_GUEST_LAN', fallback: 'deny' },
   { name: 'CABOOSE_BIND', fallback: '127.0.0.1' },
   { name: 'CABOOSE_PORT', fallback: '7310' },
   { name: 'CABOOSE_MEMORY_MB', fallback: '6144' },

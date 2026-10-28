@@ -48,7 +48,7 @@ export interface ComponentsUpgrade {
 }
 
 export function runtimeLabel(runtime: HostInfo['runtime']): string {
-  return runtime === 'container' ? 'Container' : 'microVM (Cloud Hypervisor)'
+  return runtime === 'container' ? 'Container' : 'microVM'
 }
 
 export function displayLabel(display: HostInfo['display']): string {

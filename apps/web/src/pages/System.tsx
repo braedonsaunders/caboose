@@ -66,7 +66,7 @@ export function System({ client, computer, onUnauthorized }: { client: CabooseCl
 
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <DashboardMetricCard label="caboose-host" value={host ? host.version : '—'} detail={host ? `Node ${host.node.replace(/^v/, '')}` : undefined} icon={<Server className="size-4" aria-hidden />} />
-          <DashboardMetricCard label="Runtime" value={host ? runtimeLabel(host.runtime) : '—'} icon={<HardDrive className="size-4" aria-hidden />} />
+          <DashboardMetricCard label="Runtime" value={host ? runtimeLabel(host.runtime) : '—'} detail={host ? (host.runtime === 'container' ? 'Docker, frozen when parked' : 'Cloud Hypervisor, parked with memory') : undefined} icon={<HardDrive className="size-4" aria-hidden />} />
           <DashboardMetricCard label="Display" value={host ? displayLabel(host.display) : '—'} detail={host ? host.display : undefined} icon={<MonitorPlay className="size-4" aria-hidden />} />
           <DashboardMetricCard label="GPU" value={host ? gpuLabel(host.gpu) : '—'} icon={<Cpu className="size-4" aria-hidden />} />
         </div>
