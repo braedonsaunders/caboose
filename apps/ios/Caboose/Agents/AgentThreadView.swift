@@ -59,7 +59,7 @@ struct AgentThreadView: View {
                                        description: Text("Reconnect to your computer to see this conversation."))
             }
         }
-        .background { Backdrop() }
+        .background { ShellBackground() }
         // Again once the task list arrives, for a thread opened from a notification before it did.
         .task(id: "\(taskID):\(agents.tasks.contains { $0.id == taskID })") { await agents.loadThread(taskID) }
         .sheet(isPresented: $connectingModel) { ConnectModelView().environment(model) }

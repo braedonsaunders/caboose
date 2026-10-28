@@ -28,7 +28,7 @@ struct AgentsScreen: View {
                         }
                 }
             }
-            .background { Backdrop() }
+            .background { ShellBackground() }
             .navigationTitle("Agents")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: String.self) { AgentThreadView(taskID: $0) }
