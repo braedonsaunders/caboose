@@ -8,8 +8,9 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-upgrade --no-install-recommends \
   ca-certificates curl xz-utils python3-gi gir1.2-gtk-3.0 adwaita-icon-theme \
+  mesa-vulkan-drivers libgl1-mesa-dri \
   chromium firefox-esr xfce4-terminal thunar mousepad libreoffice \
-  evince eog gimp inkscape vlc audacity keepassxc gnome-calculator file-roller \
+  evince keepassxc file-roller \
   git ripgrep fd-find bat eza fzf zoxide btop lazygit neovim tmux gh git-delta \
   jq curl wget unzip zip bzip2 tree ncdu htop fastfetch ffmpeg imagemagick docker.io docker-cli docker-compose mpv yt-dlp tealdeer \
   fonts-inter fonts-jetbrains-mono fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji

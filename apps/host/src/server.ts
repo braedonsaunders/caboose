@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { AgentCatalog } from './agent-catalog.js'
+import { AppCatalog } from './app-catalog.js'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { openUrl, saveDownload } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
@@ -73,6 +74,7 @@ export function createCabooseServer(options: {
   const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), {
     resolver: catalog, home, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
   })
+  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire())
   const media = new MediaHandoff(() => controller.guest(), broadcast)
   /** Media is polled only while the computer is already running and someone is watching it. */
   function syncMedia(): void { media.setActive(computer.state === 'running' && sockets.size - controls.size > 0) }
@@ -131,6 +133,7 @@ export function createCabooseServer(options: {
         return json(response, 200, managementStatus())
       }
       if (request.method === 'POST' && path === '/v1/computer/restart') {
+        if (appCatalog.busy) throw new ComputerConflictError('An application install is in progress')
         const body = await readJson(request)
         if (body.confirm !== true) throw new SettingsInputError('Restart closes apps and discards unsaved work; confirm must be true')
         await computer.restart(async () => {
@@ -147,9 +150,17 @@ export function createCabooseServer(options: {
         return json(response, 200, { ...session, computer: { ...session.computer, name: settings.get().name } })
       }
       if (request.method === 'POST' && path === '/v1/session/park') {
+        if (appCatalog.busy) throw new ComputerConflictError('An application install is in progress')
         await computer.park(closeSockets)
         return json(response, 200, { state: computer.state })
       }
+      if (request.method === 'GET' && path === '/v1/catalog') return json(response, 200, await appCatalog.list())
+      const packInstall = /^\/v1\/catalog\/packs\/([^/]+)\/install$/.exec(path)
+      if (request.method === 'POST' && packInstall?.[1]) { if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
+      const appAction = /^\/v1\/catalog\/([^/]+)\/(install|update|rollback)$/.exec(path)
+      if (request.method === 'POST' && appAction?.[1]) { if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
+      const removeApp = /^\/v1\/catalog\/([^/]+)$/.exec(path)
+      if (request.method === 'DELETE' && removeApp?.[1]) { if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
       if (request.method === 'GET' && path === '/v1/apps') {
         return json(response, 200, await computer.run(() => controller.apps()))
       }

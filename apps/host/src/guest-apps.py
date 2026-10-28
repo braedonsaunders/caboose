@@ -52,6 +52,17 @@ if sys.argv[1] == 'launch':
         os.environ.setdefault('GALLIUM_DRIVER', 'd3d12')
     if 'PULSE_SERVER' not in os.environ and (pulse := xpra_pulse_server()):
         os.environ['PULSE_SERVER'] = pulse
+    # Craft's winit GUI must use X11, including Caboose Display's Xwayland DISPLAY.
+    # Keep the driver's DISPLAY and XAUTHORITY; only remove Wayland selection hints.
+    craft = {'photocraft', 'lightcraft', 'filmcraft', 'vectorcraft', 'pdfcraft',
+             'effectcraft', 'designcraft', 'wordcraft', 'gridcraft', 'deckcraft',
+             'cadcraft', 'soundcraft', 'figcraft'}
+    if sys.argv[2] in {f'ai.storyteller.{name}.desktop' for name in craft}:
+        os.environ.pop('WAYLAND_DISPLAY', None)
+        os.environ['XDG_SESSION_TYPE'] = 'x11'
+        os.environ['WINIT_UNIX_BACKEND'] = 'x11'
+        os.environ['GDK_BACKEND'] = 'x11'
+        os.environ['QT_QPA_PLATFORM'] = 'xcb'
     entry = entries().get(sys.argv[2])
     if not entry or read(entry) is None:
         raise SystemExit('Application not found')
