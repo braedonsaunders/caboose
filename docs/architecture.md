@@ -360,6 +360,9 @@ display logic: display streams are relayed, not parsed.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CABOOSE_OWNER_TOKEN` | generated | The owner's bearer token; unset, the host generates one into `${CABOOSE_IMAGE_ROOT}/owner-token` (mode 0600) on first start and reuses it |
+| `CABOOSE_DATABASE_URL` | unset | Postgres for accounts and tenants; unset, an embedded PGlite database in `${CABOOSE_IMAGE_ROOT}/identity` |
+| `CABOOSE_PUBLIC_URL` | `http://127.0.0.1:<port>` | The origin people reach the console at, for sign-in; requests from whatever origin a browser used are accepted too |
+| `CABOOSE_AUTH_SECRET` | generated | The session-signing secret (32 characters or more); unset, generated into `${CABOOSE_IMAGE_ROOT}/auth-secret` |
 | `CABOOSE_BIND` | `127.0.0.1` | Listen address |
 | `CABOOSE_PORT` | `7310` | Listen port |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Golden image, overlays, snapshots and host state |
@@ -383,8 +386,10 @@ display logic: display streams are relayed, not parsed.
 
 Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mode 0600:
 
-- `owner-token` when generated, `computers.json` (the computers other than the owner's,
-  with their slots),
+- `owner-token` and `auth-secret` when generated, `setup-code` until the host is set up,
+  `identity/` (the embedded accounts database and its Unix socket, mode 0700),
+  `computers.json` (the computers other than the owner's, with their slots, tenants and
+  people),
   `phones.json` (phone sign-ins, by SHA-256 of their tokens) and `agent-registry.json`.
 - The owner's computer's `caboose.json` (settings), `push-devices.json` and
   `activities.json` at the root, where a host from before several computers kept them.
@@ -417,7 +422,16 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 | `POST` | `/v1/pair` | **No token.** `{ code, deviceName }` → 201 `{ token, computer: { id, name } }`. Trades a pairing code for the phone's own token. `deviceName` is 1–60 characters without control characters. 404 for an unknown, used or expired code; 429 for 60 s after 20 wrong codes |
 
 The routes without a computer in the path serve the caller's own computer: the owner's
-computer for the owner token, and the phone's computer for a phone token.
+computer for the owner token and the operator, and the phone's computer for a phone token.
+They answer another administrator 403.
+
+On a host with accounts, `GET /v1/computers` lists only the computers the caller manages,
+and each carries `tenantId` and `person`. `POST /v1/computers` also takes `tenantId`
+(required: a tenant the caller administers) and `person`, and `PATCH /v1/computers/:id`
+changes `person`, or (for the operator) moves the computer to another `tenantId`. Quotas
+are checked whenever a computer is made, resized (`PATCH …/computer/settings`), moved or
+woken (see Accounts and tenants); a computer over quota answers 409 with what it would be
+given and the quota.
 
 **Pairing.** The console asks for a code and shows it as a QR code and as
 `caboose://connect?host=<origin>&code=<code>`. A code is 8 characters from
@@ -451,18 +465,75 @@ The computer has one state: `parked`, `waking`, `running`, `parking`, `restartin
 
 While running, the microVM's appkit-desk lease is renewed every 20 s.
 
+### Accounts and tenants
+
+Accounts belong to **administrators**, who use the web console. The people whose computers
+they run need none: each computer names its `person`, who uses it from a phone paired with
+it. A **tenant** is a household or a team: its computers, its administrators, and quotas on
+what its computers are given between them. The first account is the host's **operator**,
+who sees every tenant, makes tenants and sets quotas; the owner token has the same reach.
+
+Accounts, sessions, tenants and memberships are AppKit's identity schema
+(`@braedonsaunders/appkit-db`, with its migrations), signed in through
+`@braedonsaunders/appkit-auth` (Better Auth, email and password); invitations are
+Caboose's own table. They live in Postgres when `CABOOSE_DATABASE_URL` is set, and
+otherwise in an embedded PGlite database in `identity/`, served to the host over a Unix
+socket only its user can open. Quotas are `tenants.settings.quotas`.
+
+**Setting the host up.** Until the first account exists the host is unclaimed. It writes a
+one-time code to `${CABOOSE_IMAGE_ROOT}/setup-code` (mode 0600) and logs
+`Set up Caboose: http://<address>:<port>/setup?code=<code>`. The `/setup` page is served
+only with that code or to the host itself (a loopback request with no `X-Forwarded-For` or
+`Forwarded` header); once claimed it redirects to `/`. Claiming makes the operator's
+account and the first tenant, gives that tenant every computer the host already runs,
+deletes the code file and signs the browser in.
+
+**Invitations** are links an administrator copies: `/invite?token=<token>`, single-use,
+valid for seven days, kept as a SHA-256. A new administrator chooses a name and password;
+someone with an account confirms it with their password. A tenant keeps at least one
+administrator.
+
+**Quotas** are `memoryMb`, `vcpus` and `diskGb`, each null for no limit. Memory and vCPUs
+count what the tenant's computers are set to be given; disk counts what their microVM disks
+and parked memory use on the host (a container's disk is not measured). Memory and vCPUs are
+checked when a computer is made, resized or moved, and all three when it wakes.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/setup` | **No account.** `{ claimed, codeRequired }` |
+| `POST` | `/v1/setup` | **No account.** `{ name, email, password, tenantName, code? }` → 201, with the session cookie. `code` is needed except from the host itself; 409 once claimed |
+| any | `/v1/auth/*` | Better Auth: `POST /v1/auth/sign-in/email { email, password }`, `POST /v1/auth/sign-out`, `GET /v1/auth/get-session`, `POST /v1/auth/change-password`. Sign-up is closed; accounts come from setup and invitations |
+| `GET` | `/v1/me` | `{ kind: "owner" \| "admin", user: { id, name, email } \| null, operator, tenants: [{ id, name, quotas, createdAt }] }` |
+| `GET`, `POST` | `/v1/tenants` | The tenants the caller administers, each with `usage: { computers, memoryMb, vcpus, diskBytes }`; the operator makes one with `{ name, quotas? }` |
+| `GET`, `PATCH`, `DELETE` | `/v1/tenants/:id` | One tenant; `PATCH { name?, quotas? }` (quotas: the operator only); `DELETE` (the operator, once it has no computers) |
+| `GET` | `/v1/tenants/:id/administrators` | `{ administrators: [{ userId, name, email, operator, joinedAt }] }` |
+| `DELETE` | `/v1/tenants/:id/administrators/:userId` | Takes an administrator off the tenant; 409 for its last |
+| `GET`, `POST` | `/v1/tenants/:id/invites` | Waiting invitations; `POST { email }` → 201 `{ invite, token }`, the token shown only here |
+| `DELETE` | `/v1/tenants/:id/invites/:invite` | Withdraws an invitation |
+| `GET` | `/v1/invites/:token` | **No account.** `{ tenantName, email, expiresAt, accountExists }` |
+| `POST` | `/v1/invites/:token/accept` | **No account.** `{ name?, password }` → the session cookie; `name` for a new account |
+
+A tenant an administrator does not administer answers 404, as if it were not there.
+
 ### Authentication
 
-Every `/v1` route except `POST /v1/pair`, and every WebSocket upgrade, requires
-`Authorization: Bearer <token>`. The token is either the owner token, compared as SHA-256
-digests in constant time, or a phone token. The owner token reaches every route and every
-computer. A phone token reaches only its own computer's routes, without a computer in the
-path; `/v1/health`, `/v1/host` and `/v1/computers…` answer it 403. Requests with neither
-token get 401.
+A request is from one of three kinds of caller:
+
+- **The owner token**, `Authorization: Bearer <owner token>`, compared as SHA-256 digests in
+  constant time. It reaches every route and every computer, as the operator does.
+- **An administrator**, by the session cookie Better Auth sets at sign-in (30 days,
+  renewed daily). An administrator reaches the computers and tenants they administer; only
+  the operator reaches `/v1/health`, `/v1/host` and the routes without a computer in the path.
+- **A phone token**, which reaches only its own computer's routes, without a computer in the
+  path; `/v1/health`, `/v1/host`, `/v1/me`, `/v1/tenants…` and `/v1/computers…` answer it 403.
+
+`POST /v1/pair`, setup, invitations and `/v1/auth/*` need none of these. Any other `/v1`
+route, and every WebSocket upgrade, answers 401 without one.
 
 The built web console is served from `CABOOSE_WEB_ROOT` with an SPA fallback for non-API
-`GET`s. Static files are public. The console keeps the owner token in session storage and
-sends it only as an `Authorization` header.
+`GET`s. Static files are public, except `/setup` before the host is claimed. The console
+signs in with an account; signed in with the owner token instead, it keeps the token in
+session storage and sends it only as an `Authorization` header.
 
 ### Conventions
 
@@ -472,11 +543,11 @@ most 64 KiB (15 MiB for `POST /v1/agent/tasks`). Errors are `{ error: string }`:
 | Status | Meaning |
 | --- | --- |
 | 400 | Invalid input, including unknown fields where a route rejects them |
-| 401 | Missing or unknown token |
-| 403 | A phone token on a route for the owner alone |
+| 401 | Missing or unknown token or session |
+| 403 | A phone, or an administrator who is not the operator, on a route that is not theirs |
 | 404 | Unknown route, task, agent, element or device |
-| 409 | The computer is not running (or is restarting, or being deleted), its display is not ready, or a conflicting operation is in progress |
-| 429 | Too many wrong pairing codes |
+| 409 | The computer is not running (or is restarting, or being deleted), its display is not ready, a conflicting operation is in progress, or a tenant's quota would be exceeded |
+| 429 | Too many wrong pairing codes, or sign-in attempts |
 | 502 | The guest or the agent registry failed an operation; the message says why |
 | 503 | Push or Live Activities are not configured |
 
@@ -1471,6 +1542,12 @@ app group and a Keychain access group.
   WebSocket. The web console keeps it in session storage. The host
   speaks plain HTTP on loopback by default; HTTPS and WSS belong in front of it before
   traffic crosses a network.
+- **Accounts.** Administrators sign in with an email and password (hashed by Better Auth;
+  sessions are signed with `CABOOSE_AUTH_SECRET` or the generated `auth-secret`). Sign-up
+  is closed: the first account comes from setting the host up with its one-time code, the
+  rest from single-use invitation links. The host allows twenty sign-in, setup or
+  invitation attempts per client in ten minutes, then answers 429. An administrator
+  sees only their tenants' computers; only the operator sees the host itself.
 - **Phone tokens.** A phone signs in to one computer with its own token, obtained once for a
   single-use, ten-minute pairing code, so no token is ever shown in a link, a QR code or the
   console. The host stores only SHA-256 digests; signing a phone out closes its sockets and
