@@ -20,5 +20,8 @@
   "phone/uca.xml",
   "phone/cups-backend",
   "phone/printer-setup",
-  "phone/caboose-phone-printer.service"
+  "phone/caboose-phone-printer.service",
+  "agentd/caboose-agentd.mjs",
+  "agentd/package.json",
+  "agentd/install.sh"
 ]

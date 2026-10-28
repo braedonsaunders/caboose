@@ -154,7 +154,7 @@ sh guest/agentd/install.sh
 sh guest/media-handoff/install.sh
 ```
 
-None of these reboots the computer. The file service, notifications and phone handoff are
+None of these reboots the computer. The agent runner, file service, notifications and phone handoff are
 updated by the host itself through [`guest/components`](../components/README.md);
 [`guest/display`](../display/README.md) describes updating Caboose Display.
 

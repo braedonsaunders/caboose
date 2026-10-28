@@ -40,6 +40,7 @@ COPY --from=host-deps /src/apps/host/package.json ./apps/host/package.json
 COPY --from=host-build /src/apps/host/dist ./apps/host/dist
 # The identity database's own migrations, beside AppKit's in node_modules.
 COPY apps/host/migrations ./apps/host/migrations
+COPY guest/agentd/caboose-agentd.mjs guest/agentd/package.json guest/agentd/install.sh ./guest/agentd/
 COPY guest/components ./guest/components
 COPY guest/files ./guest/files
 COPY guest/phone ./guest/phone
