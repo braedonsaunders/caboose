@@ -40,8 +40,61 @@ at a pinned source revision with appkit-desk
 0.6.0. The agent listens on vsock port 5252. Xpra starts only when the host has
 written its per-wake password; it does not run automatically at boot. A separate `caboose-xpra-agent.service`
 provides display `:101` on port `14501` with the same token when explicitly
-started by the host on demand. Software
-and OS packages other than Xpra follow their repositories at build time.
+started by the host on demand. Debian OS packages follow their signed
+repositories at build time; the app installer pins its external releases.
+
+## Apps
+
+`apps.sh` is the same idempotent installer used by the image builder and existing
+Debian 13 amd64 computers. To upgrade an existing guest, copy it into the guest and
+run `sudo bash apps.sh`. It does not reboot the computer. Debian packages come
+from its signed APT repositories; OpenCode, mise, Lazydocker and Obsidian are pinned
+to upstream release assets with checked SHA-256 hashes, and npm agent versions and
+their registry integrity values are pinned. Obsidian is proprietary software.
+Agents require the owner's own account or credentials, entered in their terminal.
+OpenCode and Gemini are interactive terminal agents; the host task API currently
+supports Claude Code and Codex only.
+
+| Category | Caboose lineup |
+| --- | --- |
+| Browsers and writing | Chromium, Firefox ESR, Obsidian, LibreOffice, Mousepad |
+| Desktop tools | Thunar, Evince, Eye of GNOME, GIMP, Inkscape, VLC, Audacity, Calculator, File Roller |
+| Development | VS Code, Neovim, Git, GitHub CLI, Docker, Lazygit, Lazydocker, btop, tmux, mise |
+| Shell | ripgrep, fd, bat, eza, fzf, zoxide, jq, ncdu, htop, fastfetch, yt-dlp, tealdeer, ffmpeg, ImageMagick |
+| Agents | Claude Code, Codex, OpenCode, Gemini CLI |
+| Fonts and appearance | Inter, JetBrains Mono, Noto CJK and emoji; WhiteSur and Adwaita from the image |
+
+Lazygit, Lazydocker, btop, Neovim and the four agents have terminal desktop
+launchers in the Home grid. Docker runs inside the guest; it does not control
+the host's Docker daemon. Membership in the guest's `docker` group grants root
+access inside the guest. As with other guest apps, changes to group membership
+take effect on a new login. The launcher icons include OpenCode's upstream mark
+and recolored [Simple Icons](https://github.com/simple-icons/simple-icons) marks
+(CC0); Neovim, btop and the terminal use their installed application icons.
+
+To check a running computer from the host, install a local Xpra client with
+rencodeplus and lz4 support and run:
+
+```sh
+CABOOSE_OWNER_TOKEN=... node apps/host/scripts/check-lineup.mjs
+```
+
+The check authenticates through the display relay, verifies PNG icons and opens
+Calculator, btop and OpenCode, then requires a new Xpra window for each. It
+leaves those windows open and does not park or restart the computer. Agents can
+show a sign-in screen until configured. The check needs free capacity for three
+windows; close prior instances before rerunning if an app reuses its window.
+
+For comparison, Omarchy's [default package list](https://github.com/omacom/omarchy/blob/83f040099f80a95f1983435e20fd2f631c2f8dee/install/omarchy-base.packages)
+includes foot, Neovim, Lazygit, btop, Docker, mise, fzf, ripgrep, zoxide, eza,
+bat, fd, Chromium, Obsidian, LibreOffice, LocalSend, Evince, mpv, Pinta, Noto
+and JetBrains Mono; its [agent launchers](https://omarchy.org/manual/ai/) install
+Claude, Codex, OpenCode and many others lazily. Omarchy's hardware, Wayland,
+screen-recording and local gaming utilities do not suit the microVM. LocalSend
+is omitted because the default guest network fence blocks LAN discovery; the
+Xpra file-transfer path is intended for moving files instead. Pinta is not in
+Debian 13's repositories, so GIMP supplies image editing. This image does not
+claim to install Omarchy's optional commercial apps or all its lazy agents.
 
 To exercise KVM, the agent, Xpra authentication through the relay, the app
 list, terminal launch and memory snapshots, run `apps/host/scripts/e2e.sh` against a deployed

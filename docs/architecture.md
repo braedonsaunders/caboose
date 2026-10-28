@@ -65,9 +65,11 @@ base swap.
 - **Session auth.** Xpra requires a per-boot token (`tcp-auth`/`ws-auth` via an
   `env`/file authenticator). The host writes it with `desk.exec` at wake and hands
   it to the client inside the authenticated `/v1/session` response.
-- **Apps** installed in the image: Chromium, Firefox ESR, VS Code, a terminal
-  (xfce4-terminal), Thunar, Mousepad, LibreOffice, Node 22, git, ripgrep, Claude
-  Code, Codex CLI. Fonts: Inter, JetBrains Mono, Noto (incl. CJK, emoji).
+- **Apps** installed in the image: Chromium, Firefox ESR, VS Code, xfce4-terminal,
+  Thunar, Mousepad, LibreOffice, Obsidian, document, media and image tools; developer
+  tools including Git, Neovim, Lazygit, Lazydocker, btop, mise and modern shell tools;
+  and the Claude Code, Codex, OpenCode and Gemini CLI agents. Terminal tools and agents
+  have desktop launchers. Fonts: Inter, JetBrains Mono and Noto (incl. CJK, emoji).
 - **Guest agent.** The appkit-desk guest agent (vsock 5252) for exec, jobs,
   observe/a11y and agent input. Agents drive the machine through it; humans drive
   it through Xpra.

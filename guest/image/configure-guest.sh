@@ -20,9 +20,9 @@ apt-get install -y --no-install-recommends linux-image-cloud-amd64 systemd-sysv 
 for executable in gio xdotool wmctrl import xpra; do
   command -v "$executable" >/dev/null || { echo "Missing required guest executable: $executable" >&2; exit 1; }
 done
-npm install -g @anthropic-ai/claude-code @openai/codex
 useradd -m -u 1000 -s /bin/bash caboose
 usermod -aG sudo caboose
+/tmp/apps.sh
 printf 'caboose ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/caboose
 chmod 0440 /etc/sudoers.d/caboose
 /tmp/desktop-mcp/install.sh
