@@ -98,6 +98,9 @@ public struct ClientCapabilities: Sendable {
                 // Video only (never text): the server may encode a video smaller to keep its
                 // frame rate, and the client scales it back up on the GPU.
                 "video_scaling": true,
+                // The guest encodes on the CPU, and 139 ms of every update was encoding at Xpra's
+                // default effort. Favour speed: quicker WebP, raw RGB for small updates on a LAN.
+                "min-speed": 70,
                 // Typing and pointer feedback: let the server's adaptive batching go as low as a
                 // phone frame and no higher than 150 ms, instead of the 500 ms default ceiling.
                 "batch": ["min_delay": .int(Int64(max(4, 1000 / max(30, refreshRate)))), "max_delay": 150, "delay": 16],
