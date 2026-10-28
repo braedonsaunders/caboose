@@ -1,4 +1,5 @@
 import { once } from 'node:events'
+import { DRAIN_NOTIFICATIONS } from './desktop-notifications.js'
 import { readFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -27,6 +28,7 @@ function fakeGuest(options: { missing?: boolean; failInstall?: string } = {}) {
   const guest: AgentGuest = {
     async run(command, args) {
       if (command === '/bin/sh' && args[1] === HOME_REPAIR_SCRIPT) return '0'
+      if (args.includes(DRAIN_NOTIFICATIONS)) return ''
       expect(command).toBe('/usr/sbin/runuser')
       expect(args.slice(0, 6)).toEqual(['-u', 'caboose', '--', '/usr/bin/env', 'HOME=/home/caboose', 'PATH=/home/caboose/.local/bin:/usr/local/bin:/usr/bin:/bin'])
       if (options.missing) throw new Error('Guest command failed: caboose-agentd is not installed in this computer')

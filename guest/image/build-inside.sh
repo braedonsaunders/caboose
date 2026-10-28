@@ -43,15 +43,18 @@ cp /usr/lib/x86_64-linux-gnu/libeatmydata.so.1 /usr/local/lib/libeatmydata.so.1
 LD_PRELOAD=/usr/local/lib/libeatmydata.so.1 debootstrap --variant=minbase --arch=amd64 trixie "$work/root" https://deb.debian.org/debian
 for p in proc sys dev; do mount --rbind "/$p" "$work/root/$p"; mount --make-rslave "$work/root/$p"; done
 cp /builder/configure-guest.sh /builder/apps.sh /builder/caboose-xpra.service /builder/caboose-xpra-agent.service "$work/root/tmp/"
+cp -r /builder/files "$work/root/tmp/files"
 cp -r /builder/desktop-mcp "$work/root/tmp/desktop-mcp"
 cp -r /builder/display "$work/root/tmp/caboose-display"
 cp -r /builder/agentd "$work/root/tmp/agentd"
+cp -r /builder/notifications "$work/root/tmp/notifications"
+cp -r /builder/phone "$work/root/tmp/phone"
 cp /etc/resolv.conf "$work/root/etc/resolv.conf"
 chroot "$work/root" /usr/bin/env LD_PRELOAD=/usr/local/lib/libeatmydata.so.1 /bin/bash /tmp/configure-guest.sh
 cp "$(ls "$work/root"/boot/vmlinuz-* | sort -V | tail -1)" "$work/vmlinux"
 cp "$(ls "$work/root"/boot/initrd.img-* | sort -V | tail -1)" "$work/initrd"
 rm -f "$work/root/usr/local/lib/libeatmydata.so.1" "$work/root/etc/dpkg/dpkg.cfg.d/99-caboose-build" "$work/root/etc/dpkg/dpkg.cfg.d/99-build-speed"
-rm -rf "$work/root/tmp/desktop-mcp" "$work/root/tmp/caboose-display" "$work/root/tmp/agentd"
+rm -rf "$work/root/tmp/notifications" "$work/root/tmp/desktop-mcp" "$work/root/tmp/caboose-display" "$work/root/tmp/agentd" "$work/root/tmp/files" "$work/root/tmp/phone"
 rm "$work/root/tmp/configure-guest.sh" "$work/root/tmp/apps.sh" "$work/root/tmp/caboose-xpra.service" "$work/root/tmp/caboose-xpra-agent.service"
 # Complete update work after the final /usr changes to avoid a slow first boot.
 chroot "$work/root" /sbin/ldconfig

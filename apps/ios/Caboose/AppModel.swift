@@ -25,8 +25,13 @@ final class AppModel {
 
     private(set) var phase: Phase
     let agents = AgentCenter()
+    var notificationTaskID: String?
+    var askFocusRequested = false
+    let catalog = CatalogCenter()
+    let documents = OpenDocumentCenter()
     /// Videos playing on the computer that can move to the phone.
     let media = MediaHandoff()
+    let phone = PhoneHandoff()
     /// A window on the agent seat being watched or taken over full screen.
     var presentedAgentWindowID: Int?
     private(set) var credentials: Credentials?
@@ -54,6 +59,7 @@ final class AppModel {
     private var frameCache: [Int: CGImage] = [:]
     private var reconnectAttempts = 0
     private var reconnectTask: Task<Void, Never>?
+    private var fileSearchTask: Task<Void, Never>?
     private var sceneActive = true
 
     private var launchStartedAt: Date?
@@ -65,9 +71,22 @@ final class AppModel {
         let saved = Credentials.load()
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
-        agents.onComputer = { [weak self] status in self?.computerStatus = status }
-        agents.onEvent = { [weak self] type, event in self?.media.handle(type, event) }
+        agents.onComputer = { [weak self] status in
+            self?.computerStatus = status
+            if let credentials = self?.credentials { FileDomains.register(credentials, name: status.settings.name) }
+        }
+        agents.onEvent = { [weak self] type, event in
+            guard let self else { return }
+            self.media.handle(type, event)
+            self.catalog.handle(type, event)
+            self.phone.handle(type, event)
+            if type == "fs.changed" { self.refreshFileSearch() }
+            if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
+            if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials); self.documents.requestSync(model: self) }
+        }
+        catalog.onChange = { [weak self] in await self?.refreshApps() }
         media.attach(host: { [weak self] in self?.host })
+        phone.attach(host: { [weak self] in self?.host })
     }
 
     var host: HostClient? { credentials.map { HostClient(baseURL: activeHostURL ?? $0.hostURL, token: $0.token) } }
@@ -92,6 +111,13 @@ final class AppModel {
     // MARK: Setup
 
     func connect(with credentials: Credentials) {
+        if let old = self.credentials, old.fileDomainIdentifier != credentials.fileDomainIdentifier { FileDomains.remove(old) }
+        if self.credentials != nil && self.credentials != credentials {
+            fileSearchTask?.cancel()
+            ComputerSearch.clear()
+            PushCoordinator.shared.unregister(from: host)
+            LiveActivityCoordinator.shared.unregister(from: host)
+        }
         credentials.save()
         self.credentials = credentials
         activeHostURL = nil
@@ -99,12 +125,20 @@ final class AppModel {
     }
 
     func signOut() {
+        fileSearchTask?.cancel()
+        ComputerSearch.clear()
+        PushCoordinator.shared.unregister(from: host)
+        LiveActivityCoordinator.shared.unregister(from: host)
         session?.disconnect()
         session = nil
         agents.reset()
+        catalog.reset()
+        documents.reset()
         media.reset()
+        phone.reset()
         computerStatus = nil
         settingsPresented = false
+        if let credentials { FileDomains.remove(credentials) }
         Credentials.clear()
         credentials = nil
         activeHostURL = nil
@@ -125,14 +159,26 @@ final class AppModel {
         if !quiet { phase = .waking }
         do {
             let wake = try await host.wake()
+            // A wake may finish after backgrounding or changing computers. Do not attach
+            // an old computer's control channel in either case.
+            guard sceneActive, self.host?.token == host.token, self.host?.baseURL == host.baseURL else { return }
             computer = wake.computer
+            if let credentials {
+                FileDomains.register(credentials, name: wake.computer.name)
+                FileDomains.signal(credentials)
+            }
             if !quiet { phase = .connecting }
             startSession(host: host, display: wake.display)
             agents.detach()
             agents.attach(host: host)
+            PushCoordinator.shared.synchronize()
+            LiveActivityCoordinator.shared.connected()
+            catalog.attach(host)
+            documents.requestSync(model: self)
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await media.refresh() }
             Task { await refreshApps() }
+            refreshFileSearch()
             Task { try? await refreshComputer() }
         } catch {
             phase = .failed(error.localizedDescription)
@@ -141,6 +187,9 @@ final class AppModel {
 
     func sceneBecameActive() {
         sceneActive = true
+        phone.setActive(true)
+        documents.requestSync(model: self)
+        showSharedDocumentIfAvailable()
         offerPasteboardIfChanged()
         if phase != .displayElsewhere, session == nil || session?.state != .ready { Task { await wake() } }
     }
@@ -148,6 +197,7 @@ final class AppModel {
     /// Leaving the app closes the display; the computer keeps every app running and parks on idle.
     func sceneEnteredBackground() {
         sceneActive = false
+        phone.setActive(false)
         reconnectTask?.cancel()
         if let session {
             frameCache = session.windows.reduce(into: [:]) { cache, entry in
@@ -175,7 +225,7 @@ final class AppModel {
         session.onClipboardText = { text in UIPasteboard.general.string = text }
         session.clipboardProvider = { UIPasteboard.general.string }
         session.onBell = { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
-        session.onOpenURL = { url in UIApplication.shared.open(url) }
+        session.onOpenURL = { [weak self] url in self?.phone.open(url) }
         session.onNotification = { note in Self.post(note) }
         session.onRaise = { [weak self] wid in self?.presentedWindowID = wid }
         session.cachedFrame = { [weak self] wid in self?.frameCache[wid] }
@@ -269,9 +319,23 @@ final class AppModel {
         if let presented = presentedWindowID, !current.contains(presented) {
             presentedWindowID = appWindows.first?.id
         }
-        if launching != nil, let newest = added.compactMap({ session.windows[$0] }).first(where: { !$0.isAuxiliary }) {
+        if let target = launching, let newest = added.compactMap({ session.windows[$0] }).first(where: { !$0.isAuxiliary && matches($0, target) }) {
             launching = nil
             presentedWindowID = newest.id
+        }
+        showSharedDocumentIfAvailable()
+    }
+
+    private func showSharedDocumentIfAvailable() {
+        let shared = UserDefaults(suiteName: OpenDocumentStore.group)
+        if let id = shared?.string(forKey: "document-open-desktop-id"),
+           shared?.string(forKey: "document-open-domain") == credentials?.fileDomainIdentifier {
+            let app = apps.first(where: { $0.id == id }) ?? HostClient.App(id: id, name: id, icon: "", categories: [], exec: "")
+            if let window = appWindows.first(where: { matches($0, app) }) {
+                presentedWindowID = window.id
+                shared?.removeObject(forKey: "document-open-desktop-id")
+                shared?.removeObject(forKey: "document-open-domain")
+            }
         }
     }
 
@@ -442,6 +506,7 @@ final class AppModel {
     func refreshComputer() async throws {
         guard let host else { return }
         computerStatus = try await host.computer()
+        LiveActivityCoordinator.shared.sync(agents.tasks)
     }
 
     /// Saves only the given changes. Name and auto-park apply at once; memory and cores at the next restart.
@@ -493,11 +558,24 @@ final class AppModel {
     }
 
 
+    private func refreshFileSearch() {
+        guard let credentials else { return }
+        fileSearchTask?.cancel()
+        fileSearchTask = Task {
+            do {
+                try await Task.sleep(for: .seconds(1))
+                try await ComputerSearch.refreshFiles(credentials: credentials)
+            }
+            catch { /* Keep the previous index when the computer is unavailable. */ }
+        }
+    }
+
     func refreshApps() async {
         guard let host else { return }
         for attempt in 0 ..< 10 {
             do {
                 let list = try await host.apps()
+                ComputerSearch.indexApps(list)
                 apps = list.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 for app in list where appIcons[app.id] == nil {
                     if let data = app.iconData, let image = UIImage(data: data) { appIcons[app.id] = image }
@@ -581,6 +659,12 @@ final class AppModel {
         }
     }
 
+    func showLaunchedDocument(_ app: CatalogApp) {
+        let target = apps.first(where: { $0.id == app.desktopId }) ?? HostClient.App(id: app.desktopId, name: app.name, icon: "", categories: [], exec: "")
+        if let existing = appWindows.first(where: { matches($0, target) }) { presentedWindowID = existing.id }
+        else { launching = target; launchStartedAt = Date() }
+    }
+
     func matches(_ window: RemoteWindow, _ app: HostClient.App) -> Bool {
         guard let appClass = window.appClass else { return false }
         let id = app.id.replacingOccurrences(of: ".desktop", with: "").lowercased()
@@ -605,7 +689,17 @@ final class AppModel {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
+    private static func postDesktop(_ event: [String: Any]) {
+        requestNotificationPermission()
+        let content = UNMutableNotificationContent()
+        content.title = (event["summary"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (event["app"] as? String ?? "Caboose")
+        content.body = event["body"] as? String ?? ""
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "linux.\(event["id"] as? String ?? UUID().uuidString)", content: content, trigger: nil))
+    }
+
     private static func post(_ note: RemoteNotification) {
+        requestNotificationPermission()
         let content = UNMutableNotificationContent()
         content.title = note.summary.isEmpty ? note.appName : note.summary
         content.subtitle = note.summary.isEmpty ? "" : note.appName

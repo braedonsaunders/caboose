@@ -1,0 +1,13 @@
+[Unit]
+Description=Caboose Display notification endpoint
+Requires=user@1000.service
+After=user@1000.service
+PartOf=caboose-display.service
+
+[Service]
+User=caboose
+Group=caboose
+Environment=HOME=/home/caboose
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+ExecStart=/usr/bin/python3 /opt/caboose/notifications/daemon.py
+Restart=on-failure

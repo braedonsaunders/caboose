@@ -58,9 +58,9 @@ export function createController(config: Config, dependencies: { backend?: DeskB
     if (result.exitCode !== 0 || result.truncated) throw new Error(`Guest command failed: ${result.stderr || result.exitCode}`)
     return result.stdout
   }
-  async function guestApps(action: string, id?: string): Promise<string> {
+  async function guestApps(action: string, id?: string, path?: string): Promise<string> {
     const script = await readFile(new URL('./guest-apps.py', import.meta.url), 'utf8')
-    return command('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/env', ...launchEnv, '/usr/bin/python3', '-c', script, action, ...(id ? [id] : [])], 60_000)
+    return command('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/env', ...launchEnv, '/usr/bin/python3', '-c', script, action, ...(id ? [id] : []), ...(path ? [path] : [])], 60_000)
   }
   async function startDisplay(service: string, port: number): Promise<void> {
     // systemd and the listening socket can be ready before Xpra can serve a hello.
@@ -75,6 +75,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
   const controller: Controller = {
     displayUrl: `ws://${GUEST_ADDRESS}:${owner.port}/`,
     agentDisplayUrl: `ws://${GUEST_ADDRESS}:14501/`,
+    fileService: () => ({ url: `http://${GUEST_ADDRESS}:14700`, token: displayToken }),
     async ensureAgentSeat() {
       // Same per-wake token file and user as the owner's display; started only when wanted.
       await startDisplay('caboose-xpra-agent.service', 14501)
@@ -112,6 +113,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
         displayToken = randomBytes(32).toString('hex')
         // A password file is read by Xpra on connection; never put a newline in it.
         await command('/bin/sh', ['-c', `install -d -m 0755 /run/caboose; printf %s "$1" > /run/caboose/xpra-token; chown caboose:caboose /run/caboose/xpra-token; chmod 0600 /run/caboose/xpra-token`, 'sh', displayToken])
+        await command('/bin/sh', ['-c', '[ -f /opt/caboose/files/caboose-files.py ] || exit 0; systemctl start caboose-files.service || exit 1; for i in $(seq 1 60); do systemctl is-active --quiet caboose-files.service && ss -lnt | grep -Eq ":14700[[:space:]]" && exit 0; sleep 1; done; echo file-service-not-ready >&2; exit 1'], 70_000).catch(error => console.error('File service unavailable:', error))
         if (config.display === 'caboose-display') await startCabooseDisplay()
         else await startDisplay('caboose-xpra.service', 14500)
         clearHeartbeat()
@@ -166,7 +168,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
         if (page.length < 10) return apps
       }
     },
-    async launch(id: string): Promise<void> { await guestApps('launch', id) },
+    async launch(id: string, path?: string): Promise<void> { await guestApps('launch', id, path) },
   }
   return controller
 }

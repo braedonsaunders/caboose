@@ -13,7 +13,7 @@ It is one file, `caboose-agentd.mjs`, on Node 22 with the official TypeScript SD
 
 | Command | What it does |
 | --- | --- |
-| `run <task dir>` | One task. Started detached (`setsid`) by the host as `caboose` with `DISPLAY=:101`. |
+| `run <task dir>` | One task. Started detached (`setsid`) by the host as `caboose` with `DISPLAY=:101` and the agent seat D-Bus session at `/run/user/1000/agent-bus`. |
 | `install <spec>` | Prefetches the agent, starts it once to learn its sign-in methods, records it as installed. Prints `{ installed: { version }, signIn: [...] }`. |
 | `probe <spec>` | `initialize` only; records and prints the sign-in methods. |
 | `sign-in <spec>` | Runs one sign-in method on the owner's display (see below). |
@@ -47,7 +47,7 @@ note on stderr. Values are never written to the transcript or logs.
 
 The host writes these, each whole and renamed into place:
 
-- `task.json` — `{ agent: <spec>, cwd, approvals: "ask" | "auto", idleMs }`.
+- `task.json` — `{ agent: <spec>, cwd, approvals: "ask" | "auto", idleMs, craftServers }`.
 - `inbox/<turn, 6 digits>.prompt.json` — `{ type: "prompt", turn, text, attachments?: [{ path, name, mimeType? }] }`.
 - `inbox/cancel-<n>.json` — `{ type: "cancel" }`.
 - `approvals/<requestId>.decision` — `{ allow, message?, optionId? }`.
@@ -94,7 +94,10 @@ turn number. Updates outside a turn (including the history an agent replays on
   `~/.local/share/caboose/agents/<id>/auth.json`.
 - **Session.** `session/new` with the task directory as `cwd` and one MCP server,
   `caboose-desktop` (`node /opt/caboose/desktop-mcp.mjs`, `CABOOSE_AGENT_DISPLAY` set to the
-  runner's display), so every agent can drive GUI apps on the agent seat.
+  runner's display), so every agent can drive GUI apps on the agent seat. The host also
+  snapshots installed catalog MCP commands into `task.json` and the runner passes them to
+  new, load and resume requests. `craftMcp: false` on task creation disables them for that
+  task, including replies. See the Agents section of the architecture for the app list.
 - **Prompt.** A text block, then each attachment as an `image` block when the agent's
   `promptCapabilities.image` is set and the file is a PNG, JPEG, GIF or WebP under 10 MB, and
   otherwise a `resource_link` to its `file://` path.

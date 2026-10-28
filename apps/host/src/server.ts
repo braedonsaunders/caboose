@@ -1,17 +1,25 @@
+import { parseCraftRequest, runCraft } from './craft-jobs.js'
+import { proxyFiles, type FileService } from './fs-proxy.js'
+import { agentJob, parseJob, type ActivityService } from './activities.js'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { AgentCatalog } from './agent-catalog.js'
+import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
-import { openUrl, saveDownload } from './files.js'
+import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWNLOADS } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
 import { HomeOwnership } from './home.js'
 import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
 import { AgentRegistry } from './registry.js'
+import { PhoneHandoff, readPhoneFile } from './phone.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
 import type { DisplayProtocol } from './config.js'
 import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
+import { DesktopNotifications } from './desktop-notifications.js'
+import type { PushService } from './push.js'
+import type { AgentEvent } from './agents.js'
 import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenType } from './screen.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
@@ -19,7 +27,7 @@ export interface Session { state: string; display: { path: string; token: string
 export interface Controller extends ComputerDriver<Session> {
   stats(): unknown
   apps(): Promise<App[]>
-  launch(id: string): Promise<void>
+  launch(id: string, path?: string): Promise<void>
   /** The owner's display in the guest: Xpra's WebSocket, or caboose-display's. */
   displayUrl: string
   /** The agent seat's Xpra (display :101). */
@@ -27,6 +35,7 @@ export interface Controller extends ComputerDriver<Session> {
   ensureAgentSeat(): Promise<void>
   /** Root command runner in the running computer, or undefined while parked. */
   guest(): AgentGuest | undefined
+  fileService?(): FileService
   activeResources(): ComputerResources | null
   hasSavedState(): boolean
   lastError?(): string | null
@@ -34,7 +43,6 @@ export interface Controller extends ComputerDriver<Session> {
 
 /** Body limits: base64 inflates by a third, plus room for the JSON around it. */
 const TASK_BODY_LIMIT = 15 * 1024 * 1024
-const FILE_BODY_LIMIT = 70 * 1024 * 1024
 
 async function readJson(request: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
@@ -58,11 +66,15 @@ export function createCabooseServer(options: {
   registry?: AgentRegistry
   /** How long a task's runner keeps its agent after a turn, waiting for a reply. */
   agentIdleMs?: number
+  push?: PushService
+  activities?: ActivityService
 }) {
   const { controller, token, settings } = options
   const computer = new ComputerLifecycle(controller, settings.get().idleMs)
   const sockets = new Set<WebSocket>()
   const controls = new Set<WebSocket>()
+  const foregroundClients = new Set<WebSocket>()
+  const phoneControls = new Set<WebSocket>()
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024, handleProtocols: protocols => protocols.has('binary') ? 'binary' : false })
   function broadcast(event: unknown): void {
     const message = JSON.stringify(event)
@@ -70,12 +82,63 @@ export function createCabooseServer(options: {
   }
   const home = new HomeOwnership()
   const catalog = new AgentCatalog(options.registry ?? new AgentRegistry(), () => controller.guest(), settings, home)
-  const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), {
-    resolver: catalog, home, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
+  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire())
+  const agents = new AgentTasks(() => controller.guest(), event => {
+    broadcast(event)
+    if (options.push) void options.push.event(event as AgentEvent, foregroundClients.size > 0).catch(error => console.error('Push event failed:', error))
+    const job = agentJob(event as AgentEvent)
+    if (job && options.activities) void options.activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
+  }, () => computer.acquire(), {
+    resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
   })
+  const desktopNotifications = new DesktopNotifications(() => controller.guest(), event => {
+    broadcast({ type: 'notification', ...event })
+    if (options.push) void options.push.desktop(event, foregroundClients.size > 0).catch(error => console.error('Desktop push failed:', error))
+  })
+  let craftBusy = 0
+  const craftJobs = new Set<string>()
   const media = new MediaHandoff(() => controller.guest(), broadcast)
+  let fileAnchor: string | undefined
+  let filePoll: ReturnType<typeof setInterval> | undefined
+  let pollingFiles = false
+  function syncFiles(): void {
+    const active = computer.state === 'running' && controls.size > 0 && controller.fileService
+    if (!active) {
+      if (filePoll) clearInterval(filePoll)
+      filePoll = undefined
+      fileAnchor = undefined
+      return
+    }
+    if (filePoll) return
+    const poll = async () => {
+      if (pollingFiles || !controller.fileService || computer.state !== 'running') return
+      pollingFiles = true
+      try {
+        const service = controller.fileService()
+        const url = new URL('/changes', service.url)
+        if (fileAnchor) url.searchParams.set('anchor', fileAnchor)
+        const response = await fetch(url, { headers: { authorization: `Bearer ${service.token}` }, signal: AbortSignal.timeout(5000) })
+        if (!response.ok) throw new Error('File change feed unavailable')
+        const change = await response.json() as { anchor: string; changed: boolean }
+        if (fileAnchor && change.changed) broadcast({ type: 'fs.changed', anchor: change.anchor })
+        fileAnchor = change.anchor
+      } catch { /* Retry with the previous anchor so missed changes trigger a rescan. */ }
+      finally { pollingFiles = false }
+    }
+    void poll()
+    filePoll = setInterval(() => { void poll() }, 1000)
+    filePoll.unref()
+  }
+
+  const phone = new PhoneHandoff(() => controller.guest(), event => {
+    const message = JSON.stringify(event)
+    for (const socket of phoneControls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
+  })
   /** Media is polled only while the computer is already running and someone is watching it. */
-  function syncMedia(): void { media.setActive(computer.state === 'running' && sockets.size - controls.size > 0) }
+  function syncMedia(): void {
+    media.setActive(computer.state === 'running' && sockets.size - controls.size > 0)
+    phone.setActive(computer.state === 'running' && phoneControls.size > 0)
+  }
   function managementStatus() {
     const desired = settings.get()
     const active = controller.activeResources()
@@ -85,7 +148,7 @@ export function createCabooseServer(options: {
       restartRequired: controller.hasSavedState() && (!active || active.memoryMb !== desired.memoryMb || active.vcpus !== desired.vcpus),
       clients: { display: sockets.size - controls.size, control: controls.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
-      capabilities: { restart: typeof controller.restart === 'function' },
+      capabilities: { restart: typeof controller.restart === 'function', push: !!options.push },
       lastError: computer.lastError ?? controller.lastError?.() ?? null,
     }
   }
@@ -105,6 +168,8 @@ export function createCabooseServer(options: {
     if (state === 'running') agents.resume()
     else { agents.pause(); media.computerStopped() }
     syncMedia()
+    syncFiles()
+    desktopNotifications.setActive(state === 'running')
     broadcastSettings()
   })
   function json(response: ServerResponse, status: number, body: unknown): void {
@@ -120,7 +185,75 @@ export function createCabooseServer(options: {
         return json(response, 404, { error: 'not found' })
       }
       if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
+      if (request.method === 'POST' && path === '/v1/fs/open') {
+        const input = await readJson(request)
+        const relative = input.path
+        if (typeof relative !== 'string' || !relative || relative.startsWith('/') || relative.split('/').some(part => !part || part === '.' || part === '..' || part.includes('\0'))) {
+          throw new AgentInputError('invalid file path')
+        }
+        if (input.app !== undefined && (typeof input.app !== 'string' || !/^[a-zA-Z0-9._-]+\.desktop$/.test(input.app))) throw new AgentInputError('invalid application id')
+        return computer.wakeAndRun(async () => {
+          if (!controller.fileService || !controller.guest()) throw new AgentUnavailableError()
+          const service = controller.fileService(), url = new URL('/stat', service.url)
+          url.searchParams.set('path', relative)
+          const checked = await fetch(url, { headers: { authorization: `Bearer ${service.token}` } })
+          if (!checked.ok) return json(response, checked.status, { error: 'file unavailable' })
+          if (typeof input.app === 'string') await controller.launch(input.app, relative)
+          else await openOnDisplay(controller.guest()!, `/home/caboose/${relative}`)
+          return json(response, 200, { opened: true })
+        })
+      }
+      if (path.startsWith('/v1/fs/')) {
+        return computer.wakeAndRun(async () => {
+          if (!controller.fileService) throw new AgentUnavailableError()
+          await proxyFiles(controller.fileService(), request, response)
+        })
+      }
       if (request.method === 'GET' && path === '/v1/health') return json(response, 200, controller.stats())
+      if (path === '/v1/activities' && request.method === 'POST') {
+        if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
+        const body = await readJson(request)
+        await options.activities.store.registerActivity(body)
+        void options.activities.reconcile(body.activityId as string).catch(error => console.error('Live Activity reconciliation failed:', error))
+        return json(response, 200, { registered: true })
+      }
+      if (path === '/v1/activities' && request.method === 'DELETE') {
+        if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
+        const body = await readJson(request)
+        if (typeof body.activityId !== 'string') throw new SettingsInputError('invalid activityId')
+        await options.activities.store.removeActivity(body.activityId)
+        return json(response, 200, { removed: true })
+      }
+      if (path === '/v1/activities/start-token' && request.method === 'POST') {
+        if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
+        await options.activities.store.registerStarter(await readJson(request))
+        return json(response, 200, { registered: true })
+      }
+      if (path === '/v1/activities/start-token' && request.method === 'DELETE') {
+        if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
+        const body = await readJson(request)
+        if (typeof body.deviceId !== 'string') throw new SettingsInputError('invalid deviceId')
+        await options.activities.store.removeStarter(body.deviceId)
+        return json(response, 200, { removed: true })
+      }
+      if (path === '/v1/jobs/activity' && request.method === 'POST') {
+        if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })
+        const body = await readJson(request)
+        if (typeof body.start !== 'boolean') throw new SettingsInputError('start must be boolean')
+        const job = parseJob(body.job)
+        await options.activities.job(job, body.start, foregroundClients.size > 0)
+        return json(response, 200, { sent: true })
+      }
+      if (path === '/v1/devices/push' && request.method === 'POST') {
+        if (!options.push) return json(response, 503, { error: 'push unavailable' })
+        await options.push.devices.register(await readJson(request))
+        return json(response, 200, { registered: true })
+      }
+      if (path === '/v1/devices/push' && request.method === 'DELETE') {
+        if (!options.push) return json(response, 503, { error: 'push unavailable' })
+        await options.push.devices.remove((await readJson(request)).token)
+        return json(response, 200, { removed: true })
+      }
       if (request.method === 'GET' && path === '/v1/computer') return json(response, 200, managementStatus())
       if (request.method === 'PATCH' && path === '/v1/computer/settings') {
         const input = await readJson(request)
@@ -131,6 +264,7 @@ export function createCabooseServer(options: {
         return json(response, 200, managementStatus())
       }
       if (request.method === 'POST' && path === '/v1/computer/restart') {
+        if (appCatalog.busy || craftBusy) throw new ComputerConflictError('An application operation is in progress')
         const body = await readJson(request)
         if (body.confirm !== true) throw new SettingsInputError('Restart closes apps and discards unsaved work; confirm must be true')
         await computer.restart(async () => {
@@ -147,9 +281,48 @@ export function createCabooseServer(options: {
         return json(response, 200, { ...session, computer: { ...session.computer, name: settings.get().name } })
       }
       if (request.method === 'POST' && path === '/v1/session/park') {
+        if (appCatalog.busy || craftBusy) throw new ComputerConflictError('An application operation is in progress')
         await computer.park(closeSockets)
         return json(response, 200, { state: computer.state })
       }
+      if (request.method === 'GET' && path === '/v1/catalog') return json(response, 200, await appCatalog.list())
+      const craftRun = /^\/v1\/catalog\/([^/]+)\/run$/.exec(path)
+      if (request.method === 'POST' && craftRun?.[1]) {
+        const id = decodeURIComponent(craftRun[1])
+        const input = parseCraftRequest(id, await readJson(request))
+        if (craftJobs.has(input.job)) throw new AgentConflictError('Craft job is already running')
+        if (appCatalog.busy) throw new AgentConflictError('An application install is in progress')
+        craftJobs.add(input.job)
+        craftBusy++
+        try {
+          await computer.wake()
+          return await leased(async () => {
+            const listing = await appCatalog.list()
+            const app = listing.apps.find(item => item.id === id)
+            if (!app?.installedVersion) throw new AgentNotFoundError('Craft app is not installed')
+            const job = { id: input.job, kind: 'craft', title: app.name, status: 'running' as const, detail: 'Processing files' }
+            const publish = (state: typeof job | { id: string; kind: string; title: string; status: 'succeeded' | 'failed'; detail: string }, start: boolean) => {
+              broadcast({ type: 'job.progress', job: state })
+              if (options.activities) void options.activities.job(state, start, false).catch(error => console.error('Craft activity failed:', error))
+            }
+            publish(job, true)
+            try {
+              const { outputs, warnings } = await runCraft(controller.guest(), id, input, true)
+              publish({ ...job, status: 'succeeded', detail: 'Finished' }, false)
+              return json(response, 200, { job: input.job, outputs, warnings })
+            } catch (error) {
+              publish({ ...job, status: 'failed', detail: error instanceof Error ? error.message.slice(0, 500) : 'Failed' }, false)
+              throw error
+            }
+          })
+        } finally { craftBusy--; craftJobs.delete(input.job) }
+      }
+      const packInstall = /^\/v1\/catalog\/packs\/([^/]+)\/install$/.exec(path)
+      if (request.method === 'POST' && packInstall?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
+      const appAction = /^\/v1\/catalog\/([^/]+)\/(install|update|rollback)$/.exec(path)
+      if (request.method === 'POST' && appAction?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
+      const removeApp = /^\/v1\/catalog\/([^/]+)$/.exec(path)
+      if (request.method === 'DELETE' && removeApp?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
       if (request.method === 'GET' && path === '/v1/apps') {
         return json(response, 200, await computer.run(() => controller.apps()))
       }
@@ -215,9 +388,32 @@ export function createCabooseServer(options: {
         const input = await readJson(request)
         return json(response, 200, await computer.run(() => screen(controller.guest(), input)))
       }
+      const phoneFile = /^\/v1\/phone\/files\/([^/]+)$/.exec(path)
+      if (request.method === 'GET' && phoneFile?.[1]) return json(response, 200, await leased(() => readPhoneFile(controller.guest(), phoneFile[1]!)))
       if (request.method === 'POST' && path === '/v1/files') {
-        const input = await readJson(request, FILE_BODY_LIMIT)
-        return json(response, 200, await computer.run(() => saveDownload(controller.guest(), input)))
+        const input = await readJson(request, Number.MAX_SAFE_INTEGER)
+        if (typeof input.name !== 'string' || !input.name.trim()) throw new AgentInputError('name is required')
+        if (input.open !== undefined && typeof input.open !== 'boolean') throw new AgentInputError('open must be a boolean')
+        const data = decodeBase64(input.data, 'data')
+        return json(response, 200, await computer.wakeAndRun(async () => {
+          if (!controller.fileService || !controller.guest()) throw new AgentUnavailableError()
+          const service = controller.fileService()
+          const headers = { authorization: `Bearer ${service.token}` }
+          const mkdir = await fetch(`${service.url}/mkdir?path=Downloads`, { method: 'POST', headers })
+          if (!mkdir.ok && mkdir.status !== 409) throw new Error('Could not create Downloads')
+          const name = sanitizeFileName(input.name), { stem, ext } = splitName(name)
+          for (let n = 1; ; n++) {
+            const target = n === 1 ? name : `${stem} (${n})${ext}`
+            const url = new URL('/content', service.url)
+            url.searchParams.set('path', `Downloads/${target}`)
+            const saved = await fetch(url, { method: 'PUT', headers: { ...headers, 'if-none-match': '*', 'content-length': String(data.length) }, body: new Uint8Array(data) })
+            if (saved.status === 412) continue
+            if (!saved.ok) throw new Error('Could not save file in Downloads')
+            const path = `${DOWNLOADS}/${target}`
+            if (input.open === true) await openOnDisplay(controller.guest()!, path)
+            return { path }
+          }
+        }))
       }
       if (request.method === 'POST' && path === '/v1/open') {
         const input = await readJson(request)
@@ -269,10 +465,15 @@ export function createCabooseServer(options: {
     try {
       wss.handleUpgrade(request, socket, head, client => {
         sockets.add(client)
-        if (path === '/v1/control') controls.add(client)
+        if (path === '/v1/control') {
+          controls.add(client)
+          if (url.searchParams.get('foreground') === '1') foregroundClients.add(client)
+          if (url.searchParams.get('phone') === '1') phoneControls.add(client)
+        }
         syncMedia()
+        syncFiles()
         client.on('error', () => client.terminate())
-        client.once('close', () => { sockets.delete(client); controls.delete(client); release(); syncMedia() })
+        client.once('close', () => { sockets.delete(client); controls.delete(client); foregroundClients.delete(client); phoneControls.delete(client); release(); syncMedia(); syncFiles() })
         if (path === '/v1/control') {
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))

@@ -1,0 +1,1029 @@
+{
+  "packs": [
+    {
+      "id": "creative-studio",
+      "name": "Creative Studio"
+    },
+    {
+      "id": "create",
+      "name": "Create"
+    },
+    {
+      "id": "video-audio",
+      "name": "Video & Audio"
+    },
+    {
+      "id": "make",
+      "name": "Make"
+    },
+    {
+      "id": "office",
+      "name": "Office"
+    },
+    {
+      "id": "admin",
+      "name": "Admin"
+    },
+    {
+      "id": "utilities",
+      "name": "Utilities"
+    }
+  ],
+  "apps": [
+    {
+      "id": "photocraft",
+      "name": "PhotoCraft",
+      "summary": "Photo editing",
+      "category": "Create",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.photocraft",
+      "desktopId": "ai.storyteller.photocraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "psd",
+          "png",
+          "jpg",
+          "jpeg",
+          "tiff",
+          "webp",
+          "gif",
+          "bmp"
+        ],
+        "utTypes": [
+          "com.adobe.photoshop-image",
+          "public.png",
+          "public.jpeg",
+          "public.tiff",
+          "org.webmproject.webp",
+          "com.compuserve.gif",
+          "com.microsoft.bmp"
+        ]
+      },
+      "cli": "photocraft-cli",
+      "mcp": "photocraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.16.0",
+        "url": "https://github.com/storytold/photocraft/releases/download/v0.16.0/photocraft-0.16.0-linux-x86_64.deb",
+        "sha256": "955589b84849d94e5efee8f19c9c32263723bbfe89358f9109263540f0696078",
+        "size": 89232816,
+        "package": "photocraft"
+      }
+    },
+    {
+      "id": "lightcraft",
+      "name": "LightCraft",
+      "summary": "Photo development",
+      "category": "Create",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.lightcraft",
+      "desktopId": "ai.storyteller.lightcraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "heic",
+          "heif",
+          "jpg",
+          "jpeg",
+          "png",
+          "tiff",
+          "webp",
+          "dng",
+          "cr2",
+          "cr3",
+          "arw",
+          "nef",
+          "raf",
+          "rw2",
+          "rwl",
+          "pef",
+          "orf"
+        ],
+        "utTypes": [
+          "public.heic",
+          "public.heif",
+          "public.jpeg",
+          "public.png",
+          "public.tiff",
+          "org.webmproject.webp",
+          "com.adobe.raw-image"
+        ]
+      },
+      "cli": "lightcraft-cli",
+      "mcp": "lightcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.14.0",
+        "url": "https://github.com/storytold/lightcraft/releases/download/v0.14.0/lightcraft-0.14.0-linux-x86_64.deb",
+        "sha256": "7f956f13c492403950ca589adc2174e8d115c1a77dbeb55209791b15aba25a8a",
+        "size": 112241780,
+        "package": "lightcraft"
+      }
+    },
+    {
+      "id": "filmcraft",
+      "name": "FilmCraft",
+      "summary": "Video editing",
+      "category": "Video & Audio",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.filmcraft",
+      "desktopId": "ai.storyteller.filmcraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "fcproj",
+          "mp4",
+          "m4v",
+          "mov",
+          "mkv",
+          "webm",
+          "avi",
+          "mpeg"
+        ],
+        "utTypes": [
+          "public.mpeg-4",
+          "com.apple.m4v-video",
+          "com.apple.quicktime-movie",
+          "org.matroska.mkv",
+          "org.webmproject.webm",
+          "public.avi",
+          "public.mpeg"
+        ]
+      },
+      "cli": "filmcraft-cli",
+      "mcp": "filmcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.13.0",
+        "url": "https://github.com/storytold/filmcraft/releases/download/v0.13.0/filmcraft-0.13.0-linux-x86_64.deb",
+        "sha256": "294d0517ce7e4e2ebc0e93030a204853d9bd06a9a60878190aa69b5b0a9c2ffd",
+        "size": 100595586,
+        "package": "filmcraft"
+      }
+    },
+    {
+      "id": "vectorcraft",
+      "name": "VectorCraft",
+      "summary": "Vector drawing",
+      "category": "Create",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.vectorcraft",
+      "desktopId": "ai.storyteller.vectorcraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "ai",
+          "svg",
+          "pdf",
+          "png",
+          "jpg",
+          "jpeg",
+          "gif",
+          "webp",
+          "tiff"
+        ],
+        "utTypes": [
+          "com.adobe.illustrator.ai-image",
+          "public.svg-image",
+          "com.adobe.pdf",
+          "public.png",
+          "public.jpeg",
+          "com.compuserve.gif",
+          "org.webmproject.webp",
+          "public.tiff"
+        ]
+      },
+      "cli": "vectorcraft-cli",
+      "mcp": "vectorcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.17.0",
+        "url": "https://github.com/storytold/vectorcraft/releases/download/v0.17.0/vectorcraft-0.17.0-linux-x86_64.deb",
+        "sha256": "7bb44bc6b0a4afa24807720f4fe7ccc535113b9cf83026b06df41d0f696cc1bd",
+        "size": 131272650,
+        "package": "vectorcraft"
+      }
+    },
+    {
+      "id": "pdfcraft",
+      "name": "PDFCraft",
+      "summary": "PDF editing",
+      "category": "Office",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.pdfcraft",
+      "desktopId": "ai.storyteller.pdfcraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "pdf"
+        ],
+        "utTypes": [
+          "com.adobe.pdf"
+        ]
+      },
+      "cli": "pdfcraft-cli",
+      "mcp": "pdfcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.14.0",
+        "url": "https://github.com/storytold/pdfcraft/releases/download/v0.14.0/pdfcraft-0.14.0-linux-x86_64.deb",
+        "sha256": "9d8fe58e3ab10c51e2635501f13fc898640eb7df594576e666ace5a281f488c6",
+        "size": 89427156,
+        "package": "pdfcraft"
+      }
+    },
+    {
+      "id": "effectcraft",
+      "name": "EffectCraft",
+      "summary": "Visual effects",
+      "category": "Create",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.effectcraft",
+      "desktopId": "ai.storyteller.effectcraft.desktop",
+      "fileTypes": {
+        "extensions": [],
+        "utTypes": []
+      },
+      "cli": "effectcraft-cli",
+      "mcp": "effectcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.17.0",
+        "url": "https://github.com/storytold/effectcraft/releases/download/v0.17.0/effectcraft-0.17.0-linux-x86_64.deb",
+        "sha256": "cb34d6f7c244723af6d010ae6c5ffe47337db04be0c6c980be24eb85ce53a9bd",
+        "size": 66234036,
+        "package": "effectcraft"
+      }
+    },
+    {
+      "id": "designcraft",
+      "name": "DesignCraft",
+      "summary": "Graphic design",
+      "category": "Create",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.designcraft",
+      "desktopId": "ai.storyteller.designcraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "idml"
+        ],
+        "utTypes": [
+          "com.adobe.indesign-idml"
+        ]
+      },
+      "cli": "designcraft-cli",
+      "mcp": "designcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.13.0",
+        "url": "https://github.com/storytold/designcraft/releases/download/v0.13.0/designcraft-0.13.0-linux-x86_64.deb",
+        "sha256": "b511a92b641d1d01c6e761d75d07a4149d1b6c6a2debace66b2dafaa76402e18",
+        "size": 112461378,
+        "package": "designcraft"
+      }
+    },
+    {
+      "id": "wordcraft",
+      "name": "WordCraft",
+      "summary": "Word processing",
+      "category": "Office",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.wordcraft",
+      "desktopId": "ai.storyteller.wordcraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "docx",
+          "doc",
+          "odt",
+          "rtf",
+          "md",
+          "html",
+          "txt"
+        ],
+        "utTypes": [
+          "org.openxmlformats.wordprocessingml.document",
+          "com.microsoft.word.doc",
+          "org.oasis-open.opendocument.text",
+          "public.rtf",
+          "net.daringfireball.markdown",
+          "public.html",
+          "public.plain-text"
+        ]
+      },
+      "cli": "wordcraft-cli",
+      "mcp": "wordcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.11.0",
+        "url": "https://github.com/storytold/wordcraft/releases/download/v0.11.0/wordcraft-0.11.0-linux-x86_64.deb",
+        "sha256": "5246a58853c157fd81670cbd6b35c3c27b53c3a9a631eaeee4b8925bd01e3efd",
+        "size": 104909992,
+        "package": "wordcraft"
+      }
+    },
+    {
+      "id": "gridcraft",
+      "name": "GridCraft",
+      "summary": "Spreadsheets",
+      "category": "Office",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.gridcraft",
+      "desktopId": "ai.storyteller.gridcraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "xlsx",
+          "xlsm",
+          "xlsb",
+          "ods",
+          "csv",
+          "tsv"
+        ],
+        "utTypes": [
+          "org.openxmlformats.spreadsheetml.sheet",
+          "public.comma-separated-values-text",
+          "public.tab-separated-values-text"
+        ]
+      },
+      "cli": "gridcraft-cli",
+      "mcp": "gridcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.12.1",
+        "url": "https://github.com/storytold/gridcraft/releases/download/v0.12.1/gridcraft-0.12.1-linux-x86_64.deb",
+        "sha256": "4ab02b0e1b545c4bbcd8868f4f9661e4fb31c69e31c00b60dd594ec001204f75",
+        "size": 21340650,
+        "package": "gridcraft"
+      }
+    },
+    {
+      "id": "deckcraft",
+      "name": "DeckCraft",
+      "summary": "Presentations",
+      "category": "Office",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.deckcraft",
+      "desktopId": "ai.storyteller.deckcraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "pptx",
+          "potx",
+          "ppsx"
+        ],
+        "utTypes": [
+          "org.openxmlformats.presentationml.presentation"
+        ]
+      },
+      "cli": "deckcraft-cli",
+      "mcp": "deckcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.11.1",
+        "url": "https://github.com/storytold/deckcraft/releases/download/v0.11.1/deckcraft-0.11.1-linux-x86_64.deb",
+        "sha256": "2f638903ff8bdde9ddb878389812dbb9a02f74892215b599e8b97ce44cbd829f",
+        "size": 82799644,
+        "package": "deckcraft"
+      }
+    },
+    {
+      "id": "cadcraft",
+      "name": "CADCraft",
+      "summary": "Computer-aided design",
+      "category": "Make",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.cadcraft",
+      "desktopId": "ai.storyteller.cadcraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "dxf",
+          "dwg"
+        ],
+        "utTypes": [
+          "com.autodesk.dxf",
+          "com.autodesk.dwg"
+        ]
+      },
+      "cli": "cadcraft-cli",
+      "mcp": "cadcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.13.0",
+        "url": "https://github.com/storytold/cadcraft/releases/download/v0.13.0/cadcraft-0.13.0-linux-x86_64.deb",
+        "sha256": "16ddba3c75a7a793d2b57846e8eb99cbbad5241a30d35f19d17119e0fac145bf",
+        "size": 66056884,
+        "package": "cadcraft"
+      }
+    },
+    {
+      "id": "soundcraft",
+      "name": "SoundCraft",
+      "summary": "Audio editing",
+      "category": "Video & Audio",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.soundcraft",
+      "desktopId": "ai.storyteller.soundcraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "scraft",
+          "wav",
+          "aiff",
+          "flac",
+          "mp3",
+          "mid"
+        ],
+        "utTypes": [
+          "com.microsoft.waveform-audio",
+          "public.aiff-audio",
+          "org.xiph.flac",
+          "public.mp3",
+          "public.midi-audio"
+        ]
+      },
+      "cli": "soundcraft-cli",
+      "mcp": "soundcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.13.1",
+        "url": "https://github.com/storytold/soundcraft/releases/download/v0.13.1/soundcraft-0.13.1-linux-x86_64.deb",
+        "sha256": "3828c0522c8c47ba5abdb12962b1feac6e8374d83313f6112787ae7661766b8d",
+        "size": 18240714,
+        "package": "soundcraft"
+      }
+    },
+    {
+      "id": "figcraft",
+      "name": "FigCraft",
+      "summary": "Interface design",
+      "category": "Create",
+      "packs": [
+        "creative-studio"
+      ],
+      "icon": "ai.storyteller.figcraft",
+      "desktopId": "ai.storyteller.figcraft.desktop",
+      "fileTypes": {
+        "extensions": [
+          "svg",
+          "png",
+          "jpg",
+          "jpeg"
+        ],
+        "utTypes": [
+          "public.svg-image",
+          "public.png",
+          "public.jpeg"
+        ]
+      },
+      "cli": "figcraft-cli",
+      "mcp": "figcraft-cli mcp",
+      "source": {
+        "kind": "deb",
+        "version": "0.11.2",
+        "url": "https://github.com/storytold/figcraft/releases/download/v0.11.2/figcraft-0.11.2-linux-x86_64.deb",
+        "sha256": "dd376f5d71cc3d97e64a4dbc04aa568b98ea0115548cf768d65672e44691ae45",
+        "size": 90762598,
+        "package": "figcraft"
+      }
+    },
+    {
+      "id": "krita",
+      "name": "Krita",
+      "summary": "Digital painting",
+      "category": "Create",
+      "packs": [
+        "create"
+      ],
+      "icon": "org.kde.krita",
+      "desktopId": "org.kde.krita.desktop",
+      "fileTypes": {
+        "extensions": [
+          "kra",
+          "ora",
+          "psd",
+          "png",
+          "jpg",
+          "jpeg"
+        ],
+        "utTypes": [
+          "com.adobe.photoshop-image",
+          "public.png",
+          "public.jpeg"
+        ]
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "krita"
+        ]
+      }
+    },
+    {
+      "id": "darktable",
+      "name": "darktable",
+      "summary": "Photo development",
+      "category": "Create",
+      "packs": [
+        "create"
+      ],
+      "icon": "org.darktable.darktable",
+      "desktopId": "org.darktable.darktable.desktop",
+      "fileTypes": {
+        "extensions": [
+          "dng",
+          "jpg",
+          "jpeg",
+          "png",
+          "tif",
+          "tiff"
+        ],
+        "utTypes": [
+          "com.adobe.raw-image",
+          "public.jpeg",
+          "public.png",
+          "public.tiff"
+        ]
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "darktable"
+        ]
+      }
+    },
+    {
+      "id": "inkscape",
+      "name": "Inkscape",
+      "summary": "Vector drawing",
+      "category": "Create",
+      "packs": [
+        "create"
+      ],
+      "icon": "org.inkscape.Inkscape",
+      "desktopId": "org.inkscape.Inkscape.desktop",
+      "fileTypes": {
+        "extensions": [
+          "svg",
+          "pdf",
+          "png"
+        ],
+        "utTypes": [
+          "public.svg-image",
+          "com.adobe.pdf",
+          "public.png"
+        ]
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "inkscape"
+        ]
+      }
+    },
+    {
+      "id": "gimp",
+      "name": "GIMP",
+      "summary": "Image editing",
+      "category": "Create",
+      "packs": [
+        "create"
+      ],
+      "icon": "gimp",
+      "desktopId": "gimp.desktop",
+      "fileTypes": {
+        "extensions": [
+          "xcf",
+          "psd",
+          "png",
+          "jpg",
+          "jpeg",
+          "tif",
+          "tiff",
+          "gif"
+        ],
+        "utTypes": [
+          "com.adobe.photoshop-image",
+          "public.png",
+          "public.jpeg",
+          "public.tiff",
+          "com.compuserve.gif"
+        ]
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "gimp"
+        ]
+      }
+    },
+    {
+      "id": "kdenlive",
+      "name": "Kdenlive",
+      "summary": "Video editing",
+      "category": "Video & Audio",
+      "packs": [
+        "video-audio"
+      ],
+      "icon": "org.kde.kdenlive",
+      "desktopId": "org.kde.kdenlive.desktop",
+      "fileTypes": {
+        "extensions": [
+          "kdenlive",
+          "mp4",
+          "mov"
+        ],
+        "utTypes": [
+          "public.mpeg-4",
+          "com.apple.quicktime-movie"
+        ]
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "kdenlive"
+        ]
+      }
+    },
+    {
+      "id": "shotcut",
+      "name": "Shotcut",
+      "summary": "Video editing",
+      "category": "Video & Audio",
+      "packs": [
+        "video-audio"
+      ],
+      "icon": "org.shotcut.Shotcut",
+      "desktopId": "org.shotcut.Shotcut.desktop",
+      "fileTypes": {
+        "extensions": [
+          "mlt",
+          "mp4",
+          "mov"
+        ],
+        "utTypes": [
+          "public.mpeg-4",
+          "com.apple.quicktime-movie"
+        ]
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "shotcut"
+        ]
+      }
+    },
+    {
+      "id": "audacity",
+      "name": "Audacity",
+      "summary": "Audio editing",
+      "category": "Video & Audio",
+      "packs": [
+        "video-audio"
+      ],
+      "icon": "audacity",
+      "desktopId": "audacity.desktop",
+      "fileTypes": {
+        "extensions": [
+          "aup3",
+          "wav",
+          "aiff",
+          "mp3"
+        ],
+        "utTypes": [
+          "com.microsoft.waveform-audio",
+          "public.aiff-audio",
+          "public.mp3"
+        ]
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "audacity"
+        ]
+      }
+    },
+    {
+      "id": "handbrake",
+      "name": "HandBrake",
+      "summary": "Video conversion",
+      "category": "Video & Audio",
+      "packs": [
+        "video-audio"
+      ],
+      "icon": "fr.handbrake.ghb",
+      "desktopId": "fr.handbrake.ghb.desktop",
+      "fileTypes": {
+        "extensions": [
+          "mp4",
+          "mkv",
+          "mov"
+        ],
+        "utTypes": [
+          "public.mpeg-4",
+          "org.matroska.mkv",
+          "com.apple.quicktime-movie"
+        ]
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "handbrake"
+        ]
+      }
+    },
+    {
+      "id": "freecad",
+      "name": "FreeCAD",
+      "summary": "Parametric 3D design",
+      "category": "Make",
+      "packs": [
+        "make"
+      ],
+      "icon": "org.freecad.FreeCAD",
+      "desktopId": "org.freecad.FreeCAD.desktop",
+      "fileTypes": {
+        "extensions": [
+          "fcstd",
+          "step",
+          "stp",
+          "stl"
+        ],
+        "utTypes": []
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "freecad"
+        ]
+      }
+    },
+    {
+      "id": "openscad",
+      "name": "OpenSCAD",
+      "summary": "Scripted 3D design",
+      "category": "Make",
+      "packs": [
+        "make"
+      ],
+      "icon": "openscad",
+      "desktopId": "openscad.desktop",
+      "fileTypes": {
+        "extensions": [
+          "scad",
+          "stl"
+        ],
+        "utTypes": []
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "openscad"
+        ]
+      }
+    },
+    {
+      "id": "kicad",
+      "name": "KiCad",
+      "summary": "Electronics design",
+      "category": "Make",
+      "packs": [
+        "make"
+      ],
+      "icon": "org.kicad.kicad",
+      "desktopId": "org.kicad.kicad.desktop",
+      "fileTypes": {
+        "extensions": [
+          "kicad_pro",
+          "kicad_sch",
+          "kicad_pcb"
+        ],
+        "utTypes": []
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "kicad"
+        ]
+      }
+    },
+    {
+      "id": "prusa-slicer",
+      "name": "PrusaSlicer",
+      "summary": "3D printing preparation",
+      "category": "Make",
+      "packs": [
+        "make"
+      ],
+      "icon": "PrusaSlicer",
+      "desktopId": "PrusaSlicer.desktop",
+      "fileTypes": {
+        "extensions": [
+          "stl",
+          "3mf",
+          "obj"
+        ],
+        "utTypes": []
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "prusa-slicer"
+        ]
+      }
+    },
+    {
+      "id": "thunderbird",
+      "name": "Thunderbird",
+      "summary": "Email and calendar",
+      "category": "Office",
+      "packs": [
+        "office"
+      ],
+      "icon": "thunderbird",
+      "desktopId": "thunderbird.desktop",
+      "fileTypes": {
+        "extensions": [],
+        "utTypes": []
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "thunderbird"
+        ]
+      }
+    },
+    {
+      "id": "calibre",
+      "name": "Calibre",
+      "summary": "E-book management",
+      "category": "Office",
+      "packs": [
+        "office"
+      ],
+      "icon": "calibre-gui",
+      "desktopId": "calibre-gui.desktop",
+      "fileTypes": {
+        "extensions": [
+          "epub",
+          "pdf"
+        ],
+        "utTypes": [
+          "org.idpf.epub-container",
+          "com.adobe.pdf"
+        ]
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "calibre"
+        ]
+      }
+    },
+    {
+      "id": "remmina",
+      "name": "Remmina",
+      "summary": "Remote desktop",
+      "category": "Admin",
+      "packs": [
+        "admin"
+      ],
+      "icon": "org.remmina.Remmina",
+      "desktopId": "org.remmina.Remmina.desktop",
+      "fileTypes": {
+        "extensions": [],
+        "utTypes": []
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "remmina"
+        ]
+      }
+    },
+    {
+      "id": "wireshark",
+      "name": "Wireshark",
+      "summary": "Network analysis",
+      "category": "Admin",
+      "packs": [
+        "admin"
+      ],
+      "icon": "org.wireshark.Wireshark",
+      "desktopId": "org.wireshark.Wireshark.desktop",
+      "fileTypes": {
+        "extensions": [],
+        "utTypes": []
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "wireshark"
+        ]
+      }
+    },
+    {
+      "id": "eog",
+      "name": "Image Viewer",
+      "summary": "View images",
+      "category": "Utilities",
+      "packs": [
+        "utilities"
+      ],
+      "icon": "org.gnome.eog",
+      "desktopId": "org.gnome.eog.desktop",
+      "fileTypes": {
+        "extensions": [
+          "png",
+          "jpg",
+          "jpeg",
+          "gif",
+          "tif",
+          "tiff"
+        ],
+        "utTypes": [
+          "public.png",
+          "public.jpeg",
+          "com.compuserve.gif",
+          "public.tiff"
+        ]
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "eog"
+        ]
+      }
+    },
+    {
+      "id": "gnome-calculator",
+      "name": "Calculator",
+      "summary": "Calculator",
+      "category": "Utilities",
+      "packs": [
+        "utilities"
+      ],
+      "icon": "org.gnome.Calculator",
+      "desktopId": "org.gnome.Calculator.desktop",
+      "fileTypes": {
+        "extensions": [],
+        "utTypes": []
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "gnome-calculator"
+        ]
+      }
+    },
+    {
+      "id": "vlc",
+      "name": "VLC",
+      "summary": "Media player",
+      "category": "Video & Audio",
+      "packs": [
+        "video-audio"
+      ],
+      "icon": "vlc",
+      "desktopId": "vlc.desktop",
+      "fileTypes": {
+        "extensions": [
+          "mp4",
+          "mkv",
+          "mov",
+          "mp3",
+          "wav"
+        ],
+        "utTypes": [
+          "public.mpeg-4",
+          "org.matroska.mkv",
+          "com.apple.quicktime-movie",
+          "public.mp3",
+          "com.microsoft.waveform-audio"
+        ]
+      },
+      "source": {
+        "kind": "apt",
+        "packages": [
+          "vlc"
+        ]
+      }
+    }
+  ]
+}

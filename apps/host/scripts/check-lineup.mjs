@@ -15,7 +15,7 @@ async function request(path, method = 'GET') {
 const session = await request('/v1/session', 'POST')
 const apps = await request('/v1/apps')
 const wanted = [
-  ['org.gnome.Calculator.desktop', 'Calculator'],
+  ['org.xfce.mousepad.desktop', 'Mousepad'],
   ['caboose-btop.desktop', 'btop'],
   ['caboose-opencode.desktop', 'OpenCode'],
 ]
@@ -54,11 +54,11 @@ try {
   let missing = wanted.map(([, title]) => title)
   while (Date.now() < deadline && missing.length) {
     const after = await titles()
-    missing = wanted.map(([, title]) => title).filter(title => ![...after].some(([id, value]) => !before.has(id) && value === title))
+    missing = wanted.map(([, title]) => title).filter(title => ![...after].some(([id, value]) => !before.has(id) && value.includes(title)))
     if (missing.length) await new Promise(resolve => setTimeout(resolve, 1000))
   }
   if (missing.length) throw new Error(`No new Xpra window for: ${missing.join(', ')}; close existing windows and retry`)
-  console.log('App icons and new Calculator, btop and OpenCode windows verified')
+  console.log('App icons and new Mousepad, btop and OpenCode windows verified')
 } finally {
   await new Promise(resolve => bridge.close(resolve))
 }

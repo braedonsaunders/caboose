@@ -70,24 +70,36 @@ export class ComputerLifecycle<T> {
 
   wake(): Promise<T> {
     this.clearIdle()
+    return this.serialize(() => this.wakeNow())
+  }
+
+  private async wakeNow(): Promise<T> {
+    if (this.current === 'running' && this.value !== undefined) {
+      this.armIdle()
+      return this.value
+    }
+    this.setState('waking')
+    try {
+      this.value = await this.driver.wake()
+      this.failure = null
+      this.setState('running')
+      this.armIdle()
+      return this.value
+    } catch (error) {
+      this.failure = error instanceof Error ? error.message : String(error)
+      this.setState('error')
+      throw error
+    }
+  }
+
+  /** Wake and perform an operation in the same lifecycle turn, holding a lease throughout. */
+  wakeAndRun<R>(work: () => Promise<R>): Promise<R> {
+    if (this.restartPending) return Promise.reject(new ComputerConflictError('Computer is restarting'))
+    const release = this.acquire()
     return this.serialize(async () => {
-      if (this.current === 'running' && this.value !== undefined) {
-        this.armIdle()
-        return this.value
-      }
-      this.setState('waking')
-      try {
-        this.value = await this.driver.wake()
-        this.failure = null
-        this.setState('running')
-        this.armIdle()
-        return this.value
-      } catch (error) {
-        this.failure = error instanceof Error ? error.message : String(error)
-        this.setState('error')
-        throw error
-      }
-    })
+      await this.wakeNow()
+      return work()
+    }).finally(release)
   }
 
   /** Guest operations complete before a park/restart can close their transport. */

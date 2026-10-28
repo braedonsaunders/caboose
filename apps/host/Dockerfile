@@ -11,7 +11,7 @@ FROM build-deps AS host-build
 COPY apps/host/tsconfig.json apps/host/tsconfig.json
 COPY apps/host/src apps/host/src
 RUN pnpm --filter caboose-host exec tsc --outDir dist && \
-    cp apps/host/src/guest-apps.py apps/host/dist/
+    cp apps/host/src/guest-apps.py apps/host/src/guest-catalog.py apps/host/src/guest-craft.py apps/host/dist/
 
 FROM build-deps AS web-build
 COPY apps/web apps/web
@@ -38,6 +38,8 @@ COPY --from=host-deps /src/node_modules ./node_modules
 COPY --from=host-deps /src/apps/host/node_modules ./apps/host/node_modules
 COPY --from=host-deps /src/apps/host/package.json ./apps/host/package.json
 COPY --from=host-build /src/apps/host/dist ./apps/host/dist
+COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
+COPY guest/catalog/icons ./guest/catalog/icons
 COPY --from=web-build /src/apps/web/dist ./apps/web/dist
 COPY apps/host/scripts/setup-disks.sh /usr/local/bin/setup-disks
 COPY apps/host/scripts/container-entrypoint.sh /usr/local/bin/caboose-entrypoint

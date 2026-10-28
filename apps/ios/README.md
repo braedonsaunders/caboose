@@ -33,7 +33,8 @@ Deny, on the task card or on the banner that shows over any screen. A finished t
 reply that continues the same conversation; one whose agent was signed out offers Sign In.
 Settings › Agents (from the bar's menu or Computer settings) installs and updates agents,
 signs in to them on the computer's screen, gives one an API key or other environment, and
-sets the default.
+sets the default. The Ask bar menu’s **Use Craft App Tools** switch controls whether new
+tasks started in the app offer installed catalog MCP servers to the agent.
 
 Where Apple Intelligence is available the bar also offers **On iPhone**: Apple's on-device
 model, in `Caboose/Agents/OnDevice*.swift`. It opens apps and pages, types, presses
@@ -58,11 +59,60 @@ every site (contract: `docs/architecture.md` § Media handoff).
 Caboose appears in the iOS share sheet. A web page can be opened in the computer's browser;
 photos, files and text can be saved in `~/Downloads` (and opened there); any of them can be
 handed to an agent with a request (photos are scaled to 2048 px, at most 4 files and 10 MB).
-The app and the extension share the host address and token through the Keychain access group
+The share extension stages files on disk and streams them to the computer; the size limit
+for agent attachments still applies. The app and the extensions share the host address and token through the Keychain access group
 `<team>.com.braedonsaunders.caboose.shared`; an install that paired before this moves its
 pairing there on first launch, so it does not need pairing again. On a device, check: share a
 Safari page and pick Open on Computer; share a photo and pick Save and Open; share a photo
 with "describe this" to an agent and see the task appear on Home.
+
+## Files app
+
+The paired computer appears as a Files location named after the computer. Files can enumerate
+its home, download on demand, create folders, upload edits, rename, move and delete items.
+The replicated provider uses version checks for coordinated writes and polls the guest's sync
+anchor when its enumerator wakes; the app signals it on live `fs.changed` events. The system
+can generate previews for downloaded items; there is no separate server thumbnail service.
+A parked computer wakes for file access. An unreachable host is reported as offline.
+
+On a signed device paired to a guest with `guest/files` installed, open the location in Files,
+create a folder, save a document from another app, open and edit it in place, and verify the
+edit on Linux. Rename and move it from each side, verify changes appear after reconnecting,
+then delete it in Files and check the guest Trash. Park the computer and open a file to verify
+wake; disconnect the network and verify Files reports the host unavailable without discarding
+an offline edit. Verify a conflicting Linux edit is not overwritten. A simulator build alone
+does not verify the File Provider daemon or device entitlements.
+
+## Drop into Linux
+
+Drop text on an owner window to focus the drop point and type it. Drop a file or image to
+save it in `~/Downloads` and open it with Linux's default handler (up to 50 MiB); this does
+not deliver a native drag event to the target app. Dragging out of Linux is not implemented.
+
+On a real iPad, connect to the computer, open a text editor, then drop selected text from
+another app into its edit area. Check that the text appears at the drop point. Drop an image
+from Photos and a document from Files; check Downloads and the default viewer. Repeat with
+Xpra and Caboose Display, and with the app in its full-screen and desktop layouts. Try a
+file over 50 MiB and verify the error is shown. The iPhone can receive drops where iOS makes
+a drag source available. Device checks require a real computer and iOS device.
+
+## Open, share and print from Linux
+
+`caboose-open` opens a supported link on the phone after confirmation. In Thunar use
+**Share to iPhone**, or run `caboose-share FILE`; selecting **iPhone** in a Linux print
+dialog sends a PDF to the phone's print dialog. Share and print files are limited to
+10 MiB. Requests wait in the guest while the phone is disconnected, expire after 24 hours,
+and are delivered at most once. Every action asks first; no background URL opens. The
+`PhoneFileDownloading` protocol currently uses the bounded guest-command download; the
+streamed `/v1/fs` API is available for a later handoff-client upgrade.
+
+For a real-device check, connect to the computer, open a terminal, run
+`caboose-open 'mailto:person@example.com'`, and confirm only after verifying the URL.
+Share a photo from Thunar and verify the native share sheet can save it or AirDrop it;
+print a document to iPhone and verify the AirPrint preview and printer selection. Repeat
+with the phone backgrounded and with both Xpra and Caboose Display; no action should occur
+without a tap. Open the app again to receive queued requests. See `guest/phone/README.md`
+for the scripted guest check.
 
 ## Computer settings
 
@@ -72,6 +122,18 @@ how long it waits before parking, Park Now, Restart (confirmed first: open apps 
 disk is kept) and Change Computer. It reads and writes the host's management API
 (`GET /v1/computer`, `PATCH /v1/computer/settings`, `POST /v1/computer/restart`, see
 `docs/architecture.md`) and follows `computer.settings` events on the control socket.
+
+## Shelf and Library
+
+Home's Shelf offers optional applications from the computer's pinned catalog. Tap Get
+and follow its live install indicator; the installed application appears in the app grid.
+Library groups applications into packs and offers updates, rollback when an older release
+is cached, and removal. Debian applications come from Debian 13; Craft release versions
+change only when this repository's catalog pin is changed, then the owner chooses Update.
+
+On a device connected to a deployed computer, install PhotoCraft from the Shelf, verify
+progress and that Open launches a window, then check Library's pack and Remove actions.
+An update and rollback check needs a computer with an older pinned Craft release cached.
 
 ## Build
 
@@ -202,3 +264,68 @@ Protocol instead of Xpra; the screens are the same. What changes:
 - **Not yet.** Window pictures are SDR:
   the hello reports `hdr: false` until the window surfaces render EDR.
 
+
+## Notifications
+
+When the host has APNs configured, Computer settings lets this device choose approval,
+finished-task, and desktop alerts and request iOS notification permission. Approval
+actions answer the host's existing approval API; task alerts open the task. The app
+unregisters its token when changing computers. A development-signed app uses APNs
+sandbox and a release-signed app uses production; signing must include the push
+capability. Check on a real paired device by enabling each kind, backgrounding the app,
+triggering an approval and a task completion, and using Allow and Deny from notifications.
+A Linux notification has no portable window identifier and opens Caboose.
+
+## Live Activities
+
+The app starts a Live Activity for running agent tasks when the host has APNs, and the
+host updates and ends it while the app is closed. `CabooseWidgets` is the shared WidgetKit
+extension for these Lock Screen and Dynamic Island views; later widgets and controls belong
+in this target. Its shared `JobAttributes` also describes generic jobs, with the host API in
+`docs/architecture.md` § Notifications. Push-to-start uses ActivityKit's token stream.
+On a signed device with APNs configured, start a task, background the app, verify the Lock
+Screen/Dynamic Island updates and ends on completion, then start a task from another client
+and verify push-to-start. Real delivery depends on iOS and APNs and cannot be proved by a
+simulator build.
+
+## Shortcuts and Spotlight
+
+Shortcuts wake or park the computer, open a Linux app or URL, start an agent task, and
+open, get or save computer files. File search recursively lists the home and suggests
+recently modified files. Spotlight indexes the 200 newest files and current Linux apps,
+refreshing after file-change events and a wake. File uploads never overwrite an existing
+file; the agent task requests approval and returns a task link.
+
+PhotoCraft converts one or more images; PDFCraft combines PDFs; LightCraft develops a
+photo; FilmCraft exports a project whose referenced media is present on the computer.
+Each action requires the corresponding catalog app installed, transfers input and output
+through `/v1/fs`, and returns the files and CLI warnings. See the architecture contract
+for formats, job lifecycle, and staged-file retention.
+
+The Computer widget displays state and running agent count; add a Favourite Linux App
+widget to launch a chosen app. Control Center offers Computer Power, Open Linux App
+(configure its favourite), and Ask Agent. On a signed paired device, run each shortcut,
+check input and output files, configure and tap the widget and controls, and compare the
+power state with Computer settings. Create, rename and delete a nested computer file,
+check Spotlight after `fs.changed`, then sign out and verify entries disappear. Repeat
+with the phone disconnected and reconnected. Verify job progress and Live Activity on a
+signed device with APNs configured. WidgetKit schedules refreshes and may delay updates;
+these checks need a real device and a computer with the file service and Craft apps.
+
+## Open documents in Linux apps
+
+Files and Open In can send a registered document type to Caboose. Choose an installed catalog app
+or install a compatible one from the chooser. External documents are uploaded to a unique folder
+in `Caboose Documents` and their changes are synchronized with the original. The app checks after
+computer file events and on returning from suspension. If both copies changed, choose which to
+keep; unavailable originals or failed transfers are reported. Files in the Caboose Files location
+open on the computer directly. The Share extension's **Open on Computer** offers the same app
+choice. If the source supplies only a temporary copy, it warns that edits cannot be written back.
+Return to Caboose to see the window.
+
+The app, Files and Share extensions need the application group
+`group.com.braedonsaunders.caboose` provisioned for a signed device. Run
+`python3 apps/ios/scripts/document-types.py --write` after changing catalog file types, then
+`python3 apps/ios/scripts/test-document-types.py`; every app build checks the generated list.
+For a signed device and a deployed host, run `apps/ios/scripts/check-open-in-place.sh` and follow
+the checks. A simulator build cannot establish file-provider or security-scoped bookmark behavior.

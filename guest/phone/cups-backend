@@ -1,0 +1,13 @@
+#!/bin/sh
+# CUPS invokes this as root (mode 0700), with a PDF after its filter chain.
+set -eu
+if [ "$#" -eq 0 ]; then
+    echo 'direct caboose-phone "Unknown" "iPhone"'
+    exit 0
+fi
+[ "$#" -ge 5 ] || exit 1
+job=$(mktemp /tmp/caboose-print.XXXXXXXX)
+trap 'rm -f "$job"' EXIT
+if [ "$#" -ge 6 ]; then cat -- "$6" > "$job"; else cat > "$job"; fi
+chown caboose:caboose "$job"
+runuser -u caboose -- /usr/local/bin/caboose-phone print "$job" "${3:-Print job}.pdf"

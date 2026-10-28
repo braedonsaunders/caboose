@@ -8,6 +8,7 @@ struct AskBar: View {
     /// A registry id, "" for the owner's default agent, or `onDevice`.
     @AppStorage("caboose.agent.choice") private var agent = ""
     @AppStorage("caboose.agent.askFirst") private var askFirst = false
+    @AppStorage("caboose.agent.craftMcp") private var craftMcp = true
     @AppStorage("caboose.agent.delegate") private var delegate = ""
     @FocusState private var focused: Bool
 
@@ -28,6 +29,7 @@ struct AskBar: View {
                 }
                 if agent != Self.onDevice {
                     Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
+                    Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
                 }
                 Button { model.showAgentSettings = true } label: { Label("Agents…", systemImage: "slider.horizontal.3") }
             } label: {
@@ -50,6 +52,10 @@ struct AskBar: View {
         .padding(.vertical, 8)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24))
         .animation(.snappy, value: prompt.isEmpty)
+        .onAppear { if model.askFocusRequested { focused = true; model.askFocusRequested = false } }
+        .onChange(of: model.askFocusRequested) { _, requested in
+            if requested { focused = true; model.askFocusRequested = false }
+        }
     }
 
     private func send() {

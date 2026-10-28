@@ -77,12 +77,27 @@ approvals, attachments, `POST /v1/files` and `POST /v1/open` are specified in
 (`src/registry.ts`; `CABOOSE_AGENT_REGISTRY_URL` selects a mirror), cached in
 `${CABOOSE_IMAGE_ROOT}/agent-registry.json`, and run in the computer by `caboose-agentd`
 (`guest/agentd`); the host has no code for any particular agent. `CABOOSE_AGENT_IDLE_MS`
-sets how long an agent stays running after a turn, waiting for a reply. The host talks to
-the guest only through the driver's `guest().run(command, args)`; file contents are sent
-as base64 argument chunks and decoded in the guest, so both the microVM and container
-drivers support them without a stdin channel. `guest().ownerEnv` is what a GUI on the
-owner's display needs (sign-in, opening files and URLs, the screen routes): `DISPLAY=:100`
-under Xpra, or the launch environment Caboose Display writes at each wake.
+sets how long an agent stays running after a turn, waiting for a reply. Agent attachment contents use base64 argument chunks on the guest command channel.
+Shared files and `/v1/fs` use the guest's authenticated TCP file service, installed in both
+images; streaming requests wake the computer and hold a lease until the transfer finishes.
+The full route, precondition, Trash and change-feed contract is in `../../docs/architecture.md` § Files.
+Existing computer disks need the service installed in the guest; rebuilding the golden image
+updates newly created computers only.
+
+With Node 22 and a real computer, the file check creates a temporary directory, uploads,
+lists, downloads a byte range, moves and trashes its files and the directory:
+
+```sh
+export CABOOSE_URL=https://computer.example.com
+# Supply CABOOSE_OWNER_TOKEN through your private environment.
+node apps/host/scripts/check-fs.mjs
+```
+
+The guest-service check runs its Linux inotify and filesystem operations in an ephemeral
+Python container: `docker run --rm -v "$PWD/guest/files:/checks:ro" python:3.13-slim python3 /checks/check-service.py`.
+`guest().ownerEnv` is what a GUI on the owner's display needs (sign-in, opening files and URLs,
+the screen routes): `DISPLAY=:100` under Xpra, or the launch environment Caboose Display
+writes at each wake.
 
 The owner-screen routes (`/v1/screen/*`, § Screen) are in `src/screen.ts`: they run the
 guest's accessibility helper `/opt/caboose/a11y.py` (see `guest/desktop-mcp`) and `xdotool`
@@ -216,3 +231,90 @@ random value, then run `docker compose -f deploy/compose.yaml up -d` to
 recreate the service. Update every client; the old token stops working. Keep
 this file private and never commit it. The token is also visible to Docker
 administrators through container configuration.
+
+## APNs
+
+Set all of `CABOOSE_APNS_KEY_PATH` (a private P-256 .p8 file),
+`CABOOSE_APNS_KEY_ID`, `CABOOSE_APNS_TEAM_ID`, and `CABOOSE_APNS_TOPIC` to enable
+the host APNs provider. Keep the key and environment private. Devices are stored
+in `push-devices.json` under `CABOOSE_IMAGE_ROOT` with mode 0600. The API and
+current limitations are described in `../../docs/architecture.md` § Notifications.
+The iOS app registers its device and Live Activity tokens after pairing.
+
+On a host with real credentials and at least one registered device, run
+`node apps/host/scripts/check-push.mjs [device-index]` from the repository root.
+It sends a test alert to the indexed registered device (default 0); APNs acceptance
+is not proof of device delivery, so check the device too. The index does not print
+tokens.
+
+Live Activity registrations are kept in `activities.json` in the same directory. Agent
+task events update them; other job producers may publish the generic job shape through
+`POST /v1/jobs/activity` as documented in the architecture contract. The sender uses the
+app topic with `.push-type.liveactivity` appended.
+
+## Application catalog
+
+The pinned catalog in `guest/catalog` is served at `GET /v1/catalog`. Install, update,
+rollback and removal are asynchronous; watch `catalog.progress` and `catalog.changed`
+on `/v1/control`. The guest downloads and verifies release packages before APT runs.
+Only one catalog operation runs at a time. An interrupted operation is reported by the
+next catalog listing; inspect its error and retry. Debian package installs use the signed
+Debian 13 repositories. Rollback is available only when an earlier release package was
+cached. The container runtime retains its writable layer across a Caboose cold restart.
+
+With an Xpra owner display and a deployed computer, verify PhotoCraft's guest download,
+installation, launch and software rendering (close any existing PhotoCraft window first):
+
+```sh
+export CABOOSE_URL=https://computer.example.com
+# Supply CABOOSE_OWNER_TOKEN in the private environment. Requires a local Xpra client.
+node apps/host/scripts/check-catalog.mjs
+```
+
+The check wakes the computer, installs PhotoCraft if needed, and leaves the window open.
+It requires a new Xpra window and is separate from the host unit tests.
+
+## iOS handoff
+
+The host relays validated guest `phone.open`, `phone.share`, and `phone.print` events
+only to owner-authenticated `/v1/control?phone=1` sockets, and only polls while one is
+connected. `GET /v1/phone/files/:id` reads a staged file through the guest command
+channel; it does not accept arbitrary guest paths or wake the computer. See
+`../../docs/architecture.md` § iOS weave for the schema, limits and delivery semantics,
+and `../../guest/phone/README.md` for the guest-side CUPS and command check.
+
+## Catalog tools for agents
+
+New agent tasks offer installed catalog MCP commands through ACP. Send `craftMcp: false`
+in `POST /v1/agent/tasks` to turn them off for that task and its replies. The installed
+list is captured at task creation; apps installed later are available to a new task. The
+iOS Ask bar menu also provides a switch for tasks started in the app. See the Agents section of the
+architecture for the app list and agent compatibility.
+
+To verify launching a specific application with a real file, set `CABOOSE_URL`,
+`CABOOSE_OWNER_TOKEN`, `CABOOSE_CHECK_FILE` (a compatible local document) and
+`CABOOSE_CHECK_APP` (an installed desktop entry ID), then run
+`apps/host/scripts/check-open-app.sh`. Check the owner display for the document; the
+script leaves its test copy in a uniquely named folder in the computer's home.
+
+## Craft jobs
+
+The host runs a fixed list of installed catalog CLI operations against files staged in
+`~/.caboose-jobs/<job>` through `/v1/fs`. The HTTP contract, accepted formats, progress
+events, Live Activities, warnings and retention are in `docs/architecture.md` under
+Shortcuts and Spotlight. The guest executes the CLI as `caboose`, not root.
+
+On a paired real host with the requested app installed and Node 22+, run:
+
+```sh
+export CABOOSE_URL=https://computer.example.com
+# Set CABOOSE_OWNER_TOKEN in the private environment.
+node apps/host/scripts/check-craft.mjs photocraft /path/to/example.jpg
+node apps/host/scripts/check-craft.mjs pdfcraft /path/to/one.pdf /path/to/two.pdf
+node apps/host/scripts/check-craft.mjs lightcraft /path/to/example.jpg
+node apps/host/scripts/check-craft.mjs filmcraft /path/to/project.fcproj
+```
+
+Each check wakes the computer, uploads its fixtures, validates the output signature
+and moves the staged job directory to Trash. FilmCraft media must already be present
+at the paths in the project on the computer. Failed jobs remain for inspection.

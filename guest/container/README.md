@@ -7,7 +7,7 @@ docker build -t caboose-computer:gpu -f guest/container/Dockerfile guest
 ```
 
 The image uses Debian 13, the signed Xpra repository at version 6.5.5, Mesa,
-the guest app installer, and Xpra NVENC with PyCUDA. `CABOOSE_GPU=wsl` selects
+the guest app installer, Mesa Vulkan and OpenGL software drivers, and Xpra NVENC with PyCUDA. `CABOOSE_GPU=wsl` selects
 Mesa D3D12 and enables NVENC when WSL exposes NVIDIA; `nvidia` uses native
 NVIDIA, `dri` uses a Linux render node, and `none` uses software rendering. It extracts
 the signed Debian `python3-pycuda` package and installs its runtime libraries
@@ -56,3 +56,30 @@ profile is based on the [Moby seccomp v0.2.1 default](https://github.com/moby/pr
 (Apache-2.0), with clone/unshare allowed for user, PID and network namespaces;
 mount, UTS, IPC and cgroup namespace creation remains blocked. It must be
 reviewed against the Docker version and local security requirements.
+
+## File service
+
+The image installs `guest/files/caboose-files.py`. `caboose-session start-files` starts it
+as `caboose` after the host writes the wake token; the host publishes port 14700 on loopback
+only. See `docs/architecture.md` § Files and `apps/host/README.md` for the API and checks.
+Recreate a container from the updated image to install the service; its home volume remains.
+## Desktop notifications
+
+The owner session's D-Bus notification monitor writes a bounded private queue under
+`~/.cache/caboose/notifications`; the host drains it while the computer runs. The owner and agent seats use separate D-Bus session buses, so agent notifications do not enter the owner queue. The monitor needs the
+owner's user bus and `python3-gi`. To check a running guest with the owner display up,
+run `sudo bash guest/notifications/check.sh` inside it; the check sends a notification
+and waits for its queue record. APNs delivery needs the separate host and device check.
+
+`guest/notifications/check-container.sh` exercises the actual monitor and separate buses in
+a disposable Debian container without a VM or APNs credentials.
+
+Cold restart stops and starts the same container, preserving its installed packages and
+catalog rollback cache in the writable layer. Removing or replacing that container discards
+those packages; back up the home volume separately.
+
+## iOS handoff and printing
+
+The container installs the same commands, desktop integration and iPhone CUPS queue as
+the microVM; `caboose-session` starts CUPS for either owner display. See
+[`guest/phone/README.md`](../phone/README.md) for behavior and the scripted guest check.

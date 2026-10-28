@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 struct ShareView: View {
     @Bindable var model: ShareModel
     @FocusState private var promptFocused: Bool
+    @State private var selected: ShareModel.CatalogEntry?
+    @State private var warnCopy = false
 
     var body: some View {
         NavigationStack {
@@ -13,10 +15,11 @@ struct ShareView: View {
                                            description: Text("Open Caboose and connect to your computer first."))
                 } else if model.phase == .loading {
                     ProgressView()
+                } else if model.items.isEmpty, case .failed(let message) = model.phase {
+                    ContentUnavailableView("Could Not Open", systemImage: "exclamationmark.triangle", description: Text(message))
                 } else if model.items.isEmpty {
                     ContentUnavailableView("Nothing to Send", systemImage: "tray",
-                                           description: Text(model.skipped.isEmpty ? "Caboose can take pages, text, photos and files."
-                                                             : "Files over 20 MB are too large to share from here."))
+                                           description: Text("Caboose can take pages, text, photos and files."))
                 } else {
                     form
                 }
@@ -26,6 +29,34 @@ struct ShareView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { model.cancel() } }
             }
+        }
+        .sheet(isPresented: $model.selectingApp) {
+            NavigationStack {
+                List {
+                    Section("Apps for these documents") {
+                        ForEach(model.compatibleApps) { app in appRow(app) }
+                        if model.compatibleApps.isEmpty { Text("No catalog app lists all these document types.").foregroundStyle(.secondary) }
+                    }
+                    Section("Other installed apps") {
+                        ForEach(model.catalog.filter { app in app.installedVersion != nil && !model.compatibleApps.contains(where: { $0.id == app.id }) }) { app in appRow(app) }
+                    }
+                }.navigationTitle("Open on Computer")
+                    .toolbar { Button("Cancel") { model.selectingApp = false } }
+            }
+        }
+        .alert("Open a copy?", isPresented: $warnCopy) {
+            Button("Open Copy") { if let selected { model.openOnComputer(selected) } }
+            Button("Cancel", role: .cancel) { selected = nil }
+        } message: { Text("The sharing app provided a temporary copy. Changes on your computer cannot be written back to the original.") }
+    }
+
+    private func appRow(_ app: ShareModel.CatalogEntry) -> some View {
+        Button {
+            selected = app
+            model.selectingApp = false
+            if model.canWriteBack { model.openOnComputer(app) } else { warnCopy = true }
+        } label: {
+            HStack { Text(app.name); Spacer(); Text(app.installedVersion == nil ? "Get" : "Open").foregroundStyle(.secondary) }
         }
     }
 
@@ -37,10 +68,6 @@ struct ShareView: View {
         Form {
             Section {
                 ForEach(model.items) { item in row(item) }
-                if !model.skipped.isEmpty {
-                    Label("Too large to share from here: \(model.skipped.joined(separator: ", "))", systemImage: "exclamationmark.triangle")
-                        .font(.footnote).foregroundStyle(.orange)
-                }
             }
 
             Section {
@@ -50,6 +77,7 @@ struct ShareView: View {
                 if !model.files.isEmpty || !model.texts.isEmpty {
                     Button("Save to Downloads", systemImage: "square.and.arrow.down") { model.save(open: false) }
                     Button("Save and Open", systemImage: "arrow.up.forward.app") { model.save(open: true) }
+                    if !model.files.isEmpty { Button("Open on Computer…", systemImage: "desktopcomputer") { model.selectingApp = true; Task { await model.refreshCatalog(wake: true) } } }
                 }
             }
             .disabled(busy)
@@ -75,7 +103,10 @@ struct ShareView: View {
 
             switch model.phase {
             case .sending(let message):
-                Section { Label { Text(message) } icon: { ProgressView() } }
+                Section {
+                    Label { Text(message) } icon: { ProgressView() }
+                    if let id = model.installing, let value = model.catalog.first(where: { $0.id == id })?.progress?.value { ProgressView(value: value) }
+                }
             case .done(let message):
                 Section { Label(message, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
             case .failed(let message):
@@ -97,19 +128,15 @@ struct ShareView: View {
             } icon: { Image(systemName: "globe") }
         case .text(let text):
             Label { Text(text).lineLimit(3).font(.subheadline) } icon: { Image(systemName: "text.alignleft") }
-        case .file(let name, let type, let data):
+        case .file(let name, let type, let url, _, _):
             Label {
                 VStack(alignment: .leading) {
                     Text(name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))
+                    Text(ByteCountFormatter.string(fromByteCount: Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0), countStyle: .file))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } icon: {
-                if type.conforms(to: .image), let image = UIImage(data: data) {
-                    Image(uiImage: image).resizable().scaledToFill().frame(width: 28, height: 28).clipShape(.rect(cornerRadius: 5))
-                } else {
-                    Image(systemName: type.conforms(to: .movie) ? "film" : "doc")
-                }
+                Image(systemName: type.conforms(to: .image) ? "photo" : type.conforms(to: .movie) ? "film" : "doc")
             }
         }
     }

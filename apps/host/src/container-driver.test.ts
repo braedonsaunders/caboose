@@ -11,11 +11,12 @@ function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
     switch (args[0]) {
       case 'inspect':
         if (status === 'missing') throw new Error('No such object')
-        if (args.includes('{{json .Config.Labels}}')) return '{"caboose.memory-mb":"4096","caboose.vcpus":"2"}'
+        if (args.includes('{{json .HostConfig}}')) return '{"Memory":4294967296,"NanoCpus":2000000000}'
         return `${status}\n`
       case 'run': status = 'running'; return 'id\n'
       case 'start': case 'unpause': status = 'running'; return ''
       case 'pause': status = 'paused'; return ''
+      case 'stop': status = 'exited'; return ''
       case 'rm': status = 'missing'; return ''
       case 'network': return ''
       case 'exec':
@@ -139,7 +140,8 @@ describe('container settings and restart', () => {
     expect(controller.activeResources()).toEqual({ memoryMb: 8192, vcpus: 6 })
     desired = { ...desired, memoryMb: 12288 }
     const second = await controller.restart!()
-    expect(fake.calls.some(call => call[0] === 'rm')).toBe(true)
+    expect(fake.calls.some(call => call[0] === 'rm')).toBe(false)
+    expect(fake.calls).toContainEqual(['update', '--memory', '12288m', '--memory-swap', '24576m', '--cpus', '6', 'caboose-owner'])
     expect(second.computer.memoryMb).toBe(12288)
     expect(second.display.token).not.toBe(first.display.token)
   })

@@ -612,6 +612,11 @@ class Task {
     const config = JSON.parse(await readFile(join(this.dir, 'task.json'), 'utf8'))
     this.spec = readSpec(config.agent)
     this.cwd = typeof config.cwd === 'string' && isAbsolute(config.cwd) ? config.cwd : this.dir
+    this.craftServers = Array.isArray(config.craftServers) ? config.craftServers.filter(server =>
+      server && typeof server.name === 'string' && /^caboose-[a-z0-9.-]+$/.test(server.name) &&
+      typeof server.command === 'string' && /^[a-zA-Z0-9._-]+$/.test(server.command) &&
+      Array.isArray(server.args) && server.args.every(arg => typeof arg === 'string' && /^[a-zA-Z0-9._-]+$/.test(arg))
+    ).map(server => ({ name: server.name, command: server.command, args: server.args, env: [] })) : []
     this.approvalMode = config.approvals === 'ask' ? 'ask' : 'auto'
     this.idleMs = Number.isSafeInteger(config.idleMs) && config.idleMs >= 0 ? config.idleMs : DEFAULT_IDLE_MS
   }
@@ -683,6 +688,7 @@ class Task {
     const mcpServers = existsSync(DESKTOP_MCP)
       ? [{ name: 'caboose-desktop', command: process.execPath, args: [DESKTOP_MCP], env: [{ name: 'CABOOSE_AGENT_DISPLAY', value: process.env.DISPLAY || ':101' }] }]
       : []
+    mcpServers.push(...this.craftServers)
     const previous = (await readFile(join(this.dir, 'session'), 'utf8').catch(() => '')).trim()
     const request = (method, params) => Promise.race([agent.connection.agent.request(method, params), agent.died])
     let continuity = 'new'

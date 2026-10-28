@@ -59,6 +59,7 @@ struct HostClient: Sendable {
         }
         struct Capabilities: Decodable, Equatable, Sendable {
             var restart: Bool
+            var push: Bool?
         }
         struct Bounds: Decodable, Equatable, Sendable {
             var min: Int
@@ -154,7 +155,7 @@ struct HostClient: Sendable {
             return try JSONDecoder().decode(T.self, from: data)
         case 401, 403:
             throw Failure.unauthorized
-        case 409 where path.hasPrefix("/v1/computer"):
+        case 409 where path.hasPrefix("/v1/computer") || path.hasPrefix("/v1/catalog") || path == "/v1/session/park":
             let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"]
             throw Failure.server(status, message)
         case 409:

@@ -106,6 +106,7 @@ final class AgentCenter {
         guard let host else { return }
         do {
             tasks = try await host.agentTasks()
+            LiveActivityCoordinator.shared.sync(tasks)
             available = true
             if !tasks.isEmpty { openSeatIfNeeded() }
         } catch HostClient.Failure.server(404, _) {
@@ -124,7 +125,7 @@ final class AgentCenter {
         guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         let approvals = askFirst ? "ask" : "auto"
         do {
-            let id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments)
+            let id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments, craftMcp: UserDefaults.standard.object(forKey: "caboose.agent.craftMcp") as? Bool ?? true)
             if !tasks.contains(where: { $0.id == id }) {
                 let chosen = agent ?? defaultAgent ?? ""
                 tasks.insert(Task(id: id, agent: chosen, agentName: listing(chosen)?.name, prompt: prompt, status: "running",
@@ -283,7 +284,9 @@ final class AgentCenter {
 
     private func openControl() {
         guard let host, control == nil else { return }
-        var request = URLRequest(url: host.socketURL("/v1/control"))
+        var components = URLComponents(url: host.socketURL("/v1/control"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "foreground", value: "1"), URLQueryItem(name: "phone", value: "1")]
+        var request = URLRequest(url: components.url!)
         request.setValue("Bearer \(host.token)", forHTTPHeaderField: "Authorization")
         let task = URLSession.shared.webSocketTask(with: request)
         control = task
@@ -368,6 +371,7 @@ final class AgentCenter {
         default:
             break
         }
+        LiveActivityCoordinator.shared.sync(tasks)
     }
 
     /// A JSON value from a control event, decoded as `type`.
@@ -398,7 +402,8 @@ extension HostClient {
     func decideAgentApproval(_ id: String, request requestID: String, allow: Bool, option: String? = nil) async throws {
         var body: [String: JSONValue] = ["allow": .bool(allow)]
         if let option { body["optionId"] = .string(option) }
-        let _: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/approvals/\(requestID)", body: body, timeout: 20)
+        let result: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/approvals/\(requestID)", body: body, timeout: 20)
+        guard result["resolved"] == true else { throw Failure.server(409, "This approval is no longer waiting for an answer.") }
     }
 
     func cancelAgentTask(_ id: String) async throws {
