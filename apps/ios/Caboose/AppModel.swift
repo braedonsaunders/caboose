@@ -46,6 +46,10 @@ final class AppModel {
     private(set) var launching: HostClient.App?
     /// An app that would not start. The computer is fine, so Home stays and says which app.
     var launchFailure: String?
+    /// A pairing code is being traded for this phone's token.
+    private(set) var pairing = false
+    /// Why the last pairing code did not sign this phone in.
+    var pairingFailure: String?
 
     /// Linux pixels per iOS point. 2 gives crisp text with the guest running at 192 dpi.
     let pixelsPerPoint: CGFloat = 2
@@ -109,6 +113,18 @@ final class AppModel {
     func window(_ id: Int?) -> RemoteWindow? { id.flatMap { session?.windows[$0] } }
 
     // MARK: Setup
+
+    /// Signs in with a pairing link or typed code: the host trades it once for this phone's own token.
+    func pair(with link: PairingLink) {
+        guard !pairing else { return }
+        pairing = true
+        pairingFailure = nil
+        Task {
+            defer { pairing = false }
+            do { connect(with: try await link.redeem(deviceName: UIDevice.current.name)) }
+            catch { pairingFailure = error.localizedDescription }
+        }
+    }
 
     func connect(with credentials: Credentials) {
         if let old = self.credentials, old.fileDomainIdentifier != credentials.fileDomainIdentifier { FileDomains.remove(old) }

@@ -14,6 +14,7 @@ struct CabooseApp: App {
                 .preferredColorScheme(.dark)
                 .onOpenURL { url in
                     if url.isFileURL { model.documents.receive(url) }
+                    else if let pairing = PairingLink(link: url) { model.pair(with: pairing) }
                     else if let credentials = Credentials(link: url) { model.connect(with: credentials) }
                     else if url.scheme == "caboose", url.host == "task", let id = url.pathComponents.dropFirst().first { model.notificationTaskID = id }
                 }
@@ -90,6 +91,9 @@ struct RootView: View {
             Button("Retry") { model.documents.error = nil; model.documents.requestSync(model: model) }
             Button("OK", role: .cancel) { model.documents.error = nil }
         } message: { Text(model.documents.error ?? "") }
+        .alert("Couldn't sign in", isPresented: Binding(get: { model.pairingFailure != nil }, set: { if !$0 { model.pairingFailure = nil } })) {
+            Button("OK", role: .cancel) { model.pairingFailure = nil }
+        } message: { Text(model.pairingFailure ?? "") }
         .sheet(isPresented: Bindable(model).settingsPresented) {
             ComputerSettingsView().environment(model)
         }
@@ -283,7 +287,7 @@ struct SetupView: View {
                     .autocorrectionDisabled()
                     .padding(14)
                     .glassEffect(.regular, in: .rect(cornerRadius: 14))
-                SecureField("Sign-in token", text: $token)
+                SecureField("Pairing code or sign-in token", text: $token)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .padding(14)
@@ -295,11 +299,14 @@ struct SetupView: View {
             Button {
                 connect()
             } label: {
-                Text("Wake My Computer").frame(maxWidth: .infinity)
+                Text(model.pairing ? "Signing In…" : "Wake My Computer").frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
             .controlSize(.large)
-            .disabled(host.isEmpty || token.isEmpty)
+            .disabled(host.isEmpty || token.isEmpty || model.pairing)
+            Text("Scan the QR code on the computer's Phones page in the Caboose console, or type its address and pairing code here.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             Spacer()
         }
         .padding(28)
@@ -312,7 +319,13 @@ struct SetupView: View {
             error = "That doesn't look like a computer address."
             return
         }
-        model.connect(with: Credentials(hostURL: url, token: token.trimmingCharacters(in: .whitespacesAndNewlines)))
+        let entered = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A pairing code is traded for this phone's own token; anything else is a token itself.
+        if let code = PairingLink.normalize(entered) {
+            model.pair(with: PairingLink(hostURL: url, code: code))
+        } else {
+            model.connect(with: Credentials(hostURL: url, token: entered))
+        }
     }
 }
 
