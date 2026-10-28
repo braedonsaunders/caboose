@@ -15,6 +15,9 @@ Switchyard (Desktop tab, no external display):
 3. In both tiled and full-screen views, open a browser menu, context menu and
    file chooser. Each appears above its parent and accepts input. Close the
    full-screen window and check that the bars/dock return and another tile works.
+   Fit a minimum-width window into a narrow tile, then open a menu and submenu:
+   they stay attached to their controls. Leave a dialog open, switch to another
+   column, and zoom that column: the previous column's dialog does not follow.
 4. Two-finger tap in Chromium (native Wayland) and Thunar (Xwayland): one context
    menu opens at the touch with a ring and haptic. A two-finger pinch or moving
    fingers must not open a menu. Long-press in Thunar also right-clicks.

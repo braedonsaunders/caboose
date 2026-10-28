@@ -1242,7 +1242,9 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   indicator step aside, the window is configured to the whole display, and a pull down
   from the small tab at its top edge shrinks it back into its tile under the finger. An
   app asking for full screen gets the same, and is told when it is pulled back. Menus and
-  dialogs appear above the covering window and fit within the display. A window
+  dialogs appear above the covering window and fit within the display. Auxiliary windows
+  follow their parent's displayed scale and position, including nested menus; trees whose
+  owner is offscreen, or is not the covering window, are hidden. A window
   whose own minimum is wider than its tile is shown whole, scaled to fit.
   The dock stays along the bottom under the tiles: the everyday apps, one car per column
   (tap to go to it, slide along them to move along the track), Overview (every window, tap

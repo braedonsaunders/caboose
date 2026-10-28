@@ -115,11 +115,8 @@ struct SwitchyardView: View {
     /// into the tile or springs back.
     private func cover(_ window: RemoteWindow, screen: CGSize) -> some View {
         let keyTarget = yard.keyTarget(in: model.session?.windows ?? [:])
-        let full = CGRect(origin: .zero, size: screen)
-        let tile = yard.tiles[window.id] ?? full
         let p = yard.coverProgress
-        let rect = CGRect(x: full.minX + (tile.minX - full.minX) * p, y: full.minY + (tile.minY - full.minY) * p,
-                          width: full.width + (tile.width - full.width) * p, height: full.height + (tile.height - full.height) * p)
+        let rect = coverFrame(window.id, screen: screen)
         return YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: p > 0 || yard.stretches(window.id),
                            keyboard: model.keyboardVisible && keyTarget == window.id) {}
             .frame(width: rect.width, height: rect.height)
@@ -128,6 +125,15 @@ struct SwitchyardView: View {
             .shadow(color: .black.opacity(0.4 * p), radius: 24, y: 10)
             .overlay(alignment: .top) { coverHandle(screen: screen).opacity(1 - p) }
             .offset(x: rect.minX, y: rect.minY)
+    }
+
+    private func coverFrame(_ id: Int, screen: CGSize) -> CGRect {
+        let full = CGRect(origin: .zero, size: screen)
+        let tile = yard.tiles[id] ?? full
+        let p = yard.coverProgress
+        return CGRect(x: tile.minX * p, y: tile.minY * p,
+                      width: full.width + (tile.width - full.width) * p,
+                      height: full.height + (tile.height - full.height) * p)
     }
 
     /// A small glass pull-tab at the top edge: pull down to put the window back in its tile.
@@ -213,23 +219,48 @@ struct SwitchyardView: View {
 
     // MARK: Popups
 
-    /// Menus, tooltips and dialogs float above the tiles where the computer put them: a tile's
-    /// Linux position is where it is on screen, so they line up with their window.
+    /// Menus follow the surface inside a tile, including fitting, centering and carrying.
+    /// Descendants follow their displayed parent after screen-edge clamping as well.
     @ViewBuilder
     private func popups(_ windows: [Int: RemoteWindow], keyTarget: Int?, size: CGSize) -> some View {
         let scale = yard.pixelsPerPoint
+        let frames = popupFrames(windows, size: size)
         ForEach(windows.values.filter(\.isAuxiliary).sorted { $0.id < $1.id }) { popup in
-            let width = min(size.width, popup.frame.width / scale), height = min(size.height, popup.frame.height / scale)
-            let x = min(max(0, popup.frame.minX / scale), max(0, size.width - width))
-            let y = min(max(0, popup.frame.minY / scale), max(0, size.height - height))
-            YardSurface(window: popup, pixelsPerPoint: scale, stretch: false,
-                        keyboard: model.keyboardVisible && keyTarget == popup.id) {}
-                .frame(width: width, height: height)
-                .clipShape(RoundedRectangle(cornerRadius: popup.isOverrideRedirect ? 6 : yard.metrics.cornerRadius, style: .continuous))
-                .shadow(color: .black.opacity(0.4), radius: popup.isOverrideRedirect ? 8 : 20, y: popup.isOverrideRedirect ? 3 : 10)
-                .offset(x: x, y: y)
-                .zIndex(3)
+            if let frame = frames[popup.id] {
+                YardSurface(window: popup, pixelsPerPoint: scale, stretch: true,
+                            keyboard: model.keyboardVisible && keyTarget == popup.id) {}
+                    .frame(width: frame.width, height: frame.height)
+                    .clipShape(RoundedRectangle(cornerRadius: popup.isOverrideRedirect ? 6 : yard.metrics.cornerRadius, style: .continuous))
+                    .shadow(color: .black.opacity(0.4), radius: popup.isOverrideRedirect ? 8 : 20, y: popup.isOverrideRedirect ? 3 : 10)
+                    .offset(x: frame.minX, y: frame.minY)
+                    .zIndex(3)
+            }
         }
+    }
+
+    private func popupFrames(_ windows: [Int: RemoteWindow], size: CGSize) -> [Int: CGRect] {
+        var roots: [Int: CGRect] = [:]
+        for window in windows.values where !window.isAuxiliary {
+            guard let tile = yard.tiles[window.id] else { continue }
+            let covering = yard.coverWindow == window.id
+            let container = covering ? coverFrame(window.id, screen: size) : tile
+            let natural = CGSize(width: window.frame.width / yard.pixelsPerPoint,
+                                 height: window.frame.height / yard.pixelsPerPoint)
+            let surface = DesktopGeometry.surfaceFrame(natural: natural, available: container.size,
+                                                       resizing: yard.stretches(window.id) || (covering && yard.coverProgress > 0))
+            var shown = surface.offsetBy(dx: container.minX, dy: container.minY)
+            if !covering, let carry = yard.carry, carry.window == window.id {
+                let factor = carry.rect.width / max(1, tile.width)
+                shown = CGRect(x: carry.rect.minX + surface.minX * factor,
+                               y: carry.rect.minY + surface.minY * factor,
+                               width: surface.width * factor, height: surface.height * factor)
+            }
+            roots[window.id] = shown
+        }
+        return DesktopGeometry.popupFrames(
+            windows: windows.mapValues { .init(frame: $0.frame, parent: $0.transientFor) },
+            rootFrames: roots, viewport: CGRect(origin: .zero, size: size),
+            pixelsPerPoint: yard.pixelsPerPoint, covering: yard.coverWindow)
     }
 }
 
