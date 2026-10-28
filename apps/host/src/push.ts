@@ -1,14 +1,15 @@
+import type { DesktopNotification } from './desktop-notifications.js'
 import type { AgentEvent } from './agents.js'
 import { APNsSender, type APNsEnvironment, type APNsMessage, type APNsResult } from './apns.js'
 import { readJsonFile, SettingsInputError, writePrivateJson } from './settings.js'
 
-type Kind = 'approval' | 'task'
+type Kind = 'approval' | 'task' | 'desktop'
 export interface PushDevice { token: string; environment: APNsEnvironment; kinds: Kind[] }
 const TOKEN = /^(?:[0-9a-f]{2}){1,256}$/
 export function parseDevice(input: unknown): PushDevice {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new SettingsInputError('device must be an object')
   const value = input as Record<string, unknown>
-  if (Object.keys(value).some(key => !['token', 'environment', 'kinds'].includes(key)) || typeof value.token !== 'string' || !TOKEN.test(value.token) || (value.environment !== 'sandbox' && value.environment !== 'production') || !Array.isArray(value.kinds) || value.kinds.some(kind => kind !== 'approval' && kind !== 'task') || new Set(value.kinds).size !== value.kinds.length) throw new SettingsInputError('invalid push device')
+  if (Object.keys(value).some(key => !['token', 'environment', 'kinds'].includes(key)) || typeof value.token !== 'string' || !TOKEN.test(value.token) || (value.environment !== 'sandbox' && value.environment !== 'production') || !Array.isArray(value.kinds) || value.kinds.some(kind => kind !== 'approval' && kind !== 'task' && kind !== 'desktop') || new Set(value.kinds).size !== value.kinds.length) throw new SettingsInputError('invalid push device')
   return { token: value.token, environment: value.environment, kinds: value.kinds as Kind[] }
 }
 export class PushDevices {
@@ -62,6 +63,13 @@ export class PushService {
   async event(event: AgentEvent, foreground: boolean): Promise<void> {
     const notification = notificationFor(event)
     if (!notification || foreground) return
+    await this.deliver(notification)
+  }
+  async desktop(event: DesktopNotification, foreground: boolean): Promise<void> {
+    if (foreground) return
+    await this.deliver({ kind: 'desktop', collapseId: `desktop-${event.id}`, payload: { aps: { alert: { title: bounded(event.summary || event.app || 'Desktop notification'), body: bounded(event.body) }, 'thread-id': `desktop-${bounded(event.app).slice(0, 40)}`, sound: 'default' } } })
+  }
+  private async deliver(notification: { kind: Kind; payload: object; collapseId: string }): Promise<void> {
     await Promise.all(this.devices.list().filter(device => device.kinds.includes(notification.kind)).map(async device => {
       try {
         const revision = this.devices.version(device.token)

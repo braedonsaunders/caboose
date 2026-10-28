@@ -1,0 +1,10 @@
+[Unit]
+Description=Caboose agent seat session bus
+Requires=user@1000.service
+After=user@1000.service
+
+[Service]
+User=caboose
+Group=caboose
+ExecStart=/usr/bin/dbus-daemon --session --address=unix:path=/run/user/1000/agent-bus --nofork
+Restart=on-failure

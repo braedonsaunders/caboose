@@ -13,7 +13,7 @@ It is one file, `caboose-agentd.mjs`, on Node 22 with the official TypeScript SD
 
 | Command | What it does |
 | --- | --- |
-| `run <task dir>` | One task. Started detached (`setsid`) by the host as `caboose` with `DISPLAY=:101`. |
+| `run <task dir>` | One task. Started detached (`setsid`) by the host as `caboose` with `DISPLAY=:101` and the agent seat D-Bus session at `/run/user/1000/agent-bus`. |
 | `install <spec>` | Prefetches the agent, starts it once to learn its sign-in methods, records it as installed. Prints `{ installed: { version }, signIn: [...] }`. |
 | `probe <spec>` | `initialize` only; records and prints the sign-in methods. |
 | `sign-in <spec>` | Runs one sign-in method on the owner's display (see below). |

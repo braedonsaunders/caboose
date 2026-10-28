@@ -221,10 +221,15 @@ Set all of `CABOOSE_APNS_KEY_PATH` (a private P-256 .p8 file),
 the host APNs provider. Keep the key and environment private. Devices are stored
 in `push-devices.json` under `CABOOSE_IMAGE_ROOT` with mode 0600. The API and
 current limitations are described in `../../docs/architecture.md` § Notifications.
-The iOS app does not yet register itself, so registration requires an API client.
+The iOS app registers its device and Live Activity tokens after pairing.
 
 On a host with real credentials and at least one registered device, run
 `node apps/host/scripts/check-push.mjs [device-index]` from the repository root.
 It sends a test alert to the indexed registered device (default 0); APNs acceptance
 is not proof of device delivery, so check the device too. The index does not print
 tokens.
+
+Live Activity registrations are kept in `activities.json` in the same directory. Agent
+task events update them; other job producers may publish the generic job shape through
+`POST /v1/jobs/activity` as documented in the architecture contract. The sender uses the
+app topic with `.push-type.liveactivity` appended.

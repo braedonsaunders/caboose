@@ -2,6 +2,7 @@ import { once } from 'node:events'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { ActivityService, ActivityStore } from './activities.js'
 import { PushDevices, PushService } from './push.js'
 import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
@@ -100,4 +101,34 @@ it('exposes authenticated push registration and capability only when configured'
   expect(await (await fetch(base + '/v1/computer', { headers: { authorization: 'Bearer owner' } })).json()).toMatchObject({ capabilities: { push: true } })
   expect((await request('DELETE', { token: device.token })).status).toBe(200)
   expect(devices.list()).toEqual([])
+})
+
+
+it('routes Live Activity registrations and distinguishes foreground app sockets', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'caboose-activity-api-'))
+  close.push(() => rm(root, { recursive: true, force: true }))
+  const store = await ActivityStore.open(join(root, 'activities.json'))
+  const send = vi.fn(async () => ({ status: 200 }))
+  const activities = new ActivityService(store, send, 'example.app')
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'x', protocol: 'xpra-ws' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller, activities })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  close.unshift(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const request = (path: string, method: string, body?: object) => fetch(base + path, { method, headers: { authorization: 'Bearer owner', 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) })
+  const starter = { token: 'ab'.repeat(32), environment: 'sandbox', deviceToken: 'cd'.repeat(32) }
+  expect((await request('/v1/activities/start-token', 'POST', starter)).status).toBe(200)
+  expect((await request('/v1/activities', 'POST', { token: 'bad', environment: 'sandbox' })).status).toBe(400)
+  await request('/v1/session', 'POST')
+  const client = new WebSocket(base.replace('http:', 'ws:') + '/v1/control?foreground=1', { headers: { authorization: 'Bearer owner' } })
+  await once(client, 'open')
+  const job = { id: 'job-1', kind: 'install', title: 'Install', status: 'running', detail: 'Installing' }
+  expect((await request('/v1/jobs/activity', 'POST', { start: true, job })).status).toBe(200)
+  expect(send).not.toHaveBeenCalled()
+  client.close(); await once(client, 'close')
+  expect((await request('/v1/jobs/activity', 'POST', { start: true, job })).status).toBe(200)
+  expect(send).toHaveBeenCalledOnce()
+  expect((await request('/v1/activities/start-token', 'DELETE', { deviceToken: starter.deviceToken })).status).toBe(200)
+  expect(store.list().starters).toEqual([])
 })

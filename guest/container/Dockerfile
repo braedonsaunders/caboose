@@ -30,7 +30,7 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg && \
     printf 'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\n' > /etc/apt/sources.list.d/nodesource.list && \
     apt-get update && apt-get install -y --no-install-recommends \
-      sudo systemd dbus dbus-user-session dbus-x11 xauth xvfb xwayland x11-utils xdotool wmctrl xclip \
+      sudo systemd dbus dbus-user-session dbus-x11 libnotify-bin xauth xvfb xwayland x11-utils xdotool wmctrl xclip \
       python3 python3-gi gir1.2-gtk-3.0 python3-pyatspi python3-websockets \
       libglib2.0-bin libglib2.0-dev-bin imagemagick ffmpeg at-spi2-core gsettings-desktop-schemas xfce4-settings \
       code nodejs sassc libxml2-utils qt5-gtk-platformtheme qt6-gtk-platformtheme \
@@ -49,6 +49,8 @@ COPY desktop-mcp /tmp/desktop-mcp
 RUN /tmp/desktop-mcp/install.sh
 COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /tmp/agentd/
 RUN /tmp/agentd/install.sh && rm -rf /tmp/agentd
+COPY notifications /tmp/notifications
+RUN /bin/sh /tmp/notifications/install.sh && rm -rf /tmp/notifications
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff
 RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
