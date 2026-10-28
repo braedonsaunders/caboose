@@ -31,7 +31,7 @@ export interface RoutineState { version: 1; routines: AgentRoutine[]; runs: Agen
 export interface RoutinePersistence { load(): Promise<unknown>; save(state: RoutineState): Promise<void> }
 export interface RoutineOptions { runtime: RoutineRuntime; clock?: RoutineClock; onChange?: () => void; onError?: (error: unknown) => void }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const MAX_ROUTINES = 100, HISTORY = 100, MAX_INPUT = 128_000
+const MAX_ROUTINES = 100, HISTORY = 100, MAX_INPUT = 512_000
 const realClock: RoutineClock = { now: Date.now, setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: timer => clearTimeout(timer as ReturnType<typeof setTimeout>) }
 function obj(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AgentInputError('Expected an object')
@@ -110,7 +110,7 @@ export class AgentRoutines {
   }
   static async open(path: string, options: RoutineOptions): Promise<AgentRoutines> {
     return AgentRoutines.create({
-      load: async () => { try { const file = await open(path, 'r'); try { if ((await file.stat()).size > 30_000_000) throw new Error('Routine store too large'); return JSON.parse(await file.readFile('utf8')) } finally { await file.close() } } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error } },
+      load: async () => { try { const file = await open(path, 'r'); try { if ((await file.stat()).size > 64_000_000) throw new Error('Routine store too large'); return JSON.parse(await file.readFile('utf8')) } finally { await file.close() } } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error } },
       save: async state => {
         await mkdir(dirname(path), { recursive: true })
         const temporary = `${path}.${randomUUID()}.tmp`
@@ -216,16 +216,19 @@ export class AgentRoutines {
   private async cycle() {
     await this.serial(async () => {
       const next = structuredClone(this.state), now = this.now()
+      let changed = false
       for (const r of next.routines) {
         const snapshot = await this.options.runtime.snapshot(r.profileId, r.prompt)
         const revision = snapshot ? text(snapshot.revision, 'profile revision', 256) : null
         if (revision !== r.profileRevision) {
+          changed = true
           r.profileRevision = revision; r.revision++; r.updatedAt = now
           r.nextAt = nextOccurrence(r.schedule, now)
           continue
         }
         if (!snapshot) {
-          r.nextAt = nextOccurrence(r.schedule, now)
+          const nextAt = nextOccurrence(r.schedule, now)
+          if (r.nextAt !== nextAt) { r.nextAt = nextAt; changed = true }
           continue
         }
         if (r.paused || r.nextAt === null || r.nextAt > now) continue
@@ -233,9 +236,10 @@ export class AgentRoutines {
         const policy = r.missed === 'coalesce' || Date.parse(now) - Date.parse(r.nextAt) <= r.deliveryGraceMs ? 'coalesce' : 'skip'
         const advance = advanceRecurrence(r.schedule, { nextAt: r.nextAt }, now, policy)
         r.nextAt = advance.nextAt
+        changed = true
         if (advance.dueAt) await this.reserve(next, r, advance.dueAt, 'schedule')
       }
-      if (JSON.stringify(next) !== JSON.stringify(this.state)) await this.commit(next)
+      if (changed) await this.commit(next)
     })
     for (const run of this.state.runs.filter(pending)) {
       if (this.closed || this.fault) break
@@ -251,7 +255,11 @@ export class AgentRoutines {
       await this.serial(async () => {
         const next = structuredClone(this.state), run = next.runs.find(r => r.id === id)
         if (!run || !pending(run)) return
-        if (task) { this.apply(run, task); await this.commit(next); return }
+        if (task) {
+          const detail = task.detail ? task.detail.slice(0, 2000) : undefined
+          if (task.status === 'active' && run.status === 'active' && run.detail === detail) return
+          this.apply(run, task); await this.commit(next); return
+        }
         if (run.status === 'active') { run.status = 'failed'; run.detail = 'Previously admitted task is missing; effects are not retried.'; run.finishedAt = this.now(); await this.commit(next); return }
         const routine = next.routines.find(r => r.id === run.routineId)
         const snapshot = routine ? await this.options.runtime.snapshot(routine.profileId, routine.prompt) : null
@@ -269,7 +277,10 @@ export class AgentRoutines {
       // Persist diagnostic only; never turn ambiguous admission into a new task.
       if (!this.closed && !this.fault) await this.serial(async () => {
         const next = structuredClone(this.state), run = next.runs.find(r => r.id === id)
-        if (run && pending(run)) { run.detail = String(error).slice(0, 2000) || 'Dispatch failed'; await this.commit(next) }
+        if (run && pending(run)) {
+          const detail = String(error).slice(0, 2000) || 'Dispatch failed'
+          if (run.detail !== detail) { run.detail = detail; await this.commit(next) }
+        }
       })
     } finally { release?.() }
   }

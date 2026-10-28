@@ -9,7 +9,7 @@ const base = Date.parse('2026-01-01T00:00:00.000Z')
 function fixture() {
   let now = base, stored: RoutineState | undefined, fail = false, revision = 'v1', available = true
   const tasks = new Map<string, RoutineTask>(), calls: Array<{ id: string; input: Record<string, unknown> }> = [], errors: unknown[] = []
-  const timers = new Map<number, () => void>(); let timerId = 0, leases = 0
+  const timers = new Map<number, () => void>(); let timerId = 0, leases = 0, writes = 0
   const clock: RoutineClock = { now: () => now, setTimeout: fn => { timers.set(++timerId, fn); return timerId }, clearTimeout: timer => { timers.delete(timer as number) } }
   const runtime: RoutineRuntime = {
     snapshot: async (_id, prompt) => available ? { revision, input: { prompt, envelope: { revision } } } : null,
@@ -17,9 +17,9 @@ function fixture() {
     lookup: async id => tasks.get(id) ?? null,
     start: async (input, id) => { calls.push({ id, input }); const task: RoutineTask = { status: 'active' }; tasks.set(id, task); return task },
   }
-  const persistence = { load: async () => structuredClone(stored), save: async (state: RoutineState) => { if (fail) throw new Error('disk failure'); stored = structuredClone(state) } }
+  const persistence = { load: async () => structuredClone(stored), save: async (state: RoutineState) => { if (fail) throw new Error('disk failure'); stored = structuredClone(state); writes++ } }
   const options: RoutineOptions = { runtime, clock, onError: error => { errors.push(error) } }
-  return { options, runtime, persistence, tasks, calls, errors, timers, now: (value: number) => { now = base + value }, fail: (value: boolean) => { fail = value }, profile: (value: string, present = true) => { revision = value; available = present }, store: () => structuredClone(stored), leases: () => leases, open: () => AgentRoutines.create(persistence, options), input: (extra = {}) => ({ name: 'Daily summary', profileId, prompt: 'Summarize', schedule: { kind: 'interval', timeZone: 'UTC', everyMs: 60_000, anchor: new Date(base).toISOString() }, ...extra }) }
+  return { options, runtime, persistence, tasks, calls, errors, timers, now: (value: number) => { now = base + value }, fail: (value: boolean) => { fail = value }, profile: (value: string, present = true) => { revision = value; available = present }, store: () => structuredClone(stored), leases: () => leases, writes: () => writes, open: () => AgentRoutines.create(persistence, options), input: (extra = {}) => ({ name: 'Daily summary', profileId, prompt: 'Summarize', schedule: { kind: 'interval', timeZone: 'UTC', everyMs: 60_000, anchor: new Date(base).toISOString() }, ...extra }) }
 }
 
 describe('durable computer routines', () => {
@@ -127,13 +127,26 @@ describe('durable computer routines', () => {
     await s.tick(); expect(s.history()[0]?.status).toBe('reserved'); expect(f.calls).toHaveLength(0); expect(f.leases()).toBe(0)
     f.runtime.lookup = lookup; await s.tick(); expect(f.calls).toHaveLength(1)
     const run = s.history()[0]!; f.tasks.set(run.id, { status: 'succeeded' }); await s.tick()
-    f.runtime.snapshot = async () => ({ revision: 'v1', input: { envelope: 'x'.repeat(128_001) } })
+    f.runtime.snapshot = async () => ({ revision: 'v1', input: { envelope: 'x'.repeat(512_001) } })
     await expect(s.runNow(r.id)).rejects.toThrow('too large'); expect(s.history()).toHaveLength(1); await s.close()
   })
   it('allows a fresh manual run immediately after an unobserved profile edit', async () => {
     const f = fixture(), s = await f.open(), r = await s.create(f.input()); f.profile('v2')
     const run = await s.runNow(r.id); await s.tick()
     expect(f.calls[0]?.id).toBe(run.id); expect(f.calls[0]?.input).toEqual({ prompt: 'Summarize', envelope: { revision: 'v2' } }); await s.close()
+  })
+  it('does not persist unchanged active statuses or repeated lookup failures', async () => {
+    const f = fixture(), s = await f.open(), r = await s.create(f.input()); await s.runNow(r.id); await s.tick()
+    const writes = f.writes(); await s.tick(); await s.tick(); expect(f.writes()).toBe(writes)
+    const run = s.history()[0]!; f.tasks.set(run.id, { status: 'active', detail: 'Waiting for approval' }); await s.tick(); expect(f.writes()).toBe(writes + 1)
+    await s.tick(); expect(f.writes()).toBe(writes + 1)
+    f.runtime.lookup = async () => { throw new Error('guest unavailable') }; await s.tick(); const errorsWritten = f.writes()
+    await s.tick(); expect(f.writes()).toBe(errorsWritten); await s.close()
+  })
+  it('accepts bounded Unicode profile envelopes', async () => {
+    const f = fixture(), s = await f.open(), r = await s.create(f.input())
+    f.runtime.snapshot = async () => ({ revision: 'v1', input: { context: '🦀'.repeat(100_000) } })
+    await s.runNow(r.id); await s.tick(); expect(f.calls).toHaveLength(1); await s.close()
   })
   it('bounds history and removes terminal envelopes', async () => {
     const f = fixture(), s = await f.open(), r = await s.create(f.input())

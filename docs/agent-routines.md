@@ -66,7 +66,7 @@ characters) that changes for every launch-affecting profile edit, including memo
 archive and restore. The root adapter hashes the complete resolved profile snapshot.
 The exact JSON `input` is an opaque internal envelope holding the task request and the
 resolved profile snapshot. The scheduler persists it with the reservation, bounded to
-128000 UTF-8 bytes, and passes the same value on every admission attempt. It never
+512000 UTF-8 bytes, and passes the same value on every admission attempt. It never
 rebuilds a reserved task from a new profile snapshot.
 
 `acquire` wakes the computer and holds its existing lifecycle lease through lookup and
@@ -95,6 +95,7 @@ Public methods are `list()`, `get(id)`, `create(input)`, `update(id, patch)`, `d
 `history(routineId?)`, `runNow(id)`, `profileChanged(profileId)`, `tick()`, `start(pollMs?)`
 and `close()`. History is newest first, with at most 100 terminal runs across the computer
 plus all outstanding runs. `onChange` fires only after a successful durable commit.
+Unchanged active task statuses and repeated identical lookup errors do not write the store.
 Use the existing agent input/conflict/not-found errors when mapping API responses.
 
 ## Persistence, recovery and lifecycle
@@ -104,7 +105,7 @@ exact launch envelope in one write **before** waking or admitting a task. The fi
 uses a private temporary file, file fsync, rename and directory fsync. In-memory state
 changes only after save completes. Any save failure latches that instance closed to
 further state changes and dispatch; the host reports the error and reopens the store
-after repairing persistence. A failed commit may have reached disk, so reopening reads
+after repairing persistence. The file loader rejects stores larger than 64 MB. A failed commit may have reached disk, so reopening reads
 and validates the durable state rather than assuming the old version won.
 
 A reserved run is looked up before every admission attempt, including after restart.
