@@ -286,3 +286,27 @@ On a signed device with APNs configured, start a task, background the app, verif
 Screen/Dynamic Island updates and ends on completion, then start a task from another client
 and verify push-to-start. Real delivery depends on iOS and APNs and cannot be proved by a
 simulator build.
+
+## Shortcuts and Spotlight
+
+Shortcuts wake or park the computer, open a Linux app or URL, start an agent task, and
+open, get or save computer files. File search recursively lists the home and suggests
+recently modified files. Spotlight indexes the 200 newest files and current Linux apps,
+refreshing after file-change events and a wake. File uploads never overwrite an existing
+file; the agent task requests approval and returns a task link.
+
+PhotoCraft converts one or more images; PDFCraft combines PDFs; LightCraft develops a
+photo; FilmCraft exports a project whose referenced media is present on the computer.
+Each action requires the corresponding catalog app installed, transfers input and output
+through `/v1/fs`, and returns the files and CLI warnings. See the architecture contract
+for formats, job lifecycle, and staged-file retention.
+
+The Computer widget displays state and running agent count; add a Favourite Linux App
+widget to launch a chosen app. Control Center offers Computer Power, Open Linux App
+(configure its favourite), and Ask Agent. On a signed paired device, run each shortcut,
+check input and output files, configure and tap the widget and controls, and compare the
+power state with Computer settings. Create, rename and delete a nested computer file,
+check Spotlight after `fs.changed`, then sign out and verify entries disappear. Repeat
+with the phone disconnected and reconnected. Verify job progress and Live Activity on a
+signed device with APNs configured. WidgetKit schedules refreshes and may delay updates;
+these checks need a real device and a computer with the file service and Craft apps.
