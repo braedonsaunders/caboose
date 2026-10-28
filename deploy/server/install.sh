@@ -53,6 +53,16 @@ check() { if [[ $force == 1 ]]; then warn "$1"; else die "$1 (--force continues 
 [[ -n $domain ]] || { usage >&2; exit 2; }
 [[ $domain =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]] || die "$domain is not a domain name"
 [[ -z $email || $email =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || die "$email is not an email address"
+[[ $version =~ ^[A-Za-z0-9._+-]+$ ]] || die "--version must be a release tag"
+[[ $dir == /* && $dir != *[$'\n\r\t ']* ]] || die "--dir must be absolute without whitespace"
+# An upgrade must never silently point an existing stack at a different computer directory.
+if [[ -f $dir/.env ]]; then
+  while IFS='=' read -r key value; do
+    case $value in \"*\") value=${value:1:${#value}-2} ;; \'*\') value=${value:1:${#value}-2} ;; esac
+    [[ $key != CABOOSE_STATE_DIR ]] || state=$value
+  done <"$dir/.env"
+fi
+[[ $state == /* && $state != *[$'\n\r\t $&|']* ]] || die "--state-dir must be an absolute path without whitespace or shell metacharacters"
 [[ $(uname -s) == Linux ]] || die "a Caboose server runs on Linux"
 case $(uname -m) in x86_64 | amd64 | aarch64 | arm64) ;; *) die "Caboose runs on amd64 and arm64, not $(uname -m)" ;; esac
 [[ $dry_run == 1 || $(id -u) == 0 ]] || die "run it as root, for example with sudo"
@@ -151,6 +161,10 @@ fi
 
 echo
 say "Caboose is running at https://$domain"
+setup_code=$(compose exec -T caboose-host node -e '
+  const fs = require("fs"), path = require("path").join(process.env.CABOOSE_IMAGE_ROOT, "setup-code")
+  if (fs.existsSync(path)) process.stdout.write(fs.readFileSync(path, "utf8").trim())' 2>/dev/null || true)
+if [[ -n $setup_code ]]; then echo "  Set up:       https://$domain/setup?code=$setup_code"; fi
 echo "  Owner token:  docker compose -f $dir/compose.yaml exec caboose-host cat /data/caboose/disks/owner-token"
 echo "  Settings:     $env_file (then: docker compose -f $dir/compose.yaml up -d)"
 code=$(host_api POST /v1/computers/owner/pairing 'console.log(body.code ?? "")' 2>/dev/null || true)

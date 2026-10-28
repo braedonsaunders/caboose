@@ -10,7 +10,7 @@ curl -fsSL https://raw.githubusercontent.com/braedonsaunders/caboose/main/deploy
 ```
 
 `deploy/linux/install.sh --domain …` does the same thing. At the end, the installer prints the
-address, how to read the owner token, and a pairing QR code for the first iPhone.
+address, the setup link while unclaimed, how to read the owner token, and a pairing QR code for the first iPhone.
 
 ## What you need
 
@@ -31,7 +31,7 @@ address, how to read the owner token, and a pairing QR code for the first iPhone
 | Path | What |
 | --- | --- |
 | `/opt/caboose-server/compose.yaml`, `Caddyfile` | The stack, from this directory at the release's tag. |
-| `/opt/caboose-server/.env` (0600) | Settings (below). Written once; a re-run changes only the domain and version. |
+| `/opt/caboose-server/.env` (0600) | Settings (below). Written once; a re-run changes only the domain and version, preserving the state directory. |
 | `/opt/caboose-server/caddy-options/email.caddy` | The ACME account email, with `--email`. |
 | `/data/caboose` | Every computer, its snapshots, and the host's state, including the generated owner token. |
 | Docker volumes `caddy-data`, `caddy-config` | Caddy's certificates and ACME account. |
@@ -63,8 +63,7 @@ fencing).
 Make a computer for each person under **Computers** in the console, then pair each person's
 iPhone from that computer's **Phones** tab. A phone's token reaches only its own computer, and
 the owner token reaches everything (docs/architecture.md, Computers and Authentication).
-Accounts and tenants, with sign-in for each person and an operator account in place of the
-owner token, are being built and are not part of this deployment yet.
+
 
 ## Upgrade, back up, remove
 

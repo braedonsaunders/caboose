@@ -53,7 +53,12 @@ out=$(docker run --rm -v "$here:/server:ro" debian:trixie-slim bash /server/inst
 grep -q 'would write /opt/caboose-server/compose.yaml' <<<"$out" || { echo "$out" >&2; fail 'the dry run does not describe the project'; }
 grep -q 'would set CABOOSE_DOMAIN=caboose.example.com' <<<"$out" || fail 'the dry run does not set the domain'
 if docker run --rm -v "$here:/server:ro" debian:trixie-slim bash /server/install.sh --domain 'not a domain' --dry-run >/dev/null 2>&1; then fail 'an invalid domain was accepted'; fi
-pass 'installer dry run, and refusal of an invalid domain'
+out=$(docker run --rm -v "$here:/server:ro" debian:trixie-slim bash -c '
+  mkdir -p /opt/caboose-server
+  printf "CABOOSE_STATE_DIR=/srv/retained-computers\n" > /opt/caboose-server/.env
+  bash /server/install.sh --domain caboose.example.com --force --dry-run' 2>&1) || fail 'upgrade dry run'
+grep -q 'would set CABOOSE_STATE_DIR=/srv/retained-computers' <<<"$out" || fail 'upgrade lost the saved state directory'
+pass 'installer dry run, saved state directory, and refusal of an invalid domain' 
 
 [[ $e2e == 1 ]] || exit 0
 
