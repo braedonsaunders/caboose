@@ -473,8 +473,9 @@ A task record:
 ```
 
 Prompts are 1–32000 characters after trimming; `message` is at most 2000 characters and
-`optionId` 200. Agent requests answer 400 for invalid input and 409 while the computer is
-not running.
+`optionId` 200. Agent requests answer 400 for invalid input, 409 while the computer is
+not running or when its image has no runner (with how to install it), and 502 when the
+registry has never been fetched and the agent is not installed.
 
 Control-socket events: `agent.task.started { id, agent, agentName?, prompt }`,
 `agent.task.output { id, kind: "text" | "tool" | "error", text }` (each agent message, each

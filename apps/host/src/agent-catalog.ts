@@ -1,4 +1,7 @@
-import { AGENTD, AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentUnavailableError, type AgentGuest, type AgentResolver, type SignInMethod } from './agents.js'
+import {
+  AGENTD, AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentUnavailableError, RUNNER_MISSING, rethrowRunnerMissing,
+  type AgentGuest, type AgentResolver, type SignInMethod,
+} from './agents.js'
 import { AGENT_ID, type AgentLaunch, type AgentRegistry, type RegistryAgent } from './registry.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
 
@@ -10,7 +13,6 @@ import { SettingsInputError, type SettingsStore } from './settings.js'
  */
 const RUNUSER = '/usr/sbin/runuser'
 const GUEST_ENV = ['HOME=/home/caboose', 'PATH=/home/caboose/.local/bin:/usr/local/bin:/usr/bin:/bin']
-const MISSING = 'caboose-agentd is not installed in this computer'
 const INSTALL_TIMEOUT_MS = 15 * 60_000
 const PROBE_TIMEOUT_MS = 3 * 60_000
 
@@ -142,6 +144,7 @@ export class AgentCatalog implements AgentResolver {
     const entry = catalog.agents.find(agent => agent.id === id)
     if (entry?.launch) return entry.launch
     if (entry) throw new AgentInputError(`${entry.name} has no build Caboose can run on linux-x86_64`)
+    if (!catalog.agents.length && catalog.error) throw new AgentOperationError(catalog.error)
     throw new AgentNotFoundError(`"${id}" is not in the agent registry${catalog.error ? ` (${catalog.error})` : ''}`)
   }
 
@@ -149,6 +152,8 @@ export class AgentCatalog implements AgentResolver {
   async ensureKnown(id: unknown): Promise<void> {
     if (id === null) return
     if (typeof id !== 'string' || !AGENT_ID.test(id)) throw new SettingsInputError('defaultAgent must be an agent id from the registry, or null')
+    const guest = this.guest()
+    if (guest) await this.refresh(guest).catch(() => {})
     if (this.guestAgents[id]?.installed) return
     try { await this.registryLaunch(id) } catch (error) {
       throw new SettingsInputError(error instanceof Error ? error.message : String(error))
@@ -203,7 +208,7 @@ export class AgentCatalog implements AgentResolver {
     const method = publicSignIn(this.guestAgents[id]?.authMethods).find(item => item.id === methodId)
     if (!method) throw new AgentInputError(`${launch.name} has no sign-in method "${methodId}"`)
     await guest.run(RUNUSER, ['-u', 'caboose', '--', '/usr/bin/env', ...GUEST_ENV, '/bin/sh', '-c', SIGN_IN_SCRIPT, 'sh', AGENTD,
-      encode({ agent: launch, methodId, display: ':100' })], 30_000).catch(rethrowMissing)
+      encode({ agent: launch, methodId, display: ':100' })], 30_000).catch(rethrowRunnerMissing)
     const state = this.guestAgents[id] ?? (this.guestAgents[id] = {})
     state.signInStatus = { methodId, status: 'running', startedAt: new Date().toISOString() }
     return { started: true, method }
@@ -216,7 +221,7 @@ export class AgentCatalog implements AgentResolver {
 
 /** Starts a sign-in detached from the guest command, as `caboose`; $1 is the runner, $2 its spec. */
 const SIGN_IN_SCRIPT = [
-  `[ -f "$1" ] || { echo "${MISSING}" >&2; exit 1; }`,
+  `[ -f "$1" ] || { echo "${RUNNER_MISSING}" >&2; exit 1; }`,
   'log="$HOME/.local/share/caboose/agents"; mkdir -p "$log"',
   'setsid node "$1" sign-in "$2" >> "$log/sign-in.log" 2>&1 < /dev/null &',
 ].join('\n')
@@ -229,15 +234,8 @@ function guestMessage(error: unknown): string {
 
 function encode(value: unknown): string { return Buffer.from(JSON.stringify(value)).toString('base64') }
 
-function rethrowMissing(error: unknown): never {
-  if (error instanceof Error && error.message.includes(MISSING)) {
-    throw new AgentConflictError('This computer has no agent runner. Rebuild its image, or run guest/agentd/install.sh in it as root.')
-  }
-  throw error
-}
-
 async function agentd(guest: AgentGuest, mode: string, argument: string | undefined, timeoutMs: number): Promise<string> {
-  const script = `[ -f "$1" ] || { echo "${MISSING}" >&2; exit 1; }\nexec node "$@"`
+  const script = `[ -f "$1" ] || { echo "${RUNNER_MISSING}" >&2; exit 1; }\nexec node "$@"`
   return guest.run(RUNUSER, ['-u', 'caboose', '--', '/usr/bin/env', ...GUEST_ENV, '/bin/sh', '-c', script, 'sh', AGENTD, mode, ...(argument ? [argument] : [])], timeoutMs)
-    .catch(rethrowMissing)
+    .catch(rethrowRunnerMissing)
 }

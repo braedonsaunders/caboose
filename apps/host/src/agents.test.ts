@@ -383,7 +383,8 @@ describe('AgentTasks', () => {
       return fake.guest.run(command, args, timeout)
     } }
     const tasks = new AgentTasks(() => guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000 })
-    await expect(tasks.start({ prompt: 'x' })).rejects.toThrow('not installed')
+    await expect(tasks.start({ prompt: 'x' })).rejects.toBeInstanceOf(AgentConflictError)
+    await expect(tasks.start({ prompt: 'x' })).rejects.toThrow('This computer has no agent runner')
     expect(fake.scriptOf(fake.calls.at(-1))).toContain('rm -rf')
     expect(tasks.list()).toEqual([])
   })

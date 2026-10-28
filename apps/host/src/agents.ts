@@ -83,6 +83,8 @@ export interface AgentTaskOptions {
 const HOME = '/home/caboose'
 const RUNUSER = '/usr/sbin/runuser'
 export const AGENTD = '/opt/caboose/agentd/caboose-agentd.mjs'
+/** What the guest scripts print when the computer's image has no runner. */
+export const RUNNER_MISSING = 'caboose-agentd is not installed in this computer'
 const TASK_ID = /^[0-9a-f-]{36}$/
 const AGENT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/
 /** Approval request ids are UUIDs minted by caboose-agentd. */
@@ -99,7 +101,7 @@ const LEGACY_AGENTS: Readonly<Record<string, string>> = { claude: 'claude-acp', 
 
 const LAUNCH = [
   'export HOME=/home/caboose DISPLAY=:101 PATH=/home/caboose/.local/bin:/usr/local/bin:/usr/bin:/bin CABOOSE_TASK_DIR="$PWD"',
-  `[ -f ${AGENTD} ] || { echo "caboose-agentd is not installed in this computer" >&2; exit 1; }`,
+  `[ -f ${AGENTD} ] || { echo "${RUNNER_MISSING}" >&2; exit 1; }`,
   'rm -f exit-code',
   `setsid sh -c 'node ${AGENTD} run "$PWD" >> stderr.log 2>&1; echo $? > exit-code' > /dev/null 2>&1 < /dev/null &`,
   'echo $! > pid',
@@ -298,7 +300,7 @@ export class AgentTasks {
       const config = JSON.stringify({ agent: launch, cwd: dir, approvals, idleMs: this.idleMs })
       const message = JSON.stringify({ type: 'prompt', turn: 1, text: prompt,
         ...(files.length ? { attachments: files.map((file, index) => ({ path: attachments[index], name: file.name, ...(file.type ? { mimeType: file.type } : {}) })) } : {}) })
-      await asCaboose(guest, START_SCRIPT, [dir, prompt, agentId, launch.name, approvals, config, message])
+      await asCaboose(guest, START_SCRIPT, [dir, prompt, agentId, launch.name, approvals, config, message]).catch(rethrowRunnerMissing)
     } catch (error) {
       await asCaboose(guest, 'rm -rf -- "$1"', [dir]).catch(() => {})
       throw error
@@ -346,6 +348,7 @@ export class AgentTasks {
       await this.prepareSeat(guest)
       const name = String(turn).padStart(6, '0')
       await asCaboose(guest, REPLY_SCRIPT, [`${HOME}/Agents/${id}`, JSON.stringify({ type: 'prompt', turn, text: prompt }), String(turn), name], 40_000)
+        .catch(rethrowRunnerMissing)
     } finally {
       entry.replying = false
     }
@@ -610,6 +613,14 @@ export function readAttachments(value: unknown): Array<{ name: string; type: str
     taken.add(unique)
     return { name: unique, type: typeof type === 'string' ? type : '', data: bytes }
   })
+}
+
+/** A computer made from an image older than the runner says so, with what to do about it (409). */
+export function rethrowRunnerMissing(error: unknown): never {
+  if (error instanceof Error && error.message.includes(RUNNER_MISSING)) {
+    throw new AgentConflictError('This computer has no agent runner. Rebuild its image, or run guest/agentd/install.sh in it as root.')
+  }
+  throw error
 }
 
 function asCaboose(guest: AgentGuest, script: string, args: string[], timeoutMs = 15_000): Promise<string> {
