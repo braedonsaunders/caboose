@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildIosPairingUrl, computeSettingsPatch, readSessionToken,
+  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildPairingLink, computeSettingsPatch, formatPairingCode, readSessionToken,
   validateSettingsInput, willRequireColdRestart, writeSessionToken, type ComputerSettings,
 } from './api.js'
 import { parseRoute, routeHref, sidebarPath } from './navigation.js'
@@ -65,9 +65,10 @@ describe('session token', () => {
     expect(readSessionToken(storage)).toBe('')
   })
 
-  it('builds the caboose:// pairing link the iOS app parses', () => {
-    expect(buildIosPairingUrl('https://computer.example.com/', 'a b')).toBe(
-      'caboose://connect?host=https%3A%2F%2Fcomputer.example.com&token=a+b')
+  it('builds the caboose:// pairing link the iOS app parses, with a code and never a token', () => {
+    expect(buildPairingLink('https://computer.example.com/', 'ABCD2345')).toBe(
+      'caboose://connect?host=https%3A%2F%2Fcomputer.example.com&code=ABCD2345')
+    expect(formatPairingCode('ABCD2345')).toBe('ABCD-2345')
   })
 })
 
@@ -132,28 +133,53 @@ describe('navigation and actions', () => {
   it('maps any path onto a page, so SPA fallbacks land somewhere real', () => {
     expect(parseRoute('/')).toEqual({ page: 'overview' })
     expect(parseRoute('/host/')).toEqual({ page: 'host' })
-    expect(parseRoute('/computer')).toEqual({ page: 'computer', tab: 'overview' })
-    expect(parseRoute('/computer/files?path=Documents')).toEqual({ page: 'computer', tab: 'files' })
-    expect(parseRoute('/computer/nope')).toEqual({ page: 'computer', tab: 'overview' })
-    expect(parseRoute('/computer/overview')).toEqual({ page: 'computer', tab: 'overview' })
+    expect(parseRoute('/computers')).toEqual({ page: 'computers' })
+    expect(parseRoute('/computers/c-0123456789')).toEqual({ page: 'computer', id: 'c-0123456789', tab: 'overview' })
+    expect(parseRoute('/computers/owner/files?path=Documents')).toEqual({ page: 'computer', id: 'owner', tab: 'files' })
+    expect(parseRoute('/computers/owner/nope')).toEqual({ page: 'computer', id: 'owner', tab: 'overview' })
+    expect(parseRoute('/computers/Not%20An%20Id')).toEqual({ page: 'computers' })
     expect(parseRoute('/computerish')).toEqual({ page: 'overview' })
     expect(parseRoute('/nope')).toEqual({ page: 'overview' })
   })
 
-  it('sends addresses from the old console to the page that took them over', () => {
-    expect(parseRoute('/files')).toEqual({ page: 'computer', tab: 'files' })
-    expect(parseRoute('/apps/')).toEqual({ page: 'computer', tab: 'apps' })
-    expect(parseRoute('/devices')).toEqual({ page: 'computer', tab: 'phones' })
-    expect(parseRoute('/settings')).toEqual({ page: 'computer', tab: 'settings' })
+  it("sends addresses from earlier consoles to the owner's computer, or the page that took them over", () => {
+    expect(parseRoute('/computer')).toEqual({ page: 'computer', id: 'owner', tab: 'overview' })
+    expect(parseRoute('/computer/phones')).toEqual({ page: 'computer', id: 'owner', tab: 'phones' })
+    expect(parseRoute('/files')).toEqual({ page: 'computer', id: 'owner', tab: 'files' })
+    expect(parseRoute('/apps/')).toEqual({ page: 'computer', id: 'owner', tab: 'apps' })
+    expect(parseRoute('/devices')).toEqual({ page: 'computer', id: 'owner', tab: 'phones' })
+    expect(parseRoute('/settings')).toEqual({ page: 'computer', id: 'owner', tab: 'settings' })
     expect(parseRoute('/system/x')).toEqual({ page: 'host' })
     expect(parseRoute('/agents')).toEqual({ page: 'overview' })
   })
 
-  it('writes one canonical address per page and highlights the computer for every tab', () => {
-    expect(routeHref({ page: 'computer', tab: 'overview' })).toBe('/computer')
-    expect(routeHref({ page: 'computer', tab: 'phones' })).toBe('/computer/phones')
-    expect(sidebarPath({ page: 'computer', tab: 'settings' })).toBe('/computer')
+  it('writes one canonical address per page and files every computer under Computers', () => {
+    expect(routeHref({ page: 'computer', id: 'owner', tab: 'overview' })).toBe('/computers/owner')
+    expect(routeHref({ page: 'computer', id: 'c-0123456789', tab: 'phones' })).toBe('/computers/c-0123456789/phones')
+    expect(sidebarPath({ page: 'computer', id: 'owner', tab: 'settings' })).toBe('/computers')
     expect(sidebarPath({ page: 'host' })).toBe('/host')
+  })
+
+  it("sends a computer's routes under its id, and host routes as they are", async () => {
+    const seen: string[] = []
+    const client = new CabooseClient(() => 't', '', async url => { seen.push(String(url)); return new Response('{"computers":[],"items":[]}', { status: 200 }) })
+    const kids = client.forComputer('c-0123456789')
+    await kids.computer()
+    await kids.listFiles('Documents')
+    await kids.startCatalogOperation('photocraft', 'install')
+    await kids.health()
+    await kids.computers()
+    await kids.phones('c-0123456789')
+    await client.computer()
+    expect(seen).toEqual([
+      '/v1/computers/c-0123456789/computer',
+      '/v1/computers/c-0123456789/fs/list?path=Documents',
+      '/v1/computers/c-0123456789/catalog/photocraft/install',
+      '/v1/health',
+      '/v1/computers',
+      '/v1/computers/c-0123456789/phones',
+      '/v1/computer',
+    ])
   })
 
   it('offers only the actions the state allows', () => {

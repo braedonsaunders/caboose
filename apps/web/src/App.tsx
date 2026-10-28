@@ -3,12 +3,13 @@ import { AppShell, Button, ConfirmRoot, PromptRoot, Toaster, type LinkRender } f
 import { LogOut } from 'lucide-react'
 import { CabooseClient, readSessionToken, writeSessionToken } from './api.js'
 import { NAVIGATION_GROUPS, navigate, sidebarPath, useRoute } from './navigation.js'
-import { useComputer } from './useComputer.js'
+import { useComputers } from './useComputer.js'
 import { useHost } from './useHost.js'
 import { Wordmark } from './brand/Logo.js'
 import { SignIn } from './pages/SignIn.js'
 import { Overview } from './pages/Overview.js'
 import { Computer } from './pages/Computer.js'
+import { Computers } from './pages/Computers.js'
 import { Host } from './pages/Host.js'
 
 /** Every navigation entry routes client-side, so the shell never reloads the page. */
@@ -53,13 +54,15 @@ export function App() {
 function Console({ token, onSignOut }: { token: string; onSignOut: () => void }) {
   const route = useRoute()
   const client = React.useMemo(() => new CabooseClient(() => token), [token])
-  const computer = useComputer(client, onSignOut)
+  const computers = useComputers(client, onSignOut)
   const host = useHost(client, onSignOut)
-  const name = computer.status?.settings.name ?? 'Caboose'
+  const awake = computers.list?.computers.some(computer => computer.state !== 'parked') ?? false
 
   React.useEffect(() => {
-    document.title = route.page === 'computer' ? `${name} — Caboose` : route.page === 'host' ? 'Host — Caboose' : 'Caboose'
-  }, [name, route.page])
+    if (route.page === 'host') document.title = 'Host — Caboose'
+    else if (route.page === 'computers') document.title = 'Computers — Caboose'
+    else if (route.page === 'overview') document.title = 'Caboose'
+  }, [route.page])
 
   return (
     <AppShell
@@ -68,8 +71,8 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
       navigationMode="sidebar"
       linkRender={linkRender}
       brand={
-        // The hubs are lit while the computer is up and unlit while it is parked.
-        <Wordmark height={30} lit={computer.status?.state !== 'parked'} className="text-fg" />
+        // The hubs are lit while any computer is up and unlit while every one is parked.
+        <Wordmark height={30} lit={awake} className="text-fg" />
       }
       header={
         <Button variant="ghost" size="sm" onClick={onSignOut}>
@@ -78,10 +81,12 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
         </Button>
       }
     >
-      {route.page === 'overview' ? <Overview computer={computer} host={host} /> : null}
-      {route.page === 'computer'
-        ? <Computer client={client} computer={computer} host={host} tab={route.tab} token={token} onUnauthorized={onSignOut} />
-        : null}
+      {route.page === 'overview' ? <Overview computers={computers} host={host} /> : null}
+      {route.page === 'computers' ? <Computers client={client} computers={computers} /> : null}
+      {route.page === 'computer' ? (
+        // Keyed by computer, so nothing one computer's tabs loaded is shown for another.
+        <Computer key={route.id} client={client} computers={computers} id={route.id} host={host} tab={route.tab} onUnauthorized={onSignOut} />
+      ) : null}
       {route.page === 'host' ? <Host host={host} /> : null}
     </AppShell>
   )

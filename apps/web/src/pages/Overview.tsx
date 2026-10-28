@@ -1,24 +1,21 @@
 import { DashboardMetricCard, DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
-import {
-  Alert, AlertDescription, AlertTitle, Badge, PageContainer, PageHeader,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@braedonsaunders/appkit-ui'
+import { Alert, AlertDescription, AlertTitle, Button, PageContainer, PageHeader } from '@braedonsaunders/appkit-ui'
 import { Cpu, HardDrive, MemoryStick, Monitor } from 'lucide-react'
-import { formatIdleDuration, formatMemoryMb } from '../api.js'
+import { formatMemoryMb } from '../api.js'
+import { ComputersTable } from '../components/ComputersTable.js'
 import { formatBytes } from '../files.js'
-import { healthProblems, sharePercent, upgradeLabel } from '../host.js'
+import { fleetTotals, healthProblems, sharePercent, upgradeLabel } from '../host.js'
 import { navigate } from '../navigation.js'
-import { stateLabel, stateTone } from '../state.js'
-import type { ComputerHandle } from '../useComputer.js'
+import type { ComputersHandle } from '../useComputer.js'
 import type { HostHandle } from '../useHost.js'
 import { RollingWordmark } from '../brand/Logo.js'
 
 /** The host at a glance: what its computers are given of the machine, and anything that needs attention. */
-export function Overview({ computer, host }: { computer: ComputerHandle; host: HostHandle }) {
-  const { status, error } = computer
+export function Overview({ computers, host }: { computers: ComputersHandle; host: HostHandle }) {
+  const { list, error } = computers
   const { info, health } = host
 
-  if (!status) {
+  if (!list) {
     return (
       <PageContainer>
         {error ? (
@@ -33,9 +30,7 @@ export function Overview({ computer, host }: { computer: ComputerHandle; host: H
 
   const machine = health?.machine
   const problems = health ? healthProblems(health) : []
-  const running = status.state === 'running' ? 1 : 0
-  const upgrade = status.upgrade
-  const open = () => navigate('/computer')
+  const totals = fleetTotals(list.computers)
 
   return (
     <PageContainer>
@@ -57,37 +52,38 @@ export function Overview({ computer, host }: { computer: ComputerHandle; host: H
             <AlertDescription className="break-words">{problem}</AlertDescription>
           </Alert>
         ))}
-        {status.lastError ? (
-          <Alert variant="destructive">
-            <AlertTitle>{status.settings.name}: last lifecycle error</AlertTitle>
-            <AlertDescription className="font-mono text-xs break-all">{status.lastError}</AlertDescription>
-          </Alert>
-        ) : null}
-        {upgrade?.state === 'failed' ? (
-          <Alert variant="warning">
-            <AlertTitle>{status.settings.name}: {upgradeLabel(upgrade)}</AlertTitle>
-            {upgrade.message ? <AlertDescription className="break-words">{upgrade.message}</AlertDescription> : null}
-          </Alert>
-        ) : null}
+        {list.computers.flatMap(computer => [
+          computer.lastError ? (
+            <Alert key={`${computer.id}:error`} variant="destructive">
+              <AlertTitle>{computer.settings.name}: last lifecycle error</AlertTitle>
+              <AlertDescription className="font-mono text-xs break-all">{computer.lastError}</AlertDescription>
+            </Alert>
+          ) : null,
+          computer.upgrade?.state === 'failed' ? (
+            <Alert key={`${computer.id}:upgrade`} variant="warning">
+              <AlertTitle>{computer.settings.name}: {upgradeLabel(computer.upgrade)}</AlertTitle>
+              {computer.upgrade.message ? <AlertDescription className="break-words">{computer.upgrade.message}</AlertDescription> : null}
+            </Alert>
+          ) : null,
+        ])}
 
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <DashboardMetricCard
             label="Computers"
-            value={1}
-            detail={running ? '1 running' : 'None running'}
+            value={list.computers.length}
+            detail={totals.running ? `${totals.running} running` : 'None running'}
             icon={<Monitor className="size-4" aria-hidden />}
           />
           <DashboardMetricCard
             label="Memory given"
-            value={formatMemoryMb(status.settings.memoryMb)}
-            detail={machine
-              ? `${sharePercent(status.settings.memoryMb, machine.memoryMb)}% of ${formatMemoryMb(machine.memoryMb)}`
-              : undefined}
+            value={formatMemoryMb(totals.memoryMb)}
+            detail={machine ? `${sharePercent(totals.memoryMb, machine.memoryMb)}% of ${formatMemoryMb(machine.memoryMb)}` : undefined}
+            tone={machine && totals.memoryMb > machine.memoryMb ? 'warning' : undefined}
             icon={<MemoryStick className="size-4" aria-hidden />}
           />
           <DashboardMetricCard
             label="vCPUs given"
-            value={status.settings.vcpus}
+            value={totals.vcpus}
             detail={machine ? `of ${machine.cpus} CPUs on this machine` : undefined}
             icon={<Cpu className="size-4" aria-hidden />}
           />
@@ -99,34 +95,12 @@ export function Overview({ computer, host }: { computer: ComputerHandle; host: H
           />
         </div>
 
-        <DashboardPanel title="Computers" icon={<Monitor className="size-4" aria-hidden />}>
-          <Table containerClassName="border-0 shadow-none">
-            <TableHeader>
-              <TableRow noAnimate>
-                <TableHead>Name</TableHead>
-                <TableHead>State</TableHead>
-                <TableHead className="hidden sm:table-cell">Size</TableHead>
-                <TableHead className="hidden md:table-cell">Screens</TableHead>
-                <TableHead className="hidden md:table-cell">Parks after</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              <TableRow className="cursor-pointer" onClick={open}>
-                <TableCell>
-                  <a href="/computer" className="font-medium hover:underline" onClick={event => { event.preventDefault(); open() }}>
-                    {status.settings.name}
-                  </a>
-                </TableCell>
-                <TableCell><Badge variant={stateTone(status.state)}>{stateLabel(status.state)}</Badge></TableCell>
-                <TableCell className="hidden text-sm sm:table-cell">
-                  {formatMemoryMb(status.settings.memoryMb)} · {status.settings.vcpus} vCPUs
-                  {status.restartRequired ? <span className="ml-2 text-xs text-fg-muted">restart to apply</span> : null}
-                </TableCell>
-                <TableCell className="hidden text-sm tabular-nums md:table-cell">{status.clients.display}</TableCell>
-                <TableCell className="hidden text-sm md:table-cell">{formatIdleDuration(status.settings.idleMs)}</TableCell>
-              </TableRow>
-            </TableBody>
-          </Table>
+        <DashboardPanel
+          title="Computers"
+          icon={<Monitor className="size-4" aria-hidden />}
+          actions={<Button size="sm" variant="outline" onClick={() => navigate('/computers')}>Manage</Button>}
+        >
+          <ComputersTable computers={list.computers} />
         </DashboardPanel>
       </div>
     </PageContainer>

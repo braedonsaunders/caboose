@@ -7,7 +7,8 @@ export type ComputerTab = 'overview' | 'files' | 'apps' | 'phones' | 'settings'
 
 export type Route =
   | { page: 'overview' }
-  | { page: 'computer'; tab: ComputerTab }
+  | { page: 'computers' }
+  | { page: 'computer'; id: string; tab: ComputerTab }
   | { page: 'host' }
 
 export const COMPUTER_TABS: Array<{ key: ComputerTab; label: string }> = [
@@ -18,47 +19,54 @@ export const COMPUTER_TABS: Array<{ key: ComputerTab; label: string }> = [
   { key: 'settings', label: 'Settings' },
 ]
 
-/** Addresses from before the console was split into host and computer pages, so bookmarks still land. */
-const LEGACY: Record<string, Route> = {
-  '/apps': { page: 'computer', tab: 'apps' },
-  '/files': { page: 'computer', tab: 'files' },
-  '/devices': { page: 'computer', tab: 'phones' },
-  '/settings': { page: 'computer', tab: 'settings' },
-  '/system': { page: 'host' },
-}
+const OWNER = 'owner'
+const COMPUTER_ID = /^[a-z0-9-]{1,40}$/
+
+/**
+ * Addresses from earlier consoles, so bookmarks still land: the single-computer pages of
+ * the first console, and the `/computer` page of the one before several computers.
+ */
+const LEGACY: Record<string, ComputerTab> = { '/apps': 'apps', '/files': 'files', '/devices': 'phones', '/settings': 'settings' }
 
 const icon = (Icon: typeof Server) => React.createElement(Icon, { className: 'size-4', 'aria-hidden': true })
 
 /** One entry per group, so the sidebar stays a flat list (appkit-ui's isFlatNavigation). */
 export const NAVIGATION_GROUPS: SidebarNavGroup[] = [
   { href: '/', label: 'Overview', icon: icon(Gauge), exact: true, mobile: true },
-  { href: '/computer', label: 'Computer', icon: icon(Monitor), mobile: true },
+  { href: '/computers', label: 'Computers', icon: icon(Monitor), mobile: true },
   { href: '/host', label: 'Host', icon: icon(Server), mobile: true },
 ].map(item => ({ id: item.href === '/' ? 'overview' : item.href.slice(1), label: item.label, items: [item] }))
 
+function tabOf(value: string | undefined): ComputerTab {
+  return COMPUTER_TABS.find(entry => entry.key !== 'overview' && entry.key === value)?.key ?? 'overview'
+}
+
 export function parseRoute(raw: string): Route {
   const clean = raw.split('?')[0]?.replace(/\/+$/, '') || '/'
-  if (clean === '/host') return { page: 'host' }
-  if (clean === '/computer') return { page: 'computer', tab: 'overview' }
-  if (clean.startsWith('/computer/')) {
-    const tab = COMPUTER_TABS.find(entry => entry.key !== 'overview' && clean === `/computer/${entry.key}`)
-    return { page: 'computer', tab: tab?.key ?? 'overview' }
-  }
+  if (clean === '/host' || clean === '/system' || clean.startsWith('/system/')) return { page: 'host' }
+  if (clean === '/computers') return { page: 'computers' }
+  const [, section, id, tab] = clean.split('/')
+  if (section === 'computers' && id) return COMPUTER_ID.test(id) ? { page: 'computer', id, tab: tabOf(tab) } : { page: 'computers' }
+  if (section === 'computer' && clean.split('/').length <= 3) return { page: 'computer', id: OWNER, tab: tabOf(id) }
   const legacy = Object.keys(LEGACY).find(path => clean === path || clean.startsWith(`${path}/`))
-  return legacy ? LEGACY[legacy]! : { page: 'overview' }
+  return legacy ? { page: 'computer', id: OWNER, tab: LEGACY[legacy]! } : { page: 'overview' }
 }
 
 export function routeHref(route: Route): string {
   switch (route.page) {
     case 'overview': return '/'
+    case 'computers': return '/computers'
     case 'host': return '/host'
-    case 'computer': return route.tab === 'overview' ? '/computer' : `/computer/${route.tab}`
+    case 'computer': {
+      const base = `/computers/${encodeURIComponent(route.id)}`
+      return route.tab === 'overview' ? base : `${base}/${route.tab}`
+    }
   }
 }
 
-/** The address the sidebar highlights for a route. */
+/** The address the sidebar highlights for a route: every computer's pages sit under Computers. */
 export function sidebarPath(route: Route): string {
-  return route.page === 'computer' ? '/computer' : routeHref(route)
+  return route.page === 'computer' ? '/computers' : routeHref(route)
 }
 
 export function navigate(href: string, options: { replace?: boolean } = {}): void {

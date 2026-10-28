@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { gpuLabel, healthFacts, healthProblems, runtimeLabel, sharePercent, upgradeLabel } from './host.js'
+import { fleetTotals, gpuLabel, healthFacts, healthProblems, runtimeLabel, sharePercent, upgradeLabel } from './host.js'
 
 describe('host', () => {
   it('names the runtime and GPU', () => {
@@ -32,6 +32,10 @@ describe('host', () => {
     // A parked container is not running, and that is not a problem.
     expect(healthProblems({ host: 'caboose-host', runtime: 'container', gpu: 'none', container: 'caboose-owner', running: false })).toEqual([])
     expect(sharePercent(6144, 32768)).toBe(19)
+    expect(fleetTotals([
+      { state: 'running', settings: { memoryMb: 4096, vcpus: 2 } },
+      { state: 'parked', settings: { memoryMb: 8192, vcpus: 4 } },
+    ])).toEqual({ running: 1, memoryMb: 12288, vcpus: 6 })
     expect(sharePercent(1, 0)).toBe(0)
   })
 })

@@ -1,12 +1,13 @@
+import * as React from 'react'
 import {
-  Alert, AlertDescription, AlertTitle, Badge, Button, DetailHeader, DetailPageLayout, PageContainer, SubtabNav,
+  Alert, AlertDescription, AlertTitle, Badge, Button, DetailHeader, DetailPageLayout, EmptyState, PageContainer, SubtabNav,
 } from '@braedonsaunders/appkit-ui'
-import { Power, RotateCcw, Sunrise } from 'lucide-react'
-import { formatMemoryMb, type CabooseClient } from '../api.js'
+import { Monitor, Power, RotateCcw, Sunrise } from 'lucide-react'
+import { OWNER_COMPUTER, formatMemoryMb, type CabooseClient } from '../api.js'
 import { useComputerActions } from '../actions.js'
 import { COMPUTER_TABS, navigate, routeHref, type ComputerTab } from '../navigation.js'
 import { availableActions, stateLabel, stateTone } from '../state.js'
-import type { ComputerHandle } from '../useComputer.js'
+import { useComputerHandle, type ComputersHandle } from '../useComputer.js'
 import type { HostHandle } from '../useHost.js'
 import { RollingWordmark } from '../brand/Logo.js'
 import { ComputerOverview } from './computer/ComputerOverview.js'
@@ -16,16 +17,35 @@ import { Phones } from './computer/Phones.js'
 import { Settings } from './computer/Settings.js'
 
 /** One computer: its state and lifecycle actions above, and a tab for each thing an owner manages. */
-export function Computer({ client, computer, host, tab, token, onUnauthorized }: {
+export function Computer({ client: hostClient, computers, id, host, tab, onUnauthorized }: {
   client: CabooseClient
-  computer: ComputerHandle
+  computers: ComputersHandle
+  id: string
   host: HostHandle
   tab: ComputerTab
-  token: string
   onUnauthorized: () => void
 }) {
+  const client = React.useMemo(() => hostClient.forComputer(id), [hostClient, id])
+  const computer = useComputerHandle(computers, id)
   const { status, error } = computer
   const actions = useComputerActions(client, computer)
+
+  React.useEffect(() => {
+    if (status) document.title = `${status.settings.name} — Caboose`
+  }, [status?.settings.name])
+
+  if (!status && computers.list) {
+    return (
+      <PageContainer>
+        <EmptyState
+          icon={<Monitor className="size-6" aria-hidden />}
+          title="This computer is not on this host"
+          description="It may have been deleted. Every computer the host runs is listed under Computers."
+          action={<Button onClick={() => navigate('/computers')}>Show computers</Button>}
+        />
+      </PageContainer>
+    )
+  }
 
   if (!status) {
     return (
@@ -103,15 +123,25 @@ export function Computer({ client, computer, host, tab, token, onUnauthorized }:
           ariaLabel="Computer"
           tabs={COMPUTER_TABS.map(entry => ({ key: entry.key, label: entry.label }))}
           active={tab}
-          onSelect={key => navigate(routeHref({ page: 'computer', tab: key as ComputerTab }))}
+          onSelect={key => navigate(routeHref({ page: 'computer', id, tab: key as ComputerTab }))}
         />
       }
     >
       {tab === 'overview' ? <ComputerOverview computer={computer} host={host} /> : null}
       {tab === 'files' ? <Files client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
       {tab === 'apps' ? <Apps client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
-      {tab === 'phones' ? <Phones client={client} computer={computer} token={token} onUnauthorized={onUnauthorized} /> : null}
-      {tab === 'settings' ? <Settings client={client} computer={computer} /> : null}
+      {tab === 'phones' ? <Phones client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
+      {tab === 'settings' ? (
+        <Settings
+          client={client}
+          computer={computer}
+          onDelete={id === OWNER_COMPUTER ? undefined : async () => {
+            await hostClient.deleteComputer(id)
+            await computers.refresh()
+            navigate('/computers')
+          }}
+        />
+      ) : null}
     </DetailPageLayout>
   )
 }
