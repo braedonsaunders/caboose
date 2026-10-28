@@ -1,58 +1,11 @@
 import AVKit
+import SafariServices
 import SwiftUI
-import WebKit
 
-/// "Playing on your computer — Play on iPhone", over whatever is on screen.
-struct MediaBanner: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.openURL) private var openURL
-
-    var body: some View {
-        let media = model.media
-        if let offer = media.offer {
-            HStack(spacing: 12) {
-                Image(systemName: offer.kind == "youtube" ? "play.rectangle.fill" : "film").font(.title3)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Playing on your computer").font(.caption).foregroundStyle(.secondary)
-                    Text(offer.displayTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
-                }
-                Spacer(minLength: 4)
-                Button { Task { await media.playHere(offer) } } label: {
-                    Label("Play on iPhone", systemImage: "iphone").labelStyle(.titleAndIcon).font(.subheadline.weight(.semibold))
-                }
-                .buttonStyle(.glassProminent)
-                Button { withAnimation(.snappy) { media.dismissOffer() } } label: {
-                    Image(systemName: "xmark").font(.caption.weight(.bold)).frame(width: 28, height: 28)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Dismiss")
-            }
-            .padding(12)
-            .glassEffect(.regular, in: .rect(cornerRadius: 20))
-            .padding(.horizontal, 12)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-        } else if let away = media.awaitingReturn {
-            HStack(spacing: 12) {
-                Image(systemName: "desktopcomputer").font(.title3)
-                Text(away.displayTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
-                Spacer(minLength: 4)
-                Button("Resume on Computer") { Task { await media.resumeOnComputer() } }.buttonStyle(.glassProminent)
-                Button { media.stayOnPhone() } label: { Image(systemName: "xmark").frame(width: 28, height: 28) }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Dismiss")
-            }
-            .padding(12)
-            .glassEffect(.regular, in: .rect(cornerRadius: 20))
-            .padding(.horizontal, 12)
-        }
-    }
-}
-
-/// Plays a handed-off video full screen. Direct and HLS sources play in AVKit (with
-/// AirPlay to an Apple TV); YouTube plays in its embedded player, which also offers AirPlay.
+/// Plays a handed-off video full screen: its own source in AVKit (with AirPlay to an Apple
+/// TV), or, for a stream the page builds itself, the page in the phone's browser.
 struct MediaPlayerScreen: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openURL) private var openURL
     let media: PlayingMedia
     @State private var position: Double
 
@@ -62,31 +15,53 @@ struct MediaPlayerScreen: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            Color.black.ignoresSafeArea()
-            if media.kind == "youtube", let id = media.videoId {
-                YouTubePlayer(videoID: id, start: media.position, position: $position) {
-                    if let url = model.media.handToYouTubeApp(at: position) { openURL(url) }
-                }
-                .ignoresSafeArea(edges: .bottom)
-                .padding(.top, 56)
-            } else if let src = media.src.flatMap(URL.init(string:)) {
+        if media.kind == "page", let page = media.pageURL {
+            // The page's own player runs here; its position does not carry back.
+            WebPage(url: page) { Task { await model.media.finished(at: nil) } }
+                .ignoresSafeArea()
+        } else if let src = media.sourceURL {
+            ZStack(alignment: .topLeading) {
+                Color.black.ignoresSafeArea()
                 NativePlayer(url: src, start: media.position, position: $position)
                     .ignoresSafeArea()
-            }
-            HStack(spacing: 10) {
-                Button { Task { await model.media.finished(at: position) } } label: {
-                    Label("Back to Computer", systemImage: "desktopcomputer").font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 14).frame(height: 40)
+                HStack(spacing: 10) {
+                    Button { Task { await model.media.finished(at: position) } } label: {
+                        Label("Back to Computer", systemImage: "desktopcomputer").font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 14).frame(height: 40)
+                    }
+                    .glassEffect(.regular.interactive(), in: .capsule)
+                    Spacer()
+                    RoutePicker().frame(width: 40, height: 40).glassEffect(.regular.interactive(), in: .circle)
                 }
-                .glassEffect(.regular.interactive(), in: .capsule)
-                Spacer()
-                RoutePicker().frame(width: 40, height: 40).glassEffect(.regular.interactive(), in: .circle)
+                .padding(.horizontal, 12).padding(.top, 8)
+                .foregroundStyle(.white)
             }
-            .padding(.horizontal, 12).padding(.top, 8)
-            .foregroundStyle(.white)
+            .statusBarHidden()
         }
-        .statusBarHidden()
+    }
+}
+
+/// The page in Safari's in-app browser, with its AirPlay and full-screen controls.
+struct WebPage: UIViewControllerRepresentable {
+    let url: URL
+    let done: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(done: done) }
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let controller = SFSafariViewController(url: url)
+        controller.dismissButtonStyle = .done
+        controller.preferredControlTintColor = .white
+        controller.delegate = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
+
+    final class Coordinator: NSObject, SFSafariViewControllerDelegate {
+        let done: () -> Void
+        init(done: @escaping () -> Void) { self.done = done }
+        func safariViewControllerDidFinish(_ controller: SFSafariViewController) { done() }
     }
 }
 
@@ -150,78 +125,6 @@ struct NativePlayer: UIViewControllerRepresentable {
         func stop() {
             if let token { player?.removeTimeObserver(token) }
             token = nil
-        }
-    }
-}
-
-/// YouTube's embedded player, reporting its time so the computer can continue from it.
-/// A video whose owner disallows embedding goes to the YouTube app instead (`fallback`).
-struct YouTubePlayer: UIViewRepresentable {
-    let videoID: String
-    let start: Double
-    @Binding var position: Double
-    let fallback: () -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator(position: $position, fallback: fallback) }
-
-    func makeUIView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.allowsInlineMediaPlayback = true
-        configuration.allowsAirPlayForMediaPlayback = true
-        configuration.allowsPictureInPictureMediaPlayback = false
-        configuration.mediaTypesRequiringUserActionForPlayback = []
-        configuration.userContentController.add(context.coordinator, name: "caboose")
-        let view = WKWebView(frame: .zero, configuration: configuration)
-        view.isOpaque = false
-        view.backgroundColor = .black
-        view.scrollView.isScrollEnabled = false
-        // The embed needs a real origin; the page is ours, served as if from youtube.com.
-        view.loadHTMLString(Self.page(videoID: videoID, start: Int(start)), baseURL: URL(string: "https://www.youtube.com"))
-        return view
-    }
-
-    func updateUIView(_ view: WKWebView, context: Context) {}
-
-    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
-        view.configuration.userContentController.removeScriptMessageHandler(forName: "caboose")
-        view.evaluateJavaScript("player && player.pauseVideo && player.pauseVideo()")
-    }
-
-    static func page(videoID: String, start: Int) -> String {
-        let id = videoID.filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
-        return """
-        <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-        <style>html,body{margin:0;height:100%;background:#000}#p{position:absolute;inset:0;width:100%;height:100%}</style></head>
-        <body><div id="p"></div><script>
-        var player;
-        function post(m){window.webkit.messageHandlers.caboose.postMessage(m)}
-        function onYouTubeIframeAPIReady(){
-          player=new YT.Player('p',{videoId:'\(id)',playerVars:{start:\(max(0, start)),autoplay:1,playsinline:1,rel:0},
-            events:{onReady:function(e){e.target.playVideo()},onError:function(e){post({error:e.data})}}});
-          setInterval(function(){if(player&&player.getCurrentTime){post({time:player.getCurrentTime()})}},500);
-        }
-        </script><script src="https://www.youtube.com/iframe_api"></script></body></html>
-        """
-    }
-
-    @MainActor final class Coordinator: NSObject, WKScriptMessageHandler {
-        private var position: Binding<Double>
-        private let fallback: () -> Void
-        private var fellBack = false
-
-        init(position: Binding<Double>, fallback: @escaping () -> Void) {
-            self.position = position
-            self.fallback = fallback
-        }
-
-        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard let body = message.body as? [String: Any] else { return }
-            if let time = body["time"] as? Double, time.isFinite, time > 0 { position.wrappedValue = time }
-            // 101 and 150: the owner does not allow embedding. 2, 5, 100: bad id, HTML5 error, removed.
-            if body["error"] != nil, !fellBack {
-                fellBack = true
-                fallback()
-            }
         }
     }
 }

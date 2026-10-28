@@ -21,6 +21,16 @@ on the task card or on the banner that shows over any screen. A finished task ta
 that continues the same conversation. A window's `…` menu has **Ask Agent About This
 Window**, which sends its screenshot, title and app with your request.
 
+## Play on iPhone or Apple TV
+
+Video reaches the phone like every other window. When the computer's Chromium is playing a
+video, its window's `…` menu also has **Play on iPhone or Apple TV**, which pauses the
+computer's copy and plays it here: a video with its own http(s) source (a file or HLS) in
+AVKit, with AirPlay to an Apple TV, and **Back to Computer** continues the computer's copy
+at the phone's time; a stream the page builds itself opens the page in Safari's in-app
+browser, and closing it continues the computer's copy where it paused. It works the same for
+every site (contract: `docs/architecture.md` § Media handoff).
+
 ## Share sheet
 
 Caboose appears in the iOS share sheet. A web page can be opened in the computer's browser;

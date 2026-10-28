@@ -6,37 +6,33 @@ struct PlayingMedia: Decodable, Equatable, Identifiable, Sendable {
     var id: String
     var page: String
     var title: String
-    /// A direct http(s) source; absent for YouTube, which plays from `videoId`.
+    /// The video's own http(s) source, for "hls" and "video"; absent for "page".
     var src: String?
-    /// "youtube", "hls" or "video".
+    /// "hls" or "video" play from `src`; "page" (a stream the page builds itself) opens the page.
     var kind: String
-    var videoId: String?
     var position: Double
     var duration: Double?
     var paused: Bool
 
-    /// Whether the phone can play it itself.
-    var playable: Bool {
-        switch kind {
-        case "youtube": videoId?.isEmpty == false
-        case "hls", "video": src.flatMap(URL.init(string:)).map { ["http", "https"].contains($0.scheme?.lowercased()) } ?? false
-        default: false
-        }
-    }
+    var sourceURL: URL? { src.flatMap(URL.init(string:)).flatMap(Self.web) }
+    var pageURL: URL? { URL(string: page).flatMap(Self.web) }
 
-    var displayTitle: String { title.isEmpty ? (URL(string: page)?.host() ?? "Video") : title }
+    /// Whether the phone can take it: its source, or for a page-built stream, its page.
+    var playable: Bool { kind == "page" ? pageURL != nil : sourceURL != nil }
+
+    var displayTitle: String { title.isEmpty ? (pageURL?.host() ?? "Video") : title }
+
+    private static func web(_ url: URL) -> URL? { ["http", "https"].contains(url.scheme?.lowercased()) ? url : nil }
 }
 
-/// Moves a video from the computer's browser to the phone (or AirPlay) and back: the Linux
-/// copy pauses while the phone plays and continues at the phone's time afterwards.
+/// "Play on iPhone / Apple TV", an action the owner takes from a window's menu. Video
+/// itself reaches the phone like every window does; this moves one video off the computer:
+/// the Linux copy pauses while the phone plays and continues at the phone's time afterwards.
 @MainActor @Observable
 final class MediaHandoff {
     private(set) var playing: PlayingMedia?
     /// Being played on the phone now.
     private(set) var handedOff: PlayingMedia?
-    /// Handed to another app (the YouTube app), so the time it stopped at is unknown.
-    private(set) var awaitingReturn: PlayingMedia?
-    private var dismissedID: String?
     private var host: () -> HostClient? = { nil }
 
     func attach(host: @escaping () -> HostClient?) {
@@ -47,18 +43,13 @@ final class MediaHandoff {
     func reset() {
         playing = nil
         handedOff = nil
-        awaitingReturn = nil
-        dismissedID = nil
     }
 
-    /// Offered while the computer plays something the phone can take, and it is not already here.
-    var offer: PlayingMedia? {
-        guard let playing, playing.playable, !playing.paused, playing.id != dismissedID,
-              handedOff == nil, awaitingReturn == nil else { return nil }
+    /// What the window menu offers to move to the phone, if anything.
+    var available: PlayingMedia? {
+        guard let playing, playing.playable, handedOff == nil else { return nil }
         return playing
     }
-
-    func dismissOffer() { dismissedID = playing?.id }
 
     func refresh() async {
         struct Current: Decodable { var media: PlayingMedia? }
@@ -74,7 +65,6 @@ final class MediaHandoff {
             guard let object = event["media"],
                   let data = try? JSONSerialization.data(withJSONObject: object),
                   let media = try? JSONDecoder().decode(PlayingMedia.self, from: data) else { return true }
-            if media.id != playing?.id { dismissedID = nil }
             playing = media
         case "media.stopped":
             if let id = event["id"] as? String, playing?.id == id { playing = nil }
@@ -96,23 +86,6 @@ final class MediaHandoff {
         handedOff = nil
         await control(media.id, "play", position: position)
     }
-
-    /// The embedded player refused the video: play it in the YouTube app instead, and offer
-    /// to continue on the computer when Caboose is back.
-    func handToYouTubeApp(at position: Double) -> URL? {
-        guard let media = handedOff, let id = media.videoId else { return nil }
-        handedOff = nil
-        awaitingReturn = media
-        return URL(string: "https://www.youtube.com/watch?v=\(id)&t=\(Int(position))s")
-    }
-
-    func resumeOnComputer() async {
-        guard let media = awaitingReturn else { return }
-        awaitingReturn = nil
-        await control(media.id, "play", position: nil)
-    }
-
-    func stayOnPhone() { awaitingReturn = nil }
 
     private func control(_ id: String, _ action: String, position: Double?) async {
         guard let host = host() else { return }

@@ -47,14 +47,9 @@ struct WindowScreen: View {
             }
         }
         .overlay(alignment: .top) {
-            VStack(spacing: 8) {
-                ApprovalBanner()
-                MediaBanner()
-            }
-            .padding(.top, chromeVisible ? 56 : 8)
+            ApprovalBanner().padding(.top, chromeVisible ? 56 : 8)
         }
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
-        .animation(.snappy, value: model.media.offer?.id)
         .fullScreenCover(item: Binding(
             get: { model.media.handedOff },
             set: { if $0 == nil, model.media.handedOff != nil { Task { await model.media.finished(at: nil) } } })) { media in
@@ -120,6 +115,9 @@ struct WindowScreen: View {
                 Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
                 if model.agents.available {
                     Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
+                }
+                if let video = model.media.available, window.appClass?.name.lowercased().contains("chromium") == true {
+                    Button("Play on iPhone or Apple TV", systemImage: "play.tv") { Task { await model.media.playHere(video) } }
                 }
                 Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
                 Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }

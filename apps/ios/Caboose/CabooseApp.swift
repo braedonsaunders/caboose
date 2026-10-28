@@ -61,20 +61,9 @@ struct RootView: View {
         }
         .animation(.smooth(duration: 0.35), value: model.phase)
         .overlay(alignment: .top) {
-            if model.phase == .ready, !model.externalDisplayActive {
-                VStack(spacing: 8) {
-                    ApprovalBanner()
-                    MediaBanner()
-                }
-            }
+            if model.phase == .ready, !model.externalDisplayActive { ApprovalBanner() }
         }
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
-        .animation(.snappy, value: model.media.offer?.id)
-        .fullScreenCover(item: Binding(
-            get: { model.presentedWindowID == nil ? model.media.handedOff : nil },
-            set: { if $0 == nil, model.media.handedOff != nil { Task { await model.media.finished(at: nil) } } })) { media in
-            MediaPlayerScreen(media: media).environment(model)
-        }
         .sheet(isPresented: Bindable(model).settingsPresented) {
             ComputerSettingsView().environment(model)
         }
