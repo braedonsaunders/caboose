@@ -5,6 +5,9 @@ struct AgentAttachment: Sendable {
     var name: String
     var type: String
     var data: Data
+    var json: JSONValue {
+        .object(["name": .string(name), "type": .string(type), "data": .string(data.base64EncodedString())])
+    }
 }
 
 /// What the app and its share extension send to the computer.
@@ -16,9 +19,7 @@ extension HostClient {
         var body: [String: JSONValue] = ["prompt": .string(prompt), "approvals": .string(approvals), "craftMcp": .bool(craftMcp)]
         if let agent, !agent.isEmpty { body["agent"] = .string(agent) }
         if !attachments.isEmpty {
-            body["attachments"] = .array(attachments.map {
-                .object(["name": .string($0.name), "type": .string($0.type), "data": .string($0.data.base64EncodedString())])
-            })
+            body["attachments"] = .array(attachments.map(\.json))
         }
         let started: Started = try await request("POST", "/v1/agent/tasks", body: body, timeout: 120)
         return started.id

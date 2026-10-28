@@ -26,7 +26,7 @@ struct AgentsScreen: View {
                 } else {
                     NewChat(connectModel: { connectingModel = true })
                         .safeAreaBar(edge: .bottom) { ChatComposer(task: nil) { connectingModel = true } }
-                        .navigationTitle("New Chat")
+                        .navigationTitle("Agents")
                 }
             }
             .safeAreaBar(edge: .top) { LiveStrip(excluding: chat?.id) { agents.currentChat = $0 } }
@@ -48,6 +48,9 @@ struct AgentsScreen: View {
                 ComputerToolbar()
             }
         }
+        .alert("Agent Action Failed", isPresented: Binding(get: { agents.lastError != nil }, set: { if !$0 { agents.lastError = nil } })) {
+            Button("OK") { agents.lastError = nil }
+        } message: { Text(agents.lastError ?? "") }
         .sheet(isPresented: $connectingModel) { ConnectModelView().environment(model) }
         .sheet(isPresented: $showingChats) { ChatList().environment(model) }
         .onChange(of: agents.focusedTask, initial: true) { _, id in
@@ -62,11 +65,12 @@ struct AgentsScreen: View {
 private struct ChatList: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
 
     var body: some View {
         let agents = model.agents
         NavigationStack {
-            List(agents.tasks) { task in
+            List(agents.tasks.filter { search.isEmpty || agents.title(of: $0).localizedCaseInsensitiveContains(search) || agents.name(of: $0).localizedCaseInsensitiveContains(search) }) { task in
                 Button {
                     agents.currentChat = task.id
                     dismiss()
@@ -95,6 +99,7 @@ private struct ChatList: View {
             .overlay {
                 if agents.tasks.isEmpty { ContentUnavailableView("No Chats Yet", systemImage: "bubble.left.and.bubble.right") }
             }
+            .searchable(text: $search, prompt: "Search chats and agents")
             .refreshable { await agents.refresh() }
             .navigationTitle("Chats")
             .navigationBarTitleDisplayMode(.inline)
@@ -175,22 +180,33 @@ private struct NewChat: View {
                     if let agent { AgentAvatar(name: agent.name, size: 72) } else { CabooseAvatar(size: 72) }
                 }
                 .padding(.top, 36)
-                Text("What should your computer do?")
-                    .font(.title2.weight(.bold))
+                Text("What shall we\nmake happen?")
+                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    .tracking(-0.7)
                     .multilineTextAlignment(.center)
-                Text(agent.map { "\($0.name) works on its own screen in your computer, so yours stays free. Ask it anything, and keep talking while it works." }
-                     ?? "Connect a model, and an agent works on its own screen in your computer.")
+                Text(agent.map { "Your files. Your apps. \($0.name), with a whole computer to work with." }
+                     ?? "Your files. Your apps. Connect an agent and give it a whole computer to work with.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
                 VStack(spacing: 8) {
                     ForEach(Self.suggestions, id: \.text) { suggestion in
-                        Button { agents.draft = suggestion.text } label: {
-                            Label(suggestion.text, systemImage: suggestion.symbol)
-                                .font(.subheadline)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 14).padding(.vertical, 11)
+                        Button {
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            agents.draft = suggestion.text
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: suggestion.symbol).font(.title3).foregroundStyle(Brand.amber).frame(width: 28)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(suggestion.title).font(.subheadline.weight(.semibold))
+                                    Text(suggestion.detail).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 0)
+                                Image(systemName: "arrow.up.left").font(.caption).foregroundStyle(.tertiary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14).padding(.vertical, 13)
                         }
                         .buttonStyle(.plain)
                         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
@@ -205,11 +221,10 @@ private struct NewChat: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
-    static let suggestions: [(symbol: String, text: String)] = [
-        ("folder", "Tidy my Downloads folder by type and tell me what you moved"),
-        ("doc.richtext", "Summarize the newest document in my Documents folder"),
-        ("tablecells", "Make a spreadsheet comparing three laptops under $1,500"),
-        ("safari", "Find tomorrow's weather and leave it open in the browser"),
+    static let suggestions: [(symbol: String, title: String, detail: String, text: String)] = [
+        ("doc.text", "Make sense of a document", "Find the useful details in your files", "Find the newest document in my Documents folder and summarize it. Tell me which file you read."),
+        ("globe", "Research something", "Bring the sources and an answer", "Help me research a topic. Ask me what I want to find out, then check current sources."),
+        ("tablecells", "Make something useful", "A spreadsheet, a report, a starting point", "Help me make a spreadsheet. Ask me what it should contain, then save it in my Documents folder."),
     ]
 }
 

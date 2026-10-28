@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
-import { chooseOption, describeToolCall, launchCommand, Normaliser, publicAuthMethods, readSpec, recapFrom } from '../caboose-agentd.mjs'
+import { chooseOption, describeToolCall, Draft, launchCommand, Normaliser, publicAuthMethods, readSpec, recapFrom } from '../caboose-agentd.mjs'
 
 const RUNNER = new URL('../caboose-agentd.mjs', import.meta.url).pathname
 const STAND_IN = new URL('./stand-in-agent.mjs', import.meta.url).pathname
@@ -131,6 +131,25 @@ describe('a turn', () => {
     expect(events[1]).toMatchObject({ continuity: 'new', agent: { name: 'stand-in' }, modes: { currentModeId: 'default' } })
     expect(events[5]).toMatchObject({ id: 'call-1', title: 'Run echo hi', kind: 'execute', status: 'pending', detail: 'echo hi' })
     expect(events.at(-2)).toMatchObject({ type: 'usage', used: 100, size: 1000 })
+  })
+
+  it('saves the message being written as a draft, gone once the message is whole', async () => {
+    const t = await task()
+    await t.prompt(1, 'please stream')
+    t.start()
+    const draftPath = join(t.dir, 'draft.json')
+    let draft
+    for (let i = 0; i < 100 && !draft; i++) {
+      const read = JSON.parse(await readFile(draftPath, 'utf8').catch(() => 'null'))
+      if (read?.text?.startsWith('one two')) draft = read
+      else await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    expect(draft).toMatchObject({ kind: 'text', turn: 1 })
+    expect(Number.isSafeInteger(draft.after)).toBe(true)
+    expect(draft.after).toBeGreaterThan(0)
+    await t.turnEnd(1)
+    expect((await t.texts(1)).map(text => text.trim())).toContain('one two three four five six')
+    await expect(stat(draftPath)).rejects.toThrow()
   })
 
   it('answers permission requests itself with approvals "auto"', async () => {
@@ -473,5 +492,88 @@ describe('pure parts', () => {
     expect(written).toEqual([{ type: 'text', text: 'Hello' }, { type: 'text', text: 'Next' }])
     normaliser.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'after the turn' } })
     expect(written).toHaveLength(2)
+  })
+
+  it('keeps the draft out of the transcript and removes it before the whole message lands', async () => {
+    const steps = []
+    const transcript = { write: event => { steps.push(['write', event.type]) }, then: (_step, what) => { steps.push([what]) } }
+    const draft = new Draft(transcript, '/nowhere/draft.json')
+    const normaliser = new Normaliser(transcript, draft)
+    normaliser.begin()
+    normaliser.update({ sessionUpdate: 'agent_message_chunk', messageId: 'a', content: { type: 'text', text: 'Hel' } })
+    draft.save()
+    normaliser.update({ sessionUpdate: 'agent_message_chunk', messageId: 'a', content: { type: 'text', text: 'lo' } })
+    normaliser.update({ sessionUpdate: 'tool_call', toolCallId: 'x', title: 'Look' })
+    expect(steps).toEqual([['draft removal'], ['draft write'], ['draft removal'], ['write', 'text'], ['write', 'tool']])
+    normaliser.end()
+  })
+})
+
+describe('durable turn receipts', () => {
+  const deliveryId = '11111111-1111-4111-8111-111111111111'
+  it('durably claims before consuming an inbox and records the terminal result', async () => {
+    const t = await task()
+    await t.prompt(1, 'slow', { deliveryId })
+    const runner = t.start()
+    await t.until('prompt execution', events => events.some(event => event.type === 'text'))
+    const path = join(t.dir, 'receipts/000001.json')
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ turn: 1, deliveryId, state: 'claimed' })
+    await expect(readFile(join(t.dir, 'inbox/000001.prompt.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await t.cancel(); await t.turnEnd(1)
+    for (let i = 0; i < 100; i++) {
+      const receipt = JSON.parse(await readFile(path, 'utf8'))
+      if (receipt.state === 'completed') {
+        expect(receipt).toMatchObject({ turn: 1, deliveryId, result: { type: 'turn_end', turn: 1, stopReason: 'cancelled' } })
+        return
+      }
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    throw Error(`No completed receipt: ${runner.stderr()}`)
+  })
+
+  it.each(['claimed', 'partial'])('never replays a %s receipt left before inbox unlink', async state => {
+    const t = await task({ idleMs: 50 })
+    await t.prompt(1, 'hello', { deliveryId })
+    await mkdir(join(t.dir, 'receipts'))
+    await writeFile(join(t.dir, 'receipts/000001.json'), state === 'claimed' ? JSON.stringify({ turn: 1, deliveryId, state }) : '{')
+    const runner = t.start()
+    expect(await runner.exited).toBe(1)
+    expect(runner.stderr()).toContain('uncertain')
+    expect(await t.events()).toEqual([])
+    expect(await readFile(join(t.dir, 'inbox/000001.prompt.json'), 'utf8')).toContain('hello')
+  })
+
+  it('does not execute a completed duplicate, but accepts the next turn', async () => {
+    const t = await task({ idleMs: 100 })
+    await t.prompt(1, 'duplicate', { deliveryId })
+    await mkdir(join(t.dir, 'receipts'))
+    await writeFile(join(t.dir, 'receipts/000001.json'), JSON.stringify({ turn: 1, deliveryId, state: 'completed', result: { type: 'turn_end', turn: 1 } }))
+    await t.prompt(2, 'hello', { deliveryId: '22222222-2222-4222-8222-222222222222' })
+    const runner = t.start()
+    await t.turnEnd(2)
+    expect(await runner.exited).toBe(0)
+    expect((await t.events()).filter(event => event.type === 'user').map(event => event.turn)).toEqual([2])
+  })
+
+  it('leaves an interrupted ACP execution claimed and never fabricates a terminal result', async () => {
+    const t = await task()
+    await t.prompt(1, 'slow', { deliveryId })
+    const runner = t.start()
+    await t.until('prompt execution', events => events.some(event => event.type === 'text'))
+    runner.child.kill('SIGTERM')
+    expect(await runner.exited).toBe(143)
+    expect(JSON.parse(await readFile(join(t.dir, 'receipts/000001.json'), 'utf8'))).toMatchObject({ state: 'claimed', deliveryId })
+    expect((await t.events()).some(event => ['turn_end', 'turn_failed'].includes(event.type))).toBe(false)
+    expect((await t.events()).some(event => event.type === 'notice' && event.text.includes('uncertain'))).toBe(true)
+  })
+
+  it('does not consume oversized or malformed prompts', async () => {
+    const t = await task()
+    await t.prompt(1, 'x'.repeat(32001), { deliveryId })
+    const runner = t.start()
+    expect(await runner.exited).toBe(1)
+    expect(runner.stderr()).toContain('Invalid prompt')
+    expect(await readFile(join(t.dir, 'inbox/000001.prompt.json'), 'utf8')).toContain('xxx')
+    expect(await t.events()).toEqual([])
   })
 })

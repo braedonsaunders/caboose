@@ -7,39 +7,45 @@ import UniformTypeIdentifiers
 /// A long press on the background, between and around the cards, chooses the wallpaper.
 struct HomeScreen: View {
     @Environment(AppModel.self) private var model
-    @State private var viewport: CGFloat = 0
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                GlassEffectContainer(spacing: 18) {
-                    VStack(alignment: .leading, spacing: 26) {
-                        ComputerCard()
-                        AirPlayCard()
-                        QuickActions()
-                        WorkingAgents()
-                        if model.phase == .ready, !model.appWindows.isEmpty { OpenWindows() }
-                        AppRow(title: "Pinned", apps: model.pinnedApps)
-                        AppRow(title: "Recent", apps: model.recentApps(limit: 8))
-                        RecentFilesSection()
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
-                    .padding(.bottom, 32)
-                    .frame(maxWidth: 720)
-                    .frame(maxWidth: .infinity, minHeight: viewport, alignment: .top)
-                    .background {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onLongPressGesture(minimumDuration: 0.5) {
-                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                model.wallpaperPickerPresented = true
-                            }
-                            .accessibilityAction(named: "Choose Wallpaper") { model.wallpaperPickerPresented = true }
+            GeometryReader { viewport in
+                ScrollView {
+                    GlassEffectContainer(spacing: 18) {
+                        VStack(alignment: .leading, spacing: 26) {
+                            ComputerCard()
+                            AirPlayCard()
+                            QuickActions()
+                            WorkingAgents()
+                            if model.phase == .ready, !model.appWindows.isEmpty { OpenWindows() }
+                            AppRow(title: "Pinned", apps: model.pinnedApps)
+                            AppRow(title: "Recent", apps: model.recentApps(limit: 8))
+                            RecentFilesSection()
+                        }
+                        .environment(\.homeColumnWidth, max(0, min(720, viewport.size.width) - 40))
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                        .padding(.bottom, 32)
+                        // Measure outside the scroll content, whose intrinsic row widths can
+                        // exceed the column. Every row now receives this finite proposal.
+                        .frame(width: min(720, viewport.size.width))
+                        .frame(width: viewport.size.width)
+                        .frame(minHeight: viewport.size.height, alignment: .top)
+                        .background {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onLongPressGesture(minimumDuration: 0.5) {
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                    model.wallpaperPickerPresented = true
+                                }
+                                .accessibilityAction(named: "Choose Wallpaper") { model.wallpaperPickerPresented = true }
+                        }
                     }
                 }
+                .frame(width: viewport.size.width, height: viewport.size.height)
+                .clipped()
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewport = $0 }
             .scrollIndicators(.hidden)
             .background { ShellBackground() }
             .refreshable {
@@ -339,8 +345,7 @@ struct OpenWindows: View {
                     }
                 }
             }
-            .scrollIndicators(.hidden)
-            .scrollClipDisabled()
+            .homeColumnRow(cornerRadius: WindowCard.cornerRadius, bottom: WindowCard.cornerRadius)
         }
     }
 }
@@ -362,10 +367,49 @@ struct AppRow: View {
                         }
                     }
                 }
-                .scrollIndicators(.hidden)
-                .scrollClipDisabled()
+                .homeColumnRow(cornerRadius: AppTile.cornerRadius, top: 8, bottom: 8)
             }
         }
+    }
+}
+
+extension View {
+    /// A sideways row on Home scrolls inside the content column, clipped to it like every card,
+    /// so it never runs past the screen's edge or under the vertical bar. The clip's corners
+    /// match the cards' as they slide out of view; it reaches `top` and `bottom` beyond the
+    /// row for what the cards draw outside their frames, such as a pressed tile's glass, and
+    /// takes no more room in the column than the row itself.
+    func homeColumnRow(cornerRadius: CGFloat, top: CGFloat = 0, bottom: CGFloat = 0) -> some View {
+        modifier(HomeColumnRow(cornerRadius: cornerRadius, top: top, bottom: bottom))
+    }
+}
+
+private struct HomeColumnRow: ViewModifier {
+    @Environment(\.homeColumnWidth) private var width
+    let cornerRadius: CGFloat
+    let top: CGFloat
+    let bottom: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .scrollIndicators(.hidden)
+            .contentMargins(.top, top, for: .scrollContent)
+            .contentMargins(.bottom, bottom, for: .scrollContent)
+            .padding(.top, -top)
+            .padding(.bottom, -bottom)
+            .frame(width: width)
+            .clipShape(.rect(cornerRadius: cornerRadius, style: .continuous))
+    }
+}
+
+private struct HomeColumnWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
+private extension EnvironmentValues {
+    var homeColumnWidth: CGFloat? {
+        get { self[HomeColumnWidthKey.self] }
+        set { self[HomeColumnWidthKey.self] = newValue }
     }
 }
 
@@ -423,10 +467,14 @@ private struct FileRow: View {
                 Text(name).font(.subheadline.weight(.medium)).lineLimit(1)
                 Text(folder.isEmpty ? "Home" : folder).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .truncationMode(.middle)
             Spacer(minLength: 8)
             Text(Date(timeIntervalSince1970: file.mtime / 1000), format: .relative(presentation: .named))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .frame(maxWidth: 90, alignment: .trailing)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -464,6 +512,7 @@ struct SectionHeader: View {
 }
 
 struct AppTile: View {
+    static let cornerRadius: CGFloat = 18
     let app: HostClient.App
     let icon: UIImage?
     let launching: Bool
@@ -471,7 +520,7 @@ struct AppTile: View {
     var body: some View {
         VStack(spacing: 8) {
             ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
                     .fill(.white.opacity(0.08))
                 if let icon {
                     Image(uiImage: icon).resizable().scaledToFit().padding(10)
@@ -479,12 +528,12 @@ struct AppTile: View {
                     Image(systemName: "app.dashed").font(.title)
                 }
                 if launching {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.black.opacity(0.45))
+                    RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous).fill(.black.opacity(0.45))
                     CabooseWheel(motion: .rolling).frame(width: 26, height: 26)
                 }
             }
             .frame(width: 68, height: 68)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: Self.cornerRadius))
             Text(app.name)
                 .font(.caption)
                 .lineLimit(2)
@@ -496,6 +545,7 @@ struct AppTile: View {
 
 /// A live, non-interactive preview of an open window.
 struct WindowCard: View {
+    static let cornerRadius: CGFloat = 16
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let icon: UIImage?
@@ -504,8 +554,8 @@ struct WindowCard: View {
         VStack(alignment: .leading, spacing: 8) {
             RemoteWindowPreview(window: window)
                 .frame(width: 150, height: 210)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.12)))
+                .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous).stroke(.white.opacity(0.12)))
             HStack(spacing: 6) {
                 if let icon { Image(uiImage: icon).resizable().frame(width: 16, height: 16) }
                 Text(window.title.isEmpty ? "Window" : window.title)

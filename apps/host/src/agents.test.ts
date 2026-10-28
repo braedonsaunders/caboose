@@ -88,7 +88,7 @@ describe('readAttachments', () => {
   })
 })
 
-interface FakeTask { transcript: Buffer; exitCode: string; stderr: string; approvals: Map<string, { json: string; decision?: string }>; files: Map<string, string>; inbox: string[] }
+interface FakeTask { alive: boolean; published: Map<string, string>; receipts: Map<string, object>; metadata?: string[]; draft?: object; transcript: Buffer; exitCode: string; stderr: string; approvals: Map<string, { json: string; decision?: string }>; files: Map<string, string>; inbox: string[] }
 
 /**
  * A guest that answers the host's scripts from in-memory task directories: the batched poll,
@@ -99,10 +99,13 @@ function fakeGuest() {
   const tasks = new Map<string, FakeTask>()
   const calls: string[][] = []
   let polls = 0
+  let beforeCancel: (() => Promise<void>) | undefined
+  let beforeLaunch: ((id: string) => void) | undefined
+  let claimLaunches = true
   let listing = ''
   const task = (id: string): FakeTask => {
     let entry = tasks.get(id)
-    if (!entry) tasks.set(id, entry = { transcript: Buffer.alloc(0), exitCode: '', stderr: '', approvals: new Map(), files: new Map(), inbox: [] })
+    if (!entry) tasks.set(id, entry = { alive: true, published: new Map(), receipts: new Map(), transcript: Buffer.alloc(0), exitCode: '', stderr: '', approvals: new Map(), files: new Map(), inbox: [] })
     return entry
   }
   const idOf = (dir: string) => dir.split('/').at(-1)!
@@ -121,13 +124,27 @@ function fakeGuest() {
           const state = task(id)
           const data = state.transcript.subarray(Number(rest[i + 1])).subarray(0, max)
           out += `T\t${id}\t${state.exitCode}\t${state.exitCode ? b64(state.stderr) : ''}\t${data.toString('base64')}\n`
+          out += `D\t${id}\t${state.draft ? b64(JSON.stringify(state.draft)) : ''}\n`
           for (const [requestId, request] of state.approvals) {
             if (request.decision === undefined) out += `A\t${id}\t${requestId}\t${b64(request.json)}\n`
           }
         }
         return out
       }
-      if (script.includes('ls -1t')) return listing
+      if (script.includes('ls -1t')) return listing || [...tasks.entries()].flatMap(([id, state]) => state.metadata ? [[id, state.metadata[2], '1790000500', state.exitCode, state.alive ? '1' : '0', state.transcript.length,
+        b64(state.metadata[1]!), b64(state.transcript.toString().trim().split('\n').reverse().find(line => /"type":"(turn_end|turn_failed|auth_required)"/.test(line)) ?? ''), state.metadata[4],
+        Math.max(1, ...state.inbox.filter(x => x !== 'cancel').map(x => JSON.parse(x).turn)), '1', '', b64(state.metadata[3]!)].join('\t')] : []).join('\n')
+      if (rest[1]?.startsWith('// caboose confirm journal')) return 'confirmed'
+      if (rest[1]?.startsWith('// caboose delivery journal write')) {
+        task(idOf(rest[0]!)).files.set('delivery.json', Buffer.from(rest.slice(2).join(''), 'base64').toString('utf8'))
+        return ''
+      }
+      if (rest[1]?.startsWith('// caboose delivery evidence')) {
+        const state = task(idOf(rest[0]!)); const name = rest[2]!
+        const inbox = state.inbox.find(x => x !== 'cancel' && String(JSON.parse(x).turn).padStart(6, '0') === name) ?? ''
+        return JSON.stringify({ journal: state.files.get('delivery.json') ?? '', receiptExists: state.receipts.has(name), receipt: state.receipts.has(name) ? JSON.stringify(state.receipts.get(name)) : '', inbox,
+          published: state.published.get(name) ?? '', transcript: state.transcript.toString(), alive: state.alive && !state.exitCode })
+      }
       if (script.includes('tail -c "$2" "$1"')) {
         const state = task(rest[0]!.split('/')[4]!)
         return `${state.transcript.length}\t${state.transcript.subarray(-Number(rest[1])).toString('base64')}`
@@ -138,6 +155,7 @@ function fakeGuest() {
         request.decision = rest[2]!
         return 'resolved'
       }
+      if (script.includes(': > "$1"')) task(rest[0]!.split('/')[4]!).files.set(rest[0]!, '')
       if (script.includes('base64 -d')) {
         const path = rest[0]!
         const state = task(path.split('/')[4]!)
@@ -151,22 +169,42 @@ function fakeGuest() {
       if (script.includes('> task.json')) {
         const state = task(idOf(rest[0]!))
         state.files.set('task.json', rest[5]!)
-        state.inbox.push(rest[6]!)
+        state.files.set('delivery.json', rest[7]!)
+        state.metadata = rest
+        const staged = tasks.get(idOf(rest[10]!))
+        if (staged) for (const [path, contents] of staged.files) state.files.set(path.replace(rest[10]!, rest[0]!), contents)
+        const message = state.files.get(`${rest[0]}/${rest[6]!.slice(6)}`)!
+        state.published.set('000001', message)
+        state.inbox.push(message)
+        beforeLaunch?.(idOf(rest[0]!))
       }
       if (script.includes('echo launched')) {
         const state = task(idOf(rest[0]!))
-        state.inbox.push(rest[1]!)
-        state.exitCode = ''
-        return 'delivered\n'
+        const message = rest[1]!.startsWith('@file:') ? state.files.get(`${rest[0]}/${rest[1]!.slice(6)}`)! : rest[1]!
+        const published = state.published.get(rest[3]!)
+        if (published !== undefined && published !== message) throw new Error('delivery conflict')
+        if (published === undefined) {
+          state.inbox.push(message)
+          state.published.set(rest[3]!, message)
+        }
+        if (claimLaunches) state.receipts.set(rest[3]!, { turn: Number(rest[2]), deliveryId: JSON.parse(message).deliveryId, state: 'claimed' })
+        state.exitCode = ''; state.alive = true
+        return claimLaunches ? 'claimed\n' : 'launched\n'
       }
-      if (script.includes('"type":"cancel"')) task(idOf(rest[0]!)).inbox.push('cancel')
+      if (script.includes('"type":"cancel"')) {
+        await beforeCancel?.()
+        task(idOf(rest[0]!)).inbox.push('cancel')
+      }
       return ''
     },
   }
   return {
     guest, calls, task,
     get polls() { return polls },
-    setListing: (value: string) => { listing = value },
+    beforeCancel: (hook: () => Promise<void>) => { beforeCancel = hook },
+    beforeLaunch: (hook: (id: string) => void) => { beforeLaunch = hook },
+    claimOnLaunch: (value: boolean) => { claimLaunches = value },
+    setListing: (value: string) => { listing = value; for (const row of value.split('\n')) { const f = row.split('\t'); if (f[0]) { task(f[0]).alive = f[4] === '1'; task(f[0]).exitCode = f[3] ?? '' } } },
     append: (id: string, event: object) => { const state = task(id); state.transcript = Buffer.concat([state.transcript, Buffer.from(JSON.stringify(event) + '\n')]) },
     exit: (id: string, code: string, message = '') => { task(id).exitCode = code; task(id).stderr = message },
     request: (id: string, requestId: string, value: object) => { task(id).approvals.set(requestId, { json: JSON.stringify(value) }) },
@@ -224,7 +262,7 @@ describe('AgentTasks', () => {
       agent: { id: 'stand-in', name: 'Stand-in', version: '1.0.0', distribution: 'npx', package: '@example/stand-in@1.0.0', args: [], env: {} },
       cwd: `/home/caboose/Agents/${task.id}`, approvals: 'auto', idleMs: 120_000, craftServers: [],
     })
-    expect(JSON.parse(state.inbox[0]!)).toEqual({ type: 'prompt', turn: 1, text: 'Run the tests' })
+    expect(JSON.parse(state.inbox[0]!)).toMatchObject({ type: 'prompt', turn: 1, text: 'Run the tests' })
     const start = fake.calls.find(call => fake.scriptOf(call)?.includes('> task.json'))!
     expect(fake.scriptOf(start)).toContain('setsid sh -c \'node /opt/caboose/agentd/caboose-agentd.mjs run "$PWD"')
     expect(fake.scriptOf(start)).toContain('DISPLAY=:101')
@@ -354,7 +392,7 @@ describe('AgentTasks', () => {
     fake.exit(died.id, '1', 'caboose-agentd is not installed in this computer')
     await tasks.poll()
     expect(events.filter(event => event.type === 'agent.task.output').map(event => (event as { kind: string }).kind)).toEqual(['error'])
-    expect(tasks.list().find(task => task.id === failed.id)).toMatchObject({ status: 'failed', summary: 'The agent exited with code 3.' })
+    expect(tasks.list().find(task => task.id === failed.id)).toMatchObject({ status: 'failed', delivery: { state: 'uncertain' } })
     expect(tasks.list().find(task => task.id === died.id)).toMatchObject({ status: 'failed', summary: 'caboose-agentd is not installed in this computer' })
   })
 
@@ -367,9 +405,9 @@ describe('AgentTasks', () => {
     const replied = await tasks.reply(task.id, { prompt: '  shorter  ' })
     expect(replied).toMatchObject({ id: task.id, status: 'running', turns: 2, prompt: 'write a poem' })
     expect(replied.summary).toBeUndefined()
-    const launch = fake.calls.at(-1)!
+    const launch = [...fake.calls].reverse().find(call => fake.scriptOf(call)?.includes('echo launched'))!
     expect(fake.scriptOf(launch)).toContain('echo launched')
-    expect(launch.slice(8)).toEqual([`/home/caboose/Agents/${task.id}`, JSON.stringify({ type: 'prompt', turn: 2, text: 'shorter' }), '2', '000002'])
+    expect(JSON.parse(fake.task(task.id).inbox.at(-1)!)).toMatchObject({ type: 'prompt', turn: 2, text: 'shorter', deliveryId: expect.any(String) })
     expect(events.at(-1)).toEqual({ type: 'agent.task.replied', id: task.id, prompt: 'shorter', turn: 2 })
     expect(acquire).toHaveBeenCalledTimes(2)
     // Late lines of turn 1 are not shown as turn 2, and turn 1's end does not end turn 2.
@@ -384,6 +422,120 @@ describe('AgentTasks', () => {
     expect(tasks.list()[0]).toMatchObject({ status: 'succeeded', summary: 'A short poem.', turns: 2 })
     const texts = events.filter(event => event.type === 'agent.task.output').map(event => (event as { text: string }).text)
     expect(texts).toEqual(['A short poem.'])
+  })
+
+  it('streams validated current-turn drafts once and clears them on commit or stop', async () => {
+    const { fake, events, tasks } = setup()
+    const task = await tasks.start({ prompt: 'stream' })
+    fake.append(task.id, user(1))
+    const state = fake.task(task.id)
+    state.draft = { turn: 1, after: state.transcript.length, kind: 'text', text: 'Hello' }
+    await tasks.poll()
+    expect(tasks.list()[0]?.draft).toEqual({ turn: 1, kind: 'text', text: 'Hello' })
+    await tasks.poll()
+    expect(events.filter(e => e.type === 'agent.task.draft')).toHaveLength(1)
+    fake.append(task.id, { type: 'text', text: 'Hello world' })
+    // Even a stale file cannot duplicate text now committed in the transcript.
+    await tasks.poll()
+    expect(tasks.list()[0]?.draft).toBeUndefined()
+    for (const draft of [
+      { turn: 2, after: state.transcript.length, kind: 'text', text: 'wrong turn' },
+      { turn: 1, after: state.transcript.length + 10, kind: 'text', text: 'ahead of transcript' },
+      { turn: 1, after: state.transcript.length, kind: 'tool', text: 'invalid' },
+      { turn: 1, after: state.transcript.length, kind: 'text', text: 'x'.repeat(16_001) },
+    ]) { state.draft = draft; await tasks.poll(); expect(tasks.list()[0]?.draft).toBeUndefined() }
+    state.draft = { turn: 1, after: state.transcript.length, kind: 'thought', text: 'Thinking' }
+    await tasks.poll()
+    await tasks.cancel(task.id)
+    expect(tasks.list()[0]?.draft).toBeUndefined()
+  })
+
+  it('keeps queued files distinct and delivers them both automatically and with Send Now', async () => {
+    const { fake, tasks } = setup()
+    const task = await tasks.start({ prompt: 'read these later' })
+    const file = { name: 'notes.txt', type: 'text/plain', data: b64('hello') }
+    await Promise.all([
+      tasks.reply(task.id, { prompt: 'first', attachments: [file] }),
+      tasks.reply(task.id, { prompt: 'second', attachments: [file] }),
+    ])
+    const paths = tasks.list()[0]!.queuedAttachments!.flat()
+    expect(new Set(paths).size).toBe(2)
+    expect(paths.every(path => fake.task(task.id).files.get(path) === 'hello')).toBe(true)
+    await tasks.sendNow(task.id)
+    let message = JSON.parse(fake.task(task.id).inbox.at(-1)!)
+    expect(message.text).toBe('first\n\nsecond')
+    expect(message.attachments.map((a: { path: string }) => a.path)).toEqual(paths)
+    expect(tasks.list()[0]!.queuedAttachments).toBeUndefined()
+    await tasks.reply(task.id, { prompt: 'third', attachments: [file] })
+    fake.append(task.id, user(2))
+    fake.append(task.id, end(2, 'done'))
+    await tasks.poll()
+    await vi.waitFor(() => expect(tasks.list()[0]?.turns).toBe(3))
+    message = JSON.parse(fake.task(task.id).inbox.at(-1)!)
+    expect(message.attachments[0]).toMatchObject({ name: 'notes.txt', mimeType: 'text/plain' })
+    expect(message.text).toBe('third')
+  })
+
+  it('claims Send Now before cancellation yields to a normal polled turn end', async () => {
+    const { fake, tasks, events, release } = setup()
+    const task = await tasks.start({ prompt: 'working' })
+    await tasks.reply(task.id, { prompt: 'queued', attachments: [{ name: 'notes.txt', data: b64('contents') }] })
+    let resume!: () => void
+    let entered!: () => void
+    const gate = new Promise<void>(resolve => { resume = resolve })
+    const cancelling = new Promise<void>(resolve => { entered = resolve })
+    fake.beforeCancel(async () => { entered(); await gate })
+    const sending = tasks.sendNow(task.id)
+    await cancelling
+    fake.append(task.id, user(1))
+    fake.append(task.id, end(1, 'finished just before cancellation'))
+    await tasks.poll()
+    expect(release).not.toHaveBeenCalled()
+    expect(fake.task(task.id).inbox).toHaveLength(1)
+    resume()
+    await sending
+    const prompts = fake.task(task.id).inbox.filter(value => value !== 'cancel').map(value => JSON.parse(value))
+    expect(prompts.filter(prompt => prompt.turn === 2)).toHaveLength(1)
+    expect(prompts.at(-1)).toMatchObject({ turn: 2, text: 'queued', attachments: [{ name: 'notes.txt' }] })
+    expect(tasks.list()[0]?.turns).toBe(2)
+    expect(events.filter(event => event.type === 'agent.task.replied')).toHaveLength(1)
+    expect(events.filter(event => event.type === 'agent.task.finished')).toHaveLength(0)
+  })
+
+  it('restores waiting files when Send Now delivery fails after the old turn finishes', async () => {
+    const { fake, tasks, release } = setup()
+    const task = await tasks.start({ prompt: 'working' })
+    await tasks.reply(task.id, { prompt: 'queued', attachments: [{ name: 'notes.txt', data: b64('contents') }] })
+    const paths = tasks.list()[0]!.queuedAttachments
+    fake.beforeCancel(async () => {
+      fake.append(task.id, user(1)); fake.append(task.id, end(1, 'done'))
+      await tasks.poll()
+    })
+    const run = fake.guest.run
+    fake.guest.run = async (command, args, timeout) => {
+      if (args.some(arg => arg.includes('echo launched'))) throw new Error('delivery failed')
+      return run(command, args, timeout)
+    }
+    await expect(tasks.sendNow(task.id)).rejects.toThrow('delivery failed')
+    expect(tasks.list()[0]).toMatchObject({ queued: ['queued'], queuedAttachments: paths, status: 'succeeded' })
+    expect(release).toHaveBeenCalledTimes(1)
+    fake.guest.run = run
+    await tasks.sendNow(task.id)
+    expect(tasks.list()[0]).toMatchObject({ status: 'running', turns: 2 })
+    expect(tasks.list()[0]!.queued).toBeUndefined()
+  })
+
+  it('bounds files across concurrent queued replies and supports files on a finished reply', async () => {
+    const { fake, tasks } = setup()
+    const task = await tasks.start({ prompt: 'x' })
+    const file = { name: 'a.txt', data: b64('a') }
+    const replies = await Promise.allSettled(Array.from({ length: 5 }, () => tasks.reply(task.id, { prompt: 'more', attachments: [file] })))
+    expect(replies.filter(r => r.status === 'fulfilled')).toHaveLength(4)
+    expect(tasks.list()[0]!.queuedAttachments!.flat()).toHaveLength(4)
+    await tasks.cancel(task.id)
+    await tasks.reply(task.id, { prompt: 'again', attachments: [file] })
+    expect(JSON.parse(fake.task(task.id).inbox.at(-1)!).attachments).toHaveLength(1)
+    await expect(tasks.reply(task.id, { prompt: 'bad', attachments: [{ name: 'bad', data: '!' }] })).rejects.toThrow()
   })
 
   it('refuses replies it cannot honour', async () => {
@@ -409,7 +561,7 @@ describe('AgentTasks', () => {
     await tasks.poll()
     await vi.waitFor(() => expect(tasks.list()[0]).toMatchObject({ status: 'running', turns: 2 }))
     expect(tasks.list()[0]!.queued).toBeUndefined()
-    expect(JSON.parse(fake.task(task.id).inbox.at(-1)!)).toEqual({ type: 'prompt', turn: 2, text: 'how is it going?\n\nskip the PDFs' })
+    expect(JSON.parse(fake.task(task.id).inbox.at(-1)!)).toMatchObject({ type: 'prompt', turn: 2, text: 'how is it going?\n\nskip the PDFs' })
     // The turn in between is not announced as finished, and the lease is never let go.
     expect(events.some(event => event.type === 'agent.task.finished')).toBe(false)
     expect(events.at(-1)).toMatchObject({ type: 'agent.task.replied', turn: 2, prompt: 'how is it going?\n\nskip the PDFs' })
@@ -433,7 +585,7 @@ describe('AgentTasks', () => {
     await tasks.poll()
     expect(tasks.list().find(task => task.id === signedOut.id)).toMatchObject({ status: 'failed', queued: ['d'] })
     await tasks.reply(signedOut.id, { prompt: 'e' })
-    expect(JSON.parse(fake.task(signedOut.id).inbox.at(-1)!)).toEqual({ type: 'prompt', turn: 2, text: 'd\n\ne' })
+    expect(JSON.parse(fake.task(signedOut.id).inbox.at(-1)!)).toMatchObject({ type: 'prompt', turn: 2, text: 'd\n\ne' })
     expect(tasks.list().find(task => task.id === signedOut.id)!.queued).toBeUndefined()
     const busy = await tasks.start({ prompt: 'f' })
     for (let i = 0; i < 10; i++) await tasks.reply(busy.id, { prompt: `${i}` })
@@ -475,14 +627,14 @@ describe('AgentTasks', () => {
     expect(task.attachments).toEqual([`${dir}/attachments/photo.png`, `${dir}/attachments/notes.txt`])
     expect(fake.task(task.id).files.get(`${dir}/attachments/photo.png`)).toBe(png.toString('latin1'))
     expect(fake.task(task.id).files.get(`${dir}/attachments/notes.txt`)).toBe('notes')
-    expect(JSON.parse(fake.task(task.id).inbox[0]!)).toEqual({ type: 'prompt', turn: 1, text: 'What is in this picture?', attachments: [
+    expect(JSON.parse(fake.task(task.id).inbox[0]!)).toMatchObject({ type: 'prompt', turn: 1, text: 'What is in this picture?', attachments: [
       { path: `${dir}/attachments/photo.png`, name: 'photo.png', mimeType: 'image/png' },
       { path: `${dir}/attachments/notes.txt`, name: 'notes.txt' },
     ] })
     expect(tasks.list()[0]?.prompt).toBe('What is in this picture?')
   })
 
-  it('removes the task directory when the start fails', async () => {
+  it('preserves task data when a start command fails ambiguously', async () => {
     const fake = fakeGuest()
     const guest: AgentGuest = { run: async (command, args, timeout) => {
       if (args[5]?.includes('setsid')) throw new Error('caboose-agentd is not installed in this computer')
@@ -491,7 +643,7 @@ describe('AgentTasks', () => {
     const tasks = new AgentTasks(() => guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000 })
     await expect(tasks.start({ prompt: 'x' })).rejects.toBeInstanceOf(AgentConflictError)
     await expect(tasks.start({ prompt: 'x' })).rejects.toThrow('This computer has no agent runner')
-    expect(fake.scriptOf(fake.calls.at(-1))).toContain('rm -rf')
+    expect(fake.calls.some(call => fake.scriptOf(call)?.includes('rm -rf'))).toBe(false)
     expect(tasks.list()).toEqual([])
   })
 
@@ -500,7 +652,7 @@ describe('AgentTasks', () => {
     const task = await tasks.start({ prompt: 'long job' })
     expect(await tasks.cancel(task.id)).toBe(true)
     expect(fake.task(task.id).inbox.at(-1)).toBe('cancel')
-    expect(fake.scriptOf(fake.calls.at(-1))).toContain('kill -CONT')
+    expect(fake.calls.some(call => fake.scriptOf(call)?.includes('kill -CONT'))).toBe(true)
     expect(tasks.list()[0]).toMatchObject({ status: 'cancelled', summary: 'Cancelled.' })
     expect(await tasks.cancel(task.id)).toBe(false)
     expect(events.filter(event => event.type === 'agent.task.finished')).toHaveLength(1)
@@ -553,7 +705,7 @@ describe('AgentTasks', () => {
     expect(acquire).toHaveBeenCalledTimes(1)
     expect(events).toEqual([])
     await tasks.reply(done, { prompt: 'and lint' })
-    expect(fake.calls.at(-1)!.slice(8)).toEqual([`/home/caboose/Agents/${done}`, JSON.stringify({ type: 'prompt', turn: 4, text: 'and lint' }), '4', '000004'])
+    expect(JSON.parse(fake.task(done).inbox.at(-1)!)).toMatchObject({ type: 'prompt', turn: 4, text: 'and lint', deliveryId: expect.any(String) })
     await tasks.poll()
     const poll = fake.calls.find(call => fake.scriptOf(call)?.startsWith('max=$1'))!
     expect(poll.slice(poll.indexOf(`/home/caboose/Agents/${done}`), poll.indexOf(`/home/caboose/Agents/${done}`) + 2)).toEqual([`/home/caboose/Agents/${done}`, '900'])
@@ -593,4 +745,379 @@ describe('parsePoll', () => {
     expect(reports.get(id)).toMatchObject({ exitCode: '0', stderr: 'err', requests: [{ id: REQUEST, json: '{}' }] })
     expect(reports.get(id)?.data.toString()).toBe('{"a":1}\n')
   })
+})
+
+describe('durable admission and recovery', () => {
+  async function restart(s: ReturnType<typeof setup>) {
+    s.tasks.pause()
+    const events: AgentEvent[] = []
+    const release = vi.fn()
+    const tasks = new AgentTasks(() => s.fake.guest, event => events.push(event), () => release,
+      { resolver: resolver(), pollMs: 60_000 })
+    await tasks.restore()
+    tasks.pause()
+    return { tasks, events, release }
+  }
+  const journal = (s: ReturnType<typeof setup>, id: string) => JSON.parse(s.fake.task(id).files.get('delivery.json')!)
+  const writes = (s: ReturnType<typeof setup>) => s.fake.calls.filter(call => call.some(arg => arg.startsWith('// caboose delivery journal write')))
+
+  it('restores ordered queued replies and their staged files across a host restart', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    const files = [{ name: 'notes.txt', data: b64('durable contents') }]
+    await s.tasks.reply(t.id, { prompt: 'first', attachments: files, operationId: 'reply-1' })
+    await s.tasks.reply(t.id, { prompt: 'second', operationId: 'reply-2' })
+    const paths = t.queuedAttachments
+    const r = await restart(s)
+    expect(r.tasks.list()[0]).toMatchObject({ queued: ['first', 'second'], queuedAttachments: paths })
+    expect(s.fake.task(t.id).files.get(paths![0]![0]!)).toBe('durable contents')
+    s.fake.append(t.id, user(1)); s.fake.append(t.id, end(1, 'done'))
+    await r.tasks.poll()
+    expect(r.tasks.list()[0]).toMatchObject({ turns: 2, status: 'running' })
+    expect(JSON.parse(s.fake.task(t.id).inbox.at(-1)!)).toMatchObject({ text: 'first\n\nsecond', attachments: [{ path: paths![0]![0] }] })
+    expect(journal(s, t.id).queue).toEqual([])
+  })
+
+  it('deduplicates stable task ids concurrently and after restart, comparing original bytes and options', async () => {
+    const s = setup()
+    const id = '11111111-1111-4111-8111-111111111111'
+    const input = { prompt: 'work', attachments: [{ name: 'a.txt', data: b64('one') }], craftMcp: false }
+    const [a, b] = await Promise.all([s.tasks.start(input, { id }), s.tasks.start(input, { id })])
+    expect(a.id).toBe(b.id)
+    expect(s.fake.task(id).inbox).toHaveLength(1)
+    const r = await restart(s)
+    await expect(r.tasks.start(input, { id })).resolves.toMatchObject({ id, turns: 1, attachments: a.attachments })
+    expect(s.fake.task(id).inbox).toHaveLength(1)
+    await expect(r.tasks.start({ ...input, attachments: [{ name: 'a.txt', data: b64('two') }] }, { id })).rejects.toBeInstanceOf(AgentConflictError)
+    await expect(r.tasks.start({ ...input, prompt: ' work' }, { id })).rejects.toBeInstanceOf(AgentConflictError)
+    await expect(r.tasks.start(input, { id: '../bad' })).rejects.toBeInstanceOf(AgentInputError)
+    await expect(r.tasks.start(input, { id: '-'.repeat(36) })).rejects.toBeInstanceOf(AgentInputError)
+  })
+
+  it('deduplicates opaque reply operations before and after delivery and restart', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    const input = { prompt: 'reply', attachments: [{ name: 'n.txt', data: b64('one') }], operationId: ' opaque/ key ? ' }
+    await Promise.all([s.tasks.reply(t.id, input), s.tasks.reply(t.id, input)])
+    expect(t.queued).toEqual(['reply'])
+    const r = await restart(s)
+    await r.tasks.reply(t.id, input)
+    expect(r.tasks.list()[0]?.queued).toEqual(['reply'])
+    await expect(r.tasks.reply(t.id, { ...input, attachments: [{ name: 'n.txt', data: b64('two') }] })).rejects.toBeInstanceOf(AgentConflictError)
+    s.fake.append(t.id, user(1)); s.fake.append(t.id, end(1, 'done'))
+    await r.tasks.poll()
+    await r.tasks.reply(t.id, input)
+    expect(r.tasks.list()[0]?.turns).toBe(2)
+    expect(s.fake.task(t.id).inbox.filter(x => x !== 'cancel' && JSON.parse(x).turn === 2)).toHaveLength(1)
+    expect(journal(s, t.id).operations).toMatchObject([{ id: input.operationId, turn: 2 }])
+    for (const operationId of ['', 'x'.repeat(201), 'bad\nkey', 42]) {
+      await expect(r.tasks.reply(t.id, { prompt: 'x', operationId })).rejects.toBeInstanceOf(AgentInputError)
+    }
+  })
+
+  it('does not return admission success before the write finishes; poll and Send Now preserve order', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    let unblock!: () => void, entered!: () => void
+    const gate = new Promise<void>(resolve => { unblock = resolve })
+    const writing = new Promise<void>(resolve => { entered = resolve })
+    const run = s.fake.guest.run
+    let delay = true
+    s.fake.guest.run = async (command, args, timeout) => {
+      if (delay && args.some(arg => arg.startsWith('// caboose delivery journal write'))) { delay = false; entered(); await gate }
+      return run(command, args, timeout)
+    }
+    let admitted = false
+    const reply = s.tasks.reply(t.id, { prompt: 'first', operationId: 'one' }).then(() => { admitted = true })
+    await writing
+    const second = s.tasks.reply(t.id, { prompt: 'second', operationId: 'two' })
+    const sending = s.tasks.sendNow(t.id)
+    s.fake.append(t.id, user(1)); s.fake.append(t.id, end(1, 'done'))
+    const polling = s.tasks.poll()
+    expect(admitted).toBe(false)
+    expect(journal(s, t.id).queue).toHaveLength(0)
+    unblock()
+    await Promise.all([reply, second, sending, polling])
+    expect(journal(s, t.id).operations.map((op: any) => op.id)).toEqual(['one', 'two'])
+    const prompts = s.fake.task(t.id).inbox.filter(x => x !== 'cancel').map(x => JSON.parse(x))
+    expect(prompts.filter(x => x.turn > 1).map(x => x.text).join('\n\n')).toBe('first\n\nsecond')
+    expect(writes(s).length).toBeGreaterThan(1)
+  })
+
+  it('rejects a failed admission write and recognizes a write that committed before its response failed', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    const run = s.fake.guest.run
+    s.fake.guest.run = async (command, args, timeout) => {
+      if (args.some(arg => arg.startsWith('// caboose delivery journal write'))) throw Error('disk write failed')
+      return run(command, args, timeout)
+    }
+    await expect(s.tasks.reply(t.id, { prompt: 'reply', operationId: 'one' })).rejects.toThrow('disk write failed')
+    expect(t.queued).toBeUndefined()
+    expect(journal(s, t.id).queue).toHaveLength(0)
+    s.fake.guest.run = async (command, args, timeout) => {
+      const out = await run(command, args, timeout)
+      if (args.some(arg => arg.startsWith('// caboose delivery journal write'))) throw Error('response lost after rename')
+      return out
+    }
+    await s.tasks.reply(t.id, { prompt: 'reply', operationId: 'one' })
+    expect(t.queued).toEqual(['reply'])
+    const r = await restart(s)
+    await r.tasks.reply(t.id, { prompt: 'reply', operationId: 'one' })
+    expect(r.tasks.list()[0]?.queued).toEqual(['reply'])
+  })
+
+  it('finds a stable task when its launch response was lost', async () => {
+    const s = setup()
+    const run = s.fake.guest.run
+    s.fake.guest.run = async (command, args, timeout) => {
+      const out = await run(command, args, timeout)
+      if (args.some(arg => arg.includes('> task.json'))) throw Error('start response lost')
+      return out
+    }
+    const id = '11111111-1111-4111-8111-111111111111'
+    await expect(s.tasks.start({ prompt: 'work' }, { id })).rejects.toThrow('start response lost')
+    await expect(s.tasks.start({ prompt: 'work' }, { id })).resolves.toMatchObject({ id, turns: 1 })
+    expect(s.fake.task(id).inbox).toHaveLength(1)
+  })
+
+  it('recovers the exact initial attachment envelope after admission but before runner launch', async () => {
+    const s = setup()
+    const id = '11111111-1111-4111-8111-111111111111'
+    const input = { prompt: 'inspect these', attachments: [
+      { name: 'image.png', type: 'image/png', data: b64('image contents') },
+      { name: 'notes.txt', type: 'text/plain', data: b64('notes contents') },
+    ] }
+    s.fake.beforeLaunch(taskId => {
+      s.fake.task(taskId).alive = false
+      throw new Error('crash after directory rename, before launch')
+    })
+    await expect(s.tasks.start(input, { id })).rejects.toThrow('before launch')
+    const state = s.fake.task(id)
+    const admitted = state.published.get('000001')!
+    expect(JSON.parse(admitted).attachments).toEqual([
+      { path: `/home/caboose/Agents/${id}/attachments/image.png`, name: 'image.png', mimeType: 'image/png' },
+      { path: `/home/caboose/Agents/${id}/attachments/notes.txt`, name: 'notes.txt', mimeType: 'text/plain' },
+    ])
+    const r = await restart(s)
+    expect(r.tasks.list()[0]).toMatchObject({ id, status: 'running', turns: 1 })
+    expect(state.published.get('000001')).toBe(admitted)
+    expect(state.inbox).toEqual([admitted])
+    expect(state.files.get(`/home/caboose/Agents/${id}/attachments/image.png`)).toBe('image contents')
+    expect(state.files.get(`/home/caboose/Agents/${id}/attachments/notes.txt`)).toBe('notes contents')
+    await expect(r.tasks.start(input, { id })).resolves.toMatchObject({ id, status: 'running', turns: 1 })
+    await expect(r.tasks.reply(id, { prompt: 'later', operationId: 'later' })).resolves.toMatchObject({ queued: ['later'] })
+    expect(state.inbox).toEqual([admitted])
+  })
+
+  it('recovers a prepared intent whose publish command never ran', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    await s.tasks.reply(t.id, { prompt: 'reply', operationId: 'one' })
+    const run = s.fake.guest.run
+    s.fake.guest.run = async (command, args, timeout) => {
+      if (args.some(arg => arg.includes('echo launched'))) throw Error('transport failed before publish')
+      return run(command, args, timeout)
+    }
+    await expect(s.tasks.sendNow(t.id)).rejects.toThrow('transport failed')
+    expect(journal(s, t.id).intent.turn).toBe(2)
+    s.fake.guest.run = run
+    const r = await restart(s)
+    expect(r.tasks.list()[0]).toMatchObject({ turns: 2, status: 'running' })
+    expect(s.fake.task(t.id).inbox.filter(x => x !== 'cancel' && JSON.parse(x).turn === 2)).toHaveLength(1)
+  })
+
+  it.each([false, true])('retains a relaunched unclaimed turn instead of repeating its reply (Send Now=%s)', async sendNow => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    s.fake.append(t.id, user(1)); s.fake.append(t.id, end(1, 'done'))
+    await s.tasks.poll()
+    s.fake.claimOnLaunch(false)
+    await s.tasks.reply(t.id, { prompt: 'perform action once', operationId: 'op1' })
+    const originalIntent = journal(s, t.id).intent
+    expect(originalIntent).toMatchObject({ turn: 2, replies: ['op1'] })
+    s.fake.task(t.id).alive = false
+    s.fake.exit(t.id, '1', 'runner died before claim')
+    await s.tasks.poll()
+    expect(t).toMatchObject({ status: 'failed', turns: 2 })
+    await s.tasks.reply(t.id, { prompt: 'later message', operationId: 'op2' })
+    if (sendNow) await s.tasks.sendNow(t.id)
+    expect(t).toMatchObject({ status: 'running', turns: 2, queued: ['later message'] })
+    expect(journal(s, t.id).intent).toEqual(originalIntent)
+    expect([...s.fake.task(t.id).published.values()].map(value => JSON.parse(value))).toMatchObject([
+      { turn: 1, text: 'work' }, { turn: 2, text: 'perform action once' },
+    ])
+    // Only a proven end of the recovered turn permits a fresh batch containing op2 alone.
+    s.fake.append(t.id, user(2, 'perform action once')); s.fake.append(t.id, end(2, 'done'))
+    await s.tasks.poll()
+    expect(t.turns).toBe(3)
+    expect(JSON.parse(s.fake.task(t.id).published.get('000003')!)).toMatchObject({ turn: 3, text: 'later message' })
+    expect(journal(s, t.id).intent).toMatchObject({ turn: 3, replies: ['op2'] })
+  })
+
+  it('does not republish an inbox after a lost delivery response', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    await s.tasks.reply(t.id, { prompt: 'reply' })
+    const run = s.fake.guest.run
+    s.fake.guest.run = async (command, args, timeout) => {
+      const out = await run(command, args, timeout)
+      if (args.some(arg => arg.includes('echo launched'))) throw Error('reply response lost')
+      return out
+    }
+    await expect(s.tasks.sendNow(t.id)).rejects.toThrow('reply response lost')
+    s.fake.guest.run = run
+    const r = await restart(s)
+    expect(r.tasks.list()[0]).toMatchObject({ turns: 2, status: 'running' })
+    expect(r.tasks.list()[0]?.queued).toBeUndefined()
+    expect(s.fake.task(t.id).inbox.filter(x => x !== 'cancel' && JSON.parse(x).turn === 2)).toHaveLength(1)
+  })
+
+  it.each(['partial-claim-before-unlink', 'claimed-before-unlink', 'claimed-after-unlink', 'old-runner-user', 'old-runner-unlink-gap', 'marker-before-inbox'])('reports %s as uncertain after interruption without replaying or discarding later replies', async point => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    await s.tasks.reply(t.id, { prompt: 'first', operationId: 'one' })
+    await s.tasks.sendNow(t.id)
+    await s.tasks.reply(t.id, { prompt: 'later', operationId: 'two' })
+    const state = s.fake.task(t.id)
+    state.alive = false
+    if (!point.endsWith('before-unlink')) state.inbox = state.inbox.filter(x => x === 'cancel' || JSON.parse(x).turn !== 2)
+    if (point === 'partial-claim-before-unlink') state.receipts.set('000002', {})
+    if (point.startsWith('old-') || point === 'marker-before-inbox') state.receipts.clear()
+    if (point === 'old-runner-user') s.fake.append(t.id, user(2, 'first'))
+    const r = await restart(s)
+    expect(r.tasks.list()[0]).toMatchObject({ status: 'failed', delivery: { turn: 2, state: 'uncertain' }, queued: ['later'] })
+    await expect(r.tasks.sendNow(t.id)).rejects.toBeInstanceOf(AgentConflictError)
+    expect(state.published.get('000002')).toContain('first')
+    expect(state.inbox.filter(x => x !== 'cancel' && JSON.parse(x).turn === 2)).toHaveLength(point.endsWith('before-unlink') ? 1 : 0)
+    expect(journal(s, t.id).intent.uncertain).toBe(true)
+  })
+
+  it('reconciles an old runner terminal transcript without receipts and delivers later queued files once', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    await s.tasks.reply(t.id, { prompt: 'first' }); await s.tasks.sendNow(t.id)
+    await s.tasks.reply(t.id, { prompt: 'later', attachments: [{ name: 'n.txt', data: b64('later file') }] })
+    const state = s.fake.task(t.id)
+    state.receipts.clear(); state.alive = false
+    state.inbox = []
+    s.fake.append(t.id, user(2, 'first')); s.fake.append(t.id, end(2, 'done'))
+    const r = await restart(s)
+    expect(r.tasks.list()[0]).toMatchObject({ status: 'running', turns: 3 })
+    expect(JSON.parse(state.inbox.at(-1)!)).toMatchObject({ turn: 3, text: 'later', attachments: [{ name: 'n.txt' }] })
+    expect(state.published.size).toBe(3)
+  })
+
+  it('uses a completed receipt when the transcript tail is unavailable and preserves queues on corrupt storage', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    await s.tasks.reply(t.id, { prompt: 'first' }); await s.tasks.sendNow(t.id)
+    const state = s.fake.task(t.id)
+    const receipt = state.receipts.get('000002')!
+    state.receipts.set('000002', { ...receipt, state: 'completed', result: end(2, 'done') })
+    state.alive = false; state.inbox = []
+    const r = await restart(s)
+    expect(r.tasks.list()[0]).toMatchObject({ status: 'succeeded', turns: 2, summary: 'done' })
+    state.files.set('delivery.json', '{broken')
+    r.tasks.pause()
+    const broken = await restart(s)
+    expect(broken.tasks.list()[0]?.status).toBe('failed')
+    await expect(broken.tasks.reply(t.id, { prompt: 'x' })).rejects.toBeInstanceOf(AgentConflictError)
+    expect(state.files.get('delivery.json')).toBe('{broken')
+  })
+
+  it('observes a runner loaded before upgrade without synthesizing a prompt, and retains newly admitted replies on interruption', async () => {
+    const s = setup()
+    const id = '11111111-1111-4111-8111-111111111111'
+    s.fake.setListing([id, 'stand-in', '1790000500', '', '1', '0', b64('work'), '', 'auto', '2', '1', '', ''].join('\t'))
+    await s.tasks.restore()
+    expect(journal(s, id).intent).toMatchObject({ turn: 2, legacy: true })
+    expect(s.fake.task(id).inbox).toEqual([])
+    await s.tasks.reply(id, { prompt: 'queued', operationId: 'one' })
+    s.fake.append(id, user(2)); s.fake.append(id, { type: 'turn_failed', turn: 2, message: 'Stopped.' })
+    s.fake.task(id).alive = false
+    await s.tasks.poll()
+    expect(s.tasks.list()[0]).toMatchObject({ status: 'failed', delivery: { state: 'uncertain' }, queued: ['queued'] })
+    expect(s.fake.task(id).inbox).toEqual([])
+  })
+
+  it('restores a live claim that precedes the turns-file update and holds its lease', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    await s.tasks.reply(t.id, { prompt: 'first' }); await s.tasks.sendNow(t.id)
+    s.fake.append(t.id, user(1)); s.fake.append(t.id, end(1, 'done'))
+    s.fake.setListing([t.id, 'stand-in', '1790000500', '', '1', String(s.fake.task(t.id).transcript.length), b64('work'), b64(line(end(1, 'done'))), 'auto', '1', '1', '', ''].join('\t'))
+    const r = await restart(s)
+    expect(r.tasks.list()[0]).toMatchObject({ status: 'running', turns: 2 })
+    expect(r.release).not.toHaveBeenCalled()
+    await r.tasks.reply(t.id, { prompt: 'later' })
+    expect(r.tasks.list()[0]?.queued).toEqual(['later'])
+    expect(s.fake.task(t.id).published.size).toBe(2)
+  })
+
+  it('holds an interrupted agent process uncertain instead of automatically draining admitted replies', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    await s.tasks.reply(t.id, { prompt: 'queued' })
+    s.fake.append(t.id, user(1)); s.fake.append(t.id, { type: 'turn_failed', turn: 1, message: 'Connection lost', uncertain: true })
+    await s.tasks.poll()
+    expect(t).toMatchObject({ status: 'failed', delivery: { state: 'uncertain' }, queued: ['queued'] })
+    expect(s.fake.task(t.id).published.size).toBe(1)
+    expect(journal(s, t.id).intent.uncertain).toBe(true)
+  })
+
+  it('retains cancelled operation receipts across restart without reviving dropped replies', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    await s.tasks.reply(t.id, { prompt: 'drop', operationId: 'one' })
+    await s.tasks.cancel(t.id)
+    const r = await restart(s)
+    await r.tasks.reply(t.id, { prompt: 'drop', operationId: 'one' })
+    expect(r.tasks.list()[0]).toMatchObject({ status: 'cancelled', turns: 1 })
+    expect(r.tasks.list()[0]?.queued).toBeUndefined()
+    expect(journal(s, t.id).operations).toHaveLength(1)
+    expect(s.fake.task(t.id).published.size).toBe(1)
+  })
+
+
+  it('keeps the computer leased while the next durable delivery write is delayed', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    await s.tasks.reply(t.id, { prompt: 'queued' })
+    let unblock!: () => void, entered!: () => void
+    const gate = new Promise<void>(resolve => { unblock = resolve })
+    const writing = new Promise<void>(resolve => { entered = resolve })
+    const run = s.fake.guest.run
+    s.fake.guest.run = async (command, args, timeout) => {
+      if (args.some(arg => arg.startsWith('// caboose delivery journal write'))) {
+        const v = JSON.parse(Buffer.from(args.slice(9).join(''), 'base64').toString())
+        if (v.intent?.turn === 2) { entered(); await gate }
+      }
+      return run(command, args, timeout)
+    }
+    s.fake.append(t.id, user(1)); s.fake.append(t.id, end(1, 'done'))
+    const polling = s.tasks.poll()
+    await writing
+    expect(s.release).not.toHaveBeenCalled()
+    unblock(); await polling
+    expect(t).toMatchObject({ status: 'running', turns: 2 })
+    expect(s.release).toHaveBeenCalledTimes(1)
+  })
+
+  it('never reuses a completed turn when the launch turns file is stale after a crash', async () => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    await s.tasks.reply(t.id, { prompt: 'first' }); await s.tasks.sendNow(t.id)
+    s.fake.append(t.id, user(2)); s.fake.append(t.id, end(2, 'done'))
+    await s.tasks.poll()
+    expect(journal(s, t.id)).toMatchObject({ turns: 2 })
+    expect(journal(s, t.id).intent).toBeUndefined()
+    s.fake.setListing([t.id, 'stand-in', '1790000500', '0', '0', String(s.fake.task(t.id).transcript.length), b64('work'), b64(line(end(2, 'done'))), 'auto', '1', '1', '', ''].join('\t'))
+    const r = await restart(s)
+    expect(r.tasks.list()[0]).toMatchObject({ status: 'succeeded', turns: 2 })
+    await r.tasks.reply(t.id, { prompt: 'next', operationId: 'next' })
+    expect(r.tasks.list()[0]?.turns).toBe(3)
+    expect(JSON.parse(s.fake.task(t.id).inbox.at(-1)!)).toMatchObject({ turn: 3, text: 'next' })
+  })
+
 })

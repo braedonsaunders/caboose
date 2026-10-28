@@ -288,7 +288,9 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
   `delete_surrounding_text` depends on the application's surrounding-text bookkeeping
   (Chromium drops it). The commit and pre-edit text go through text-input-v3 when the
   focused surface has it enabled; otherwise (an X11 app through Xwayland, for example)
-  the commit is typed as key presses and pre-edit text is not shown.
+  the commit is typed as key presses and pre-edit text is not shown. Clients send Return as
+  a `key` press/release (`0xFF0D`), not a committed newline: single-line fields can ignore
+  newlines committed by an input method.
 - `text_input` fires when the focused window's text-input-v3 is enabled or disabled. With
   the `text-input-v3` feature the client shows and hides the keyboard from it, and treats a
   `text` cursor shape only as a fallback.

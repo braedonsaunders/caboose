@@ -26,9 +26,19 @@ struct AgentThreadView: View {
                         }
                         if thread.turns.last?.outcome == nil, !task.isRunning, let summary = task.summary, !summary.isEmpty, task.signIn?.isEmpty != false {
                             // The transcript could not be read (the computer is parked): the host's summary stands in.
-                            Text(Markdown.inline(summary)).font(.body).textSelection(.enabled)
+                            ChatMessageView(text: summary)
                         }
-                        if task.isRunning { WorkingIndicator(task: task, thread: thread) }
+                        if task.isRunning, let draft = task.draft, draft.turn == task.turns {
+                            if draft.kind == "thought" { ThoughtView(text: draft.text) }
+                            else { ChatMessageView(text: draft.text) }
+                        }
+                        if task.isRunning {
+                            WorkingIndicator(task: task, thread: thread)
+                            if let seat = agents.seat,
+                               let window = seat.windows.values.filter({ !$0.isAuxiliary }).sorted(by: { $0.id < $1.id }).last {
+                                AgentSeatCard(seat: seat, window: window)
+                            }
+                        }
                         if let approval = task.pendingApproval {
                             ApprovalRow(task: task, approval: approval)
                                 .padding(14)
@@ -93,17 +103,22 @@ private struct QueuedView: View {
     @Environment(AppModel.self) private var model
     let task: AgentCenter.Task
     let queued: [String]
+    @State private var sending = false
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            ForEach(Array(queued.enumerated()), id: \.offset) { _, text in
-                PromptBubble(text: text).opacity(0.6)
+            ForEach(Array(queued.enumerated()), id: \.offset) { index, text in
+                PromptBubble(text: text, attachmentNames: task.queuedAttachments?.indices.contains(index) == true ? task.queuedAttachments![index] : []).opacity(0.65)
             }
             HStack(spacing: 10) {
                 Label("Waiting for \(model.agents.name(of: task)) to finish this step", systemImage: "clock")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("Send Now") { Task { await model.agents.sendNow(task) } }
+                Button(sending ? "Sending…" : "Send Now") {
+                    sending = true
+                    Task { await model.agents.sendNow(task); sending = false }
+                }
+                    .disabled(sending)
                     .font(.caption.weight(.semibold))
                     .buttonStyle(.glass)
             }
@@ -120,14 +135,11 @@ private struct TurnView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if !turn.prompt.isEmpty { PromptBubble(text: turn.prompt, attachments: turn.attachments.count) }
+            if !turn.prompt.isEmpty { PromptBubble(text: turn.prompt, attachmentNames: turn.attachments) }
             ForEach(turn.items) { item in
                 switch item {
                 case .text(_, let text):
-                    Text(Markdown.inline(text))
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ChatMessageView(text: text)
                 case .thought(_, let text): ThoughtView(text: text)
                 case .tools(_, let tools): ToolGroupView(tools: tools, live: isLast && task.isRunning)
                 case .plan(_, let entries): PlanView(entries: entries)
@@ -144,7 +156,7 @@ private struct TurnView: View {
 /// What the owner wrote, on the right like any message they sent.
 struct PromptBubble: View {
     let text: String
-    var attachments = 0
+    var attachmentNames: [String] = []
 
     var body: some View {
         HStack {
@@ -155,9 +167,9 @@ struct PromptBubble: View {
                     .textSelection(.enabled)
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(Brand.amber.opacity(0.22), in: .rect(cornerRadius: 20))
-                if attachments > 0 {
-                    Label(attachments == 1 ? "1 attachment" : "\(attachments) attachments", systemImage: "paperclip")
-                        .font(.caption2).foregroundStyle(.secondary)
+                ForEach(Array(attachmentNames.enumerated()), id: \.offset) { _, path in
+                    Label((path as NSString).lastPathComponent, systemImage: "paperclip")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
         }
@@ -226,6 +238,7 @@ private struct ToolGroupView: View {
 
 private struct ToolRow: View {
     let tool: AgentThread.Tool
+    @State private var expanded = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -233,17 +246,21 @@ private struct ToolRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(tool.title).font(.footnote.weight(.medium)).lineLimit(2)
                 if let detail = tool.detail, !tool.title.contains(detail) {
-                    Text(detail).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
+                    Text(detail).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(expanded ? nil : 2).textSelection(.enabled)
                 }
             }
             Spacer(minLength: 0)
             Group {
                 if tool.isActive { ProgressView().controlSize(.mini) }
                 else if tool.isFailed { Image(systemName: "xmark.circle.fill").foregroundStyle(.orange) }
-                else { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green.opacity(0.8)) }
+                else if tool.isDone { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green.opacity(0.8)) }
+                else { Image(systemName: "circle").foregroundStyle(.secondary) }
             }
             .font(.caption)
         }
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.snappy) { expanded.toggle() } }
+        .accessibilityAction(named: expanded ? "Collapse details" : "Show details") { expanded.toggle() }
     }
 }
 

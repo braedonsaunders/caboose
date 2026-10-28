@@ -10,6 +10,7 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 | `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input. |
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
 | `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, SwiftTerm's view in the Caboose look and the key row above the keyboard. |
+| `Caboose/Switchyard/` | The Desktop tab's tiling on the device's own screen: tiles, gaps, grabber, dock, Overview, launcher and ⌘⌥ keys, over the `CabooseKit/Switchyard` layout. |
 | `Caboose/Brand/` | The logo drawn natively in SwiftUI. It shares geometry and timing with `apps/web/src/brand/brand.ts`; change both together. `scripts/render-app-icon.sh` renders the app icon from the same SVG (macOS). |
 | `Share/` | The share extension (target `CabooseShare`). |
 | `Files/` | The File Provider extension that shows the computer in the Files app. |
@@ -77,6 +78,28 @@ a real host, `CABOOSE_HOST_URL=… CABOOSE_HOST_TOKEN=… swift test --filter Li
 opens a terminal over URLSession as the app does, runs a command, resizes, reattaches from
 its offset, is replaced by a second connection, exits, and checks the closes that follow.
 
+## Checking Switchyard on a device
+
+The layout and work-area geometry are unit-tested (`swift test --filter 'SwitchyardTests|DesktopGeometryTests'`).
+Run `sh scripts/check-desktop.sh` for the real-device checks, including external-display
+maximizing, browser controls and app-card toolbars on Duo and ordinary iPhones. The gestures
+and picture need a device with the computer awake. On the Desktop tab, with three apps open:
+
+1. Upright iPhone: one full-width column; the side edges and the dock's cars move between
+   columns, and the lit car follows. Drag a grabber to the bottom quarter of another tile: they stack.
+2. Open a Duo, or turn a large phone on its side: two halves. Drag the gap: it ticks at ½ and ⅔ and settles
+   on release; the apps redraw at the new width without a seam.
+3. iPad: thirds, the Tiled/Free choice in the toolbar, and ⌘⌥←/→, ⌘⌥⇧←/→, ⌘⌥R, ⌘⌥O on a
+   hardware keyboard (hold ⌘ to see them listed). Plain ⌘C still copies in the app.
+4. Open a menu and a dialog in a tile: both appear over that tile. Park and wake: the same
+   columns come back.
+5. Tap a tile to focus it, then use the trailing toolbar's Full Screen control and Open App
+   Full Screen; double-tap the grabber, use its menu, or press ⌘⌥F: the same app card as
+   Apps opens. Close the card: Desktop and its tile layout return. Rotate/fold while
+   the card is up, hide/show its controls, then dismiss: both card and desktop fit their
+   available viewport. Browser content keeps its own double taps. Two fingers tapped on a
+   window right-click, with a ring where they landed.
+
 ## How it renders
 
 Each Linux window is its own stream: HEVC, AV1 where the device decodes it in hardware
@@ -118,7 +141,9 @@ its texture into a `CAMetalLayer` only when a picture changed it.
 ## How input works
 
 Native Wayland windows take real multi-touch: every finger is a touch slot and each UIKit
-event is one touch frame, so pinch, swipe and long-press are the app's own. Apple Pencil is a
+event is one touch frame, so pinch, swipe and long-press are the app's own. A two-finger tap
+cancels that native touch sequence and sends a right-click, with a brief ring and haptic.
+Apple Pencil is a
 tablet with pressure, tilt and azimuth on every coalesced sample, and hover on iPads that
 have it. X11 windows (through Xwayland) take pointer gestures, since X11 apps turn a touch
 drag into a selection: swipe scrolls with momentum, tap clicks, double-tap double-clicks, a
@@ -279,3 +304,16 @@ by a simulator build. On a signed device paired to a deployed computer, check:
 - **AirPlay.** With an AirPlay device in reach, play to it once from Home's route picker;
   Home then names it, and its main control reconnects or offers it as the Automatically
   AirPlay setting allows. Park, Turn On and Restart from the lifecycle menu.
+
+## Agent conversations
+
+The Agents tab has a native composer for camera, Photos, Files and explicit speech
+recognition. Unsent input stays with each chat while the app is open; failed sends keep
+its text and files. Responses use the host's live draft snapshots and transcript events,
+with native markdown blocks, selectable code and Copy. Tool progress and approvals appear
+inline, and an existing agent-seat window has a live preview and Watch action.
+
+Run `scripts/check-agents.sh` for the real-device checklist against a matching host. It
+covers streaming, same-named queued attachments and Send Now, approvals, seat takeover,
+speech permissions, failed sends and chat switching. No scheduled-task or cross-agent
+memory feature is implied by the composer; conversation continuity belongs to the ACP agent.

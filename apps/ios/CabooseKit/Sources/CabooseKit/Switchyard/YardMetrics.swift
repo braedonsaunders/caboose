@@ -3,16 +3,17 @@ import CoreGraphics
 /// The screen Switchyard lays out for, and the sizes that follow from it.
 ///
 /// Column widths are fractions of the screen, chosen from ⅓, ½, ⅔ and full. A preset is
-/// offered only where its column is at least `minimumTile` wide, so an iPhone held upright
-/// offers full width alone, a Duo opened out or a phone on its side adds halves, and an
-/// iPad adds thirds. The gap between tiles is the same at the screen's edges.
+/// offered only where its column is at least `minimumTile` wide and two halves fit, so an
+/// iPhone held upright offers full width alone, a Duo opened out or a phone on its side adds
+/// halves and two thirds, and an iPad adds thirds. The gap between tiles is the same at the screen's edges.
 public struct YardMetrics: Equatable, Sendable {
     /// The space for the yard, in points.
     public var size: CGSize
     public var gap: CGFloat
 
-    /// The narrowest a tile is made: a phone's width, about what a Linux app can lay out in.
-    public static let minimumTile = CGSize(width: 320, height: 180)
+    /// The narrowest a tile is made: about what a Linux app can lay out in at the yard's
+    /// density, and narrow enough that an iPhone Duo opened out takes two side by side.
+    public static let minimumTile = CGSize(width: 280, height: 180)
     public var minimumTile: CGSize { Self.minimumTile }
 
     public static let fractions: [CGFloat] = [1.0 / 3, 0.5, 2.0 / 3, 1]
@@ -45,8 +46,13 @@ public struct YardMetrics: Equatable, Sendable {
         return (points + gap) / (size.width - gap)
     }
 
-    /// The narrowest fraction that still makes a tile `minimumTile` wide.
-    public var minimumFraction: CGFloat { min(1, fraction(forPoints: minimumTile.width)) }
+    /// The narrowest fraction that still makes a tile `minimumTile` wide. A screen too narrow
+    /// for two halves side by side keeps every column full width: a column that leaves too
+    /// little beside it for another only wastes the rest.
+    public var minimumFraction: CGFloat {
+        guard points(forFraction: 0.5) >= minimumTile.width else { return 1 }
+        return min(1, fraction(forPoints: minimumTile.width))
+    }
 
     /// The widths this screen offers, narrowest first. Full width is always one.
     public var presets: [CGFloat] { Self.fractions.filter { $0 >= minimumFraction - 0.0001 } }

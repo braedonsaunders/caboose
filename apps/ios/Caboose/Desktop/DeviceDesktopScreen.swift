@@ -2,8 +2,9 @@ import CabooseKit
 import SwiftUI
 import UIKit
 
-/// The Desktop tab: the computer's whole desktop on this screen, windows side by side with
-/// the dock and Launchpad; or, while a TV shows the desktop, this phone as its trackpad.
+/// The Desktop tab: the computer's whole desktop on this screen, its windows tiled in
+/// Switchyard (or, on an iPad that chooses Free, floating with the dock and Launchpad); or,
+/// while a TV shows the desktop, this phone as its trackpad.
 ///
 /// Its actions sit in the toolbar, so on iPhone Duo they join the tab bar in the vertical bar
 /// on the side, which stays fully shown as on every tab. The desktop fills everything beside
@@ -15,6 +16,7 @@ struct DesktopScreen: View {
     @Environment(AppModel.self) private var model
     @State private var showAirPlay = false
     @State private var fullScreen = false
+    @State private var showingFullScreenActions = false
 
     var body: some View {
         NavigationStack {
@@ -24,7 +26,7 @@ struct DesktopScreen: View {
                 } else if model.externalDisplayActive {
                     TrackpadScreen(desktop: model.desktop)
                 } else {
-                    DesktopStage(fullScreen: fullScreen)
+                    DesktopStage(fullScreen: immersive)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -39,17 +41,31 @@ struct DesktopScreen: View {
                 ComputerToolbar()
             }
             .keepsTabBarInVerticalBar()
-            .toolbarVisibility(fullScreen ? .hidden : .automatic, for: .navigationBar, .tabBar)
-            .statusBarHidden(fullScreen)
-            .persistentSystemOverlays(fullScreen ? .hidden : .automatic)
-            .overlay(alignment: .top) { if fullScreen { exitFullScreenHandle } }
-            .animation(.snappy, value: fullScreen)
+            .toolbarVisibility(immersive ? .hidden : .automatic, for: .navigationBar, .tabBar)
+            .statusBarHidden(immersive)
+            .persistentSystemOverlays(immersive ? .hidden : .automatic)
+            .overlay(alignment: .top) { if fullScreen && model.yard.coverWindow == nil { exitFullScreenHandle } }
+            .animation(.snappy, value: immersive)
             .onChange(of: model.phase) { _, phase in if phase != .ready { fullScreen = false } }
+            .confirmationDialog("Full Screen", isPresented: $showingFullScreenActions, titleVisibility: .visible) {
+                if model.yardActive, let window = model.window(model.yard.layout.focused) {
+                    Button("Open App Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") {
+                        model.show(windowID: window.id)
+                    }
+                }
+                Button("Hide Desktop Bars", systemImage: "rectangle.expand.vertical") { fullScreen = true }
+            }
             .sheet(isPresented: $showAirPlay) {
                 AirPlaySheet().environment(model)
                     .presentationDetents([.medium])
             }
         }
+    }
+
+    /// Full Screen from the toolbar, or a Switchyard window covering the screen: the bars,
+    /// the status bar and the home indicator step aside.
+    private var immersive: Bool {
+        fullScreen || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil)
     }
 
     /// The desktop's own actions. Agents and Apps are tabs beside them and Launchpad is in
@@ -61,6 +77,16 @@ struct DesktopScreen: View {
                 model.keyboardVisible.toggle()
             }
             Button("AirPlay", systemImage: model.airPlay.current != nil ? "airplay.audio" : "airplay.video") { showAirPlay = true }
+        }
+        if !model.externalDisplayActive, UIDevice.current.userInterfaceIdiom == .pad {
+            ToolbarItem(placement: .topBarTrailing) {
+                @Bindable var model = model
+                Picker("Arrangement", selection: $model.deviceDesktopStyle) {
+                    Label("Tiled", systemImage: "rectangle.split.3x1").tag(AppModel.DeviceDesktopStyle.tiled)
+                    Label("Free", systemImage: "macwindow.on.rectangle").tag(AppModel.DeviceDesktopStyle.free)
+                }
+                .pickerStyle(.menu)
+            }
         }
         if !model.externalDisplayActive {
             if #available(iOS 27.0, *) {
@@ -83,7 +109,8 @@ struct DesktopScreen: View {
 
     private var fullScreenItem: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { fullScreen = true }
+            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { showingFullScreenActions = true }
+                .labelStyle(.iconOnly)
         }
     }
 
@@ -114,12 +141,24 @@ private struct DesktopStage: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack {
-                DesktopView(desktop: model.desktop, fillsScreen: false)
-                DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
+            Group {
+                if model.deviceDesktopStyle == .tiled {
+                    SwitchyardView(yard: model.yard)
+                } else {
+                    ZStack {
+                        DesktopView(desktop: model.desktop, fillsScreen: false)
+                        DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
+                    }
+                }
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
             .onAppear { model.desktopStageResized(to: proxy.size) }
             .onChange(of: proxy.size) { _, size in model.desktopStageResized(to: size) }
+            .onChange(of: barEdge) { _, _ in model.desktopStageResized(to: proxy.size) }
+            .onChange(of: model.selectedTab) { _, tab in
+                if tab == .desktop { model.desktopStageResized(to: proxy.size) }
+            }
         }
         .ignoresSafeArea(edges: ignoredEdges)
     }
@@ -127,8 +166,8 @@ private struct DesktopStage: View {
     private var ignoredEdges: Edge.Set {
         if fullScreen { return .all }
         switch barEdge {
-        case .trailing: return [.top, .bottom, .leading]
-        case .leading: return [.top, .bottom, .trailing]
+        case .trailing: return [.top, .bottom]
+        case .leading: return [.top, .bottom]
         case nil: return []
         }
     }
@@ -160,8 +199,8 @@ struct DesktopTouchArea: UIViewRepresentable {
     func updateUIView(_ view: DesktopTouchSurface, context: Context) {
         view.desktop = desktop
         view.model = model
-        if keyboardVisible, !view.isFirstResponder { DispatchQueue.main.async { view.becomeFirstResponder() } }
-        if !keyboardVisible, view.isFirstResponder { DispatchQueue.main.async { view.resignFirstResponder() } }
+        if keyboardVisible && !model.windowCardOwnsGeometry, !view.isFirstResponder { DispatchQueue.main.async { view.becomeFirstResponder() } }
+        if (!keyboardVisible || model.windowCardOwnsGeometry), view.isFirstResponder { DispatchQueue.main.async { view.resignFirstResponder() } }
     }
 }
 
@@ -300,7 +339,14 @@ final class DesktopTouchSurface: UIView, UIKeyInput {
         return desktop.stacking.reversed().compactMap { session.windows[$0] }.first { !$0.isAuxiliary && desktop.isVisible($0.id) }
     }
 
-    func insertText(_ text: String) { session?.type(text, in: focusedWindow) }
+    func insertText(_ text: String) {
+        let target = focusedWindow
+        session?.type(text, in: target)
+        if (text == "\n" || text == "\r"), !RemoteWindowView.isCodeApp(target) {
+            model?.keyboardVisible = false
+            resignFirstResponder()
+        }
+    }
 
     func deleteBackward() {
         guard let stroke = Keysyms.special["BackSpace"] else { return }

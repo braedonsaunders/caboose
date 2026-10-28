@@ -146,6 +146,29 @@ enum Tone {
         #expect(clock.now == nil)
     }
 
+    @Test func failedSessionActivationIsRetriedBeforePlaying() throws {
+        enum ActivationError: Error { case unavailable }
+        var attempts = 0
+        let clock = MediaClock()
+        let player = SoundPlayer(clock: clock, activate: {
+            attempts += 1
+            if attempts == 1 { throw ActivationError.unavailable }
+        })
+        player.renderer.isMuted = true
+        let packets = try Tone.packets(3)
+        player.play(AudioPacket(ptsMicros: 10_000_000, data: packets[0]))
+        player.flush()
+        #expect(attempts == 1 && player.failed == 1 && player.played == 0)
+        #expect(clock.now == nil)
+        player.play(AudioPacket(ptsMicros: 10_020_000, data: packets[1]))
+        player.play(AudioPacket(ptsMicros: 10_040_000, data: packets[2]))
+        player.flush()
+        #expect(attempts == 2 && player.failed == 1 && player.played == 2)
+        #expect(clock.now != nil)
+        player.stop()
+        player.flush()
+    }
+
     @Test func packetsArrivingInRealTimeNeverRestartTheClock() async throws {
         let clock = MediaClock()
         let player = SoundPlayer(clock: clock)

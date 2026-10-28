@@ -338,7 +338,16 @@ agent. A task starts the agent seat if needed and runs as `caboose` with the sea
 (`/run/caboose/agent-display.env`, Xwayland `:101`) and the seat's D-Bus session bus
 `/run/user/1000/agent-bus`. New tasks offer installed catalog MCP commands to the agent;
 `craftMcp: false` in `POST /v1/agent/tasks` turns them off for that task and its replies.
-The list is captured when the task is created.
+The list is captured when the task is created. Replies and their staged files are admitted
+into a durable per-task guest journal before success is returned. `AgentTasks.start(input,
+{ id })` accepts a stable UUID; reply `operationId` values deduplicate retries per task and
+conflict on changed original payloads. Recovery and uncertain-delivery behavior are specified
+in the architecture and runner file protocol linked above. Focused tests:
+
+```sh
+pnpm --filter caboose-host exec vitest run src/agents.test.ts src/agent-delivery.test.ts
+pnpm --filter caboose-agentd test
+```
 
 `/v1/fs` and shared files go through the guest's file service
 ([`guest/files`](../../guest/files/README.md), port 14700, authenticated with the per-wake
@@ -397,8 +406,12 @@ The pinned catalog in [`guest/catalog`](../../guest/catalog/README.md) is served
 `GET /v1/catalog`. Install, update, rollback and removal are asynchronous; watch
 `catalog.progress` and `catalog.changed` on `/v1/control`. The guest downloads and verifies
 release packages before APT runs, and Debian packages come from the signed Debian 13
-repositories. One catalog operation runs at a time; an interrupted one is reported by the
-next listing. Rollback is available only when an earlier release package is cached.
+repositories. Progress percentages describe measured release-download bytes only;
+verification, package installation and triggers show indeterminate stages. One catalog
+operation runs at a time. Listings distinguish a lock-held active operation from an
+interrupted worker; the host observes surviving work and holds its lease until it ends.
+Retry completes pending dpkg configuration even if the application already reports an
+installed version. Rollback is available only when an earlier release package is cached.
 
 Craft jobs run a fixed list of installed catalog CLI operations, as `caboose`, on files
 staged in `~/.caboose-jobs/<job>` through `/v1/fs`. The contract, formats, progress events
@@ -436,7 +449,7 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-lineup.mjs` | Opens Mousepad, btop and OpenCode and requires a new window for each on the owner's display. Leaves them open and does not park. |
 | `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft if needed, launches it and requires a new window. Close any PhotoCraft window first. |
 | `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |
-| `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk; the owner's computer is only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
+| `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk. Hosts with accounts also get a throwaway tenant, removed after the computer even when the check fails. Older hosts without tenants remain supported. It creates no accounts; the owner's computer is only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
 | `node apps/host/scripts/check-accounts.mjs` | Accounts and tenants: the setup state and the owner token's view, then a throwaway tenant with a memory quota, a computer within it made and one beyond it refused, a resize past it refused, and both deleted. It makes no accounts and verifies that setup requires its code even on loopback. |
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
 | `node apps/host/scripts/check-terminal.mjs` | Opens a terminal through `/v1/terminal` (waking the computer), checks the login shell's environment, resizes, lists the session, detaches, reattaches from its offset and receives what was written meanwhile, then exits the shell with a code. A failed check hangs the session up. |

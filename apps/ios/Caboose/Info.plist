@@ -25,6 +25,9 @@
 	<key>LSRequiresIPhoneOS</key><true/>
 	<key>NSAppTransportSecurity</key>
 	<dict><key>NSAllowsLocalNetworking</key><true/></dict>
+	<key>NSCameraUsageDescription</key><string>Take a photo to attach to your agent message.</string>
+	<key>NSMicrophoneUsageDescription</key><string>Dictate a message to your agent.</string>
+	<key>NSSpeechRecognitionUsageDescription</key><string>Turn your speech into an editable agent message.</string>
 	<key>NSLocalNetworkUsageDescription</key><string>Caboose connects to your computer when it runs on your own network.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>

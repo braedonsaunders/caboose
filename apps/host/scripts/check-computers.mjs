@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Run against a real configured host. Makes a throwaway computer, wakes it, pairs a phone with
 // it, checks the phone reaches only that computer, signs the phone out and deletes the
-// computer with its disk. The owner's computer is only read. --fence also checks, as root or
+// computer with its disk. Hosts with accounts also get a throwaway tenant, deleted last.
+// No accounts are created, and the owner's computer is only read. --fence also checks, as root or
 // through `sudo -n`, that the host's fence rejects traffic between computers.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -18,7 +19,9 @@ async function call(path, { method = 'GET', body, bearer = token, expect = 200 }
     headers: { ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}), 'Content-Type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
-  assert.equal(response.status, expect, `${method} ${path}: HTTP ${response.status}`)
+  const expected = Array.isArray(expect) ? expect : [expect]
+  assert.ok(expected.includes(response.status), `${method} ${path}: HTTP ${response.status} (expected ${expected.join(' or ')})`)
+  if (response.status === 404) { await response.arrayBuffer(); return undefined }
   return response.headers.get('content-type')?.includes('json') ? response.json() : undefined
 }
 
@@ -27,9 +30,18 @@ assert.equal(before.computers[0].id, 'owner')
 assert.equal(before.canCreate, true, 'This host was started without room for more computers')
 const owner = before.computers[0]
 
-const made = await call('/v1/computers', { method: 'POST', body: { name: 'Caboose check', memoryMb: 2048, vcpus: 2 }, expect: 201 })
-console.log(`Made ${made.id}.`)
+let tenant
+let made
+const failures = []
 try {
+  // Older hosts have no tenancy API. A new tenant avoids changing an existing tenant's quotas.
+  const tenancy = await call('/v1/tenants', { expect: [200, 404] })
+  if (tenancy !== undefined) {
+    assert.ok(Array.isArray(tenancy.tenants), 'The host lists its tenants')
+    tenant = await call('/v1/tenants', { method: 'POST', body: { name: 'Caboose computers check' }, expect: 201 })
+  }
+  made = await call('/v1/computers', { method: 'POST', body: { name: 'Caboose check', memoryMb: 2048, vcpus: 2, ...(tenant ? { tenantId: tenant.id } : {}) }, expect: 201 })
+  console.log(`Made ${made.id}.`)
   assert.equal(made.state, 'parked')
   assert.deepEqual([made.settings.memoryMb, made.settings.vcpus], [2048, 2])
 
@@ -65,17 +77,34 @@ try {
   await call(`/v1/computers/${made.id}/phones/${signedIn.id}`, { method: 'DELETE' })
   await call('/v1/computer', { bearer: phone, expect: 401 })
   console.log('A paired phone reached only its computer, and signing it out locked it out.')
+} catch (error) {
+  failures.push(error)
 } finally {
-  // The host waits for a components upgrade itself; waiting here too keeps the check's timing honest.
-  for (let waited = 0; waited < 300_000; waited += 2_000) {
-    const state = (await call(`/v1/computers/${made.id}`)).upgrade?.state
-    if (state !== 'checking' && state !== 'updating') break
-    await new Promise(resolve => setTimeout(resolve, 2_000))
+  if (made) {
+    try {
+      // The host waits for an upgrade itself; polling here keeps the check's timing honest.
+      for (let waited = 0; waited < 300_000; waited += 2_000) {
+        const state = (await call(`/v1/computers/${made.id}`)).upgrade?.state
+        if (state !== 'checking' && state !== 'updating') break
+        await new Promise(resolve => setTimeout(resolve, 2_000))
+      }
+    } catch (error) { failures.push(error) }
+    // A failed poll must not skip deletion. Always attempt the tenant cleanup after this too.
+    try {
+      await call(`/v1/computers/${made.id}`, { method: 'DELETE', body: { confirm: true } })
+      await call(`/v1/computers/${made.id}`, { expect: 404 })
+      console.log(`Deleted ${made.id} with its disk.`)
+    } catch (error) { failures.push(error) }
   }
-  await call(`/v1/computers/${made.id}`, { method: 'DELETE', body: { confirm: true } })
-  await call(`/v1/computers/${made.id}`, { expect: 404 })
-  console.log(`Deleted ${made.id} with its disk.`)
+  if (tenant) {
+    try {
+      await call(`/v1/tenants/${tenant.id}`, { method: 'DELETE' })
+      console.log(`Deleted throwaway tenant ${tenant.id}.`)
+    } catch (error) { failures.push(error) }
+  }
 }
+if (failures.length === 1) throw failures[0]
+if (failures.length > 1) throw new AggregateError(failures, 'The computer check or its cleanup failed')
 const after = await call('/v1/computers')
 assert.deepEqual(after.computers.map(computer => computer.id), before.computers.map(computer => computer.id))
 assert.equal(after.computers[0].state === 'running', owner.state === 'running', "The owner's computer was left as it was")

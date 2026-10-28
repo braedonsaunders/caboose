@@ -23,6 +23,8 @@ final class AgentCenter {
         var signIn: [SignInMethod]?
         /// Replies waiting for the agent's turn to end; they go to it together as its next turn.
         var queued: [String]?
+        var queuedAttachments: [[String]]?
+        var draft: AgentDraft?
 
         var isRunning: Bool { status == "running" || status == "queued" || status == "paused" }
     }
@@ -55,8 +57,18 @@ final class AgentCenter {
     private(set) var threads: [String: AgentThread] = [:]
     /// The chat the Agents tab shows: a task, whose turns are the conversation. Nil for a new chat.
     var currentChat: String? = UserDefaults.standard.string(forKey: AgentCenter.chatKey) {
-        didSet { UserDefaults.standard.set(currentChat, forKey: Self.chatKey) }
+        didSet { UserDefaults.standard.set(currentChat, forKey: Self.chatKey); chatRevision += 1 }
     }
+    private(set) var chatRevision = 0
+    private var composerDrafts: [String: AgentComposerDraft] = [:]
+    func composerDraft(for id: String?) -> AgentComposerDraft {
+        let key = id ?? "new"
+        if let existing = composerDrafts[key] { return existing }
+        let draft = AgentComposerDraft()
+        composerDrafts[key] = draft
+        return draft
+    }
+
     /// Short names for chats, by task id, written by the iPhone's model where it has one.
     private(set) var titles: [String: String] = UserDefaults.standard.dictionary(forKey: AgentCenter.titlesKey) as? [String: String] ?? [:]
     /// A chat to show, asked for from elsewhere in the app (Home, a notification); the Agents tab opens it.
@@ -80,6 +92,7 @@ final class AgentCenter {
     /// Other control-socket events (`media.*`), for whoever handles them.
     var onEvent: ((String, [String: Any]) -> Void)?
 
+    private var attached = false
     private var control: URLSessionWebSocketTask?
     private var host: HostClient?
 
@@ -88,12 +101,14 @@ final class AgentCenter {
 
     func attach(host: HostClient) {
         self.host = host
+        attached = true
         openControl()
         Swift.Task { await refresh() }
         Swift.Task { await refreshAgents() }
     }
 
     func detach() {
+        attached = false
         control?.cancel(with: .goingAway, reason: nil)
         control = nil
         seat?.disconnect()
@@ -103,12 +118,14 @@ final class AgentCenter {
     /// Forgets the computer entirely: a different one, or none, is next.
     func reset() {
         tookOver = false
+        pausedForTakeover = []
         detach()
         host = nil
         seatToken = nil
         tasks = []
         output = [:]
         threads = [:]
+        composerDrafts = [:]
         catalog = []
         defaultAgent = nil
         currentChat = nil
@@ -175,13 +192,9 @@ final class AgentCenter {
 
     /// Stops the agent's turn and sends what was waiting right away.
     func sendNow(_ task: Task) async {
-        guard let waiting = task.queued, !waiting.isEmpty else { return }
-        await cancel(task)
-        if let index = tasks.firstIndex(where: { $0.id == task.id }) {
-            tasks[index].status = "cancelled"
-            tasks[index].queued = nil
-            await reply(to: tasks[index], waiting.joined(separator: "\n\n"))
-        }
+        guard let host else { return }
+        do { replace(try await host.sendQueuedAgentReplies(task.id)) }
+        catch { lastError = error.localizedDescription }
     }
 
     /// Asks another agent the chat's last request, in a new chat, and shows it.
@@ -317,10 +330,11 @@ final class AgentCenter {
     }
 
     /// Continues a chat: the next turn, or, while the agent is working, a reply that waits for it.
-    func reply(to task: Task, _ prompt: String) async {
-        guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    @discardableResult
+    func reply(to task: Task, _ prompt: String, attachments: [Attachment] = []) async -> Bool {
+        guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         do {
-            let updated = try await host.replyToAgentTask(task.id, prompt: prompt)
+            let updated = try await host.replyToAgentTask(task.id, prompt: prompt, attachments: attachments)
             let started = (updated.turns ?? 1) > (tasks.first { $0.id == task.id }?.turns ?? task.turns ?? 1)
             replace(updated)
             if started {
@@ -328,8 +342,10 @@ final class AgentCenter {
                 threads[task.id]?.begin(turn: updated.turns ?? 1, prompt: prompt)
             }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            return true
         } catch {
             lastError = error.localizedDescription
+            return false
         }
     }
 
@@ -354,24 +370,53 @@ final class AgentCenter {
     }
 
     func cancel(_ task: Task) async {
-        try? await host?.cancelAgentTask(task.id)
+        guard let host else { return }
+        do {
+            try await host.cancelAgentTask(task.id)
+            if let index = tasks.firstIndex(where: { $0.id == task.id }) {
+                tasks[index].status = "cancelled"
+                tasks[index].draft = nil
+                tasks[index].queued = nil
+                tasks[index].queuedAttachments = nil
+            }
+        } catch { lastError = error.localizedDescription }
     }
 
     /// The owner is driving the agent seat: running agents are stopped so the two never
     /// type into the same app at once.
     private(set) var tookOver = false
+    private var takeoverChanging = false
+    private var pausedForTakeover: Set<String> = []
 
     func takeOver() async {
-        guard let host, !tookOver else { return }
-        tookOver = true
-        for task in tasks where task.status == "running" { try? await host.holdAgentTask(task.id, paused: true) }
-        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+        guard let host, !tookOver, !takeoverChanging else { return }
+        takeoverChanging = true
+        defer { takeoverChanging = false }
+        do {
+            for task in tasks where task.status == "running" {
+                try await host.holdAgentTask(task.id, paused: true)
+                pausedForTakeover.insert(task.id)
+            }
+            tookOver = true
+            UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+        } catch {
+            lastError = error.localizedDescription
+            for id in pausedForTakeover {
+                do { try await host.holdAgentTask(id, paused: false); pausedForTakeover.remove(id) }
+                catch { lastError = error.localizedDescription }
+            }
+        }
     }
 
     func handBack() async {
-        guard let host, tookOver else { return }
-        tookOver = false
-        for task in tasks where task.status == "paused" { try? await host.holdAgentTask(task.id, paused: false) }
+        guard let host, !takeoverChanging else { return }
+        takeoverChanging = true
+        defer { takeoverChanging = false }
+        for id in pausedForTakeover {
+            do { try await host.holdAgentTask(id, paused: false); pausedForTakeover.remove(id) }
+            catch { lastError = error.localizedDescription }
+        }
+        tookOver = !pausedForTakeover.isEmpty
     }
 
     /// Remembers how to reach the agent seat. The seat's display only starts once an agent is
@@ -401,7 +446,7 @@ final class AgentCenter {
     // MARK: Control channel
 
     private func openControl() {
-        guard let host, control == nil else { return }
+        guard attached, let host, control == nil else { return }
         var components = URLComponents(url: host.socketURL("/v1/control"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "foreground", value: "1"), URLQueryItem(name: "phone", value: "1")]
         var request = URLRequest(url: components.url!)
@@ -420,7 +465,10 @@ final class AgentCenter {
                 case .failure:
                     self.control = nil
                     try? await Swift.Task.sleep(for: .seconds(3))
+                    guard self.attached else { return }
                     self.openControl()
+                    await self.refresh()
+                    if let id = self.currentChat { await self.loadThread(id) }
                 case .success(let message):
                     if case .string(let text) = message { self.handle(text) }
                     if case .data(let data) = message, let text = String(data: data, encoding: .utf8) { self.handle(text) }
@@ -460,10 +508,16 @@ final class AgentCenter {
         case "agent.task.event":
             if let entry = Self.decode(TranscriptEntry.self, event["entry"]) { record(entry, for: id) }
             return
+        case "agent.task.draft":
+            if let index = tasks.firstIndex(where: { $0.id == id }) {
+                let draft = Self.decode(AgentDraft.self, event["draft"])
+                tasks[index].draft = draft?.turn == tasks[index].turns ? draft : nil
+            }
         case "agent.task.queued":
             if let index = tasks.firstIndex(where: { $0.id == id }) {
                 let queued = event["queued"] as? [String] ?? []
                 tasks[index].queued = queued.isEmpty ? nil : queued
+                tasks[index].queuedAttachments = event["queuedAttachments"] as? [[String]]
             }
         case "agent.task.paused", "agent.task.resumed":
             if let index = tasks.firstIndex(where: { $0.id == id }) {
@@ -474,6 +528,7 @@ final class AgentCenter {
                 tasks[index].status = event["status"] as? String ?? "succeeded"
                 tasks[index].summary = event["summary"] as? String
                 tasks[index].pendingApproval = nil
+                tasks[index].draft = nil
                 tasks[index].signIn = Self.decode([SignInMethod].self, event["signIn"])
                 notifyFinished(tasks[index])
             }
@@ -481,6 +536,7 @@ final class AgentCenter {
             if let index = tasks.firstIndex(where: { $0.id == id }) {
                 tasks[index].status = "running"
                 tasks[index].summary = nil
+                tasks[index].draft = nil
                 tasks[index].signIn = nil
                 tasks[index].turns = event["turn"] as? Int ?? (tasks[index].turns ?? 1) + 1
                 let prompt = event["prompt"] as? String ?? ""
@@ -528,9 +584,17 @@ extension HostClient {
     /// Every turn of a task's conversation; 409 while the computer is parked.
     func agentTranscript(_ id: String) async throws -> Transcript { try await request("GET", "/v1/agent/tasks/\(id)/transcript", timeout: 30) }
 
-    func replyToAgentTask(_ id: String, prompt: String) async throws -> AgentCenter.Task {
+    func replyToAgentTask(_ id: String, prompt: String, attachments: [AgentAttachment] = []) async throws -> AgentCenter.Task {
         struct Replied: Decodable { var task: AgentCenter.Task }
-        let replied: Replied = try await request("POST", "/v1/agent/tasks/\(id)/reply", body: ["prompt": .string(prompt)], timeout: 30)
+        var body: [String: JSONValue] = ["prompt": .string(prompt)]
+        if !attachments.isEmpty { body["attachments"] = .array(attachments.map(\.json)) }
+        let replied: Replied = try await request("POST", "/v1/agent/tasks/\(id)/reply", body: body, timeout: 120)
+        return replied.task
+    }
+
+    func sendQueuedAgentReplies(_ id: String) async throws -> AgentCenter.Task {
+        struct Replied: Decodable { var task: AgentCenter.Task }
+        let replied: Replied = try await request("POST", "/v1/agent/tasks/\(id)/send-now", timeout: 60)
         return replied.task
     }
 
@@ -542,10 +606,12 @@ extension HostClient {
     }
 
     func cancelAgentTask(_ id: String) async throws {
-        let _: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/cancel", timeout: 20)
+        let result: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/cancel", timeout: 20)
+        guard result["cancelled"] == true else { throw Failure.server(409, "This agent has already stopped.") }
     }
 
     func holdAgentTask(_ id: String, paused: Bool) async throws {
-        let _: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/\(paused ? "pause" : "resume")", timeout: 20)
+        let result: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/\(paused ? "pause" : "resume")", timeout: 20)
+        guard result[paused ? "paused" : "resumed"] == true else { throw Failure.server(409, "The agent's state changed. Refresh the conversation and try again.") }
     }
 }

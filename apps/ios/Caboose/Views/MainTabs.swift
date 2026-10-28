@@ -32,8 +32,8 @@ struct MainTabs: View {
         .tint(Brand.amber)
         .onChange(of: model.selectedTab) { _, _ in model.updateDeviceDesktop() }
         .fullScreenCover(isPresented: Binding(
-            get: { model.phase == .ready && model.presentedWindowID != nil && !model.desktopActive },
-            set: { if !$0 { model.presentedWindowID = nil } })) {
+            get: { model.phase == .ready && model.presentedWindowID != nil },
+            set: { if !$0 { model.presentedWindowID = nil } }), onDismiss: { model.windowCardDismissed() }) {
             WindowScreen()
                 .environment(model)
         }

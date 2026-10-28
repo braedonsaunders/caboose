@@ -26,7 +26,7 @@ struct DesktopView: View {
                 if let session = model.session, desktop.fullscreenWindow(in: session.windows) == nil {
                     Dock(desktop: desktop)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                        .padding(.bottom, 10 * desktop.ui)
+                        .padding(.bottom, desktop.dockBottomInset)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 if desktop.showsCursor {
@@ -37,14 +37,21 @@ struct DesktopView: View {
             }
             .coordinateSpace(name: "desktop")
             .onAppear {
-                desktop.size = proxy.size
+                if !model.windowCardOwnsGeometry { desktop.size = proxy.size }
                 if fillsScreen {
                     WallpaperStore.shared.show(pixelSize: CGSize(width: proxy.size.width * desktop.pixelsPerPoint,
                                                                  height: proxy.size.height * desktop.pixelsPerPoint))
                 }
             }
             .onDisappear { if fillsScreen { WallpaperStore.shared.stop() } }
-            .onChange(of: proxy.size) { _, size in desktop.size = size }
+            .onChange(of: proxy.size) { _, size in
+                guard !model.windowCardOwnsGeometry else { return }
+                desktop.size = size
+                desktop.resizeMaximizedWindows(session: model.session)
+            }
+            .onChange(of: desktop.ui) { _, _ in
+                if !model.windowCardOwnsGeometry { desktop.resizeMaximizedWindows(session: model.session) }
+            }
         }
         .ignoresSafeArea(edges: fillsScreen ? .all : [])
         .clipped()
@@ -86,9 +93,13 @@ struct DesktopWindow: View {
         .shadow(color: .black.opacity(window.isAuxiliary ? 0.25 : 0.45), radius: window.isAuxiliary ? 8 : 24, y: window.isAuxiliary ? 3 : 12)
         .position(x: chrome.midX, y: chrome.midY)
         .onChange(of: window.isFullscreen) { _, _ in
-            withAnimation(.snappy) { desktop.applyFullscreen(window, session: model.session) }
+            if !model.windowCardOwnsGeometry {
+                withAnimation(.snappy) { desktop.applyFullscreen(window, session: model.session) }
+            }
         }
-        .onAppear { if window.isFullscreen { desktop.applyFullscreen(window, session: model.session) } }
+        .onAppear {
+            if window.isFullscreen && !model.windowCardOwnsGeometry { desktop.applyFullscreen(window, session: model.session) }
+        }
     }
 }
 

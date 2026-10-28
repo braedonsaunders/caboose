@@ -60,6 +60,7 @@ public final class OpusDecoder {
 final class SoundPlayer: @unchecked Sendable {
     let renderer = AVSampleBufferAudioRenderer()
     private let clock: MediaClock
+    private let activate: () throws -> Void
     private let queue = DispatchQueue(label: "caboose.display.sound", qos: .userInteractive)
     // On `queue`:
     private var decoder: OpusDecoder?
@@ -68,8 +69,13 @@ final class SoundPlayer: @unchecked Sendable {
     private(set) var played = 0
     private(set) var failed = 0
 
-    init(clock: MediaClock) {
+    init(clock: MediaClock, activate: @escaping () throws -> Void = {
+        #if os(iOS)
+        try AVAudioSession.sharedInstance().setActive(true)
+        #endif
+    }) {
         self.clock = clock
+        self.activate = activate
         clock.add(renderer)
     }
 
@@ -84,7 +90,7 @@ final class SoundPlayer: @unchecked Sendable {
                 guard let decoder else { return }
                 let pcm = try decoder.decode(packet.data)
                 guard pcm.frameLength > 0 else { return }
-                activateSession()
+                try activateSession()
                 if renderer.status == .failed {
                     renderer.flush()
                     clock.stop()
@@ -142,11 +148,9 @@ final class SoundPlayer: @unchecked Sendable {
 
     /// Sound plays through the app's audio session (`.playback`, mixed with others, set at
     /// launch); it is made active when the first packet arrives.
-    private func activateSession() {
+    private func activateSession() throws {
         guard !sessionActive else { return }
+        try activate()
         sessionActive = true
-        #if os(iOS)
-        try? AVAudioSession.sharedInstance().setActive(true)
-        #endif
     }
 }

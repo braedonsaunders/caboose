@@ -5,10 +5,11 @@ import SwiftUI
 /// A real shell on the computer, drawn natively: `TerminalModel` keeps the session, and
 /// `CabooseTerminalView` (SwiftTerm) renders it. The screen is the tab's content; the shell
 /// around it supplies the navigation stack, the wallpaper and its own toolbar items, and this
-/// adds the title and the session menu.
+/// adds the session menu. Like Desktop, the grid fills the space beside a vertical sidebar.
 struct TerminalScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
     @State private var terminal = TerminalModel.shared
     @State private var onScreen = false
 
@@ -26,7 +27,14 @@ struct TerminalScreen: View {
         Group {
             if computerAvailable {
                 TerminalSurface(view: terminal.view)
-                    .padding(.horizontal, 4)
+                    .padding(10)
+                    .background {
+                        // Fill only the inset: SwiftTerm already draws the translucent center.
+                        Rectangle().strokeBorder(
+                            Color(uiColor: TerminalTheme.background).opacity(TerminalTheme.backgroundOpacity),
+                            lineWidth: 10)
+                    }
+                    .ignoresSafeArea(.container, edges: terminalEdges)
                     .overlay(alignment: .bottom) { TerminalStatusBar(terminal: terminal) }
                     .onAppear { onScreen = true; attach() }
                     .onDisappear { onScreen = false; terminal.hide() }
@@ -37,6 +45,7 @@ struct TerminalScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(terminal.title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(removing: .title)
         .toolbar {
             if computerAvailable { ToolbarItem(placement: .topBarTrailing) { sessionMenu } }
         }
@@ -49,6 +58,14 @@ struct TerminalScreen: View {
             }
         }
         .onChange(of: model.host?.baseURL) { _, _ in if onScreen, computerAvailable { attach() } }
+    }
+
+    private var terminalEdges: Edge.Set {
+        switch barEdge {
+        case .trailing: [.top, .bottom, .leading]
+        case .leading: [.top, .bottom, .trailing]
+        case nil: []
+        }
     }
 
     private func attach() {

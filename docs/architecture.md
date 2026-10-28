@@ -120,15 +120,16 @@ computer in `error` with the reason in `lastError`, and the next wake retries it
 ### Guest components
 
 Caboose's own guest plumbing (the file and terminal services, the notification monitor and
-endpoints, and phone handoff) is a bundle listed in `guest/components/manifest.json` and installed by
+endpoints, phone handoff and the agent runner) is a bundle listed in `guest/components/manifest.json` and installed by
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
 
 - After each wake, once the owner's display is ready, the host hashes the bundled files in
   manifest order and compares the hash with `/usr/local/share/caboose/components.version`
   in the guest. On a mismatch it runs the installer as root over the guest channel (`vm` or
-  `container` mode). The installer adds only missing Debian packages, never touches the
-  owner's home, is safe to repeat, and writes the marker only after it succeeds.
+  `container` mode). The installer adds missing Debian dependencies and preserves working
+  `node` and `npm` commands, including npm bundled with NodeSource's `nodejs`. It never
+  touches the owner's home, is safe to repeat, and writes the marker only after it succeeds.
 - The update runs in the background and does not block the display. While it runs it holds
   a lease, and park or restart is rejected with 409. A failure is retried on the next wake.
 - `GET /v1/computer` reports `upgrade: null | { state, version?, message? }`, and
@@ -139,6 +140,9 @@ same installer to update computers whose disks predate the host:
   without the 14701 mapping needs nothing: the host reaches its terminal service on the
   container's address on its bridge network.
 
+The runner and its pinned runtime dependencies install at `/opt/caboose/agentd`; an upgrade
+replaces its script atomically and reuses dependencies whose exact versions already match.
+An active runner finishes with the code it loaded; the next runner uses the installed code.
 The bundle does not include Caboose Display or its units, which come with the image.
 
 ### Runtimes
@@ -361,13 +365,27 @@ runtimes. Downloads go directly from the guest, are size- and SHA-256-checked be
 installs them, and are kept in `/var/lib/caboose/catalog` for rollback. Release installs
 also install `mesa-vulkan-drivers` and `libgl1-mesa-dri`. Debian applications cannot be
 rolled back. Installed versions come from dpkg; failures and interrupted operations are
-recorded in the guest and reported on the next listing.
+recorded in the guest and reported on the next listing. A guest operation lock, retained
+by package-manager children, distinguishes active work from an interrupted worker. A
+retry of failed or interrupted work completes pending dpkg configuration before trying
+the requested operation again, even when dpkg already reports the application installed.
 
 Only one catalog operation runs at a time, and it holds a computer lease. A second
 operation, a park, a restart or a Craft job receives 409 while one runs. A pack installs
 its entries in order and continues past individual failures. The listing reports the last
 observed state while the computer is parked and never wakes it. `/v1/apps` discovers
-installed desktop entries independently.
+installed desktop entries independently. Listings include the active operation's progress;
+a host that rediscovers it holds a lease and observes it until it ends. A command-channel
+timeout alone does not mark a still-active guest operation failed or release its lease.
+
+Download progress measures the bytes currently in the release file against its pinned
+size. `value` is that download fraction, capped at 1; it is never an overall installation
+percentage. `downloadedBytes` and `totalBytes` accompany it. Preparation, verification,
+repository refresh, package installation, package configuration (including triggers) and
+removal are indeterminate, with `value: null`. Package setup can continue after dpkg
+reports the application's version; only the installer finishing completes the operation.
+The Shelf names the current stage. The Library also shows download bytes and offers
+Retry for failed or interrupted operations even when the application is already installed.
 
 Craft applications (`ai.storyteller.<name>.desktop`) are launched on the owner display's
 Xwayland, with `WAYLAND_DISPLAY` removed and `GDK_BACKEND`, `WINIT_UNIX_BACKEND` and
@@ -608,7 +626,7 @@ session storage and sends it only as an `Authorization` header.
 ### Conventions
 
 Request and response bodies are JSON unless stated. A JSON body must be an object of at
-most 64 KiB (15 MiB for `POST /v1/agent/tasks`). Errors are `{ error: string }`:
+most 64 KiB (15 MiB for task start and reply). Errors are `{ error: string }`:
 
 | Status | Meaning |
 | --- | --- |
@@ -663,7 +681,7 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | `computer.upgrade` | `{ upgrade: { state, version?, message? } }` | A guest component update starts, finishes or fails (see [Guest components](#guest-components)) |
 | `notification` | `{ id, app, summary, body, created }` | A desktop notification on the owner's display |
 | `fs.changed` | `{ anchor }` | The home changed (see [Files](#files)) |
-| `catalog.progress` | `{ id, operation, phase, message?, stage?, value? }` | A catalog operation is `queued`, `installing`, `finished` or `failed`; `stage` and `value` (0–1 or null) report download progress |
+| `catalog.progress` | `{ id, operation, phase, message?, stage?, value?, downloadedBytes?, totalBytes? }` | A catalog operation is `queued`, `installing`, `finished` or `failed`. Stages are `preparing`, `downloading`, `verifying`, `refreshing`, `installing`, `configuring`, `removing` and `finished`. Only `downloading` has a measured `value` (0–1) and byte counts; other stages have `value: null` |
 | `catalog.changed` | `{ id? }` | After each application in an operation, and once when the operation ends |
 | `job.progress` | `{ job: { id, kind, title, status, detail } }` | A Craft job starts, succeeds or fails |
 | `agent.task.*` | see [Agents](#tasks) | Agent task activity |
@@ -815,7 +833,7 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/catalog` | `{ packs, apps }`: each catalog entry with `installedVersion`, `canRollback`, `lastError`, `interrupted`, `iconData`, `pinnedVersion`, `updateAvailable` and `progress` |
+| `GET` | `/v1/catalog` | `{ packs, apps }`: each catalog entry with `installedVersion`, `canRollback`, `lastError`, `interrupted`, `active`, `iconData`, `pinnedVersion`, `updateAvailable` and `progress` |
 | `POST` | `/v1/catalog/:id/install`, `/update`, `/rollback` | Queue an operation → 202 `{ accepted: true }` |
 | `DELETE` | `/v1/catalog/:id` | Queue removal → 202 |
 | `POST` | `/v1/catalog/packs/:id/install` | Queue every application in a pack → 202 |
@@ -1110,8 +1128,13 @@ specified in `guest/agentd/README.md`; in short:
 - The host writes `task.json` `{ agent: <resolved spec>, cwd, approvals, idleMs,
   craftServers }`, prompts as `inbox/<turn, 6 digits>.prompt.json`, cancels as
   `inbox/cancel-<n>.json`, and decisions as `approvals/<requestId>.decision`. The runner
-  writes `transcript.jsonl`, `approvals/<requestId>.json` and `session`; the launch script
-  records `pid` and `exit-code`. Every file is written whole and renamed into place.
+  writes `transcript.jsonl`, `draft.json`, `approvals/<requestId>.json`, `session` and
+  `receipts/<turn>.json`; the launch script records `pid` and `exit-code`. The host's
+  `delivery.json` journal stores ordered admitted replies, operation fingerprints and the
+  current delivery intent and monotonic turn count; `deliveries/<turn>.json` retains each
+  published prompt. Journal and prompt publication use file fsync, atomic rename and directory fsync. A runner creates
+  an exclusive, fsynced claim before removing an inbox prompt or calling ACP, and atomically
+  records completion after fsync of the terminal transcript event.
 - `initialize` advertises file reads and writes (resolved paths, refused outside
   `/home/caboose`, at most 10 MB), no terminals, and terminal sign-in.
 - Each turn is `session/prompt` with a text block, and each attachment as an `image` block
@@ -1121,7 +1144,15 @@ specified in `guest/agentd/README.md`; in short:
   (`continuity: new | resume | load | recap`), `text` and `thought`, `tool` and
   `tool_update` (title, kind, status), `plan`, `mode`, `permission`, `usage`, and exactly
   one of `turn_end` (ACP `stopReason` and the turn's last message as `summary`),
-  `turn_failed` or `auth_required` per turn, each with its turn number.
+  `turn_failed` or `auth_required` per completed turn, each with its turn number. Interrupted
+  runners leave an incomplete claim rather than fabricating a terminal result.
+- While a message or thought is arriving, the runner atomically saves `draft.json` at most
+  every 200 ms: `{ turn, after, kind: "text" | "thought", text }`, with at most the last
+  16000 characters and `after` the transcript byte position before that message. It removes
+  the draft before committing the complete message to the transcript. The host reads the
+  transcript before the draft, validates every field, and publishes a replaceable snapshot
+  only when its position matches the bytes consumed and its turn is current. A draft is
+  cleared on commit, turn change, cancellation or finish; it is never another transcript entry.
 - After a turn the runner keeps the agent and its session for `CABOOSE_AGENT_IDLE_MS`
   waiting for a reply, then exits 0. A later reply starts a new runner, which reopens the
   conversation with `session/resume` if the agent advertises it, else `session/load` (the
@@ -1134,7 +1165,11 @@ specified in `guest/agentd/README.md`; in short:
   `defaultAgent`. The ids `claude` and `codex` are accepted as `claude-acp` and
   `codex-acp`. The host resolves the agent (installed version first), starts the agent seat,
   writes the attachments, `task.json` and the first prompt, and starts the runner. The
-  task's `prompt` stays as the owner wrote it.
+  task's `prompt` stays as the owner wrote it. Internally,
+  `AgentTasks.start(input, options?: { id?: string })` accepts a canonical lowercase UUID.
+  Repeating that id finds its persisted task, including after a lost launch response; a
+  different original payload conflicts. Without an id the host generates one. The task
+  directory is admitted by renaming a fully staged directory before launching its runner.
 - **Approvals.** With `approvals: "ask"`, each ACP `session/request_permission` becomes
   `approvals/<requestId>.json` `{ tool, kind, summary, input, options: [{ id, name, kind }],
   requestedAt }` and waits, with no time limit (the task's lease keeps the computer awake),
@@ -1151,11 +1186,24 @@ specified in `guest/agentd/README.md`; in short:
   keeps its id, `prompt` and `startedAt`, returns to `running`, and `turns` counts the
   turns. Output the earlier turn writes after it was cancelled is not shown as the new
   turn's. A reply to a running or paused task waits in the task's `queued` list (at most 10
-  replies, 32000 characters together, kept in the host's memory, so a host restart drops
-  them). When the turn ends, everything waiting goes to the agent as one turn, the replies
+  replies, 32000 characters, four files and 10 MB decoded together). Files are staged in
+  distinct per-message directories and flushed before the queue journal commits. Admission
+  is persisted before success is returned, and both replies and files survive a host restart.
+  An optional `operationId` is an opaque, task-local string of 1–200 characters without
+  control characters. Repeating it with the original prompt and file names, types and
+  contents returns the existing task without adding a reply or turn; a changed payload
+  conflicts. Task ids and reply operations compare the original request fields, independently
+  of later registry or default-agent changes. Each task retains at most 2048 operation
+  records in a journal bounded to 1 MiB; new admissions beyond either limit conflict.
+  Queue admission, cancellation, Send Now and delivery transitions are serialized per task;
+  polling cannot dispatch a second copy of a claimed transition.
+  When the turn ends, everything waiting goes to the agent as one turn, the replies
   separated by blank lines, under the same lease and without an `agent.task.finished` for
   the turn in between. Cancel drops what is waiting; a turn that ends signed out keeps it
-  for the next reply, which sends it first.
+  for the next reply, which sends it first. Send Now cancels the current turn and delivers
+  the waiting prompts and their staged files together, retaining durable admission if
+  delivery fails. An intent precedes publication, and a published batch remains in the
+  journal until a matching receipt or transcript proves it was taken.
 - **Cancel** writes a cancel to the inbox. The runner sends `session/cancel`, answers
   waiting permission requests `cancelled`, and ends the turn with
   `stopReason: "cancelled"`; an agent that has not stopped after 15 s is terminated, and
@@ -1168,13 +1216,24 @@ specified in `guest/agentd/README.md`; in short:
 - **Polling.** While any task is live the host runs one guest command per second for all of
   them: new transcript bytes from each task's offset (1 MiB per tick shared between tasks,
   read as base64 so offsets stay exact), the runner's exit code, and pending approval
-  requests. A runner that exits before its turn ends fails the task with the end of its
-  stderr.
+  requests. Turn boundaries trigger bounded journal and receipt reconciliation. A runner
+  that exits before its turn ends fails the task; a claim or ambiguous delivery reports
+  uncertainty, while an unclaimed failure retains the end of its stderr.
 - **Restore.** Each task directory records its agent, prompt, approval mode and turn
   count, so a restarted host rebuilds the task list from the guest: a task whose last turn
   ended is finished with that turn's result, one whose runner is still working takes the
-  lease again, and either can be replied to. A task directory without `task.json` is listed
-  but cannot be continued.
+  lease again, and either can be replied to. Recovery reads every task directory, restores
+  admitted replies in order and resumes proven unclaimed delivery. Completion receipts or
+  terminal transcript events reconcile runners loaded before an upgrade, which do not emit
+  receipts. Their ambiguous `turn_failed` events remain uncertain, because they cannot
+  distinguish an execution interruption from a reported error. A missing inbox by itself
+  never proves delivery. An interrupted claim, an agent process dying during ACP, or
+  publication without an inbox or result becomes a failed task
+  with `delivery: { turn, state: "uncertain", message }`; its intent and remaining replies
+  stay on disk. This task does not send further replies: inspect its transcript and published
+  prompt before starting another task, because external actions may already have happened.
+  Corrupt or oversized journals block mutation instead of discarding their contents. A task
+  directory without `task.json` is listed but cannot be continued.
 - **Lifetime.** Tasks keep running while the phone is locked. The host holds a lease while
   any task is running or paused, so the computer is not parked under a working agent.
 
@@ -1187,14 +1246,15 @@ specified in `guest/agentd/README.md`; in short:
 | `POST` | `/v1/agent/tasks` | `{ prompt, agent?, approvals?: "ask" \| "auto", craftMcp?: boolean, attachments?: [{ name, type?, data (base64) }] }` → `{ id }`. 400 when no agent is given and no default is set; 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | Recent tasks, newest first |
 | `GET` | `/v1/agent/tasks/:id/transcript` | → `{ entries: TranscriptEntry[], truncated }`: every turn of the task's conversation, read from the end of its `transcript.jsonl` (at most 2 MiB; `truncated` when earlier lines were left out). 404 for an unknown task, 409 while the computer is not running |
-| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`. While the task is running or paused the reply waits in `task.queued`. 409 for a task that cannot be continued or when too much is already waiting; 404 for an unknown task |
+| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt, attachments?: [{ name, type?, data (base64) }], operationId? }` → `{ task }`. While the task is running or paused the reply waits in `task.queued`. 409 for a task that cannot be continued or when too much is already waiting; 404 for an unknown task |
+| `POST` | `/v1/agent/tasks/:id/send-now` | → `{ task }`. Stops the current turn and sends its queued prompts and files immediately. 409 when nothing is waiting or a next turn is already starting; 404 for an unknown task |
 | `POST` | `/v1/agent/tasks/:id/approvals/:requestId` | `{ allow: boolean, message?, optionId? }` → `{ resolved }`; `false` when that request is no longer waiting |
 | `POST` | `/v1/agent/tasks/:id/cancel` | → `{ cancelled }` |
 | `POST` | `/v1/agent/tasks/:id/pause` | → `{ paused }`; the task becomes `paused` |
 | `POST` | `/v1/agent/tasks/:id/resume` | → `{ resumed }` |
 
 Prompts are 1–32000 characters after trimming. Attachments are at most 4 files and 10 MB
-decoded together; names are made safe and unique, and files are written to the task's
+decoded together on both start and reply; names are made safe and unique, and files are written to the task's
 `attachments/` directory. `message` is at most 2000 characters and `optionId` 200. Agent
 routes answer 409 while the computer is not running or when its image has no runner, and
 502 when the registry has never been fetched and the agent is not installed.
@@ -1234,7 +1294,10 @@ A task record:
   pendingApproval?: { id: string, tool: string, summary: string, options?: Array<{ id: string, name: string, kind: string }> },  // oldest request waiting
   attachments?: string[],         // absolute guest paths
   signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>,  // when the agent was signed out
-  queued?: string[]               // replies waiting for the current turn to end, oldest first
+  queued?: string[],              // replies waiting for the current turn to end, oldest first
+  queuedAttachments?: string[][], // guest file paths, aligned with queued
+  draft?: { turn: number, kind: "text" | "thought", text: string }, // live, replaceable message snapshot
+  delivery?: { turn: number, state: "uncertain", message: string }
 }
 ```
 
@@ -1247,9 +1310,10 @@ Control-socket events:
 | `agent.task.paused`, `agent.task.resumed` | `{ id }` |
 | `agent.task.finished` | `{ id, status: "succeeded" \| "failed" \| "cancelled", summary, signIn? }` |
 | `agent.task.replied` | `{ id, prompt, turn }` |
-| `agent.task.queued` | `{ id, queued: string[] }`: the replies waiting for the turn to end changed |
+| `agent.task.queued` | `{ id, queued: string[], queuedAttachments?: string[][] }`: the replies waiting for the turn to end changed |
 | `agent.task.approval` | `{ id, request: { id, tool, summary, options? } }`, once per request |
 | `agent.task.approval.resolved` | `{ id, requestId, allow }` |
+| `agent.task.draft` | `{ id, draft: { turn, kind: "text" \| "thought", text } \| null }`: a changed or cleared live snapshot, at the host's one-second polling cadence |
 | `agent.task.event` | `{ id, turn, entry: TranscriptEntry }`: each entry of the current turn as the host reads it |
 
 A `TranscriptEntry` is one line of the runner's transcript (guest/agentd/README.md), checked
@@ -1360,11 +1424,58 @@ window's texture is a blit on one shared Metal queue, which runs command buffers
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-- **Windows.** On iPhone each Linux window is an app card: full screen, with native
-  app-switcher gestures between cards. On the Desktop tab, iPad and external displays the
-  same windows float, resize and stack, with a dock and Launchpad. Transient windows
-  (menus, dialogs, tooltips) are positioned relative to their parent, never as separate
-  cards.
+- **Windows.** A Linux window opened from Home or Apps is an app card: full screen, sized
+  to the phone, and a swipe in from either side edge goes to the next or previous open app
+  in the order they opened. Back, the app switcher, Keyboard and Window Options use the
+  system toolbar: on a vertical-bar device they sit on the side and the app uses the full
+  height beside it; elsewhere they occupy a compact horizontal toolbar within the safe
+  area. The window title is in the switcher; Options includes Ask Agent, redraw and close.
+  The switcher and options open system action dialogs outside the toolbar's overflow group.
+  Full Screen hides the controls; its accessible top handle brings them back.
+  An external display shows the windows floating, resizing and
+  stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
+  The green title-bar button maximizes above the dock: its title bar meets the desktop's
+  top edge, and its content ends eight UI-scaled points above the dock. Rotation and UI
+  scaling update this area. Maximizing and restoring clear the guest's maximized state
+  so it uses the client-provided size, while an app's own full-screen request is preserved.
+  Transient windows (menus, dialogs, tooltips) are positioned relative to their parent,
+  never as separate cards.
+- **Switchyard.** Without an external display the Desktop tab tiles the windows on the
+  device's own screen (on iPad, a toolbar choice keeps the floating desktop instead).
+  Windows sit in columns on a horizontal track that scrolls; a column holds one window or
+  a stack (two on an upright phone, three elsewhere). Column widths are ⅓, ½, ⅔ or full,
+  offered only where a tile is at least 280 points wide and two halves fit, so an upright
+  iPhone shows one full-width column, a Duo opened out or a large phone on its side two,
+  an iPad three. New windows open beside the focused one and share the screen evenly until
+  it is full, then take columns of their own. Each tile's on-screen rect is that window's Linux geometry
+  (`configure`), so apps lay out at the tile's size and popups land over their tile; a
+  resize stretches the entire last picture without cropping until the new one arrives, and drags send geometry at
+  most about eight times a second. The gaps resize (snapping to the presets, with haptic
+  detents). The grabber at a tile's top carries it to a new column, into a stack or onto
+  another tile; a tap gives the tile the keyboard, and a double tap opens the same
+  full-screen app card as Apps. The Desktop toolbar's trailing Full Screen control opens
+  the focused app as that card; the grabber's menu and accessibility action, and ⌘⌥F
+  also open it. The card keeps Desktop selected
+  underneath; dismissing it restores the tile layout. Only the presented card sends window
+  geometry while it is up. Its measured content area, including changes to its controls,
+  rotation and folding, replaces the guest display size; the complete picture fits while
+  the app redraws. A long press or the options button opens the tile's menu (full screen,
+  width, ask an agent, redraw, close). An app asking for full screen covers the desktop
+  edge to edge: the bars, dock, status bar and home indicator step aside, and a pull down
+  from the small tab at its top edge shrinks it back into its tile. The app is told when
+  it is pulled back. Menus and
+  dialogs appear above the covering window and fit within the display. Auxiliary windows
+  follow their parent's displayed scale and position, including nested menus; trees whose
+  owner is offscreen, or is not the covering window, are hidden. A window
+  whose own minimum is wider than its tile is shown whole, scaled to fit.
+  The dock stays along the bottom under the tiles: the everyday apps, one car per column
+  (tap to go to it, slide along them to move along the track), Overview (every window, tap
+  to go, swipe up to close) and All Apps. The side edges also move along the track.
+  ⌘⌥ with the arrows moves focus, with ⇧ moves the window, and R, F, ⇧F, W, O, A and
+  Return cycle the width, toggle full screen, toggle full width, close, open Overview, open
+  an app and open a terminal; ⌘⌥ reaches Linux as Ctrl+Alt, so plain ⌘ stays the apps' Ctrl. The layout
+  and each app's hand-chosen width are kept per computer (window ids survive reconnects
+  and parking). The layout engine is `CabooseKit/Switchyard` and is unit-tested.
 - **Lifecycle.** The display socket closes when the app goes to the background; the
   computer parks on idle and resumes on the next foreground. The last frame of every window
   is cached, so reopening is instant while the stream reconnects.
@@ -1397,8 +1508,13 @@ Pinned and recent apps are kept on the phone per computer.
   (`toolbarVerticalCompressionBehavior(.prefersTabBar)`), gives Full Screen the lowest
   visibility priority and the Computer pair the highest, and reads
   `toolbarVerticalEdge` to extend the desktop under the top and bottom insets beside the
-  bar. Full Screen hides the bars and gives the desktop the whole display; a handle at the
-  top brings them back. No screen disables the vertical bar.
+  bar. Both horizontal safe edges stay protected as the bar moves. The desktop is bounded
+  and clipped to its measured content viewport; folding, rotation and tab changes report
+  that viewport again. Home's Open, Pinned and Recent rows receive the measured column
+  width and clip within it; recent file names and paths truncate within the same column.
+  The Desktop toolbar's Full Screen action dialog also offers Hide Desktop Bars, giving the
+  desktop the whole display; a handle at the top brings the bars back. No screen disables
+  the vertical bar.
 - **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. Home's
   AirPlay control remembers the AirPlay output the computer's sound last played on (from the
   audio session's route) and, on a tap, switches the session to long-form video routing and
@@ -1418,9 +1534,11 @@ Pinned and recent apps are kept on the phone per computer.
 
 ### Input
 
-- **Touch.** Native Wayland windows take real multi-touch. Xwayland windows get pointer
+- **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap cancels
+  the touch sequence and sends a right-click with a brief amber ring and haptic. Xwayland windows get pointer
   gestures: tap, drag and long press, with a two-finger tap or a long press for a right
-  click and swipes that scroll with momentum. A tap shows the keyboard when the app
+  click (an amber ring blooms where it lands, with a tick) and swipes that scroll with
+  momentum. A tap shows the keyboard when the app
   answers it with a text cursor or text-input-v3 focus, and hides it otherwise. Dialogs are
   fitted and centred on the phone.
 - **Pointer.** A hardware trackpad and mouse work through `UIPointerInteraction` and
@@ -1431,7 +1549,10 @@ Pinned and recent apps are kept on the phone per computer.
   Return or non-text key, assumes the remote caret is at its end, and turns each edit iOS
   makes into BackSpaces and keystrokes from where the old and new text differ. Where an app
   has text-input-v3, the keyboard follows its state, its content purpose turns autocorrect
-  off for terminals and passwords, and marked text is a preedit. Otherwise autocorrect and
+  off for terminals and passwords, and marked text is a preedit. Return commits any marked
+  text and sends a real Enter key press/release, so a browser address bar submits. An
+  unmodified software Return dismisses the keyboard except in terminals and code editors;
+  pasted multiline text and hardware Return leave it open. Otherwise autocorrect and
   capitals are on for prose and off in terminals and code editors, with an `Aa` toggle on
   the key bar.
 - **Pencil.** The client defines `pencil` samples (pressure, tilt, azimuth, hover), but the
@@ -1449,7 +1570,10 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
 - **Look.** Caboose Night: SF Mono on the icon's navy (`#0E1626`) at 82% opacity over the
   wallpaper, cream text, an amber cursor and selection, and a sixteen-colour palette from
   which the 256-colour cube derives. Pinch, or Larger and Smaller Text in the session menu,
-  sets the size from 8 to 28 points; it is kept on the phone.
+  sets the size from 8 to 28 points; it is kept on the phone. Like Desktop, the terminal
+  fills the screen beside a vertical sidebar without a title strip or outer margins.
+  The grid has a ten-point inset inside its navy background to keep text and the cursor
+  clear of the edges; the keyboard still reduces the grid's height.
 - **Input.** A key row above the keyboard has Esc, Tab, sticky Ctrl and Alt (for the row's
   keys and the keyboard's next one), arrows that repeat while held, `` | ~ / - _ ` \ : * $ ``,
   Home, End, Page Up and Page Down, and Hide Keyboard. Unmodified arrows follow the
@@ -1481,11 +1605,20 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   fresh task; the chat list is the task list, and other chats still working are pinned
   along the top. Where Apple Intelligence is available the phone's Foundation Models model
   names each chat from its first message for the list; it handles nothing the owner says.
+- **Composer.** Every chat and the new-chat screen retain their own unsent text and files
+  while the app is open. The glass composer offers camera photos, Photos and Files, shows
+  removable attachment previews, and keeps input after a failed send. Explicit dictation
+  requests microphone and speech permission, displays Listening, and puts recognized speech
+  into editable text; it never sends automatically. Recognition availability depends on iOS
+  and the selected language. Attachments without text use “Please look at the attached files.”
 - **Transcript.** A chat shows its whole conversation from
-  `GET /v1/agent/tasks/:id/transcript`, then follows `agent.task.event`: prompts, messages,
+  `GET /v1/agent/tasks/:id/transcript`, then follows `agent.task.event` and replaceable
+  `agent.task.draft` snapshots: prompts, streamed messages,
   collapsible thoughts, tool calls grouped and updated in place, the plan as a checklist,
-  permissions with their answers, and context use. A working agent can be stopped or
-  watched on the seat. Pending approvals show in the chat, on Home and as a banner over every screen, with the agent's always-allow option when it
+  permissions with their answers, and context use. Messages render native headings, lists,
+  quotes, inline styles and links, plus selectable fenced code with Copy. The chat list is
+  searchable by title and agent. A running chat shows a live preview when the shared agent
+  seat has an application window; Watch opens that real surface. A working agent can be stopped. Pending approvals show in the chat, on Home and as a banner over every screen, with the agent's always-allow option when it
   has one. A task whose agent was signed out offers its sign-in methods, Connect a Model,
   and asking another agent the same thing in a new chat. A window's menu hands the window
   (screenshot, title, app) to an agent as an attachment.

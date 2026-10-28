@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { CONFIRM_JOURNAL, emptyJournal, JOURNAL_LIMIT, MAX_OPERATIONS, operationId, PUBLISH_PROMPT, READ_DELIVERY, readJournal, readPublishedPrompt, UUID, WRITE_JOURNAL, type DeliveryJournal, type QueuedReply, type StoredAttachment } from './agent-delivery.js'
 import type { HomeOwnership } from './home.js'
 import { decodeBase64, sanitizeFileName, uniqueName, writeGuestFile } from './files.js'
 import type { AgentLaunch } from './registry.js'
@@ -30,6 +31,8 @@ export interface PendingApproval {
   options?: Array<{ id: string; name: string; kind: string }>
 }
 
+export interface AgentDraft { turn: number; kind: 'text' | 'thought'; text: string }
+
 export interface AgentTask {
   id: string
   /** The ACP registry id of the agent. */
@@ -51,6 +54,11 @@ export interface AgentTask {
   signIn?: SignInMethod[]
   /** Replies sent while the agent was working, oldest first; they go to it together as its next turn. */
   queued?: string[]
+  /** File paths for each waiting reply, in the same order as queued. */
+  queuedAttachments?: string[][]
+  draft?: AgentDraft
+  /** A claimed or possibly delivered turn stopped without a durable result; never replayed automatically. */
+  delivery?: { turn: number; state: 'uncertain'; message: string }
 }
 
 export type AgentEvent =
@@ -63,7 +71,8 @@ export type AgentEvent =
   | { type: 'agent.task.approval.resolved'; id: string; requestId: string; allow: boolean }
   | { type: 'agent.task.replied'; id: string; prompt: string; turn: number }
   /** The replies waiting for the agent's turn to end changed. */
-  | { type: 'agent.task.queued'; id: string; queued: string[] }
+  | { type: 'agent.task.queued'; id: string; queued: string[]; queuedAttachments?: string[][] }
+  | { type: 'agent.task.draft'; id: string; draft: AgentDraft | null }
   /** One entry of the current turn's transcript, as `GET /v1/agent/tasks/:id/transcript` returns them. */
   | { type: 'agent.task.event'; id: string; turn: number; entry: TranscriptEntry }
 
@@ -119,7 +128,7 @@ const RUNUSER = '/usr/sbin/runuser'
 export const AGENTD = '/opt/caboose/agentd/caboose-agentd.mjs'
 /** What the guest scripts print when the computer's image has no runner. */
 export const RUNNER_MISSING = 'caboose-agentd is not installed in this computer'
-const TASK_ID = /^[0-9a-f-]{36}$/
+const TASK_ID = UUID
 /** The summary of a task that ran before caboose-agentd (no task.json). */
 export const LEGACY_SUMMARY = 'Ran before Caboose\'s agent runner, so it cannot be continued. Its transcript is in'
 const AGENT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/
@@ -150,41 +159,51 @@ const LAUNCH = [
 ]
 
 /**
- * Sets up a new task in "$1" and starts its runner, detached, as `caboose`: $2 the prompt as
- * written, $3 the agent id, $4 its name, $5 the approval mode, $6 task.json, $7 the first
- * prompt message. Attachments are written before this runs.
+ * Admits a staged task directory and starts its runner as `caboose`: $1 final directory,
+ * $2 original prompt, $3 agent id, $4 name, $5 approval mode, $6 task.json, $7 prompt file
+ * reference, $8 journal, $9 journal writer, $10 publisher, $11 staging directory. Attachments
+ * and the prompt input are staged first; directory rename precedes runner launch.
  */
 export const START_SCRIPT = [
   'set -e',
-  'mkdir -p "$1/inbox" "$1/approvals"',
-  'cd "$1"',
+  'mkdir -p "${11}/inbox" "${11}/approvals"',
+  'cd "${11}"',
   'printf %s "$2" > prompt.txt && printf %s "$3" > agent && printf %s "$4" > agent-name && printf %s "$5" > approval-mode && printf 1 > turns',
   'printf %s "$6" > task.json',
-  'printf %s "$7" > inbox/.000001.tmp && mv inbox/.000001.tmp inbox/000001.prompt.json',
+  'sync -f task.json',
+  'node -e "$9" "${11}/delivery.json" "$8"',
+  'node -e "${10}" "${11}" "$7" 000001',
+  '[ ! -e "$1" ] || { echo "task already exists" >&2; exit 1; }',
+  'mv -T -- "${11}" "$1"',
+  'sync -f "$1"',
+  'cd "$1"',
   ...LAUNCH,
 ].join('\n')
 
 /**
- * A reply: $2 the prompt message, $3 the turn number, $4 its six-digit inbox name. A runner
+ * A reply: $2 the staged prompt reference, $3 the turn number, $4 its six-digit inbox name,
+ * $5 the publisher. Publication never recreates an inbox behind an existing marker. A runner
  * still waiting after the last turn takes the prompt from its inbox; otherwise (it exited, or
  * did not take it within 20 s and is stopped) a new runner starts and takes it.
  */
 export const REPLY_SCRIPT = [
   'set -e',
   'cd "$1"',
+  'node -e "$5" "$1" "$2" "$4"',
   'printf %s "$3" > turns',
-  'mkdir -p inbox',
-  'printf %s "$2" > "inbox/.$4.tmp" && mv "inbox/.$4.tmp" "inbox/$4.prompt.json"',
   'pid=$(cat pid 2>/dev/null || true)',
   'if [ -n "$pid" ] && [ ! -e exit-code ] && kill -0 "$pid" 2>/dev/null; then',
   '  for i in $(seq 1 100); do',
-  '    [ -e "inbox/$4.prompt.json" ] || { echo delivered; exit 0; }',
+  '    [ -e "receipts/$4.json" ] && { echo claimed; exit 0; }',
+  '    [ -e "inbox/$4.prompt.json" ] || { echo uncertain; exit 0; }',
   '    kill -0 "$pid" 2>/dev/null || break',
   '    sleep 0.2',
   '  done',
   '  if kill -0 "$pid" 2>/dev/null; then kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; sleep 1; fi',
+  '  kill -0 "$pid" 2>/dev/null && { echo waiting; exit 0; }',
   'fi',
-  '[ -e "inbox/$4.prompt.json" ] || { echo delivered; exit 0; }',
+  '[ -e "receipts/$4.json" ] && { echo claimed; exit 0; }',
+  '[ -e "inbox/$4.prompt.json" ] || { echo uncertain; exit 0; }',
   ...LAUNCH,
   'echo launched',
 ].join('\n')
@@ -199,7 +218,7 @@ const CANCEL_SCRIPT = [
 ].join('\n')
 
 type Output = { kind: 'text' | 'tool' | 'error'; text: string }
-export interface TurnResult { turn: number; status: 'succeeded' | 'failed' | 'cancelled'; summary: string; signIn?: SignInMethod[] }
+export interface TurnResult { uncertain?: boolean; turn: number; status: 'succeeded' | 'failed' | 'cancelled'; summary: string; signIn?: SignInMethod[] }
 
 /**
  * Turns one line of the runner's transcript into display events, the start of a turn, or a
@@ -228,7 +247,7 @@ export function interpretLine(line: string): { outputs: Output[]; turn?: number;
     case 'turn_failed': {
       if (turn === undefined) return { outputs: [] }
       const message = typeof event.message === 'string' && event.message ? event.message : 'The agent failed.'
-      return { outputs: [{ kind: 'error', text: message }], result: { turn, status: 'failed', summary: message } }
+      return { outputs: [{ kind: 'error', text: message }], result: { turn, status: 'failed', summary: message, ...(event.uncertain === true ? { uncertain: true } : {}) } }
     }
     case 'auth_required': {
       if (turn === undefined) return { outputs: [] }
@@ -242,7 +261,7 @@ export function interpretLine(line: string): { outputs: Output[]; turn?: number;
 
 function readSignIn(value: unknown): SignInMethod[] {
   if (!Array.isArray(value)) return []
-  return value.flatMap(item => {
+  return value.slice(0, 20).flatMap(item => {
     if (!item || typeof item.id !== 'string' || typeof item.name !== 'string' || (item.type !== 'agent' && item.type !== 'terminal')) return []
     return [{ id: item.id.slice(0, 200), name: item.name.slice(0, 200), ...(typeof item.description === 'string' && item.description ? { description: item.description.slice(0, 500) } : {}), type: item.type }]
   })
@@ -337,8 +356,12 @@ interface Tracked {
   /** Approval requests the agent is waiting on, oldest first. */
   pending: Array<PendingApproval & { requestedAt: string }>
   replying?: boolean
-  /** Replies waiting for the current turn to end. Kept in memory: a host restart drops them. */
-  queue: string[]
+  /** A validated mirror of the guest journal; changed only on the task operation chain. */
+  queue: QueuedReply[]
+  journal: DeliveryJournal
+  journalError?: string
+  completedTurn?: number
+  replyChain?: Promise<unknown>
 }
 
 export class AgentTasks {
@@ -375,45 +398,70 @@ export class AgentTasks {
   computerRestarted(): void {
     this.home?.reset()
     this.pause()
+    this.needsRecovery = true
     for (const entry of this.tracked.values()) {
-      if (isLive(entry.task.status)) this.finish(entry, 'failed', 'Stopped when the computer restarted.')
+      if (isLive(entry.task.status)) this.finish(entry, 'failed', 'Stopped when the computer restarted.', false)
     }
   }
 
-  async start(input: Record<string, unknown>): Promise<AgentTask> {
+  private startChain: Promise<unknown> = Promise.resolve()
+
+  async start(input: Record<string, unknown>, options?: { id?: string }): Promise<AgentTask> {
+    if (options?.id !== undefined && (typeof options.id !== 'string' || !UUID.test(options.id))) throw new AgentInputError('id must be a canonical UUID')
+    const operation = this.startChain.catch(() => {}).then(() => this.startTask(input, options?.id))
+    this.startChain = operation
+    return operation
+  }
+
+  private async startTask(input: Record<string, unknown>, stableId?: string): Promise<AgentTask> {
     const prompt = readPrompt(input.prompt)
-    const agentId = this.readAgent(input.agent)
     const approvals = input.approvals === 'ask' ? 'ask' : input.approvals === 'auto' || input.approvals === undefined ? 'auto' : undefined
     if (!approvals) throw new AgentInputError('approvals must be "ask" or "auto"')
     if (input.craftMcp !== undefined && typeof input.craftMcp !== 'boolean') throw new AgentInputError('craftMcp must be a boolean')
     const files = readAttachments(input.attachments)
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
+    const original = fingerprint(input, files, true)
+    const id = stableId ?? randomUUID()
+    if (stableId) {
+      await this.restoring
+      await this.restoreId(id)
+      const existing = this.tracked.get(id)
+      if (existing) {
+        if (existing.journalError || existing.journal.original !== original) throw new AgentConflictError('Task id already exists with a different original payload or unreadable admission.')
+        await this.serial(existing, async () => { await this.save(existing, existing.journal); await this.recoverDelivery(existing) })
+        return existing.task
+      }
+    }
+    const agentId = this.readAgent(input.agent)
     const launch = await this.resolver.launch(agentId)
-    const id = randomUUID()
+    const journal: DeliveryJournal = { ...emptyJournal(), original, turns: 1, intent: { id: randomUUID(), turn: 1, replies: [] } }
     const dir = `${HOME}/Agents/${id}`
+    const staging = `${HOME}/Agents/.${id}.${randomUUID()}`
     const attachments = files.map(file => `${dir}/attachments/${file.name}`)
+    journal.startAttachments = attachments
     await this.prepareSeat(guest)
     try {
-      for (const [index, file] of files.entries()) {
-        const path = attachments[index]!
-        await writeGuestFile(guest, `${path}.part`, file.data)
-        await asCaboose(guest, 'mv -- "$1.part" "$1"', [path])
+      for (const file of files) {
+        const staged = `${staging}/attachments/${file.name}`
+        await writeGuestFile(guest, `${staged}.part`, file.data)
+        await asCaboose(guest, 'mv -- "$1.part" "$1" && sync -f "$1"', [staged])
       }
       const craftServers = input.craftMcp === false ? [] : await this.craftServers?.() ?? []
       const config = JSON.stringify({ agent: launch, cwd: dir, approvals, idleMs: this.idleMs, craftServers })
-      const message = JSON.stringify({ type: 'prompt', turn: 1, text: prompt,
+      const message = JSON.stringify({ type: 'prompt', turn: 1, deliveryId: journal.intent!.id, text: prompt,
         ...(files.length ? { attachments: files.map((file, index) => ({ path: attachments[index], name: file.name, ...(file.type ? { mimeType: file.type } : {}) })) } : {}) })
-      await asCaboose(guest, START_SCRIPT, [dir, prompt, agentId, launch.name, approvals, config, message]).catch(rethrowRunnerMissing)
+      await writeGuestFile(guest, `${staging}/initial-prompt.json`, Buffer.from(message))
+      await asCaboose(guest, START_SCRIPT, [dir, prompt, agentId, launch.name, approvals, config, '@file:initial-prompt.json', JSON.stringify(journal), WRITE_JOURNAL, PUBLISH_PROMPT, staging]).catch(rethrowRunnerMissing)
     } catch (error) {
-      await asCaboose(guest, 'rm -rf -- "$1"', [dir]).catch(() => {})
+      // A failed command can have committed admission or launched the runner. Never erase it.
       throw error
     }
     const task: AgentTask = {
       id, agent: agentId, agentName: launch.name, prompt, status: 'running', startedAt: new Date().toISOString(), turns: 1, approvals,
       ...(attachments.length ? { attachments } : {}),
     }
-    this.tracked.set(id, { task, offset: 0, carry: Buffer.alloc(0), turn: 0, resumable: true, pending: [], queue: [] })
+    this.tracked.set(id, { task, offset: 0, carry: Buffer.alloc(0), turn: 0, resumable: true, pending: [], queue: [], journal })
     this.releases.set(id, this.acquire())
     this.emit({ type: 'agent.task.started', id, agent: agentId, agentName: launch.name, prompt })
     this.ensurePolling()
@@ -440,55 +488,261 @@ export class AgentTasks {
    * waiting goes to the agent together as its next turn.
    */
   async reply(id: string, input: Record<string, unknown>): Promise<AgentTask> {
+    await this.restoring
+    await this.recovering
     const entry = TASK_ID.test(id) ? this.tracked.get(id) : undefined
     if (!entry) throw new AgentNotFoundError()
-    const prompt = readPrompt(input.prompt)
-    if (!entry.resumable) throw new AgentConflictError('This task was started by an earlier version of Caboose and cannot be continued.')
-    if (isLive(entry.task.status) || entry.replying) {
-      if (entry.queue.length >= MAX_QUEUED || [...entry.queue, prompt].join('\n\n').length > MAX_PROMPT) {
-        throw new AgentConflictError('Too much is already waiting for the agent; wait for its turn to end, or stop it.')
-      }
-      entry.queue.push(prompt)
-      this.syncQueue(entry)
-      return entry.task
-    }
-    return this.sendTurn(entry, [...entry.queue, prompt], entry.queue.length)
+    return this.serial(entry, () => this.acceptReply(entry, input))
   }
 
-  /** Starts the next turn with `prompts`, the first `fromQueue` of them taken from the queue. */
-  private async sendTurn(entry: Tracked, prompts: string[], fromQueue: number): Promise<AgentTask> {
-    const id = entry.task.id
-    const prompt = prompts.join('\n\n')
+  private serial<T>(entry: Tracked, step: () => Promise<T>): Promise<T> {
+    const operation = (entry.replyChain ?? Promise.resolve()).catch(() => {}).then(step)
+    entry.replyChain = operation
+    return operation
+  }
+
+  private async save(entry: Tracked, journal: DeliveryJournal): Promise<void> {
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
-    const turn = entry.task.turns + 1
+    const text = JSON.stringify(journal)
+    if (Buffer.byteLength(text) > JOURNAL_LIMIT) throw new AgentConflictError('This task has reached its durable journal limit; start a new task.')
+    try {
+      await asCaboose(guest, 'dir=$1; code=$2; shift 2; exec node -e "$code" "$dir/delivery.json" @base64 "$@"', [`${HOME}/Agents/${entry.task.id}`, WRITE_JOURNAL, ...Buffer.from(text).toString('base64').match(/.{1,48000}/g)!])
+    } catch (error) {
+      // A timeout after rename is ambiguous. Adopt only the exact committed snapshot.
+      const evidence = await this.evidence(entry).catch(() => undefined)
+      if (!evidence) entry.journalError = 'Cannot confirm durable admission; restart recovery before changing this task.'
+      if (evidence?.journal !== text) throw error
+      try {
+        const confirmed = await asCaboose(guest, 'exec node -e "$2" "$1/delivery.json" "$3"',
+          [`${HOME}/Agents/${entry.task.id}`, CONFIRM_JOURNAL, createHash('sha256').update(text).digest('hex')])
+        if (confirmed.trim() !== 'confirmed') throw new Error('No durability acknowledgement')
+      } catch {
+        entry.journalError = 'Cannot confirm durable admission; restart recovery before changing this task.'
+        throw error
+      }
+    }
+    entry.journal = journal
+    entry.queue = journal.queue
+  }
+
+  private async evidence(entry: Tracked): Promise<{ journal: string; receipt: string; receiptExists: boolean; inbox: string; published: string; transcript: string; alive: boolean }> {
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const out = await asCaboose(guest, 'exec node -e "$2" "$1" "$3"', [`${HOME}/Agents/${entry.task.id}`, READ_DELIVERY,
+      entry.journal.intent ? String(entry.journal.intent.turn).padStart(6, '0') : ''])
+    const value = JSON.parse(out)
+    if (!value || ['journal', 'receipt', 'inbox', 'published', 'transcript'].some(key => typeof value[key] !== 'string') || typeof value.alive !== 'boolean' || typeof value.receiptExists !== 'boolean') throw new Error('Invalid delivery evidence')
+    return value
+  }
+
+  private async acceptReply(entry: Tracked, input: Record<string, unknown>): Promise<AgentTask> {
+    const prompt = readPrompt(input.prompt)
+    const files = readAttachments(input.attachments)
+    if (input.operationId !== undefined && !operationId(input.operationId)) throw new AgentInputError('operationId must be 1–200 characters without control characters')
+    if (!entry.resumable) throw new AgentConflictError('This task was started by an earlier version of Caboose and cannot be continued.')
+    if (entry.journalError) throw new AgentConflictError(entry.journalError)
+    const key = typeof input.operationId === 'string' ? input.operationId : randomUUID()
+    const hash = fingerprint(input, files)
+    const previous = entry.journal.operations.find(op => op.id === key)
+    if (previous) {
+      if (previous.hash !== hash) throw new AgentConflictError('operationId already exists with a different original payload')
+      // A retry can follow an earlier ambiguous fsync failure; establish durability again.
+      await this.save(entry, entry.journal)
+      await this.recoverDelivery(entry)
+      if (!isLive(entry.task.status) && !entry.task.delivery && entry.queue.length) {
+        try { await this.sendTurn(entry) } catch (error) { console.error('Admitted reply awaits delivery:', error) }
+      }
+      return entry.task
+    }
+    if (entry.journal.operations.length >= MAX_OPERATIONS) throw new AgentConflictError('This task has reached its durable operation limit; start a new task.')
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const attachments = entry.queue.flatMap(reply => reply.attachments)
+    if (entry.queue.length >= MAX_QUEUED || [...entry.queue.map(reply => reply.prompt), prompt].join('\n\n').length > MAX_PROMPT
+        || attachments.length + files.length > MAX_ATTACHMENTS
+        || attachments.reduce((n, file) => n + file.bytes, 0) + files.reduce((n, file) => n + file.data.length, 0) > MAX_ATTACHMENT_BYTES) {
+      throw new AgentConflictError('Too much is already waiting for the agent; wait for its turn to end, or stop it.')
+    }
+    const dir = `${HOME}/Agents/${entry.task.id}/attachments/${randomUUID()}`
+    const staged: StoredAttachment[] = []
+    for (const file of files) {
+      const path = `${dir}/${file.name}`
+      await writeGuestFile(guest, `${path}.part`, file.data)
+      await asCaboose(guest, 'mv -- "$1.part" "$1" && sync -f "$1"', [path])
+      staged.push({ path, name: file.name, bytes: file.data.length, ...(file.type ? { mimeType: file.type } : {}) })
+    }
+    // Admission is durable before any success response or attempt to deliver.
+    await this.save(entry, { ...entry.journal, queue: [...entry.queue, { id: key, hash, prompt, attachments: staged }],
+      operations: [...entry.journal.operations, { id: key, hash }] })
+    this.syncQueue(entry)
+    if (!isLive(entry.task.status) && !entry.task.delivery) {
+      try { await this.sendTurn(entry) } catch (error) { console.error('Admitted reply awaits delivery:', error) }
+    }
+    return entry.task
+  }
+
+  /** Stops the current turn and delivers the durable queue. */
+  async sendNow(id: string): Promise<AgentTask> {
+    await this.restoring
+    await this.recovering
+    const entry = TASK_ID.test(id) ? this.tracked.get(id) : undefined
+    if (!entry) throw new AgentNotFoundError()
+    return this.serial(entry, async () => {
+      if (entry.journalError) throw new AgentConflictError(entry.journalError)
+      if (entry.journal.intent && entry.journal.intent.turn > entry.task.turns) {
+        await this.recoverDelivery(entry)
+        if (!entry.task.delivery && entry.task.turns === entry.journal.intent?.turn) return entry.task
+      }
+      if (entry.task.delivery) throw new AgentConflictError(entry.task.delivery.message)
+      if (!entry.queue.length) throw new AgentConflictError('No messages are waiting.')
+      entry.replying = true
+      try {
+        if (isLive(entry.task.status)) await this.cancelTurn(entry, false)
+        return await this.sendTurn(entry, true)
+      } catch (error) {
+        if (!isLive(entry.task.status)) {
+          this.releases.get(id)?.(); this.releases.delete(id); this.announceFinished(entry)
+        }
+        throw error
+      } finally { entry.replying = false }
+    })
+  }
+
+  /** The queue remains in the journal until positive claim/transcript evidence retires it. */
+  private async sendTurn(entry: Tracked, cancelledCurrent = false): Promise<AgentTask> {
+    if (entry.task.delivery) throw new AgentConflictError(entry.task.delivery.message)
+    if (entry.journal.intent) {
+      const futureIntent = entry.journal.intent.turn > entry.task.turns
+      await this.recoverDelivery(entry)
+      if (entry.task.delivery) throw new AgentConflictError('Delivery is uncertain; inspect the transcript before continuing.')
+      // Recovery can relaunch an unclaimed inbox without claiming it. That intent still
+      // owns its replies; a new batch must never include them a second time. Send Now may
+      // supersede a cancelled current turn only after its replies have left the queue.
+      const intent = entry.journal.intent
+      if (intent && (futureIntent || !cancelledCurrent || entry.queue.some(reply => intent.replies.includes(reply.id)))) return entry.task
+    }
+    if (!entry.queue.length) return entry.task
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const turn = Math.max(entry.task.turns, entry.journal.turns ?? 1) + 1
+    if (turn > 999999) throw new AgentConflictError('Task turn limit reached')
+    const intent = { id: randomUUID(), turn, replies: entry.queue.map(reply => reply.id) }
+    await this.save(entry, { ...entry.journal, intent, turns: turn })
     entry.replying = true
     try {
       await this.prepareSeat(guest)
-      const name = String(turn).padStart(6, '0')
-      await asCaboose(guest, REPLY_SCRIPT, [`${HOME}/Agents/${id}`, JSON.stringify({ type: 'prompt', turn, text: prompt }), String(turn), name], 40_000)
-        .catch(rethrowRunnerMissing)
-    } finally {
-      entry.replying = false
-    }
-    if (fromQueue) {
-      entry.queue.splice(0, fromQueue)
-      this.syncQueue(entry)
-    }
-    // Lines still to come from the earlier turn are read but not shown.
-    entry.pending = []
+      await this.publish(entry)
+    } finally { entry.replying = false }
+    return entry.task
+  }
+
+  private async publish(entry: Tracked, original?: string): Promise<void> {
+    const intent = entry.journal.intent!
+    if (intent.turn === 1 && !original) throw new Error('The original admitted prompt is unavailable')
+    const replies = entry.queue.filter(reply => intent.replies.includes(reply.id))
+    const prompt = original ? readPublishedPrompt(original, entry.task.id, intent).text : replies.map(reply => reply.prompt).join('\n\n')
+    const attachments = replies.flatMap(reply => reply.attachments).map(({ bytes: _bytes, ...file }) => file)
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    // Turn 1 has no reply queue entries. Its admitted envelope owns original file names,
+    // MIME types and paths, and must match the durable publication marker byte for byte.
+    const message = original ?? JSON.stringify({ type: 'prompt', turn: intent.turn, deliveryId: intent.id, text: prompt, ...(attachments.length ? { attachments } : {}) })
+    const file = `.delivery-input-${intent.id}.json`
+    await writeGuestFile(guest, `${HOME}/Agents/${entry.task.id}/${file}`, Buffer.from(message))
+    const outcome = await asCaboose(guest, REPLY_SCRIPT, [`${HOME}/Agents/${entry.task.id}`, `@file:${file}`, String(intent.turn), String(intent.turn).padStart(6, '0'), PUBLISH_PROMPT], 40_000).catch(rethrowRunnerMissing)
+    this.markRunning(entry, intent.turn)
+    if (['claimed', 'uncertain'].includes(outcome.trim())) await this.recoverDelivery(entry)
+    this.emit({ type: 'agent.task.replied', id: entry.task.id, prompt, turn: intent.turn })
+  }
+
+  private markRunning(entry: Tracked, turn: number): void {
     const task = entry.task
-    task.status = 'running'
-    task.turns = turn
-    delete task.finishedAt
-    delete task.summary
-    delete task.pendingApproval
-    delete task.signIn
-    this.releases.get(id)?.()
-    this.releases.set(id, this.acquire())
-    this.emit({ type: 'agent.task.replied', id, prompt, turn })
+    task.status = 'running'; task.turns = turn
+    delete task.finishedAt; delete task.summary; delete task.pendingApproval; delete task.signIn
+    entry.pending = []; this.setDraft(entry, null)
+    // A published inbox is pending, not proof of delivery. Hide its batch from the waiting UI.
+    this.syncQueue(entry)
+    this.releases.get(task.id)?.(); this.releases.set(task.id, this.acquire())
     this.ensurePolling()
-    return task
+  }
+
+  private async retireIntent(entry: Tracked): Promise<void> {
+    const intent = entry.journal.intent
+    if (!intent) return
+    await this.save(entry, { ...entry.journal, turns: Math.max(entry.journal.turns ?? 1, intent.turn), intent: undefined, queue: entry.queue.filter(reply => !intent.replies.includes(reply.id)),
+      operations: entry.journal.operations.map(op => intent.replies.includes(op.id) ? { ...op, turn: intent.turn } : op) })
+    this.syncQueue(entry)
+  }
+
+  private async confirmClaim(entry: Tracked): Promise<void> {
+    const intent = entry.journal.intent
+    if (!intent || intent.claimed) return
+    await this.save(entry, { ...entry.journal, intent: { ...intent, claimed: true },
+      queue: entry.queue.filter(reply => !intent.replies.includes(reply.id)),
+      operations: entry.journal.operations.map(op => intent.replies.includes(op.id) ? { ...op, turn: intent.turn } : op) })
+    this.syncQueue(entry)
+  }
+
+  private async uncertain(entry: Tracked): Promise<void> {
+    const intent = entry.journal.intent!
+    const message = `Turn ${intent.turn} may have performed external actions before it stopped. Delivery is uncertain; inspect its transcript before continuing. This turn is not replayed.`
+    await this.save(entry, { ...entry.journal, intent: { ...intent, uncertain: true } })
+    entry.task.turns = Math.max(entry.task.turns, intent.turn)
+    entry.task.delivery = { turn: intent.turn, state: 'uncertain', message }
+    entry.task.status = 'running'
+    this.finish(entry, 'failed', message, false)
+    this.syncQueue(entry)
+  }
+
+  private async recoverDelivery(entry: Tracked, allowPublish = true, claimOnly = false): Promise<void> {
+    const intent = entry.journal.intent
+    if (!intent || entry.journalError) return
+    const evidence = await this.evidence(entry)
+    const events = evidence.transcript.split('\n').flatMap(line => { try { return [JSON.parse(line)] } catch { return [] } })
+    const user = events.find(event => event?.type === 'user' && event.turn === intent.turn)
+    let receipt: any
+    try { receipt = JSON.parse(evidence.receipt) } catch { /* Older runners have no receipt. */ }
+    const claimed = receipt?.deliveryId === intent.id && receipt?.turn === intent.turn && ['claimed', 'completed'].includes(receipt?.state)
+    const result = events.map(event => interpretLine(JSON.stringify(event)).result).find(result => result?.turn === intent.turn)
+      ?? (claimed && receipt.state === 'completed' ? interpretLine(JSON.stringify(receipt.result)).result : undefined)
+    if (claimOnly) {
+      if (claimed || user) await this.confirmClaim(entry)
+      return
+    }
+    if (result?.turn === intent.turn) {
+      const legacyFailure = !claimed && events.some(event => event?.type === 'turn_failed' && event.turn === intent.turn)
+      if (result.uncertain || legacyFailure) { await this.uncertain(entry); return }
+      entry.task.turns = Math.max(entry.task.turns, intent.turn)
+      await this.retireIntent(entry)
+      delete entry.task.delivery
+      entry.task.status = 'running'; this.finishWith(entry, result, false, entry.queue.length > 0 && !result.signIn && result.status !== 'cancelled')
+      return
+    }
+    if (intent.legacy) {
+      if (!evidence.alive) await this.uncertain(entry)
+      else if (!isLive(entry.task.status)) this.markRunning(entry, intent.turn)
+      return
+    }
+    if (intent.uncertain || (!evidence.alive && (evidence.receiptExists || intent.claimed || claimed || user || evidence.published && !evidence.inbox))) {
+      await this.uncertain(entry); return
+    }
+    if (claimed || user) {
+      await this.confirmClaim(entry)
+      // A runner can claim before the launch script updates `turns` or returns to the host.
+      if (!isLive(entry.task.status) || entry.task.turns < intent.turn) this.markRunning(entry, intent.turn)
+      return
+    }
+    if (evidence.receiptExists || evidence.published && !evidence.inbox) {
+      // An old runner may be between unlink and its first transcript append. Wait while alive.
+      if (!evidence.alive) await this.uncertain(entry)
+      else if (!isLive(entry.task.status) || entry.task.turns < intent.turn) this.markRunning(entry, intent.turn)
+      return
+    }
+    if (allowPublish && (!evidence.published || !evidence.alive && evidence.inbox)) await this.publish(entry, evidence.published || evidence.inbox || undefined)
+    else if (allowPublish && evidence.inbox && (!isLive(entry.task.status) || intent.turn > entry.task.turns)) {
+      this.markRunning(entry, intent.turn)
+    }
   }
 
   /** Answers the approval request `requestId` of task `id`; false when it is not waiting. */
@@ -550,11 +804,19 @@ export class AgentTasks {
     const entry = this.tracked.get(id)
     const guest = this.guest()
     if (!entry || !TASK_ID.test(id) || !isLive(entry.task.status) || !guest) return false
-    await asCaboose(guest, CANCEL_SCRIPT, [`${HOME}/Agents/${id}`])
+    return this.serial(entry, () => this.cancelTurn(entry, true))
+  }
+
+  private async cancelTurn(entry: Tracked, drop: boolean): Promise<boolean> {
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    await asCaboose(guest, CANCEL_SCRIPT, [`${HOME}/Agents/${entry.task.id}`])
     // Stopping stops everything: what was waiting for this turn is dropped with it.
-    if (entry.queue.length) {
-      entry.queue = []
-      this.syncQueue(entry)
+    if (drop) {
+      const hadQueue = entry.queue.length > 0
+      await this.save(entry, { ...entry.journal, queue: [], intent: undefined, cancelled: entry.task.turns })
+      delete entry.task.delivery
+      this.syncQueue(entry, hadQueue)
     }
     this.finish(entry, 'cancelled', 'Cancelled.')
     return true
@@ -587,28 +849,57 @@ export class AgentTasks {
    * Rebuilds the task list from the task directories in the guest, once per host process,
    * so a host restart neither forgets tasks nor drops the lease under one still running.
    */
+  private restoring?: Promise<void>
+
   async restore(): Promise<void> {
+    if (this.restoring) return this.restoring
     const guest = this.guest()
     if (this.restored || !guest) return
-    this.restored = true
-    const listing = await guest.run('/bin/sh', ['-c', RESTORE_SCRIPT, 'sh', `${HOME}/Agents`], 20_000).catch(() => '')
+    this.restoring = this.restoreId()
+    try { await this.restoring; this.restored = true } finally { this.restoring = undefined }
+    this.resume()
+  }
+
+  private async restoreId(onlyId?: string): Promise<void> {
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const listing = await guest.run('/bin/sh', ['-c', RESTORE_SCRIPT, 'sh', `${HOME}/Agents`, onlyId ?? ''], 20_000)
     for (const line of listing.split('\n')) {
       const [id, agent, started, exitCode, alive, size, prompt, last, mode, turnsField, resumable, attached, name] = line.split('\t')
-      if (!id || !TASK_ID.test(id) || this.tracked.has(id)) continue
-      const attachments = decode(attached).split('\n').filter(file => file && !file.endsWith('.part')).map(file => `${HOME}/Agents/${id}/attachments/${file}`)
-      const turns = Math.max(1, Number.parseInt(turnsField ?? '', 10) || 1)
+      if (!id || !TASK_ID.test(id) || this.tracked.has(id) || onlyId && id !== onlyId) continue
+      const attachments = decode(attached).split('\n').filter(file => file && file.length <= 255 && !file.includes('/') && !/[\u0000-\u001f]/.test(file) && file !== '..' && file !== '.' && !file.endsWith('.part')).slice(0, MAX_ATTACHMENTS).map(file => `${HOME}/Agents/${id}/attachments/${file}`)
+      let turns = Math.min(999999, Math.max(1, Number.parseInt(turnsField ?? '', 10) || 1))
       const agentId = agent && AGENT_ID.test(agent) ? LEGACY_AGENTS[agent] ?? agent : 'unknown'
       const agentName = decode(name).trim().slice(0, 100)
       const task: AgentTask = {
-        id, agent: agentId, ...(agentName ? { agentName } : {}), prompt: decode(prompt), status: 'running',
-        startedAt: new Date(Number(started) * 1000).toISOString(),
+        id, agent: agentId, ...(agentName ? { agentName } : {}), prompt: decode(prompt).slice(0, MAX_PROMPT), status: 'running',
+        startedAt: new Date(Number.isFinite(Number(started)) && Number(started) > 0 && Number(started) < 8640000000000 ? Number(started) * 1000 : 0).toISOString(),
         turns, approvals: mode === 'ask' ? 'ask' : 'auto',
         ...(attachments.length ? { attachments } : {}),
       }
-      const entry: Tracked = { task, offset: Number(size) || 0, carry: Buffer.alloc(0), turn: turns, resumable: resumable === '1', pending: [], queue: [] }
+      const entry: Tracked = { task, offset: Number.isSafeInteger(Number(size)) && Number(size) >= 0 ? Number(size) : 0, carry: Buffer.alloc(0), turn: turns, resumable: resumable === '1', pending: [], queue: [], journal: emptyJournal() }
       this.tracked.set(id, entry)
+      try {
+        const evidence = await this.evidence(entry)
+        if (evidence.journal) {
+          entry.journal = readJournal(evidence.journal, id)
+          entry.queue = entry.journal.queue
+          turns = Math.max(turns, entry.journal.turns ?? 1)
+          task.turns = turns; entry.turn = turns
+          if (entry.journal.startAttachments?.length) entry.task.attachments = entry.journal.startAttachments
+          else if (entry.journal.startAttachments) delete entry.task.attachments
+        } else if (entry.resumable) {
+          // A pre-upgrade runner has no delivery token. Observe its current turn, never
+          // synthesize an inbox for it, and persist this fence before admitting replies.
+          await this.save(entry, { ...emptyJournal(), turns, intent: { id: randomUUID(), turn: turns, replies: [], legacy: true } })
+        }
+      } catch (error) {
+        entry.journalError = error instanceof Error ? error.message : 'Cannot read durable replies'
+      }
       const result = interpretLine(decode(last)).result
-      if (result && result.turn === turns) {
+      if (entry.journal.cancelled === turns) {
+        this.finish(entry, 'cancelled', 'Cancelled.', false)
+      } else if (result && result.turn === turns) {
         this.finishWith(entry, result, false)
       } else if (exitCode === '' && alive === '1') {
         this.releases.set(id, this.acquire())
@@ -621,11 +912,32 @@ export class AgentTasks {
       } else {
         this.finish(entry, 'failed', `The agent runner exited with code ${exitCode} before the turn ended.`, false)
       }
+      if (entry.journalError) {
+        entry.task.status = 'running'; this.finish(entry, 'failed', entry.journalError, false)
+      } else {
+        try {
+          if (entry.journal.intent?.legacy && result?.turn === turns) {
+            let legacyEvent: any
+            try { legacyEvent = JSON.parse(decode(last)) } catch { /* Invalid lines are not terminal evidence. */ }
+            if (legacyEvent?.type === 'turn_failed') await this.uncertain(entry)
+            else await this.retireIntent(entry)
+          } else await this.recoverDelivery(entry)
+        } catch (error) {
+          entry.journalError = `Cannot reconcile durable delivery: ${error instanceof Error ? error.message : 'guest read failed'}`
+          entry.task.status = 'running'; this.finish(entry, 'failed', entry.journalError, false)
+        }
+        this.syncQueue(entry, false)
+        // Resume only proven unclaimed work or replies after a proven completed turn.
+        if (!entry.journalError && !isLive(entry.task.status) && !entry.task.delivery && entry.queue.length && entry.task.status === 'succeeded') {
+          await this.serial(entry, () => this.continueQueue(entry, entry.task.status))
+        }
+      }
     }
-    this.resume()
   }
 
   private restored = false
+  private needsRecovery = false
+  private recovering?: Promise<void>
 
   /** Stops tailing (the computer is parking); running tasks resume being tailed on wake. */
   pause(): void {
@@ -634,7 +946,14 @@ export class AgentTasks {
   }
 
   resume(): void {
-    if (!this.restored) void this.restore()
+    if (this.needsRecovery && !this.recovering) {
+      this.needsRecovery = false
+      this.recovering = Promise.all([...this.tracked.values()].map(entry => this.serial(entry, () => this.recoverDelivery(entry))))
+        .then(() => { if ([...this.tracked.values()].some(entry => isLive(entry.task.status))) this.ensurePolling() })
+        .catch(error => { this.needsRecovery = true; console.error('Agent recovery failed:', error) })
+        .finally(() => { this.recovering = undefined })
+    }
+    if (!this.restored) void this.restore().catch(error => console.error('Agent recovery failed:', error))
     if ([...this.tracked.values()].some(entry => isLive(entry.task.status))) this.ensurePolling()
   }
 
@@ -655,6 +974,7 @@ export class AgentTasks {
     if (this.polling || !guest) return
     this.polling = true
     try {
+      const versions = new Map(live.map(entry => [entry.task.id, { turn: entry.task.turns, offset: entry.offset }]))
       const chunk = Math.max(MIN_TASK_CHUNK, Math.floor(POLL_BUDGET / live.length))
       const output = await guest.run('/bin/sh', ['-c', POLL_SCRIPT, 'sh', String(chunk),
         ...live.flatMap(entry => [`${HOME}/Agents/${entry.task.id}`, String(entry.offset)])], 20_000).catch(() => undefined)
@@ -662,7 +982,9 @@ export class AgentTasks {
       const reports = parsePoll(output)
       for (const entry of live) {
         const report = reports.get(entry.task.id)
-        if (report && isLive(entry.task.status)) this.apply(entry, report, chunk)
+        const version = versions.get(entry.task.id)!
+        if (report && isLive(entry.task.status) && entry.task.turns === version.turn && entry.offset === version.offset) this.apply(entry, report, chunk)
+        if (!entry.replying) await entry.replyChain
       }
     } finally {
       this.polling = false
@@ -676,11 +998,15 @@ export class AgentTasks {
     const buffer = entry.carry.length ? Buffer.concat([entry.carry, report.data]) : report.data
     let start = 0
     let result: TurnResult | undefined
+    let began = false
     for (let end = buffer.indexOf(10); end >= 0; start = end + 1, end = buffer.indexOf(10, start)) {
       const line = buffer.subarray(start, end).toString('utf8')
       if (!line.trim()) continue
       const interpreted = interpretLine(line)
-      if (interpreted.turn !== undefined) entry.turn = interpreted.turn
+      if (interpreted.turn !== undefined) {
+        entry.turn = interpreted.turn
+        if (entry.turn === entry.task.turns) began = true
+      }
       if (entry.turn === entry.task.turns) {
         for (const output of interpreted.outputs) this.emit({ type: 'agent.task.output', id, ...output })
         const transcript = transcriptEntry(line)
@@ -689,20 +1015,38 @@ export class AgentTasks {
       if (interpreted.result?.turn === entry.task.turns) result ??= interpreted.result
     }
     entry.carry = Buffer.from(buffer.subarray(start))
+    // Ignore snapshots from an older turn or beyond the transcript bytes consumed this tick.
+    const draft = report.draft
+    this.setDraft(entry, !result && report.data.length < chunk && draft?.turn === entry.task.turns
+      && draft.after === entry.offset ? { turn: draft.turn, kind: draft.kind, text: draft.text } : null)
     if (result) return this.finishWith(entry, result)
+    if (began && entry.journal.intent?.replies.length && !entry.journal.intent.claimed) {
+      void this.serial(entry, () => this.recoverDelivery(entry, false, true)).catch(error => console.error('Cannot confirm turn claim:', error))
+    }
     this.updatePending(entry, report.requests)
     // A full chunk means more transcript is waiting; finish only once it has all been read.
     if (report.exitCode === '' || report.data.length >= chunk) return
     const stderr = report.stderr.trim()
-    this.finish(entry, 'failed', stderr || `The agent runner exited with code ${report.exitCode} before the turn ended.`)
+    this.finish(entry, 'failed', stderr || `The agent runner exited with code ${report.exitCode} before the turn ended.`, false)
+    void this.serial(entry, async () => {
+      await this.recoverDelivery(entry, false)
+      this.announceFinished(entry)
+    }).catch(error => console.error('Delivery recovery failed:', error))
   }
 
-  private finishWith(entry: Tracked, result: TurnResult, announce = true): void {
+  private finishWith(entry: Tracked, result: TurnResult, announce = true, keepLease = false): void {
+    entry.completedTurn = result.turn
+    if (result.uncertain && entry.journal.intent) {
+      entry.task.delivery = { turn: result.turn, state: 'uncertain', message: result.summary.slice(0, 2000) }
+      this.finish(entry, 'failed', result.summary, announce)
+      if (announce) void this.serial(entry, () => this.uncertain(entry)).catch(error => console.error('Cannot persist uncertain delivery:', error))
+      return
+    }
     if (result.signIn) {
       const name = entry.task.agentName ?? entry.task.agent
       return this.finish(entry, 'failed', `Sign in to ${name} first.`, announce, result.signIn)
     }
-    this.finish(entry, result.status, result.summary, announce)
+    this.finish(entry, result.status, result.summary, announce, undefined, keepLease)
   }
 
   /** Announces new approval requests and forgets ones answered elsewhere. */
@@ -721,10 +1065,24 @@ export class AgentTasks {
     this.syncPending(entry)
   }
 
-  private syncQueue(entry: Tracked): void {
-    if (entry.queue.length) entry.task.queued = [...entry.queue]
+  private setDraft(entry: Tracked, draft: AgentDraft | null): void {
+    if (JSON.stringify(entry.task.draft ?? null) === JSON.stringify(draft)) return
+    if (draft) entry.task.draft = draft
+    else delete entry.task.draft
+    this.emit({ type: 'agent.task.draft', id: entry.task.id, draft })
+  }
+
+  private syncQueue(entry: Tracked, announce = true): void {
+    const before = JSON.stringify([entry.task.queued ?? [], entry.task.queuedAttachments ?? []])
+    const visible = entry.queue.filter(reply => entry.task.delivery || entry.journal.intent?.turn !== entry.task.turns || !entry.journal.intent.replies.includes(reply.id))
+    const queued = visible.map(reply => reply.prompt)
+    const files = visible.map(reply => reply.attachments.map(file => file.path))
+    if (queued.length) entry.task.queued = queued
     else delete entry.task.queued
-    this.emit({ type: 'agent.task.queued', id: entry.task.id, queued: [...entry.queue] })
+    if (files.some(paths => paths.length)) entry.task.queuedAttachments = files
+    else delete entry.task.queuedAttachments
+    if (announce && before !== JSON.stringify([entry.task.queued ?? [], entry.task.queuedAttachments ?? []])) this.emit({ type: 'agent.task.queued', id: entry.task.id, queued,
+      ...(entry.task.queuedAttachments ? { queuedAttachments: files } : {}) })
   }
 
   private syncPending(entry: Tracked): void {
@@ -733,27 +1091,38 @@ export class AgentTasks {
     else delete entry.task.pendingApproval
   }
 
-  private finish(entry: Tracked, status: TaskStatus, summary: string, announce = true, signIn?: SignInMethod[]): void {
+  private finish(entry: Tracked, status: TaskStatus, summary: string, announce = true, signIn?: SignInMethod[], keepLease = false): void {
     if (!isLive(entry.task.status)) return
+    this.setDraft(entry, null)
     entry.task.status = status
     entry.task.finishedAt = new Date().toISOString()
     entry.task.summary = summary.slice(0, 2000)
     if (signIn) entry.task.signIn = signIn
     entry.pending = []
     delete entry.task.pendingApproval
+    // A claimed Send Now transition owns the lease and the next delivery, even if polling
+    // observes a normal turn_end while cancellation is still in flight.
+    if (announce && entry.replying) return
     // Replies waited for this turn: they go to the agent now, as one turn, under the same lease.
-    if (announce && entry.queue.length && status !== 'cancelled' && !signIn) {
-      void this.continueQueue(entry, status)
+    if (announce && entry.completedTurn === entry.task.turns && (entry.queue.length || entry.journal.intent) && status !== 'cancelled' && !signIn && !entry.task.delivery) {
+      void this.serial(entry, () => this.continueQueue(entry, status))
       return
     }
-    this.releases.get(entry.task.id)?.()
-    this.releases.delete(entry.task.id)
+    if (!keepLease) {
+      this.releases.get(entry.task.id)?.()
+      this.releases.delete(entry.task.id)
+    }
     if (announce) this.announceFinished(entry)
   }
 
   private async continueQueue(entry: Tracked, status: TaskStatus): Promise<void> {
     try {
-      await this.sendTurn(entry, [...entry.queue], entry.queue.length)
+      await this.recoverDelivery(entry)
+      if (!entry.task.delivery && entry.queue.length) await this.sendTurn(entry)
+      else {
+        this.releases.get(entry.task.id)?.(); this.releases.delete(entry.task.id)
+        this.announceFinished(entry)
+      }
     } catch (error) {
       // The queue stays, to go with the owner's next reply.
       console.error('Queued reply was not delivered:', error)
@@ -775,7 +1144,7 @@ function isLive(status: TaskStatus): boolean { return status === 'running' || st
 
 function readPrompt(value: unknown): string {
   const prompt = typeof value === 'string' ? value.trim() : ''
-  if (!prompt || prompt.length > MAX_PROMPT) throw new AgentInputError('prompt must be 1–32000 characters')
+  if (!prompt || prompt.length > MAX_PROMPT || prompt.includes('\0')) throw new AgentInputError('prompt must be 1–32000 characters')
   return prompt
 }
 
@@ -821,7 +1190,7 @@ function decode(value: string | undefined): string {
   return value ? Buffer.from(value, 'base64').toString('utf8') : ''
 }
 
-interface PollReport { exitCode: string; stderr: string; data: Buffer; requests: Array<{ id: string; json: string }> }
+interface PollReport { draft?: AgentDraft & { after: number }; exitCode: string; stderr: string; data: Buffer; requests: Array<{ id: string; json: string }> }
 
 /**
  * The batched poll: $1 is the per-task byte budget, then pairs of task directory and
@@ -833,10 +1202,12 @@ const POLL_SCRIPT = [
   'while [ $# -ge 2 ]; do',
   '  d=$1; o=$2; shift 2; id=${d##*/}',
   '  e=$(cat "$d/exit-code" 2>/dev/null || true); err=""',
+  '  p=$(cat "$d/pid" 2>/dev/null || true); if [ -z "$e" ] && { [ -z "$p" ] || ! kill -0 "$p" 2>/dev/null; }; then e=interrupted; fi',
   '  [ -n "$e" ] && err=$(tail -c 400 "$d/stderr.log" 2>/dev/null | base64 -w0)',
   "  printf 'T\\t%s\\t%s\\t%s\\t' \"$id\" \"$e\" \"$err\"",
   '  tail -c +"$((o + 1))" "$d/transcript.jsonl" 2>/dev/null | head -c "$max" | base64 -w0',
   "  printf '\\n'",
+  `  printf 'D\\t%s\\t%s\\n' "$id" "$(head -c 131072 "$d/draft.json" 2>/dev/null | base64 -w0)"`,
   '  for f in "$d"/approvals/*.json; do',
   '    [ -f "$f" ] || continue',
   '    r=${f##*/}; r=${r%.json}',
@@ -852,6 +1223,15 @@ export function parsePoll(output: string): Map<string, PollReport> {
     const fields = line.split('\t')
     if (fields[0] === 'T' && fields[1] && TASK_ID.test(fields[1])) {
       reports.set(fields[1], { exitCode: (fields[2] ?? '').trim(), stderr: decode(fields[3]).replace(/\n/g, ' '), data: Buffer.from(fields[4] ?? '', 'base64'), requests: [] })
+    } else if (fields[0] === 'D' && fields[1]) {
+      const report = reports.get(fields[1])
+      try {
+        const value = JSON.parse(decode(fields[2]))
+        if (report && Number.isSafeInteger(value.turn) && value.turn > 0 && Number.isSafeInteger(value.after) && value.after >= 0
+            && (value.kind === 'text' || value.kind === 'thought') && typeof value.text === 'string' && value.text.length <= 16_000) {
+          report.draft = { turn: value.turn, after: value.after, kind: value.kind, text: value.text }
+        }
+      } catch { /* A missing, partial or malformed guest snapshot is not a draft. */ }
     } else if (fields[0] === 'A' && fields[1] && fields[2] && REQUEST_ID.test(fields[2])) {
       reports.get(fields[1])?.requests.push({ id: fields[2], json: decode(fields[3]) })
     }
@@ -867,23 +1247,23 @@ const TRANSCRIPT_SCRIPT = [
 ].join('\n')
 
 /**
- * One tab-separated line per task directory, newest 30: id, agent id, start time, the
+ * One tab-separated line per task directory (or the requested $2 id): id, agent id, start time, the
  * runner's exit code, whether it is alive, transcript size, base64 prompt, base64 last line
  * that ends a turn, approval mode, turns, whether task.json exists (1 or 0), base64
  * attachment names, base64 agent name.
  */
 const RESTORE_SCRIPT = [
   'cd "$1" 2>/dev/null || exit 0',
-  'for d in $(ls -1t | head -30); do',
+  'for d in ${2:-$(ls -1t)}; do',
   '  [ -f "$d/prompt.txt" ] || continue',
   '  pid=$(cat "$d/pid" 2>/dev/null); alive=0; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && alive=1',
   '  resumable=0; [ -f "$d/task.json" ] && resumable=1',
-  `  last=$(grep -E '"type":"(turn_end|turn_failed|auth_required)"' "$d/transcript.jsonl" 2>/dev/null | tail -n 1)`,
-  '  printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$d" "$(cat "$d/agent" 2>/dev/null)" "$(stat -c %Y "$d/prompt.txt")" \\',
+  `  last=$(tail -c 2097152 "$d/transcript.jsonl" 2>/dev/null | grep -E '"type":"(turn_end|turn_failed|auth_required)"' | tail -n 1 | head -c 131072)`,
+  '  printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$d" "$(head -c 64 "$d/agent" 2>/dev/null)" "$(stat -c %Y "$d/prompt.txt")" \\',
   '    "$(cat "$d/exit-code" 2>/dev/null)" "$alive" "$(stat -c %s "$d/transcript.jsonl" 2>/dev/null || echo 0)" \\',
-  '    "$(base64 -w0 < "$d/prompt.txt")" "$(printf %s "$last" | base64 -w0)" \\',
-  '    "$(cat "$d/approval-mode" 2>/dev/null || echo auto)" "$(cat "$d/turns" 2>/dev/null || echo 1)" "$resumable" \\',
-  '    "$(ls -1 "$d/attachments" 2>/dev/null | base64 -w0)" "$(cat "$d/agent-name" 2>/dev/null | base64 -w0)"',
+  '    "$(head -c 128000 "$d/prompt.txt" | base64 -w0)" "$(printf %s "$last" | base64 -w0)" \\',
+  '    "$(head -c 8 "$d/approval-mode" 2>/dev/null || echo auto)" "$(head -c 8 "$d/turns" 2>/dev/null || echo 1)" "$resumable" \\',
+  '    "$(ls -1 "$d/attachments" 2>/dev/null | head -c 4096 | base64 -w0)" "$(head -c 400 "$d/agent-name" 2>/dev/null | base64 -w0)"',
   'done',
 ].join('\n')
 
@@ -897,4 +1277,12 @@ export class AgentConflictError extends Error {}
 export class AgentOperationError extends Error {}
 export class AgentNotFoundError extends Error {
   constructor(message = 'task not found') { super(message) }
+}
+
+/** Fixed field order; compare original request fields and file contents, never mutable launch defaults. */
+function fingerprint(input: Record<string, unknown>, files: ReturnType<typeof readAttachments>, start = false): string {
+  return createHash('sha256').update(JSON.stringify({ prompt: input.prompt,
+    ...(start ? { agent: input.agent ?? null, approvals: input.approvals ?? null, craftMcp: input.craftMcp ?? null } : {}),
+    attachments: files.map((file, index) => ({ name: (input.attachments as any[])[index].name,
+      type: (input.attachments as any[])[index].type ?? null, sha256: createHash('sha256').update(file.data).digest('hex') })) })).digest('hex')
 }

@@ -29,6 +29,13 @@ final class DesktopModel {
     var ui: CGFloat = 1
     var titleBarHeight: CGFloat { 30 * ui }
     var dockHeight: CGFloat { 76 * ui }
+    var dockBottomInset: CGFloat { 10 * ui }
+    var maximizedFrame: CGRect {
+        let area = DesktopGeometry.maximizedFrame(size: size, titleBarHeight: titleBarHeight,
+                                                 dockHeight: dockHeight, dockBottomInset: dockBottomInset, dockGap: 8 * ui)
+        return CGRect(x: area.minX * pixelsPerPoint, y: area.minY * pixelsPerPoint,
+                      width: area.width * pixelsPerPoint, height: area.height * pixelsPerPoint).integral
+    }
 
     /// The size factor for a display this many points wide: a 1600-point-wide desktop reads
     /// well across a room, so wider ones scale up to match.
@@ -210,15 +217,16 @@ final class DesktopModel {
         switch drag.hit {
         case .titleBar(let id):
             guard let window = session.windows[id] else { return }
-            let top = titleBarHeight * pixelsPerPoint
-            session.configure(window, frame: CGRect(x: drag.frame.minX + dx, y: max(top, drag.frame.minY + dy),
-                                                    width: drag.frame.width, height: drag.frame.height))
+            unzoomedFrames.removeValue(forKey: id)
+            session.configure(window, frame: CGRect(x: drag.frame.minX + dx, y: max(0, drag.frame.minY + dy),
+                                                    width: drag.frame.width, height: drag.frame.height), state: ["maximized": false])
         case .resize(let id):
             guard let window = session.windows[id] else { return }
+            unzoomedFrames.removeValue(forKey: id)
             let minimum = window.minimumSize ?? CGSize(width: 240, height: 160)
             session.configure(window, frame: CGRect(x: drag.frame.minX, y: drag.frame.minY,
                                                     width: max(minimum.width, drag.frame.width + dx),
-                                                    height: max(minimum.height, drag.frame.height + dy)))
+                                                    height: max(minimum.height, drag.frame.height + dy)), state: ["maximized": false])
         case .content(let id, _):
             guard let window = session.windows[id] else { return }
             let content = contentRect(window)
@@ -257,12 +265,14 @@ final class DesktopModel {
             raise(window.id)
             if window.frame != full { session.configure(window, frame: full) }
         } else if let previous = windowedFrames.removeValue(forKey: window.id) {
-            session.configure(window, frame: previous)
+            session.configure(window, frame: previous, state: ["maximized": false])
         }
     }
 
     /// Frames windows had before they were zoomed, to restore them.
     private var unzoomedFrames: [Int: CGRect] = [:]
+
+    func isZoomed(_ window: Int) -> Bool { unzoomedFrames[window] != nil }
 
     /// The green button: fill the desktop above the dock, or go back to where it was.
     func toggleZoom(_ id: Int, _ session: any DisplaySession) {
@@ -270,16 +280,20 @@ final class DesktopModel {
         raise(id)
         focus(id, session)
         if let previous = unzoomedFrames.removeValue(forKey: id) {
-            session.configure(window, frame: previous)
+            session.configure(window, frame: previous, state: ["maximized": false])
             return
         }
         unzoomedFrames[id] = window.frame
-        let margin = 8 * ui
-        let top = margin + titleBarHeight
-        let bottom = size.height - dockHeight - 10 * ui - margin
-        let area = CGRect(x: margin, y: top, width: size.width - 2 * margin, height: max(200, bottom - top))
-        session.configure(window, frame: CGRect(x: area.minX * pixelsPerPoint, y: area.minY * pixelsPerPoint,
-                                                width: area.width * pixelsPerPoint, height: area.height * pixelsPerPoint).integral)
+        session.configure(window, frame: maximizedFrame, state: ["maximized": false])
+    }
+
+    /// Rotation, toolbar changes and display scaling keep zoomed windows above the dock.
+    func resizeMaximizedWindows(session: (any DisplaySession)?) {
+        guard let session else { return }
+        for id in unzoomedFrames.keys {
+            guard let window = session.windows[id], !window.isFullscreen else { continue }
+            if window.frame != maximizedFrame { session.configure(window, frame: maximizedFrame, state: ["maximized": false]) }
+        }
     }
 
     /// The dock icon of an app with windows: bring back what was minimized, else bring its

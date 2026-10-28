@@ -23,7 +23,7 @@ struct ShelfTile: View {
                     else { Image(systemName: symbol(app.category)).font(.title).foregroundStyle(.secondary) }
                     if app.busy {
                         RoundedRectangle(cornerRadius: 18).fill(.black.opacity(0.45))
-                        if let value = app.progress?.value {
+                        if let value = app.progress?.downloadFraction {
                             Circle().stroke(.white.opacity(0.25), lineWidth: 4).frame(width: 32, height: 32)
                             Circle().trim(from: 0, to: value).stroke(.white, style: StrokeStyle(lineWidth: 4, lineCap: .round)).rotationEffect(.degrees(-90)).frame(width: 32, height: 32)
                         } else { ProgressView().tint(.white) }
@@ -32,7 +32,7 @@ struct ShelfTile: View {
                 .frame(width: 68, height: 68)
                 .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
                 Text(app.name).font(.caption).lineLimit(1)
-                Text(app.busy ? "Installing" : app.installedVersion != nil ? "Open" : (app.size.map { "Get · \($0)" } ?? "Get")).font(.caption2).foregroundStyle(.secondary)
+                Text(app.busy ? (app.progress?.label ?? "Preparing") : app.needsRecovery ? "Needs attention" : app.installedVersion != nil ? "Open" : (app.size.map { "Get · \($0)" } ?? "Get")).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             }
         }.buttonStyle(.plain).disabled(app.busy)
     }
@@ -85,12 +85,19 @@ struct CatalogLibrary: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(app.name).font(.body.weight(.medium))
                 Text(app.summary).font(.caption).foregroundStyle(.secondary)
-                if let error = app.lastError, !error.isEmpty { Text(error).font(.caption2).foregroundStyle(.red).lineLimit(2) }
+                if app.busy, let progress = app.progress {
+                    Text(progress.label).font(.caption2).foregroundStyle(.secondary)
+                    if let detail = progress.downloadDetail { Text(detail).font(.caption2).foregroundStyle(.secondary) }
+                }
+                else if let error = app.progress?.message ?? app.lastError, app.needsRecovery, !error.isEmpty { Text(error).font(.caption2).foregroundStyle(.red).lineLimit(2) }
                 else if app.interrupted && !app.busy { Text("Installation interrupted; try again.").font(.caption2).foregroundStyle(.orange) }
                 else if let size = app.size, app.installedVersion == nil { Text(size).font(.caption2).foregroundStyle(.secondary) }
             }
             Spacer()
             if app.busy { ProgressView() }
+            else if app.needsRecovery {
+                Button("Retry") { Task { await model.catalog.perform(app.id, action: app.progress?.operation ?? "install") } }.buttonStyle(.bordered)
+            }
             else if app.installedVersion == nil {
                 Button("Get") { Task { await model.catalog.perform(app.id, action: "install") } }.buttonStyle(.bordered)
             } else {
