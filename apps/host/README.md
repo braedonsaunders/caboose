@@ -330,7 +330,16 @@ agent. A task starts the agent seat if needed and runs as `caboose` with the sea
 (`/run/caboose/agent-display.env`, Xwayland `:101`) and the seat's D-Bus session bus
 `/run/user/1000/agent-bus`. New tasks offer installed catalog MCP commands to the agent;
 `craftMcp: false` in `POST /v1/agent/tasks` turns them off for that task and its replies.
-The list is captured when the task is created.
+The list is captured when the task is created. Replies and their staged files are admitted
+into a durable per-task guest journal before success is returned. `AgentTasks.start(input,
+{ id })` accepts a stable UUID; reply `operationId` values deduplicate retries per task and
+conflict on changed original payloads. Recovery and uncertain-delivery behavior are specified
+in the architecture and runner file protocol linked above. Focused tests:
+
+```sh
+pnpm --filter caboose-host exec vitest run src/agents.test.ts src/agent-delivery.test.ts
+pnpm --filter caboose-agentd test
+```
 
 `/v1/fs` and shared files go through the guest's file service
 ([`guest/files`](../../guest/files/README.md), port 14700, authenticated with the per-wake
