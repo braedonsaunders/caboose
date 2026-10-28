@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  appActions, catalogBusy, displayVersion, isPending, launchableFor, matchesQuery, packApps, packMissing, progressSummary,
+  appActions, catalogBusy, displayVersion, isPending, matchesQuery, packApps, packMissing, progressSummary,
   type CatalogApp, type CatalogResponse,
 } from './catalog.js'
 
@@ -41,7 +41,7 @@ describe('catalog', () => {
     expect(progressSummary({ id: 'a', operation: 'remove', phase: 'finished' })).toEqual({ label: 'Removed' })
   })
 
-  it('groups packs, counts what is missing, and finds the launchable entry by desktop id', () => {
+  it('groups packs and counts what is missing', () => {
     const catalog: CatalogResponse = {
       packs: [{ id: 'studio', name: 'Studio' }, { id: 'office', name: 'Office' }],
       apps: [app('a', { installedVersion: '1' }), app('b'), app('c', { packs: ['office'] })],
@@ -49,10 +49,6 @@ describe('catalog', () => {
     expect(packApps(catalog, 'studio').map(entry => entry.id)).toEqual(['a', 'b'])
     expect(packMissing(catalog, 'studio')).toBe(1)
     expect(packMissing(catalog, 'office')).toBe(1)
-    const launchable = [{ id: 'b.desktop', name: 'B', icon: '', categories: [], exec: 'b' }]
-    expect(launchableFor(catalog.apps[1]!, launchable)?.id).toBe('b.desktop')
-    expect(launchableFor(catalog.apps[0]!, launchable)).toBeUndefined()
-    expect(launchableFor(catalog.apps[0]!, null)).toBeUndefined()
   })
 
   it('searches names, summaries and categories, and trims Debian revisions from versions', () => {

@@ -1,17 +1,17 @@
 import * as React from 'react'
 import { DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
 import {
-  Alert, AlertDescription, AlertTitle, Badge, Button, EmptyState, Input, PageContainer, PageHeader, Progress, Select, Spinner,
+  Alert, AlertDescription, AlertTitle, Badge, Button, EmptyState, Input, Progress, Select, Spinner,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, confirmDialog, toast,
 } from '@braedonsaunders/appkit-ui'
-import { LayoutGrid, Package, Play } from 'lucide-react'
-import { CabooseApiError, type CabooseClient } from '../api.js'
+import { Package } from 'lucide-react'
+import { CabooseApiError, type CabooseClient } from '../../api.js'
 import {
-  appActions, catalogBusy, displayVersion, isPending, launchableFor, matchesQuery, packApps, packMissing, progressSummary,
-  type CatalogApp, type CatalogOperation, type CatalogResponse, type LaunchableApp,
-} from '../catalog.js'
-import { AppIcon, NotRunningNotice, errorMessage, useVisibleInterval } from '../components/common.js'
-import type { ComputerHandle } from '../useComputer.js'
+  appActions, catalogBusy, displayVersion, matchesQuery, packApps, packMissing, progressSummary,
+  type CatalogApp, type CatalogOperation, type CatalogResponse,
+} from '../../catalog.js'
+import { AppIcon, NotRunningNotice, TabIntro, errorMessage, useVisibleInterval } from '../../components/common.js'
+import type { ComputerHandle } from '../../useComputer.js'
 
 /** Fast while an operation runs, so progress moves; slow otherwise, since each listing asks the computer. */
 const BUSY_POLL_MS = 2_000
@@ -23,11 +23,8 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
   const running = computer.status?.state === 'running'
   const [catalog, setCatalog] = React.useState<CatalogResponse | null>(null)
   const [catalogError, setCatalogError] = React.useState<string | null>(null)
-  const [apps, setApps] = React.useState<LaunchableApp[] | null>(null)
-  const [appsError, setAppsError] = React.useState<string | null>(null)
   const [query, setQuery] = React.useState('')
   const [pack, setPack] = React.useState('')
-  const [launching, setLaunching] = React.useState<string | null>(null)
   const [starting, setStarting] = React.useState<string | null>(null)
 
   const handle = React.useCallback((failure: unknown, set: (message: string) => void) => {
@@ -44,32 +41,14 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
     }
   }, [client, handle])
 
-  const refreshApps = React.useCallback(async () => {
-    if (!running) return
-    try {
-      setApps(await client.apps())
-      setAppsError(null)
-    } catch (failure) {
-      handle(failure, setAppsError)
-    }
-  }, [client, handle, running])
-
   const busy = catalogBusy(catalog)
   React.useEffect(() => { void refreshCatalog() }, [refreshCatalog, running])
-  React.useEffect(() => { if (running) void refreshApps(); else setApps(null) }, [refreshApps, running])
   useVisibleInterval(() => void refreshCatalog(), busy ? BUSY_POLL_MS : IDLE_POLL_MS)
-
-  // A finished operation changes what is installed, so list the launchable apps again.
-  const wasBusy = React.useRef(false)
-  React.useEffect(() => {
-    if (wasBusy.current && !busy) void refreshApps()
-    wasBusy.current = busy
-  }, [busy, refreshApps])
 
   async function start(app: CatalogApp, operation: CatalogOperation) {
     if (operation === 'remove' && !await confirmDialog({
       title: `Remove ${app.name}?`,
-      message: 'The app is uninstalled from your computer. Files you made with it stay in your home folder.',
+      message: 'The app is uninstalled from this computer. Files made with it stay in the home folder.',
       confirmLabel: 'Remove',
       tone: 'danger',
     })) return
@@ -97,169 +76,122 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
     }
   }
 
-  async function launch(app: LaunchableApp) {
-    setLaunching(app.id)
-    try {
-      await client.launchApp(app.id)
-      toast.success(`${app.name} is opening on your computer's screen.`)
-    } catch (failure) {
-      toast.error(errorMessage(failure))
-    } finally {
-      setLaunching(null)
-    }
-  }
-
   const shown = catalog ? (pack ? packApps(catalog, pack) : catalog.apps).filter(app => matchesQuery(app, query)) : []
   const operations = catalog?.apps.filter(app => app.progress && app.progress.phase !== 'finished') ?? []
   const selectedPack = catalog?.packs.find(entry => entry.id === pack)
   const missing = catalog && pack ? packMissing(catalog, pack) : 0
-  const launchable = apps?.filter(app => matchesQuery(app, query)) ?? null
 
   return (
-    <PageContainer>
-      <div className="space-y-6">
-        <PageHeader
-          title="Apps"
-          description="Open the apps installed in your computer, and add optional ones from the Caboose catalog. Release versions are pinned and never change on their own."
-          actions={
-            <Input
-              className="w-56"
-              type="search"
-              placeholder="Search apps"
-              aria-label="Search apps"
-              value={query}
-              onChange={event => setQuery(event.target.value)}
-            />
-          }
-        />
+    <div className="space-y-6">
+      <TabIntro
+        description="Optional apps from the Caboose catalog: install, update, roll back or remove them on this computer. Release versions are pinned and never change on their own."
+        actions={
+          <Input
+            className="w-56"
+            type="search"
+            placeholder="Search apps"
+            aria-label="Search apps"
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+          />
+        }
+      />
 
-        <NotRunningNotice client={client} computer={computer}>
-          The catalog shows what was installed when the computer last ran. Wake it to open, install, update or remove apps.
-        </NotRunningNotice>
+      <NotRunningNotice client={client} computer={computer}>
+        The catalog shows what was installed when the computer last ran. Wake it to install, update or remove apps.
+      </NotRunningNotice>
 
-        {operations.length ? (
-          <DashboardPanel title="Operations" icon={<Package className="size-4" aria-hidden />}>
-            <ul className="space-y-3">
-              {operations.map(app => <OperationRow key={app.id} app={app} />)}
-            </ul>
-          </DashboardPanel>
-        ) : null}
-
-        {running ? (
-          <DashboardPanel title="On your computer" icon={<LayoutGrid className="size-4" aria-hidden />}>
-            {appsError ? (
-              <Alert variant="destructive"><AlertDescription>{appsError}</AlertDescription></Alert>
-            ) : launchable === null ? (
-              <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Listing apps…</div>
-            ) : launchable.length === 0 ? (
-              <p className="text-sm text-fg-muted">{query ? 'No installed app matches your search.' : 'No apps with a desktop entry were found.'}</p>
-            ) : (
-              <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-                {launchable.map(app => (
-                  <li key={app.id} className="flex items-center gap-3 rounded-md border p-2">
-                    <AppIcon src={app.icon || null} name={app.name} size={36} />
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium" title={app.name}>{app.name}</span>
-                    <Button size="sm" variant="outline" disabled={launching !== null} onClick={() => void launch(app)} aria-label={`Open ${app.name}`}>
-                      <Play className="size-3.5" aria-hidden />{launching === app.id ? 'Opening…' : 'Open'}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </DashboardPanel>
-        ) : null}
-
-        <DashboardPanel
-          title="Catalog"
-          icon={<Package className="size-4" aria-hidden />}
-          actions={catalog ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <Select className="w-48" aria-label="Pack" value={pack} onChange={event => setPack(event.target.value)}>
-                <option value="">All apps</option>
-                {catalog.packs.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-              </Select>
-              {selectedPack ? (
-                <Button
-                  size="sm"
-                  disabled={!running || busy || missing === 0 || starting !== null}
-                  onClick={() => void installPack(selectedPack.id, selectedPack.name)}
-                >
-                  {missing ? `Install ${selectedPack.name} (${missing})` : 'All installed'}
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
-        >
-          {catalogError ? (
-            <Alert variant="destructive" className="mb-3"><AlertTitle>The catalog could not be read</AlertTitle><AlertDescription>{catalogError}</AlertDescription></Alert>
-          ) : null}
-          {!catalog ? (
-            catalogError ? null : <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Reading the catalog…</div>
-          ) : shown.length === 0 ? (
-            <EmptyState icon={<Package className="size-6" aria-hidden />} title="No apps match" description="Try another search or pack." />
-          ) : (
-            <Table containerClassName="border-0 shadow-none">
-              <TableHeader>
-                <TableRow noAnimate>
-                  <TableHead>App</TableHead>
-                  <TableHead className="hidden md:table-cell">Category</TableHead>
-                  <TableHead>Version</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {shown.map(app => {
-                  const entry = launchableFor(app, apps)
-                  const pending = isPending(app.progress)
-                  return (
-                    <TableRow key={app.id}>
-                      <TableCell>
-                        <div className="flex min-w-0 items-center gap-3">
-                          <AppIcon src={app.iconData ?? entry?.icon ?? null} name={app.name} size={32} />
-                          <div className="min-w-0">
-                            <div className="truncate font-medium">{app.name}</div>
-                            <div className="truncate text-xs text-fg-muted">{app.summary}</div>
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell className="hidden text-sm text-fg-muted md:table-cell">{app.category}</TableCell>
-                      <TableCell className="text-sm">
-                        <VersionCell app={app} />
-                      </TableCell>
-                      <TableCell>
-                        <StatusCell app={app} />
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap justify-end gap-2">
-                          {entry && running ? (
-                            <Button size="sm" variant="outline" disabled={launching !== null || pending} onClick={() => void launch(entry)}>
-                              {launching === entry.id ? 'Opening…' : 'Open'}
-                            </Button>
-                          ) : null}
-                          {appActions(app).map(operation => (
-                            <Button
-                              key={operation}
-                              size="sm"
-                              variant={operation === 'remove' ? 'ghost' : operation === 'install' || operation === 'update' ? 'default' : 'outline'}
-                              disabled={!running || busy || starting !== null}
-                              title={!running ? 'Wake the computer first.' : busy ? 'Another operation is running.' : undefined}
-                              onClick={() => void start(app, operation)}
-                            >
-                              {ACTION_LABEL[operation]}
-                            </Button>
-                          ))}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
-          )}
+      {operations.length ? (
+        <DashboardPanel title="Operations" icon={<Package className="size-4" aria-hidden />}>
+          <ul className="space-y-3">
+            {operations.map(app => <OperationRow key={app.id} app={app} />)}
+          </ul>
         </DashboardPanel>
-      </div>
-    </PageContainer>
+      ) : null}
+
+      <DashboardPanel
+        title="Catalog"
+        icon={<Package className="size-4" aria-hidden />}
+        actions={catalog ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Select className="w-48" aria-label="Pack" value={pack} onChange={event => setPack(event.target.value)}>
+              <option value="">All apps</option>
+              {catalog.packs.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+            </Select>
+            {selectedPack ? (
+              <Button
+                size="sm"
+                disabled={!running || busy || missing === 0 || starting !== null}
+                onClick={() => void installPack(selectedPack.id, selectedPack.name)}
+              >
+                {missing ? `Install ${selectedPack.name} (${missing})` : 'All installed'}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+      >
+        {catalogError ? (
+          <Alert variant="destructive" className="mb-3"><AlertTitle>The catalog could not be read</AlertTitle><AlertDescription>{catalogError}</AlertDescription></Alert>
+        ) : null}
+        {!catalog ? (
+          catalogError ? null : <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Reading the catalog…</div>
+        ) : shown.length === 0 ? (
+          <EmptyState icon={<Package className="size-6" aria-hidden />} title="No apps match" description="Try another search or pack." />
+        ) : (
+          <Table containerClassName="border-0 shadow-none">
+            <TableHeader>
+              <TableRow noAnimate>
+                <TableHead>App</TableHead>
+                <TableHead className="hidden md:table-cell">Category</TableHead>
+                <TableHead>Version</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {shown.map(app => {
+                return (
+                  <TableRow key={app.id}>
+                    <TableCell>
+                      <div className="flex min-w-0 items-center gap-3">
+                        <AppIcon src={app.iconData} name={app.name} size={32} />
+                        <div className="min-w-0">
+                          <div className="truncate font-medium">{app.name}</div>
+                          <div className="truncate text-xs text-fg-muted">{app.summary}</div>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="hidden text-sm text-fg-muted md:table-cell">{app.category}</TableCell>
+                    <TableCell className="text-sm">
+                      <VersionCell app={app} />
+                    </TableCell>
+                    <TableCell>
+                      <StatusCell app={app} />
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        {appActions(app).map(operation => (
+                          <Button
+                            key={operation}
+                            size="sm"
+                            variant={operation === 'remove' ? 'ghost' : operation === 'install' || operation === 'update' ? 'default' : 'outline'}
+                            disabled={!running || busy || starting !== null}
+                            title={!running ? 'Wake the computer first.' : busy ? 'Another operation is running.' : undefined}
+                            onClick={() => void start(app, operation)}
+                          >
+                            {ACTION_LABEL[operation]}
+                          </Button>
+                        ))}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
+        )}
+      </DashboardPanel>
+    </div>
   )
 }
 

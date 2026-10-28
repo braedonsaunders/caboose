@@ -4,57 +4,26 @@ import {
   Alert, AlertDescription, AlertTitle, Badge, PageContainer, PageHeader, Spinner,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@braedonsaunders/appkit-ui'
-import { Activity, Cpu, HardDrive, Server, SlidersHorizontal } from 'lucide-react'
-import { CabooseApiError, type CabooseClient } from '../api.js'
-import { errorMessage, useVisibleInterval } from '../components/common.js'
-import { gpuLabel, healthFacts, runtimeLabel, upgradeLabel, type HealthStatus, type HostInfo } from '../host.js'
-import { stateLabel, stateTone } from '../state.js'
-import type { ComputerHandle } from '../useComputer.js'
+import { Activity, Bell, Cpu, HardDrive, MemoryStick, Server, SlidersHorizontal } from 'lucide-react'
+import { formatMemoryMb } from '../api.js'
+import { formatBytes } from '../files.js'
+import { gpuLabel, healthFacts, runtimeLabel } from '../host.js'
+import type { HostHandle } from '../useHost.js'
 
-const HEALTH_POLL_MS = 10_000
-/** Only the first value of a persisted setting: Settings overrides them once saved. */
+/** Only the first value of a persisted setting: the computer's Settings override them once saved. */
 const INITIAL_ONLY = new Set(['CABOOSE_MEMORY_MB', 'CABOOSE_VCPUS', 'CABOOSE_IDLE_MS'])
 
-export function System({ client, computer, onUnauthorized }: { client: CabooseClient; computer: ComputerHandle; onUnauthorized: () => void }) {
-  const [host, setHost] = React.useState<HostInfo | null>(null)
-  const [hostError, setHostError] = React.useState<{ status: number; message: string } | null>(null)
-  const [health, setHealth] = React.useState<HealthStatus | null>(null)
-  const [healthError, setHealthError] = React.useState<string | null>(null)
-
-  React.useEffect(() => {
-    let current = true
-    client.host().then(
-      value => { if (current) setHost(value) },
-      failure => {
-        if (!current) return
-        if (failure instanceof CabooseApiError && failure.isUnauthorized) onUnauthorized()
-        else setHostError({ status: failure instanceof CabooseApiError ? failure.status : 0, message: errorMessage(failure) })
-      },
-    )
-    return () => { current = false }
-  }, [client, onUnauthorized])
-
-  const refreshHealth = React.useCallback(async () => {
-    try {
-      setHealth(await client.health())
-      setHealthError(null)
-    } catch (failure) {
-      if (failure instanceof CabooseApiError && failure.isUnauthorized) onUnauthorized()
-      else setHealthError(errorMessage(failure))
-    }
-  }, [client, onUnauthorized])
-  React.useEffect(() => { void refreshHealth() }, [refreshHealth])
-  useVisibleInterval(() => void refreshHealth(), HEALTH_POLL_MS)
-
-  const status = computer.status
-  const upgrade = status?.upgrade
+/** The host itself: what it runs on, how it was started and how it is doing. Read-only. */
+export function Host({ host }: { host: HostHandle }) {
+  const { info: hostInfo, infoError: hostError, health, healthError } = host
+  const machine = health?.machine
 
   return (
     <PageContainer>
       <div className="space-y-6">
         <PageHeader
-          title="System"
-          description="The host this console talks to: what it runs, how it was started and how it is doing. Everything here is read-only."
+          title="Host"
+          description="The machine this console talks to: what it runs, how it was started and how it is doing. Everything here is read-only."
         />
 
         {hostError ? (
@@ -65,39 +34,23 @@ export function System({ client, computer, onUnauthorized }: { client: CabooseCl
         ) : null}
 
         <div className="grid gap-4 sm:grid-cols-3">
-          <DashboardMetricCard label="caboose-host" value={host ? host.version : '—'} detail={host ? `Node ${host.node.replace(/^v/, '')}` : undefined} icon={<Server className="size-4" aria-hidden />} />
-          <DashboardMetricCard label="Runtime" value={host ? runtimeLabel(host.runtime) : '—'} detail={host ? (host.runtime === 'container' ? 'Docker, frozen when parked' : 'Cloud Hypervisor, parked with memory') : undefined} icon={<HardDrive className="size-4" aria-hidden />} />
-          <DashboardMetricCard label="GPU" value={host ? gpuLabel(host.gpu) : '—'} icon={<Cpu className="size-4" aria-hidden />} />
+          <DashboardMetricCard label="caboose-host" value={hostInfo ? hostInfo.version : '—'} detail={hostInfo ? `Node ${hostInfo.node.replace(/^v/, '')}` : undefined} icon={<Server className="size-4" aria-hidden />} />
+          <DashboardMetricCard label="Runtime" value={hostInfo ? runtimeLabel(hostInfo.runtime) : '—'} detail={hostInfo ? (hostInfo.runtime === 'container' ? 'Docker, frozen when parked' : 'Cloud Hypervisor, parked with memory') : undefined} icon={<HardDrive className="size-4" aria-hidden />} />
+          <DashboardMetricCard label="GPU" value={hostInfo ? gpuLabel(hostInfo.gpu) : '—'} icon={<Cpu className="size-4" aria-hidden />} />
         </div>
 
         <div className="grid gap-6 xl:grid-cols-2">
-          <DashboardPanel title="Computer" icon={<HardDrive className="size-4" aria-hidden />}>
+          <DashboardPanel title="Machine" icon={<MemoryStick className="size-4" aria-hidden />}>
             <dl className="grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-2 text-sm">
-              <dt className="text-fg-muted">State</dt>
-              <dd>{status ? <Badge variant={stateTone(status.state)}>{stateLabel(status.state)}</Badge> : '—'}</dd>
+              <dt className="text-fg-muted">Memory</dt>
+              <dd>{machine ? `${formatMemoryMb(machine.memoryMb)}, ${formatMemoryMb(machine.availableMemoryMb)} available` : '—'}</dd>
+              <dt className="text-fg-muted">CPUs</dt>
+              <dd>{machine ? machine.cpus : '—'}</dd>
+              <dt className="text-fg-muted">Disk</dt>
+              <dd>{machine?.disk ? `${formatBytes(machine.disk.freeBytes)} free of ${formatBytes(machine.disk.totalBytes)}` : '—'}</dd>
               <dt className="text-fg-muted">Image</dt>
-              <dd className="break-all">{host?.image ?? '—'}</dd>
-              <dt className="text-fg-muted">Push notifications</dt>
-              <dd>{host ? (host.push ? 'Configured' : 'Not configured') : '—'}</dd>
-              <dt className="text-fg-muted">Live Activities</dt>
-              <dd>{host ? (host.liveActivities ? 'Configured' : 'Not configured') : '—'}</dd>
-              {upgrade ? (
-                <>
-                  <dt className="text-fg-muted">Components</dt>
-                  <dd>
-                    <Badge variant={upgrade.state === 'failed' ? 'destructive' : upgrade.state === 'succeeded' ? 'success' : 'info'}>{upgradeLabel(upgrade)}</Badge>
-                    {upgrade.version ? <div className="mt-1 font-mono text-xs text-fg-muted" title="Hash of the bundled guest components">{upgrade.version.slice(0, 12)}</div> : null}
-                    {upgrade.message ? <p className="mt-1 text-xs text-fg-muted">{upgrade.message}</p> : null}
-                  </dd>
-                </>
-              ) : null}
+              <dd className="break-all">{hostInfo?.image ?? '—'}</dd>
             </dl>
-            {status?.lastError ? (
-              <Alert variant="destructive" className="mt-4">
-                <AlertTitle>Last lifecycle error</AlertTitle>
-                <AlertDescription className="font-mono text-xs break-all">{status.lastError}</AlertDescription>
-              </Alert>
-            ) : null}
           </DashboardPanel>
 
           <DashboardPanel title="Health" icon={<Activity className="size-4" aria-hidden />}>
@@ -118,12 +71,23 @@ export function System({ client, computer, onUnauthorized }: { client: CabooseCl
           </DashboardPanel>
         </div>
 
-        {host ? (
+        {hostInfo ? (
+          <DashboardPanel title="Notifications" icon={<Bell className="size-4" aria-hidden />}>
+            <dl className="grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-2 text-sm">
+              <dt className="text-fg-muted">Push notifications</dt>
+              <dd>{hostInfo.push ? 'Configured' : 'Not configured: set the CABOOSE_APNS_* variables and restart the host'}</dd>
+              <dt className="text-fg-muted">Live Activities</dt>
+              <dd>{hostInfo.liveActivities ? 'Configured' : 'Not configured'}</dd>
+            </dl>
+          </DashboardPanel>
+        ) : null}
+
+        {hostInfo ? (
           <DashboardPanel title="Configuration" icon={<SlidersHorizontal className="size-4" aria-hidden />}>
             <p className="mb-3 text-sm text-fg-muted">
               The host reads these when it starts. To change one, set it in the host's environment (<code>deploy/.env</code> for
               Docker Compose, or the service's environment file) and restart caboose-host; it parks the computer before it stops.
-              Name, memory, vCPUs, auto-park and the default agent are edited in Settings instead.
+              A computer's name, memory, vCPUs and auto-park are edited in its Settings instead.
             </p>
             <Table containerClassName="border-0 shadow-none">
               <TableHeader>
@@ -133,13 +97,13 @@ export function System({ client, computer, onUnauthorized }: { client: CabooseCl
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {host.settings.map(setting => (
+                {hostInfo.settings.map(setting => (
                   <TableRow key={setting.name}>
                     <TableCell><code className="text-xs">{setting.name}</code></TableCell>
                     <TableCell>
                       <span className="break-all font-mono text-xs">{setting.value}</span>
                       {setting.default ? <Badge variant="outline" className="ml-2">default</Badge> : null}
-                      {INITIAL_ONLY.has(setting.name) ? <span className="ml-2 text-xs text-fg-muted">initial value; Settings overrides it</span> : null}
+                      {INITIAL_ONLY.has(setting.name) ? <span className="ml-2 text-xs text-fg-muted">initial value; the computer's Settings override it</span> : null}
                     </TableCell>
                   </TableRow>
                 ))}

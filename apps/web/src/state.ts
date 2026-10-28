@@ -1,4 +1,4 @@
-import type { ComputerState, ComputerStatus, TaskStatus } from './api.js'
+import type { ComputerState, ComputerStatus } from './api.js'
 
 export type Tone = 'success' | 'warning' | 'info' | 'destructive' | 'secondary'
 
@@ -39,20 +39,6 @@ export function availableActions(status: Pick<ComputerStatus, 'state' | 'capabil
     park: status.state === 'running',
     restart: settled && status.capabilities.restart,
   }
-}
-
-export function taskTone(status: TaskStatus): Tone {
-  switch (status) {
-    case 'running': return 'info'
-    case 'paused': return 'warning'
-    case 'succeeded': return 'success'
-    case 'failed': return 'destructive'
-    case 'cancelled': return 'secondary'
-  }
-}
-
-export function isLiveTask(status: TaskStatus): boolean {
-  return status === 'running' || status === 'paused'
 }
 
 /** Whole-gigabyte steps within the host's bounds, plus the current value when it is not one. */

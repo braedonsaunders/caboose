@@ -1,4 +1,4 @@
-import type { CatalogOperation, CatalogResponse, LaunchableApp } from './catalog.js'
+import type { CatalogOperation, CatalogResponse } from './catalog.js'
 import { fsQuery, joinPath, numberedName, type FileItem } from './files.js'
 import type { ComponentsUpgrade, HealthStatus, HostInfo } from './host.js'
 
@@ -20,8 +20,6 @@ export interface ComputerSettings {
   memoryMb: number
   vcpus: number
   idleMs: number
-  /** The ACP registry id tasks run when they name no agent. Absent from hosts older than the registry. */
-  defaultAgent?: string | null
 }
 
 export interface ComputerResources {
@@ -38,10 +36,6 @@ export interface ComputerStatus {
   clients: {
     display: number
     control: number
-  }
-  tasks: {
-    running: number
-    paused: number
   }
   capabilities: {
     restart: boolean
@@ -75,130 +69,6 @@ export interface SessionInfo {
     memoryMb: number
     vcpus: number
   }
-}
-
-export type TaskStatus = 'running' | 'paused' | 'succeeded' | 'failed' | 'cancelled'
-
-export type ApprovalMode = 'ask' | 'auto'
-
-/** A way to sign in to an agent, as the agent announced it over ACP. */
-export interface SignInMethod {
-  id: string
-  name: string
-  description?: string
-  /** "agent": the agent opens a browser sign-in on the computer's screen; "terminal": a terminal window runs its login. */
-  type: 'agent' | 'terminal'
-}
-
-export interface SignInStatus {
-  methodId: string
-  status: 'running' | 'succeeded' | 'failed'
-  message?: string
-  startedAt?: string
-  finishedAt?: string
-}
-
-/** An agent from the Agent Client Protocol registry, as this computer can run it. */
-export interface AgentListing {
-  id: string
-  name: string
-  version: string
-  description: string
-  icon: string | null
-  website: string | null
-  repository: string | null
-  license: string | null
-  distribution: 'npx' | 'uvx' | 'binary'
-  installed: { version: string } | null
-  signIn?: SignInMethod[]
-  signInStatus?: SignInStatus
-  /** Variable names the agent's environment file in the computer sets; never values. */
-  env?: string[]
-}
-
-export interface AgentsResponse {
-  agents: AgentListing[]
-  defaultAgent: string | null
-  registry: { fetchedAt: string | null; error?: string }
-}
-
-/** A tool use the agent is waiting on the owner to allow or deny. */
-export interface PendingApproval {
-  id: string
-  tool: string
-  summary: string
-  options?: Array<{ id: string; name: string; kind: string }>
-}
-
-export interface AgentTask {
-  id: string
-  /** The agent's registry id ("claude" or "codex" from hosts older than the registry). */
-  agent: string
-  agentName?: string
-  prompt: string
-  status: TaskStatus
-  startedAt: string
-  finishedAt?: string
-  summary?: string
-  /** 1 for a fresh task, plus one per reply. Absent from hosts older than replies. */
-  turns?: number
-  approvals?: ApprovalMode
-  pendingApproval?: PendingApproval
-  attachments?: string[]
-  /** Set when the agent was signed out: the ways to sign in. */
-  signIn?: SignInMethod[]
-}
-
-export interface AgentAttachment {
-  name: string
-  type: string
-  /** base64 */
-  data: string
-}
-
-export interface StartAgentTaskInput {
-  prompt: string
-  /** A registry id; the host's default agent when absent. */
-  agent?: string
-  /** Ask the owner before each tool use the agent requests permission for. */
-  approvals?: ApprovalMode
-  attachments?: AgentAttachment[]
-}
-
-/** A finished task can be continued; a live one is still working. */
-export function canReply(task: Pick<AgentTask, 'status'>): boolean {
-  return task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled'
-}
-
-/** What to call a task's agent. */
-export function agentLabel(task: Pick<AgentTask, 'agent' | 'agentName'>, agents?: AgentListing[]): string {
-  return task.agentName ?? agents?.find(agent => agent.id === task.agent)?.name ?? task.agent
-}
-
-/** Installed agents first (the default leading), then the rest in registry order. */
-export function orderAgents(agents: AgentListing[], defaultAgent: string | null): AgentListing[] {
-  const rank = (agent: AgentListing) => agent.id === defaultAgent ? 0 : agent.installed ? 1 : 2
-  return agents.map((agent, index) => ({ agent, index })).sort((a, b) => rank(a.agent) - rank(b.agent) || a.index - b.index).map(({ agent }) => agent)
-}
-
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
-
-/** Why an environment variable cannot be saved, or undefined when it can. */
-export function envProblem(name: string, value: string): string | undefined {
-  if (!ENV_NAME.test(name.trim())) return 'Use a variable name such as OPENROUTER_API_KEY: letters, digits and underscores.'
-  if (!value) return 'Enter a value.'
-  if (/[\r\n\0]/.test(value) || value.length > 8192) return 'The value must be one line of at most 8192 characters.'
-  return undefined
-}
-
-/** An installed agent whose registry version has moved on. */
-export function hasUpdate(agent: Pick<AgentListing, 'installed' | 'version'>): boolean {
-  return Boolean(agent.installed && agent.installed.version !== agent.version)
-}
-
-/** The option of a pending approval that allows this kind of request from now on, if the agent offers one. */
-export function alwaysAllowOption(approval: PendingApproval): { id: string; name: string } | undefined {
-  return approval.options?.find(option => option.kind === 'allow_always')
 }
 
 export const DEFAULT_LIMITS: ComputerLimits = {
@@ -279,7 +149,6 @@ export function validateSettingsInput(
       memoryMb: input.memoryMb,
       vcpus: input.vcpus,
       idleMs: input.idleMs,
-      ...(input.defaultAgent !== undefined ? { defaultAgent: input.defaultAgent } : {}),
     },
   }
 }
@@ -294,7 +163,6 @@ export function computeSettingsPatch(
   if (next.memoryMb !== current.memoryMb) patch.memoryMb = next.memoryMb
   if (next.vcpus !== current.vcpus) patch.vcpus = next.vcpus
   if (next.idleMs !== current.idleMs) patch.idleMs = next.idleMs
-  if (next.defaultAgent !== undefined && next.defaultAgent !== (current.defaultAgent ?? null)) patch.defaultAgent = next.defaultAgent
   return patch
 }
 
@@ -500,15 +368,6 @@ export class CabooseClient {
     return this.request<{ accepted: true }>('POST', `/v1/catalog/packs/${encodeURIComponent(id)}/install`, { timeoutMs: 30_000 })
   }
 
-  /** Launchable apps; answers 409 while the computer is not running. */
-  apps(): Promise<LaunchableApp[]> {
-    return this.request<LaunchableApp[]>('GET', '/v1/apps', { timeoutMs: 90_000 })
-  }
-
-  launchApp(id: string): Promise<{ launched: true }> {
-    return this.request<{ launched: true }>('POST', `/v1/apps/${encodeURIComponent(id)}/launch`, { timeoutMs: 60_000 })
-  }
-
   /** Lists a home-relative folder. Every /v1/fs request wakes a parked computer. */
   async listFiles(path: string): Promise<FileItem[]> {
     const { items } = await this.request<{ items: FileItem[] }>('GET', `/v1/fs/list?${fsQuery(path)}`, { timeoutMs: 300_000 })
@@ -553,82 +412,5 @@ export class CabooseClient {
   /** Moves an item to the computer's Trash. */
   trashFile(path: string): Promise<{ deleted: true }> {
     return this.request<{ deleted: true }>('DELETE', `/v1/fs/item?${fsQuery(path)}`, { timeoutMs: 300_000 })
-  }
-
-  /** Opens a file or folder with its default app on the computer's screen. */
-  openOnComputer(path: string): Promise<{ opened: true }> {
-    return this.request<{ opened: true }>('POST', '/v1/fs/open', { body: { path }, timeoutMs: 300_000 })
-  }
-
-  agentTasks(): Promise<AgentTask[]> {
-    return this.request<AgentTask[]>('GET', '/v1/agent/tasks', { timeoutMs: 20_000 })
-  }
-
-  agents(): Promise<AgentsResponse> {
-    return this.request<AgentsResponse>('GET', '/v1/agents', { timeoutMs: 30_000 })
-  }
-
-  /** Downloads the agent into the computer; this can take minutes for a large agent. */
-  installAgent(id: string): Promise<{ agent: AgentListing }> {
-    return this.request<{ agent: AgentListing }>('POST', `/v1/agents/${encodeURIComponent(id)}/install`, { timeoutMs: 900_000 })
-  }
-
-  signInAgent(id: string, methodId: string): Promise<{ started: true; method: SignInMethod }> {
-    return this.request<{ started: true; method: SignInMethod }>('POST', `/v1/agents/${encodeURIComponent(id)}/sign-in`, {
-      body: { methodId },
-      timeoutMs: 240_000,
-    })
-  }
-
-  /** Sets or removes variables in the agent's environment file in the computer; returns the names it sets. */
-  setAgentEnv(id: string, changes: { set?: Record<string, string>; remove?: string[] }): Promise<{ env: string[] }> {
-    return this.request<{ env: string[] }>('PUT', `/v1/agents/${encodeURIComponent(id)}/env`, { body: changes, timeoutMs: 30_000 })
-  }
-
-  startAgentTask(input: StartAgentTaskInput): Promise<{ id: string }> {
-    const body: StartAgentTaskInput = { prompt: input.prompt }
-    if (input.agent) body.agent = input.agent
-    if (input.approvals === 'ask') body.approvals = 'ask'
-    if (input.attachments?.length) body.attachments = input.attachments
-    return this.request<{ id: string }>('POST', '/v1/agent/tasks', {
-      body,
-      timeoutMs: input.attachments?.length ? 120_000 : 30_000,
-    })
-  }
-
-  replyToAgentTask(id: string, prompt: string): Promise<{ task: AgentTask }> {
-    return this.request<{ task: AgentTask }>('POST', `/v1/agent/tasks/${encodeURIComponent(id)}/reply`, {
-      body: { prompt },
-      timeoutMs: 30_000,
-    })
-  }
-
-  resolveAgentApproval(id: string, requestId: string, allow: boolean, options: { message?: string; optionId?: string } = {}): Promise<{ resolved: boolean }> {
-    const body: { allow: boolean; message?: string; optionId?: string } = { allow }
-    if (options.message?.trim()) body.message = options.message.trim()
-    if (options.optionId) body.optionId = options.optionId
-    return this.request<{ resolved: boolean }>(
-      'POST',
-      `/v1/agent/tasks/${encodeURIComponent(id)}/approvals/${encodeURIComponent(requestId)}`,
-      { body, timeoutMs: 20_000 },
-    )
-  }
-
-  cancelAgentTask(id: string): Promise<{ cancelled: boolean }> {
-    return this.request<{ cancelled: boolean }>('POST', `/v1/agent/tasks/${encodeURIComponent(id)}/cancel`, {
-      timeoutMs: 20_000,
-    })
-  }
-
-  pauseAgentTask(id: string): Promise<{ paused: boolean }> {
-    return this.request<{ paused: boolean }>('POST', `/v1/agent/tasks/${encodeURIComponent(id)}/pause`, {
-      timeoutMs: 20_000,
-    })
-  }
-
-  resumeAgentTask(id: string): Promise<{ resumed: boolean }> {
-    return this.request<{ resumed: boolean }>('POST', `/v1/agent/tasks/${encodeURIComponent(id)}/resume`, {
-      timeoutMs: 20_000,
-    })
   }
 }

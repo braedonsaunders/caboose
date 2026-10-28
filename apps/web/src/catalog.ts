@@ -50,16 +50,6 @@ export interface CatalogResponse {
   apps: CatalogApp[]
 }
 
-/** A launchable app from the computer's .desktop files (`GET /v1/apps`). */
-export interface LaunchableApp {
-  id: string
-  name: string
-  /** A PNG data URL, or empty when the app has no icon. */
-  icon: string
-  categories: string[]
-  exec: string
-}
-
 /** An operation the host has accepted and not yet finished. */
 export function isPending(progress: CatalogProgress | null): boolean {
   return progress?.phase === 'queued' || progress?.phase === 'installing'
@@ -121,9 +111,4 @@ export function matchesQuery(app: { name: string; summary?: string; category?: s
   const needle = query.trim().toLowerCase()
   if (!needle) return true
   return [app.name, app.summary ?? '', app.category ?? '', ...(app.categories ?? [])].some(value => value.toLowerCase().includes(needle))
-}
-
-/** The installed desktop entry a catalog app put in the computer, if it is there. */
-export function launchableFor(app: Pick<CatalogApp, 'desktopId'>, apps: LaunchableApp[] | null): LaunchableApp | undefined {
-  return apps?.find(entry => entry.id === app.desktopId)
 }

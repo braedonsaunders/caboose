@@ -35,9 +35,19 @@ export interface DeskStats {
   snapshotCpuFallbacks: number
 }
 
-export type HealthStatus =
+/** The machine the host runs on (`GET /v1/health` `machine`): what its computers share. */
+export interface MachineResources {
+  memoryMb: number
+  availableMemoryMb: number
+  cpus: number
+  /** The volume holding the computers' disks and memory snapshots; null when the host cannot read it. */
+  disk: { totalBytes: number; freeBytes: number } | null
+}
+
+export type HealthStatus = (
   | { host: string; kvm: boolean; desk: DeskStats }
   | { host: string; runtime: 'container'; gpu: GpuKind; container: string; running: boolean }
+) & { machine?: MachineResources }
 
 /** The guest-components upgrade a host runs on wake, when it reports one (`GET /v1/computer` `upgrade`). */
 export interface ComponentsUpgrade {
@@ -88,4 +98,19 @@ export function upgradeLabel(upgrade: ComponentsUpgrade): string {
     case 'succeeded': return 'Caboose components are up to date'
     case 'failed': return 'Caboose components could not be updated'
   }
+}
+
+/** A host problem worth showing above everything else, from what `/v1/health` reports. */
+export function healthProblems(health: HealthStatus): string[] {
+  if (!('desk' in health)) return []
+  return [
+    ...(health.kvm ? [] : ['/dev/kvm is not present, so the host cannot start a microVM.']),
+    ...(health.desk.lastError ? [health.desk.lastError] : []),
+  ]
+}
+
+/** How much of a shared resource the computers are given, as a whole percentage of the machine. */
+export function sharePercent(assigned: number, total: number): number {
+  if (!(total > 0)) return 0
+  return Math.round((assigned / total) * 100)
 }

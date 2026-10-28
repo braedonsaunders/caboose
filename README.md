@@ -77,10 +77,10 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 | **iOS app** (`apps/ios`) | SwiftUI shell over UIKit and Metal. Each Linux window is its own Metal surface; H.264, HEVC and, where the device has a decoder, AV1 decode in VideoToolbox straight into GPU memory. Touch, hardware trackpad and mouse, the iOS keyboard with autocorrect, dictation and CJK input, ⌘ shortcuts sent as Control, and a TV mode with the phone as a trackpad. Extensions put the computer in the Files app and the share sheet, and add widgets and Live Activities. |
 | **CabooseKit** (`apps/ios/CabooseKit`) | The display client as a Swift package: `CabooseDisplaySession` speaks the Caboose Display Protocol, with native touch, IME text, video layers and Opus sound. Unit-tested against the protocol's golden vectors. |
 | **Host** (`apps/host`) | `caboose-host`, TypeScript on Node 22. Owner-token auth, computer lifecycle (wake, lease, park with memory, cold restart), a display relay that never decodes a pixel, the app catalog, files, the agent task API, and the management API. |
-| **Console** (`apps/web`) | The self-host web console the host serves: state and resources, wake, park and restart, apps, files, agents, devices, settings, and the link that signs an iPhone in. |
+| **Console** (`apps/web`) | The self-host web console the host serves, for running the server rather than using the computer: what the computers are given of the machine, each computer's state, wake, park and restart, files, catalog apps, phones and settings, and the host's own health and configuration. |
 | **The computer** (`guest/`) | A Debian 13 golden image on Cloud Hypervisor. Each computer is a copy-on-write clone of it and keeps its own installs. The image includes Chromium, Firefox, VS Code, LibreOffice, Obsidian, Docker, a modern shell kit, and Claude Code, Codex, OpenCode and Gemini CLI; more apps, such as GIMP, install from the catalog. On a GPU host it can run as a container instead (WSL2, NVIDIA, or an Intel or AMD render node). |
 | **Caboose Display** (`guest/display`) | The computer's display server, in Rust: a headless Wayland compositor with Xwayland that streams each window on its own. |
-| **Agents** | Any agent in the [Agent Client Protocol registry](https://github.com/agentclientprotocol/registry), installed and signed in from the console, run by `caboose-agentd` in the computer on a second display only agents use, with `caboose-desktop-mcp` giving them accessibility-tree, screenshot, click, type, key, scroll, drag and launch tools for GUI apps. |
+| **Agents** | Any agent in the [Agent Client Protocol registry](https://github.com/agentclientprotocol/registry), installed and signed in from the iPhone app, run by `caboose-agentd` in the computer on a second display only agents use, with `caboose-desktop-mcp` giving them accessibility-tree, screenshot, click, type, key, scroll, drag and launch tools for GUI apps. |
 
 ## How it works
 
@@ -148,7 +148,7 @@ Then:
    `vmlinux` and `initrd` to `/data/caboose/disks`, the host's disk root
    ([guest/image](guest/image/README.md)).
 2. **Open the console** at `http://localhost:7310` (or behind your HTTPS proxy), sign in
-   with the owner token, and use **Connect your iPhone** to sign the app in.
+   with the owner token, and use **Computer › Phones › Connect a phone** to sign the app in.
 3. **Build the iOS app** with XcodeGen ([apps/ios](apps/ios/README.md)).
 
 The host listens on loopback by default and speaks plain HTTP. Put HTTPS in front of it

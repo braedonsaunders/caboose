@@ -30,7 +30,7 @@ export function NotRunningNotice({ client, computer, children }: { client: Caboo
   const moving = isTransitioning(state)
   return (
     <Alert variant={state === 'error' ? 'destructive' : 'info'}>
-      <AlertTitle>{moving ? `${stateLabel(state)}…` : state === 'error' ? 'Your computer needs attention' : 'Your computer is parked'}</AlertTitle>
+      <AlertTitle>{moving ? `${stateLabel(state)}…` : state === 'error' ? 'This computer needs attention' : 'This computer is parked'}</AlertTitle>
       <AlertDescription>
         <div className="flex flex-wrap items-center gap-3">
           <span className="min-w-0 flex-1">{children}</span>
@@ -42,6 +42,16 @@ export function NotRunningNotice({ client, computer, children }: { client: Caboo
         </div>
       </AlertDescription>
     </Alert>
+  )
+}
+
+/** The top of a computer tab: what it is for, and the tab's own actions. */
+export function TabIntro({ description, actions }: { description: React.ReactNode; actions?: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <p className="min-w-0 max-w-2xl flex-1 text-sm text-fg-muted">{description}</p>
+      {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+    </div>
   )
 }
 

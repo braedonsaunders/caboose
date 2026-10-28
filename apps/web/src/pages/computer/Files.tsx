@@ -1,22 +1,22 @@
 import * as React from 'react'
 import { DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
 import {
-  Alert, AlertDescription, AlertTitle, Button, EmptyState, PageContainer, PageHeader, Spinner, Switch,
+  Alert, AlertDescription, AlertTitle, Button, EmptyState, Spinner, Switch,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, confirmDialog, promptDialog, toast,
 } from '@braedonsaunders/appkit-ui'
-import { ArrowUp, ChevronRight, Download, File, Folder, FolderPlus, MonitorUp, Pencil, RefreshCw, Trash2, Upload } from 'lucide-react'
-import { CabooseApiError, type CabooseClient } from '../api.js'
+import { ArrowUp, ChevronRight, Download, File, Folder, FolderPlus, Pencil, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { CabooseApiError, type CabooseClient } from '../../api.js'
 import {
   breadcrumbs, formatBytes, joinPath, nameProblem, normalizeFsPath, parentPath, visibleItems,
   type FileItem, type FileSortKey,
-} from '../files.js'
-import { errorMessage } from '../components/common.js'
-import { navigate, useSearchParam } from '../navigation.js'
-import { isTransitioning } from '../state.js'
-import type { ComputerHandle } from '../useComputer.js'
+} from '../../files.js'
+import { TabIntro, errorMessage } from '../../components/common.js'
+import { navigate, useSearchParam } from '../../navigation.js'
+import { isTransitioning } from '../../state.js'
+import type { ComputerHandle } from '../../useComputer.js'
 
 function filesHref(path: string): string {
-  return path ? `/files?path=${encodeURIComponent(path)}` : '/files'
+  return path ? `/computer/files?path=${encodeURIComponent(path)}` : '/computer/files'
 }
 
 export function Files({ client, computer, onUnauthorized }: { client: CabooseClient; computer: ComputerHandle; onUnauthorized: () => void }) {
@@ -151,15 +151,11 @@ export function Files({ client, computer, onUnauthorized }: { client: CabooseCli
   async function trash(item: FileItem) {
     const confirmed = await confirmDialog({
       title: `Move “${item.name}” to the Trash?`,
-      message: 'It goes to the Trash in your computer, where you can restore it from the file manager.',
+      message: 'It goes to the Trash in the computer, where it can be restored from the file manager.',
       confirmLabel: 'Move to Trash',
       tone: 'danger',
     })
     if (confirmed) await act(`trash:${item.name}`, () => client.trashFile(joinPath(path, item.name)), `Moved ${item.name} to the Trash.`)
-  }
-
-  async function openOnComputer(item: FileItem) {
-    await act(`open:${item.name}`, () => client.openOnComputer(joinPath(path, item.name)), `${item.name} is opening on your computer's screen.`)
   }
 
   function sortBy(key: FileSortKey) {
@@ -172,171 +168,165 @@ export function Files({ client, computer, onUnauthorized }: { client: CabooseCli
   const disabled = !canBrowse || busy !== null || uploads !== null
 
   return (
-    <PageContainer>
-      <div className="space-y-6">
-        <PageHeader
-          title="Files"
-          description="Your computer's home folder. Download files, upload into the folder you are in, or open something on the computer's screen."
-          actions={canBrowse ? (
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={() => void newFolder()} disabled={disabled}>
-                <FolderPlus className="size-4" aria-hidden />New folder
-              </Button>
-              <Button onClick={() => uploadInput.current?.click()} disabled={disabled}>
-                <Upload className="size-4" aria-hidden />Upload
-              </Button>
-              <input ref={uploadInput} type="file" multiple hidden onChange={event => void upload([...(event.target.files ?? [])])} />
-            </div>
-          ) : null}
-        />
-
-        {!canBrowse ? (
-          <Alert variant="info">
-            <AlertTitle>{waking ? 'Your computer is starting up' : 'Your computer is parked'}</AlertTitle>
-            <AlertDescription>
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="min-w-0 flex-1">Browsing its files wakes it, and it parks again after it has been idle.</span>
-                <Button size="sm" onClick={() => setAllowWake(true)}>Wake and browse</Button>
-              </div>
-            </AlertDescription>
-          </Alert>
+    <div className="space-y-6">
+      <TabIntro
+        description="The computer's home folder. Download files, upload into the folder you are in, rename, or move things to the Trash."
+        actions={canBrowse ? (
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => void newFolder()} disabled={disabled}>
+              <FolderPlus className="size-4" aria-hidden />New folder
+            </Button>
+            <Button onClick={() => uploadInput.current?.click()} disabled={disabled}>
+              <Upload className="size-4" aria-hidden />Upload
+            </Button>
+            <input ref={uploadInput} type="file" multiple hidden onChange={event => void upload([...(event.target.files ?? [])])} />
+          </div>
         ) : null}
+      />
 
-        {canBrowse ? (
-          <DashboardPanel
-            title={
-              <nav aria-label="Folder" className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
-                {crumbs.map((crumb, index) => (
-                  <React.Fragment key={crumb.path}>
-                    {index > 0 ? <ChevronRight className="size-3.5 text-fg-muted" aria-hidden /> : null}
-                    {index === crumbs.length - 1 ? (
-                      <span className="font-semibold" aria-current="page">{crumb.name}</span>
-                    ) : (
-                      <a href={filesHref(crumb.path)} className="text-fg-muted hover:text-fg hover:underline"
-                        onClick={event => { event.preventDefault(); navigate(filesHref(crumb.path)) }}>
-                        {crumb.name}
-                      </a>
-                    )}
-                  </React.Fragment>
-                ))}
-              </nav>
-            }
-            actions={
-              <div className="flex items-center gap-3">
-                <label className="flex items-center gap-2 text-xs text-fg-muted">
-                  <Switch checked={showHidden} onChange={event => setShowHidden(event.target.checked)} />
-                  Hidden files
-                </label>
-                <Button size="sm" variant="ghost" disabled={!path} onClick={() => navigate(filesHref(parentPath(path)))} aria-label="Enclosing folder">
-                  <ArrowUp className="size-4" aria-hidden />
-                </Button>
-                <Button size="sm" variant="ghost" disabled={loading} onClick={() => void refresh()} aria-label="Refresh">
-                  <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} aria-hidden />
-                </Button>
-              </div>
-            }
+      {!canBrowse ? (
+        <Alert variant="info">
+          <AlertTitle>{waking ? 'This computer is starting up' : 'This computer is parked'}</AlertTitle>
+          <AlertDescription>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="min-w-0 flex-1">Browsing its files wakes it, and it parks again after it has been idle.</span>
+              <Button size="sm" onClick={() => setAllowWake(true)}>Wake and browse</Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {canBrowse ? (
+        <DashboardPanel
+          title={
+            <nav aria-label="Folder" className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
+              {crumbs.map((crumb, index) => (
+                <React.Fragment key={crumb.path}>
+                  {index > 0 ? <ChevronRight className="size-3.5 text-fg-muted" aria-hidden /> : null}
+                  {index === crumbs.length - 1 ? (
+                    <span className="font-semibold" aria-current="page">{crumb.name}</span>
+                  ) : (
+                    <a href={filesHref(crumb.path)} className="text-fg-muted hover:text-fg hover:underline"
+                      onClick={event => { event.preventDefault(); navigate(filesHref(crumb.path)) }}>
+                      {crumb.name}
+                    </a>
+                  )}
+                </React.Fragment>
+              ))}
+            </nav>
+          }
+          actions={
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 text-xs text-fg-muted">
+                <Switch checked={showHidden} onChange={event => setShowHidden(event.target.checked)} />
+                Hidden files
+              </label>
+              <Button size="sm" variant="ghost" disabled={!path} onClick={() => navigate(filesHref(parentPath(path)))} aria-label="Enclosing folder">
+                <ArrowUp className="size-4" aria-hidden />
+              </Button>
+              <Button size="sm" variant="ghost" disabled={loading} onClick={() => void refresh()} aria-label="Refresh">
+                <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} aria-hidden />
+              </Button>
+            </div>
+          }
+        >
+          <div
+            className={`relative rounded-md ${dragging ? 'outline-2 outline-dashed outline-primary' : ''}`}
+            onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true) } }}
+            onDragLeave={event => { if (event.currentTarget === event.target) setDragging(false) }}
+            onDrop={event => {
+              event.preventDefault()
+              setDragging(false)
+              if (!disabled) void upload([...event.dataTransfer.files])
+            }}
           >
-            <div
-              className={`relative rounded-md ${dragging ? 'outline-2 outline-dashed outline-primary' : ''}`}
-              onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true) } }}
-              onDragLeave={event => { if (event.currentTarget === event.target) setDragging(false) }}
-              onDrop={event => {
-                event.preventDefault()
-                setDragging(false)
-                if (!disabled) void upload([...event.dataTransfer.files])
-              }}
-            >
-              {uploads ? (
-                <div className="mb-3 flex items-center gap-2 text-sm text-fg-muted">
-                  <Spinner size={16} />Uploading {uploads.name}{uploads.total > 1 ? ` (${uploads.index} of ${uploads.total})` : ''}…
-                </div>
-              ) : null}
-              {error ? (
-                <Alert variant="destructive">
-                  <AlertTitle>{error.status === 404 ? 'This folder is not there' : error.status === 403 ? 'This folder cannot be read' : 'The folder could not be listed'}</AlertTitle>
-                  <AlertDescription>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <span className="min-w-0 flex-1">{error.message}</span>
-                      {path ? <Button size="sm" variant="outline" onClick={() => navigate('/files')}>Go to Home</Button> : null}
-                      <Button size="sm" variant="outline" onClick={() => void refresh()}>Try again</Button>
-                    </div>
-                  </AlertDescription>
-                </Alert>
-              ) : shown === null ? (
-                <div className="flex items-center gap-2 py-6 text-sm text-fg-muted">
-                  <Spinner size={16} />{state === 'running' ? 'Listing…' : 'Waking your computer…'}
-                </div>
-              ) : shown.length === 0 ? (
-                <EmptyState
-                  icon={<Folder className="size-6" aria-hidden />}
-                  title="This folder is empty"
-                  description="Drop files here or use Upload to add them."
-                />
-              ) : (
-                <Table containerClassName="border-0 shadow-none">
-                  <TableHeader>
-                    <TableRow noAnimate>
-                      <SortHead label="Name" active={sort.key === 'name'} dir={sort.dir} onClick={() => sortBy('name')} />
-                      <SortHead label="Size" active={sort.key === 'size'} dir={sort.dir} onClick={() => sortBy('size')} className="hidden w-28 sm:table-cell" />
-                      <SortHead label="Modified" active={sort.key === 'mtime'} dir={sort.dir} onClick={() => sortBy('mtime')} className="hidden w-48 md:table-cell" />
-                      <TableHead className="w-px text-right"><span className="sr-only">Actions</span></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {shown.map(item => {
-                      const target = joinPath(path, item.name)
-                      return (
-                        <TableRow key={item.identity + item.name}>
-                          <TableCell>
-                            <div className="flex min-w-0 items-center gap-2">
-                              {item.kind === 'directory'
-                                ? <Folder className="size-4 shrink-0 text-primary" aria-hidden />
-                                : <File className="size-4 shrink-0 text-fg-muted" aria-hidden />}
-                              {item.kind === 'directory' ? (
-                                <a href={filesHref(target)} className="truncate font-medium hover:underline"
-                                  onClick={event => { event.preventDefault(); navigate(filesHref(target)) }}>
-                                  {item.name}
-                                </a>
-                              ) : (
-                                <span className="truncate" title={item.contentType}>{item.name}</span>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell className="hidden text-sm text-fg-muted tabular-nums sm:table-cell">
-                            {item.kind === 'file' ? formatBytes(item.size) : '—'}
-                          </TableCell>
-                          <TableCell className="hidden text-sm text-fg-muted md:table-cell">
-                            {new Date(item.mtime).toLocaleString()}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex justify-end gap-1">
-                              {item.kind === 'file' ? (
-                                <IconButton label={`Download ${item.name}`} disabled={disabled} onClick={() => void download(item)} busy={busy === `download:${item.name}`}>
-                                  <Download className="size-4" aria-hidden />
-                                </IconButton>
-                              ) : null}
-                              <IconButton label={`Open ${item.name} on the computer`} disabled={disabled} onClick={() => void openOnComputer(item)} busy={busy === `open:${item.name}`}>
-                                <MonitorUp className="size-4" aria-hidden />
+            {uploads ? (
+              <div className="mb-3 flex items-center gap-2 text-sm text-fg-muted">
+                <Spinner size={16} />Uploading {uploads.name}{uploads.total > 1 ? ` (${uploads.index} of ${uploads.total})` : ''}…
+              </div>
+            ) : null}
+            {error ? (
+              <Alert variant="destructive">
+                <AlertTitle>{error.status === 404 ? 'This folder is not there' : error.status === 403 ? 'This folder cannot be read' : 'The folder could not be listed'}</AlertTitle>
+                <AlertDescription>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="min-w-0 flex-1">{error.message}</span>
+                    {path ? <Button size="sm" variant="outline" onClick={() => navigate(filesHref(''))}>Go to Home</Button> : null}
+                    <Button size="sm" variant="outline" onClick={() => void refresh()}>Try again</Button>
+                  </div>
+                </AlertDescription>
+              </Alert>
+            ) : shown === null ? (
+              <div className="flex items-center gap-2 py-6 text-sm text-fg-muted">
+                <Spinner size={16} />{state === 'running' ? 'Listing…' : 'Waking the computer…'}
+              </div>
+            ) : shown.length === 0 ? (
+              <EmptyState
+                icon={<Folder className="size-6" aria-hidden />}
+                title="This folder is empty"
+                description="Drop files here or use Upload to add them."
+              />
+            ) : (
+              <Table containerClassName="border-0 shadow-none">
+                <TableHeader>
+                  <TableRow noAnimate>
+                    <SortHead label="Name" active={sort.key === 'name'} dir={sort.dir} onClick={() => sortBy('name')} />
+                    <SortHead label="Size" active={sort.key === 'size'} dir={sort.dir} onClick={() => sortBy('size')} className="hidden w-28 sm:table-cell" />
+                    <SortHead label="Modified" active={sort.key === 'mtime'} dir={sort.dir} onClick={() => sortBy('mtime')} className="hidden w-48 md:table-cell" />
+                    <TableHead className="w-px text-right"><span className="sr-only">Actions</span></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {shown.map(item => {
+                    const target = joinPath(path, item.name)
+                    return (
+                      <TableRow key={item.identity + item.name}>
+                        <TableCell>
+                          <div className="flex min-w-0 items-center gap-2">
+                            {item.kind === 'directory'
+                              ? <Folder className="size-4 shrink-0 text-primary" aria-hidden />
+                              : <File className="size-4 shrink-0 text-fg-muted" aria-hidden />}
+                            {item.kind === 'directory' ? (
+                              <a href={filesHref(target)} className="truncate font-medium hover:underline"
+                                onClick={event => { event.preventDefault(); navigate(filesHref(target)) }}>
+                                {item.name}
+                              </a>
+                            ) : (
+                              <span className="truncate" title={item.contentType}>{item.name}</span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="hidden text-sm text-fg-muted tabular-nums sm:table-cell">
+                          {item.kind === 'file' ? formatBytes(item.size) : '—'}
+                        </TableCell>
+                        <TableCell className="hidden text-sm text-fg-muted md:table-cell">
+                          {new Date(item.mtime).toLocaleString()}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex justify-end gap-1">
+                            {item.kind === 'file' ? (
+                              <IconButton label={`Download ${item.name}`} disabled={disabled} onClick={() => void download(item)} busy={busy === `download:${item.name}`}>
+                                <Download className="size-4" aria-hidden />
                               </IconButton>
-                              <IconButton label={`Rename ${item.name}`} disabled={disabled} onClick={() => void rename(item)} busy={busy === `rename:${item.name}`}>
-                                <Pencil className="size-4" aria-hidden />
-                              </IconButton>
-                              <IconButton label={`Move ${item.name} to the Trash`} disabled={disabled} onClick={() => void trash(item)} busy={busy === `trash:${item.name}`}>
-                                <Trash2 className="size-4" aria-hidden />
-                              </IconButton>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      )
-                    })}
-                  </TableBody>
-                </Table>
-              )}
-            </div>
-          </DashboardPanel>
-        ) : null}
-      </div>
-    </PageContainer>
+                            ) : null}
+                            <IconButton label={`Rename ${item.name}`} disabled={disabled} onClick={() => void rename(item)} busy={busy === `rename:${item.name}`}>
+                              <Pencil className="size-4" aria-hidden />
+                            </IconButton>
+                            <IconButton label={`Move ${item.name} to the Trash`} disabled={disabled} onClick={() => void trash(item)} busy={busy === `trash:${item.name}`}>
+                              <Trash2 className="size-4" aria-hidden />
+                            </IconButton>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+        </DashboardPanel>
+      ) : null}
+    </div>
   )
 }
 
