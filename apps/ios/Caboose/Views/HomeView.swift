@@ -68,8 +68,8 @@ struct HomeView: View {
                 }
                 Button("Computer Settings", systemImage: "gearshape") { model.settingsPresented = true }
             } label: {
-                CabooseCar(stove: false)
-                    .frame(width: 26, height: 26)
+                CabooseWheel()
+                    .frame(width: 24, height: 24)
                     .frame(width: 44, height: 44)
                     .glassEffect(.regular.interactive(), in: .circle)
             }

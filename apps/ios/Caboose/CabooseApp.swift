@@ -88,8 +88,8 @@ struct WakeView: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            CabooseCar(motion: .rolling)
-                .frame(height: 84)
+            CabooseWordmark(motion: .rolling)
+                .frame(height: 58)
                 .foregroundStyle(.white.opacity(0.9))
             VStack(spacing: 6) {
                 Text(connecting ? "Opening your display" : "Waking your computer")
@@ -131,9 +131,9 @@ struct ParkedView: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            // Parked: the car at rest with its windows dark.
-            CabooseCar(lightsOn: false)
-                .frame(height: 76)
+            // Parked: the wordmark at rest with its hubs unlit.
+            CabooseWordmark(lit: false)
+                .frame(height: 58)
                 .foregroundStyle(.white.opacity(0.9))
             VStack(spacing: 6) {
                 Text("Your computer is parked")

@@ -12,8 +12,9 @@ The iPhone and iPad app, and **CabooseKit**, its native Xpra client.
 - `Caboose/` — the app: setup, wake, Home (open windows and the computer's apps), and the
   full-screen window screen.
 - `Caboose/Brand/` — the logo drawn natively in SwiftUI: the wordmark draws itself in on
-  setup, the car rolls while the computer wakes and parks with its windows dark. It is
-  the same geometry and timing as `apps/web/src/brand/brand.ts`; change both together.
+  setup, rolls while the computer wakes and shows its hubs unlit while it is parked, and
+  one of its wheels marks the computer menu. It is the same geometry and timing as
+  `apps/web/src/brand/brand.ts`; change both together.
   The app icon is rendered from that module's SVG by `scripts/render-app-icon.sh` (macOS).
 
 ## Computer settings
