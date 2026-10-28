@@ -599,7 +599,7 @@ export class AgentTasks {
       entry.replying = true
       try {
         if (isLive(entry.task.status)) await this.cancelTurn(entry, false)
-        return await this.sendTurn(entry)
+        return await this.sendTurn(entry, true)
       } catch (error) {
         if (!isLive(entry.task.status)) {
           this.releases.get(id)?.(); this.releases.delete(id); this.announceFinished(entry)
@@ -610,16 +610,19 @@ export class AgentTasks {
   }
 
   /** The queue remains in the journal until positive claim/transcript evidence retires it. */
-  private async sendTurn(entry: Tracked): Promise<AgentTask> {
+  private async sendTurn(entry: Tracked, cancelledCurrent = false): Promise<AgentTask> {
     if (entry.task.delivery) throw new AgentConflictError(entry.task.delivery.message)
-    if (entry.journal.intent && entry.journal.intent.turn <= entry.task.turns) {
+    if (entry.journal.intent) {
+      const futureIntent = entry.journal.intent.turn > entry.task.turns
       await this.recoverDelivery(entry)
       if (entry.task.delivery) throw new AgentConflictError('Delivery is uncertain; inspect the transcript before continuing.')
+      // Recovery can relaunch an unclaimed inbox without claiming it. That intent still
+      // owns its replies; a new batch must never include them a second time. Send Now may
+      // supersede a cancelled current turn only after its replies have left the queue.
+      const intent = entry.journal.intent
+      if (intent && (futureIntent || !cancelledCurrent || entry.queue.some(reply => intent.replies.includes(reply.id)))) return entry.task
     }
-    if (entry.journal.intent && entry.journal.intent.turn > entry.task.turns) {
-      await this.recoverDelivery(entry)
-      return entry.task
-    }
+    if (!entry.queue.length) return entry.task
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
     const turn = Math.max(entry.task.turns, entry.journal.turns ?? 1) + 1
@@ -737,7 +740,7 @@ export class AgentTasks {
       return
     }
     if (allowPublish && (!evidence.published || !evidence.alive && evidence.inbox)) await this.publish(entry, evidence.published || evidence.inbox || undefined)
-    else if (allowPublish && evidence.inbox && intent.turn > entry.task.turns) {
+    else if (allowPublish && evidence.inbox && (!isLive(entry.task.status) || intent.turn > entry.task.turns)) {
       this.markRunning(entry, intent.turn)
     }
   }

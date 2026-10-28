@@ -101,6 +101,7 @@ function fakeGuest() {
   let polls = 0
   let beforeCancel: (() => Promise<void>) | undefined
   let beforeLaunch: ((id: string) => void) | undefined
+  let claimLaunches = true
   let listing = ''
   const task = (id: string): FakeTask => {
     let entry = tasks.get(id)
@@ -186,9 +187,9 @@ function fakeGuest() {
           state.inbox.push(message)
           state.published.set(rest[3]!, message)
         }
-        state.receipts.set(rest[3]!, { turn: Number(rest[2]), deliveryId: JSON.parse(message).deliveryId, state: 'claimed' })
+        if (claimLaunches) state.receipts.set(rest[3]!, { turn: Number(rest[2]), deliveryId: JSON.parse(message).deliveryId, state: 'claimed' })
         state.exitCode = ''; state.alive = true
-        return 'claimed\n'
+        return claimLaunches ? 'claimed\n' : 'launched\n'
       }
       if (script.includes('"type":"cancel"')) {
         await beforeCancel?.()
@@ -202,6 +203,7 @@ function fakeGuest() {
     get polls() { return polls },
     beforeCancel: (hook: () => Promise<void>) => { beforeCancel = hook },
     beforeLaunch: (hook: (id: string) => void) => { beforeLaunch = hook },
+    claimOnLaunch: (value: boolean) => { claimLaunches = value },
     setListing: (value: string) => { listing = value; for (const row of value.split('\n')) { const f = row.split('\t'); if (f[0]) { task(f[0]).alive = f[4] === '1'; task(f[0]).exitCode = f[3] ?? '' } } },
     append: (id: string, event: object) => { const state = task(id); state.transcript = Buffer.concat([state.transcript, Buffer.from(JSON.stringify(event) + '\n')]) },
     exit: (id: string, code: string, message = '') => { task(id).exitCode = code; task(id).stderr = message },
@@ -923,6 +925,34 @@ describe('durable admission and recovery', () => {
     const r = await restart(s)
     expect(r.tasks.list()[0]).toMatchObject({ turns: 2, status: 'running' })
     expect(s.fake.task(t.id).inbox.filter(x => x !== 'cancel' && JSON.parse(x).turn === 2)).toHaveLength(1)
+  })
+
+  it.each([false, true])('retains a relaunched unclaimed turn instead of repeating its reply (Send Now=%s)', async sendNow => {
+    const s = setup()
+    const t = await s.tasks.start({ prompt: 'work' })
+    s.fake.append(t.id, user(1)); s.fake.append(t.id, end(1, 'done'))
+    await s.tasks.poll()
+    s.fake.claimOnLaunch(false)
+    await s.tasks.reply(t.id, { prompt: 'perform action once', operationId: 'op1' })
+    const originalIntent = journal(s, t.id).intent
+    expect(originalIntent).toMatchObject({ turn: 2, replies: ['op1'] })
+    s.fake.task(t.id).alive = false
+    s.fake.exit(t.id, '1', 'runner died before claim')
+    await s.tasks.poll()
+    expect(t).toMatchObject({ status: 'failed', turns: 2 })
+    await s.tasks.reply(t.id, { prompt: 'later message', operationId: 'op2' })
+    if (sendNow) await s.tasks.sendNow(t.id)
+    expect(t).toMatchObject({ status: 'running', turns: 2, queued: ['later message'] })
+    expect(journal(s, t.id).intent).toEqual(originalIntent)
+    expect([...s.fake.task(t.id).published.values()].map(value => JSON.parse(value))).toMatchObject([
+      { turn: 1, text: 'work' }, { turn: 2, text: 'perform action once' },
+    ])
+    // Only a proven end of the recovered turn permits a fresh batch containing op2 alone.
+    s.fake.append(t.id, user(2, 'perform action once')); s.fake.append(t.id, end(2, 'done'))
+    await s.tasks.poll()
+    expect(t.turns).toBe(3)
+    expect(JSON.parse(s.fake.task(t.id).published.get('000003')!)).toMatchObject({ turn: 3, text: 'later message' })
+    expect(journal(s, t.id).intent).toMatchObject({ turn: 3, replies: ['op2'] })
   })
 
   it('does not republish an inbox after a lost delivery response', async () => {
