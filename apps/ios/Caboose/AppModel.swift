@@ -68,13 +68,17 @@ final class AppModel {
         let saved = Credentials.load()
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
-        agents.onComputer = { [weak self] status in self?.computerStatus = status }
+        agents.onComputer = { [weak self] status in
+            self?.computerStatus = status
+            if let credentials = self?.credentials { FileDomains.register(credentials, name: status.settings.name) }
+        }
         agents.onEvent = { [weak self] type, event in
             guard let self else { return }
             self.media.handle(type, event)
             self.catalog.handle(type, event)
             self.phone.handle(type, event)
             if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
+            if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials) }
         }
         catalog.onChange = { [weak self] in await self?.refreshApps() }
         media.attach(host: { [weak self] in self?.host })
@@ -103,6 +107,7 @@ final class AppModel {
     // MARK: Setup
 
     func connect(with credentials: Credentials) {
+        if let old = self.credentials, old.fileDomainIdentifier != credentials.fileDomainIdentifier { FileDomains.remove(old) }
         if self.credentials != nil && self.credentials != credentials {
             PushCoordinator.shared.unregister(from: host)
             LiveActivityCoordinator.shared.unregister(from: host)
@@ -124,6 +129,7 @@ final class AppModel {
         phone.reset()
         computerStatus = nil
         settingsPresented = false
+        if let credentials { FileDomains.remove(credentials) }
         Credentials.clear()
         credentials = nil
         activeHostURL = nil
@@ -148,6 +154,10 @@ final class AppModel {
             // an old computer's control channel in either case.
             guard sceneActive, self.host?.token == host.token, self.host?.baseURL == host.baseURL else { return }
             computer = wake.computer
+            if let credentials {
+                FileDomains.register(credentials, name: wake.computer.name)
+                FileDomains.signal(credentials)
+            }
             if !quiet { phase = .connecting }
             startSession(host: host, display: wake.display)
             agents.detach()

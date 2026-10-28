@@ -5,6 +5,31 @@ import { authenticate } from './auth.js'
 afterEach(() => vi.useRealTimers())
 
 describe('computer lifecycle', () => {
+  it('wakes for an operation and holds the computer until the operation finishes', async () => {
+    vi.useFakeTimers()
+    let finish!: () => void
+    const driver = { wake: vi.fn(async () => 'desk'), park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 100)
+    const operation = computer.wakeAndRun(() => new Promise<void>(resolve => { finish = resolve }))
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    await vi.advanceTimersByTimeAsync(200)
+    expect(driver.wake).toHaveBeenCalledOnce()
+    expect(driver.park).not.toHaveBeenCalled()
+    finish()
+    await operation
+    await vi.advanceTimersByTimeAsync(100)
+    expect(driver.park).toHaveBeenCalledOnce()
+  })
+
+  it('does not run work when waking fails and allows a later attempt', async () => {
+    const driver = { wake: vi.fn().mockRejectedValueOnce(new Error('boot failed')).mockResolvedValue('desk'), park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle<string>(driver, 1000)
+    const work = vi.fn(async () => 'saved')
+    await expect(computer.wakeAndRun(work)).rejects.toThrow('boot failed')
+    expect(work).not.toHaveBeenCalled()
+    expect(await computer.wakeAndRun(work)).toBe('saved')
+  })
+
   it('coalesces wakes and parks after the final lease expires', async () => {
     vi.useFakeTimers()
     const driver = { wake: vi.fn(async () => 'desk'), park: vi.fn(async () => {}) }

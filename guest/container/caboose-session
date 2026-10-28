@@ -103,6 +103,12 @@ start_printing() {
 }
 case ${1:-} in
   start) start_printing; start_display :100 14500 on ;;
+  start-files)
+    start-stop-daemon --start --oknodo --background --make-pidfile --pidfile /run/caboose/files.pid \
+      --chuid caboose:caboose --exec /usr/bin/python3 -- /opt/caboose/files/caboose-files.py
+    for _ in $(seq 1 60); do ss -lnt | grep -Eq ':14700[[:space:]]' && exit 0; sleep 1; done
+    echo 'File service did not become ready' >&2; exit 1
+    ;;
   start-agent) start_display :101 14501 off; ready :101 ;;
   ready) ready "${2:?display required}" ;;
   start-display) start_printing; start_caboose_display ;;

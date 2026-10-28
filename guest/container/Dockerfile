@@ -49,6 +49,7 @@ COPY desktop-mcp /tmp/desktop-mcp
 RUN /tmp/desktop-mcp/install.sh
 COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /tmp/agentd/
 RUN /tmp/agentd/install.sh && rm -rf /tmp/agentd
+COPY files/caboose-files.py /opt/caboose/files/caboose-files.py
 COPY notifications /tmp/notifications
 RUN /bin/sh /tmp/notifications/install.sh && rm -rf /tmp/notifications
 

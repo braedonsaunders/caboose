@@ -136,6 +136,13 @@ Login and interactive Bash shells on `:100` discover Xpra's PulseAudio server
 from its X11 root property; an explicitly configured `PULSE_SERVER` is preserved,
 and the separate `:101` agent seat is not redirected to the owner's speaker.
 
+## File service
+
+The image installs `guest/files/caboose-files.py` and `caboose-files.service`; the host starts
+it as `caboose` after writing the per-wake display token. It listens on guest port 14700 and
+serves home-confined file operations and inotify changes. See `docs/architecture.md` § Files
+and `apps/host/README.md` for the API and real-host check. Existing computer disks need a
+guest-side upgrade to install the service; rebuilding the golden image affects new disks.
 ## Desktop notifications
 
 The owner session's D-Bus notification monitor writes a bounded private queue under

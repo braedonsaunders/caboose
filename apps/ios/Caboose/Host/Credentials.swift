@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import CryptoKit
 
 /// Where your computer lives and the token that opens it, kept in the Keychain in the
 /// app's shared access group so the share extension can reach the same computer.
@@ -9,6 +10,12 @@ struct Credentials: Equatable {
     /// Other addresses of the same host — its Tailscale or other VPN address, say — tried
     /// alongside `hostURL` so the computer is reachable at home and away.
     var alternateURLs: [URL] = []
+
+    /// A pairing-specific identifier, so cached Files data is never reused for another computer.
+    var fileDomainIdentifier: String {
+        let bytes = SHA256.hash(data: Data((hostURL.absoluteString + "\n" + token).utf8))
+        return "computer-" + bytes.map { String(format: "%02x", $0) }.joined()
+    }
 
     /// Every address of the host, the preferred one first.
     var candidates: [URL] { [hostURL] + alternateURLs.filter { $0 != hostURL } }
