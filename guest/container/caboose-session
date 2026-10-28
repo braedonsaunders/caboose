@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
-export HOME=/home/caboose
+# The session runs as root; everything it starts for the owner runs as caboose with this
+# home. Root's own commands keep root's HOME, so nothing root writes lands in the owner's.
+CABOOSE_HOME=/home/caboose
 # Accessibility trees for a11y.py: Chromium and Electron, Firefox, Qt.
 export ACCESSIBILITY_ENABLED=1 GNOME_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 case ${CABOOSE_GPU:-none} in
@@ -29,14 +31,14 @@ fi
 # Start the display's accessibility bus before any app, so every app on it joins that bus
 # (see guest/desktop-mcp/README.md). Safe to repeat; an app still runs without it.
 a11y_bus() {
-  runuser -u caboose -- env HOME="$HOME" DISPLAY="$1" python3 /opt/caboose/a11y.py bus --display "$1" --wait 30 >/dev/null ||
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" DISPLAY="$1" python3 /opt/caboose/a11y.py bus --display "$1" --wait 30 >/dev/null ||
     echo "No accessibility bus for $1" >&2
 }
 start_display() {
   local display=$1 port=$2 speaker=$3
   if runuser -u caboose -- env DISPLAY="$display" xpra info "$display" >/dev/null 2>&1; then a11y_bus "$display"; return; fi
   # Xpra's packaged config switches GTK's accessibility bridge off for the apps it starts.
-  runuser -u caboose -- env HOME="$HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     xpra seamless "$display" --daemon=yes --bind-ws="0.0.0.0:$port" \
     --ws-auth=file:filename=/run/caboose/xpra-token --html=off --clipboard=on \
     --notifications=on --file-transfer=on --mdns=off --printing=off --webcam=off \
@@ -61,11 +63,13 @@ start_caboose_display() {
   if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi
   install -d -m 0755 /run/caboose
   install -o caboose -g caboose -m 0644 /dev/null /run/caboose/display.env
-  local log=/home/caboose/.cache/caboose-display.log
-  runuser -u caboose -- install -d -m 0700 /home/caboose/.cache
+  local log=$CABOOSE_HOME/.cache/caboose-display.log
+  runuser -u caboose -- install -d -m 0700 "$CABOOSE_HOME/.cache"
+  # The redirect below is opened by this root shell, so the log must already be caboose's.
+  touch "$log" && chown caboose:caboose "$log"
   local libs=
   if [ "${CABOOSE_GPU:-none}" = wsl ]; then libs=/usr/lib/wsl/lib; fi
-  runuser -u caboose -- env HOME="$HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" LD_LIBRARY_PATH="$libs" \
     setsid caboose-display --env-file /run/caboose/display.env >>"$log" 2>&1 < /dev/null &
 }

@@ -36,7 +36,10 @@ cp /tmp/desk-guest-agent.mjs /tmp/atspi-dump.py /tmp/package.json /opt/desk-agen
 chmod +x /opt/desk-agent/atspi-dump.py
 (cd /tmp && npm pack @braedonsaunders/appkit-desk@0.6.0 --silent && tar -xzf braedonsaunders-appkit-desk-0.6.0.tgz)
 cp /tmp/package/{events,guest-agent,protocol}.js /opt/desk-agent/appkit-desk/
-sed 's@HOME=/home/agent@HOME=/home/caboose@' /tmp/desk-guest-agent.service > /etc/systemd/system/desk-guest-agent.service
+# The guest agent runs as root, and so does every command the host runs through it; give
+# them root's home, not the owner's, so nothing root writes lands in /home/caboose (owner
+# processes are started with runuser, which sets caboose's HOME).
+sed 's@HOME=/home/agent@HOME=/root@' /tmp/desk-guest-agent.service > /etc/systemd/system/desk-guest-agent.service
 cp /tmp/desk-vsock-bridge.service /tmp/caboose-xpra.service /tmp/caboose-xpra-agent.service /etc/systemd/system/
 # Caboose Display: installed, not enabled. The host starts caboose-display.service
 # instead of caboose-xpra.service when it selects Caboose Display.
