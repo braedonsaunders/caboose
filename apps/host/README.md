@@ -223,3 +223,15 @@ Only one catalog operation runs at a time. An interrupted operation is reported 
 next catalog listing; inspect its error and retry. Debian package installs use the signed
 Debian 13 repositories. Rollback is available only when an earlier release package was
 cached. The container runtime retains its writable layer across a Caboose cold restart.
+
+With an Xpra owner display and a deployed computer, verify PhotoCraft's guest download,
+installation, launch and software rendering (close any existing PhotoCraft window first):
+
+```sh
+export CABOOSE_URL=https://computer.example.com
+# Supply CABOOSE_OWNER_TOKEN in the private environment. Requires a local Xpra client.
+node apps/host/scripts/check-catalog.mjs
+```
+
+The check wakes the computer, installs PhotoCraft if needed, and leaves the window open.
+It requires a new Xpra window and is separate from the host unit tests.

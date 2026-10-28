@@ -93,6 +93,10 @@ take effect on a new login. The launcher icons include OpenCode's upstream mark
 and recolored [Simple Icons](https://github.com/simple-icons/simple-icons) marks
 (CC0); Neovim, btop and the terminal use their installed application icons.
 
+To verify a Craft application and Mesa rendering on a deployed host, run
+`node apps/host/scripts/check-catalog.mjs` with the environment described in
+`apps/host/README.md`. The check installs PhotoCraft and requires a new window.
+
 To check a running computer from the host, install a local Xpra client with
 rencodeplus and lz4 support and run:
 
