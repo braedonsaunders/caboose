@@ -30,7 +30,7 @@ struct AppsScreen: View {
                     ComputerStateView()
                 }
             }
-            .background { Backdrop() }
+            .background { ShellBackground() }
             .navigationTitle("Apps")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

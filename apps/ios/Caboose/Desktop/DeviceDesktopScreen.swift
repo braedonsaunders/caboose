@@ -14,6 +14,7 @@ import UIKit
 struct DesktopScreen: View {
     @Environment(AppModel.self) private var model
     @State private var showAirPlay = false
+    @State private var showBackground = false
     @State private var fullScreen = false
 
     var body: some View {
@@ -28,7 +29,7 @@ struct DesktopScreen: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background { ShellWallpaper(store: WallpaperStore.shared) }
+            .background { ShellBackground() }
             .navigationTitle("Desktop")
             .navigationBarTitleDisplayMode(.inline)
             // The desktop needs the height more than a title: with the vertical bar the top
@@ -45,6 +46,17 @@ struct DesktopScreen: View {
             .overlay(alignment: .top) { if fullScreen { exitFullScreenHandle } }
             .animation(.snappy, value: fullScreen)
             .onChange(of: model.phase) { _, phase in if phase != .ready { fullScreen = false } }
+            .sheet(isPresented: $showBackground) {
+                NavigationStack {
+                    BackgroundPicker()
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done", systemImage: "checkmark") { showBackground = false }
+                            }
+                        }
+                }
+                .environment(model)
+            }
             .sheet(isPresented: $showAirPlay) {
                 AirPlaySheet().environment(model)
                     .presentationDetents([.medium])
@@ -70,6 +82,15 @@ struct DesktopScreen: View {
             }
         }
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
+        if #available(iOS 27.0, *) {
+            // The system's overflow menu, with whatever else did not fit.
+            ToolbarOverflowMenu {
+                Button("Background", systemImage: "photo.on.rectangle") { showBackground = true }
+                if WallpaperStore.shared.choice.usesLibrary {
+                    Button("Next Photograph", systemImage: "arrow.triangle.2.circlepath") { WallpaperStore.shared.next() }
+                }
+            }
+        }
     }
 
     private var fullScreenItem: some ToolbarContent {

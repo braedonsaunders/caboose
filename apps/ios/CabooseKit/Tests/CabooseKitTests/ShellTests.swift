@@ -140,3 +140,31 @@ final class HostMessageTests: XCTestCase {
         XCTAssertNil(HostMessage.upgradeStatus("idle"))
     }
 }
+
+final class BackgroundChoiceTests: XCTestCase {
+    func testRoundTripsThroughJSON() throws {
+        for choice in [BackgroundChoice.gradient, .rotating, .photo(1015), .custom] {
+            let data = try JSONEncoder().encode(choice)
+            XCTAssertEqual(try JSONDecoder().decode(BackgroundChoice.self, from: data), choice)
+        }
+    }
+
+    func testOnlyRotatingRotatesAndOnlyGradientShowsNoPhotograph() {
+        XCTAssertTrue(BackgroundChoice.rotating.rotates)
+        XCTAssertFalse(BackgroundChoice.photo(1).rotates)
+        XCTAssertFalse(BackgroundChoice.custom.rotates)
+        XCTAssertFalse(BackgroundChoice.gradient.showsPhotograph)
+        XCTAssertTrue(BackgroundChoice.custom.showsPhotograph)
+        XCTAssertTrue(BackgroundChoice.photo(1).usesLibrary)
+        XCTAssertFalse(BackgroundChoice.custom.usesLibrary)
+    }
+
+    func testLibraryPhotoAndNext() {
+        XCTAssertEqual(BackgroundChoice.photo(29).libraryPhoto(current: 110), 29)
+        XCTAssertEqual(BackgroundChoice.rotating.libraryPhoto(current: 110), 110)
+        XCTAssertNil(BackgroundChoice.custom.libraryPhoto(current: 110))
+        XCTAssertEqual(BackgroundChoice.photo(29).next(choosing: 128), .photo(128))
+        XCTAssertEqual(BackgroundChoice.gradient.next(choosing: 128), .rotating)
+        XCTAssertEqual(BackgroundChoice.rotating.next(choosing: 128), .rotating)
+    }
+}

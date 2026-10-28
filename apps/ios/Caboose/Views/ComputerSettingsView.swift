@@ -184,6 +184,18 @@ struct ComputerSettingsView: View {
                 }
             }
 
+            Section {
+                NavigationLink {
+                    BackgroundPicker()
+                } label: {
+                    LabeledContent {
+                        Text(backgroundName)
+                    } label: {
+                        Label("Background", systemImage: "photo.on.rectangle")
+                    }
+                }
+            }
+
             Section("Connection") {
                 if let host = model.credentials?.hostURL.host() {
                     LabeledContent("Host", value: host)
@@ -207,6 +219,15 @@ struct ComputerSettingsView: View {
         }
         .scrollContentBackground(.hidden)
         .refreshable { await load() }
+    }
+
+    private var backgroundName: String {
+        switch WallpaperStore.shared.choice {
+        case .gradient: "Gradient"
+        case .rotating: "Rotating"
+        case .photo: "Photograph"
+        case .custom: "Your Photo"
+        }
     }
 
     // MARK: Editing

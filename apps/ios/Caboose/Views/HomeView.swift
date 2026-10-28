@@ -28,7 +28,7 @@ struct HomeScreen: View {
                 }
             }
             .scrollIndicators(.hidden)
-            .background { Backdrop() }
+            .background { ShellBackground() }
             .refreshable {
                 await model.refreshApps()
                 await model.agents.refresh()
