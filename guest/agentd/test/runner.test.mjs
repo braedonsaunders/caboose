@@ -46,7 +46,7 @@ async function task(options = {}) {
   const box = await sandbox(options)
   const dir = join(box.home, 'Agents', 'task-1')
   await mkdir(join(dir, 'inbox'), { recursive: true })
-  await writeFile(join(dir, 'task.json'), JSON.stringify({ agent: options.agent ?? AGENT, cwd: dir, approvals: options.approvals ?? 'auto', idleMs: options.idleMs ?? 20_000 }))
+  await writeFile(join(dir, 'task.json'), JSON.stringify({ agent: options.agent ?? AGENT, cwd: dir, approvals: options.approvals ?? 'auto', idleMs: options.idleMs ?? 20_000, craftServers: options.craftServers }))
   let runner
   const t = {
     ...box, dir,
@@ -99,6 +99,17 @@ async function pendingApproval(dir) {
 }
 
 describe('a turn', () => {
+  it('offers installed catalog servers to an ACP session', async () => {
+    const t = await task({ craftServers: [
+      { name: 'caboose-photocraft', command: 'photocraft-cli', args: ['mcp'], env: [] },
+      { name: 'bad', command: 'sh', args: ['-c', 'bad command'], env: [] },
+    ] })
+    await t.prompt(1, 'hello')
+    t.start()
+    await t.turnEnd(1)
+    expect(await t.texts(1)).toContain('turns in session: 1; mcp: caboose-desktop,caboose-photocraft; blocks: text; recap: no; display: :101')
+  })
+
   it('streams an agent-neutral transcript', async () => {
     const t = await task()
     await t.prompt(1, 'hello tool plan')

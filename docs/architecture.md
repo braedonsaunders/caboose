@@ -459,7 +459,16 @@ pointer or types into the owner's windows.
   `read_text` returns the window's text. Xpra keeps a seamless window unmapped until a client
   shows it, so before a coordinate tool runs the server asks Xpra to map the seat's hidden
   windows; `click`, `type` and `screenshot` work whether or not anyone is watching the seat.
-  Every task gets it as the MCP server `caboose-desktop` in ACP `session/new`.
+  Every task gets it as the MCP server `caboose-desktop` in ACP `session/new`. At task
+  creation the host also snapshots installed catalog entries with an `mcp` command and
+  offers them as `caboose-<catalog id>` stdio servers in ACP new, load and resume requests.
+  Commands and arguments are passed directly, never through a shell. The current catalog
+  offers PhotoCraft, LightCraft, FilmCraft, VectorCraft, PDFCraft, EffectCraft, DesignCraft,
+  WordCraft, GridCraft, DeckCraft, CADCraft, SoundCraft and FigCraft when installed. An API
+  client can set `craftMcp: false` when starting a task to omit these servers for that task;
+  the choice persists for replies. The Ask bar menu offers Use Craft App Tools for tasks started
+  in the app. Agent support
+  for ACP MCP servers and each application's own tools determine what is actually available.
 
 ### The registry
 
@@ -601,7 +610,7 @@ keeps them in the owner's home directory.
 | `POST` | `/v1/agents/:id/install` | → `{ agent }`; prefetch the registry's current version into the computer and learn its sign-in methods; can take minutes. 404 for an id not in the registry, 409 while the computer is not running or when it has no runner, 502 when the install fails (with the reason) |
 | `PUT` | `/v1/agents/:id/env` | `{ set?: { NAME: value }, remove?: [NAME] }` → `{ env: [NAME] }`; set or remove variables in the agent's environment file in the computer, such as an API key. Names are shell-style, values one line of at most 8192 characters. 400 for invalid input, 409 while the computer is not running |
 | `POST` | `/v1/agents/:id/sign-in` | `{ methodId }` → `{ started: true, method: { id, name, description?, type } }`; start a sign-in on the owner's display. 400 for an unknown method |
-| `POST` | `/v1/agent/tasks` | `{ prompt, agent?: <registry id>, approvals?: "ask" \| "auto", attachments?: [{ name, type, data (base64) }] }` → `{ id }`. `agent` defaults to `defaultAgent` (400 when neither is set); 404 for an id that is not in the registry or installed |
+| `POST` | `/v1/agent/tasks` | `{ prompt, agent?: <registry id>, approvals?: "ask" \| "auto", craftMcp?: boolean, attachments?: [{ name, type, data (base64) }] }` → `{ id }`. `agent` defaults to `defaultAgent` (400 when neither is set); 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | recent tasks, newest first (task record below) |
 | `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`; continue a finished task's conversation. 409 while the task is running or paused, or for a task from before the runner; 404 for an unknown task |
 | `POST` | `/v1/agent/tasks/:id/approvals/:requestId` | `{ allow: boolean, message?: string, optionId?: string }` → `{ resolved }`; `resolved: false` when that request is no longer waiting |

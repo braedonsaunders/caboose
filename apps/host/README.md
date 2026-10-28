@@ -278,3 +278,11 @@ connected. `GET /v1/phone/files/:id` reads a staged file through the guest comma
 channel; it does not accept arbitrary guest paths or wake the computer. See
 `../../docs/architecture.md` § iOS weave for the schema, limits and delivery semantics,
 and `../../guest/phone/README.md` for the guest-side CUPS and command check.
+
+## Catalog tools for agents
+
+New agent tasks offer installed catalog MCP commands through ACP. Send `craftMcp: false`
+in `POST /v1/agent/tasks` to turn them off for that task and its replies. The installed
+list is captured at task creation; apps installed later are available to a new task. The
+iOS Ask bar menu also provides a switch for tasks started in the app. See the Agents section of the
+architecture for the app list and agent compatibility.

@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { AgentCatalog } from './agent-catalog.js'
-import { AppCatalog } from './app-catalog.js'
+import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWNLOADS } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
@@ -81,19 +81,19 @@ export function createCabooseServer(options: {
   }
   const home = new HomeOwnership()
   const catalog = new AgentCatalog(options.registry ?? new AgentRegistry(), () => controller.guest(), settings, home)
+  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire())
   const agents = new AgentTasks(() => controller.guest(), event => {
     broadcast(event)
     if (options.push) void options.push.event(event as AgentEvent, foregroundClients.size > 0).catch(error => console.error('Push event failed:', error))
     const job = agentJob(event as AgentEvent)
     if (job && options.activities) void options.activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
   }, () => computer.acquire(), {
-    resolver: catalog, home, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
+    resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
   })
   const desktopNotifications = new DesktopNotifications(() => controller.guest(), event => {
     broadcast({ type: 'notification', ...event })
     if (options.push) void options.push.desktop(event, foregroundClients.size > 0).catch(error => console.error('Desktop push failed:', error))
   })
-  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire())
   const media = new MediaHandoff(() => controller.guest(), broadcast)
   let fileAnchor: string | undefined
   let filePoll: ReturnType<typeof setInterval> | undefined

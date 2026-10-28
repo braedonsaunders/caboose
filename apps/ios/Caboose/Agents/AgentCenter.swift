@@ -125,7 +125,7 @@ final class AgentCenter {
         guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         let approvals = askFirst ? "ask" : "auto"
         do {
-            let id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments)
+            let id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments, craftMcp: UserDefaults.standard.object(forKey: "caboose.agent.craftMcp") as? Bool ?? true)
             if !tasks.contains(where: { $0.id == id }) {
                 let chosen = agent ?? defaultAgent ?? ""
                 tasks.insert(Task(id: id, agent: chosen, agentName: listing(chosen)?.name, prompt: prompt, status: "running",

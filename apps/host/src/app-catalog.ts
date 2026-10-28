@@ -84,3 +84,13 @@ export class AppCatalog {
   }
   private setProgress(progress: Progress): void { this.progress.set(progress.id, progress); this.emit({ type: 'catalog.progress', ...progress }) }
 }
+
+/** Convert installed catalog entries to shell-free ACP stdio server definitions. */
+export function craftMcpServers(apps: Array<{ id: string; mcp?: string; installedVersion: string | null }>) {
+  return apps.flatMap(app => {
+    if (!app.installedVersion || !app.mcp) return []
+    const parts = app.mcp.split(' ')
+    if (!parts.every(part => /^[a-zA-Z0-9._-]+$/.test(part))) throw new Error(`Invalid MCP command for ${app.id}`)
+    return [{ name: `caboose-${app.id}`, command: parts[0]!, args: parts.slice(1), env: [] }]
+  })
+}

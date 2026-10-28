@@ -33,7 +33,8 @@ Deny, on the task card or on the banner that shows over any screen. A finished t
 reply that continues the same conversation; one whose agent was signed out offers Sign In.
 Settings › Agents (from the bar's menu or Computer settings) installs and updates agents,
 signs in to them on the computer's screen, gives one an API key or other environment, and
-sets the default.
+sets the default. The Ask bar menu’s **Use Craft App Tools** switch controls whether new
+tasks started in the app offer installed catalog MCP servers to the agent.
 
 Where Apple Intelligence is available the bar also offers **On iPhone**: Apple's on-device
 model, in `Caboose/Agents/OnDevice*.swift`. It opens apps and pages, types, presses

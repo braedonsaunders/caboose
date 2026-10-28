@@ -56,6 +56,7 @@ it('routes agent replies, approvals, files and links with the right status codes
   const runs: string[][] = []
   const guest = { run: async (command: string, args: string[]) => {
     runs.push([command, ...args])
+    if (command === '/usr/bin/python3' && args[2] === 'list') return '{}'
     return args[5]?.includes('while [ -e "$target" ]') ? '/home/caboose/Downloads/a.txt' : ''
   } }
   const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
