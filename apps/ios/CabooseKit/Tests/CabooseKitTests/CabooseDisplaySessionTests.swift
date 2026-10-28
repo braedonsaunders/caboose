@@ -317,6 +317,46 @@ final class FakeDecoder: PictureDecoder {
         #expect(texts[1].body.encoded() == ClientMessage.text(commit: "a").frame.body.encoded())
     }
 
+    @Test func softwareReturnSubmitsWithKeysAfterAddressText() async throws {
+        let session = try await ready()
+        session.edit([.type("google.ca")], in: nil)
+        session.edit([.type("\n")], in: nil)
+        let sent = stream.take()
+        #expect(sent.map(\.type) == [DisplayProtocol.ClientType.text.rawValue,
+                                   DisplayProtocol.ClientType.key.rawValue, DisplayProtocol.ClientType.key.rawValue])
+        #expect(sent[0].body["commit"]?.string == "google.ca")
+        #expect(sent[1].body["keysym"]?.int == 0xFF0D)
+        #expect(sent[1].body["pressed"] == .bool(true))
+        #expect(sent[2].body["pressed"] == .bool(false))
+    }
+
+    @Test func returnClearsUncommittedPreeditBeforeSendingTheKey() async throws {
+        let session = try await ready()
+        session.compose("に", selection: NSRange(location: 1, length: 0), in: nil)
+        _ = stream.take()
+        session.type("\n", in: nil)
+        let sent = stream.take()
+        #expect(sent.count == 3)
+        #expect(sent[0].body["preedit"]?.string == "")
+        #expect(sent[1].body["keysym"]?.int == 0xFF0D)
+        #expect(sent[1].body["pressed"] == .bool(true))
+        #expect(sent[2].body["pressed"] == .bool(false))
+    }
+
+    @Test func correctedTextAndPastedLinesKeepTheirOrderAroundReturn() async throws {
+        let session = try await ready()
+        session.edit([.backspace(2), .type("ca\nnext")], in: nil)
+        session.type("\r\n", in: nil)
+        let sent = stream.take()
+        #expect(sent.count == 6)
+        #expect(sent[0].body.encoded() == ClientMessage.text(commit: "ca", deleteBefore: 2).frame.body.encoded())
+        #expect(sent[1].body["pressed"] == .bool(true))
+        #expect(sent[2].body["pressed"] == .bool(false))
+        #expect(sent[3].body["commit"]?.string == "next")
+        #expect(sent[4].body["pressed"] == .bool(true))
+        #expect(sent[5].body["pressed"] == .bool(false))
+    }
+
     @Test func compositionIsAPreeditUntilItsCommit() async throws {
         let session = try await ready()
         stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100])), (.textInput, ["id": 7, "enabled": true, "purpose": "normal"])])

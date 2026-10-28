@@ -634,7 +634,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func insertText(_ text: String) {
-        guard !stickyModifiers.isEmpty else { return super.insertText(text) }
+        guard !stickyModifiers.isEmpty else {
+            super.insertText(text)
+            if (text == "\n" || text == "\r" || text == "\r\n"), !Self.isCodeApp(remoteWindow) {
+                focusCheck = nil
+                onKeyboardWanted?(false)
+                resignFirstResponder()
+            }
+            return
+        }
         resetTyping()
         for character in text {
             guard let stroke = Keysyms.stroke(for: Character(character.lowercased())) else { continue }

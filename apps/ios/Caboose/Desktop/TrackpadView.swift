@@ -160,6 +160,14 @@ final class TrackpadSurface: RemoteTextInputView {
         return desktop.stacking.reversed().compactMap { session.windows[$0] }.first { !$0.isAuxiliary && desktop.isVisible($0.id) }
     }
 
+    override func insertText(_ text: String) {
+        super.insertText(text)
+        if (text == "\n" || text == "\r" || text == "\r\n"), !RemoteWindowView.isCodeApp(focusedWindow) {
+            model?.keyboardVisible = false
+            resignFirstResponder()
+        }
+    }
+
     override func send(_ edits: [TypingBuffer.Edit]) { session?.edit(edits, in: focusedWindow) }
 
     override var sendsMarkedTextAsPreedit: Bool { session?.composesText ?? false }
