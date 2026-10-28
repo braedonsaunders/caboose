@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentConflictError, AgentInputError, AgentNotFoundError, AgentTasks, LEGACY_SUMMARY, describeRequest, interpretLine, parsePoll, parseRequest,
-  readAttachments, type AgentEvent, type AgentGuest, type AgentResolver,
+  readAttachments, transcriptEntry, type AgentEvent, type AgentGuest, type AgentResolver,
 } from './agents.js'
 import type { AgentLaunch } from './registry.js'
 
@@ -31,6 +31,31 @@ describe('interpretLine', () => {
       .toEqual({ turn: 1, status: 'failed', summary: '', signIn: [{ id: 'a', name: 'Account', type: 'agent' }] })
     expect(interpretLine(line({ type: 'turn_end', stopReason: 'end_turn' })).result).toBeUndefined()
     expect(interpretLine('not json')).toEqual({ outputs: [] })
+  })
+})
+
+describe('transcriptEntry', () => {
+  it('passes what clients show and drops bookkeeping and bad lines', () => {
+    expect(transcriptEntry(line({ type: 'thought', text: 'Checking the tests first.', at: '2026-10-28T12:00:00Z' })))
+      .toEqual({ type: 'thought', text: 'Checking the tests first.', at: '2026-10-28T12:00:00Z' })
+    expect(transcriptEntry(line({ type: 'tool_update', id: 'c1', title: 'Run tests', kind: 'execute', status: 'completed' })))
+      .toEqual({ type: 'tool_update', toolId: 'c1', title: 'Run tests', kind: 'execute', status: 'completed' })
+    expect(transcriptEntry(line({ type: 'plan', entries: [{ content: 'Read', status: 'completed' }, { content: 'Fix' }] })))
+      .toEqual({ type: 'plan', entries: [{ content: 'Read', status: 'completed' }, { content: 'Fix', status: 'pending' }] })
+    expect(transcriptEntry(line({ type: 'permission', requestId: null, tool: 'Edit', summary: 'a.ts', optionId: 'o', kind: 'allow_once', auto: true })))
+      .toEqual({ type: 'permission', requestId: null, tool: 'Edit', summary: 'a.ts', auto: true })
+    expect(transcriptEntry(line({ type: 'permission_resolved', requestId: REQUEST, outcome: 'selected', allow: false, message: 'not that file' })))
+      .toEqual({ type: 'permission_resolved', requestId: REQUEST, allow: false, message: 'not that file' })
+    expect(transcriptEntry(line({ type: 'usage', used: 1200, size: 200000, cost: { amount: 0.02, currency: 'USD' } })))
+      .toEqual({ type: 'usage', used: 1200, size: 200000, cost: { amount: 0.02, currency: 'USD' } })
+    expect(transcriptEntry(line({ type: 'auth_required', turn: 2, message: 'Sign in', authMethods: [] })))
+      .toEqual({ type: 'auth_required', turn: 2, message: 'Sign in' })
+    expect(transcriptEntry(line({ type: 'session', sessionId: 's', continuity: 'new' }))).toBeUndefined()
+    expect(transcriptEntry(line({ type: 'mode', modeId: 'plan' }))).toBeUndefined()
+    expect(transcriptEntry(line({ type: 'text', text: '   ' }))).toBeUndefined()
+    expect(transcriptEntry(line({ type: 'tool', title: 'no id' }))).toBeUndefined()
+    expect(transcriptEntry(line({ type: 'permission_resolved', requestId: '../x', allow: true }))).toBeUndefined()
+    expect(transcriptEntry('{')).toBeUndefined()
   })
 })
 
@@ -103,6 +128,10 @@ function fakeGuest() {
         return out
       }
       if (script.includes('ls -1t')) return listing
+      if (script.includes('tail -c "$2" "$1"')) {
+        const state = task(rest[0]!.split('/')[4]!)
+        return `${state.transcript.length}\t${state.transcript.subarray(-Number(rest[1])).toString('base64')}`
+      }
       if (script.includes('printf resolved')) {
         const request = task(idOf(rest[0]!)).approvals.get(rest[1]!)
         if (!request || request.decision !== undefined) return ''
@@ -207,7 +236,7 @@ describe('AgentTasks', () => {
     fake.append(task.id, { type: 'tool', id: 'c', title: 'Run pnpm test', kind: 'execute', status: 'pending' })
     fake.append(task.id, end(1, '42 tests passed.'))
     await tasks.poll()
-    expect(events).toEqual([
+    expect(events.filter(event => event.type !== 'agent.task.event')).toEqual([
       { type: 'agent.task.started', id: task.id, agent: 'stand-in', agentName: 'Stand-in', prompt: 'Run the tests' },
       { type: 'agent.task.output', id: task.id, kind: 'text', text: 'Running pnpm test.' },
       { type: 'agent.task.output', id: task.id, kind: 'tool', text: 'Run pnpm test' },
@@ -215,6 +244,28 @@ describe('AgentTasks', () => {
     ])
     expect(tasks.list()[0]).toMatchObject({ status: 'succeeded', summary: '42 tests passed.' })
     expect(release).toHaveBeenCalledTimes(1)
+    // The structured events carry the same turn, session bookkeeping left out.
+    expect(events.flatMap(event => event.type === 'agent.task.event' ? [event.entry] : [])).toEqual([
+      { type: 'user', turn: 1, text: 'x' },
+      { type: 'text', text: 'Running pnpm test.' },
+      { type: 'tool', toolId: 'c', title: 'Run pnpm test', kind: 'execute', status: 'pending' },
+      { type: 'turn_end', turn: 1, stopReason: 'end_turn', summary: '42 tests passed.' },
+    ])
+    expect(await tasks.transcript(task.id)).toEqual({ entries: events.flatMap(event => event.type === 'agent.task.event' ? [event.entry] : []), truncated: false })
+  })
+
+  it('reads a long transcript from its end and refuses unknown tasks', async () => {
+    const { fake, tasks } = setup()
+    const task = await tasks.start({ prompt: 'Write a lot' })
+    fake.append(task.id, user(1))
+    for (let i = 0; i < 400; i++) fake.append(task.id, { type: 'text', text: `${i} ${'x'.repeat(10_000)}` })
+    fake.append(task.id, end(1, 'Done.'))
+    const read = await tasks.transcript(task.id)
+    expect(read.truncated).toBe(true)
+    expect(read.entries.at(-1)).toEqual({ type: 'turn_end', turn: 1, stopReason: 'end_turn', summary: 'Done.' })
+    expect(read.entries.every(entry => entry.type !== 'user')).toBe(true)
+    expect(read.entries.length).toBeGreaterThan(150)
+    await expect(tasks.transcript('00000000-0000-0000-0000-000000000000')).rejects.toBeInstanceOf(AgentNotFoundError)
   })
 
   it('runs the default agent, maps the two ids older clients send, and refuses what it cannot run', async () => {

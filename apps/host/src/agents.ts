@@ -60,6 +60,24 @@ export type AgentEvent =
   | { type: 'agent.task.approval'; id: string; request: PendingApproval }
   | { type: 'agent.task.approval.resolved'; id: string; requestId: string; allow: boolean }
   | { type: 'agent.task.replied'; id: string; prompt: string; turn: number }
+  /** One entry of the current turn's transcript, as `GET /v1/agent/tasks/:id/transcript` returns them. */
+  | { type: 'agent.task.event'; id: string; turn: number; entry: TranscriptEntry }
+
+/**
+ * One line of a task's transcript as clients see it: the runner's event (guest/agentd/README.md),
+ * checked and trimmed, without session bookkeeping.
+ */
+export type TranscriptEntry = { at?: string } & (
+  | { type: 'user'; turn: number; text: string; attachments?: string[] }
+  | { type: 'text' | 'thought' | 'notice'; text: string }
+  | { type: 'tool'; toolId: string; title: string; kind: string; status: string; detail?: string }
+  | { type: 'tool_update'; toolId: string; title: string; kind: string; status: string }
+  | { type: 'plan'; entries: Array<{ content: string; status: string }> }
+  | { type: 'permission'; requestId: string | null; tool: string; summary: string; auto: boolean }
+  | { type: 'permission_resolved'; requestId: string; allow: boolean; message?: string }
+  | { type: 'usage'; used: number; size: number; cost?: { amount: number; currency: string } }
+  | { type: 'turn_end'; turn: number; stopReason: string; summary: string }
+  | { type: 'turn_failed' | 'auth_required'; turn: number; message: string })
 
 export interface AgentGuest {
   /** Runs a command in the guest as root; resolves stdout, rejects on non-zero exit. */
@@ -110,6 +128,8 @@ const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 const POLL_BUDGET = 1024 * 1024
 const MIN_TASK_CHUNK = 64 * 1024
 const DEFAULT_IDLE_MS = 10 * 60_000
+/** The most of a transcript `transcript()` reads, from its end. */
+const TRANSCRIPT_LIMIT = 2 * 1024 * 1024
 /** Clients that predate the registry name the two agents they knew. */
 const LEGACY_AGENTS: Readonly<Record<string, string>> = { claude: 'claude-acp', codex: 'codex-acp' }
 
@@ -220,6 +240,59 @@ function readSignIn(value: unknown): SignInMethod[] {
     if (!item || typeof item.id !== 'string' || typeof item.name !== 'string' || (item.type !== 'agent' && item.type !== 'terminal')) return []
     return [{ id: item.id.slice(0, 200), name: item.name.slice(0, 200), ...(typeof item.description === 'string' && item.description ? { description: item.description.slice(0, 500) } : {}), type: item.type }]
   })
+}
+
+const TEXT_LIMIT = 16_000
+
+/** The runner's transcript line as a client entry; undefined for bookkeeping and lines it cannot read. */
+export function transcriptEntry(line: string): TranscriptEntry | undefined {
+  let event: any
+  try { event = JSON.parse(line) } catch { return undefined }
+  if (!event || typeof event !== 'object') return undefined
+  const text = (value: unknown, limit = TEXT_LIMIT) => typeof value === 'string' ? value.slice(0, limit) : ''
+  const turn = Number.isSafeInteger(event.turn) ? event.turn as number : undefined
+  const at = typeof event.at === 'string' ? { at: event.at.slice(0, 40) } : {}
+  switch (event.type) {
+    case 'user': {
+      if (turn === undefined) return undefined
+      const attachments = Array.isArray(event.attachments) ? event.attachments.filter((path: unknown) => typeof path === 'string').slice(0, 4) : []
+      return { type: 'user', ...at, turn, text: text(event.text, 32_000), ...(attachments.length ? { attachments } : {}) }
+    }
+    case 'text': case 'thought': case 'notice':
+      return text(event.text).trim() ? { type: event.type, ...at, text: text(event.text) } : undefined
+    case 'tool': case 'tool_update': {
+      if (typeof event.id !== 'string' || !event.id) return undefined
+      const base = { ...at, toolId: event.id.slice(0, 200), title: text(event.title, 500) || 'Tool', kind: text(event.kind, 40) || 'other', status: text(event.status, 40) || 'pending' }
+      if (event.type === 'tool_update') return { type: 'tool_update', ...base }
+      return { type: 'tool', ...base, ...(typeof event.detail === 'string' && event.detail ? { detail: event.detail.slice(0, 1000) } : {}) }
+    }
+    case 'plan':
+      return {
+        type: 'plan', ...at,
+        entries: Array.isArray(event.entries) ? event.entries.slice(0, 50).map((entry: any) => ({ content: text(entry?.content, 500), status: text(entry?.status, 40) || 'pending' })) : [],
+      }
+    case 'permission':
+      return {
+        type: 'permission', ...at, requestId: typeof event.requestId === 'string' && REQUEST_ID.test(event.requestId) ? event.requestId : null,
+        tool: text(event.tool, 200) || 'Tool', summary: text(event.summary, 300), auto: event.auto === true,
+      }
+    case 'permission_resolved':
+      if (typeof event.requestId !== 'string' || !REQUEST_ID.test(event.requestId)) return undefined
+      return { type: 'permission_resolved', ...at, requestId: event.requestId, allow: event.allow === true, ...(typeof event.message === 'string' && event.message ? { message: event.message.slice(0, 2000) } : {}) }
+    case 'usage': {
+      if (!Number.isFinite(event.used) || !Number.isFinite(event.size)) return undefined
+      const cost = event.cost && Number.isFinite(event.cost.amount) && typeof event.cost.currency === 'string' ? { cost: { amount: event.cost.amount as number, currency: event.cost.currency.slice(0, 10) } } : {}
+      return { type: 'usage', ...at, used: event.used, size: event.size, ...cost }
+    }
+    case 'turn_end':
+      if (turn === undefined) return undefined
+      return { type: 'turn_end', ...at, turn, stopReason: text(event.stopReason, 40) || 'end_turn', summary: text(event.summary, 2000) }
+    case 'turn_failed': case 'auth_required':
+      if (turn === undefined) return undefined
+      return { type: event.type, ...at, turn, message: text(event.message, 2000) }
+    default:
+      return undefined
+  }
 }
 
 /** One line for the owner about what an approval request would do, when the runner gave none. */
@@ -423,6 +496,28 @@ export class AgentTasks {
     return true
   }
 
+  /**
+   * The task's conversation so far, read from its transcript in the guest: every turn, newest
+   * last. Only the last TRANSCRIPT_LIMIT bytes are read; `truncated` says earlier lines were left out.
+   */
+  async transcript(id: string): Promise<{ entries: TranscriptEntry[]; truncated: boolean }> {
+    const entry = TASK_ID.test(id) ? this.tracked.get(id) : undefined
+    if (!entry) throw new AgentNotFoundError()
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const output = await asCaboose(guest, TRANSCRIPT_SCRIPT, [`${HOME}/Agents/${id}/transcript.jsonl`, String(TRANSCRIPT_LIMIT)], 20_000)
+    const [size, data] = output.split('\t')
+    const truncated = Number(size) > TRANSCRIPT_LIMIT
+    const lines = decode(data).split('\n')
+    // A cut-off read starts mid-line.
+    if (truncated) lines.shift()
+    const entries = lines.flatMap(line => {
+      const parsed = line.trim() ? transcriptEntry(line) : undefined
+      return parsed ? [parsed] : []
+    })
+    return { entries, truncated }
+  }
+
   /** Cancels the running turn: the runner sends ACP session/cancel and answers waiting requests "cancelled". */
   async cancel(id: string): Promise<boolean> {
     const entry = this.tracked.get(id)
@@ -556,6 +651,8 @@ export class AgentTasks {
       if (interpreted.turn !== undefined) entry.turn = interpreted.turn
       if (entry.turn === entry.task.turns) {
         for (const output of interpreted.outputs) this.emit({ type: 'agent.task.output', id, ...output })
+        const transcript = transcriptEntry(line)
+        if (transcript) this.emit({ type: 'agent.task.event', id, turn: entry.turn, entry: transcript })
       }
       if (interpreted.result?.turn === entry.task.turns) result ??= interpreted.result
     }
@@ -699,6 +796,13 @@ export function parsePoll(output: string): Map<string, PollReport> {
   }
   return reports
 }
+
+/** Prints the transcript's size, a tab, and its last $2 bytes in base64; "0\t" when there is none. */
+const TRANSCRIPT_SCRIPT = [
+  '[ -f "$1" ] || { printf "0\\t"; exit 0; }',
+  'printf "%s\\t" "$(stat -c %s "$1")"',
+  'tail -c "$2" "$1" | base64 -w0',
+].join('\n')
 
 /**
  * One tab-separated line per task directory, newest 30: id, agent id, start time, the
