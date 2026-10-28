@@ -86,6 +86,20 @@ enum Tone {
         #expect(samples.allSatisfy { abs($0) < 0.001 })
     }
 
+    /// A real 20 ms stereo packet from the server's libopus encoder, through the system decoder.
+    @Test(.enabled(if: DisplayVectorTests.names.contains("audio-opus-stereo")))
+    func theServersStereoPacketDecodes() throws {
+        var parser = DisplayFrameParser()
+        guard case .audio(let packet) = try parser.append(try DisplayVectorTests.vector("audio-opus-stereo").wire).first.map(ServerMessage.init) else {
+            Issue.record("no audio packet"); return
+        }
+        #expect(packet.channels == 2)
+        let pcm = try OpusDecoder(channels: packet.channels).decode(packet.data)
+        #expect(pcm.frameLength > 0 && pcm.frameLength <= 960)
+        let samples = UnsafeBufferPointer(start: pcm.floatChannelData![0], count: Int(pcm.frameLength) * 2)
+        #expect(samples.contains { abs($0) > 0.01 }, "a tone, not silence")
+    }
+
     @Test func aToneComesBackAsTheTone() throws {
         let decoder = try OpusDecoder(channels: 2)
         var left: [Float] = []
