@@ -84,6 +84,7 @@ public struct ClientCapabilities: Sendable {
         }
         caps += [
             pair("auto_refresh_delay", 250),
+            pair("vrefresh", .int(Int64(refreshRate))),
             pair("metadata.supported", .list(Self.metadataSupported)),
             pair("encoding", [
                 "": RValue(preferredEncoding),
@@ -94,7 +95,12 @@ public struct ClientCapabilities: Sendable {
                 "icons": ["max_size": [128, 128], "greedy": true],
                 "transparency": true,
                 "rgb_lz4": false,
-                "video_scaling": false,
+                // Video only (never text): the server may encode a video smaller to keep its
+                // frame rate, and the client scales it back up on the GPU.
+                "video_scaling": true,
+                // Typing and pointer feedback: let the server's adaptive batching go as low as a
+                // phone frame and no higher than 150 ms, instead of the 500 ms default ceiling.
+                "batch": ["min_delay": .int(Int64(max(4, 1000 / max(30, refreshRate)))), "max_delay": 150, "delay": 16],
                 "full_csc_modes": ["h264": ["YUV420P"], "jpeg": ["BGRX", "BGRA", "YUV420P"], "webp": ["BGRX", "BGRA"]],
                 "h264": [
                     "score-delta": 80,
