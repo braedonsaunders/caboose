@@ -508,3 +508,72 @@ describe('pure parts', () => {
     normaliser.end()
   })
 })
+
+describe('durable turn receipts', () => {
+  const deliveryId = '11111111-1111-4111-8111-111111111111'
+  it('durably claims before consuming an inbox and records the terminal result', async () => {
+    const t = await task()
+    await t.prompt(1, 'slow', { deliveryId })
+    const runner = t.start()
+    await t.until('prompt execution', events => events.some(event => event.type === 'text'))
+    const path = join(t.dir, 'receipts/000001.json')
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ turn: 1, deliveryId, state: 'claimed' })
+    await expect(readFile(join(t.dir, 'inbox/000001.prompt.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await t.cancel(); await t.turnEnd(1)
+    for (let i = 0; i < 100; i++) {
+      const receipt = JSON.parse(await readFile(path, 'utf8'))
+      if (receipt.state === 'completed') {
+        expect(receipt).toMatchObject({ turn: 1, deliveryId, result: { type: 'turn_end', turn: 1, stopReason: 'cancelled' } })
+        return
+      }
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    throw Error(`No completed receipt: ${runner.stderr()}`)
+  })
+
+  it.each(['claimed', 'partial'])('never replays a %s receipt left before inbox unlink', async state => {
+    const t = await task({ idleMs: 50 })
+    await t.prompt(1, 'hello', { deliveryId })
+    await mkdir(join(t.dir, 'receipts'))
+    await writeFile(join(t.dir, 'receipts/000001.json'), state === 'claimed' ? JSON.stringify({ turn: 1, deliveryId, state }) : '{')
+    const runner = t.start()
+    expect(await runner.exited).toBe(1)
+    expect(runner.stderr()).toContain('uncertain')
+    expect(await t.events()).toEqual([])
+    expect(await readFile(join(t.dir, 'inbox/000001.prompt.json'), 'utf8')).toContain('hello')
+  })
+
+  it('does not execute a completed duplicate, but accepts the next turn', async () => {
+    const t = await task({ idleMs: 100 })
+    await t.prompt(1, 'duplicate', { deliveryId })
+    await mkdir(join(t.dir, 'receipts'))
+    await writeFile(join(t.dir, 'receipts/000001.json'), JSON.stringify({ turn: 1, deliveryId, state: 'completed', result: { type: 'turn_end', turn: 1 } }))
+    await t.prompt(2, 'hello', { deliveryId: '22222222-2222-4222-8222-222222222222' })
+    const runner = t.start()
+    await t.turnEnd(2)
+    expect(await runner.exited).toBe(0)
+    expect((await t.events()).filter(event => event.type === 'user').map(event => event.turn)).toEqual([2])
+  })
+
+  it('leaves an interrupted ACP execution claimed and never fabricates a terminal result', async () => {
+    const t = await task()
+    await t.prompt(1, 'slow', { deliveryId })
+    const runner = t.start()
+    await t.until('prompt execution', events => events.some(event => event.type === 'text'))
+    runner.child.kill('SIGTERM')
+    expect(await runner.exited).toBe(143)
+    expect(JSON.parse(await readFile(join(t.dir, 'receipts/000001.json'), 'utf8'))).toMatchObject({ state: 'claimed', deliveryId })
+    expect((await t.events()).some(event => ['turn_end', 'turn_failed'].includes(event.type))).toBe(false)
+    expect((await t.events()).some(event => event.type === 'notice' && event.text.includes('uncertain'))).toBe(true)
+  })
+
+  it('does not consume oversized or malformed prompts', async () => {
+    const t = await task()
+    await t.prompt(1, 'x'.repeat(32001), { deliveryId })
+    const runner = t.start()
+    expect(await runner.exited).toBe(1)
+    expect(runner.stderr()).toContain('Invalid prompt')
+    expect(await readFile(join(t.dir, 'inbox/000001.prompt.json'), 'utf8')).toContain('xxx')
+    expect(await t.events()).toEqual([])
+  })
+})

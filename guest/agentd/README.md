@@ -48,7 +48,23 @@ note on stderr. Values are never written to the transcript or logs.
 The host writes these, each whole and renamed into place:
 
 - `task.json` — `{ agent: <spec>, cwd, approvals: "ask" | "auto", idleMs, craftServers }`.
-- `inbox/<turn, 6 digits>.prompt.json` — `{ type: "prompt", turn, text, attachments?: [{ path, name, mimeType? }] }`.
+- `inbox/<turn, 6 digits>.prompt.json` — `{ type: "prompt", turn, deliveryId?, text, attachments?: [{ path, name, mimeType? }] }`.
+- `delivery.json` — version 1 journal: `{ version: 1, turns?, original?, startAttachments?, queue, operations, intent?, cancelled? }`.
+  `turns` is the monotonic allocated turn count, independent of the launch script's `turns`
+  file. `original` is the initial request's SHA-256 fingerprint; `queue` is the ordered list of
+  `{ id, hash, prompt, attachments: [{ path, name, mimeType?, bytes }] }`, and `operations`
+  retains `{ id, hash, turn? }` for each admitted reply, including replies explicitly dropped
+  by Cancel. An intent is `{ id: <delivery UUID>, turn, replies: <operation ids>, claimed?, uncertain?, legacy? }`.
+  `legacy` fences the current turn of a runner loaded before receipts, without creating an
+  inbox for that turn. `cancelled` records the explicitly cancelled turn. The journal is
+  bounded to 1 MiB, 2048 operations and ten waiting replies; strings, paths, numbers and attachment totals are
+  validated before recovery. Writes fsync a temporary file, rename it and fsync the directory.
+- `deliveries/<turn, 6 digits>.json` — the published prompt, retained for recovery. It is
+  committed before inbox publication, which is also atomic and fsynced. Repeating publication
+  never recreates a missing inbox. An intent without a publication marker is safe to publish;
+  a marker without an inbox requires a receipt or transcript evidence. File payloads and task
+  creation are staged before admission; new task directories are renamed into place before
+  launching a runner.
 - `inbox/cancel-<n>.json` — `{ type: "cancel" }`.
 - `approvals/<requestId>.decision` — `{ allow, message?, optionId? }`.
 
@@ -61,6 +77,11 @@ The runner writes:
   is removed before the complete message enters the transcript. `after` is the transcript
   byte position before the message, so the host can reject stale or premature snapshots.
   This is transient output, not another transcript event.
+- `receipts/<turn, 6 digits>.json` — `{ turn, deliveryId: <UUID or null>, state: "claimed" | "completed", result? }`.
+  An exclusive, fsynced claim precedes inbox unlink and all ACP execution. An existing claim,
+  including a partial claim file left by a crash, is never executed again. Completion atomically
+  replaces the claim after the terminal transcript event is flushed and fsynced; `result` is
+  that event. Prompts from older hosts without a delivery id use null.
 - `session` — the ACP session id, for the next runner.
 - `agent.log` — the agent's stderr (first 4 MiB).
 
@@ -84,12 +105,13 @@ Every event has `type` and `at` (ISO time).
 | `usage` | `used`, `size`, `cost?` — the turn's last usage report |
 | `notice` | `text` |
 | `turn_end` | `turn`, `stopReason` (ACP), `summary` (the turn's last message, at most 2000 characters) |
-| `turn_failed` | `turn`, `message` |
+| `turn_failed` | `turn`, `message`, `uncertain?` (true when the agent process died during execution) |
 | `auth_required` | `turn`, `message`, `authMethods: [{ id, name, description?, type: "agent" \| "terminal" }]` |
 
-Every turn ends with exactly one of `turn_end`, `turn_failed` or `auth_required` carrying its
-turn number. Updates outside a turn (including the history an agent replays on
-`session/load`) are not written.
+A completed turn ends with exactly one of `turn_end`, `turn_failed` or `auth_required`
+carrying its turn number. An interrupted runner leaves a claim without a completed receipt;
+its signal handler writes a notice instead of fabricating a terminal result. Updates outside
+a turn (including the history an agent replays on `session/load`) are not written.
 
 ## Behaviour
 
@@ -124,6 +146,12 @@ turn number. Updates outside a turn (including the history an agent replays on
   next prompt, then stops the agent and exits 0. It checks the inbox one last time before it
   decides to exit and never takes a prompt after that, so a prompt written in that moment is
   left for the next runner.
+- **Recovery.** A missing inbox is never an acknowledgement. The host reconciles claims,
+  completion receipts, transcript turn boundaries, the published prompt and runner liveness.
+  Runners loaded before a component update have no receipts; their transcript still proves
+  started or completed turns. An interrupted claimed or possibly delivered turn is explicitly
+  uncertain and is not replayed, and later admitted replies remain durable. The task's
+  published prompts retain the payload even if it stopped before writing its first user event.
 - **A later runner** reopens the session from `session`: `session/resume` when the agent
   advertises `sessionCapabilities.resume`, else `session/load` when it advertises
   `loadSession` (the replay is not written again), else `session/new` with a recap of the
@@ -162,7 +190,12 @@ SDK's agent side: streaming, tool calls, plans, permissions (ask and auto, named
 cancel (including an agent that ignores it), replies on the same session, `session/resume`,
 `session/load` and the recap fallback, `auth_required`, both sign-in kinds, npx prefetch,
 a binary download with its checksum, the home-only file system, attachments and the owner's
-environment file. `apps/host/scripts/check-agent-shell.sh` runs it again in a Debian 13
+environment file, durable claims, duplicate suppression and interrupted execution.
+The host's focused recovery tests run with
+`pnpm --filter caboose-host exec vitest run src/agents.test.ts src/agent-delivery.test.ts`;
+they cover host restarts, ordered files, idempotent admission, delayed and failed writes,
+publication crash points, old runners, uncertain claims and Send Now/poll races.
+`apps/host/scripts/check-agent-shell.sh` runs it again in a Debian 13
 container through caboose-host's own guest scripts.
 
 The guest components installer also installs the runner on existing computers. Matching
