@@ -40,7 +40,8 @@ On a WSL2 host that exposes its GPU through `/dev/dxg`, the host can instead run
 the computer as a Debian container using `CABOOSE_RUNTIME=container`. Mesa's
 D3D12 driver renders on the WSL GPU and Xpra can use NVENC; display ports,
 authentication, application discovery and the two-seat protocol remain the
-same. The home directory is a persistent host bind mount or volume. Parking
+same. The home directory is a persistent host bind mount or volume; installed packages
+remain in the container writable layer across a Caboose cold restart. Parking
 pauses the container in RAM, and waking unpauses it; a Docker or WSL restart
 loses the process tree, but not the home directory. This volatile pause does
 not claim the durable microVM snapshot semantics described below. The runtime
@@ -133,6 +134,10 @@ HTTP API (all JSON, all behind `Authorization: Bearer <device token>`):
 | `GET` | `/v1/health` | host + KVM + desk host stats |
 | `POST` | `/v1/session` | wake the user's computer (start or resume), ensure its display server is up, return `{ state, display: { path, token, protocol }, computer: { name, image, memoryMb, vcpus } }`. `protocol` is `"xpra-ws"` (the default) or `"caboose-display"` (`CABOOSE_DISPLAY=caboose`, docs/display.md); clients treat any other value as `"xpra-ws"` |
 | `GET` | `/v1/display` | **WebSocket.** Binary relay to the owner's display in the guest: Xpra's WS on 14500, or caboose-display's on 14600. Subprotocol passthrough (`binary`). One relay per client connection |
+| `GET` | `/v1/catalog` | catalog, packs, installed versions and operation state |
+| `POST` | `/v1/catalog/:id/install`, `/update`, `/rollback` | queue an application operation |
+| `DELETE` | `/v1/catalog/:id` | queue removal of an application |
+| `POST` | `/v1/catalog/packs/:id/install` | queue a pack installation |
 | `GET` | `/v1/apps` | launchable apps from the guest's `.desktop` files: `{ id, name, icon (PNG data URL), categories, exec }` |
 | `POST` | `/v1/apps/:id/launch` | start an app on display `:100` |
 | `POST` | `/v1/session/park` | park now (snapshot with memory); otherwise parked on idle |
@@ -202,6 +207,26 @@ v0 auth is a single owner token from the environment; accounts and tenancy move 
 `appkit-auth`/`appkit-tenant`/`appkit-iam` for the hosted service. Nothing in the
 API is single-user by shape: every route is scoped to the authenticated
 principal's computer.
+
+### Catalog
+
+The repository-owned `guest/catalog/catalog.json` is the source of available apps and
+release pins. Debian apps use Debian 13's signed repositories; Craft release packages
+have fixed URLs, byte counts and SHA-256 hashes. No release pin changes automatically.
+A catalog mutation returns 202 after accepting the operation and emits `catalog.progress`
+with an id, operation and phase (`queued`, `installing`, `finished`, or `failed`), followed
+by `catalog.changed`. Only one catalog operation runs at a time; a concurrent request,
+park or cold restart receives 409. Pack installs run their entries in order and continue
+past individual failures. Catalog operations hold a computer lease.
+
+The host runs the installer as root through the same argument-only guest channel on both
+runtimes. Downloads go directly from the guest, are size- and SHA-256-checked before APT
+installs them, and are retained for rollback. A successful change retains the prior cached
+release where available. APT apps do not promise rollback. Package state and failures are
+recorded in the guest and installed versions come from dpkg; interrupted operations are
+reported on the next listing. The catalog listing uses the last observed state while the
+computer is parked. It does not wake the computer. `/v1/apps` continues to discover
+installed desktop entries independently.
 
 ### 3. App: Caboose for iOS (`apps/ios/`)
 

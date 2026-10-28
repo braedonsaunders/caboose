@@ -74,3 +74,25 @@ it('routes agent replies, approvals, files and links with the right status codes
   expect(await (await post('/v1/open', { url: 'https://example.com' })).json()).toEqual({ opened: true })
   expect(runs.at(-1)?.at(-1)).toBe('https://example.com/')
 })
+
+it('serves the catalog and serializes authenticated application operations', async () => {
+  let finish!: () => void
+  const gate = new Promise<void>(resolve => { finish = resolve })
+  const guest = { run: async (_command: string, args: string[]) => { if (args[2] === 'list') return '{}'; await gate; return '' } }
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening'); close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const req = (path: string, method = 'GET') => fetch(base + path, { method, headers: { authorization: 'Bearer owner' } })
+  expect((await fetch(base + '/v1/catalog')).status).toBe(401)
+  await req('/v1/session', 'POST')
+  const list = await (await req('/v1/catalog')).json() as { apps: { id: string }[] }
+  expect(list.apps.some(a => a.id === 'gridcraft')).toBe(true)
+  expect((await req('/v1/catalog/no-such-app/install', 'POST')).status).toBe(404)
+  expect((await req('/v1/catalog/gridcraft/install', 'POST')).status).toBe(202)
+  expect((await req('/v1/catalog/gimp/install', 'POST')).status).toBe(409)
+  expect((await req('/v1/session/park', 'POST')).status).toBe(409)
+  finish()
+  await vi.waitFor(async () => { const result = await (await req('/v1/catalog')).json() as { apps: { id: string; progress: { phase: string } }[] }; expect(result.apps.find(a => a.id === 'gridcraft')?.progress.phase).toBe('finished') })
+})

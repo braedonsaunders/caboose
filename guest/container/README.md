@@ -56,3 +56,7 @@ profile is based on the [Moby seccomp v0.2.1 default](https://github.com/moby/pr
 (Apache-2.0), with clone/unshare allowed for user, PID and network namespaces;
 mount, UTS, IPC and cgroup namespace creation remains blocked. It must be
 reviewed against the Docker version and local security requirements.
+
+Cold restart stops and starts the same container, preserving its installed packages and
+catalog rollback cache in the writable layer. Removing or replacing that container discards
+those packages; back up the home volume separately.

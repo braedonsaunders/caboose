@@ -213,3 +213,13 @@ random value, then run `docker compose -f deploy/compose.yaml up -d` to
 recreate the service. Update every client; the old token stops working. Keep
 this file private and never commit it. The token is also visible to Docker
 administrators through container configuration.
+
+## Application catalog
+
+The pinned catalog in `guest/catalog` is served at `GET /v1/catalog`. Install, update,
+rollback and removal are asynchronous; watch `catalog.progress` and `catalog.changed`
+on `/v1/control`. The guest downloads and verifies release packages before APT runs.
+Only one catalog operation runs at a time. An interrupted operation is reported by the
+next catalog listing; inspect its error and retry. Debian package installs use the signed
+Debian 13 repositories. Rollback is available only when an earlier release package was
+cached. The container runtime retains its writable layer across a Caboose cold restart.
