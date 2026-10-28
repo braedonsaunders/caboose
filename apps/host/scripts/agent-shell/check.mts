@@ -68,13 +68,14 @@ await until('the approved turn', () => find(tasks, ask.id).status !== 'running')
 assert.ok(events.some(event => event.type === 'agent.task.output' && event.text === 'decision allow:true'))
 console.log('Approval round trip passed.')
 
-// Codex: a thread is resumed with its id and the sandbox override.
+// Codex: a thread is resumed with its id, both turns outside Codex's own sandbox.
 const codex = await tasks.start({ prompt: 'Codex one', agent: 'codex' })
 await until('the Codex turn', () => find(tasks, codex.id).status !== 'running')
 await tasks.reply(codex.id, { prompt: 'Codex two' })
 await until('the resumed Codex turn', () => find(tasks, codex.id).status !== 'running')
 assert.equal(find(tasks, codex.id).summary, 'codex heard Codex two')
-assert.equal(await sh(`sort -u /home/caboose/Agents/${codex.id}/codex-config.log`), 'sandbox_mode=workspace-write')
+assert.ok((await sh(`sort -u /home/caboose/Agents/${codex.id}/codex-flags.log`)).split('\n').includes('--dangerously-bypass-approvals-and-sandbox'))
+assert.equal(await sh(`grep -c -- --dangerously-bypass-approvals-and-sandbox /home/caboose/Agents/${codex.id}/codex-flags.log`), '2')
 console.log('Codex resume passed.')
 tasks.pause()
 

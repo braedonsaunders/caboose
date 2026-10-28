@@ -6,7 +6,7 @@ pos=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -c) printf '%s\n' "$2" >> codex-config.log; shift 2 ;;
-    --*) shift ;;
+    --*) printf '%s\n' "$1" >> codex-flags.log; shift ;;
     *) pos="$pos
 $1"; shift ;;
   esac
