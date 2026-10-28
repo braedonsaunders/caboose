@@ -69,6 +69,13 @@ try {
 } catch (error) { failures.push(error) }
 finally {
   for (const id of routines) try { await call(`/v1/agent/routines/${id}`, 'DELETE') } catch (error) { failures.push(error) }
-  if (profile) try { await call(`/v1/agent/profiles/${profile.id}`, 'PATCH', { archived: true }) } catch (error) { failures.push(error) }
+  if (profile) {
+    try {
+      for (const task of await call('/v1/agent/tasks')) {
+        if (task.profileId === profile.id && ['running', 'paused'].includes(task.status)) await call(`/v1/agent/tasks/${task.id}/cancel`, 'POST', {})
+      }
+    } catch (error) { failures.push(error) }
+    try { await call(`/v1/agent/profiles/${profile.id}`, 'PATCH', { archived: true }) } catch (error) { failures.push(error) }
+  }
 }
 if (failures.length) throw new AggregateError(failures, 'Persistent-agent verification failed')
