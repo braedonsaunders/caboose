@@ -1,0 +1,21 @@
+[
+  "components/install.sh",
+  "components/version.py",
+  "files/caboose-files.py",
+  "files/caboose-files.service",
+  "notifications/install.sh",
+  "notifications/monitor.py",
+  "notifications/daemon.py",
+  "notifications/caboose-notifications.service",
+  "notifications/caboose-notification-daemon.service",
+  "notifications/caboose-agent-bus.service",
+  "phone/install.sh",
+  "phone/caboose-phone",
+  "phone/caboose-phone.desktop",
+  "phone/caboose-share.desktop",
+  "phone/uca.xml",
+  "phone/cups-backend",
+  "phone/printer-setup",
+  "phone/caboose-phone-printer.service",
+  "container/caboose-session"
+]

@@ -1,10 +1,8 @@
 # Phone handoff in the guest
 
 `install.sh` installs `caboose-open`, `caboose-share`, the phone URL desktop handler,
-Thunar's **Share to iPhone** custom action, and an `iPhone` CUPS queue. Both guest image
-builders install it. It can also be run as root on an existing Debian guest with an
-existing `caboose` user. Log in again or restart Thunar to reload custom actions; a user's
-own MIME defaults may override the system defaults.
+a system default for Thunar's **Share to iPhone** custom action, and an `iPhone` CUPS queue. Both guest image
+builders install it. It can also be installed by the automatic host upgrade on an existing Debian guest. Log in again or restart Thunar to reload custom actions; a user's own MIME defaults or Thunar actions may override the system defaults.
 
 ```
 caboose-open 'mailto:person@example.com'

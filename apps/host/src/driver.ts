@@ -73,6 +73,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
     if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
   }
   const controller: Controller = {
+    componentsMode: 'vm',
     displayUrl: `ws://${GUEST_ADDRESS}:${owner.port}/`,
     agentDisplayUrl: `ws://${GUEST_ADDRESS}:14501/`,
     fileService: () => ({ url: `http://${GUEST_ADDRESS}:14700`, token: displayToken }),

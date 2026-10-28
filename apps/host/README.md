@@ -81,8 +81,7 @@ sets how long an agent stays running after a turn, waiting for a reply. Agent at
 Shared files and `/v1/fs` use the guest's authenticated TCP file service, installed in both
 images; streaming requests wake the computer and hold a lease until the transfer finishes.
 The full route, precondition, Trash and change-feed contract is in `../../docs/architecture.md` § Files.
-Existing computer disks need the service installed in the guest; rebuilding the golden image
-updates newly created computers only.
+Existing computers receive the service through the automatic components upgrade described below.
 
 With Node 22 and a real computer, the file check creates a temporary directory, uploads,
 lists, downloads a byte range, moves and trashes its files and the directory:
@@ -278,3 +277,21 @@ connected. `GET /v1/phone/files/:id` reads a staged file through the guest comma
 channel; it does not accept arbitrary guest paths or wake the computer. See
 `../../docs/architecture.md` § iOS weave for the schema, limits and delivery semantics,
 and `../../guest/phone/README.md` for the guest-side CUPS and command check.
+
+## Guest components
+
+The host bundles the files listed in `guest/components/manifest.json` and compares their
+content hash with the running guest on each wake. Updating happens after display readiness
+and reports `computer.upgrade` and `GET /v1/computer`'s `upgrade` status. It retries on the
+next wake after a failure. Park and restart are unavailable while packages are being installed.
+A container without its original loopback mapping for port 14700 reports that it must be
+recreated to enable Files. Preserve its home and back up anything needed from its writable
+layer first; recreating it discards installed packages in that layer.
+
+Run `guest/components/check-container.sh` from the repository root after `pnpm install`
+to test a component-free disposable Debian guest, install twice and check services and
+a preserved file. It needs Docker and network access. On a real host, set `CABOOSE_URL`
+and `CABOOSE_OWNER_TOKEN`, then run `node apps/host/scripts/check-upgrade.mjs`; it wakes
+the computer, waits for the upgrade, and runs the Files check. To exercise the installation
+rather than the up-to-date path, use an existing guest with an older marker. This check
+needs a real guest; the microVM path additionally needs KVM.

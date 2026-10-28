@@ -145,9 +145,25 @@ and its build and checks are documented in `guest/container/README.md`.
 A Debian 13 (trixie, amd64) golden image booted by Cloud Hypervisor. Each computer's
 disk is a reflink copy-on-write clone of the base, exactly the appkit-desk model: it
 costs no space up front and each user's installs and home persist. A clone is
-independent of the base once made, so a new base image reaches new computers only;
-updating existing ones is a guest-side upgrade (apt and the Caboose units), not a
-base swap.
+independent of the base once made, so a new base image reaches new computers only.
+On each wake the host compares a SHA-256 hash of its bundled guest components with
+`/usr/local/share/caboose/components.version`. A mismatch starts an asynchronous,
+root guest-exec upgrade after the display is ready: the host stages bounded base64
+argument chunks, installs missing Debian packages, the file service, phone integration,
+notification monitor and Mesa software drivers, starts their services and CUPS queue,
+and atomically writes the marker only after success. It never replaces the disk or edits
+user files. The same installer is used by both image builders. A failed upgrade is retried
+on the next wake; a running upgrade holds a lease and rejects park or restart requests.
+The system Thunar action is a default; existing user-defined actions take precedence.
+
+`GET /v1/computer` reports `upgrade: null | { state, version?, message? }`, and
+`/v1/control` broadcasts `computer.upgrade { upgrade }` plus updated management status.
+States are `checking`, `updating`, `succeeded`, and `failed`. A failure does not prevent
+the display opening. Old containers retain their writable layer and use the same guest
+upgrade, but Docker cannot add a port mapping to an existing container: if its port 14700
+mapping is absent the success message says to recreate the container to enable Files.
+Back up its writable layer and home before replacing it; installed packages in that layer
+are otherwise lost. The Computer sheet shows progress, failures and this warning.
 
 - **Display server: Xpra in seamless mode** on display `:100`, listening for
   WebSocket on `0.0.0.0:14500` inside the guest (reachable only from the host over
@@ -698,8 +714,7 @@ The private `guest/files` service listens on guest TCP port 14700, runs as `cabo
 reads the same per-wake token file as the displays on every request. The microVM host reaches
 it over the fenced TAP; the container publishes it on host loopback only. Both guest images
 install it. The host relays bytes without buffering an entire file and holds a lifecycle
-lease from wake until the response completes. Existing computers need this service installed
-in the guest; changing a golden image alone does not upgrade a pre-existing computer.
+lease from wake until the response completes. Existing computers receive this service through the guest-components upgrade described above.
 
 The `/v1/fs` routes above require the owner bearer token. `path` and `destination` are
 relative to `/home/caboose`; the empty path denotes the root. Traversal, absolute paths,

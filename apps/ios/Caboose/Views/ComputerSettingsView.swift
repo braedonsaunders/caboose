@@ -76,6 +76,17 @@ struct ComputerSettingsView: View {
     private func form(_ status: HostClient.ComputerStatus) -> some View {
         let limits = status.limits
         Form {
+            if let upgrade = status.upgrade, upgrade.state == "checking" || upgrade.state == "updating" || upgrade.state == "failed" || upgrade.message != nil {
+                Section {
+                    if upgrade.state == "checking" || upgrade.state == "updating" {
+                        Label { Text("Updating Caboose components…") } icon: { ProgressView() }
+                    }
+                    if let message = upgrade.message {
+                        Label(message, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
             if status.restartRequired {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {

@@ -75,6 +75,7 @@ export function createContainerController(config: Config, dependencies: { docker
   let launchEnv = owner.launchEnv ?? []
   let displayToken = ''
   let running = false
+  let filesPortWarning: string | undefined
 
   async function state(): Promise<'missing' | 'running' | 'paused' | 'stopped'> {
     try {
@@ -135,6 +136,8 @@ export function createContainerController(config: Config, dependencies: { docker
   }
 
   const controller: Controller = {
+    componentsMode: 'container',
+    componentsWarning: () => filesPortWarning,
     displayUrl: `ws://127.0.0.1:${owner.port}/`,
     agentDisplayUrl: 'ws://127.0.0.1:14501/',
     fileService: () => ({ url: 'http://127.0.0.1:14700', token: displayToken }),
@@ -163,6 +166,9 @@ export function createContainerController(config: Config, dependencies: { docker
       }
       running = true
       try {
+        const mapping = await docker(['port', name, '14700/tcp'], 15_000).catch(() => '')
+        filesPortWarning = mapping.split(/\r?\n/).some(line => line.trim() === '127.0.0.1:14700') ? undefined : 'Recreate the container to enable Files.'
+
         if (!displayToken) {
           displayToken = randomBytes(32).toString('hex')
           // Xpra reads the password file on each connection; never put a newline in it.
