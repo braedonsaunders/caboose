@@ -43,7 +43,7 @@ const identity = Identity.create({
 })
 const apns = await apnsFromEnvironment(process.env)
 const sender = apns ? new APNsSender(apns) : undefined
-const computers = await ComputerRegistry.open(deployment.imageRoot)
+const computers = await ComputerRegistry.open(deployment.imageRoot, identityDatabase)
 const phones = await PhoneTokens.open(join(deployment.imageRoot, 'phones.json'))
 // Every microVM computer shares one appkit-desk host, and with it its capacity.
 const desks = deployment.runtime === 'microvm' ? createDeskPool(deployment) : undefined

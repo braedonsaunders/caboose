@@ -228,7 +228,7 @@ The owner's computer's name, memory, CPUs, idle timeout and default agent are sa
 the environment. Invalid or unreadable settings stop startup rather than reverting. Back the
 file up with the disks and do not edit it while the host runs. Its push devices
 (`push-devices.json`) and Live Activities (`activities.json`) live beside it, with the agent
-registry cache (`agent-registry.json`), the other computers (`computers.json`) and phone
+registry cache (`agent-registry.json`), the computer registry and people in the identity database, and phone
 sign-ins (`phones.json`, SHA-256 digests only). Every other computer keeps its own
 `caboose.json`, `push-devices.json` and `activities.json` in `computers/<id>/`.
 
@@ -243,12 +243,22 @@ A new host is unclaimed: it writes a one-time code to `${CABOOSE_IMAGE_ROOT}/set
 logs `Set up Caboose: http://<address>:<port>/setup?code=<code>`. `/setup` opens with that
 code, including on the host itself: a local proxy may relay outside traffic without
 forwarding headers. It makes the operator's account and the first tenant, gives it the
-host's computers, and deletes the file. Other administrators join by invitation links
+host’s computers, and deletes the file. The owner computer is assigned to the operator’s
+person record in the same database transaction. The owner-token console offers Complete
+setup until this is done; existing computers and paired phones continue to work. Other administrators join by invitation links
 from **People**. Accounts and sessions are AppKit's (`appkit-auth`, `appkit-db`) in the
 embedded database, or Postgres with `CABOOSE_DATABASE_URL`. Back up `identity/` (or the
 Postgres database) with the disks. The owner token keeps working for the whole API.
 
 ## Computers
+
+Computers belong to people, and people belong to tenants. The identity database stores
+both in `caboose_computers` and `caboose_people`, enforcing tenant/person foreign keys.
+New computers require a selected person. Deleting a person with computers is refused.
+The first startup imports the legacy JSON registry atomically without changing disk ids,
+network slots or phone tokens; the original file remains a backup. Unknown legacy owners
+remain marked Assignment required. Back up the database with the disks.
+
 
 The owner token manages every computer through `/v1/computers` (list, make, delete) and
 reaches any one under `/v1/computers/<id>/…`; the routes without an id serve the owner's

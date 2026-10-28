@@ -1,11 +1,11 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual, randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
-import { and, asc, eq, gt, inArray, isNull } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm'
 import { createAppkitAuth, type AppkitAuth } from '@braedonsaunders/appkit-auth'
-import { memberships, tenants, users } from '@braedonsaunders/appkit-db/schema'
+import { authAccounts, memberships, tenants, users } from '@braedonsaunders/appkit-db/schema'
 import { secretFile } from '../owner-token.js'
 import type { IdentityDatabase } from './database.js'
-import { invites } from './schema.js'
+import { invites, people } from './schema.js'
 
 /**
  * Accounts, tenants and invitations. Accounts belong to administrators, who use the web
@@ -20,6 +20,7 @@ export interface Quotas { memoryMb: number | null; vcpus: number | null; diskGb:
 export const UNLIMITED: Quotas = { memoryMb: null, vcpus: null, diskGb: null }
 
 export interface Tenant { id: string; name: string; quotas: Quotas; createdAt: string }
+export interface Person { id: string; tenantId: string; name: string; userId: string | null; createdAt: string }
 export interface Administrator { userId: string; name: string; email: string; operator: boolean; joinedAt: string | null }
 export interface PendingInvite { id: string; email: string; createdAt: string; expiresAt: string }
 export interface InviteDetails { tenantName: string; email: string; expiresAt: string; accountExists: boolean }
@@ -144,7 +145,7 @@ export class Identity {
    * already runs. Allowed once, with the setup code even on loopback: a local proxy may
    * relay remote visitors.
    */
-  async claim(input: Record<string, unknown>): Promise<{ userId: string; tenantId: string; email: string }> {
+  async claim(input: Record<string, unknown>): Promise<{ userId: string; tenantId: string; personId: string; email: string }> {
     if (this.claiming) throw new IdentityConflictError('This host is already being set up')
     const work = (async () => {
       if (await this.claimed()) throw new IdentityConflictError('This host is already set up')
@@ -153,13 +154,27 @@ export class Identity {
       const address = email(input.email)
       const secret = password(input.password)
       const tenantName = label(input.tenantName, 'tenantName')
-      const userId = await this.createAccount(name, address, secret)
-      await this.db.update(users).set({ isSuperAdmin: true, emailVerified: true }).where(eq(users.id, userId))
-      const tenant = await this.createTenant({ name: tenantName })
-      await this.addMembership(tenant.id, userId, name)
+      const hash = await (await this.auth.$context).password.hash(secret)
+      const userId = randomUUID()
+      const tenantId = randomUUID()
+      const personId = randomUUID()
+      await this.db.transaction(async tx => {
+        await tx.execute(sql`LOCK TABLE users IN EXCLUSIVE MODE`)
+        if ((await tx.select({ id: users.id }).from(users).limit(1)).length) throw new IdentityConflictError('This host is already set up')
+        await tx.insert(users).values({ id: userId, name, email: address, isSuperAdmin: true, emailVerified: true })
+        await tx.insert(authAccounts).values({ userId, accountId: userId, providerId: 'credential', password: hash })
+        await tx.insert(tenants).values({ id: tenantId, name: tenantName, slug: slugFor(tenantName), settings: { quotas: UNLIMITED } })
+        await tx.insert(memberships).values({ tenantId, userId, displayName: name, status: 'active', joinedAt: new Date() })
+        await tx.insert(people).values({ id: personId, tenantId, name, userId })
+        // The preserved owner's computer becomes the setup person's computer. Other
+        // legacy computers keep their identity and explicitly await person assignment.
+        await tx.execute(sql`UPDATE caboose_computers SET tenant_id=${tenantId}, person_id=${personId}, assignment_pending=false
+          WHERE id='owner' AND tenant_id IS NULL`)
+        await tx.execute(sql`UPDATE caboose_computers SET tenant_id=${tenantId} WHERE tenant_id IS NULL`)
+      })
       this.claimedOnce = true
-      await rm(this.setupCodePath, { force: true })
-      return { userId, tenantId: tenant.id, email: address }
+      await rm(this.setupCodePath, { force: true }).catch(() => {})
+      return { userId, tenantId, personId, email: address }
     })()
     this.claiming = work
     try { return await work } finally { this.claiming = undefined }
@@ -175,8 +190,11 @@ export class Identity {
 
   private async addMembership(tenantId: string, userId: string, displayName: string): Promise<void> {
     const now = new Date()
-    await this.db.insert(memberships).values({ tenantId, userId, displayName, status: 'active', joinedAt: now })
-      .onConflictDoUpdate({ target: [memberships.tenantId, memberships.userId], set: { status: 'active', joinedAt: now, updatedAt: now } })
+    await this.db.transaction(async tx => {
+      await tx.insert(memberships).values({ tenantId, userId, displayName, status: 'active', joinedAt: now })
+        .onConflictDoUpdate({ target: [memberships.tenantId, memberships.userId], set: { status: 'active', joinedAt: now, updatedAt: now } })
+      await tx.insert(people).values({ tenantId, userId, name: displayName }).onConflictDoNothing()
+    })
   }
 
   /** Signs an account in, answering with Better Auth's response so its session cookie reaches the browser. */
@@ -229,8 +247,53 @@ export class Identity {
   /** The caller makes sure the tenant has no computers left. */
   async deleteTenant(id: string): Promise<void> {
     await this.tenant(id)
-    await this.db.delete(memberships).where(eq(memberships.tenantId, id))
-    await this.db.delete(tenants).where(eq(tenants.id, id))
+    try {
+      await this.db.transaction(async tx => {
+        await tx.delete(people).where(eq(people.tenantId, id))
+        await tx.delete(memberships).where(eq(memberships.tenantId, id))
+        await tx.delete(tenants).where(eq(tenants.id, id))
+      })
+    } catch (error) {
+      if (foreignKeyFailure(error)) throw new IdentityConflictError('Move or delete the tenant’s computers first')
+      throw error
+    }
+  }
+
+  async people(tenantId: string): Promise<Person[]> {
+    await this.tenant(tenantId)
+    return (await this.db.select().from(people).where(eq(people.tenantId, tenantId)).orderBy(asc(people.createdAt)))
+      .map(row => ({ ...row, createdAt: row.createdAt.toISOString() }))
+  }
+
+  async person(id: string): Promise<Person> {
+    if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/.test(id)) throw new IdentityNotFoundError('person not found')
+    const [row] = await this.db.select().from(people).where(eq(people.id, id))
+    if (!row) throw new IdentityNotFoundError('person not found')
+    return { ...row, createdAt: row.createdAt.toISOString() }
+  }
+
+  async createPerson(tenantId: string, input: Record<string, unknown>): Promise<Person> {
+    for (const key of Object.keys(input)) if (key !== 'name') throw new IdentityInputError(`Unknown field: ${key}`)
+    await this.tenant(tenantId)
+    const [row] = await this.db.insert(people).values({ tenantId, name: label(input.name, 'name') }).returning()
+    return { ...row!, createdAt: row!.createdAt.toISOString() }
+  }
+
+  async updatePerson(id: string, input: Record<string, unknown>): Promise<Person> {
+    for (const key of Object.keys(input)) if (key !== 'name') throw new IdentityInputError(`Unknown field: ${key}`)
+    await this.person(id)
+    const [row] = await this.db.update(people).set({ name: label(input.name, 'name') }).where(eq(people.id, id)).returning()
+    if (!row) throw new IdentityNotFoundError('person not found')
+    return { ...row, createdAt: row.createdAt.toISOString() }
+  }
+
+  async deletePerson(id: string): Promise<void> {
+    await this.person(id)
+    try { await this.db.transaction(async tx => { await tx.delete(people).where(eq(people.id, id)) }) }
+    catch (error) {
+      if (foreignKeyFailure(error)) throw new IdentityConflictError('Reassign or delete this person’s computers first')
+      throw error
+    }
   }
 
   // --- Administrators -----------------------------------------------------------
@@ -316,4 +379,9 @@ export class Identity {
     await this.addMembership(invite.tenantId, userId, displayName)
     return { email: invite.email, password: secret }
   }
+}
+
+function foreignKeyFailure(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  return ('code' in error && (error.code === '23503' || error.code === '23001')) || ('cause' in error && foreignKeyFailure(error.cause))
 }

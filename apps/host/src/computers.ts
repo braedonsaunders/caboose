@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto
 import { join } from 'node:path'
 import { MAX_SLOTS } from './network.js'
 import { readJsonFile, SettingsInputError, writePrivateJson } from './settings.js'
+import { ComputerStore } from './identity/computer-store.js'
+import type { IdentityDatabase } from './identity/database.js'
 
 /**
  * The computers a host runs. The owner's computer is always there: it has id `owner` and
@@ -18,10 +20,10 @@ export const COMPUTER_ID_PATTERN = /^(?:owner|c-[0-9a-f]{10})$/
  * the tenant the computer belongs to, null until the host is set up; `person` is the name of
  * the one person whose computer it is, who uses it from their phone.
  */
-export interface ComputerRecord { id: string; slot: number; createdAt: string | null; tenantId: string | null; person: string | null }
+export interface ComputerRecord { id: string; slot: number; createdAt: string | null; tenantId: string | null; person: string | null; personId?: string | null }
 
 /** What the registry keeps about a computer besides its identity. */
-export type ComputerAssignment = Pick<ComputerRecord, 'tenantId' | 'person'>
+export type ComputerAssignment = Pick<ComputerRecord, 'tenantId' | 'person' | 'personId'>
 
 export class ComputerCapacityError extends Error {}
 
@@ -54,10 +56,18 @@ interface OwnerMeta extends ComputerAssignment { createdAt: string | null }
 
 export class ComputerRegistry {
   private pending: Promise<void> = Promise.resolve()
-  private constructor(readonly root: string, private path: string, private others: ComputerRecord[], private owner: OwnerMeta) {}
+  private failure: unknown
+  private constructor(readonly root: string, private path: string, private others: ComputerRecord[], private owner: OwnerMeta, private store?: ComputerStore) {}
 
-  static async open(root: string): Promise<ComputerRegistry> {
+  static async open(root: string, database?: IdentityDatabase): Promise<ComputerRegistry> {
     const path = join(root, 'computers.json')
+    const store = database ? new ComputerStore(database.pool) : undefined
+    const persisted = store ? await store.load() : []
+    if (persisted.length) {
+      const registry = new ComputerRegistry(root, path, [], { createdAt: null, tenantId: null, person: null }, store)
+      registry.install(persisted)
+      return registry
+    }
     const value = await readJsonFile(path)
     if (value !== undefined && (!value || typeof value !== 'object' || !Array.isArray((value as { computers?: unknown }).computers))) throw new Error('Invalid computer registry')
     const stored = value as { computers: unknown[]; owner?: Record<string, unknown>; ownerCreatedAt?: unknown } | undefined
@@ -66,10 +76,35 @@ export class ComputerRegistry {
     // Registries from before tenants kept only the owner's computer's creation time.
     const meta = stored?.owner ?? {}
     const createdAt = typeof meta.createdAt === 'string' ? meta.createdAt : typeof stored?.ownerCreatedAt === 'string' ? stored.ownerCreatedAt : null
-    return new ComputerRegistry(root, path, others, { createdAt, ...assignment(meta) })
+    const registry = new ComputerRegistry(root, path, others, { createdAt, ...assignment(meta) }, store)
+    if (registry.store) registry.install(await registry.store.initialize(registry.list()))
+    return registry
+  }
+
+  private install(records: ComputerRecord[]) {
+    const owner = records.find(record => record.id === OWNER_COMPUTER)
+    if (!owner) throw new Error('Computer database has no owner computer')
+    const { id: _id, slot: _slot, ...meta } = owner
+    this.owner = meta
+    this.others = records.filter(record => record.id !== OWNER_COMPUTER)
+  }
+
+  /** Serialize changes made by identity setup/people with registry writes, then refresh. */
+  async synchronize<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.pending.then(async () => {
+      try { return await work() } finally {
+        if (this.store) {
+          try { this.install(await this.store.load()); this.failure = undefined }
+          catch (error) { this.failure = error; throw error }
+        }
+      }
+    })
+    this.pending = next.then(() => {}, () => {})
+    return next
   }
 
   list(): ComputerRecord[] {
+    if (this.failure) throw new Error('Computer ownership is unavailable; restart the host to reload it', { cause: this.failure })
     return [{ id: OWNER_COMPUTER, slot: 0, ...this.owner }, ...this.others.map(c => ({ ...c }))]
   }
 
@@ -81,9 +116,18 @@ export class ComputerRegistry {
   private save(change: (others: ComputerRecord[], owner: OwnerMeta) => { others: ComputerRecord[]; owner: OwnerMeta }): Promise<void> {
     const work = this.pending.then(async () => {
       const next = change(this.others.map(c => ({ ...c })), { ...this.owner })
-      await writePrivateJson(this.path, { owner: next.owner, computers: next.others })
-      this.others = next.others
-      this.owner = next.owner
+      if (this.store) {
+        try { this.install(await this.store.save(this.list(), [{ id: OWNER_COMPUTER, slot: 0, ...next.owner }, ...next.others])) }
+        catch (error) {
+          // A lost commit acknowledgement must never leave old authorization cached.
+          if (!(error instanceof SettingsInputError)) this.failure = error
+          throw error
+        }
+      } else {
+        await writePrivateJson(this.path, { owner: next.owner, computers: next.others })
+        this.others = next.others
+        this.owner = next.owner
+      }
     })
     this.pending = work.catch(() => {})
     return work
@@ -98,10 +142,10 @@ export class ComputerRegistry {
       if (slot >= MAX_SLOTS) throw new ComputerCapacityError(`A host runs at most ${MAX_SLOTS} computers`)
       let id: string
       do id = `c-${randomBytes(5).toString('hex')}`; while (others.some(c => c.id === id))
-      made = { id, slot, createdAt: now.toISOString(), tenantId: assigned.tenantId, person: personName(assigned.person) }
+      made = { id, slot, createdAt: now.toISOString(), ...assigned, person: personName(assigned.person) }
       return { others: [...others, made], owner }
     })
-    return made!
+    return this.get(made!.id)!
   }
 
   /** Moves a computer to a tenant, or names its person; fields left out are kept. */
@@ -109,6 +153,7 @@ export class ComputerRegistry {
     const update = (current: ComputerAssignment): ComputerAssignment => ({
       tenantId: change.tenantId !== undefined ? change.tenantId : current.tenantId,
       person: change.person !== undefined ? personName(change.person) : current.person,
+      ...(change.personId !== undefined ? { personId: change.personId } : current.personId !== undefined ? { personId: current.personId } : {}),
     })
     await this.save((others, owner) => {
       if (id === OWNER_COMPUTER) return { others, owner: { ...owner, ...update(owner) } }

@@ -441,8 +441,7 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
 
 - `owner-token` and `auth-secret` when generated, `setup-code` until the host is set up,
   `identity/` (the embedded accounts database, mode 0700),
-  `computers.json` (the computers other than the owner's, with their slots, tenants and
-  people),
+  `caboose_computers` and `caboose_people` in the identity database (computer slots and ownership),
   `phones.json` (phone sign-ins, by SHA-256 of their tokens) and `agent-registry.json`.
 - The owner's computer's `caboose.json` (settings), `push-devices.json` and
   `activities.json` at the root, where a host from before several computers kept them.
@@ -479,9 +478,11 @@ computer for the owner token and the operator, and the phone's computer for a ph
 They answer another administrator 403.
 
 On a host with accounts, `GET /v1/computers` lists only the computers the caller manages,
-and each carries `tenantId` and `person`. `POST /v1/computers` also takes `tenantId`
-(required: a tenant the caller administers) and `person`, and `PATCH /v1/computers/:id`
-changes `person`, or (for the operator) moves the computer to another `tenantId`. Quotas
+and each carries `tenantId`, `personId` and the display label `person`. `POST /v1/computers`
+requires a `tenantId` the caller administers and a `personId` belonging to it. Older callers
+may supply a nonempty `person` name, which creates a distinct person in the same transaction.
+`PATCH /v1/computers/:id` changes `personId`; moving to another `tenantId` also requires a
+person in that destination and operator access. People are renamed through their own route. Quotas
 are checked whenever a computer is made, resized (`PATCH …/computer/settings`), moved or
 woken (see Accounts and tenants); a computer over quota answers 409 with what it would be
 given and the quota.
@@ -564,15 +565,18 @@ While running, the microVM's appkit-desk lease is renewed every 20 s.
 ### Accounts and tenants
 
 Accounts belong to **administrators**, who use the web console. The people whose computers
-they run need none: each computer names its `person`, who uses it from a phone paired with
-it. A **tenant** is a household or a team: its computers, its administrators, and quotas on
+they run need none: each person has a stable record within a tenant, and each assigned
+computer references that person. A person may optionally link to an administrator account;
+that link itself grants no console access. A **tenant** is a household or a team: its computers, its administrators, and quotas on
 what its computers are given between them. The first account is the host's **operator**,
 who sees every tenant, makes tenants and sets quotas; the owner token has the same reach.
 
 Accounts, sessions, tenants and memberships are AppKit's identity schema
 (`@braedonsaunders/appkit-db`, with its migrations), signed in through
 `@braedonsaunders/appkit-auth` (Better Auth, email and password); invitations are
-Caboose's own table. They live in Postgres when `CABOOSE_DATABASE_URL` is set, and
+Caboose's own table. Caboose people and computer ownership are relational tables in the
+same database, with a composite foreign key enforcing that a computer’s person belongs
+to its tenant. Deleting a person or tenant with computers is refused. They live in Postgres when `CABOOSE_DATABASE_URL` is set, and
 otherwise in an embedded PGlite database in `identity/`, served to the host over a Unix
 socket only its user can open. The socket lives in a short, private temporary directory
 removed when the database closes. Quotas are `tenants.settings.quotas`.
@@ -582,9 +586,21 @@ one-time code to `${CABOOSE_IMAGE_ROOT}/setup-code` (mode 0600) and logs
 `Set up Caboose: http://<address>:<port>/setup?code=<code>`. The `/setup` page is served
 only with that code, including on loopback: a local reverse proxy can relay remote visitors
 without forwarding headers. The setup API requires the same code. Once claimed the page
-redirects to `/`. Claiming makes the operator's account and the first tenant, gives that
-tenant every computer the host already runs,
-deletes the code file and signs the browser in.
+redirects to `/`. Claiming atomically creates the operator’s account, first tenant and
+person and assigns the existing owner computer to that person. Other unassigned legacy
+computers join that tenant and remain marked Assignment required until a person is selected.
+It deletes the code file and signs the browser in. An owner-token console shows a persistent
+setup banner while unclaimed; its authenticated setup-link endpoint returns the existing
+one-time link. New tenants and computers require completed setup. Existing computers and
+phone tokens keep working during setup.
+
+On first database-backed startup, the host imports `computers.json` in one transaction,
+retaining computer ids, slots, creation times and existing tenant assignments. Each known
+legacy person name creates its own person record, never merging people merely by name.
+Unknown assignments remain explicitly pending. The JSON file stays intact as a migration
+backup and is not subsequently read as authority; the database supplies the registry.
+Back up the identity database alongside computer disks. Unassigned legacy computers are
+visible to the operator and their existing tenant administrators, not to other tenants.
 
 **Invitations** are links an administrator copies: `/invite?token=<token>`, single-use,
 valid for seven days, kept as a SHA-256. A new administrator chooses a name and password;
@@ -600,8 +616,11 @@ checked when a computer is made, resized or moved, and all three when it wakes.
 | --- | --- | --- |
 | `GET` | `/v1/setup` | **No account.** `{ claimed, codeRequired }` |
 | `POST` | `/v1/setup` | **No account.** `{ name, email, password, tenantName, code }` → 201, with the session cookie. `code` is required from every address; 409 once claimed |
+| `POST` | `/v1/setup/link` | Owner token only; `{ path }` containing the one-time setup link; 409 once claimed |
+| `GET`, `POST` | `/v1/tenants/:id/people` | Lists `{ people: [{ id, tenantId, name, userId, createdAt }] }`; creates a phone user with `{ name }`, no login required |
+| `PATCH`, `DELETE` | `/v1/people/:id` | Rename `{ name }` or delete a person in an administered tenant; deletion refuses assigned computers |
 | any | `/v1/auth/*` | Better Auth: `POST /v1/auth/sign-in/email { email, password }`, `POST /v1/auth/sign-out`, `GET /v1/auth/get-session`, `POST /v1/auth/change-password`. Sign-up is closed; accounts come from setup and invitations |
-| `GET` | `/v1/me` | `{ kind: "owner" \| "admin", user: { id, name, email } \| null, operator, tenants: [{ id, name, quotas, createdAt }] }` |
+| `GET` | `/v1/me` | `{ kind: "owner" \| "admin", user: { id, name, email } \| null, operator, setupRequired, tenants: [{ id, name, quotas, createdAt }] }` |
 | `GET`, `POST` | `/v1/tenants` | The tenants the caller administers, each with `usage: { computers, memoryMb, vcpus, diskBytes }`; the operator makes one with `{ name, quotas? }` |
 | `GET`, `PATCH`, `DELETE` | `/v1/tenants/:id` | One tenant; `PATCH { name?, quotas? }` (quotas: the operator only); `DELETE` (the operator, once it has no computers) |
 | `GET` | `/v1/tenants/:id/administrators` | `{ administrators: [{ userId, name, email, operator, joinedAt }] }` |

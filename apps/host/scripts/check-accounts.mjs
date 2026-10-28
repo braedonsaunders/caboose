@@ -39,7 +39,7 @@ try {
   made = await call('/v1/computers', { method: 'POST', body: { name: 'Caboose check', tenantId: tenant.id, person: 'Check', memoryMb: 2048, vcpus: 2 }, expect: 201 })
   assert.equal(made.tenantId, tenant.id)
   assert.equal(made.person, 'Check')
-  await call('/v1/computers', { method: 'POST', body: { name: 'Over quota', tenantId: tenant.id, memoryMb: 1024, vcpus: 1 }, expect: 409 })
+  await call('/v1/computers', { method: 'POST', body: { name: 'Over quota', person: 'Check', tenantId: tenant.id, memoryMb: 1024, vcpus: 1 }, expect: 409 })
   await call(`/v1/computers/${made.id}/computer/settings`, { method: 'PATCH', body: { memoryMb: 4096 }, expect: 409 })
   const usage = (await call(`/v1/tenants/${tenant.id}`)).usage
   assert.equal(usage.computers, 1)

@@ -794,7 +794,7 @@ export function createCabooseServer(options: ComputerPieces & {
   const recordOf = (id: string) => records().find(c => c.id === id)
   const describe = (runtime: ComputerRuntime) => {
     const record = recordOf(runtime.id)
-    return { id: runtime.id, createdAt: record?.createdAt ?? null, tenantId: record?.tenantId ?? null, person: record?.person ?? null, ...runtime.managementStatus() }
+    return { id: runtime.id, createdAt: record?.createdAt ?? null, tenantId: record?.tenantId ?? null, personId: record?.personId ?? null, person: record?.person ?? null, ...runtime.managementStatus() }
   }
   const tenancy: TenancyContext | undefined = identity && {
     identity,
@@ -807,6 +807,7 @@ export function createCabooseServer(options: ComputerPieces & {
       return record && options.fleet?.diskBytes ? options.fleet.diskBytes(record) : null
     },
     adoptUnassigned: async tenantId => { await options.fleet?.computers.adoptUnassigned(tenantId) },
+    synchronize: work => options.fleet ? options.fleet.computers.synchronize(work) : work(),
   }
 
   /**
@@ -872,20 +873,30 @@ export function createCabooseServer(options: ComputerPieces & {
   async function createComputer(input: Record<string, unknown>, principal: Principal): Promise<ComputerRuntime> {
     const fleet = options.fleet
     if (!fleet) throw new ComputerConflictError('This host serves one computer')
-    const { tenantId: requestedTenant, person: requestedPerson, ...settingsInput } = input
+    const { tenantId: requestedTenant, person: requestedPerson, personId: requestedPersonId, ...settingsInput } = input
     if (!('name' in settingsInput)) throw new SettingsInputError('name is required')
     if ('defaultAgent' in settingsInput) throw new SettingsInputError('Unknown setting: defaultAgent')
     const initial = updateSettings({ name: 'Computer', defaultAgent: null, ...fleet.defaults }, settingsInput, settingsLimits())
-    const person = personName(requestedPerson)
+    let person = personName(requestedPerson)
+    let personId: string | null = null
     let tenantId: string | null = null
     if (identity) {
+      if (!await identity.claimed()) throw new ComputerConflictError('Complete host setup first')
       if (typeof requestedTenant !== 'string') throw new SettingsInputError('tenantId is required')
       if (principal.kind === 'phone' || !administers(principal, requestedTenant)) throw new SettingsInputError('tenant not found')
       await identity.tenant(requestedTenant)
       tenantId = requestedTenant
+      if (requestedPersonId !== undefined) {
+        if (person !== null) throw new SettingsInputError('Send personId, not both personId and person')
+        if (typeof requestedPersonId !== 'string') throw new SettingsInputError('personId is required')
+        const selected = await identity.person(requestedPersonId)
+        if (selected.tenantId !== tenantId) throw new SettingsInputError('Person must belong to the selected tenant')
+        personId = selected.id
+        person = selected.name
+      } else if (!person) throw new SettingsInputError('personId is required; choose a person in this tenant')
       await admit('', initial, false, tenantId)
     } else if (requestedTenant !== undefined) throw new SettingsInputError('This host has no tenants')
-    const record = await fleet.computers.create({ tenantId, person })
+    const record = await fleet.computers.create({ tenantId, person, personId })
     try {
       const runtime = createComputerRuntime(record.id, await fleet.open(record, initial), shared)
       runtimes.set(record.id, runtime)
@@ -959,7 +970,7 @@ export function createCabooseServer(options: ComputerPieces & {
       if (path === '/v1/computers' && request.method === 'GET') {
         return json(response, 200, {
           computers: [...runtimes.values()].filter(r => !deleting.has(r.id) && manages(principal, r.id)).map(describe),
-          canCreate: !!options.fleet, limits: { computers: options.fleet ? MAX_SLOTS : 1, running: options.fleet?.maxRunning ?? null },
+          canCreate: !!options.fleet && (!identity || await identity.claimed()), limits: { computers: options.fleet ? MAX_SLOTS : 1, running: options.fleet?.maxRunning ?? null },
         })
       }
       if (path === '/v1/computers' && request.method === 'POST') return json(response, 201, describe(await createComputer(await readJson(request), principal)))
@@ -972,13 +983,27 @@ export function createCabooseServer(options: ComputerPieces & {
         if (!phones && request.method === 'PATCH') {
           // A computer's person, and (for the operator) its tenant.
           const input = await readJson(request)
-          for (const key of Object.keys(input)) if (key !== 'person' && key !== 'tenantId') throw new SettingsInputError(`Unknown field: ${key}`)
+          for (const key of Object.keys(input)) if (key !== 'person' && key !== 'tenantId' && key !== 'personId') throw new SettingsInputError(`Unknown field: ${key}`)
           if (!options.fleet) throw new ComputerConflictError('This host serves one computer')
+          if (identity && !await identity.claimed()) throw new ComputerConflictError('Complete host setup first')
           if ('tenantId' in input) {
-            if (!identity || !administers(principal, null)) throw new SettingsInputError('Only the operator moves computers between tenants')
+            if (!identity || (input.tenantId !== recordOf(runtime.id)?.tenantId && !administers(principal, null))) throw new SettingsInputError('Only the operator moves computers between tenants')
             if (typeof input.tenantId !== 'string') throw new SettingsInputError('tenantId must be a tenant id')
             await identity.tenant(input.tenantId)
             await admit(runtime.id, runtime.settings.get(), false, input.tenantId)
+          }
+          if (identity) {
+            const tenantId = typeof input.tenantId === 'string' ? input.tenantId : recordOf(runtime.id)?.tenantId
+            if (!tenantId) throw new SettingsInputError('Choose a tenant and person')
+            if ('person' in input) throw new SettingsInputError('Choose a person by personId; rename people in People')
+            if ('personId' in input && typeof input.personId !== 'string') throw new SettingsInputError('personId must identify a person')
+            const personId = input.personId ?? recordOf(runtime.id)?.personId
+            if (typeof personId !== 'string') throw new SettingsInputError('personId is required')
+            const selected = await identity.person(personId)
+            if (selected.tenantId !== tenantId) throw new SettingsInputError('Person must belong to the selected tenant')
+            input.tenantId = tenantId
+            input.personId = selected.id
+            input.person = selected.name
           }
           await options.fleet.computers.assign(runtime.id, input as Partial<ComputerAssignment>)
           return json(response, 200, describe(runtime))
