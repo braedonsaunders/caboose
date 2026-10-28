@@ -9,7 +9,7 @@ import { useComputerActions } from '../actions.js'
 import { availableActions, stateLabel, stateTone } from '../state.js'
 import type { ComputerHandle } from '../useComputer.js'
 import { navigate } from '../navigation.js'
-import { RollingCar } from '../brand/Logo.js'
+import { RollingWordmark } from '../brand/Logo.js'
 
 export function Overview({ client, computer, token }: { client: CabooseClient; computer: ComputerHandle; token: string }) {
   const { status, error } = computer
@@ -24,7 +24,7 @@ export function Overview({ client, computer, token }: { client: CabooseClient; c
             <AlertTitle>The host could not be reached</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
-        ) : <RollingCar label="Loading your computer" />}
+        ) : <RollingWordmark label="Loading your computer" />}
       </PageContainer>
     )
   }

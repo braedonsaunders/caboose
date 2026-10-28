@@ -4,7 +4,7 @@ import { LogOut } from 'lucide-react'
 import { CabooseClient, readSessionToken, writeSessionToken } from './api.js'
 import { NAVIGATION_GROUPS, navigate, usePathname } from './navigation.js'
 import { useComputer } from './useComputer.js'
-import { Car } from './brand/Logo.js'
+import { Wordmark } from './brand/Logo.js'
 import { SignIn } from './pages/SignIn.js'
 import { Overview } from './pages/Overview.js'
 import { Settings } from './pages/Settings.js'
@@ -63,11 +63,8 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
       navigationMode="sidebar"
       linkRender={linkRender}
       brand={
-        <span className="flex items-center gap-2 font-semibold">
-          {/* The car's windows are lit while the computer is up, dark while it is parked. */}
-          <Car height={22} lights={computer.status?.state !== 'parked'} decorative />
-          <span className="truncate">{name}</span>
-        </span>
+        // The hubs are lit while the computer is up and unlit while it is parked.
+        <Wordmark height={30} lit={computer.status?.state !== 'parked'} className="text-fg" />
       }
       header={
         <Button variant="ghost" size="sm" onClick={onSignOut}>

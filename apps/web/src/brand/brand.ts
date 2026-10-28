@@ -127,12 +127,16 @@ function styles(scope: string, motion: Motion): string {
 
 const delay = (seconds: number) => ` style="--d:${round(seconds)}s"`
 
-/** One o-wheel with its left edge at `x`: rim, spoke and amber hub. */
-function wheel(x: number, amber: string, start: number): string {
+/**
+ * One o-wheel with its left edge at `x`: rim, spoke and hub. A lit hub is amber; an
+ * unlit one (a parked computer) is the ink, faint.
+ */
+function wheel(x: number, hub: string, start: number, lit = true): string {
+  const fill = lit ? `fill="${hub}"` : `fill="${hub}" opacity=".22"`
   return `<g transform="translate(${x} 0)">` +
     `<g class="wheel"${delay(start)}>${ring(50)}` +
     `<path class="spoke" d="M50 50V22" stroke-width="12" stroke-linecap="round"/></g>` +
-    `<circle class="pop"${delay(start + TIMING.hubAfter)} cx="50" cy="50" r="10" fill="${amber}" stroke="none"/></g>`
+    `<circle class="pop"${delay(start + TIMING.hubAfter)} cx="50" cy="50" r="10" ${fill} stroke="none"/></g>`
 }
 
 /** Ties under the rail, one every TIE, sliding left as the train rolls right. */
@@ -151,12 +155,12 @@ function open(box: readonly number[], id: string, height: number | undefined, ex
 }
 
 /** The wordmark: "caboose" on the rail, its o's for wheels. */
-export function wordmarkSvg(options: BrandOptions): string {
-  const { ink, amber = AMBER, motion = 'intro', id = 'caboose', height } = options
+export function wordmarkSvg(options: BrandOptions & { lit?: boolean }): string {
+  const { ink, amber = AMBER, motion = 'intro', id = 'caboose', height, lit = true } = options
   const letters = WORD.map((letter, index) => {
     const x = LETTER_X[index]!
     const start = TIMING.letter(index)
-    if (letter === 'o') return wheel(x, amber, start)
+    if (letter === 'o') return lit ? wheel(x, amber, start) : wheel(x, ink, start, false)
     return `<g transform="translate(${x} 0)"${delay(start)}>${GLYPHS[letter].strokes.join('')}</g>`
   }).join('')
   return open(WORDMARK_VIEWBOX, id, height) +
@@ -204,15 +208,6 @@ function carBody({ ink, amber, lights, stove, rail, clip, tieOpacity }: CarParts
     `<rect class="pop"${delay(1.2)} x="224" y="-90" width="56" height="44" rx="9"/>` +
     `<rect class="pop"${delay(1.32)} x="143" y="-168" width="48" height="26" rx="6"/>` +
     `</g>`
-}
-
-/** The car on a short rail: the console's mark. */
-export function carSvg(options: BrandOptions & { lights?: boolean; stove?: boolean }): string {
-  const { ink, amber = AMBER, motion = 'none', id = 'caboose-car', height, lights = true, stove = true } = options
-  return open(CAR_VIEWBOX, id, height) +
-    `<style>${styles(id, motion)}</style>` +
-    carBody({ ink, amber, lights, stove, rail: [-24, 358], clip: [-30, 368], tieOpacity: 0.32 }, id) +
-    `</svg>`
 }
 
 /**

@@ -9,7 +9,7 @@ import {
 import { useComputerActions } from '../actions.js'
 import { idleChoices, isTransitioning, memoryChoices } from '../state.js'
 import type { ComputerHandle } from '../useComputer.js'
-import { RollingCar } from '../brand/Logo.js'
+import { RollingWordmark } from '../brand/Logo.js'
 
 function same(a: ComputerSettings | null, b: ComputerSettings | null): boolean {
   return Boolean(a && b) && a!.name === b!.name && a!.memoryMb === b!.memoryMb && a!.vcpus === b!.vcpus && a!.idleMs === b!.idleMs
@@ -29,7 +29,7 @@ export function Settings({ client, computer }: { client: CabooseClient; computer
     baseline.current = status.settings
   }, [status])
 
-  if (!status || !draft) return <PageContainer><RollingCar label="Loading settings" /></PageContainer>
+  if (!status || !draft) return <PageContainer><RollingWordmark label="Loading settings" /></PageContainer>
 
   const limits = effectiveLimits(status)
   const validation = validateSettingsInput(draft, limits)
