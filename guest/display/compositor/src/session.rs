@@ -31,7 +31,7 @@ pub struct Session {
 }
 
 /// Features this server implements (docs/display.md, Handshake).
-pub fn features(xwayland: bool, video: bool, audio: bool) -> Vec<String> {
+pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool) -> Vec<String> {
     let mut f = vec!["vsync", "ack", "touch", "text-input-v3", "cursor-named", "clipboard"];
     if xwayland {
         f.push("xwayland");
@@ -41,6 +41,9 @@ pub fn features(xwayland: bool, video: bool, audio: bool) -> Vec<String> {
     }
     if audio {
         f.push("audio");
+    }
+    if tiles {
+        f.push("tiles");
     }
     f.into_iter().map(String::from).collect()
 }
@@ -235,6 +238,7 @@ impl State {
                     (self.videos.socket.is_some() || self.config.motion)
                         && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()),
                     self.audio.is_some(),
+                    self.encoders.settings.tile_max_px > 0,
                 ),
             }),
         );
@@ -632,6 +636,17 @@ impl State {
                 w.stream.need_keyframe = true;
             }
         }
+        if let Some(t) = done.tiles {
+            w.stream.refine_at_us = t.refine_in_ms.map(|ms| now_us + ms * 1000);
+            self.stats.tiles += t.tiles.len() as u64;
+            self.stats.tile_pictures += 1;
+            self.stats.encode_cpu_us += t.cpu_us;
+            for (rect, data) in t.tiles {
+                self.stats.bytes += data.len() as u64;
+                let tile = proto::Tile { id: done.window, rect, format: proto::TileFormat::Png, data };
+                self.net.send(conn, &Message::Tile(tile));
+            }
+        }
         match (done.motion, w.stream.motion.as_mut()) {
             (Some((id, Ok(encoded))), Some(m)) if m.id == id && encoded.data.len() <= proto::MAX_PAYLOAD - 256 => {
                 let seq = m.next_seq;
@@ -834,9 +849,10 @@ mod tests {
 
     #[test]
     fn features_name_xwayland_only_when_running() {
-        assert!(!features(false, false, false).contains(&"xwayland".to_string()));
-        assert!(features(true, false, false).contains(&"xwayland".to_string()));
-        assert!(features(false, true, false).contains(&"video".to_string()));
-        assert!(features(false, false, true).contains(&"audio".to_string()));
+        assert!(!features(false, false, false, false).contains(&"xwayland".to_string()));
+        assert!(features(true, false, false, false).contains(&"xwayland".to_string()));
+        assert!(features(false, true, false, false).contains(&"video".to_string()));
+        assert!(features(false, false, true, false).contains(&"audio".to_string()));
+        assert!(features(false, false, false, true).contains(&"tiles".to_string()));
     }
 }

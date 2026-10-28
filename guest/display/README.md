@@ -46,6 +46,15 @@ This directory is a Cargo workspace:
   `hevc_nvenc`, `av1_nvenc`) from system memory, all through libavcodec behind one
   `Encoder` trait. Each is probed at start-up by encoding a test picture; only working
   ones are offered. `--list-encoders` prints them.
+- **Tiles.** A change of at most `--tile-max-px` (64K) pixels in at most 32 runs, which
+  is typing, a caret or a small widget, goes as lossless PNG tiles of the changed
+  blocks instead of a picture, with no x264 pass. The comparison shadow becomes "what
+  the client shows", and tiled areas are marked stale for the encoder. The next picture
+  codes them, and a sharpening picture codes them directly at the sharpening QP. A window
+  updating more than 7 times in 500 ms (an animation, not typing) gets pictures, which
+  video coding keeps far smaller. A
+  damage report with no real change now sends nothing. Software encoders only;
+  `--tile-max-px 0` turns tiles off.
 - **Sharpening.** Pictures are coded at `--crf` (23), which keeps updates small but
   leaves text soft. An area of a window that has not changed for `--refine-after` (300 ms)
   is coded once more at `--refine-qp` (12): it rides along in the next picture the window
@@ -95,8 +104,8 @@ This directory is a Cargo workspace:
   lists the stream's codec in `video_decoders`; `--no-motion` turns it off.
 
 Not yet here, and absent from `hello.features` until they are: non-text clipboard types, Pencil
-(tablet-v2), cursor images (named cursors are sent), notifications, the microphone, lossless
-tiles, video layer 2, a GPU renderer with the zero-copy encoders (dmabuf → NVENC or
+(tablet-v2), cursor images (named cursors are sent), notifications, the microphone, tiles
+from NVENC streams, video layer 2, a GPU renderer with the zero-copy encoders (dmabuf → NVENC or
 VA-API) and the exact passthrough binding it enables, typing characters that are not on the
 keymap into X11 applications, and an agent seat on `14601`.
 
@@ -161,6 +170,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `clipboard-x11` | an X11 copy (xclip) reaches the phone on connect, and the phone's copy reaches X11 |
 | `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
 | `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
+| `tiles` | 31 characters typed into Chromium at 1179×2556 go as tiles: every tile decodes, at most a third of the pictures of a run without tiles, the server spends at most 60% of the CPU, and the final picture (frame plus tiles, as the client paints it) matches the one without tiles (≥ 40 dB); a 250×250 animation at 60 Hz stays video. Measured: 6 pictures against 77, 470 ms against 1180 ms, 66.6 dB |
 | `motion` | Chromium plays a 480×270 canvas "video" in a page of text for 8 s: it becomes one `motion` stream at the canvas, every frame decodes with a pts, the window stream sends at most half as many pictures beside it, the stream ends after the video stops, and the final window picture matches the one streamed with `--no-motion` (≥ 40 dB) |
 | `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer (measured: 42.4 → 50.3 dB, one 34 kB picture); a blinking caret costs at most 4 extra pictures in 6 s, not one per blink (measured: 16 against 13) |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
@@ -186,7 +196,18 @@ On the machine below, with `--encoder-threads` at its default:
 | TV | scrolling | 64 | 32.0% | 37.9% |
 | TV | caret | 27 | 9.3% | 11.4% |
 
-Nearly all of it is libx264 (the `encode-N` threads). Its cost has a floor that scales with
+Nearly all of it is libx264 (the `encode-N` threads), most of it for small changes.
+Tiles take those off the encoder. Server CPU per keystroke, from process CPU over 9 s of
+typing (about 25 keystrokes) minus the idle-caret baseline:
+
+| | With tiles | `--tile-max-px 0` |
+| --- | --- | --- |
+| phone, per keystroke | ≈0.8 ms | ≈17 ms |
+| TV, per keystroke | under 1 ms (below the 10 ms clock tick over the run) | ≈44 ms |
+| phone, idle caret | 1.1% of a core | 2.9% |
+| TV, idle caret | 1.0% | 7.1% |
+
+The thread table above was measured before tiles. Its cost has a floor that scales with
 the picture, whatever changed: one typed glyph is 6.4 ms at 1179×2556 and 18.5 ms at
 3840×2160 on one thread (`bench_text`).
 

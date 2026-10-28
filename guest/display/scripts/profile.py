@@ -85,7 +85,7 @@ def run(display, workload, page, actions, extra):
     m = re.search(r"per frame: render ([\d.]+) ms, encode ([\d.]+) ms CPU", log)
     w = max(r["windows"], key=lambda w: w["frames"])
     render, encode = (m.group(1), m.group(2)) if m else ("?", "?")
-    print(f"{display:5} {workload:6} {w['size'][0]}x{w['size'][1]}: {w['frames']} pictures, "
+    print(f"{display:5} {workload:6} {w['size'][0]}x{w['size'][1]}: {w['frames']} pictures, {w.get('tiles', 0)} tiles, "
           f"{w['kbps']:.0f} kbit/s; server {r['server_cpu_pct']}% of a core, "
           f"{r['server_cpu_ms_per_frame']} ms/picture (render {render}, encode {encode})", flush=True)
     busy = sorted(r["threads"].items(), key=lambda t: -t[1])

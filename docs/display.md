@@ -156,6 +156,14 @@ server implements it.
   callbacks of a window are released on a vsync of its display, and only while fewer than
   2 of its frames are unacknowledged (`ack` matches by `pts_us`). A window whose display
   sends no vsync is throttled like a minimised one: it gets frame callbacks once a second.
+- **Tiles.** A small change (typing, a caret, a small widget) can arrive as `tile`s
+  instead of a frame: lossless PNGs, 8-bit RGB, of the changed 16×16 blocks.
+  `tile.rect` is in picture pixels, the space of `frame.crop`, and maps to the window
+  the way the last frame's `crop` maps to its `rect`. A tile paints over the window's
+  picture. Tiles are applied in order with frames and are not acknowledged, and a later
+  frame repaints the whole picture, tiles included. The server makes that frame carry
+  the current content of every tiled area. The server lists `tiles` in `features` when
+  it sends them.
 - A frame can change no content and only sharpen it: once part of a window has been
   unchanged for a while, the server codes it once more at a lower QP (progressive
   refinement). It is an ordinary non-key `frame` under the same flow control. Its `pts_us`
@@ -293,7 +301,8 @@ measurements and the scripted checks.
   windows read in place without composition, the rest damage-tracked; changed-block
   detection and libx264 macroblock hints, so the server's CPU follows what changes on
   screen; progressive refinement, where areas quiet for 300 ms are coded once more at
-  QP 12 (libx264), so text sharpens and then costs nothing; video layer 3, where regions
+  QP 12 (libx264), so text sharpens and then costs nothing; lossless tiles for small
+  changes (typing, carets) instead of pictures; video layer 3, where regions
   that update at video rates become `motion` streams; libx264, libx265 and NVENC (from
   system memory, the WSL2 path) behind one `Encoder` trait; pacing on vsync with acknowledgement-based flow
   control; pointer, multitouch, keys and text-input-v3 input; the text clipboard between
@@ -304,11 +313,11 @@ measurements and the scripted checks.
   microVM integration, with the driver (installed, not the default).
 - **Next:** a GPU renderer that composes into dmabufs, and the zero-copy encoders on it
   (dmabuf → NVENC through CUDA external memory, dmabuf → VA-API), which also enables the
-  exact passthrough binding; video layer 2 (YUV subsurfaces); lossless tiles; cursor
-  images and Pencil.
+  exact passthrough binding; video layer 2 (YUV subsurfaces); tiles from NVENC streams;
+  cursor images and Pencil.
 - **Passthrough reach:** Chromium and Firefox decode through VA only with a working GPU
   process, which needs a DRM render node; on WSL2 and hosts without a GPU their video stays
-  in the window picture (layers 2 and 3 are for that). Players that decode on the CPU
+  in the window picture, or becomes a layer 3 `motion` stream. Players that decode on the CPU
   through VA (mpv, GStreamer, FFmpeg) pass through anywhere the driver runs. VA carries no
   HDR metadata, and AV1 is presented one picture late (docs in guest/vaapi).
 - **Not measurable here yet:** milestone 2's success criterion needs a Linux host with an

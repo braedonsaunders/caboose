@@ -102,6 +102,22 @@ pub trait Encoder: Send {
     fn refine(&mut self) -> Result<Picture, EncodeError> {
         Err(EncodeError(format!("{} does not refine", self.name())))
     }
+    /// Small changes as lossless tiles instead of a picture. When what really changed
+    /// in `damage` is at most `max_px` pixels in a few rectangles, returns those pixels;
+    /// the client then shows them, and the next `encode` codes them into the stream.
+    /// `None`: encode a picture as usual (software encoders only tile).
+    fn tiles(&mut self, input: Input<'_>, damage: &[Rect], max_px: u64) -> Result<Option<Tiles>, EncodeError> {
+        let _ = (input, damage, max_px);
+        Ok(None)
+    }
+}
+
+/// Changed areas sent as tiles: each rectangle (picture pixels) with its RGB pixels,
+/// rows packed.
+pub struct Tiles {
+    pub tiles: Vec<(Rect, Vec<u8>)>,
+    /// As in [`Picture`].
+    pub refine_in_ms: Option<u64>,
 }
 
 /// Encoder settings shared by every stream.
@@ -121,11 +137,21 @@ pub struct Settings {
     /// 0, or not below `crf`, turns refinement off.
     pub refine_qp: u32,
     pub refine_after_ms: u32,
+    /// Changes of at most this many pixels go as lossless tiles instead of a picture;
+    /// 0 turns tiles off.
+    pub tile_max_px: u64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { crf: 23, threads: 0, preset: "ultrafast".into(), refine_qp: 12, refine_after_ms: 300 }
+        Self {
+            crf: 23,
+            threads: 0,
+            preset: "ultrafast".into(),
+            refine_qp: 12,
+            refine_after_ms: 300,
+            tile_max_px: 65536,
+        }
     }
 }
 
