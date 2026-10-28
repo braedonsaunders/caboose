@@ -33,7 +33,8 @@ Deny, on the task card or on the banner that shows over any screen. A finished t
 reply that continues the same conversation; one whose agent was signed out offers Sign In.
 Settings › Agents (from the bar's menu or Computer settings) installs and updates agents,
 signs in to them on the computer's screen, gives one an API key or other environment, and
-sets the default.
+sets the default. The Ask bar menu’s **Use Craft App Tools** switch controls whether new
+tasks started in the app offer installed catalog MCP servers to the agent.
 
 Where Apple Intelligence is available the bar also offers **On iPhone**: Apple's on-device
 model, in `Caboose/Agents/OnDevice*.swift`. It opens apps and pages, types, presses
@@ -316,3 +317,21 @@ check Spotlight after `fs.changed`, then sign out and verify entries disappear. 
 with the phone disconnected and reconnected. Verify job progress and Live Activity on a
 signed device with APNs configured. WidgetKit schedules refreshes and may delay updates;
 these checks need a real device and a computer with the file service and Craft apps.
+
+## Open documents in Linux apps
+
+Files and Open In can send a registered document type to Caboose. Choose an installed catalog app
+or install a compatible one from the chooser. External documents are uploaded to a unique folder
+in `Caboose Documents` and their changes are synchronized with the original. The app checks after
+computer file events and on returning from suspension. If both copies changed, choose which to
+keep; unavailable originals or failed transfers are reported. Files in the Caboose Files location
+open on the computer directly. The Share extension's **Open on Computer** offers the same app
+choice. If the source supplies only a temporary copy, it warns that edits cannot be written back.
+Return to Caboose to see the window.
+
+The app, Files and Share extensions need the application group
+`group.com.braedonsaunders.caboose` provisioned for a signed device. Run
+`python3 apps/ios/scripts/document-types.py --write` after changing catalog file types, then
+`python3 apps/ios/scripts/test-document-types.py`; every app build checks the generated list.
+For a signed device and a deployed host, run `apps/ios/scripts/check-open-in-place.sh` and follow
+the checks. A simulator build cannot establish file-provider or security-scoped bookmark behavior.

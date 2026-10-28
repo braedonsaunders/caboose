@@ -9,6 +9,14 @@ describe('application catalog', () => {
     expect(data.apps.find(a => a.id === 'gridcraft')?.source.kind).toBe('deb')
     expect(data.apps.find(a => a.id === 'gimp')?.source).toEqual({ kind: 'apt', packages: ['gimp'] })
   })
+  it('records verified native projects and camera raw associations', () => {
+    const apps = loadCatalog().apps
+    const types = (id: string) => apps.find(app => app.id === id)!.fileTypes.extensions
+    expect(types('vectorcraft')).toContain('ai')
+    expect(types('filmcraft')).toContain('fcproj')
+    expect(types('soundcraft')).toContain('scraft')
+    expect(types('lightcraft')).toEqual(expect.arrayContaining(['cr2', 'cr3', 'arw', 'nef', 'raf', 'rw2', 'rwl', 'pef', 'orf']))
+  })
   it('keeps all release assets aligned with the reviewed checksums', () => {
     const releases = JSON.parse(readFileSync(new URL('../../../guest/catalog/craft-releases.json', import.meta.url), 'utf8')) as { releases: { id: string; version: string; sha256: string; size: number; url: string }[] }
     const entries = loadCatalog().apps.filter(app => app.source.kind === 'deb')

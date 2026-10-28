@@ -238,9 +238,12 @@ export async function setEnv(id, changes) {
 // ---------------------------------------------------------------------------------------------
 // The ACP connection to one agent process.
 
-/** The display environment for a GUI on `display`, with the owner's session bus when it exists. */
-function displayEnv(display) {
-  const env = { DISPLAY: display }
+/**
+ * The environment for a GUI on the owner's display: `vars` from the host (its launch
+ * environment, such as DISPLAY or WAYLAND_DISPLAY), with the owner's session bus when it exists.
+ */
+function displayEnv(vars) {
+  const env = Object.fromEntries(Object.entries(vars && typeof vars === 'object' ? vars : {}).filter(([key, value]) => ENV_NAME.test(key) && typeof value === 'string'))
   if (existsSync('/run/user/1000/bus')) Object.assign(env, { XDG_RUNTIME_DIR: '/run/user/1000', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' })
   return env
 }
@@ -609,6 +612,11 @@ class Task {
     const config = JSON.parse(await readFile(join(this.dir, 'task.json'), 'utf8'))
     this.spec = readSpec(config.agent)
     this.cwd = typeof config.cwd === 'string' && isAbsolute(config.cwd) ? config.cwd : this.dir
+    this.craftServers = Array.isArray(config.craftServers) ? config.craftServers.filter(server =>
+      server && typeof server.name === 'string' && /^caboose-[a-z0-9.-]+$/.test(server.name) &&
+      typeof server.command === 'string' && /^[a-zA-Z0-9._-]+$/.test(server.command) &&
+      Array.isArray(server.args) && server.args.every(arg => typeof arg === 'string' && /^[a-zA-Z0-9._-]+$/.test(arg))
+    ).map(server => ({ name: server.name, command: server.command, args: server.args, env: [] })) : []
     this.approvalMode = config.approvals === 'ask' ? 'ask' : 'auto'
     this.idleMs = Number.isSafeInteger(config.idleMs) && config.idleMs >= 0 ? config.idleMs : DEFAULT_IDLE_MS
   }
@@ -680,6 +688,7 @@ class Task {
     const mcpServers = existsSync(DESKTOP_MCP)
       ? [{ name: 'caboose-desktop', command: process.execPath, args: [DESKTOP_MCP], env: [{ name: 'CABOOSE_AGENT_DISPLAY', value: process.env.DISPLAY || ':101' }] }]
       : []
+    mcpServers.push(...this.craftServers)
     const previous = (await readFile(join(this.dir, 'session'), 'utf8').catch(() => '')).trim()
     const request = (method, params) => Promise.race([agent.connection.agent.request(method, params), agent.died])
     let continuity = 'new'
@@ -932,7 +941,7 @@ async function install(spec) {
  * the agent's own program with the method's arguments and environment. Progress goes to
  * agents/<id>/sign-in.json.
  */
-async function signIn({ agent, methodId, display = ':100' }) {
+async function signIn({ agent, methodId, env: ownerEnv = { DISPLAY: ':100' } }) {
   const spec = readSpec(agent)
   if (typeof methodId !== 'string' || !methodId) throw new Error('methodId is required')
   const dir = join(AGENTS_DIR, spec.id)
@@ -941,7 +950,7 @@ async function signIn({ agent, methodId, display = ':100' }) {
   const startedAt = new Date().toISOString()
   const report = (state, extra = {}) => writeJson(status, { methodId, status: state, startedAt, ...extra, ...(state !== 'running' ? { finishedAt: new Date().toISOString() } : {}) })
   await report('running')
-  const env = displayEnv(display)
+  const env = displayEnv(ownerEnv)
   let started
   try {
     started = await startAgent(spec, { cwd: HOME, env })

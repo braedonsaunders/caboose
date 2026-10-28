@@ -46,3 +46,15 @@ describe('catalog operations', () => {
     expect(s.release).toHaveBeenCalledOnce()
   })
 })
+
+describe('catalog MCP servers', () => {
+  it('offers only installed apps with safe commands', async () => {
+    const { craftMcpServers } = await import('./app-catalog.js')
+    expect(craftMcpServers([
+      { id: 'photo', installedVersion: '1', mcp: 'photocraft-cli mcp' },
+      { id: 'absent', installedVersion: null, mcp: 'absent-cli mcp' },
+      { id: 'no-server', installedVersion: '1' },
+    ])).toEqual([{ name: 'caboose-photo', command: 'photocraft-cli', args: ['mcp'], env: [] }])
+    expect(() => craftMcpServers([{ id: 'bad', installedVersion: '1', mcp: 'sh -c evil;command' }])).toThrow('Invalid MCP command')
+  })
+})

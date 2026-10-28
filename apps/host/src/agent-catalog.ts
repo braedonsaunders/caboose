@@ -2,6 +2,7 @@ import {
   AGENTD, AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentUnavailableError, RUNNER_MISSING, rethrowRunnerMissing,
   type AgentGuest, type AgentResolver, type SignInMethod,
 } from './agents.js'
+import { ownerEnv } from './display.js'
 import type { HomeOwnership } from './home.js'
 import { AGENT_ID, type AgentLaunch, type AgentRegistry, type RegistryAgent } from './registry.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
@@ -221,7 +222,7 @@ export class AgentCatalog implements AgentResolver {
     const method = publicSignIn(this.guestAgents[id]?.authMethods).find(item => item.id === methodId)
     if (!method) throw new AgentInputError(`${launch.name} has no sign-in method "${methodId}"`)
     await guest.run(RUNUSER, ['-u', 'caboose', '--', '/usr/bin/env', ...GUEST_ENV, '/bin/sh', '-c', SIGN_IN_SCRIPT, 'sh', AGENTD,
-      encode({ agent: launch, methodId, display: ':100' })], 30_000).catch(rethrowRunnerMissing)
+      encode({ agent: launch, methodId, env: envObject(ownerEnv(guest)) })], 30_000).catch(rethrowRunnerMissing)
     const state = this.guestAgents[id] ?? (this.guestAgents[id] = {})
     state.signInStatus = { methodId, status: 'running', startedAt: new Date().toISOString() }
     return { started: true, method }
@@ -270,6 +271,11 @@ const SIGN_IN_SCRIPT = [
 function guestMessage(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error)
   return text.replace(/^(Guest command failed|docker exec failed):\s*/, '').trim().split('\n').slice(-3).join(' ').slice(0, 600)
+}
+
+/** `KEY=value` pairs as an object; a later pair for the same name wins, as with env(1). */
+function envObject(pairs: string[]): Record<string, string> {
+  return Object.fromEntries(pairs.filter(pair => pair.indexOf('=') > 0).map(pair => [pair.slice(0, pair.indexOf('=')), pair.slice(pair.indexOf('=') + 1)]))
 }
 
 function encode(value: unknown): string { return Buffer.from(JSON.stringify(value)).toString('base64') }

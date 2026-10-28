@@ -2,7 +2,7 @@
 // is served from localhost). Each test gets its own home, task directory and agent state.
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -32,7 +32,7 @@ async function sandbox({ caps = '', auth = false } = {}) {
   await writeFile(join(bin, 'npx'), `#!/bin/sh\nshift 2\nexec "${process.execPath}" "${STAND_IN}" "$@"\n`)
   await writeFile(join(bin, 'npm'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${root}/npm.log"\n`)
   // A terminal emulator that runs its command in the foreground, as -e … would.
-  await writeFile(join(bin, 'x-terminal-emulator'), `#!/bin/sh\nshift\nprintf '%s %s\\n' "$DISPLAY" "$STAND_IN_LOGIN" > "${root}/terminal.log"\necho | "$@"\n`)
+  await writeFile(join(bin, 'x-terminal-emulator'), `#!/bin/sh\nshift\nprintf '%s %s %s\\n' "$DISPLAY" "\${WAYLAND_DISPLAY:-none}" "$STAND_IN_LOGIN" > "${root}/terminal.log"\necho | "$@"\n`)
   for (const name of ['npx', 'npm', 'x-terminal-emulator']) await chmod(join(bin, name), 0o755)
   const env = {
     ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, DISPLAY: ':101',
@@ -46,7 +46,7 @@ async function task(options = {}) {
   const box = await sandbox(options)
   const dir = join(box.home, 'Agents', 'task-1')
   await mkdir(join(dir, 'inbox'), { recursive: true })
-  await writeFile(join(dir, 'task.json'), JSON.stringify({ agent: options.agent ?? AGENT, cwd: dir, approvals: options.approvals ?? 'auto', idleMs: options.idleMs ?? 20_000 }))
+  await writeFile(join(dir, 'task.json'), JSON.stringify({ agent: options.agent ?? AGENT, cwd: dir, approvals: options.approvals ?? 'auto', idleMs: options.idleMs ?? 20_000, craftServers: options.craftServers }))
   let runner
   const t = {
     ...box, dir,
@@ -88,6 +88,13 @@ async function task(options = {}) {
   return t
 }
 
+async function decide(dir, id, decision) {
+  const path = join(dir, 'approvals', `${id}.decision`)
+  const temporary = path + '.tmp'
+  await writeFile(temporary, JSON.stringify(decision))
+  await rename(temporary, path)
+}
+
 async function pendingApproval(dir) {
   for (let i = 0; i < 200; i++) {
     const names = await readdir(join(dir, 'approvals')).catch(() => [])
@@ -99,6 +106,17 @@ async function pendingApproval(dir) {
 }
 
 describe('a turn', () => {
+  it('offers installed catalog servers to an ACP session', async () => {
+    const t = await task({ craftServers: [
+      { name: 'caboose-photocraft', command: 'photocraft-cli', args: ['mcp'], env: [] },
+      { name: 'bad', command: 'sh', args: ['-c', 'bad command'], env: [] },
+    ] })
+    await t.prompt(1, 'hello')
+    t.start()
+    await t.turnEnd(1)
+    expect(await t.texts(1)).toContain('turns in session: 1; mcp: caboose-desktop,caboose-photocraft; blocks: text; recap: no; display: :101')
+  })
+
   it('streams an agent-neutral transcript', async () => {
     const t = await task()
     await t.prompt(1, 'hello tool plan')
@@ -135,14 +153,14 @@ describe('a turn', () => {
       tool: 'Delete build', kind: 'delete', summary: 'Delete build: rm -rf build', input: { command: 'rm -rf build' },
       options: [{ id: 'yes', name: 'Allow', kind: 'allow_once' }, { id: 'always', name: 'Always allow', kind: 'allow_always' }, { id: 'no', name: 'Reject', kind: 'reject_once' }],
     })
-    await writeFile(join(t.dir, 'approvals', `${first.id}.decision`), JSON.stringify({ allow: false, message: 'Not now.' }))
+    await decide(t.dir, first.id, { allow: false, message: 'Not now.' })
     await t.turnEnd(1)
     expect(await t.texts(1)).toContain('permission: no')
     expect((await t.events()).find(event => event.type === 'permission_resolved')).toMatchObject({ allow: false, optionId: 'no', message: 'Not now.' })
     // A named option wins over the plain allow.
     await t.prompt(2, 'ask')
     const second = await pendingApproval(t.dir)
-    await writeFile(join(t.dir, 'approvals', `${second.id}.decision`), JSON.stringify({ allow: true, optionId: 'always' }))
+    await decide(t.dir, second.id, { allow: true, optionId: 'always' })
     await t.turnEnd(2)
     expect(await t.texts(2)).toContain('permission: always')
   })
@@ -333,7 +351,7 @@ describe('sign-in', () => {
 
   it('signs in through the agent, then tasks run', async () => {
     const box = await sandbox({ auth: true })
-    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-login', display: ':100' })
+    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-login', env: { DISPLAY: ':100' } })
     expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-login', status: 'succeeded' })
     expect(await readFile(join(box.state, 'signed-in'), 'utf8')).toBe('agent')
     await expect(run(box, 'sign-in', { agent: AGENT, methodId: 'nope' })).rejects.toThrow()
@@ -342,10 +360,17 @@ describe('sign-in', () => {
 
   it('signs in with a terminal method on the owner display', async () => {
     const box = await sandbox({ auth: true })
-    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-terminal', display: ':100' })
+    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-terminal' })
     expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-terminal', status: 'succeeded' })
     expect(await readFile(join(box.state, 'signed-in'), 'utf8')).toBe('terminal')
-    expect((await readFile(join(box.root, 'terminal.log'), 'utf8')).trim()).toBe(':100 1')
+    expect((await readFile(join(box.root, 'terminal.log'), 'utf8')).trim()).toBe(':100 none 1')
+  })
+
+  it('opens the terminal with the launch environment the host sends, as on Caboose Display', async () => {
+    const box = await sandbox({ auth: true })
+    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-terminal', env: { WAYLAND_DISPLAY: 'wayland-caboose-0', DISPLAY: ':110', 'bad name': 'x' } })
+    expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-terminal', status: 'succeeded' })
+    expect((await readFile(join(box.root, 'terminal.log'), 'utf8')).trim()).toBe(':110 wayland-caboose-0 1')
   })
 })
 

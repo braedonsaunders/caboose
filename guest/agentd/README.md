@@ -47,7 +47,7 @@ note on stderr. Values are never written to the transcript or logs.
 
 The host writes these, each whole and renamed into place:
 
-- `task.json` — `{ agent: <spec>, cwd, approvals: "ask" | "auto", idleMs }`.
+- `task.json` — `{ agent: <spec>, cwd, approvals: "ask" | "auto", idleMs, craftServers }`.
 - `inbox/<turn, 6 digits>.prompt.json` — `{ type: "prompt", turn, text, attachments?: [{ path, name, mimeType? }] }`.
 - `inbox/cancel-<n>.json` — `{ type: "cancel" }`.
 - `approvals/<requestId>.decision` — `{ allow, message?, optionId? }`.
@@ -94,7 +94,10 @@ turn number. Updates outside a turn (including the history an agent replays on
   `~/.local/share/caboose/agents/<id>/auth.json`.
 - **Session.** `session/new` with the task directory as `cwd` and one MCP server,
   `caboose-desktop` (`node /opt/caboose/desktop-mcp.mjs`, `CABOOSE_AGENT_DISPLAY` set to the
-  runner's display), so every agent can drive GUI apps on the agent seat.
+  runner's display), so every agent can drive GUI apps on the agent seat. The host also
+  snapshots installed catalog MCP commands into `task.json` and the runner passes them to
+  new, load and resume requests. `craftMcp: false` on task creation disables them for that
+  task, including replies. See the Agents section of the architecture for the app list.
 - **Prompt.** A text block, then each attachment as an `image` block when the agent's
   `promptCapabilities.image` is set and the file is a PNG, JPEG, GIF or WebP under 10 MB, and
   otherwise a `resource_link` to its `file://` path.
@@ -118,11 +121,13 @@ turn number. Updates outside a turn (including the history an agent replays on
   says so.
 - **Signed out.** An `auth_required` error (ACP code -32000) from `session/new`, `load`,
   `resume` or `prompt` ends the turn with an `auth_required` event and the runner exits.
-- **Sign-in** (`sign-in` mode, spec `{ agent, methodId, display }`): progress in
+- **Sign-in** (`sign-in` mode, spec `{ agent, methodId, env? }`): progress in
   `~/.local/share/caboose/agents/<id>/sign-in.json` `{ methodId, status: "running" |
   "succeeded" | "failed", message?, startedAt, finishedAt? }`. An `agent` method is ACP
-  `authenticate`, with the agent started on `display` (the owner's `:100`) so the browser it
-  opens is on the owner's screen; it waits up to 30 minutes. A `terminal` method opens
+  `authenticate`, with the agent started with `env`, the owner display's launch environment
+  from the host (`{ DISPLAY: ":100" }` under Xpra, the default; `WAYLAND_DISPLAY`, Xwayland's
+  `DISPLAY` and toolkit hints under Caboose Display), so the browser it opens is on the
+  owner's screen; it waits up to 30 minutes. A `terminal` method opens
   `xfce4-terminal` (else `x-terminal-emulator`) on that display running the agent's own
   program with the method's `args` in place of the registry's, and its `env` over the
   registry's; exit status 0 is success, after which the runner initializes the agent again.

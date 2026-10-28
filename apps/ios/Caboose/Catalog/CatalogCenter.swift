@@ -6,12 +6,14 @@ struct CatalogPack: Decodable, Identifiable { let id: String; let name: String }
 struct CatalogProgress: Decodable { let id: String; let operation: String; let phase: String; let message: String?; let stage: String?; let value: Double? }
 struct CatalogApp: Decodable, Identifiable {
     struct Source: Decodable { let kind: String; let size: Int? }
+    struct FileTypes: Decodable { let extensions: [String]; let utTypes: [String] }
     let id: String
     let name: String
     let summary: String
     let category: String
     let packs: [String]
     let desktopId: String
+    let fileTypes: FileTypes
     let iconData: String?
     let source: Source
     let installedVersion: String?
@@ -45,12 +47,13 @@ final class CatalogCenter {
         guard let host else { return }
         do {
             let catalog: CatalogResponse = try await host.request("GET", "/v1/catalog", timeout: 60)
-            apps = catalog.apps; packs = catalog.packs
+            apps = catalog.apps; packs = catalog.packs; error = nil
         } catch HostClient.Failure.server(404, _) { apps = []; packs = [] }
         catch { self.error = error.localizedDescription }
     }
     func perform(_ id: String, action: String, pack: Bool = false) async {
         guard let host else { return }
+        error = nil
         let path = pack ? "/v1/catalog/packs/\(id)/install" : action == "remove" ? "/v1/catalog/\(id)" : "/v1/catalog/\(id)/\(action)"
         do {
             let _: [String: Bool] = try await host.request(action == "remove" ? "DELETE" : "POST", path, timeout: 30)

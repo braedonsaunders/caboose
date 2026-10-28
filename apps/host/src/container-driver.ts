@@ -120,9 +120,9 @@ export function createContainerController(config: Config, dependencies: { docker
     return docker(['exec', '-u', user, name, command, ...args], timeoutMs)
   }
 
-  async function guestApps(action: string, id?: string): Promise<string> {
+  async function guestApps(action: string, id?: string, path?: string): Promise<string> {
     const script = await readFile(new URL('./guest-apps.py', import.meta.url), 'utf8')
-    return exec('caboose', '/usr/bin/env', [...launchEnv, 'HOME=/home/caboose', '/usr/bin/python3', '-c', script, action, ...(id ? [id] : [])], 60_000)
+    return exec('caboose', '/usr/bin/env', [...launchEnv, 'HOME=/home/caboose', '/usr/bin/python3', '-c', script, action, ...(id ? [id] : []), ...(path ? [path] : [])], 60_000)
   }
 
   /** The size an existing container was created with (survives a host restart). */
@@ -226,7 +226,7 @@ export function createContainerController(config: Config, dependencies: { docker
         if (page.length < 10) return apps
       }
     },
-    async launch(id: string): Promise<void> { await guestApps('launch', id) },
+    async launch(id: string, path?: string): Promise<void> { await guestApps('launch', id, path) },
   }
   return controller
 }

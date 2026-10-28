@@ -58,9 +58,9 @@ export function createController(config: Config, dependencies: { backend?: DeskB
     if (result.exitCode !== 0 || result.truncated) throw new Error(`Guest command failed: ${result.stderr || result.exitCode}`)
     return result.stdout
   }
-  async function guestApps(action: string, id?: string): Promise<string> {
+  async function guestApps(action: string, id?: string, path?: string): Promise<string> {
     const script = await readFile(new URL('./guest-apps.py', import.meta.url), 'utf8')
-    return command('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/env', ...launchEnv, '/usr/bin/python3', '-c', script, action, ...(id ? [id] : [])], 60_000)
+    return command('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/env', ...launchEnv, '/usr/bin/python3', '-c', script, action, ...(id ? [id] : []), ...(path ? [path] : [])], 60_000)
   }
   async function startDisplay(service: string, port: number): Promise<void> {
     // systemd and the listening socket can be ready before Xpra can serve a hello.
@@ -168,7 +168,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
         if (page.length < 10) return apps
       }
     },
-    async launch(id: string): Promise<void> { await guestApps('launch', id) },
+    async launch(id: string, path?: string): Promise<void> { await guestApps('launch', id, path) },
   }
   return controller
 }

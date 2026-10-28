@@ -300,7 +300,7 @@ HTTP API (JSON except streamed file contents, all behind `Authorization: Bearer 
 | `DELETE` | `/v1/catalog/:id` | queue removal of an application |
 | `POST` | `/v1/catalog/packs/:id/install` | queue a pack installation |
 | `GET` | `/v1/apps` | launchable apps from the guest's `.desktop` files: `{ id, name, icon (PNG data URL), categories, exec }` |
-| `POST` | `/v1/apps/:id/launch` | start an app on display `:100` |
+| `POST` | `/v1/apps/:id/launch` | start an app on the owner's display: Xpra's `:100`, or under Caboose Display with the launch environment it writes to `/run/caboose/display.env` |
 | `POST` | `/v1/session/park` | park now (snapshot with memory); otherwise parked on idle |
 | `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `notification`, `agent.*`, `media.*`, `fs.changed` |
 | `GET` | `/v1/computer` | management status and persisted computer settings; does not wake or lease the computer |
@@ -314,8 +314,8 @@ HTTP API (JSON except streamed file contents, all behind `Authorization: Bearer 
 | `POST` | `/v1/fs/move?path=…` | move or rename with `{ destination }` |
 | `DELETE` | `/v1/fs/item?path=…` | move an item to the guest's Trash |
 | `GET` | `/v1/fs/changes?anchor=…` | query the inotify journal and its sync anchor |
-| `POST` | `/v1/fs/open` | `{ path }` → open a home-relative item on the owner display |
-| `POST` | `/v1/open` | `{ url }` → `{ opened: true }`: open an `http(s)` URL in the default browser on `:100` |
+| `POST` | `/v1/fs/open` | `{ path, app? }` → open a home-relative item on the owner display, optionally with a desktop entry id |
+| `POST` | `/v1/open` | `{ url }` → `{ opened: true }`: open an `http(s)` URL in the default browser on the owner's display |
 
 Management status has this shape (resources are MiB and idle time is milliseconds):
 
@@ -519,7 +519,16 @@ pointer or types into the owner's windows.
   `read_text` returns the window's text. Xpra keeps a seamless window unmapped until a client
   shows it, so before a coordinate tool runs the server asks Xpra to map the seat's hidden
   windows; `click`, `type` and `screenshot` work whether or not anyone is watching the seat.
-  Every task gets it as the MCP server `caboose-desktop` in ACP `session/new`.
+  Every task gets it as the MCP server `caboose-desktop` in ACP `session/new`. At task
+  creation the host also snapshots installed catalog entries with an `mcp` command and
+  offers them as `caboose-<catalog id>` stdio servers in ACP new, load and resume requests.
+  Commands and arguments are passed directly, never through a shell. The current catalog
+  offers PhotoCraft, LightCraft, FilmCraft, VectorCraft, PDFCraft, EffectCraft, DesignCraft,
+  WordCraft, GridCraft, DeckCraft, CADCraft, SoundCraft and FigCraft when installed. An API
+  client can set `craftMcp: false` when starting a task to omit these servers for that task;
+  the choice persists for replies. The Ask bar menu offers Use Craft App Tools for tasks started
+  in the app. Agent support
+  for ACP MCP servers and each application's own tools determine what is actually available.
 
 ### The registry
 
@@ -643,11 +652,15 @@ in short:
 Agents announce their sign-in methods in ACP `initialize`, which the runner records when an
 agent is installed, probed or run. Registry agents offer at least one of two kinds:
 
+Sign-in runs on the owner's display, with the same launch environment an app gets there
+(`DISPLAY=:100` under Xpra; `WAYLAND_DISPLAY`, Xwayland's `DISPLAY` and the toolkit hints
+from `/run/caboose/display.env` under Caboose Display), which the host passes to the runner.
+
 - **`agent`:** `POST /v1/agents/:id/sign-in` starts the runner in sign-in mode on the
-  owner's display `:100`, and it calls ACP `authenticate`; the agent opens the computer's
+  owner's display, and it calls ACP `authenticate`; the agent opens the computer's
   browser at its own sign-in page, with its callback on the computer's localhost, and the
   owner completes it on the phone.
-- **`terminal`:** the runner opens a terminal window on `:100` running the agent's own
+- **`terminal`:** the runner opens a terminal window on that display running the agent's own
   program with the method's `args` in place of the registry's, and its `env` over the
   registry's. Exit status 0 is success; the runner then initializes the agent again.
 
@@ -661,7 +674,7 @@ keeps them in the owner's home directory.
 | `POST` | `/v1/agents/:id/install` | → `{ agent }`; prefetch the registry's current version into the computer and learn its sign-in methods; can take minutes. 404 for an id not in the registry, 409 while the computer is not running or when it has no runner, 502 when the install fails (with the reason) |
 | `PUT` | `/v1/agents/:id/env` | `{ set?: { NAME: value }, remove?: [NAME] }` → `{ env: [NAME] }`; set or remove variables in the agent's environment file in the computer, such as an API key. Names are shell-style, values one line of at most 8192 characters. 400 for invalid input, 409 while the computer is not running |
 | `POST` | `/v1/agents/:id/sign-in` | `{ methodId }` → `{ started: true, method: { id, name, description?, type } }`; start a sign-in on the owner's display. 400 for an unknown method |
-| `POST` | `/v1/agent/tasks` | `{ prompt, agent?: <registry id>, approvals?: "ask" \| "auto", attachments?: [{ name, type, data (base64) }] }` → `{ id }`. `agent` defaults to `defaultAgent` (400 when neither is set); 404 for an id that is not in the registry or installed |
+| `POST` | `/v1/agent/tasks` | `{ prompt, agent?: <registry id>, approvals?: "ask" \| "auto", craftMcp?: boolean, attachments?: [{ name, type, data (base64) }] }` → `{ id }`. `agent` defaults to `defaultAgent` (400 when neither is set); 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | recent tasks, newest first (task record below) |
 | `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`; continue a finished task's conversation. 409 while the task is running or paused, or for a task from before the runner; 404 for an unknown task |
 | `POST` | `/v1/agent/tasks/:id/approvals/:requestId` | `{ allow: boolean, message?: string, optionId?: string }` → `{ resolved }`; `resolved: false` when that request is no longer waiting |
@@ -739,10 +752,10 @@ without pixels:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/screen/elements` | `{ window: { title, app }, elements: [{ id, role, name, states, bounds: { x, y, width, height } }], note? }`: the focused window's visible controls on `:100`, at most 200, and `note` when there are none to say why |
+| `GET` | `/v1/screen/elements` | `{ window: { title, app }, elements: [{ id, role, name, states, bounds: { x, y, width, height } }], note? }`: the focused window's visible controls on the owner's display, at most 200, and `note` when there are none to say why |
 | `POST` | `/v1/screen/act` | `{ element: id, action: "press" \| "focus" \| "set-text", text? }` → `{ ok }`; 404 when the element is gone |
-| `POST` | `/v1/screen/type` | `{ text }` (1–10000 characters): type into the focused window on `:100` |
-| `POST` | `/v1/screen/keys` | `{ keys }`: press key combinations such as `ctrl+s` or `ctrl+shift+t Return` on `:100` |
+| `POST` | `/v1/screen/type` | `{ text }` (1–10000 characters): type into the focused window on the owner's display |
+| `POST` | `/v1/screen/keys` | `{ keys }`: press key combinations such as `ctrl+s` or `ctrl+shift+t Return` on the owner's display |
 
 Element ids are opaque strings valid until the window changes. These routes act only on
 the owner's display, on the owner's own command, and answer 409 while the computer is not
@@ -751,6 +764,13 @@ behind the desktop tools — and `xdotool`. The helper finds each display's acce
 bus itself and reads only an application whose windows are all on the requested display,
 so the agent seat never reads or presses the owner's windows. Xpra, Chromium, VS Code and
 Firefox are started with their accessibility trees enabled so web content is included.
+
+They run with the owner display's launch environment on its X display: Xpra's `:100`, or
+Xwayland's under Caboose Display. Both tools find the focused window and send keys through
+X, so under Caboose Display they reach X11 windows only. A native Wayland window, such as
+Chromium, is not read, and `elements` says "No window is open on this display." while one
+is focused. Reading and typing into Wayland windows needs the compositor to report focus
+and inject input, and that is not built yet.
 
 ### Files
 
@@ -795,15 +815,56 @@ on demand; the system can generate previews for materialized files. Separate ser
 thumbnail generation is not implemented. Files access wakes a parked computer; an offline
 host is reported to Files as unreachable. Device behavior requires the real-host and device
 checks in the component READMEs.
-Document-type associations and an app-level open-in-place workflow are a later lane; the
-provider supports coordinated writes back to the computer now.
+The provider supports coordinated writes back to the computer. The app-level open workflow
+and its separate external-document sync are described in Open in place.
 
 `POST /v1/files` remains available for existing clients: it accepts `{ name, data, open? }`
 with base64 data, picks a unique name in `~/Downloads`, and uses the bulk service. Its JSON
 body still has to be held in memory, so new clients should use streamed `PUT /v1/fs/content`.
 The Share extension uploads from a temporary file and optionally opens it on the computer.
+`POST /v1/fs/open` accepts an optional `app` desktop entry ID; it checks the path through
+the file service and passes it as a file argument to that application’s desktop entry.
 `POST /v1/open` opens an `http(s)` URL on the owner's display; other schemes, control
 characters and spaces are rejected. It answers 409 while the computer is not running.
+
+## Open in place
+
+The iOS build derives its alternate-handler document declarations from `guest/catalog/catalog.json`;
+`apps/ios/scripts/document-types.py --write` updates the checked snapshot and the build checks it
+before generating the app Info.plist. Catalog extensions without a recorded system identifier get
+an imported Caboose UTI. The list is limited to associations recorded in the catalog; an empty
+file type list is not evidence that an app handles a type. Project files can reference media
+separately; opening one document does not upload those dependencies.
+
+A file URL delivered to the app opens a chooser of catalog applications that list its extension
+or type, including installable apps with progress, and other installed apps. For an external file,
+Caboose coordinates a read, streams a snapshot to `Caboose Documents/<uuid>/<filename>` through
+`/v1/fs`, stores the security-scoped bookmark and paired-computer identity in the application
+group, and launches the selected desktop entry with the file. A copy delivered into the app’s Inbox is identified as a copy and the chooser warns that
+changes cannot return to its source. The chooser is also in the Share extension. It asks for an in-place representation; if the provider only offers a temporary copy,
+the extension warns that edits cannot be written back and only proceeds after the user chooses
+Open Copy. The extension cannot itself bring the containing app to the foreground; returning to
+Caboose shows the launched window when it can identify it. A Files URL belonging to Caboose's own
+File Provider is translated through the provider's shared identifier index and opens its existing
+computer path without a copy. If the index is unavailable, opening fails instead of silently
+making another copy.
+
+For an external original with a persistent bookmark, the app compares a hash of a coordinated
+local snapshot and the remote file's ETag to the last synchronized versions. A single changed
+side is copied to the other; both changed presents Keep Original or Keep Computer Copy. Downloads
+are version-checked again before a coordinated replacement, and writes to the computer carry
+`If-Match`. A changed original during a replacement or a changed remote version fails the attempt
+and is checked again rather than silently choosing a winner. The app reconciles after `fs.changed`
+and when it resumes or reconnects, so changes made while suspended are caught up when iOS runs it
+again; iOS does not guarantee continuous execution or immediate synchronization while suspended.
+Failures and stale bookmarks are shown in the app. The service's precondition is not atomic with a
+Linux application's direct write, as described in Files. A deleted or renamed computer copy is
+reported as a sync error; automatic rebinding is not supported.
+
+The app, Share extension and File Provider require the `group.com.braedonsaunders.caboose`
+application group in their signing profile, in addition to their keychain access group. A signed
+device and real computer are required to verify provider bookmarks, extension handoff, coordinated
+replacement and resumed sync; run `apps/ios/scripts/check-open-in-place.sh` and follow its checks.
 
 ## Media handoff
 

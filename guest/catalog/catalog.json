@@ -91,7 +91,16 @@
           "png",
           "tiff",
           "webp",
-          "dng"
+          "dng",
+          "cr2",
+          "cr3",
+          "arw",
+          "nef",
+          "raf",
+          "rw2",
+          "rwl",
+          "pef",
+          "orf"
         ],
         "utTypes": [
           "public.heic",
@@ -126,6 +135,7 @@
       "desktopId": "ai.storyteller.filmcraft.desktop",
       "fileTypes": {
         "extensions": [
+          "fcproj",
           "mp4",
           "m4v",
           "mov",
@@ -167,6 +177,7 @@
       "desktopId": "ai.storyteller.vectorcraft.desktop",
       "fileTypes": {
         "extensions": [
+          "ai",
           "svg",
           "pdf",
           "png",
@@ -177,6 +188,7 @@
           "tiff"
         ],
         "utTypes": [
+          "com.adobe.illustrator.ai-image",
           "public.svg-image",
           "com.adobe.pdf",
           "public.png",
@@ -431,6 +443,7 @@
       "desktopId": "ai.storyteller.soundcraft.desktop",
       "fileTypes": {
         "extensions": [
+          "scraft",
           "wav",
           "aiff",
           "flac",

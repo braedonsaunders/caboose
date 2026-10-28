@@ -94,10 +94,14 @@ node apps/host/scripts/check-fs.mjs
 
 The guest-service check runs its Linux inotify and filesystem operations in an ephemeral
 Python container: `docker run --rm -v "$PWD/guest/files:/checks:ro" python:3.13-slim python3 /checks/check-service.py`.
+`guest().ownerEnv` is what a GUI on the owner's display needs (sign-in, opening files and URLs,
+the screen routes): `DISPLAY=:100` under Xpra, or the launch environment Caboose Display
+writes at each wake.
 
 The owner-screen routes (`/v1/screen/*`, § Screen) are in `src/screen.ts`: they run the
 guest's accessibility helper `/opt/caboose/a11y.py` (see `guest/desktop-mcp`) and `xdotool`
-as `caboose` on `:100`. `guest/desktop-mcp/check-a11y.sh` runs that helper in real Xvfb and
+as `caboose` with the owner display's launch environment (Xpra's `:100`, or Xwayland's under
+Caboose Display; X11 windows only there). `guest/desktop-mcp/check-a11y.sh` runs that helper in real Xvfb and
 Xpra sessions under Docker.
 
 The guest scripts behind these routes (task start, the batched poll, replies, approval
@@ -295,6 +299,20 @@ and `CABOOSE_OWNER_TOKEN`, then run `node apps/host/scripts/check-upgrade.mjs`; 
 the computer, waits for the upgrade, and runs the Files check. To exercise the installation
 rather than the up-to-date path, use an existing guest with an older marker. This check
 needs a real guest; the microVM path additionally needs KVM.
+
+## Catalog tools for agents
+
+New agent tasks offer installed catalog MCP commands through ACP. Send `craftMcp: false`
+in `POST /v1/agent/tasks` to turn them off for that task and its replies. The installed
+list is captured at task creation; apps installed later are available to a new task. The
+iOS Ask bar menu also provides a switch for tasks started in the app. See the Agents section of the
+architecture for the app list and agent compatibility.
+
+To verify launching a specific application with a real file, set `CABOOSE_URL`,
+`CABOOSE_OWNER_TOKEN`, `CABOOSE_CHECK_FILE` (a compatible local document) and
+`CABOOSE_CHECK_APP` (an installed desktop entry ID), then run
+`apps/host/scripts/check-open-app.sh`. Check the owner display for the document; the
+script leaves its test copy in a uniquely named folder in the computer's home.
 
 ## Craft jobs
 
