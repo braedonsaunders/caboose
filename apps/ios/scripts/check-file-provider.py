@@ -23,7 +23,7 @@ def check_metadata(info, signed=False):
 
 
 def entitlements(bundle):
-    result = subprocess.run(["codesign", "-d", "--entitlements", "-", str(bundle)],
+    result = subprocess.run(["codesign", "-d", "--entitlements", "-", "--xml", str(bundle)],
                             check=True, capture_output=True)
     return plistlib.loads(result.stdout)
 
