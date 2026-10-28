@@ -123,8 +123,9 @@ same installer to update computers whose disks predate the host:
 - After each wake, once the owner's display is ready, the host hashes the bundled files in
   manifest order and compares the hash with `/usr/local/share/caboose/components.version`
   in the guest. On a mismatch it runs the installer as root over the guest channel (`vm` or
-  `container` mode). The installer adds only missing Debian packages, never touches the
-  owner's home, is safe to repeat, and writes the marker only after it succeeds.
+  `container` mode). The installer adds missing Debian dependencies and preserves working
+  `node` and `npm` commands, including npm bundled with NodeSource's `nodejs`. It never
+  touches the owner's home, is safe to repeat, and writes the marker only after it succeeds.
 - The update runs in the background and does not block the display. While it runs it holds
   a lease, and park or restart is rejected with 409. A failure is retried on the next wake.
 - `GET /v1/computer` reports `upgrade: null | { state, version?, message? }`, and
