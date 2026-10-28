@@ -1460,7 +1460,10 @@ Pinned and recent apps are kept on the phone per computer.
   Return or non-text key, assumes the remote caret is at its end, and turns each edit iOS
   makes into BackSpaces and keystrokes from where the old and new text differ. Where an app
   has text-input-v3, the keyboard follows its state, its content purpose turns autocorrect
-  off for terminals and passwords, and marked text is a preedit. Otherwise autocorrect and
+  off for terminals and passwords, and marked text is a preedit. Return commits any marked
+  text and sends a real Enter key press/release, so a browser address bar submits. An
+  unmodified software Return dismisses the keyboard except in terminals and code editors;
+  pasted multiline text and hardware Return leave it open. Otherwise autocorrect and
   capitals are on for prose and off in terminals and code editors, with an `Aa` toggle on
   the key bar.
 - **Pencil.** The client defines `pencil` samples (pressure, tilt, azimuth, hover), but the
