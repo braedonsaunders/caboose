@@ -143,6 +143,13 @@ uncertain-effect handling; the scheduler cannot infer the result of an external 
 
 ## Validation
 
+Run `node apps/host/scripts/check-persistent-agents.mjs` with `CABOOSE_URL` and
+`CABOOSE_OWNER_TOKEN` for real-host profile, memory and routine API checks. Add
+`--agent <installed-provider>` to run a manual and a scheduled task and verify MCP
+memory tools. This uses the owner's provider account, requires prior sign-in and
+creates a verification profile; cleanup deletes its routines and archives the profile.
+It does not replace the display connection or restart the computer.
+
 Run the focused tests with `pnpm --filter caboose-host exec vitest run
 src/agent-routines.test.ts --maxWorkers=1 --minWorkers=1`, and host typechecking with
 `pnpm --filter caboose-host typecheck`. Tests inject persistence, runtime and clock, and
