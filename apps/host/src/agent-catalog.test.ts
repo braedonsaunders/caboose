@@ -35,6 +35,13 @@ function fakeGuest(options: { missing?: boolean; failInstall?: string } = {}) {
         return ''
       }
       const mode = args[at + 1]!
+      if (mode === 'set-env') {
+        const [id, json] = [args[at + 2]!, JSON.parse(args[at + 3]!) as { set: Record<string, string>; remove: string[] }]
+        calls.push({ mode, argument: { id, ...json } })
+        const names = new Set([...(agents[id]?.env as string[] ?? []), ...Object.keys(json.set)].filter(name => !json.remove.includes(name)))
+        agents[id] = { ...agents[id], env: [...names].sort() }
+        return JSON.stringify({ env: agents[id]!.env })
+      }
       const argument = args[at + 2] ? decode(args[at + 2]!) as AgentLaunch : undefined
       calls.push({ mode, argument })
       if (mode === 'state') return JSON.stringify({ runner: '0.1.0', agents })
@@ -196,5 +203,23 @@ describe('agent routes', () => {
     expect((await request('/v1/agents/claude-acp/sign-in', 'POST', { methodId: 'nope' })).status).toBe(400)
     const after = await request('/v1/agents')
     expect(after.body.agents.find((agent: { id: string }) => agent.id === 'claude-acp')).toMatchObject({ installed: { version: '0.98.0' }, signIn: [{ id: 'claude-ai-login' }, { id: 'console-login' }] })
+  })
+
+  it('sets and removes an agent\'s environment variables in the computer, listing names only', async () => {
+    const fake = fakeGuest()
+    const catalog = new AgentCatalog(registry(), () => fake.guest, settingsStore())
+    expect(await catalog.setEnv('codex-acp', { set: { OPENAI_API_KEY: 'sk-1', OPENAI_BASE_URL: 'https://openrouter.ai/api/v1' } }))
+      .toEqual({ env: ['OPENAI_API_KEY', 'OPENAI_BASE_URL'] })
+    expect(fake.calls.at(-1)).toEqual({ mode: 'set-env', argument: { id: 'codex-acp', set: { OPENAI_API_KEY: 'sk-1', OPENAI_BASE_URL: 'https://openrouter.ai/api/v1' }, remove: [] } })
+    const listed = (await catalog.list()).agents.find(agent => agent.id === 'codex-acp')!
+    expect(listed.env).toEqual(['OPENAI_API_KEY', 'OPENAI_BASE_URL'])
+    expect(JSON.stringify(await catalog.list())).not.toContain('sk-1')
+    expect(await catalog.setEnv('codex-acp', { remove: ['OPENAI_BASE_URL'] })).toEqual({ env: ['OPENAI_API_KEY'] })
+    await expect(catalog.setEnv('codex-acp', { set: { 'NOT A NAME': 'x' } })).rejects.toThrow('is not a variable name')
+    await expect(catalog.setEnv('codex-acp', { set: { KEY: 'a\nb' } })).rejects.toThrow('one line')
+    await expect(catalog.setEnv('codex-acp', {})).rejects.toThrow('Nothing to change')
+    await expect(catalog.setEnv('codex-acp', { values: {} })).rejects.toThrow('Unknown field')
+    await expect(catalog.setEnv('../x', { remove: ['A'] })).rejects.toThrow('agent not found')
+    await expect(new AgentCatalog(registry(), () => undefined, settingsStore()).setEnv('codex-acp', { remove: ['A'] })).rejects.toThrow('not running')
   })
 })

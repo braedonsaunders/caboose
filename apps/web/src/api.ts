@@ -101,6 +101,8 @@ export interface AgentListing {
   installed: { version: string } | null
   signIn?: SignInMethod[]
   signInStatus?: SignInStatus
+  /** Variable names the agent's environment file in the computer sets; never values. */
+  env?: string[]
 }
 
 export interface AgentsResponse {
@@ -166,6 +168,16 @@ export function agentLabel(task: Pick<AgentTask, 'agent' | 'agentName'>, agents?
 export function orderAgents(agents: AgentListing[], defaultAgent: string | null): AgentListing[] {
   const rank = (agent: AgentListing) => agent.id === defaultAgent ? 0 : agent.installed ? 1 : 2
   return agents.map((agent, index) => ({ agent, index })).sort((a, b) => rank(a.agent) - rank(b.agent) || a.index - b.index).map(({ agent }) => agent)
+}
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
+
+/** Why an environment variable cannot be saved, or undefined when it can. */
+export function envProblem(name: string, value: string): string | undefined {
+  if (!ENV_NAME.test(name.trim())) return 'Use a variable name such as OPENROUTER_API_KEY: letters, digits and underscores.'
+  if (!value) return 'Enter a value.'
+  if (/[\r\n\0]/.test(value) || value.length > 8192) return 'The value must be one line of at most 8192 characters.'
+  return undefined
 }
 
 /** An installed agent whose registry version has moved on. */
@@ -442,6 +454,11 @@ export class CabooseClient {
       body: { methodId },
       timeoutMs: 240_000,
     })
+  }
+
+  /** Sets or removes variables in the agent's environment file in the computer; returns the names it sets. */
+  setAgentEnv(id: string, changes: { set?: Record<string, string>; remove?: string[] }): Promise<{ env: string[] }> {
+    return this.request<{ env: string[] }>('PUT', `/v1/agents/${encodeURIComponent(id)}/env`, { body: changes, timeoutMs: 30_000 })
   }
 
   startAgentTask(input: StartAgentTaskInput): Promise<{ id: string }> {

@@ -17,7 +17,8 @@ It is one file, `caboose-agentd.mjs`, on Node 22 with the official TypeScript SD
 | `install <spec>` | Prefetches the agent, starts it once to learn its sign-in methods, records it as installed. Prints `{ installed: { version }, signIn: [...] }`. |
 | `probe <spec>` | `initialize` only; records and prints the sign-in methods. |
 | `sign-in <spec>` | Runs one sign-in method on the owner's display (see below). |
-| `state` | Prints `{ runner, agents: { <id>: { installed?, authMethods?, signInStatus? } } }`. |
+| `state` | Prints `{ runner, agents: { <id>: { installed?, authMethods?, signInStatus?, env? } } }`; `env` lists the variable names the agent's environment file sets, never their values. |
+| `set-env <id> <json>` | Applies `{ set?: { NAME: value }, remove?: [NAME] }` to `~/.config/caboose/agents/<id>.env`, keeping its other lines and comments, writing values in double quotes (one line each, at most 8192 characters), mode 0600, through a temporary file and a rename. Prints `{ env: [names] }`. |
 
 `<spec>` is base64 JSON. An agent spec is what the host resolved from the registry for
 `linux-x86_64`:

@@ -11,7 +11,8 @@ owner token, then see and manage the computer.
   the host's `limits`. Edits made from another device are followed unless there are unsaved
   edits here; "Save and restart" applies new resources in one step.
 - **Agents** — pick any agent from the Agent Client Protocol registry (installed ones
-  first), install or update it, sign in to it on the computer's screen, and start a task
+  first), install or update it, sign in to it on the computer's screen or give it an API key
+  (its environment in the computer; names are shown, values never), and start a task
   that can ask before acting (answered with Approve, the agent's always-allow option, or
   Deny on the task); pause, resume or cancel it, sign in from a task that found its agent
   signed out, and reply to a finished task to continue its conversation.

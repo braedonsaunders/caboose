@@ -219,3 +219,15 @@ describe('navigation and actions', () => {
     expect(availableActions({ state: 'error', capabilities: { restart: false } })).toEqual({ wake: true, park: false, restart: false })
   })
 })
+
+describe('agent environment', () => {
+  it('accepts shell-style names and one-line values', async () => {
+    const { envProblem } = await import('./api.js')
+    expect(envProblem('OPENROUTER_API_KEY', 'sk-or-1')).toBeUndefined()
+    expect(envProblem('  OPENAI_BASE_URL ', 'https://openrouter.ai/api/v1')).toBeUndefined()
+    expect(envProblem('NOT A NAME', 'x')).toMatch(/variable name/)
+    expect(envProblem('1KEY', 'x')).toMatch(/variable name/)
+    expect(envProblem('KEY', '')).toBe('Enter a value.')
+    expect(envProblem('KEY', 'two\nlines')).toMatch(/one line/)
+  })
+})

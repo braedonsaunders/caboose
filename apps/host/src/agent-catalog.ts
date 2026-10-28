@@ -32,6 +32,8 @@ export interface AgentListing {
   /** The sign-in methods the agent announced, once it has been started (installed or run). */
   signIn?: SignInMethod[]
   signInStatus?: SignInStatus
+  /** The variable names the owner's environment file for the agent sets; never values. */
+  env?: string[]
 }
 
 export interface AgentsResponse {
@@ -44,7 +46,11 @@ interface GuestAgent {
   installed?: { version: string; spec: AgentLaunch; installedAt?: string }
   authMethods?: unknown[]
   signInStatus?: SignInStatus
+  env?: string[]
 }
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
+const MAX_ENV_VALUE = 8192
 
 /** Sign-in methods as clients see them; kinds other than "agent" and "terminal" are left out. */
 export function publicSignIn(methods: unknown): SignInMethod[] {
@@ -81,6 +87,7 @@ export function parseGuestState(output: string): Record<string, GuestAgent> {
       ...(spec && spec.id === id && typeof installed?.version === 'string' ? { installed: { version: installed.version, spec, ...(installed.installedAt ? { installedAt: installed.installedAt } : {}) } } : {}),
       ...(Array.isArray(entry.authMethods) ? { authMethods: entry.authMethods } : {}),
       ...(readSignInStatus(entry.signInStatus) ? { signInStatus: readSignInStatus(entry.signInStatus) } : {}),
+      ...(Array.isArray(entry.env) ? { env: entry.env.filter((name): name is string => typeof name === 'string' && ENV_NAME.test(name)) } : {}),
     }
   }
   return agents
@@ -127,6 +134,7 @@ export class AgentCatalog implements AgentResolver {
       installed: state?.installed ? { version: state.installed.version } : null,
       ...(signIn ? { signIn } : {}),
       ...(state?.signInStatus ? { signInStatus: state.signInStatus } : {}),
+      ...(state?.env?.length ? { env: state.env } : {}),
     }
   }
 
@@ -214,6 +222,33 @@ export class AgentCatalog implements AgentResolver {
     return { started: true, method }
   }
 
+  /**
+   * Sets and removes variables in the owner's environment file for agent `id`, for API keys
+   * and the like: `{ set?: { NAME: value }, remove?: [NAME] }`. The runner writes the file
+   * (mode 0600) in the computer; the host keeps nothing. Returns the names it now sets.
+   */
+  async setEnv(id: string, input: Record<string, unknown>): Promise<{ env: string[] }> {
+    if (!AGENT_ID.test(id)) throw new AgentNotFoundError('agent not found')
+    for (const key of Object.keys(input)) if (key !== 'set' && key !== 'remove') throw new AgentInputError(`Unknown field: ${key}`)
+    const set = input.set ?? {}
+    const remove = input.remove ?? []
+    if (!set || typeof set !== 'object' || Array.isArray(set) || !Array.isArray(remove)) throw new AgentInputError('Send { set?: { NAME: value }, remove?: [NAME] }')
+    for (const [name, value] of Object.entries(set)) {
+      if (!ENV_NAME.test(name)) throw new AgentInputError(`${name.slice(0, 130)} is not a variable name`)
+      if (typeof value !== 'string' || /[\r\n\0]/.test(value) || value.length > MAX_ENV_VALUE) throw new AgentInputError(`${name} must be one line of at most ${MAX_ENV_VALUE} characters`)
+    }
+    for (const name of remove) if (typeof name !== 'string' || !ENV_NAME.test(name)) throw new AgentInputError('remove must list variable names')
+    if (!Object.keys(set).length && !remove.length) throw new AgentInputError('Nothing to change')
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const output = await agentd(guest, 'set-env', id, 20_000, JSON.stringify({ set, remove }))
+    const env = (JSON.parse(output) as { env?: unknown }).env
+    const names = Array.isArray(env) ? env.filter((name): name is string => typeof name === 'string' && ENV_NAME.test(name)) : []
+    const state = this.guestAgents[id] ?? (this.guestAgents[id] = {})
+    state.env = names
+    return { env: names }
+  }
+
   private async refresh(guest: AgentGuest): Promise<void> {
     this.guestAgents = parseGuestState(await agentd(guest, 'state', undefined, 20_000))
   }
@@ -234,8 +269,8 @@ function guestMessage(error: unknown): string {
 
 function encode(value: unknown): string { return Buffer.from(JSON.stringify(value)).toString('base64') }
 
-async function agentd(guest: AgentGuest, mode: string, argument: string | undefined, timeoutMs: number): Promise<string> {
+async function agentd(guest: AgentGuest, mode: string, argument: string | undefined, timeoutMs: number, ...more: string[]): Promise<string> {
   const script = `[ -f "$1" ] || { echo "${RUNNER_MISSING}" >&2; exit 1; }\nexec node "$@"`
-  return guest.run(RUNUSER, ['-u', 'caboose', '--', '/usr/bin/env', ...GUEST_ENV, '/bin/sh', '-c', script, 'sh', AGENTD, mode, ...(argument ? [argument] : [])], timeoutMs)
+  return guest.run(RUNUSER, ['-u', 'caboose', '--', '/usr/bin/env', ...GUEST_ENV, '/bin/sh', '-c', script, 'sh', AGENTD, mode, ...(argument ? [argument] : []), ...more], timeoutMs)
     .catch(rethrowRunnerMissing)
 }

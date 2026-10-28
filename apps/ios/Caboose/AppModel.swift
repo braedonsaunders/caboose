@@ -429,6 +429,8 @@ final class AppModel {
     /// The host's management status: settings, what the machine runs with, and whether a restart applies them.
     private(set) var computerStatus: HostClient.ComputerStatus?
     var settingsPresented = false
+    /// Settings › Agents on its own, from the Ask bar's menu.
+    var showAgentSettings = false
 
     func refreshComputer() async throws {
         guard let host else { return }

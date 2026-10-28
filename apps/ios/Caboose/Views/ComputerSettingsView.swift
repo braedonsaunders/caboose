@@ -152,6 +152,14 @@ struct ComputerSettingsView: View {
                 Text("Parking keeps every app open. Restarting starts the computer fresh from its disk.")
             }
 
+            Section {
+                NavigationLink {
+                    AgentsView()
+                } label: {
+                    LabeledContent("Agents", value: model.agents.defaultAgent.flatMap { model.agents.listing($0)?.name } ?? "Choose")
+                }
+            }
+
             Section("Connection") {
                 if let host = model.credentials?.hostURL.host() {
                     LabeledContent("Host", value: host)
