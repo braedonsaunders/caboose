@@ -1,5 +1,8 @@
 import CabooseKit
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
+import AVFoundation
 
 /// The agent a new chat goes to.
 enum AskTarget {
@@ -11,108 +14,244 @@ enum AskTarget {
 /// agent, and while the agent works, what you send waits for its turn to end.
 struct ChatComposer: View {
     @Environment(AppModel.self) private var model
-    /// The chat, or nil for a new one.
+    @Environment(\.scenePhase) private var scenePhase
     let task: AgentCenter.Task?
     var connectModel: () -> Void = {}
-    @State private var prompt = ""
     @AppStorage(AskTarget.key) private var target = ""
-    @AppStorage("caboose.agent.askFirst") private var askFirst = false
+    @AppStorage("caboose.agent.askFirst") private var askFirst = true
     @AppStorage("caboose.agent.craftMcp") private var craftMcp = true
+    @State private var photos: [PhotosPickerItem] = []
+    @State private var showingPhotos = false
+    @State private var showingFiles = false
+    @State private var showingCamera = false
+    @State private var dictation = AgentDictation()
     @FocusState private var focused: Bool
 
+    private var draft: AgentComposerDraft { model.agents.composerDraft(for: task?.id) }
+    private var chosen: AgentListing? { model.agents.listing(target).flatMap { $0.isInstalled ? $0 : nil } }
+    private var name: String {
+        task.map { model.agents.name(of: $0) } ?? chosen?.name
+            ?? model.agents.defaultAgent.flatMap { model.agents.listing($0)?.name } ?? "Your agent"
+    }
+
     var body: some View {
-        let agents = model.agents
-        let name = task.map { agents.name(of: $0) } ?? chosen.map(\.name) ?? agents.defaultAgent.flatMap { agents.listing($0)?.name }
-        HStack(alignment: .bottom, spacing: 8) {
-            menu
-                .frame(width: 36, height: 36)
-            TextField(name.map { "Message \($0)…" } ?? "Message your computer…", text: $prompt, axis: .vertical)
-                .lineLimit(1 ... 6)
-                .focused($focused)
-                .submitLabel(.send)
-                .onSubmit(send)
-                .padding(.vertical, 8)
-            if let task, task.isRunning, prompt.isEmpty {
-                Button { Task { await agents.cancel(task) } } label: {
-                    Image(systemName: "stop.fill").font(.body.weight(.bold)).frame(width: 34, height: 34)
+        @Bindable var draft = draft
+        VStack(alignment: .leading, spacing: 10) {
+            if let error = draft.error ?? dictation.error {
+                HStack(alignment: .top) {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                    Spacer(minLength: 0)
+                    Button("Dismiss", systemImage: "xmark") { draft.error = nil; dictation.error = nil }
+                        .labelStyle(.iconOnly).font(.caption)
                 }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .accessibilityLabel("Stop")
-            } else {
-                Button(action: send) {
-                    Image(systemName: "arrow.up").font(.body.weight(.bold)).frame(width: 34, height: 34)
-                }
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.circle)
-                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel(task?.isRunning == true ? "Send When It's Ready" : "Send")
+                .padding(.horizontal, 8)
+                .accessibilityElement(children: .contain)
+            }
+            attachmentTray
+            if dictation.listening {
+                Label("Listening… Tap the microphone to finish.", systemImage: "waveform")
+                    .font(.caption).foregroundStyle(Brand.amber)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+            inputField
+            controls
+
+        }
+        .padding(12)
+        .glassEffect(.regular, in: .rect(cornerRadius: 26))
+        .padding(.horizontal, 14).padding(.bottom, 8)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+        .photosPicker(isPresented: $showingPhotos, selection: $photos, maxSelectionCount: max(1, 4 - draft.files.count), matching: .images)
+        .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.data, .content], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls): for url in urls { draft.add(url) }
+            case .failure(let error): draft.error = error.localizedDescription
             }
         }
-        .padding(.leading, 8).padding(.trailing, 6).padding(.vertical, 5)
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 26))
-        .padding(.horizontal, 14)
-        .padding(.bottom, 8)
-        .animation(.snappy, value: prompt.isEmpty)
+        .sheet(isPresented: $showingCamera) {
+            AgentCamera { image in
+                if let data = image.jpegData(compressionQuality: 0.85) { draft.add(name: "Camera-\(UUID().uuidString.prefix(6)).jpg", type: "image/jpeg", data: data) }
+                else { draft.error = "Could not read this photo." }
+            }.ignoresSafeArea()
+        }
+        .onChange(of: photos) { _, items in
+            guard !items.isEmpty else { return }
+            let destination = draft
+            destination.importing = true
+            Task {
+                defer { destination.importing = false; photos = [] }
+                for item in items {
+                    do {
+                        guard let data = try await item.loadTransferable(type: Data.self) else { throw CocoaError(.fileReadCorruptFile) }
+                        let type = item.supportedContentTypes.first(where: { $0.conforms(to: .image) }) ?? .image
+                        destination.add(name: "Photo-\(UUID().uuidString.prefix(6)).\(type.preferredFilenameExtension ?? "jpg")",
+                                        type: type.preferredMIMEType ?? "image/jpeg", data: data)
+                    } catch { destination.error = error.localizedDescription }
+                }
+            }
+        }
         .onAppear { if model.askFocusRequested { focused = true; model.askFocusRequested = false } }
         .onChange(of: model.askFocusRequested) { _, requested in
             if requested { focused = true; model.askFocusRequested = false }
         }
-        // A suggestion lands in the composer, to send as is or edit first.
-        .onChange(of: agents.draft, initial: true) { _, draft in
-            guard let draft else { return }
-            prompt = draft
-            focused = true
-            agents.draft = nil
+        .onChange(of: model.agents.draft, initial: true) { _, suggestion in
+            guard let suggestion else { return }
+            draft.text = suggestion; focused = true; model.agents.draft = nil
         }
+        .onDisappear { dictation.stop() }
+        .onChange(of: scenePhase) { _, phase in if phase == .background { dictation.stop() } }
+        .onChange(of: model.phase) { _, phase in if phase != .ready { dictation.stop() } }
     }
 
-    /// The installed agent a new chat goes to, when the owner picked one.
-    private var chosen: AgentListing? { model.agents.listing(target).flatMap { $0.isInstalled ? $0 : nil } }
+    @ViewBuilder private var attachmentTray: some View {
+        if !draft.files.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(draft.files) { file in
+                            HStack(spacing: 8) {
+                                if let image = file.thumbnail {
+                                    Image(uiImage: image).resizable().scaledToFill().frame(width: 36, height: 36).clipShape(.rect(cornerRadius: 7))
+                                } else { Image(systemName: "doc.fill").foregroundStyle(Brand.amber) }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(file.attachment.name).font(.caption.weight(.medium)).lineLimit(1)
+                                    Text(ByteCountFormatter.string(fromByteCount: Int64(file.attachment.data.count), countStyle: .file)).font(.caption2).foregroundStyle(.secondary)
+                                }.frame(maxWidth: 140, alignment: .leading)
+                                Button { draft.files.removeAll { $0.id == file.id } } label: {
+                                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                                }.accessibilityLabel("Remove \(file.attachment.name)")
+                            }
+                            .padding(8).background(.white.opacity(0.06), in: .rect(cornerRadius: 12))
+                        }
+                    }
+                }.scrollIndicators(.hidden)
+            }
+    }
 
-    private var menu: some View {
+    private var inputField: some View {
+        @Bindable var draft = draft
+        return
+            TextField("Message \(name)…", text: $draft.text, axis: .vertical)
+                .lineLimit(1 ... 7)
+                .focused($focused)
+                .submitLabel(.send)
+                .onSubmit(send)
+                .padding(.horizontal, 5).padding(.top, 3)
+                .disabled(dictation.listening || draft.sending)
+    }
+
+    private var controls: some View {
+            HStack(spacing: 12) {
+                attachmentMenu
+                agentMenu
+                Spacer(minLength: 0)
+                if draft.importing { ProgressView().controlSize(.small) }
+                Button(action: toggleDictation) {
+                    Image(systemName: dictation.listening ? "waveform.circle.fill" : "mic")
+                        .font(.body.weight(.medium)).foregroundStyle(dictation.listening ? Brand.amber : .secondary)
+                        .frame(width: 36, height: 36)
+                }
+                .accessibilityLabel(dictation.listening ? "Finish Dictation" : "Dictate Message")
+                .disabled(dictation.requesting || draft.importing)
+                if draft.sending {
+                    ProgressView().frame(width: 36, height: 36)
+                } else if let task, task.isRunning, draft.text.isEmpty, draft.files.isEmpty {
+                    Button { Task { await model.agents.cancel(task) } } label: {
+                        Image(systemName: "stop.fill").font(.body.weight(.bold)).frame(width: 36, height: 36)
+                    }
+                    .buttonStyle(.glass).buttonBorderShape(.circle).accessibilityLabel("Stop Agent")
+                } else {
+                    Button(action: send) {
+                        Image(systemName: task?.isRunning == true ? "arrow.up.to.line" : "arrow.up")
+                            .font(.body.weight(.bold)).frame(width: 36, height: 36)
+                    }
+                    .buttonStyle(.glassProminent).buttonBorderShape(.circle)
+                    .disabled((draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.files.isEmpty) || draft.importing)
+                    .accessibilityLabel(task?.isRunning == true ? "Queue Message" : "Send Message")
+                }
+            }
+            .disabled(draft.sending)    }
+
+    private var attachmentMenu: some View {
+        Menu {
+            Button("Photo Library", systemImage: "photo.on.rectangle") { showingPhotos = true }
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("Take Photo", systemImage: "camera") {
+                    Task {
+                        if await AVCaptureDevice.requestAccess(for: .video) { showingCamera = true }
+                        else { draft.error = "Enable Camera for Caboose in Settings to take a photo." }
+                    }
+                }
+            }
+            Button("Choose Files", systemImage: "folder") { showingFiles = true }
+        } label: { Image(systemName: "plus").font(.body.weight(.medium)).frame(width: 32, height: 36) }
+        .accessibilityLabel("Add Attachments")
+        .disabled(draft.files.count >= 4 || draft.importing || dictation.listening)
+    }
+
+    private var agentMenu: some View {
         let agents = model.agents
         return Menu {
             if let task {
                 let others = agents.installedAgents.filter { $0.id != task.agent }
                 if !others.isEmpty {
                     Menu("Ask Another Agent", systemImage: "arrow.triangle.branch") {
-                        ForEach(others) { agent in
-                            Button(agent.name) { Task { await agents.retry(task, with: agent.id) } }
-                        }
+                        ForEach(others) { agent in Button(agent.name) { Task { await agents.retry(task, with: agent.id) } } }
                     }
                 }
             } else {
                 Picker("Agent", selection: $target) {
-                    Text(agents.defaultAgent.flatMap { agents.listing($0)?.name }.map { "Default (\($0))" } ?? "Default Agent").tag("")
-                    ForEach(agents.installedAgents) { agent in Text(agent.name).tag(agent.id) }
+                    Text("Default Agent").tag("")
+                    ForEach(agents.installedAgents) { Text($0.name).tag($0.id) }
                 }
-                Section {
-                    Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
-                    Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
-                }
+                Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
+                Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
             }
             Section {
                 Button(action: connectModel) { Label("Connect a Model…", systemImage: "key") }
-                Button { model.showAgentSettings = true } label: { Label("Agents…", systemImage: "slider.horizontal.3") }
+                Button { model.showAgentSettings = true } label: { Label("Agent Settings", systemImage: "slider.horizontal.3") }
             }
         } label: {
-            let name = task.map { agents.name(of: $0) } ?? chosen?.name ?? agents.defaultAgent.flatMap { agents.listing($0)?.name }
-            if let name { AgentAvatar(name: name, size: 30) } else { CabooseAvatar(size: 30) }
+            HStack(spacing: 6) {
+                AgentAvatar(name: name, size: 23)
+                Text(name).font(.caption.weight(.semibold)).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+            }
         }
-        .accessibilityLabel("Agent")
+        .accessibilityLabel("Agent: \(name)")
+    }
+
+    private func toggleDictation() {
+        if dictation.listening { dictation.stop(); return }
+        focused = false
+        let destination = draft
+        let prefix = destination.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task { await dictation.start { destination.text = prefix + (prefix.isEmpty ? "" : " ") + $0 } }
     }
 
     private func send() {
-        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        prompt = ""
+        let destination = draft
+        guard !destination.sending, !destination.importing else { return }
+        dictation.stop()
+        let text = destination.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let files = destination.files.map(\.attachment)
+        guard !text.isEmpty || !files.isEmpty else { return }
+        let prompt = text.isEmpty ? "Please look at the attached files." : text
         let agents = model.agents
-        if let task {
-            Task { await agents.reply(to: task, text) }
-        } else {
-            let agent = chosen?.id
-            Task { await agents.say(text, agent: agent, askFirst: askFirst) }
+        let revision = agents.chatRevision
+        let agent = chosen?.id
+        destination.sending = true
+        destination.error = nil
+        Task {
+            defer { destination.sending = false }
+            let success: Bool
+            if let task { success = await agents.reply(to: task, prompt, attachments: files) }
+            else if let id = await agents.start(prompt, agent: agent, askFirst: askFirst, attachments: files) {
+                if agents.chatRevision == revision { agents.currentChat = id }
+                success = true
+            } else { success = false }
+            if success { destination.text = ""; destination.files = [] }
+            else { destination.error = agents.lastError ?? "Your message could not be sent. Try again." }
         }
     }
 }

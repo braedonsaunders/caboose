@@ -116,7 +116,7 @@ computer in `error` with the reason in `lastError`, and the next wake retries it
 ### Guest components
 
 Caboose's own guest plumbing (the file and terminal services, the notification monitor and
-endpoints, and phone handoff) is a bundle listed in `guest/components/manifest.json` and installed by
+endpoints, phone handoff and the agent runner) is a bundle listed in `guest/components/manifest.json` and installed by
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
 
@@ -135,6 +135,9 @@ same installer to update computers whose disks predate the host:
   without the 14701 mapping needs nothing: the host reaches its terminal service on the
   container's address on its bridge network.
 
+The runner and its pinned runtime dependencies install at `/opt/caboose/agentd`; an upgrade
+replaces its script atomically and reuses dependencies whose exact versions already match.
+An active runner finishes with the code it loaded; the next runner uses the installed code.
 The bundle does not include Caboose Display or its units, which come with the image.
 
 ### Runtimes
@@ -584,7 +587,7 @@ session storage and sends it only as an `Authorization` header.
 ### Conventions
 
 Request and response bodies are JSON unless stated. A JSON body must be an object of at
-most 64 KiB (15 MiB for `POST /v1/agent/tasks`). Errors are `{ error: string }`:
+most 64 KiB (15 MiB for task start and reply). Errors are `{ error: string }`:
 
 | Status | Meaning |
 | --- | --- |
@@ -1085,7 +1088,7 @@ specified in `guest/agentd/README.md`; in short:
 - The host writes `task.json` `{ agent: <resolved spec>, cwd, approvals, idleMs,
   craftServers }`, prompts as `inbox/<turn, 6 digits>.prompt.json`, cancels as
   `inbox/cancel-<n>.json`, and decisions as `approvals/<requestId>.decision`. The runner
-  writes `transcript.jsonl`, `approvals/<requestId>.json` and `session`; the launch script
+  writes `transcript.jsonl`, `draft.json`, `approvals/<requestId>.json` and `session`; the launch script
   records `pid` and `exit-code`. Every file is written whole and renamed into place.
 - `initialize` advertises file reads and writes (resolved paths, refused outside
   `/home/caboose`, at most 10 MB), no terminals, and terminal sign-in.
@@ -1097,6 +1100,13 @@ specified in `guest/agentd/README.md`; in short:
   `tool_update` (title, kind, status), `plan`, `mode`, `permission`, `usage`, and exactly
   one of `turn_end` (ACP `stopReason` and the turn's last message as `summary`),
   `turn_failed` or `auth_required` per turn, each with its turn number.
+- While a message or thought is arriving, the runner atomically saves `draft.json` at most
+  every 200 ms: `{ turn, after, kind: "text" | "thought", text }`, with at most the last
+  16000 characters and `after` the transcript byte position before that message. It removes
+  the draft before committing the complete message to the transcript. The host reads the
+  transcript before the draft, validates every field, and publishes a replaceable snapshot
+  only when its position matches the bytes consumed and its turn is current. A draft is
+  cleared on commit, turn change, cancellation or finish; it is never another transcript entry.
 - After a turn the runner keeps the agent and its session for `CABOOSE_AGENT_IDLE_MS`
   waiting for a reply, then exits 0. A later reply starts a new runner, which reopens the
   conversation with `session/resume` if the agent advertises it, else `session/load` (the
@@ -1126,11 +1136,13 @@ specified in `guest/agentd/README.md`; in short:
   keeps its id, `prompt` and `startedAt`, returns to `running`, and `turns` counts the
   turns. Output the earlier turn writes after it was cancelled is not shown as the new
   turn's. A reply to a running or paused task waits in the task's `queued` list (at most 10
-  replies, 32000 characters together, kept in the host's memory, so a host restart drops
-  them). When the turn ends, everything waiting goes to the agent as one turn, the replies
+  replies, 32000 characters, four files and 10 MB decoded together). Files are staged in
+  distinct per-message directories; queue metadata stays in host memory, so a host restart
+  drops waiting replies. When the turn ends, everything waiting goes to the agent as one turn, the replies
   separated by blank lines, under the same lease and without an `agent.task.finished` for
   the turn in between. Cancel drops what is waiting; a turn that ends signed out keeps it
-  for the next reply, which sends it first.
+  for the next reply, which sends it first. Send Now cancels the current turn and delivers
+  the waiting prompts and their staged files together, retaining the queue if delivery fails.
 - **Cancel** writes a cancel to the inbox. The runner sends `session/cancel`, answers
   waiting permission requests `cancelled`, and ends the turn with
   `stopReason: "cancelled"`; an agent that has not stopped after 15 s is terminated, and
@@ -1162,14 +1174,15 @@ specified in `guest/agentd/README.md`; in short:
 | `POST` | `/v1/agent/tasks` | `{ prompt, agent?, approvals?: "ask" \| "auto", craftMcp?: boolean, attachments?: [{ name, type?, data (base64) }] }` → `{ id }`. 400 when no agent is given and no default is set; 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | Recent tasks, newest first |
 | `GET` | `/v1/agent/tasks/:id/transcript` | → `{ entries: TranscriptEntry[], truncated }`: every turn of the task's conversation, read from the end of its `transcript.jsonl` (at most 2 MiB; `truncated` when earlier lines were left out). 404 for an unknown task, 409 while the computer is not running |
-| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`. While the task is running or paused the reply waits in `task.queued`. 409 for a task that cannot be continued or when too much is already waiting; 404 for an unknown task |
+| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt, attachments?: [{ name, type?, data (base64) }] }` → `{ task }`. While the task is running or paused the reply waits in `task.queued`. 409 for a task that cannot be continued or when too much is already waiting; 404 for an unknown task |
+| `POST` | `/v1/agent/tasks/:id/send-now` | → `{ task }`. Stops the current turn and sends its queued prompts and files immediately. 409 when nothing is waiting or a next turn is already starting; 404 for an unknown task |
 | `POST` | `/v1/agent/tasks/:id/approvals/:requestId` | `{ allow: boolean, message?, optionId? }` → `{ resolved }`; `false` when that request is no longer waiting |
 | `POST` | `/v1/agent/tasks/:id/cancel` | → `{ cancelled }` |
 | `POST` | `/v1/agent/tasks/:id/pause` | → `{ paused }`; the task becomes `paused` |
 | `POST` | `/v1/agent/tasks/:id/resume` | → `{ resumed }` |
 
 Prompts are 1–32000 characters after trimming. Attachments are at most 4 files and 10 MB
-decoded together; names are made safe and unique, and files are written to the task's
+decoded together on both start and reply; names are made safe and unique, and files are written to the task's
 `attachments/` directory. `message` is at most 2000 characters and `optionId` 200. Agent
 routes answer 409 while the computer is not running or when its image has no runner, and
 502 when the registry has never been fetched and the agent is not installed.
@@ -1209,7 +1222,9 @@ A task record:
   pendingApproval?: { id: string, tool: string, summary: string, options?: Array<{ id: string, name: string, kind: string }> },  // oldest request waiting
   attachments?: string[],         // absolute guest paths
   signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>,  // when the agent was signed out
-  queued?: string[]               // replies waiting for the current turn to end, oldest first
+  queued?: string[],              // replies waiting for the current turn to end, oldest first
+  queuedAttachments?: string[][], // guest file paths, aligned with queued
+  draft?: { turn: number, kind: "text" | "thought", text: string } // live, replaceable message snapshot
 }
 ```
 
@@ -1222,9 +1237,10 @@ Control-socket events:
 | `agent.task.paused`, `agent.task.resumed` | `{ id }` |
 | `agent.task.finished` | `{ id, status: "succeeded" \| "failed" \| "cancelled", summary, signIn? }` |
 | `agent.task.replied` | `{ id, prompt, turn }` |
-| `agent.task.queued` | `{ id, queued: string[] }`: the replies waiting for the turn to end changed |
+| `agent.task.queued` | `{ id, queued: string[], queuedAttachments?: string[][] }`: the replies waiting for the turn to end changed |
 | `agent.task.approval` | `{ id, request: { id, tool, summary, options? } }`, once per request |
 | `agent.task.approval.resolved` | `{ id, requestId, allow }` |
+| `agent.task.draft` | `{ id, draft: { turn, kind: "text" \| "thought", text } \| null }`: a changed or cleared live snapshot, at the host's one-second polling cadence |
 | `agent.task.event` | `{ id, turn, entry: TranscriptEntry }`: each entry of the current turn as the host reads it |
 
 A `TranscriptEntry` is one line of the runner's transcript (guest/agentd/README.md), checked
@@ -1493,10 +1509,19 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   fresh task; the chat list is the task list, and other chats still working are pinned
   along the top. Where Apple Intelligence is available the phone's Foundation Models model
   names each chat from its first message for the list; it handles nothing the owner says.
+- **Composer.** Every chat and the new-chat screen retain their own unsent text and files
+  while the app is open. The glass composer offers camera photos, Photos and Files, shows
+  removable attachment previews, and keeps input after a failed send. Explicit dictation
+  requests microphone and speech permission, displays Listening, and puts recognized speech
+  into editable text; it never sends automatically. Recognition availability depends on iOS
+  and the selected language. Attachments without text use “Please look at the attached files.”
 - **Transcript.** A chat shows its whole conversation from
-  `GET /v1/agent/tasks/:id/transcript`, then follows `agent.task.event`: prompts, messages,
+  `GET /v1/agent/tasks/:id/transcript`, then follows `agent.task.event` and replaceable `agent.task.draft` snapshots: prompts, streamed messages,
   collapsible thoughts, tool calls grouped and updated in place, the plan as a checklist,
-  permissions with their answers, and context use. A working agent can be stopped or
+  permissions with their answers, and context use. Messages render native headings, lists,
+  quotes, inline styles and links, plus selectable fenced code with Copy. The chat list is
+  searchable by title and agent. A running chat shows a live preview when the shared agent
+  seat has an application window; Watch opens that real surface. A working agent can be stopped or
   watched on the seat. Pending approvals show in the chat, on Home and as a banner over every screen, with the agent's always-allow option when it
   has one. A task whose agent was signed out offers its sign-in methods, Connect a Model,
   and asking another agent the same thing in a new chat. A window's menu hands the window
