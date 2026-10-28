@@ -71,11 +71,16 @@ struct HostClient: Sendable {
         return components.url!
     }
 
-    private func request<T: Decodable>(_ method: String, _ path: String, timeout: TimeInterval) async throws -> T {
+    func request<T: Decodable>(_ method: String, _ path: String, body: [String: String]? = nil,
+                               timeout: TimeInterval) async throws -> T {
         var request = URLRequest(url: baseURL.appendingPathComponent(path), timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
         let data: Data, response: URLResponse
         do {
             (data, response) = try await URLSession.shared.data(for: request)
