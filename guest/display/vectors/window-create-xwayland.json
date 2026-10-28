@@ -1,0 +1,8 @@
+{
+  "name": "window-create-xwayland",
+  "description": "A fullscreen X11 window through Xwayland on the TV display.",
+  "messages": [
+    {"direction": "server", "type": "window.create", "type_id": 2, "fields": {"id": 12, "max": [32767, 32767], "min": [10, 17], "kind": "toplevel", "alpha": false, "title": "xterm", "app_id": "XTerm", "display": 2, "geometry": [0, 0, 1920, 1080], "xwayland": true, "fullscreen": true}}
+  ],
+  "hex": "0276000000ab6269640c636d617882197fff197fff636d696e820a11646b696e6468746f706c6576656c65616c706861f4657469746c6565787465726d666170705f696465585465726d67646973706c6179026867656f6d6574727984000019078019043868787761796c616e64f56a66756c6c73637265656ef5"
+}

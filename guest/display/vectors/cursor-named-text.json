@@ -1,0 +1,8 @@
+{
+  "name": "cursor-named-text",
+  "description": "A text cursor: the client may show the keyboard.",
+  "messages": [
+    {"direction": "server", "type": "cursor.named", "type_id": 33, "fields": {"name": "text"}}
+  ],
+  "hex": "210b000000a1646e616d656474657874"
+}

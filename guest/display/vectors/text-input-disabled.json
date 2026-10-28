@@ -1,0 +1,8 @@
+{
+  "name": "text-input-disabled",
+  "description": "",
+  "messages": [
+    {"direction": "server", "type": "text_input", "type_id": 34, "fields": {"id": 7, "enabled": false}}
+  ],
+  "hex": "220e000000a26269640767656e61626c6564f4"
+}

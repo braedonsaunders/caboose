@@ -1,0 +1,8 @@
+{
+  "name": "clipboard-server",
+  "description": "",
+  "messages": [
+    {"direction": "server", "type": "clipboard", "type_id": 48, "fields": {"data": {"$bytes": "68c3a96c6c6f20e29c93"}, "mime": "text/plain;charset=utf-8"}}
+  ],
+  "hex": "3030000000a264646174614a68c3a96c6c6f20e29c93646d696d657818746578742f706c61696e3b636861727365743d7574662d38"
+}

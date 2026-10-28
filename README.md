@@ -164,6 +164,7 @@ terminal, use it, leave, and come back to find it exactly as you left it.
 | [`apps/web`](apps/web) | The self-host console the host serves (React, AppKit UI) |
 | [`guest/image`](guest/image) | The golden machine image: Debian 13, Xpra seamless, apps and agent CLIs |
 | [`guest/container`](guest/container) | The same computer as a GPU container, for WSL2 and Linux GPU hosts |
+| [`guest/display`](guest/display) | Caboose Display: the per-window display server, its protocol and golden vectors (Rust) |
 | [`guest/desktop-mcp`](guest/desktop-mcp) | GUI tools for agents on their own seat |
 | [`docs`](docs) | Architecture, the Xpra protocol notes and the Caboose Display design |
 
