@@ -11,9 +11,9 @@ Display (docs/display.md) where the host serves it.
   `Session/` (Xpra capabilities and HMAC challenge, the window registry, per-window draw
   pipelines with flow-control acks, clipboard, notifications, keyboard mapping),
   `Display/` (the Caboose Display Protocol: canonical CBOR, framing, messages, the session,
-  per-window frame pipelines), `Video/` (VideoToolbox H.264, HEVC and AV1 → IOSurface BGRA,
+  per-window frame pipelines, video streams), `Video/` (VideoToolbox H.264, HEVC and AV1 → IOSurface BGRA,
   Metal window surfaces), `Input/` (typing buffer, trackpad gestures, touch slots),
-  `UI/RemoteWindowView` (presentation and touch/Pencil/trackpad/keyboard input).
+  `UI/RemoteWindowView` (presentation, video layers, and touch/Pencil/trackpad/keyboard input).
 - `Caboose/` — the app: setup, wake, Home (open windows and the computer's apps), and the
   full-screen window screen.
 - `Share/` — the share extension (target `CabooseShare`).
@@ -156,7 +156,16 @@ Protocol instead of Xpra; the screens are the same. What changes:
   password fields. Text goes as text-input-v3 commits and deletions; where the app has
   text-input-v3, marked text (Chinese, Japanese, Korean) is a real preedit instead of
   typed and retyped.
+- **Video in windows.** A video an app plays (its own bitstream through the computer's
+  VA-API driver, or a Wayland video surface) arrives as a stream of its own and is layered
+  into its window: an `AVSampleBufferDisplayLayer` per stream at the stream's `rect`, cut
+  to its `clip`, in `z` order over the window's picture. Frames come in decode order and
+  are decoded in hardware as they arrive, in the decoder's own format. A live surface is
+  shown as each picture decodes; an app's own stream keeps its pictures by `seq` and shows
+  each when `video.present` says the app is showing it, so it stays in step with the app's
+  own sound. HDR streams (PQ, HLG) are shown with the screen's extended dynamic range.
+  Home's thumbnails leave video to the window's own screen.
 - **Not yet.** No sound (the protocol's Opus `audio` is a later milestone of the
-  compositor), and windows are SDR: the hello reports `hdr: false` until the window
-  surfaces render EDR.
+  compositor), and window pictures are SDR:
+  the hello reports `hdr: false` until the window surfaces render EDR.
 

@@ -19,6 +19,13 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     public weak var pacer: (any DisplaySession)?
     /// Which of the session's displays this view is on, for vsync pacing.
     public var displayID = 0
+    /// Whether this view plays the window's videos. A video plays in one view at a time, so
+    /// thumbnails leave it to the window's main view.
+    public var showsVideo = true {
+        didSet { laidOutVideos = nil }
+    }
+    private var laidOutVideos: (window: ObjectIdentifier, layout: Int, scale: CGFloat)?
+    private var hostedVideos: [CALayer] = []
     public private(set) var remoteWindow: RemoteWindow?
     public var pixelsPerPoint: CGFloat = 2
     /// When false the view only displays (thumbnails, previews).
@@ -70,6 +77,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if window !== remoteWindow {
             resetTyping()
             cancelTouches()
+            laidOutVideos = nil
         }
         remoteWindow = window
         prefersProse = autocorrectChoice ?? !Self.isCodeApp(window)
@@ -94,8 +102,38 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public override func layoutSubviews() {
         super.layoutSubviews()
+        laidOutVideos = nil
         metalLayer.contentsScale = pixelsPerPoint
         presentedGeneration = .max
+    }
+
+    /// Puts each of the window's videos over its picture: the stream's layer at its `rect`,
+    /// inside a container cut to its `clip`, in `z` order. Runs only when one of them changed.
+    fileprivate func layoutVideos() {
+        let window = showsVideo ? remoteWindow : nil
+        let key = window.map { (ObjectIdentifier($0), $0.videoLayout, pixelsPerPoint) }
+        if let key, let laid = laidOutVideos, laid == key { return }
+        if key == nil, hostedVideos.isEmpty { return }
+        laidOutVideos = key
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let videos = window?.videos ?? []
+        for container in hostedVideos where container.superlayer === layer && !videos.contains(where: { $0.container === container }) {
+            container.removeFromSuperlayer()
+        }
+        let scale = 1 / pixelsPerPoint
+        func points(_ rect: CGRect) -> CGRect {
+            CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale)
+        }
+        for video in videos {
+            let clip = video.clip ?? video.rect
+            if video.container.superlayer !== layer { layer.addSublayer(video.container) }
+            video.container.frame = points(clip)
+            video.container.zPosition = CGFloat(video.z)
+            video.layer.frame = points(video.rect.offsetBy(dx: -clip.minX, dy: -clip.minY))
+        }
+        hostedVideos = videos.map(\.container)
+        CATransaction.commit()
     }
 
     fileprivate func present() {
@@ -666,6 +704,7 @@ private final class DisplayLinkTarget: NSObject {
             pacer.displayWillRefresh(view.displayID, targetTimestamp: link.targetTimestamp)
         }
         view.checkFocus()
+        view.layoutVideos()
         view.present()
     }
 

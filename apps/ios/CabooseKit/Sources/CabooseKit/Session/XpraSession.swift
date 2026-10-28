@@ -29,6 +29,10 @@ public final class RemoteWindow: Identifiable {
     public internal(set) var acceptsTouch = false
     /// The window takes Apple Pencil as a tablet, with pressure and tilt.
     public internal(set) var acceptsPencil = false
+    /// Videos playing in the window (Caboose Display), lowest `z` first, drawn over its picture.
+    public internal(set) var videos: [RemoteVideo] = []
+    /// Bumped whenever a video comes, goes or moves, so a view knows to lay them out again.
+    public internal(set) var videoLayout = 0
     public nonisolated let surface: WindowSurface
     var resizeCounter = 0
 

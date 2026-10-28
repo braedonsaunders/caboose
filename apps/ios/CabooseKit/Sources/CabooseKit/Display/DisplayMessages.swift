@@ -14,6 +14,12 @@ public enum DisplayProtocol {
         case windowDestroy = 0x04
         case frame = 0x10
         case tile = 0x11
+        // Video streams (docs/display.md "Video streams").
+        case videoCreate = 0x12
+        case videoFrame = 0x13
+        case videoUpdate = 0x14
+        case videoDestroy = 0x15
+        case videoPresent = 0x16
         case cursor = 0x20
         case cursorNamed = 0x21
         case textInput = 0x22
@@ -32,6 +38,8 @@ public enum DisplayProtocol {
         case close = 0x85
         case requestKeyframe = 0x86
         case displays = 0x87
+        case videoAck = 0x88
+        case videoKeyframe = 0x89
         case touch = 0x90
         case pencil = 0x91
         case pointer = 0x92
@@ -174,6 +182,84 @@ public struct LosslessTile: Sendable {
     }
 }
 
+/// Where a video stream comes from: the app's own bitstream through the Caboose VA-API driver,
+/// a Wayland video subsurface the compositor encodes, or a region detected as moving.
+public enum VideoSource: String, Sendable {
+    case passthrough, surface, motion
+
+    /// Live streams are shown as they decode; an app's own stream when the app presents a frame.
+    public var isLive: Bool { self != .passthrough }
+}
+
+/// H.273 colour description of a video stream, e.g. 9/16/9 for BT.2020 PQ.
+public struct VideoColor: Equatable, Sendable {
+    public var primaries: Int
+    public var transfer: Int
+    public var matrix: Int
+    public var fullRange: Bool
+
+    /// PQ or HLG: the stream wants the screen's extended dynamic range.
+    public var isHDR: Bool { transfer == 16 || transfer == 18 }
+
+    init?(_ body: CBOR) {
+        guard let primaries = body["primaries"]?.int, let transfer = body["transfer"]?.int, let matrix = body["matrix"]?.int else { return nil }
+        self.primaries = primaries
+        self.transfer = transfer
+        self.matrix = matrix
+        fullRange = body["full_range"]?.bool ?? false
+    }
+}
+
+/// The fields of `video.create`, or the changed ones of `video.update`. `rect` is where the
+/// whole picture goes in its window (window-local display pixels, scaled to it), `clip` the
+/// part of it that shows, and `z` its order among the window's streams, all above the window.
+public struct VideoStreamFields: Sendable {
+    public var id: Int
+    public var window: Int?
+    public var rect: CGRect?
+    public var clip: CGRect?
+    public var z: Int?
+    public var codec: DisplayCodec?
+    public var source: VideoSource?
+    public var color: VideoColor?
+
+    init?(_ body: CBOR) {
+        guard let id = body["id"]?.int else { return nil }
+        self.id = id
+        window = body["window"]?.int
+        rect = body["rect"].flatMap(WindowFields.rect)
+        clip = body["clip"].flatMap(WindowFields.rect)
+        z = body["z"]?.int
+        codec = body["codec"]?.string.flatMap(DisplayCodec.init(rawValue:))
+        source = body["source"]?.string.flatMap(VideoSource.init(rawValue:))
+        color = body["color"].flatMap(VideoColor.init)
+    }
+}
+
+/// One access unit of a video stream, in decode order (`seq` from 0), in the same in-band
+/// format as `frame.data`. Live streams carry `pts_us`; an app's own stream does not, and is
+/// shown frame by frame as `video.present` says.
+public struct VideoFrame: Sendable {
+    public var video: Int
+    public var seq: Int
+    public var keyframe: Bool
+    public var ptsMicros: UInt64?
+    public var data: Data
+
+    public init(video: Int, seq: Int, keyframe: Bool, ptsMicros: UInt64? = nil, data: Data) {
+        self.video = video
+        self.seq = seq
+        self.keyframe = keyframe
+        self.ptsMicros = ptsMicros
+        self.data = data
+    }
+
+    init?(_ body: CBOR) {
+        guard let video = body["id"]?.int, let seq = body["seq"]?.int, let data = body["data"]?.data else { return nil }
+        self.init(video: video, seq: seq, keyframe: body["keyframe"]?.bool ?? false, ptsMicros: body["pts_us"]?.uint64, data: data)
+    }
+}
+
 public struct ServerHello: Equatable, Sendable {
     public var version: Int
     public var displays: [Int]
@@ -204,6 +290,12 @@ public enum ServerMessage: Sendable {
     case audio(codec: String, ptsMicros: UInt64, data: Data)
     case pong(micros: UInt64)
     case bye(reason: String)
+    case videoCreate(VideoStreamFields)
+    case videoFrame(VideoFrame)
+    case videoUpdate(VideoStreamFields)
+    case videoDestroy(id: Int)
+    /// The app is showing passthrough frame `seq` now.
+    case videoPresent(id: Int, seq: Int, ptsMicros: UInt64)
     case unknown(type: UInt8)
     /// A known type whose fields are missing or of the wrong kind.
     case malformed(type: UInt8)
@@ -242,6 +334,18 @@ public enum ServerMessage: Sendable {
             }
         case .pong: parsed = body["t_us"]?.uint64.map { .pong(micros: $0) }
         case .bye: parsed = .bye(reason: body["reason"]?.string ?? "")
+        case .videoCreate:
+            let fields = VideoStreamFields(body)
+            parsed = fields.flatMap { $0.window != nil && $0.rect != nil && $0.codec != nil ? .videoCreate($0) : nil }
+        case .videoFrame: parsed = VideoFrame(body).map(ServerMessage.videoFrame)
+        case .videoUpdate: parsed = VideoStreamFields(body).map(ServerMessage.videoUpdate)
+        case .videoDestroy: parsed = body["id"]?.int.map { .videoDestroy(id: $0) }
+        case .videoPresent:
+            if let id = body["id"]?.int, let seq = body["seq"]?.int, let pts = body["pts_us"]?.uint64 {
+                parsed = .videoPresent(id: id, seq: seq, ptsMicros: pts)
+            } else {
+                parsed = nil
+            }
         }
         self = parsed ?? .malformed(type: frame.type)
     }
@@ -334,7 +438,8 @@ public enum PointerButtons {
 }
 
 public enum ClientMessage: Sendable {
-    case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo])
+    /// `videoDecoders`: what the client plays as video streams; absent, the server sends none.
+    case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -349,6 +454,10 @@ public enum ClientMessage: Sendable {
     case text(commit: String?, preedit: String? = nil, cursor: (Int, Int)? = nil, deleteBefore: Int? = nil, deleteAfter: Int? = nil)
     case clipboard(mime: String, data: Data)
     case ping(micros: UInt64)
+    /// A video frame is decoded and queued for display.
+    case videoAck(video: Int, seq: Int)
+    /// The client could not decode a video stream; it drops frames until the next keyframe.
+    case videoKeyframe(video: Int)
 
     public var frame: DisplayFrame {
         typealias T = DisplayProtocol.ClientType
@@ -359,11 +468,16 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays):
+        case .hello(let token, let decoders, let displays, let videoDecoders):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
+                ("video_decoders", videoDecoders.map { .array($0.map { CBOR($0.rawValue) }) }),
             ]))
+        case .videoAck(let video, let seq):
+            return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))
+        case .videoKeyframe(let video):
+            return DisplayFrame(type: T.videoKeyframe.rawValue, body: map([("id", CBOR(video))]))
         case .vsync(let display, let micros):
             return DisplayFrame(type: T.vsync.rawValue, body: map([("display", CBOR(display)), ("t_us", CBOR(micros))]))
         case .ack(let window, let pts, let decoded):

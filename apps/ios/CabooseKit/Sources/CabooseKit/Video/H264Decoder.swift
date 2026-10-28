@@ -91,12 +91,13 @@ public final class H264Decoder: PictureDecoder {
 /// The parts of a VideoToolbox decoder every codec shares: a real-time hardware session
 /// whose output Metal samples without a copy, and samples wrapped for it.
 enum VideoToolboxSession {
-    static func make(_ description: CMVideoFormatDescription) throws -> VTDecompressionSession {
-        let attributes: [CFString: Any] = [
-            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+    /// `pixelFormat` nil keeps the decoder's own (YUV, 10-bit for HDR), for a video layer.
+    static func make(_ description: CMVideoFormatDescription, pixelFormat: OSType? = kCVPixelFormatType_32BGRA) throws -> VTDecompressionSession {
+        var attributes: [CFString: Any] = [
             kCVPixelBufferMetalCompatibilityKey: true,
             kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
         ]
+        if let pixelFormat { attributes[kCVPixelBufferPixelFormatTypeKey] = pixelFormat }
         let specification: [CFString: Any] = [
             kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: true,
         ]
@@ -111,7 +112,8 @@ enum VideoToolboxSession {
         return created
     }
 
-    static func sampleBuffer(_ bytes: Data, format: CMVideoFormatDescription) throws -> CMSampleBuffer {
+    /// One sample of `bytes`; `timing` stamps it for a player (decoders take it untimed).
+    static func sampleBuffer(_ bytes: Data, format: CMVideoFormatDescription, timing: CMSampleTimingInfo? = nil) throws -> CMSampleBuffer {
         var block: CMBlockBuffer?
         var status = CMBlockBufferCreateWithMemoryBlock(
             allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: bytes.count,
@@ -125,10 +127,17 @@ enum VideoToolboxSession {
         guard status == noErr else { throw H264DecoderError.sampleBuffer(status) }
         var sample: CMSampleBuffer?
         var size = bytes.count
-        status = CMSampleBufferCreateReady(
-            allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format, sampleCount: 1,
-            sampleTimingEntryCount: 0, sampleTimingArray: nil, sampleSizeEntryCount: 1, sampleSizeArray: &size,
-            sampleBufferOut: &sample)
+        if var timing {
+            status = CMSampleBufferCreateReady(
+                allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format, sampleCount: 1,
+                sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 1, sampleSizeArray: &size,
+                sampleBufferOut: &sample)
+        } else {
+            status = CMSampleBufferCreateReady(
+                allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format, sampleCount: 1,
+                sampleTimingEntryCount: 0, sampleTimingArray: nil, sampleSizeEntryCount: 1, sampleSizeArray: &size,
+                sampleBufferOut: &sample)
+        }
         guard status == noErr, let sample else { throw H264DecoderError.sampleBuffer(status) }
         return sample
     }

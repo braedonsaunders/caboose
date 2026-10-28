@@ -47,6 +47,7 @@ public final class CabooseDisplaySession: DisplaySession {
     /// This connection's windows' decode pipelines; a new connection gets new ones, so nothing
     /// a closed socket still delivers can reach the next.
     private var pipelines = FramePipelineRegistry()
+    private var videos = VideoRegistry()
     private let echo = EchoMeter()
     private var pingTimer: Timer?
     private var buttons = 0
@@ -95,7 +96,8 @@ public final class CabooseDisplaySession: DisplaySession {
         let stream = makeStream()
         self.stream = stream
         pipelines = FramePipelineRegistry()
-        let incoming = Incoming(pipelines: pipelines, echo: echo, makeDecoder: makeDecoder) { message in
+        videos = VideoRegistry()
+        let incoming = Incoming(pipelines: pipelines, videos: videos, echo: echo, makeDecoder: makeDecoder) { message in
             stream.send(DisplayFraming.encode(message.frame))
         }
         stream.open { [weak self] event in
@@ -145,6 +147,7 @@ public final class CabooseDisplaySession: DisplaySession {
 
     private func tearDown() {
         for pipeline in pipelines.removeAll() { pipeline.close() }
+        for video in videos.removeAll() { video.close() }
         windows.removeAll()
         placement.removeAll()
         pendingGeometry.removeAll()
@@ -160,7 +163,7 @@ public final class CabooseDisplaySession: DisplaySession {
 
     private func sendHello() {
         state = .authenticating
-        send(.hello(token: displayToken, decoders: decoders, displays: displays))
+        send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: decoders))
     }
 
     // MARK: Server messages
@@ -192,7 +195,10 @@ public final class CabooseDisplaySession: DisplaySession {
                 if now >= sent { latencyMs = Double(now - sent) / 1000 }
             case .bye(let reason):
                 fail(Self.describe(bye: reason))
-            case .frame, .tile, .audio, .unknown, .malformed:
+            case .videoCreate(let fields): addVideo(fields.id)
+            case .videoUpdate(let fields): updateVideo(fields)
+            case .videoDestroy(let id): removeVideo(id)
+            case .frame, .tile, .videoFrame, .videoPresent, .audio, .unknown, .malformed:
                 continue // pictures were routed on the socket's queue; sound and unknown types are not used yet
             }
         }
@@ -253,11 +259,43 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     private func destroyWindow(_ id: Int) {
+        for video in windows[id]?.videos ?? [] { removeVideo(video.id) }
         pipelines.remove(id)?.close()
         windows[id] = nil
         placement[id] = nil
         if focusedWindow == id { focusedWindow = nil }
         if textInput?.window == id { textInput = nil }
+    }
+
+    // MARK: Video streams
+
+    /// The stream was made on the socket's queue, so its first pictures are already playing.
+    private func addVideo(_ id: Int) {
+        guard let video = videos[id] else { return }
+        guard let window = windows[video.window] else {
+            videos.remove(id)?.close() // a stream for a window this connection does not have
+            return
+        }
+        window.videos = (window.videos.filter { $0.id != id } + [video]).sorted { $0.z < $1.z }
+        window.videoLayout &+= 1
+    }
+
+    private func updateVideo(_ fields: VideoStreamFields) {
+        guard let video = videos[fields.id], let window = windows[video.window] else { return }
+        if let rect = fields.rect { video.rect = rect }
+        if let clip = fields.clip { video.clip = clip }
+        if let z = fields.z { video.z = z }
+        window.videos.sort { $0.z < $1.z }
+        window.videoLayout &+= 1
+    }
+
+    private func removeVideo(_ id: Int) {
+        guard let video = videos.remove(id) else { return }
+        video.close()
+        if let window = windows[video.window] {
+            window.videos.removeAll { $0.id == id }
+            window.videoLayout &+= 1
+        }
     }
 
     private func apply(_ fields: WindowFields, to window: RemoteWindow) {
@@ -500,13 +538,15 @@ public final class CabooseDisplaySession: DisplaySession {
 private final class Incoming: @unchecked Sendable {
     private var parser = DisplayFrameParser()
     private let pipelines: FramePipelineRegistry
+    private let videos: VideoRegistry
     private let echo: EchoMeter
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private let send: @Sendable (ClientMessage) -> Void
 
-    init(pipelines: FramePipelineRegistry, echo: EchoMeter, makeDecoder: @escaping (DisplayCodec) -> PictureDecoder,
+    init(pipelines: FramePipelineRegistry, videos: VideoRegistry, echo: EchoMeter, makeDecoder: @escaping (DisplayCodec) -> PictureDecoder,
          send: @escaping @Sendable (ClientMessage) -> Void) {
         self.pipelines = pipelines
+        self.videos = videos
         self.echo = echo
         self.makeDecoder = makeDecoder
         self.send = send
@@ -524,6 +564,14 @@ private final class Incoming: @unchecked Sendable {
                 pipeline.frame(picture)
             case .tile(let tile):
                 pipelines[tile.window]?.tile(tile)
+            case .videoFrame(let frame):
+                videos[frame.video]?.frame(frame)
+            case .videoPresent(let id, let seq, _):
+                videos[id]?.present(seq: seq)
+            case .videoCreate(let fields):
+                // Made here, like a window's pipeline, because its first picture follows at once.
+                if videos[fields.id] == nil, let video = RemoteVideo(fields, send: send) { videos[fields.id] = video }
+                others.append(message)
             case .windowCreate(let fields):
                 if pipelines[fields.id] == nil {
                     let size = fields.geometry?.size ?? CGSize(width: 1, height: 1)
