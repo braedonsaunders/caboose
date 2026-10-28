@@ -37,3 +37,35 @@ it('authenticates routes and relays binary websocket messages while holding a le
   await once(client, 'close')
   await vi.waitFor(() => expect(park).toHaveBeenCalledTimes(1))
 })
+
+it('routes agent replies, approvals, files and links with the right status codes', async () => {
+  const runs: string[][] = []
+  const guest = { run: async (command: string, args: string[]) => {
+    runs.push([command, ...args])
+    return args[5]?.includes('while [ -e "$target" ]') ? '/home/caboose/Downloads/a.txt' : ''
+  } }
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+    park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {},
+    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000 }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1')
+  await once(app.server, 'listening')
+  close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const post = (path: string, body: unknown) => fetch(base + path, { method: 'POST', headers: { authorization: 'Bearer owner' }, body: JSON.stringify(body) })
+  const missing = '11111111-1111-4111-8111-111111111111'
+  expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(409)
+  await post('/v1/session', {})
+  expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(404)
+  expect((await post(`/v1/agent/tasks/${missing}/approvals/${missing}`, { allow: true })).status).toBe(404)
+  const { id } = await (await post('/v1/agent/tasks', { prompt: 'hi' })).json() as { id: string }
+  expect((await post(`/v1/agent/tasks/${id}/reply`, { prompt: 'more' })).status).toBe(409)
+  expect((await post(`/v1/agent/tasks/${id}/approvals/${missing}`, { allow: 'yes' })).status).toBe(400)
+  expect(await (await post(`/v1/agent/tasks/${id}/approvals/${missing}`, { allow: true })).json()).toEqual({ resolved: false })
+  expect((await post('/v1/agent/tasks', { prompt: 'x', agent: 'codex', approvals: 'ask' })).status).toBe(400)
+  expect(await (await post('/v1/files', { name: 'a.txt', data: 'aGk=' })).json()).toEqual({ path: '/home/caboose/Downloads/a.txt' })
+  expect((await post('/v1/open', { url: 'file:///etc/passwd' })).status).toBe(400)
+  expect(await (await post('/v1/open', { url: 'https://example.com' })).json()).toEqual({ opened: true })
+  expect(runs.at(-1)?.at(-1)).toBe('https://example.com/')
+})

@@ -16,10 +16,41 @@ Display (docs/display.md) where the host serves it.
   `UI/RemoteWindowView` (presentation and touch/Pencil/trackpad/keyboard input).
 - `Caboose/` — the app: setup, wake, Home (open windows and the computer's apps), and the
   full-screen window screen.
+- `Share/` — the share extension (target `CabooseShare`).
 - `Caboose/Brand/` — the logo drawn natively in SwiftUI: the wordmark draws itself in on
-  setup, the car rolls while the computer wakes and parks with its windows dark. It is
-  the same geometry and timing as `apps/web/src/brand/brand.ts`; change both together.
+  setup, rolls while the computer wakes and shows its hubs unlit while it is parked, and
+  one of its wheels marks the computer menu. It is the same geometry and timing as
+  `apps/web/src/brand/brand.ts`; change both together.
   The app icon is rendered from that module's SVG by `scripts/render-app-icon.sh` (macOS).
+
+## Agents
+
+The Ask bar on Home starts a Claude Code or Codex task; its menu has **Ask Before Acting**
+(Claude only), which makes the agent stop before each action until you tap Allow or Deny,
+on the task card or on the banner that shows over any screen. A finished task takes a reply
+that continues the same conversation. A window's `…` menu has **Ask Agent About This
+Window**, which sends its screenshot, title and app with your request.
+
+## Play on iPhone or Apple TV
+
+Video reaches the phone like every other window. When the computer's Chromium is playing a
+video, its window's `…` menu also has **Play on iPhone or Apple TV**, which pauses the
+computer's copy and plays it here: a video with its own http(s) source (a file or HLS) in
+AVKit, with AirPlay to an Apple TV, and **Back to Computer** continues the computer's copy
+at the phone's time; a stream the page builds itself opens the page in Safari's in-app
+browser, and closing it continues the computer's copy where it paused. It works the same for
+every site (contract: `docs/architecture.md` § Media handoff).
+
+## Share sheet
+
+Caboose appears in the iOS share sheet. A web page can be opened in the computer's browser;
+photos, files and text can be saved in `~/Downloads` (and opened there); any of them can be
+handed to an agent with a request (photos are scaled to 2048 px, at most 4 files and 10 MB).
+The app and the extension share the host address and token through the Keychain access group
+`<team>.com.braedonsaunders.caboose.shared`; an install that paired before this moves its
+pairing there on first launch, so it does not need pairing again. On a device, check: share a
+Safari page and pick Open on Computer; share a photo and pick Save and Open; share a photo
+with "describe this" to an agent and see the task appear on Home.
 
 ## Computer settings
 
@@ -40,7 +71,9 @@ xcodegen generate
 open Caboose.xcodeproj
 ```
 
-Set your own team in `project.yml` (`DEVELOPMENT_TEAM`) to run on a device.
+Set your own team in `project.yml` (`DEVELOPMENT_TEAM`) to run on a device. The share
+extension's bundle id is the app's plus `.share`, and both sign with the keychain group in
+`Caboose/Caboose.entitlements`.
 
 ## Test
 

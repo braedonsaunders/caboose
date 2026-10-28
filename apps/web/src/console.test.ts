@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildIosPairingUrl, computeSettingsPatch, readSessionToken,
+  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildIosPairingUrl, canAskFirst, canReply, computeSettingsPatch, readSessionToken,
   validateSettingsInput, willRequireColdRestart, writeSessionToken, type ComputerSettings,
 } from './api.js'
 import { normalizePathname } from './navigation.js'
@@ -125,6 +125,51 @@ describe('client', () => {
     const client = new CabooseClient(() => 'stale', '', async () => new Response('{"error":"unauthorized"}', { status: 401 }))
     const failure = await client.computer().catch(error => error)
     expect(failure.isUnauthorized).toBe(true)
+  })
+})
+
+describe('agent tasks', () => {
+  function recording() {
+    const seen: Array<{ url: string; method?: string; body: unknown }> = []
+    const client = new CabooseClient(() => 't', '', async (url, init) => {
+      seen.push({ url: String(url), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      return new Response('{"task":{},"resolved":true,"id":"x"}', { status: 200 })
+    })
+    return { client, seen }
+  }
+
+  it('replies to a finished task', async () => {
+    const { client, seen } = recording()
+    await client.replyToAgentTask('11111111-1111-4111-8111-111111111111', 'and now the tests')
+    expect(seen[0]).toEqual({ url: '/v1/agent/tasks/11111111-1111-4111-8111-111111111111/reply', method: 'POST', body: { prompt: 'and now the tests' } })
+    expect(canReply({ status: 'succeeded' })).toBe(true)
+    expect(canReply({ status: 'cancelled' })).toBe(true)
+    expect(canReply({ status: 'running' })).toBe(false)
+    expect(canReply({ status: 'paused' })).toBe(false)
+  })
+
+  it('answers an approval request, with a reason only when given', async () => {
+    const { client, seen } = recording()
+    await client.resolveAgentApproval('task', 'req', true)
+    await client.resolveAgentApproval('task', 'req', false, '  not that file  ')
+    expect(seen.map(entry => [entry.url, entry.body])).toEqual([
+      ['/v1/agent/tasks/task/approvals/req', { allow: true }],
+      ['/v1/agent/tasks/task/approvals/req', { allow: false, message: 'not that file' }],
+    ])
+  })
+
+  it('asks before acting only for Claude Code', async () => {
+    const { client, seen } = recording()
+    await client.startAgentTask({ prompt: 'p', agent: 'claude', approvals: 'ask' })
+    await client.startAgentTask({ prompt: 'p', agent: 'codex', approvals: 'ask' })
+    await client.startAgentTask({ prompt: 'p', agent: 'claude', approvals: 'auto', attachments: [{ name: 'a.png', type: 'image/png', data: 'aGk=' }] })
+    expect(seen.map(entry => entry.body)).toEqual([
+      { prompt: 'p', agent: 'claude', approvals: 'ask' },
+      { prompt: 'p', agent: 'codex' },
+      { prompt: 'p', agent: 'claude', attachments: [{ name: 'a.png', type: 'image/png', data: 'aGk=' }] },
+    ])
+    expect(canAskFirst('claude')).toBe(true)
+    expect(canAskFirst('codex')).toBe(false)
   })
 })
 

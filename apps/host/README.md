@@ -69,6 +69,48 @@ restart banner, and restart. Confirm the disk document remains, the old open
 applications are gone, and the display reconnects with the new resources. These
 real-machine checks require the built guest and are separate from unit tests.
 
+## Agents and files
+
+Agent tasks (`/v1/agent/tasks`), replies, approvals, attachments, `POST /v1/files` and
+`POST /v1/open` are specified in `../../docs/architecture.md` § Agents. The host talks to
+the guest only through the driver's `guest().run(command, args)`; file contents are sent
+as base64 argument chunks and decoded in the guest, so both the microVM and container
+drivers support them without a stdin channel.
+
+The guest scripts behind these routes (the batched poll, replies, approval decisions,
+restore after a host restart, attachments and Downloads) run for real in a Debian 13
+container with stand-in `claude` and `codex` CLIs. This needs only Docker:
+
+```sh
+apps/host/scripts/check-agent-shell.sh
+```
+
+Against a real host whose computer has Claude Code signed in (and Codex, for `--codex`),
+the agent check saves a file to `~/Downloads`, runs a Claude task that asks before acting
+with an attachment, approves it through the API, replies, and with `--codex` resumes a
+Codex thread. `--open` also opens https://example.com on the owner's display. It starts
+real agent runs on the owner's accounts.
+
+```sh
+export CABOOSE_URL=https://computer.example.com
+# Supply CABOOSE_OWNER_TOKEN through your private environment.
+node apps/host/scripts/check-agents.mjs [--codex] [--open]
+```
+
+## Media handoff
+
+`src/media.ts` reads the video playing in the computer's Chromium from the guest's
+`/home/caboose/.cache/caboose/media.json` (written by `guest/media-handoff`) about once a
+second, only while the computer is already running and a display client is connected,
+and broadcasts `media.playing` / `media.stopped` on the control socket. `GET /v1/media`
+returns the current state (null unless running; it never wakes or leases the computer).
+`POST /v1/media/:id/control` with `{ "action": "pause" }` or
+`{ "action": "play", "position": 42.5 }` writes a command for the guest as user `caboose`
+and returns `{ "sent": true }`, or 409 while the computer is not running. The contract is
+in `../../docs/architecture.md` § Media handoff. Unit tests fake the guest; check a real
+guest with `guest/media-handoff/check.sh`, then play a video in Chromium and watch
+`GET /v1/media` while the app is connected.
+
 The unverified user-service template is `systemd/caboose-host.service`. Set
 `CABOOSE_HOST_DIR` to the absolute path of `apps/host` and `CABOOSE_NODE` to
 the absolute Node executable in `~/.config/caboose/host.env`, in addition to the

@@ -28,8 +28,22 @@ targets:
         excludes: ["Config/*.xcconfig"]
     dependencies:
       - package: CabooseKit
+      - target: CabooseShare
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.braedonsaunders.caboose
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: Caboose/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Caboose/Caboose.entitlements
+  CabooseShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Share
+      - path: Caboose/Host
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.braedonsaunders.caboose.share
+        PRODUCT_NAME: CabooseShare
+        INFOPLIST_FILE: Share/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Share/Share.entitlements

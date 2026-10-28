@@ -67,6 +67,15 @@ export interface SessionInfo {
 export type AgentKind = 'claude' | 'codex'
 export type TaskStatus = 'running' | 'paused' | 'succeeded' | 'failed' | 'cancelled'
 
+export type ApprovalMode = 'ask' | 'auto'
+
+/** A tool use the agent is waiting on the owner to allow or deny. */
+export interface PendingApproval {
+  id: string
+  tool: string
+  summary: string
+}
+
 export interface AgentTask {
   id: string
   agent: AgentKind
@@ -75,6 +84,36 @@ export interface AgentTask {
   startedAt: string
   finishedAt?: string
   summary?: string
+  /** 1 for a fresh task, plus one per reply. Absent from hosts older than replies. */
+  turns?: number
+  approvals?: ApprovalMode
+  pendingApproval?: PendingApproval
+  attachments?: string[]
+}
+
+export interface AgentAttachment {
+  name: string
+  type: string
+  /** base64 */
+  data: string
+}
+
+export interface StartAgentTaskInput {
+  prompt: string
+  agent: AgentKind
+  /** Claude only: ask the owner before each tool use. */
+  approvals?: ApprovalMode
+  attachments?: AgentAttachment[]
+}
+
+/** A finished task can be continued; a live one is still working. */
+export function canReply(task: Pick<AgentTask, 'status'>): boolean {
+  return task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled'
+}
+
+/** Only Claude Code can stop and ask; `codex exec` cannot. */
+export function canAskFirst(agent: AgentKind): boolean {
+  return agent === 'claude'
 }
 
 export const DEFAULT_LIMITS: ComputerLimits = {
@@ -325,11 +364,31 @@ export class CabooseClient {
     return this.request<AgentTask[]>('GET', '/v1/agent/tasks', { timeoutMs: 20_000 })
   }
 
-  startAgentTask(input: { prompt: string; agent: AgentKind; cwd?: string }): Promise<{ id: string }> {
+  startAgentTask(input: StartAgentTaskInput): Promise<{ id: string }> {
+    const body: StartAgentTaskInput = { prompt: input.prompt, agent: input.agent }
+    if (input.approvals === 'ask' && canAskFirst(input.agent)) body.approvals = 'ask'
+    if (input.attachments?.length) body.attachments = input.attachments
     return this.request<{ id: string }>('POST', '/v1/agent/tasks', {
-      body: input,
+      body,
+      timeoutMs: input.attachments?.length ? 120_000 : 30_000,
+    })
+  }
+
+  replyToAgentTask(id: string, prompt: string): Promise<{ task: AgentTask }> {
+    return this.request<{ task: AgentTask }>('POST', `/v1/agent/tasks/${encodeURIComponent(id)}/reply`, {
+      body: { prompt },
       timeoutMs: 30_000,
     })
+  }
+
+  resolveAgentApproval(id: string, requestId: string, allow: boolean, message?: string): Promise<{ resolved: boolean }> {
+    const body: { allow: boolean; message?: string } = { allow }
+    if (message?.trim()) body.message = message.trim()
+    return this.request<{ resolved: boolean }>(
+      'POST',
+      `/v1/agent/tasks/${encodeURIComponent(id)}/approvals/${encodeURIComponent(requestId)}`,
+      { body, timeoutMs: 20_000 },
+    )
   }
 
   cancelAgentTask(id: string): Promise<{ cancelled: boolean }> {

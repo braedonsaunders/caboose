@@ -1,8 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
-import { AgentInputError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
+import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
+import { openUrl, saveDownload } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
+import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
 import type { DisplayProtocol } from './config.js'
 import type { ComputerResources } from './driver.js'
@@ -25,6 +27,10 @@ export interface Controller extends ComputerDriver<Session> {
   hasSavedState(): boolean
   lastError?(): string | null
 }
+
+/** Body limits: base64 inflates by a third, plus room for the JSON around it. */
+const TASK_BODY_LIMIT = 15 * 1024 * 1024
+const FILE_BODY_LIMIT = 70 * 1024 * 1024
 
 async function readJson(request: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
@@ -53,6 +59,9 @@ export function createCabooseServer(options: { token: string; settings: Settings
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
   }
   const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), 1000, () => controller.ensureAgentSeat())
+  const media = new MediaHandoff(() => controller.guest(), broadcast)
+  /** Media is polled only while the computer is already running and someone is watching it. */
+  function syncMedia(): void { media.setActive(computer.state === 'running' && sockets.size - controls.size > 0) }
   function managementStatus() {
     const desired = settings.get()
     const active = controller.activeResources()
@@ -71,7 +80,8 @@ export function createCabooseServer(options: { token: string; settings: Settings
   computer.subscribe(state => {
     broadcast({ type: 'computer.state', state })
     if (state === 'running') agents.resume()
-    else agents.pause()
+    else { agents.pause(); media.computerStopped() }
+    syncMedia()
     broadcastSettings()
   })
   function json(response: ServerResponse, status: number, body: unknown): void {
@@ -125,9 +135,19 @@ export function createCabooseServer(options: { token: string; settings: Settings
       }
       if (path === '/v1/agent/tasks' && request.method === 'GET') return json(response, 200, agents.list())
       if (path === '/v1/agent/tasks' && request.method === 'POST') {
-        const input = await readJson(request)
+        const input = await readJson(request, TASK_BODY_LIMIT)
         const task = await computer.run(() => agents.start(input))
         return json(response, 200, { id: task.id })
+      }
+      const reply = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/reply$/.exec(path)
+      if (request.method === 'POST' && reply?.[1]) {
+        const input = await readJson(request)
+        return json(response, 200, { task: await computer.run(() => agents.reply(reply[1]!, input)) })
+      }
+      const approval = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/approvals\/([0-9a-f-]{36})$/.exec(path)
+      if (request.method === 'POST' && approval?.[1] && approval[2]) {
+        const input = await readJson(request)
+        return json(response, 200, { resolved: await computer.run(() => agents.resolveApproval(approval[1]!, approval[2]!, input)) })
       }
       const cancel = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/cancel$/.exec(path)
       if (request.method === 'POST' && cancel?.[1]) {
@@ -138,10 +158,28 @@ export function createCabooseServer(options: { token: string; settings: Settings
         const id = hold[1]
         return json(response, 200, await computer.run(async () => hold[2] === 'pause' ? { paused: await agents.pauseTask(id) } : { resumed: await agents.resumeTask(id) }))
       }
+      if (request.method === 'GET' && path === '/v1/media') {
+        return json(response, 200, { media: await media.read(computer.state === 'running') })
+      }
+      const control = /^\/v1\/media\/([^/]+)\/control$/.exec(path)
+      if (request.method === 'POST' && control?.[1]) {
+        const command = parseMediaCommand(control[1], await readJson(request))
+        await computer.run(() => media.send(command))
+        return json(response, 200, { sent: true })
+      }
+      if (request.method === 'POST' && path === '/v1/files') {
+        const input = await readJson(request, FILE_BODY_LIMIT)
+        return json(response, 200, await computer.run(() => saveDownload(controller.guest(), input)))
+      }
+      if (request.method === 'POST' && path === '/v1/open') {
+        const input = await readJson(request)
+        return json(response, 200, await computer.run(() => openUrl(controller.guest(), input)))
+      }
       return json(response, 404, { error: 'not found' })
     })().catch(error => {
-      if (error instanceof AgentInputError || error instanceof SettingsInputError) return json(response, 400, { error: error.message })
-      if (error instanceof AgentUnavailableError || error instanceof ComputerConflictError) return json(response, 409, { error: error.message })
+      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError) return json(response, 400, { error: error.message })
+      if (error instanceof AgentNotFoundError) return json(response, 404, { error: error.message })
+      if (error instanceof AgentUnavailableError || error instanceof AgentConflictError || error instanceof ComputerConflictError) return json(response, 409, { error: error.message })
       console.error('Caboose request failed:', error)
       if (!response.headersSent) json(response, 500, { error: 'computer operation failed' })
       else response.destroy()
@@ -182,12 +220,15 @@ export function createCabooseServer(options: { token: string; settings: Settings
     try {
       wss.handleUpgrade(request, socket, head, client => {
         sockets.add(client)
+        if (path === '/v1/control') controls.add(client)
+        syncMedia()
         client.on('error', () => client.terminate())
-        client.once('close', () => { sockets.delete(client); controls.delete(client); release() })
+        client.once('close', () => { sockets.delete(client); controls.delete(client); release(); syncMedia() })
         if (path === '/v1/control') {
-          controls.add(client)
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))
+          const playing = media.watched()
+          if (playing) client.send(JSON.stringify({ type: 'media.playing', media: playing }))
           return
         }
         if (url.searchParams.get('seat') === 'agent') {

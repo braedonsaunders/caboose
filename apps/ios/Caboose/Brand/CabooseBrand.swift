@@ -1,16 +1,16 @@
 import SwiftUI
 
 // The Caboose brand, drawn natively: "caboose" standing on a rail with its o's for
-// wheels, and the car — a cupola caboose on those wheels. Same geometry and timing as
-// apps/web/src/brand/brand.ts, which renders the README, favicon and app icon; change
-// the two together.
+// wheels. Same geometry and timing as apps/web/src/brand/brand.ts, which renders the
+// README, favicon and app icon; change the two together.
 //
-//   CabooseWordmark(motion: .intro)       draws in, rolls one wheel-turn, again every 12 s
-//   CabooseCar(motion: .rolling)          wheels turning (waking)
-//   CabooseCar(lightsOn: false)           a parked car, windows dark
+//   CabooseWordmark(motion: .intro)     draws in, rolls one wheel-turn, again every 12 s
+//   CabooseWordmark(motion: .rolling)   wheels turning (waking)
+//   CabooseWordmark(lit: false)         hubs unlit: the computer is parked
+//   CabooseWheel()                      one wheel, a power button
 //
-// Ink is the environment's foreground style; the hubs and lit windows are amber.
-// Motion stops under Reduce Motion.
+// Ink is the environment's foreground style; lit hubs are amber. Motion stops under
+// Reduce Motion.
 
 enum BrandMotion: Equatable {
     case intro, rolling, still
@@ -18,25 +18,26 @@ enum BrandMotion: Equatable {
 
 struct CabooseWordmark: View {
     var motion: BrandMotion = .still
+    /// Amber hubs while the computer is up; unlit while it is parked.
+    var lit = true
 
     var body: some View {
         BrandCanvas(box: Brand.wordmarkBox, motion: motion) { context, frame in
-            Brand.drawWordmark(in: &context, frame: frame)
+            Brand.drawWordmark(in: &context, frame: frame, lit: lit)
         }
         .accessibilityElement()
         .accessibilityLabel("Caboose")
     }
 }
 
-struct CabooseCar: View {
-    var motion: BrandMotion = .still
-    var lightsOn = true
-    /// The stovepipe is lost below ~40 pt; small marks leave it off.
-    var stove = true
+/// One wheel of the wordmark: rim, spoke and amber hub. It reads as a power button,
+/// which is what it stands for where it appears (the computer menu).
+struct CabooseWheel: View {
+    var lit = true
 
     var body: some View {
-        BrandCanvas(box: Brand.carBox, motion: motion) { context, frame in
-            Brand.drawCar(in: &context, frame: frame, lightsOn: lightsOn, stove: stove)
+        BrandCanvas(box: Brand.wheelBox, motion: .still) { context, frame in
+            Brand.drawWheel(in: &context, x: 0, start: 0, frame: frame, lit: lit)
         }
         .accessibilityElement()
         .accessibilityLabel("Caboose")
@@ -123,7 +124,8 @@ enum Brand {
     static let rollDistance = tie * 6
 
     static let wordmarkBox = CGRect(x: -22, y: -50, width: 836, height: 185)
-    static let carBox = CGRect(x: -34, y: -204, width: 406, height: 340)
+    /// One wheel with a little room for its stroke's anti-aliasing.
+    static let wheelBox = CGRect(x: -2, y: -2, width: 104, height: 104)
 
     enum Timing {
         static let draw = 0.55
@@ -181,7 +183,7 @@ enum Brand {
         ]
     }()
 
-    static func drawWordmark(in context: inout GraphicsContext, frame: BrandFrame) {
+    static func drawWordmark(in context: inout GraphicsContext, frame: BrandFrame, lit: Bool = true) {
         drawTrack(in: &context, frame: frame, rail: (-12, 792), clip: (-8, 788),
                   railDrawn: frame.drawn(0.05, duration: 0.7))
         let stroke = StrokeStyle(lineWidth: 20, lineCap: .butt, lineJoin: .round)
@@ -189,58 +191,13 @@ enum Brand {
             let x = letterX[index]
             let start = Timing.letter(index)
             if letter == "o" {
-                drawWheel(in: &context, x: x, start: start, frame: frame)
+                drawWheel(in: &context, x: x, start: start, frame: frame, lit: lit)
                 continue
             }
             for path in glyphs[letter] ?? [] {
                 context.stroke(path.trimmedPath(from: 0, to: frame.drawn(start)).offsetBy(dx: x, dy: 0),
                                with: .foreground, style: stroke)
             }
-        }
-    }
-
-    // MARK: Car
-
-    private static let carStrokes: [(delay: Double, width: CGFloat, path: Path)] = [
-        (0.1, 20, line([CGPoint(x: -16, y: -16), CGPoint(x: 350, y: -16)])),
-        (0.2, 20, line([CGPoint(x: 20, y: -16), CGPoint(x: 20, y: -120)],
-                       [CGPoint(x: 0, y: -120), CGPoint(x: 334, y: -120)],
-                       [CGPoint(x: 314, y: -120), CGPoint(x: 314, y: -16)])),
-        (0.35, 20, line([CGPoint(x: 122, y: -120), CGPoint(x: 122, y: -186)],
-                        [CGPoint(x: 106, y: -186), CGPoint(x: 228, y: -186)],
-                        [CGPoint(x: 212, y: -186), CGPoint(x: 212, y: -120)])),
-        (0.45, 20, line([CGPoint(x: 20, y: -70), CGPoint(x: -16, y: -70), CGPoint(x: -16, y: -16)],
-                        [CGPoint(x: 314, y: -70), CGPoint(x: 350, y: -70), CGPoint(x: 350, y: -16)])),
-    ]
-    private static let stovepipe = line([CGPoint(x: 272, y: -120), CGPoint(x: 272, y: -160)],
-                                        [CGPoint(x: 260, y: -160), CGPoint(x: 284, y: -160)])
-    private static let windows: [(delay: Double, rect: CGRect, radius: CGFloat)] = [
-        (1.0, CGRect(x: 54, y: -90, width: 56, height: 44), 9),
-        (1.1, CGRect(x: 139, y: -90, width: 56, height: 44), 9),
-        (1.2, CGRect(x: 224, y: -90, width: 56, height: 44), 9),
-        (1.32, CGRect(x: 143, y: -168, width: 48, height: 26), 6),
-    ]
-
-    static func drawCar(in context: inout GraphicsContext, frame: BrandFrame, lightsOn: Bool, stove: Bool) {
-        drawTrack(in: &context, frame: frame, rail: (-24, 358), clip: (-30, 368),
-                  railDrawn: frame.drawn(0.05, duration: 0.7))
-        for part in carStrokes {
-            context.stroke(part.path.trimmedPath(from: 0, to: frame.drawn(part.delay)), with: .foreground,
-                           style: StrokeStyle(lineWidth: part.width, lineCap: .round, lineJoin: .round))
-        }
-        if stove {
-            context.stroke(stovepipe.trimmedPath(from: 0, to: frame.drawn(0.5)), with: .foreground,
-                           style: StrokeStyle(lineWidth: 16, lineCap: .round, lineJoin: .round))
-        }
-        drawWheel(in: &context, x: 20, start: 0.55, frame: frame)
-        drawWheel(in: &context, x: 214, start: 0.62, frame: frame)
-        for window in windows {
-            let (scale, opacity) = frame.popped(window.delay)
-            let rect = window.rect.insetBy(dx: window.rect.width * (1 - scale) / 2, dy: window.rect.height * (1 - scale) / 2)
-            var lamp = context
-            lamp.opacity = opacity * (lightsOn ? 1 : 0.22)
-            lamp.fill(Path(roundedRect: rect, cornerRadius: window.radius * scale),
-                      with: lightsOn ? .color(amber) : .foreground)
         }
     }
 
@@ -264,8 +221,8 @@ enum Brand {
                        style: StrokeStyle(lineWidth: 12, lineCap: .round))
     }
 
-    /// An o-wheel with its left edge at `x`: rim, spoke, and amber hub.
-    private static func drawWheel(in context: inout GraphicsContext, x: CGFloat, start: Double, frame: BrandFrame) {
+    /// An o-wheel with its left edge at `x`: rim, spoke, and hub (amber when lit).
+    static func drawWheel(in context: inout GraphicsContext, x: CGFloat, start: Double, frame: BrandFrame, lit: Bool = true) {
         let centre = CGPoint(x: x + 50, y: 50)
         var wheel = context
         wheel.translateBy(x: centre.x, y: centre.y)
@@ -279,9 +236,10 @@ enum Brand {
                      style: StrokeStyle(lineWidth: 12, lineCap: .round))
         let (scale, opacity) = frame.popped(start + Timing.hubAfter)
         var hub = context
-        hub.opacity = opacity
+        hub.opacity = opacity * (lit ? 1 : 0.22)
         let r = 10 * scale
-        hub.fill(Path(ellipseIn: CGRect(x: centre.x - r, y: centre.y - r, width: 2 * r, height: 2 * r)), with: .color(amber))
+        hub.fill(Path(ellipseIn: CGRect(x: centre.x - r, y: centre.y - r, width: 2 * r, height: 2 * r)),
+                 with: lit ? .color(amber) : .foreground)
     }
 }
 
