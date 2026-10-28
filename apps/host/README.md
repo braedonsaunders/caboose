@@ -1,8 +1,7 @@
 # caboose-host
 
-Work in progress: the API, guest integration and real-machine end-to-end check
-are not yet verified against a Caboose image. This package is not ready to run
-as a persistent service or expose to clients.
+Work in progress: the host has been checked against a Caboose guest on a KVM
+host, but the wider product and deployment configurations are still being tested.
 
 Install Node 22 and pnpm, then from the repository root run `pnpm install`,
 `pnpm --filter caboose-host typecheck`, and `pnpm --filter caboose-host test`.
@@ -30,8 +29,9 @@ addresses. Set `CABOOSE_GUEST_LAN=allow` to let a self-hosted computer reach you
 
 `CABOOSE_OWNER_TOKEN=... apps/host/scripts/e2e.sh` uses the local Xpra client
 to authenticate an Xpra hello over the relay, parks, resumes, and repeats.
-Set `CABOOSE_URL` when testing a different host. This check is not yet validated
-against the Caboose guest image.
+Set `CABOOSE_URL` when testing a different host. The local Xpra client must
+support the rencodeplus packet encoder and lz4 compressor. The check also
+verifies that the app list contains PNG icons.
 
 ## Self-host with Docker
 
@@ -74,8 +74,8 @@ cannot wake a computer until `base.raw`, `vmlinux`, and `initrd` are present in
 its disk root. Once the Caboose image builder is available, copy its output
 into the mounted disk root (for example, `docker cp base.raw
 $(docker compose -f deploy/compose.yaml ps -q caboose-host):/data/caboose/disks/base.raw`,
-and likewise for the kernel and initrd). The guest image and end-to-end flow
-are not yet verified. `apps/host/scripts/check-container.sh` checks the real
+and likewise for the kernel and initrd). The container deployment has not yet
+been verified end to end. `apps/host/scripts/check-container.sh` checks the real
 container's network namespace, TAP/NAT, KVM access, reflinks and authenticated
 health. The `e2e.sh` check above requires the Xpra client and a built guest;
 its first wake is cold only if no saved snapshot exists.

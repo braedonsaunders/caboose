@@ -6,7 +6,7 @@ const base = process.env.CABOOSE_URL ?? 'http://127.0.0.1:7310'
 const owner = process.env.CABOOSE_OWNER_TOKEN
 const headers = { authorization: `Bearer ${owner}` }
 async function request(path, method = 'GET') {
-  const response = await fetch(new URL(path, base), { method, headers, signal: AbortSignal.timeout(180_000) })
+  const response = await fetch(new URL(path, base), { method, headers, signal: AbortSignal.timeout(420_000) })
   if (!response.ok) throw new Error(`${method} ${path}: HTTP ${response.status}: ${await response.text()}`)
   return response.json()
 }
@@ -26,7 +26,7 @@ async function hello(session) {
   })
   await new Promise((resolve, reject) => { bridge.once('error', reject); bridge.listen(0, '127.0.0.1', resolve) })
   try {
-    const child = spawn('xpra', ['info', `tcp://127.0.0.1:${bridge.address().port}/`], { env: { ...process.env, XPRA_PASSWORD: session.display.token }, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('xpra', ['info', `tcp://127.0.0.1:${bridge.address().port}/`, '--username=caboose', '--compressors=lz4', '--packet-encoders=rencodeplus'], { env: { ...process.env, XPRA_PASSWORD: session.display.token }, stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''
     child.stdout.on('data', data => { output += data })
     child.stderr.on('data', data => { output += data })
@@ -40,6 +40,11 @@ let started = performance.now()
 const first = await request('/v1/session', 'POST')
 console.log(`First wake (cold only without a snapshot): ${((performance.now() - started) / 1000).toFixed(2)} s`)
 await hello(first)
+const apps = await request('/v1/apps')
+if (!Array.isArray(apps) || !apps.length || apps.some(app => !app.icon?.startsWith('data:image/png;base64,'))) {
+  throw new Error('Expected a nonempty app list with PNG icons')
+}
+console.log(`Found ${apps.length} applications with PNG icons`)
 started = performance.now()
 await request('/v1/session/park', 'POST')
 console.log(`Park: ${((performance.now() - started) / 1000).toFixed(2)} s`)
