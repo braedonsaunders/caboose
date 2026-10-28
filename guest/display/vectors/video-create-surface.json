@@ -1,0 +1,8 @@
+{
+  "name": "video-create-surface",
+  "description": "A YUV subsurface streamed as video at its own size; no clip, z and colour default.",
+  "messages": [
+    {"direction": "server", "type": "video.create", "type_id": 18, "fields": {"id": 2, "rect": [40, 80, 1280, 720], "codec": "h264", "source": "surface", "window": 12}}
+  ],
+  "hex": "1237000000a562696402647265637484182818501905001902d065636f646563646832363466736f7572636567737572666163656677696e646f770c"
+}

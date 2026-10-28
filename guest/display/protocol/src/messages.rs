@@ -63,7 +63,11 @@ string_enum!(
     /// A window's role. Popups and dialogs have a parent.
     WindowKind { Toplevel => "toplevel", Popup => "popup", Dialog => "dialog" }
 );
-string_enum!(Codec { Hevc => "hevc", Av1 => "av1", H264 => "h264" });
+string_enum!(Codec { Hevc => "hevc", Av1 => "av1", H264 => "h264", Vp9 => "vp9" });
+string_enum!(
+    /// Where a video stream comes from (docs/display.md, "Video, for every app").
+    VideoSource { Passthrough => "passthrough", Surface => "surface", Motion => "motion" }
+);
 string_enum!(TileFormat { Png => "png", WebpLossless => "webp-lossless" });
 string_enum!(TouchPhase { Down => "down", Motion => "motion", Up => "up", Cancel => "cancel" });
 string_enum!(PencilPhase {
@@ -250,6 +254,61 @@ pub struct ClientHello {
     pub token: String,
     pub decoders: Vec<Codec>,
     pub displays: Vec<Display>,
+    /// Codecs the client can play as `video.*` streams; absent means none.
+    pub video_decoders: Option<Vec<Codec>>,
+}
+
+/// Colour description of a video stream, as ITU-T H.273 code points.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoColor {
+    pub primaries: u32,
+    pub transfer: u32,
+    pub matrix: u32,
+    pub full_range: bool,
+}
+
+/// `video.create` (0x12): a video stream layered into a window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoCreate {
+    pub id: u64,
+    pub window: u64,
+    /// Where the whole picture goes, window-local display pixels.
+    pub rect: Rect,
+    /// The visible part of `rect`; absent means all of it.
+    pub clip: Option<Rect>,
+    /// Order among the window's video streams, higher on top; all are above the window.
+    pub z: Option<i32>,
+    pub codec: Codec,
+    pub source: VideoSource,
+    pub color: Option<VideoColor>,
+    /// Out-of-band codec configuration, only for a codec whose parameters cannot travel
+    /// in band.
+    pub extradata: Option<Vec<u8>>,
+}
+
+/// `video.frame` (0x13): one access unit, in decode order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoFrame {
+    pub id: u64,
+    /// Decode order, starting at 0 for each stream and increasing by one.
+    pub seq: u64,
+    pub keyframe: bool,
+    /// When to show it (server CLOCK_MONOTONIC). Present for `surface` and `motion`
+    /// streams, whose frames are shown as decoded; absent for `passthrough`, whose
+    /// frames are shown when `video.present` names them.
+    pub pts_us: Option<u64>,
+    /// Annex-B for h264/hevc (parameter sets on keyframes), a temporal unit of OBUs for
+    /// av1, a frame or superframe for vp9.
+    pub data: Vec<u8>,
+}
+
+/// `video.update` (0x14): the stream moved, was clipped, or restacked.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct VideoUpdate {
+    pub id: u64,
+    pub rect: Option<Rect>,
+    pub clip: Option<Rect>,
+    pub z: Option<i32>,
 }
 
 /// `configure` (0x84).
@@ -349,32 +408,76 @@ pub enum Message {
     ServerHello(ServerHello),
     WindowCreate(WindowCreate),
     WindowUpdate(WindowUpdate),
-    WindowDestroy { id: u64 },
+    WindowDestroy {
+        id: u64,
+    },
     Frame(Frame),
     Tile(Tile),
     Cursor(Cursor),
-    CursorNamed { name: String },
+    CursorNamed {
+        name: String,
+    },
     TextInput(TextInputState),
     ServerClipboard(Clipboard),
     Notification(Notification),
     Audio(Audio),
-    Pong { t_us: u64 },
-    Bye { reason: ByeReason },
+    VideoCreate(VideoCreate),
+    VideoFrame(VideoFrame),
+    VideoUpdate(VideoUpdate),
+    VideoDestroy {
+        id: u64,
+    },
+    /// The application is showing the frame `seq` of a passthrough stream now.
+    VideoPresent {
+        id: u64,
+        seq: u64,
+        pts_us: u64,
+    },
+    Pong {
+        t_us: u64,
+    },
+    Bye {
+        reason: ByeReason,
+    },
     // Client → server.
     ClientHello(ClientHello),
-    Vsync { display: u32, t_us: u64 },
-    Ack { id: u64, pts_us: u64, decoded_us: i64 },
+    Vsync {
+        display: u32,
+        t_us: u64,
+    },
+    Ack {
+        id: u64,
+        pts_us: u64,
+        decoded_us: i64,
+    },
     Configure(Configure),
-    Close { id: u64 },
-    RequestKeyframe { id: u64 },
-    Displays { displays: Vec<Display> },
+    Close {
+        id: u64,
+    },
+    RequestKeyframe {
+        id: u64,
+    },
+    Displays {
+        displays: Vec<Display>,
+    },
     Touch(Touch),
     Pencil(Pencil),
     Pointer(Pointer),
     Key(Key),
     Text(Text),
     ClientClipboard(Clipboard),
-    Ping { t_us: u64 },
+    /// The client has the video frame `seq` queued for display.
+    VideoAck {
+        id: u64,
+        seq: u64,
+    },
+    /// The client's decoder failed; it drops the stream's frames until a keyframe.
+    VideoKeyframe {
+        id: u64,
+    },
+    Ping {
+        t_us: u64,
+    },
 }
 
 pub mod type_id {
@@ -384,6 +487,11 @@ pub mod type_id {
     pub const WINDOW_DESTROY: u8 = 0x04;
     pub const FRAME: u8 = 0x10;
     pub const TILE: u8 = 0x11;
+    pub const VIDEO_CREATE: u8 = 0x12;
+    pub const VIDEO_FRAME: u8 = 0x13;
+    pub const VIDEO_UPDATE: u8 = 0x14;
+    pub const VIDEO_DESTROY: u8 = 0x15;
+    pub const VIDEO_PRESENT: u8 = 0x16;
     pub const CURSOR: u8 = 0x20;
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
@@ -399,6 +507,8 @@ pub mod type_id {
     pub const CLOSE: u8 = 0x85;
     pub const REQUEST_KEYFRAME: u8 = 0x86;
     pub const DISPLAYS: u8 = 0x87;
+    pub const VIDEO_ACK: u8 = 0x88;
+    pub const VIDEO_KEYFRAME: u8 = 0x89;
     pub const TOUCH: u8 = 0x90;
     pub const PENCIL: u8 = 0x91;
     pub const POINTER: u8 = 0x92;
@@ -457,6 +567,11 @@ impl Message {
             Message::ServerClipboard(_) => CLIPBOARD,
             Message::Notification(_) => NOTIFICATION,
             Message::Audio(_) => AUDIO,
+            Message::VideoCreate(_) => VIDEO_CREATE,
+            Message::VideoFrame(_) => VIDEO_FRAME,
+            Message::VideoUpdate(_) => VIDEO_UPDATE,
+            Message::VideoDestroy { .. } => VIDEO_DESTROY,
+            Message::VideoPresent { .. } => VIDEO_PRESENT,
             Message::Pong { .. } => PONG,
             Message::Bye { .. } => BYE,
             Message::ClientHello(_) => CLIENT_HELLO,
@@ -472,6 +587,8 @@ impl Message {
             Message::Key(_) => KEY,
             Message::Text(_) => TEXT,
             Message::ClientClipboard(_) => CLIENT_CLIPBOARD,
+            Message::VideoAck { .. } => VIDEO_ACK,
+            Message::VideoKeyframe { .. } => VIDEO_KEYFRAME,
             Message::Ping { .. } => PING,
         }
     }
@@ -519,9 +636,46 @@ impl Message {
                 .opt("xwayland", m.xwayland)
                 .opt("alpha", m.alpha)
                 .build(),
-            Message::WindowDestroy { id } | Message::Close { id } | Message::RequestKeyframe { id } => {
-                MapBuilder::new().put("id", *id).build()
+            Message::WindowDestroy { id }
+            | Message::Close { id }
+            | Message::RequestKeyframe { id }
+            | Message::VideoDestroy { id }
+            | Message::VideoKeyframe { id } => MapBuilder::new().put("id", *id).build(),
+            Message::VideoCreate(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("window", m.window)
+                .put("rect", m.rect)
+                .opt("clip", m.clip)
+                .opt("z", m.z)
+                .put("codec", m.codec)
+                .put("source", m.source)
+                .opt(
+                    "color",
+                    m.color.as_ref().map(|c| {
+                        MapBuilder::new()
+                            .put("primaries", c.primaries)
+                            .put("transfer", c.transfer)
+                            .put("matrix", c.matrix)
+                            .put("full_range", c.full_range)
+                            .build()
+                    }),
+                )
+                .opt("extradata", m.extradata.clone())
+                .build(),
+            Message::VideoFrame(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("seq", m.seq)
+                .put("keyframe", m.keyframe)
+                .opt("pts_us", m.pts_us)
+                .put("data", m.data.clone())
+                .build(),
+            Message::VideoUpdate(m) => {
+                MapBuilder::new().put("id", m.id).opt("rect", m.rect).opt("clip", m.clip).opt("z", m.z).build()
             }
+            Message::VideoPresent { id, seq, pts_us } => {
+                MapBuilder::new().put("id", *id).put("seq", *seq).put("pts_us", *pts_us).build()
+            }
+            Message::VideoAck { id, seq } => MapBuilder::new().put("id", *id).put("seq", *seq).build(),
             Message::Frame(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("codec", m.codec)
@@ -565,6 +719,7 @@ impl Message {
                 .put("token", m.token.as_str())
                 .put("decoders", codecs_value(&m.decoders))
                 .put("displays", displays_value(&m.displays))
+                .opt("video_decoders", m.video_decoders.as_deref().map(codecs_value))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -717,6 +872,45 @@ impl Message {
             AUDIO => {
                 Message::Audio(Audio { codec: f.string("codec")?, pts_us: f.u64("pts_us")?, data: f.bytes("data")? })
             }
+            VIDEO_CREATE => Message::VideoCreate(VideoCreate {
+                id: f.u64("id")?,
+                window: f.u64("window")?,
+                rect: f.rect("rect")?,
+                clip: f.opt_rect("clip")?,
+                z: f.opt("z", fields::as_i32)?,
+                codec: enum_field(&f, "codec", Codec::parse)?,
+                source: enum_field(&f, "source", VideoSource::parse)?,
+                color: match f.opt("color", Some)? {
+                    None => None,
+                    Some(v) => {
+                        let c = Fields::new("video.create.color", v)?;
+                        Some(VideoColor {
+                            primaries: c.u32("primaries")?,
+                            transfer: c.u32("transfer")?,
+                            matrix: c.u32("matrix")?,
+                            full_range: c.bool("full_range")?,
+                        })
+                    }
+                },
+                extradata: f.opt_bytes("extradata")?,
+            }),
+            VIDEO_FRAME => Message::VideoFrame(VideoFrame {
+                id: f.u64("id")?,
+                seq: f.u64("seq")?,
+                keyframe: f.bool("keyframe")?,
+                pts_us: f.opt_u64("pts_us")?,
+                data: f.bytes("data")?,
+            }),
+            VIDEO_UPDATE => Message::VideoUpdate(VideoUpdate {
+                id: f.u64("id")?,
+                rect: f.opt_rect("rect")?,
+                clip: f.opt_rect("clip")?,
+                z: f.opt("z", fields::as_i32)?,
+            }),
+            VIDEO_DESTROY => Message::VideoDestroy { id: f.u64("id")? },
+            VIDEO_PRESENT => Message::VideoPresent { id: f.u64("id")?, seq: f.u64("seq")?, pts_us: f.u64("pts_us")? },
+            VIDEO_ACK => Message::VideoAck { id: f.u64("id")?, seq: f.u64("seq")? },
+            VIDEO_KEYFRAME => Message::VideoKeyframe { id: f.u64("id")? },
             PONG => Message::Pong { t_us: f.u64("t_us")? },
             BYE => Message::Bye { reason: enum_field(&f, "reason", ByeReason::parse)? },
             CLIENT_HELLO => Message::ClientHello(ClientHello {
@@ -724,6 +918,10 @@ impl Message {
                 token: f.string("token")?,
                 decoders: codecs_from(&f, "decoders")?,
                 displays: displays_from(&f)?,
+                video_decoders: match f.opt("video_decoders", fields::as_array)? {
+                    None => None,
+                    Some(_) => Some(codecs_from(&f, "video_decoders")?),
+                },
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -806,6 +1004,13 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         WINDOW_DESTROY => "window.destroy",
         FRAME => "frame",
         TILE => "tile",
+        VIDEO_CREATE => "video.create",
+        VIDEO_FRAME => "video.frame",
+        VIDEO_UPDATE => "video.update",
+        VIDEO_DESTROY => "video.destroy",
+        VIDEO_PRESENT => "video.present",
+        VIDEO_ACK => "video.ack",
+        VIDEO_KEYFRAME => "video.keyframe",
         CURSOR => "cursor",
         CURSOR_NAMED => "cursor.named",
         TEXT_INPUT => "text_input",

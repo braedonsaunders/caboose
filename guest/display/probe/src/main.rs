@@ -202,6 +202,7 @@ fn open_decoder(codec: Codec) -> Result<ff::decoder::Video, ff::Error> {
         Codec::H264 => ff::codec::Id::H264,
         Codec::Hevc => ff::codec::Id::HEVC,
         Codec::Av1 => ff::codec::Id::AV1,
+        Codec::Vp9 => ff::codec::Id::VP9,
     };
     let av = ff::decoder::find(id).ok_or(ff::Error::DecoderNotFound)?;
     let mut ctx = ff::codec::context::Context::new_with_codec(av);
@@ -335,6 +336,7 @@ fn run(args: Args) -> Result<bool, String> {
             token: args.token.clone(),
             decoders: args.decoders.clone(),
             displays: args.displays.clone(),
+            video_decoders: None,
         }),
     )?;
 
