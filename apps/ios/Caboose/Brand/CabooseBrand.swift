@@ -4,17 +4,18 @@ import SwiftUI
 // wheels. Same geometry and timing as apps/web/src/brand/brand.ts, which renders the
 // README, favicon and app icon; change the two together.
 //
-//   CabooseWordmark(motion: .intro)     draws in, rolls three wheel-turns, again every 12 s
+//   CabooseWordmark(motion: .intro)     draws in, rolls three wheel-turns, again every 24 s
+//   CabooseWordmark(motion: .idle)      the still logo, rolling three wheel-turns every 24 s
 //   CabooseWordmark(motion: .rolling)   wheels turning (waking)
 //   CabooseWordmark(lit: false)         hubs unlit: the computer is parked
 //   CabooseWheel()                      one wheel, a power button
 //   CabooseWheel(motion: .rolling)      one wheel turning: something is at work
 //
-// Ink is the environment's foreground style; lit hubs are amber. Motion stops under
-// Reduce Motion.
+// Ink is the environment's foreground style; lit hubs are amber. At rest the rail stands
+// alone; the ties show only while the train rolls. Motion stops under Reduce Motion.
 
 enum BrandMotion: Equatable {
-    case intro, rolling, still
+    case intro, idle, rolling, still
 }
 
 struct CabooseWordmark: View {
@@ -56,7 +57,7 @@ private struct BrandCanvas: View {
 
     var body: some View {
         let moving = motion != .still && !reduceMotion
-        TimelineView(.animation(paused: !moving)) { timeline in
+        TimelineView(BrandSchedule(start: start, motion: moving ? motion : .still)) { timeline in
             Canvas { context, size in
                 let scale = min(size.width / box.width, size.height / box.height)
                 context.translateBy(x: (size.width - box.width * scale) / 2, y: (size.height - box.height * scale) / 2)
@@ -67,6 +68,22 @@ private struct BrandCanvas: View {
         }
         .aspectRatio(box.width / box.height, contentMode: .fit)
         .onAppear { start = .now }
+    }
+}
+
+/// Frames while something moves, and none while the train is at rest between rolls: a
+/// resting logo costs no redraws.
+private struct BrandSchedule: TimelineSchedule {
+    let start: Date
+    let motion: BrandMotion
+
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> AnySequence<Date> {
+        if motion == .still { return AnySequence(CollectionOfOne(startDate)) }
+        return AnySequence(sequence(first: startDate) { date in
+            let time = date.timeIntervalSince(start)
+            guard let rest = BrandFrame.nextMove(motion: motion, after: time) else { return date + 1.0 / 60 }
+            return start + rest
+        })
     }
 }
 
@@ -93,10 +110,11 @@ struct BrandFrame {
         return (0.2 + 0.8 * Brand.Easing.overshoot(p), p)
     }
 
-    /// How far the train still has to roll, in wheel revolutions: 1 is a full turn
-    /// behind its resting place (the intro starts `Brand.Timing.rollTurns` behind), 0 is at rest. Ties sit `roll × ROLL` to the right and
-    /// wheels `roll × 360°` anticlockwise of rest.
+    /// How far the train still has to roll, in wheel revolutions: 1 is a full turn behind
+    /// its resting place (a roll starts `Brand.Timing.rollTurns` behind), 0 is at rest. Ties
+    /// sit `roll × ROLL` to the right and wheels `roll × 360°` anticlockwise of rest.
     var roll: Double {
+        let (duration, turns) = (Brand.Timing.rollDuration, Brand.Timing.rollTurns)
         switch motion {
         case .still:
             return 0
@@ -104,14 +122,50 @@ struct BrandFrame {
             let period = 1.8
             return 1 - time.truncatingRemainder(dividingBy: period) / period
         case .intro:
-            let (delay, duration, cycle) = (Brand.Timing.rollDelay, Brand.Timing.rollDuration, Brand.Timing.cycle)
-            let turns = Brand.Timing.rollTurns
+            let delay = Brand.Timing.rollDelay
             if time < delay { return turns }
             if time < delay + duration { return turns * (1 - Brand.Easing.roll((time - delay) / duration)) }
-            guard time >= delay + cycle else { return 0 }
-            let phase = (time - delay - cycle).truncatingRemainder(dividingBy: cycle)
+            guard let phase = Self.phase(time, since: delay + Brand.Timing.cycle) else { return 0 }
+            return phase < duration ? turns * (1 - Brand.Easing.cycle(phase / duration)) : 0
+        case .idle:
+            guard let phase = Self.phase(time, since: Brand.Timing.idleDelay) else { return 0 }
             return phase < duration ? turns * (1 - Brand.Easing.cycle(phase / duration)) : 0
         }
+    }
+
+    /// How much of the ties shows, 0...1: none at rest; they fade in as a roll starts and
+    /// out after it stops. Busy, they always show.
+    var ties: Double {
+        switch motion {
+        case .still: return 0
+        case .rolling: return 1
+        case .intro, .idle:
+            guard let phase = Self.phase(time, since: Self.firstRoll(motion)) else { return 0 }
+            let (fadeIn, fadeOut, duration) = (Brand.Timing.tiesIn, Brand.Timing.tiesOut, Brand.Timing.rollDuration)
+            if phase < fadeIn { return phase / fadeIn }
+            if phase < duration { return 1 }
+            return max(0, 1 - (phase - duration) / fadeOut)
+        }
+    }
+
+    /// When the train next starts to move after `time`, or nil while it is moving now.
+    static func nextMove(motion: BrandMotion, after time: TimeInterval) -> TimeInterval? {
+        if motion == .rolling { return nil }
+        let first = firstRoll(motion)
+        // The intro draws in before its first roll; an idle logo waits still for its first.
+        if time < first { return motion == .intro ? nil : first }
+        let phase = (time - first).truncatingRemainder(dividingBy: Brand.Timing.cycle)
+        if phase < Brand.Timing.rollDuration + Brand.Timing.tiesOut { return nil }
+        return time - phase + Brand.Timing.cycle
+    }
+
+    private static func firstRoll(_ motion: BrandMotion) -> TimeInterval {
+        motion == .idle ? Brand.Timing.idleDelay : Brand.Timing.rollDelay
+    }
+
+    /// Seconds into the current cycle of rolls that began at `delay`, or nil before it.
+    private static func phase(_ time: TimeInterval, since delay: TimeInterval) -> TimeInterval? {
+        time < delay ? nil : (time - delay).truncatingRemainder(dividingBy: Brand.Timing.cycle)
     }
 
     private func progress(_ delay: Double, _ duration: Double) -> Double {
@@ -126,7 +180,7 @@ enum Brand {
     static let tie = 2 * Double.pi * 40 / 6
     static let rollDistance = tie * 6
 
-    static let wordmarkBox = CGRect(x: -22, y: -50, width: 836, height: 185)
+    static let wordmarkBox = CGRect(x: -4, y: -42, width: 784, height: 172)
     /// One wheel with a little room for its stroke's anti-aliasing.
     static let wheelBox = CGRect(x: -2, y: -2, width: 104, height: 104)
 
@@ -136,9 +190,15 @@ enum Brand {
         static let hubAfter = 0.5
         static let rollDelay = 0.7
         static let rollDuration = 3.2
-        /// Wheel revolutions in the intro and in each 12 s cycle.
+        /// Wheel revolutions in every roll.
         static let rollTurns = 3.0
-        static let cycle = 12.0
+        /// The ties fade in as the train starts and fade out after it stops.
+        static let tiesIn = 0.4
+        static let tiesOut = 0.8
+        /// An idle logo first rolls this long after it appears, and every logo at rest
+        /// rolls again once a cycle.
+        static let idleDelay = 6.0
+        static let cycle = 24.0
         static func letter(_ index: Int) -> Double { 0.25 + Double(index) * 0.07 }
     }
 
@@ -152,8 +212,10 @@ enum Brand {
 
     // MARK: Wordmark
 
-    /// Left edge of each letter of "caboose".
-    private static let letterX: [CGFloat] = [0, 108, 222, 346, 460, 574, 680]
+    /// Left edge of each letter of "caboose", spaced by the clear space between their ink.
+    private static let letterX: [CGFloat] = [0, 99, 223, 347, 461, 568, 676]
+    /// The rail's ends; its round caps reach flush with the c and the e.
+    private static let rail: (CGFloat, CGFloat) = (6, 770)
 
     private static func ring(_ cx: CGFloat) -> Path {
         var path = Path()
@@ -172,13 +234,14 @@ enum Brand {
     private static let glyphs: [Character: [Path]] = {
         var c = Path()
         c.addArc(center: CGPoint(x: 50, y: 50), radius: 40, startAngle: .degrees(-42.06), endAngle: .degrees(42.06), clockwise: true)
+        // Two stacked elliptical bowls, the lower a little fuller, ending near level.
         var s = Path()
-        s.addArc(center: .zero, radius: 1, startAngle: .degrees(-30), endAngle: .degrees(90), clockwise: true,
-                 transform: CGAffineTransform(a: 32, b: 0, c: 0, d: 20, tx: 50, ty: 30))
-        s.addArc(center: .zero, radius: 1, startAngle: .degrees(-90), endAngle: .degrees(150), clockwise: false,
-                 transform: CGAffineTransform(a: 32, b: 0, c: 0, d: 20, tx: 50, ty: 70))
+        s.addArc(center: .zero, radius: 1, startAngle: .degrees(-14), endAngle: .degrees(90), clockwise: true,
+                 transform: CGAffineTransform(a: 31, b: 0, c: 0, d: 19, tx: 50, ty: 29))
+        s.addArc(center: .zero, radius: 1, startAngle: .degrees(-90), endAngle: .degrees(166), clockwise: false,
+                 transform: CGAffineTransform(a: 33, b: 0, c: 0, d: 21, tx: 50, ty: 69))
         var e = Path()
-        e.addArc(center: CGPoint(x: 50, y: 50), radius: 40, startAngle: .zero, endAngle: .degrees(49.97), clockwise: true)
+        e.addArc(center: CGPoint(x: 50, y: 50), radius: 40, startAngle: .zero, endAngle: .degrees(35), clockwise: true)
         return [
             "c": [c],
             "a": [ring(50), line([CGPoint(x: 90, y: 0), CGPoint(x: 90, y: 100)])],
@@ -189,8 +252,7 @@ enum Brand {
     }()
 
     static func drawWordmark(in context: inout GraphicsContext, frame: BrandFrame, lit: Bool = true) {
-        drawTrack(in: &context, frame: frame, rail: (-12, 792), clip: (-8, 788),
-                  railDrawn: frame.drawn(0.05, duration: 0.7))
+        drawTrack(in: &context, frame: frame, rail: rail, railDrawn: frame.drawn(0.05, duration: 0.7))
         let stroke = StrokeStyle(lineWidth: 20, lineCap: .butt, lineJoin: .round)
         for (index, letter) in "caboose".enumerated() {
             let x = letterX[index]
@@ -208,18 +270,20 @@ enum Brand {
 
     // MARK: Shared parts
 
-    /// Rail and ties. The ties slide left as the train rolls right.
+    /// Rail and ties. The ties show only while the train rolls, sliding left as it rolls right.
     private static func drawTrack(in context: inout GraphicsContext, frame: BrandFrame,
-                                  rail: (CGFloat, CGFloat), clip: (CGFloat, CGFloat), railDrawn: Double) {
-        var ties = context
-        ties.clip(to: Path(CGRect(x: clip.0, y: 100, width: clip.1 - clip.0, height: 40)))
-        ties.opacity = 0.32
-        let shift = frame.roll * rollDistance
-        var k = Int(((Double(clip.0) - rollDistance * Brand.Timing.rollTurns) / tie).rounded(.down))
-        while Double(k) * tie < Double(clip.1) {
-            let x = Double(k) * tie + shift
-            ties.fill(Path(roundedRect: CGRect(x: x, y: 116, width: 14, height: 11), cornerRadius: 2), with: .foreground)
-            k += 1
+                                  rail: (CGFloat, CGFloat), railDrawn: Double) {
+        if frame.ties > 0 {
+            var ties = context
+            ties.clip(to: Path(CGRect(x: rail.0, y: 100, width: rail.1 - rail.0, height: 40)))
+            ties.opacity = 0.32 * frame.ties
+            let shift = frame.roll * rollDistance
+            var k = Int(((Double(rail.0) - rollDistance * Brand.Timing.rollTurns) / tie).rounded(.down))
+            while Double(k) * tie < Double(rail.1) {
+                let x = Double(k) * tie + shift
+                ties.fill(Path(roundedRect: CGRect(x: x, y: 116, width: 14, height: 11), cornerRadius: 2), with: .foreground)
+                k += 1
+            }
         }
         let railPath = line([CGPoint(x: rail.0, y: 106), CGPoint(x: rail.1, y: 106)])
         context.stroke(railPath.trimmedPath(from: 0, to: railDrawn), with: .foreground,
