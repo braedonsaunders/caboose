@@ -1,0 +1,85 @@
+# Publishes a release's images to GHCR when a v* tag is pushed:
+#   caboose-computer  the computer as a container (guest/container)
+#   caboose-base      the microVM image as an OCI artifact: base.raw.zst, vmlinux, initrd
+#   caboose-host      caboose-host, with both of the above pinned by digest as its defaults
+# A new host fetches whichever image its runtime needs on first run (docs/architecture.md, "Images").
+name: Release images
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to publish as (for example v0.2.0-rc.1)
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  computer:
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' }
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: guest
+          file: guest/container/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/caboose-computer:${{ env.TAG }}
+
+  base:
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make room for a 16 GiB disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      - name: Build the image
+        run: OUT_DIR="$RUNNER_TEMP/disks" ./guest/image/build.sh
+      - name: Compress the disk
+        working-directory: ${{ runner.temp }}/disks
+        run: zstd -T0 -10 --long=27 --rm base.raw -o base.raw.zst && ls -l
+      - uses: oras-project/setup-oras@v1
+      - name: Push the artifact
+        id: push
+        working-directory: ${{ runner.temp }}/disks
+        run: |
+          echo '${{ secrets.GITHUB_TOKEN }}' | oras login ghcr.io -u '${{ github.actor }}' --password-stdin
+          ref="$REGISTRY/caboose-base:$TAG"
+          oras push "$ref" --artifact-type application/vnd.caboose.microvm.v1 \
+            base.raw.zst:application/zstd vmlinux:application/octet-stream initrd:application/octet-stream
+          echo "digest=$(oras resolve "$ref")" >> "$GITHUB_OUTPUT"
+
+  host:
+    needs: [computer, base]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' }
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/host/Dockerfile
+          push: true
+          build-args: |
+            CABOOSE_BASE_IMAGE=${{ env.REGISTRY }}/caboose-base:${{ env.TAG }}@${{ needs.base.outputs.digest }}
+            CABOOSE_CONTAINER_IMAGE=${{ env.REGISTRY }}/caboose-computer:${{ env.TAG }}@${{ needs.computer.outputs.digest }}
+          tags: |
+            ${{ env.REGISTRY }}/caboose-host:${{ env.TAG }}
+            ${{ env.REGISTRY }}/caboose-host:latest
