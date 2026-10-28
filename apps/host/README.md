@@ -81,6 +81,7 @@ sets how long an agent stays running after a turn, waiting for a reply. The host
 the guest only through the driver's `guest().run(command, args)`; file contents are sent
 as base64 argument chunks and decoded in the guest, so both the microVM and container
 drivers support them without a stdin channel.
+Saving a file wakes a parked computer and keeps it awake until the save completes.
 
 The owner-screen routes (`/v1/screen/*`, § Screen) are in `src/screen.ts`: they run the
 guest's accessibility helper `/opt/caboose/a11y.py` (see `guest/desktop-mcp`) and `xdotool`

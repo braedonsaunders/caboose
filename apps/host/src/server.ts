@@ -217,7 +217,7 @@ export function createCabooseServer(options: {
       }
       if (request.method === 'POST' && path === '/v1/files') {
         const input = await readJson(request, FILE_BODY_LIMIT)
-        return json(response, 200, await computer.run(() => saveDownload(controller.guest(), input)))
+        return json(response, 200, await computer.wakeAndRun(() => saveDownload(controller.guest(), input)))
       }
       if (request.method === 'POST' && path === '/v1/open') {
         const input = await readJson(request)

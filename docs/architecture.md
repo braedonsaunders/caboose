@@ -558,10 +558,12 @@ Firefox are started with their accessibility trees enabled so web content is inc
 and made unique (`report (2).pdf`); the response is the absolute path. `open: true` then
 opens it with the desktop's default application on the owner's display `:100`
 (`xdg-open`, else `gio open`). `POST /v1/open` opens an `http`/`https` URL the same way;
-other schemes, control characters and spaces are rejected with 400. Both answer 409 while
-the computer is not running. The guest command channel carries arguments, not stdin, so
+other schemes, control characters and spaces are rejected with 400. Saving a file wakes a
+parked computer and holds a lease until it is saved; opening a URL answers 409 while the
+computer is not running. The guest command channel carries arguments, not stdin, so
 file contents travel base64-encoded in chunks of at most 96 KiB per argument and 768 KiB
 per command and are decoded in the guest; no driver needs more than `run(command, args)`.
+The streaming filesystem API and iOS Files provider are not implemented yet.
 
 ## Media handoff
 
