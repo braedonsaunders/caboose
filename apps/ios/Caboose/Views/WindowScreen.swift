@@ -18,36 +18,7 @@ struct WindowScreen: View {
                 Color.black.ignoresSafeArea()
                 if let window = model.window(model.presentedWindowID) {
                     WindowCardViewport(controlsVisible: chromeVisible) { proxy in
-                        // Keys go to the topmost dialog, if one is up, else to the window.
-                        let popups = model.auxiliaryWindows(for: window)
-                        let keyTarget = popups.last { !$0.isOverrideRedirect }?.id ?? window.id
-                        let frames = popupFrames(popups, over: window, size: proxy.size)
-                        ZStack(alignment: .topLeading) {
-                            RemoteWindowCanvas(window: window, keyboardVisible: model.keyboardVisible && keyTarget == window.id)
-                                .frame(width: proxy.size.width, height: proxy.size.height)
-                                .modifier(WindowDrop(window: window, pixelsPerPoint: model.pixelsPerPoint))
-                            ForEach(popups) { popup in
-                                if let frame = frames[popup.id] {
-                                    RemoteWindowCanvas(window: popup, keyboardVisible: model.keyboardVisible && keyTarget == popup.id)
-                                        .frame(width: frame.width, height: frame.height)
-                                        .offset(x: frame.minX, y: frame.minY)
-                                        .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
-                                        .onAppear { fitDialog(popup, over: window, in: proxy.size) }
-                                        .onChange(of: proxy.size) { _, size in fitDialog(popup, over: window, in: size) }
-                                }
-                            }
-                        }
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .clipped()
-                        .offset(x: swipe)
-                        .background(alignment: .topLeading) { neighbourCard(width: proxy.size.width) }
-                        .overlay { cardEdges(from: window, width: proxy.size.width) }
-                        .onChange(of: window.isFullscreen) { _, fullscreen in
-                            withAnimation(.snappy) { chromeVisible = !fullscreen }
-                        }
-                        .onAppear { fit(window, to: proxy.size) }
-                        .onChange(of: proxy.size) { _, size in fit(window, to: size) }
-                        .onChange(of: window.id) { _, _ in fit(window, to: proxy.size) }
+                        surface(for: window, size: proxy.size)
                     }
                     if !chromeVisible { exitFullScreenHandle }
                 } else {
@@ -75,6 +46,40 @@ struct WindowScreen: View {
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }
+    }
+
+    /// Keep the remote surface separate from the shell's toolbar and presentation tree.
+    private func surface(for window: RemoteWindow, size: CGSize) -> some View {
+        // Keys go to the topmost dialog, if one is up, else to the window.
+        let popups = model.auxiliaryWindows(for: window)
+        let keyTarget = popups.last { !$0.isOverrideRedirect }?.id ?? window.id
+        let frames = popupFrames(popups, over: window, size: size)
+        return ZStack(alignment: .topLeading) {
+            RemoteWindowCanvas(window: window, keyboardVisible: model.keyboardVisible && keyTarget == window.id)
+                .frame(width: size.width, height: size.height)
+                .modifier(WindowDrop(window: window, pixelsPerPoint: model.pixelsPerPoint))
+            ForEach(popups) { popup in
+                if let frame = frames[popup.id] {
+                    RemoteWindowCanvas(window: popup, keyboardVisible: model.keyboardVisible && keyTarget == popup.id)
+                        .frame(width: frame.width, height: frame.height)
+                        .offset(x: frame.minX, y: frame.minY)
+                        .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+                        .onAppear { fitDialog(popup, over: window, in: size) }
+                        .onChange(of: size) { _, size in fitDialog(popup, over: window, in: size) }
+                }
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipped()
+        .offset(x: swipe)
+        .background(alignment: .topLeading) { neighbourCard(width: size.width) }
+        .overlay { cardEdges(from: window, width: size.width) }
+        .onChange(of: window.isFullscreen) { _, fullscreen in
+            withAnimation(.snappy) { chromeVisible = !fullscreen }
+        }
+        .onAppear { fit(window, to: size) }
+        .onChange(of: size) { _, size in fit(window, to: size) }
+        .onChange(of: window.id) { _, _ in fit(window, to: size) }
     }
 
     // MARK: Swiping between apps
