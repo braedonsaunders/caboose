@@ -2,13 +2,13 @@
 // is served from localhost). Each test gets its own home, task directory and agent state.
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
-import { chooseOption, describeToolCall, Draft, launchCommand, Normaliser, publicAuthMethods, readSpec, recapFrom } from '../caboose-agentd.mjs'
+import { chooseOption, describeToolCall, Draft, isStaleLock, latestPage, launchCommand, loopbackURL, Normaliser, publicAuthMethods, readSpec, recapFrom } from '../caboose-agentd.mjs'
 
 const RUNNER = new URL('../caboose-agentd.mjs', import.meta.url).pathname
 const STAND_IN = new URL('./stand-in-agent.mjs', import.meta.url).pathname
@@ -403,6 +403,273 @@ describe('sign-in', () => {
     await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-terminal', env: { WAYLAND_DISPLAY: 'wayland-caboose-0', DISPLAY: ':110', 'bad name': 'x' } })
     expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-terminal', status: 'succeeded' })
     expect((await readFile(join(box.root, 'terminal.log'), 'utf8')).trim()).toBe(':110 wayland-caboose-0 1')
+  })
+})
+
+describe('sign-in on the phone', () => {
+  const encode = value => Buffer.from(JSON.stringify(value)).toString('base64')
+  const runner = (box, ...args) => promisify(execFile)(process.execPath, [RUNNER, ...args], { env: box.env })
+  const signInState = box => readFile(join(box.home, '.local/share/caboose/agents/stand-in/sign-in.json'), 'utf8').then(JSON.parse, () => undefined)
+  const until = async (what, check) => {
+    for (let i = 0; i < 300; i++) {
+      const found = await check()
+      if (found) return found
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error(`Timed out waiting for ${what}`)
+  }
+
+  const A = '0a0a0a0a-0000-4000-8000-00000000000a'
+  const B = '0b0b0b0b-0000-4000-8000-00000000000b'
+  const statePath = box => join(box.home, '.local/share/caboose/agents/stand-in/sign-in.json')
+  const attempts = box => join(box.home, '.local/share/caboose/agents/stand-in/attempts')
+  const alive = pid => { try { process.kill(pid, 0); return true } catch { return false } }
+  /** The state once attempt `attempt` has handed over its page. */
+  const page = (box, attempt) => until(`the page of ${attempt}`, async () => { const state = await signInState(box); return state?.attempt === attempt && state.url && state })
+  /** Waits until process `pid` holds the agent's sign-in lock. */
+  const lockedBy = (box, pid) => until(`${pid} to hold the lock`, async () =>
+    JSON.parse(await readFile(join(statePath(box), '..', 'sign-in.lock'), 'utf8').catch(() => '{}')).pid === pid)
+
+  /** A runner signing in, started as the host starts it: in its own process group. */
+  function signingIn(box, value) {
+    const child = spawn(process.execPath, [RUNNER, 'sign-in', encode(value)], { env: box.env, detached: true, stdio: 'ignore' })
+    const exited = new Promise(resolve => child.on('exit', (code, signal) => resolve(signal ?? code)))
+    cleanup.push(async () => { if (child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, 'SIGKILL') } catch {} await exited } })
+    return { child, exited }
+  }
+
+  /** The computer's terminal service as the runner uses it: start a program, list and hang up sessions. */
+  async function terminalService(box) {
+    const token = join(box.root, 'terminal-token')
+    await writeFile(token, 'terminal-secret')
+    const sessions = new Map()
+    const server = createServer((request, response) => {
+      const url = new URL(request.url, 'http://127.0.0.1')
+      if (request.headers.authorization !== 'Bearer terminal-secret') { response.writeHead(401).end('{"error":"unauthorized"}'); return }
+      if (url.pathname === '/start') {
+        const argv = JSON.parse(Buffer.from(url.searchParams.get('argv'), 'base64url').toString())
+        const id = createHash('sha256').update(String(Math.random())).digest('hex').slice(0, 32)
+        // A session has the service's own environment and the owner display's, never the runner's.
+        const child = spawn(argv[0], argv.slice(1), { env: { ...process.env, HOME: box.home, DISPLAY: ':101', STAND_IN_STATE: box.state }, stdio: 'ignore' })
+        sessions.set(id, child)
+        child.on('exit', () => sessions.delete(id))
+        response.end(JSON.stringify({ session: id }))
+      } else if (url.pathname === '/sessions') {
+        response.end(JSON.stringify({ sessions: [...sessions.keys()].map(id => ({ id })) }))
+      } else if (url.pathname === '/hangup') {
+        sessions.get(url.searchParams.get('session'))?.kill('SIGHUP')
+        response.end('{"hungUp":true}')
+      } else {
+        response.writeHead(404).end('{}')
+      }
+    })
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    cleanup.push(() => new Promise(resolve => { for (const child of sessions.values()) child.kill('SIGKILL'); server.close(resolve) }))
+    Object.assign(box.env, { CABOOSE_TERMINAL_PORT: String(server.address().port), CABOOSE_TERMINAL_TOKEN_FILE: token })
+  }
+
+  it('takes the latest web page, and delivers only to the computer\'s loopback', () => {
+    expect(latestPage('https://a.example/1\nnot a page\nfile:///etc/passwd\nhttps://b.example/2\n\n')).toBe('https://b.example/2')
+    expect(latestPage('')).toBeUndefined()
+    expect(loopbackURL('http://localhost:1455/auth/callback?code=x').port).toBe('1455')
+    expect(loopbackURL('http://127.0.0.1:8080/').hostname).toBe('127.0.0.1')
+    expect(loopbackURL('http://[::1]:8080/').hostname).toBe('[::1]')
+    for (const value of ['https://localhost:1455/', 'http://localhost/', 'http://example.com:1455/', 'http://user:pw@localhost:1455/', 'nope', 'http://localhost.example.com:80/']) {
+      expect(() => loopbackURL(value), value).toThrow()
+    }
+  })
+
+  it('hands the sign-in page to the phone and delivers where it sends the browser back', async () => {
+    const box = await sandbox({ auth: true })
+    box.env.STAND_IN_CALLBACK = '1'
+    const { exited } = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', env: { DISPLAY: ':100' }, on: 'phone', attempt: A })
+    const waiting = await page(box, A)
+    expect(waiting).toMatchObject({ methodId: 'stand-in-login', status: 'running', on: 'phone', attempt: A, url: expect.stringMatching(/^https:\/\/example\.com\/authorize\?/) })
+    // Nothing points the agent at the desktop, so no browser opens there.
+    expect(await readFile(join(box.state, 'sign-in-env'), 'utf8')).toBe('none none')
+    const back = `${new URL(waiting.url).searchParams.get('redirect_uri')}?code=abc`
+    await expect(runner(box, 'sign-in-callback', 'stand-in', A, 'https://example.com/callback?code=1')).rejects.toThrow(/localhost/)
+    await expect(runner(box, 'sign-in-callback', 'stand-in', A, `http://localhost/callback?code=1`)).rejects.toThrow(/localhost:<port>/)
+    await expect(runner(box, 'sign-in-callback', 'stand-in', back)).rejects.toThrow(/attempt must be a UUID/)
+    await expect(runner(box, 'sign-in-callback', 'stand-in', B, back)).rejects.toThrow(/No sign-in is waiting/)
+    const { stdout } = await runner(box, 'sign-in-callback', 'stand-in', A, back)
+    expect(JSON.parse(stdout).status).toBeLessThan(400)
+    expect(await exited).toBe(0)
+    expect(await signInState(box)).toMatchObject({ status: 'succeeded', on: 'phone', attempt: A })
+    expect(await readFile(join(box.state, 'signed-in'), 'utf8')).toBe('agent')
+    await expect(runner(box, 'sign-in-callback', 'stand-in', A, back)).rejects.toThrow(/No sign-in is waiting/)
+  })
+
+  it('runs a terminal method in a terminal session for the phone, without the desktop', async () => {
+    const box = await sandbox({ auth: true })
+    await terminalService(box)
+    expect(await signingIn(box, { agent: AGENT, methodId: 'stand-in-terminal', env: { DISPLAY: ':110' }, on: 'phone' }).exited).toBe(0)
+    expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-terminal', status: 'succeeded', on: 'phone', attempt: expect.stringMatching(/^[0-9a-f-]{36}$/), terminal: expect.stringMatching(/^[0-9a-f]{32}$/) })
+    expect(await readFile(join(box.state, 'signed-in'), 'utf8')).toBe('terminal')
+    expect(await readFile(join(box.state, 'sign-in-env'), 'utf8')).toBe('none 1')
+    // The environment file the session read, and the rest of the attempt's files, are gone.
+    expect(await readdir(attempts(box))).toEqual([])
+  })
+
+  it('reports a computer whose terminal service cannot be reached', async () => {
+    const box = await sandbox({ auth: true })
+    await writeFile(join(box.root, 'terminal-token'), 'terminal-secret')
+    Object.assign(box.env, { CABOOSE_TERMINAL_PORT: '9', CABOOSE_TERMINAL_TOKEN_FILE: join(box.root, 'terminal-token') })
+    expect(await signingIn(box, { agent: AGENT, methodId: 'stand-in-terminal', on: 'phone' }).exited).toBe(1)
+    expect(await signInState(box)).toMatchObject({ status: 'failed', message: expect.stringContaining('terminal service did not answer') })
+  })
+
+  it('replaces a running attempt, and cancels only the attempt it is told', async () => {
+    const box = await sandbox({ auth: true })
+    box.env.STAND_IN_CALLBACK = '1'
+    const first = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: A })
+    await page(box, A)
+    const second = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: B })
+    expect(await first.exited).toBe('SIGTERM')
+    expect(await page(box, B)).toMatchObject({ status: 'running', pid: second.child.pid })
+    await expect(runner(box, 'sign-in-cancel', 'stand-in')).rejects.toThrow(/attempt must be a UUID/)
+    // The replaced attempt's sheet cancelling late leaves the newer attempt running.
+    expect(JSON.parse((await runner(box, 'sign-in-cancel', 'stand-in', A)).stdout)).toEqual({ cancelled: false })
+    expect(alive(second.child.pid)).toBe(true)
+    expect(await signInState(box)).toMatchObject({ status: 'running', attempt: B })
+    expect(JSON.parse((await runner(box, 'sign-in-cancel', 'stand-in', B)).stdout)).toEqual({ cancelled: true })
+    expect(await second.exited).toBe('SIGTERM')
+    const cancelled = await signInState(box)
+    expect(cancelled).toMatchObject({ status: 'failed', attempt: B, message: 'Sign-in cancelled.' })
+    expect(cancelled).not.toHaveProperty('pid')
+    expect(JSON.parse((await runner(box, 'sign-in-cancel', 'stand-in', B)).stdout)).toEqual({ cancelled: false })
+    // Neither stopped attempt leaves its files behind.
+    expect(await readdir(attempts(box))).toEqual([])
+  })
+
+  it('serializes overlapping starts, so the later one always replaces the earlier', async () => {
+    const box = await sandbox({ auth: true })
+    // Each start pauses between reading the state and recording itself: the first is still there
+    // when the second arrives, which without the lock would record over it.
+    Object.assign(box.env, { STAND_IN_CALLBACK: '1', CABOOSE_AGENTD_SIGN_IN_PAUSE_MS: '400' })
+    const first = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: A })
+    await lockedBy(box, first.child.pid)
+    expect(await signInState(box)).toBeUndefined()
+    const second = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: B })
+    expect(await first.exited).toBe('SIGTERM')
+    expect(await page(box, B)).toMatchObject({ status: 'running', pid: second.child.pid })
+    expect(alive(second.child.pid)).toBe(true)
+  })
+
+  it('never lets a cancel that overlaps a newer start stop it', async () => {
+    const box = await sandbox({ auth: true })
+    box.env.STAND_IN_CALLBACK = '1'
+    const first = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: A })
+    await page(box, A)
+    const second = signingIn({ ...box, env: { ...box.env, CABOOSE_AGENTD_SIGN_IN_PAUSE_MS: '600' } },
+      { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: B })
+    // The newer start holds the lock and has not recorded itself yet; A's cancel waits for it.
+    await lockedBy(box, second.child.pid)
+    const cancel = runner(box, 'sign-in-cancel', 'stand-in', A)
+    expect(JSON.parse((await cancel).stdout)).toEqual({ cancelled: false })
+    expect(await first.exited).toBe('SIGTERM')
+    expect(alive(second.child.pid)).toBe(true)
+    expect(await signInState(box)).toMatchObject({ status: 'running', attempt: B, pid: second.child.pid })
+  })
+
+  it('stops a replaced runner that survived, without recording over or cleaning up after its replacement', async () => {
+    const box = await sandbox({ auth: true })
+    box.env.STAND_IN_CALLBACK = '1'
+    const first = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: A })
+    await page(box, A)
+    // A newer attempt took over without stopping this runner, and has its own files.
+    const newer = { methodId: 'stand-in-login', status: 'running', startedAt: 'later', on: 'phone', attempt: B, pid: 1 }
+    await writeFile(statePath(box), JSON.stringify(newer))
+    await mkdir(join(attempts(box), B, 'bin'), { recursive: true })
+    await writeFile(join(attempts(box), B, 'pages'), 'https://example.com/the-newer-page\n')
+    await writeFile(join(attempts(box), B, 'bin', 'xdg-open'), '#!/bin/sh\n')
+    // The old runner's next record of progress finds it was replaced.
+    await writeFile(join(attempts(box), A, 'pages'), 'https://example.com/a-later-page\n', { flag: 'a' })
+    expect(await first.exited).toBe(1)
+    expect(await signInState(box)).toEqual(newer)
+    expect(await readdir(attempts(box))).toEqual([B])
+    expect(await readFile(join(attempts(box), B, 'pages'), 'utf8')).toBe('https://example.com/the-newer-page\n')
+    expect(await readdir(join(attempts(box), B, 'bin'))).toEqual(['xdg-open'])
+  })
+
+  it('never brings a cancelled or finished attempt back with a late report', async () => {
+    const box = await sandbox({ auth: true })
+    box.env.STAND_IN_CALLBACK = '1'
+    const first = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: A })
+    const waiting = await page(box, A)
+    // Cancelled as recorded, while its runner has not stopped yet.
+    const { pid: _pid, ...rest } = waiting
+    const cancelled = { ...rest, status: 'failed', message: 'Sign-in cancelled.', finishedAt: 'now' }
+    await writeFile(statePath(box), JSON.stringify(cancelled))
+    await writeFile(join(attempts(box), A, 'pages'), 'https://example.com/a-later-page\n', { flag: 'a' })
+    expect(await first.exited).toBe(1)
+    expect(await signInState(box)).toEqual(cancelled)
+    await expect(readdir(join(attempts(box), A))).rejects.toThrow()
+  })
+
+  it('refuses a stale sheet\'s callback once a newer attempt has replaced it', async () => {
+    const box = await sandbox({ auth: true })
+    box.env.STAND_IN_CALLBACK = '1'
+    const first = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: A })
+    const oldPage = await page(box, A)
+    const second = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: B })
+    expect(await first.exited).toBe('SIGTERM')
+    const newPage = await page(box, B)
+    const back = state => `${new URL(state.url).searchParams.get('redirect_uri')}?code=abc`
+    await expect(runner(box, 'sign-in-callback', 'stand-in', A, back(oldPage))).rejects.toThrow(/No sign-in is waiting/)
+    await expect(runner(box, 'sign-in-callback', 'stand-in', A, back(newPage))).rejects.toThrow(/No sign-in is waiting/)
+    expect(await signInState(box)).toMatchObject({ status: 'running', attempt: B })
+    await runner(box, 'sign-in-callback', 'stand-in', B, back(newPage))
+    expect(await second.exited).toBe(0)
+    expect(await signInState(box)).toMatchObject({ status: 'succeeded', attempt: B })
+  })
+
+  it('takes over a lock its holder left behind, and waits for a live one', async () => {
+    const box = await sandbox()
+    const lock = join(statePath(box), '..', 'sign-in.lock')
+    await mkdir(join(lock, '..'), { recursive: true })
+    const dead = spawn(process.execPath, ['-e', ''])
+    await new Promise(resolve => dead.on('exit', resolve))
+    // A holder that died, one that never wrote its lock, and one alive but long past any work.
+    for (const [content, age] of [[JSON.stringify({ pid: dead.pid, token: 't', at: Date.now() }), 0], ['', 60_000],
+      [JSON.stringify({ pid: process.pid, token: 't', at: Date.now() - 180_000 }), 0]]) {
+      await writeFile(lock, content)
+      if (age) await utimes(lock, new Date(Date.now() - age), new Date(Date.now() - age))
+      expect(JSON.parse((await runner(box, 'sign-in-cancel', 'stand-in', A)).stdout)).toEqual({ cancelled: false })
+      await expect(stat(lock)).rejects.toThrow()
+    }
+    await writeFile(lock, JSON.stringify({ pid: process.pid, token: 't', at: Date.now() }))
+    let settled = false
+    const waiting = runner(box, 'sign-in-cancel', 'stand-in', A).finally(() => { settled = true })
+    await new Promise(resolve => setTimeout(resolve, 500))
+    expect(settled).toBe(false)
+    await rm(lock)
+    expect(JSON.parse((await waiting).stdout)).toEqual({ cancelled: false })
+  })
+
+  it('never signals a process that is not the recorded attempt\'s runner', async () => {
+    const box = await sandbox({ auth: true })
+    box.env.STAND_IN_CALLBACK = '1'
+    const other = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone', attempt: B })
+    await page(box, B)
+    const sleeper = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' })
+    cleanup.push(async () => { try { process.kill(sleeper.pid, 'SIGKILL') } catch {} })
+    // A record whose pid is some other program, then one whose pid runs a different attempt.
+    for (const pid of [sleeper.pid, other.child.pid]) {
+      await writeFile(statePath(box), JSON.stringify({ methodId: 'stand-in-login', status: 'running', on: 'phone', attempt: A, pid }))
+      expect(JSON.parse((await runner(box, 'sign-in-cancel', 'stand-in', A)).stdout)).toEqual({ cancelled: true })
+      expect(alive(pid)).toBe(true)
+    }
+  })
+
+  it('judges a lock stale only when its holder is gone, unwritten or far too old', () => {
+    const now = 1_000_000_000
+    expect(isStaleLock('', now - 1000, now)).toBe(false)
+    expect(isStaleLock('{', now - 60_000, now)).toBe(true)
+    expect(isStaleLock(JSON.stringify({ pid: process.pid, at: now - 1000 }), now, now)).toBe(false)
+    expect(isStaleLock(JSON.stringify({ pid: process.pid, at: now - 121_000 }), now, now)).toBe(true)
+    expect(isStaleLock(JSON.stringify({ pid: process.pid }), now, now)).toBe(true)
+    expect(isStaleLock(JSON.stringify({ pid: 0, at: now }), now, now)).toBe(true)
   })
 })
 

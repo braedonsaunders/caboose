@@ -306,6 +306,27 @@ final class FakeDecoder: PictureDecoder {
         #expect(sent.last?.body["keysym"]?.int == 0x41 && sent.last?.body["mods"]?.array == ["shift"])
     }
 
+    @Test func fullscreenExitSendsEscapeAndRestoresGeometryWithoutMetadata() async throws {
+        let session = try await ready()
+        defer { session.disconnect() }
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 1000, 678]))])
+        try await until("window") { session.windows[7] != nil }
+        let remote = try #require(session.windows[7])
+        #expect(!remote.isFullscreen)
+        let target = CGRect(x: 0, y: 0, width: 466, height: 678)
+        session.exitFullscreen(remote, frame: target)
+        let sent = stream.take()
+        let keys = sent.filter { $0.type == DisplayProtocol.ClientType.key.rawValue }
+        #expect(keys.count == 2)
+        #expect(keys.allSatisfy { $0.body["keysym"]?.int == 0xFF1B && $0.body["mods"]?.array == [] })
+        #expect(keys.map { $0.body["pressed"] } == [.bool(true), .bool(false)])
+        let configure = try #require(sent.last)
+        #expect(configure.body["fullscreen"] == .bool(false))
+        #expect(configure.body["maximized"] == .bool(false))
+        #expect(configure.body["geometry"] == [0, 0, 466, 678])
+        #expect(remote.frame == target && !remote.isFullscreen)
+    }
+
     @Test func editsBecomeOneTextMessage() async throws {
         let session = try await ready()
         session.edit([.backspace(2), .type("the ")], in: nil)

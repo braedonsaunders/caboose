@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """The owner's terminals: login shells on pseudo-terminals, over a token-authenticated WebSocket.
 
+A session can also run one given program instead of a shell (`/start`), which is how an
+agent's terminal sign-in reaches the phone.
+
 Each connection is one session. Sessions outlive their connection, so a client that drops
 (the phone went to the background, the computer parked) reattaches and continues from the
 byte it last received. The protocol is in docs/architecture.md § Terminal.
 """
 import asyncio
+import base64
+import binascii
 import errno
 import fcntl
 import hashlib
@@ -40,6 +45,7 @@ SESSION_ID = re.compile(r'[0-9a-f]{32}')
 TRACKED_MODES = {1: False, 25: True, 47: False, 1000: False, 1002: False, 1003: False, 1004: False,
                  1006: False, 1047: False, 1049: False, 2004: False}
 TITLE_LIMIT = 200
+MAX_ARGS, MAX_ARG = 64, 4096
 CLOSE_REPLACED, CLOSE_INVALID = 4001, 4400
 
 
@@ -67,6 +73,22 @@ def parse_attach(target):
             raise BadRequest('invalid offset')
         offset = int(offset)
     return cols, rows, session, offset
+
+
+def parse_start(target):
+    """`/start?cols=&rows=&argv=<base64url JSON list>` → (cols, rows, argv). argv[0] is an absolute path."""
+    query = parse_qs(urlsplit(target).query, keep_blank_values=True)
+    cols, rows = size(query, 'cols', MAX_COLS), size(query, 'rows', MAX_ROWS)
+    encoded = query.get('argv', [''])[0]
+    try:
+        argv = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
+    except (ValueError, binascii.Error):
+        raise BadRequest('argv must be a base64url JSON list')
+    if (not isinstance(argv, list) or not 1 <= len(argv) <= MAX_ARGS
+            or any(not isinstance(arg, str) or len(arg) > MAX_ARG or '\0' in arg for arg in argv)
+            or not os.path.isabs(argv[0])):
+        raise BadRequest(f'argv must be 1 to {MAX_ARGS} strings, the first an absolute path')
+    return cols, rows, argv
 
 
 def parse_control(text):
@@ -229,7 +251,7 @@ def controlling_terminal():
 
 
 class Session:
-    def __init__(self, service, cols, rows):
+    def __init__(self, service, cols, rows, argv=None):
         self.service = service
         self.id = secrets.token_hex(16)
         self.cols, self.rows = cols, rows
@@ -245,6 +267,8 @@ class Session:
         self.ended = asyncio.Event()
         self.process = None
         self.master = None
+        # The program the session runs; None for the user's login shell.
+        self.argv = argv
 
     async def start(self):
         user = pwd.getpwuid(os.getuid())
@@ -254,8 +278,9 @@ class Session:
             set_size(slave, self.cols, self.rows)
             os.set_blocking(master, False)
             os.set_inheritable(master, False)
+            program, executable = (self.argv, self.argv[0]) if self.argv else (['-' + os.path.basename(shell)], shell)
             self.process = await asyncio.create_subprocess_exec(
-                '-' + os.path.basename(shell), executable=shell, stdin=slave, stdout=slave, stderr=slave,
+                *program, executable=executable, stdin=slave, stdout=slave, stderr=slave,
                 cwd=user.pw_dir if os.path.isdir(user.pw_dir) else '/', env=shell_environment(user),
                 start_new_session=True, preexec_fn=controlling_terminal)
         except BaseException:
@@ -407,7 +432,7 @@ class Service:
     def __init__(self):
         self.sessions = {}
 
-    async def open(self, cols, rows):
+    async def open(self, cols, rows, argv=None):
         if len(self.sessions) >= MAX_SESSIONS:
             detached = [s for s in self.sessions.values() if s.client is None]
             if not detached:
@@ -416,7 +441,7 @@ class Service:
             oldest = min(detached, key=lambda s: s.detached)
             self.sessions.pop(oldest.id, None)
             oldest.hangup()
-        session = Session(self, cols, rows)
+        session = Session(self, cols, rows, argv)
         await session.start()
         self.sessions[session.id] = session
         return session
@@ -525,7 +550,7 @@ def respond(connection, status, body=None):
 
 
 def process_request(service):
-    def check(connection, request):
+    async def check(connection, request):
         if not authorized(request.headers.get('Authorization')):
             return respond(connection, HTTPStatus.UNAUTHORIZED, {'error': 'unauthorized'})
         target = urlsplit(request.path)
@@ -537,6 +562,19 @@ def process_request(service):
                 return respond(connection, HTTPStatus.NOT_FOUND, {'error': 'session ended'})
             session.hangup()
             return respond(connection, HTTPStatus.OK, {'hungUp': True})
+        if target.path == '/start':
+            # A session running one program, for a client to attach to with its id.
+            try:
+                cols, rows, argv = parse_start(request.path)
+            except BadRequest as error:
+                return respond(connection, HTTPStatus.BAD_REQUEST, {'error': str(error)})
+            try:
+                session = await service.open(cols, rows, argv)
+            except OSError as error:
+                return respond(connection, HTTPStatus.BAD_REQUEST, {'error': f'{argv[0]}: {error.strerror or error}'})
+            if session is None:
+                return respond(connection, HTTPStatus.SERVICE_UNAVAILABLE, {'error': 'too many terminal sessions'})
+            return respond(connection, HTTPStatus.OK, {'session': session.id})
         if target.path != '/':
             return respond(connection, HTTPStatus.NOT_FOUND, {'error': 'not found'})
         return None

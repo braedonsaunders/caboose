@@ -22,9 +22,13 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// Whether this view plays the window's videos. A video plays in one view at a time, so
     /// thumbnails leave it to the window's main view.
     public var showsVideo = true {
-        didSet { laidOutVideos = nil }
+        didSet {
+            guard showsVideo != oldValue else { return }
+            laidOutVideos = nil
+            if !showsVideo { releaseVideos() }
+        }
     }
-    private var laidOutVideos: (window: ObjectIdentifier, layout: Int, scale: CGFloat)?
+    private var laidOutVideos: (window: ObjectIdentifier, layout: Int, size: CGSize, bounds: CGRect)?
     private var hostedVideos: [CALayer] = []
     public private(set) var remoteWindow: RemoteWindow?
     public var pixelsPerPoint: CGFloat = 2
@@ -48,15 +52,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// keyboard only when it lands on editable text (the app switched to a text cursor) and
     /// hides it when it lands anywhere else; leave it nil and every tap shows the keyboard.
     public var onKeyboardWanted: ((Bool) -> Void)?
-    private var focusCheck: (since: CFTimeInterval, serial: Int)?
-    /// Ctrl/Alt from the key bar, applied to the next key and then released.
-    private var stickyModifiers = Set<String>()
-    private lazy var keyBar: KeyBar = {
-        let bar = KeyBar()
-        bar.onAction = { [weak self] action in self?.keyBarAction(action) }
-        return bar
-    }()
-
+    private var focusCheck: TapTextFocus?
     public init(session: (any DisplaySession)?, window: RemoteWindow?) {
         self.session = session
         super.init(frame: .zero)
@@ -64,7 +60,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = false
         metalLayer.isOpaque = true
-        metalLayer.contentsGravity = .topLeft
+        metalLayer.contentsGravity = .resize
         metalLayer.presentsWithTransaction = false
         backgroundColor = .black
         isMultipleTouchEnabled = true
@@ -76,6 +72,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public func attach(_ window: RemoteWindow?) {
         if window !== remoteWindow {
+            releaseVideos()
+            focusCheck = nil
             resetTyping()
             cancelTouches()
             laidOutVideos = nil
@@ -88,7 +86,11 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public override func didMoveToWindow() {
         super.didMoveToWindow()
-        if self.window == nil { cancelTouches() }
+        if self.window == nil {
+            cancelTouches()
+            focusCheck = nil
+            releaseVideos()
+        }
         displayLink?.invalidate()
         displayLink = nil
         guard self.window != nil, superview != nil else { return }
@@ -110,9 +112,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     /// Puts each of the window's videos over its picture: the stream's layer at its `rect`,
     /// inside a container cut to its `clip`, in `z` order. Runs only when one of them changed.
-    fileprivate func layoutVideos() {
+    func layoutVideos() {
         let window = showsVideo ? remoteWindow : nil
-        let key = window.map { (ObjectIdentifier($0), $0.videoLayout, pixelsPerPoint) }
+        let key = window.map { (ObjectIdentifier($0), $0.videoLayout, $0.surface.pixelSize, bounds) }
         if let key, let laid = laidOutVideos, laid == key { return }
         if key == nil, hostedVideos.isEmpty { return }
         laidOutVideos = key
@@ -131,19 +133,28 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             }
         }
         if !retiring.isEmpty { laidOutVideos = nil }
-        let scale = 1 / pixelsPerPoint
-        func points(_ rect: CGRect) -> CGRect {
-            CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale)
-        }
-        for video in videos {
-            let clip = video.clip ?? video.rect
+        for (index, video) in videos.enumerated() {
+            let geometry = VideoLayerGeometry(rect: video.rect, clip: video.clip,
+                                              surfaceSize: window?.surface.pixelSize ?? .zero, bounds: bounds)
             if video.container.superlayer !== layer { layer.addSublayer(video.container) }
-            video.container.frame = points(clip)
-            video.container.zPosition = CGFloat(video.z)
-            video.layer.frame = points(video.rect.offsetBy(dx: -clip.minX, dy: -clip.minY))
+            video.container.isHidden = geometry == nil
+            if let geometry {
+                video.container.frame = geometry.container
+                video.layer.frame = geometry.picture
+            }
+            // Negative protocol z values still play above the window's own picture.
+            video.container.zPosition = CGFloat(index + 1)
         }
         hostedVideos = videos.map(\.container) + retiring
         CATransaction.commit()
+    }
+
+    private func releaseVideos() {
+        for container in hostedVideos where container.superlayer === layer {
+            container.removeFromSuperlayer()
+        }
+        hostedVideos.removeAll()
+        laidOutVideos = nil
     }
 
     fileprivate func present() {
@@ -309,7 +320,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             if !isFirstResponder { becomeFirstResponder() }
             return
         }
-        focusCheck = (CACurrentMediaTime(), session.cursorSerial)
+        focusCheck = TapTextFocus(since: CACurrentMediaTime(), serial: session.cursorSerial)
     }
 
     /// The app answers a tap by redrawing the cursor: a text cursor means a text field took
@@ -317,21 +328,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// server that names no cursors falls back to showing the keyboard.
     fileprivate func checkFocus() {
         guard let check = focusCheck, let session, let onKeyboardWanted else { return }
-        let elapsed = CACurrentMediaTime() - check.since
-        let fresh = session.cursorSerial != check.serial
-        guard fresh || elapsed > 0.35 else { return }
-        if let isText = session.cursorIsText {
-            // The app says what the field takes: no autocorrect in a terminal or a password.
-            if isText, autocorrectChoice == nil, let purpose = session.textPurpose {
-                prefersProse = !["terminal", "password", "pin", "url", "email", "number", "digits", "phone", "date", "time", "datetime"]
-                    .contains(purpose)
-            }
-            onKeyboardWanted(isText)
-            focusCheck = nil
-        } else if elapsed > 1.2 {
-            onKeyboardWanted(true)
-            focusCheck = nil
+        guard let isText = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial,
+                                               isText: session.cursorIsText) else { return }
+        // The app says what the field takes: no autocorrect in a terminal or a password.
+        if isText, autocorrectChoice == nil, let purpose = session.textPurpose {
+            prefersProse = !["terminal", "password", "pin", "url", "email", "number", "digits", "phone", "date", "time", "datetime"]
+                .contains(purpose)
         }
+        onKeyboardWanted(isText)
+        focusCheck = nil
     }
 
     @objc private func handleSecondaryClick(_ gesture: UITapGestureRecognizer) {
@@ -343,6 +348,12 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let point = gesture.location(in: self)
         click(at: point)
         click(at: point)
+        tapped()
+    }
+
+    public override func resignFirstResponder() -> Bool {
+        focusCheck = nil
+        return super.resignFirstResponder()
     }
 
     /// Long press opens a context menu; long press then move drags with the primary button.
@@ -604,14 +615,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     // MARK: Keyboard — the software keyboard through UITextInput, hardware keys through presses.
 
     public override var canBecomeFirstResponder: Bool { isInteractive }
-    public override var inputAccessoryView: UIView? { isInteractive ? keyBar : nil }
-
-    public override var prefersProse: Bool {
-        didSet { keyBar.show(autocorrect: prefersProse) }
-    }
-
-    /// The owner's autocorrect choice from the key bar; nil follows the app (off for code).
-    private var autocorrectChoice: Bool?
+    public override var inputAccessoryView: UIView? { isInteractive ? super.inputAccessoryView : nil }
 
     /// Terminals and code editors, where autocorrect and automatic capitals get in the way.
     public static func isCodeApp(_ window: RemoteWindow?) -> Bool {
@@ -634,58 +638,22 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func insertText(_ text: String) {
-        guard !stickyModifiers.isEmpty else {
-            super.insertText(text)
-            if (text == "\n" || text == "\r" || text == "\r\n"), !Self.isCodeApp(remoteWindow) {
-                focusCheck = nil
-                onKeyboardWanted?(false)
-                resignFirstResponder()
-            }
-            return
-        }
-        resetTyping()
-        for character in text {
-            guard let stroke = Keysyms.stroke(for: Character(character.lowercased())) else { continue }
-            pressAndRelease(stroke, modifiers: Array(stickyModifiers))
-        }
-        releaseSticky()
-    }
-
-    private func keyBarAction(_ action: KeyBar.Action) {
-        switch action {
-        case .modifier(let name):
-            if stickyModifiers.contains(name) { stickyModifiers.remove(name) } else { stickyModifiers.insert(name) }
-            keyBar.show(activeModifiers: stickyModifiers)
-        case .autocorrect:
-            autocorrectChoice = !prefersProse
-            prefersProse = !prefersProse
-        case .key(let name):
-            guard let stroke = Keysyms.special[name] else { return }
-            resetTyping()
-            pressAndRelease(stroke, modifiers: Array(stickyModifiers))
-            releaseSticky()
-        case .text(let text):
-            insertText(text)
+        let modified = hasStickyModifiers
+        super.insertText(text)
+        if !modified, (text == "\n" || text == "\r" || text == "\r\n"), !Self.isCodeApp(remoteWindow) {
+            dismissKeyboard()
         }
     }
 
-    private func pressAndRelease(_ stroke: KeyStroke, modifiers: [String]) {
+    public override func dismissKeyboard() {
+        focusCheck = nil
+        onKeyboardWanted?(false)
+        super.dismissKeyboard()
+    }
+
+    public override func sendKey(_ stroke: KeyStroke, modifiers: [String]) {
         session?.key(stroke, pressed: true, in: remoteWindow, extraModifiers: modifiers)
         session?.key(stroke, pressed: false, in: remoteWindow, extraModifiers: modifiers)
-    }
-
-    private func releaseSticky() {
-        guard !stickyModifiers.isEmpty else { return }
-        stickyModifiers.removeAll()
-        keyBar.show(activeModifiers: stickyModifiers)
-    }
-
-    public override func deleteBackward() {
-        guard !stickyModifiers.isEmpty else { return super.deleteBackward() }
-        resetTyping()
-        guard let stroke = Keysyms.special["BackSpace"] else { return }
-        pressAndRelease(stroke, modifiers: Array(stickyModifiers))
-        releaseSticky()
     }
 
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {

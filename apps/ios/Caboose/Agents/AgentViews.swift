@@ -483,14 +483,15 @@ struct AgentSeatCanvas: UIViewRepresentable {
     }
 }
 
-/// What to do about a task whose agent was signed out: sign in on the computer's screen, give
-/// it a key, or run the same request with another agent or model.
+/// What to do about a task whose agent was signed out: sign in from the phone, give it a key,
+/// or run the same request with another agent or model.
 struct SignInRow: View {
     @Environment(AppModel.self) private var model
     let task: AgentCenter.Task
     let methods: [SignInMethod]
     var connectModel: () -> Void = {}
-    @State private var started: String?
+    @State private var signingIn: SignInMethod?
+    @State private var signedIn = false
 
     var body: some View {
         let agents = model.agents
@@ -501,12 +502,12 @@ struct SignInRow: View {
                 .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 if methods.count == 1, let method = methods.first {
-                    Button { signIn(with: method) } label: { Label("Sign In", systemImage: "person.badge.key") }
+                    Button { signingIn = method } label: { Label("Sign In", systemImage: "person.badge.key") }
                         .buttonStyle(.glassProminent)
                 } else {
                     Menu {
                         ForEach(methods) { method in
-                            Button(method.name, systemImage: method.type == "terminal" ? "terminal" : "person.badge.key") { signIn(with: method) }
+                            Button(method.name, systemImage: method.type == "terminal" ? "terminal" : "person.badge.key") { signingIn = method }
                         }
                     } label: { Label("Sign In", systemImage: "person.badge.key") }
                     .buttonStyle(.glassProminent)
@@ -523,18 +524,11 @@ struct SignInRow: View {
             }
             .controlSize(.small)
             .font(.caption.weight(.semibold))
-            if let started { Text(started).font(.caption).foregroundStyle(.secondary) }
+            if signedIn { Text("Signed in. Reply to try again.").font(.caption).foregroundStyle(.secondary) }
         }
-    }
-
-    private func signIn(with method: SignInMethod) {
-        Task {
-            do {
-                try await model.agents.signIn(task.agent, with: method)
-                started = "Finish signing in on your computer's screen, then reply to try again."
-            } catch {
-                started = error.localizedDescription
-            }
+        .sheet(item: $signingIn) { method in
+            AgentSignInView(agentID: task.agent, method: method) { signedIn = true }
+                .environment(model)
         }
     }
 }

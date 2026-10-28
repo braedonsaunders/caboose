@@ -251,12 +251,11 @@ struct WindowScreen: View {
                 .accessibilityValue(window.title.isEmpty ? "Window" : window.title)
                 .simultaneousGesture(toolbarDismissSwipe)
 
-            Button(model.keyboardVisible ? "Hide Keyboard" : "Keyboard",
-                   systemImage: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard") {
-                model.keyboardVisible.toggle()
+            if !model.keyboardVisible {
+                Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible = true }
+                    .labelStyle(.iconOnly)
+                    .simultaneousGesture(toolbarDismissSwipe)
             }
-            .labelStyle(.iconOnly)
-            .simultaneousGesture(toolbarDismissSwipe)
 
             Button("Window Options", systemImage: "ellipsis") { showingOptions = true }
                 .labelStyle(.iconOnly)
@@ -278,6 +277,10 @@ struct WindowScreen: View {
     /// Present actions outside the toolbar so a vertical overflow group cannot clip them.
     @ViewBuilder private func windowActions(for window: RemoteWindow) -> some View {
         Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
+        Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
+            model.session?.exitFullscreen(window, frame: window.frame)
+            withAnimation(.snappy) { chromeVisible = true }
+        }
         if model.agents.available {
             Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
         }

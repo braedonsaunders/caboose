@@ -129,6 +129,12 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   window and then destroys the stream; the layer stays until the window view has shown that
   repaint, so stale pixels never flash. HDR video streams (PQ, HLG) use the screen's extended
   dynamic range; window pictures are SDR.
+  The base picture and video clips share the confirmed surface-to-view mapping during
+  resizing; the outer Yard transform applies to both once. Only the active presentation
+  owns the playback layer. `VideoLayerGeometryTests`, `VideoSessionTests` and
+  `TapTextFocusTests` cover geometry, repaint retirement and keyboard decisions on macOS;
+  `VideoLayerHostingTests` exercises layer transfer when running the package tests on iOS.
+  `scripts/check-desktop.sh` covers real-device video, fullscreen exit and editing gestures.
 - **Sound.** The computer's sound arrives as 20 ms Opus packets stamped on the server's
   clock, decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`, so iOS
   routes it like any app's sound. The renderer and every video layer share one
@@ -198,9 +204,21 @@ offer installed catalog MCP servers to the agent.
 **Connect a Model** uses an API key instead of an account: an OpenRouter key and any of its
 tool-using models (run by the registry's goose), or an Anthropic or OpenAI key (Claude Agent
 or Codex). The app installs the agent, puts the key in its environment in the computer, and
-makes it the default. A chat whose agent is signed out offers its sign-in, Connect a Model,
-or another agent. Settings › Agents installs and updates any registry agent, signs in to
-them on the computer's screen, edits their environment, and sets the default.
+makes it the default. A chat whose agent is signed out offers **Sign In** and **Ask
+Another** (another agent, or Connect a Model). Settings › Agents installs and updates any
+registry agent, signs in to them, edits their environment, and sets the default.
+
+Signing in happens on the phone (`AgentSignInView`). The computer runs the agent's own
+sign-in, but its page opens in a private browser in the sheet; when the page sends you back
+to the computer's localhost, the app hands that address to the agent on the computer, so a
+ChatGPT or similar login finishes without touching the computer's screen. A sign-in that
+runs in a terminal, such as Claude's, shows that terminal in the sheet to answer its prompts
+(the Terminal tab's view, pinned to that one session). Google accounts refuse to sign in
+inside an app's browser, so use another option the page offers, or **Sign In on Computer's
+Screen** from the sheet's menu. Each sheet follows only the sign-in attempt it started:
+leaving it before it finishes cancels that attempt, and if a newer sign-in to the same agent
+starts (from another sheet or device), the sheet says so and stops, never touching the newer
+one.
 
 Agents run their GUI apps on the agent seat, a second display of the computer. The app
 connects to it as it does to the owner's display (`/v1/display?seat=agent`, without sound);
@@ -326,3 +344,12 @@ Run `scripts/check-agents.sh` for the real-device checklist against a matching h
 covers streaming, same-named queued attachments and Send Now, approvals, seat takeover,
 speech permissions, failed sends and chat switching. No scheduled-task or cross-agent
 memory feature is implied by the composer; conversation continuity belongs to the ACP agent.
+
+### Shared keyboard controls
+
+App cards, Desktop, the display trackpad and Terminal use CabooseKit's `KeyBar`.
+Hide Keyboard stays above the key row at its right edge on iPhone, Duo and iPad;
+scrolling the keys never hides it. Remote inputs share `RemoteTextInputView` for
+composition, autocorrect and sticky modifiers. Terminal adapts the same accessory
+to SwiftTerm's cursor modes and byte protocol. Verify folded/unfolded/rotated layouts,
+Hide and reopening, Ctrl/Alt, held arrows, Return and IME with `scripts/check-desktop.sh`.

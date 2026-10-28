@@ -5,12 +5,18 @@
 //   STAND_IN_STATE  directory for sessions (so a new process can load or resume) and sign-in
 //   STAND_IN_CAPS   comma list of: load, resume, image
 //   STAND_IN_AUTH   "1": session/new answers auth_required until signed in
+//   STAND_IN_CALLBACK  "1": signing in opens a page with xdg-open, as a browser sign-in does,
+//                   and finishes when http://localhost:<port>/callback is requested
 //   --login         terminal sign-in: marks the state signed in and exits 0
+//
+// Each sign-in writes `sign-in-env` in the state directory: its DISPLAY (or "none") and STAND_IN_LOGIN.
 //
 // Prompt words: tool, plan, env (reports STAND_IN_GREETING), ask, stream (one message in slow chunks), slow (waits for cancel), stubborn (ignores cancel),
 // write-home, write-outside, crash, refuse. Every turn answers "heard: <first line>" and a
 // line describing what it received.
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -19,10 +25,28 @@ import * as acp from '@agentclientprotocol/sdk'
 const state = process.env.STAND_IN_STATE ?? process.cwd()
 mkdirSync(state, { recursive: true })
 const signedInFile = join(state, 'signed-in')
+const recordSignInEnv = () => writeFileSync(join(state, 'sign-in-env'), `${process.env.DISPLAY || 'none'} ${process.env.STAND_IN_LOGIN || 'none'}`)
 if (process.argv.includes('--login')) {
+  recordSignInEnv()
   writeFileSync(signedInFile, 'terminal')
   console.log('Signed in to the stand-in agent.')
   process.exit(0)
+}
+
+/** A browser sign-in: opens the provider's page, which sends the browser back to a server here. */
+function browserSignIn() {
+  return new Promise((resolvePromise, reject) => {
+    const server = createServer((request, response) => {
+      if (request.url === '/done') { response.writeHead(200).end('Signed in.'); return }
+      if (!request.url?.startsWith('/callback?code=')) { response.writeHead(404).end(); return }
+      response.writeHead(302, { location: '/done' }).end()
+      resolvePromise()
+    })
+    server.listen(0, '127.0.0.1', () => {
+      const back = `http://localhost:${server.address().port}/callback`
+      try { execFileSync('xdg-open', [`https://example.com/authorize?redirect_uri=${encodeURIComponent(back)}`]) } catch (error) { reject(error) }
+    })
+  })
 }
 const caps = new Set((process.env.STAND_IN_CAPS ?? '').split(',').filter(Boolean))
 const sessions = new Map()
@@ -45,8 +69,10 @@ const app = acp.agent({ name: 'stand-in' })
       { id: 'stand-in-terminal', name: 'Stand-in terminal', type: 'terminal', args: ['--login'], env: { STAND_IN_LOGIN: '1' } },
     ],
   }))
-  .onRequest('authenticate', ({ params }) => {
+  .onRequest('authenticate', async ({ params }) => {
     if (params.methodId !== 'stand-in-login') throw acp.RequestError.invalidParams(undefined, 'unknown method')
+    recordSignInEnv()
+    if (process.env.STAND_IN_CALLBACK === '1') await browserSignIn()
     writeFileSync(signedInFile, 'agent')
     return {}
   })

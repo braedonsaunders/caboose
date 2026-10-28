@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run the real terminal service in Linux and drive it as the host does: sessions, input,
-resize, detach and reattach, replacement, backpressure, hangup and exit."""
+resize, detach and reattach, replacement, backpressure, hangup, exit and a started program."""
 import asyncio
+import base64
 import importlib.util
 import json
 import os
@@ -182,6 +183,23 @@ async def check():
             await asyncio.wait_for(extra.socket.recv(), 10)
     except ConnectionClosed:
         assert extra.socket.close_code == 1000
+
+    # A session started with one program runs it, not a shell, and ends with its exit.
+    argv = base64.urlsafe_b64encode(json.dumps(['/bin/sh', '-c', 'read answer; echo "got-$answer"; exit 4']).encode()).decode().rstrip('=')
+    status, started = await get(f'/start?cols=80&rows=24&argv={argv}')
+    assert status == 200 and terminal.SESSION_ID.fullmatch(started['session']), started
+    assert (await get('/start?cols=80&rows=24&argv=W10'))[0] == 400
+    assert (await get(f'/start?cols=80&rows=24&argv={argv}', {}))[0] == 401
+    program, hello = await open_client(port, f'cols=80&rows=24&session={started["session"]}')
+    await program.run('caboose', 'got-caboose')
+    try:
+        while True:
+            message = await asyncio.wait_for(program.socket.recv(), 10)
+            if isinstance(message, str):
+                program.controls.append(json.loads(message))
+    except ConnectionClosed:
+        pass
+    assert program.controls[-1] == {'type': 'exit', 'code': 4}, program.controls
 
     # Without a session to reattach, an invalid request is refused.
     try:

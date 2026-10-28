@@ -15,6 +15,7 @@ const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const step of cleanup.splice(0).reverse()) await step() })
 
 const decode = (value: string) => JSON.parse(Buffer.from(value, 'base64').toString('utf8'))
+const ATTEMPT = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const CLAUDE_METHODS = [
   { id: 'claude-ai-login', name: 'Claude Subscription', description: 'Use Claude subscription ', type: 'terminal', args: ['--cli', 'auth', 'login', '--claudeai'] },
   { id: 'console-login', name: 'Anthropic Console', type: 'terminal', args: ['--cli', 'auth', 'login', '--console'] },
@@ -40,6 +41,15 @@ function fakeGuest(options: { missing?: boolean; failInstall?: string } = {}) {
         return ''
       }
       const mode = args[at + 1]!
+      if (mode === 'sign-in-callback' || mode === 'sign-in-cancel') {
+        const [id, attempt, url] = [args[at + 2]!, args[at + 3]!, args[at + 4]]
+        calls.push({ mode, argument: { id, attempt, ...(url ? { url } : {}) } })
+        const status = agents[id]?.signInStatus as { status: string; attempt?: string } | undefined
+        const current = status?.status === 'running' && status.attempt === attempt
+        if (mode === 'sign-in-cancel') return JSON.stringify({ cancelled: current })
+        if (!current) throw new Error('Guest command failed: No sign-in is waiting for this page.')
+        return JSON.stringify({ status: 302 })
+      }
       if (mode === 'set-env') {
         const [id, json] = [args[at + 2]!, JSON.parse(args[at + 3]!) as { set: Record<string, string>; remove: string[] }]
         calls.push({ mode, argument: { id, ...json } })
@@ -141,9 +151,42 @@ describe('AgentCatalog', () => {
     await expect(catalog.signIn('codex-acp', { methodId: 'api-key' })).rejects.toThrow('Codex has no sign-in method "api-key"')
     expect(fake.calls.filter(call => call.mode === 'probe')).toHaveLength(1)
     const started = await catalog.signIn('codex-acp', { methodId: 'chat-gpt' })
-    expect(started).toEqual({ started: true, method: { id: 'chat-gpt', name: 'ChatGPT', description: 'Use ChatGPT to authenticate', type: 'agent' } })
+    expect(started).toEqual({ started: true, method: { id: 'chat-gpt', name: 'ChatGPT', description: 'Use ChatGPT to authenticate', type: 'agent' }, attempt: expect.stringMatching(ATTEMPT) })
     expect(fake.calls.filter(call => call.mode === 'probe')).toHaveLength(1)
-    expect(fake.calls.at(-1)).toEqual({ mode: 'sign-in', argument: { agent: expect.objectContaining({ id: 'codex-acp', version: '2.3.0' }), methodId: 'chat-gpt', env: { DISPLAY: ':110' } } })
+    expect(fake.calls.at(-1)).toEqual({ mode: 'sign-in', argument: { agent: expect.objectContaining({ id: 'codex-acp', version: '2.3.0' }), methodId: 'chat-gpt', on: 'display', attempt: started.attempt, env: { DISPLAY: ':110' } } })
+    // Every start is a new attempt.
+    expect((await catalog.signIn('codex-acp', { methodId: 'chat-gpt' })).attempt).not.toBe(started.attempt)
+  })
+
+  it('starts a sign-in on the phone, and delivers and cancels only for its own attempt', async () => {
+    const fake = fakeGuest()
+    const catalog = new AgentCatalog(registry(), () => fake.guest, settingsStore())
+    await expect(catalog.signIn('codex-acp', { methodId: 'chat-gpt', on: 'mac' })).rejects.toThrow('on must be "phone" or "display"')
+    await expect(catalog.signIn('codex-acp', { methodId: 'chat-gpt', where: 'phone' })).rejects.toThrow('Unknown field: where')
+    const { attempt } = await catalog.signIn('codex-acp', { methodId: 'chat-gpt', on: 'phone' })
+    expect(fake.calls.at(-1)).toMatchObject({ mode: 'sign-in', argument: { methodId: 'chat-gpt', on: 'phone', attempt } })
+    expect((await catalog.list()).agents.find(agent => agent.id === 'codex-acp')?.signInStatus).toBeUndefined()
+
+    const back = 'http://localhost:1455/auth/callback?code=1'
+    for (const url of ['https://localhost:1455/x', 'http://localhost/x', 'http://example.com:1455/x', 'http://a:b@localhost:1455/x', 'nope']) {
+      await expect(catalog.signInCallback('codex-acp', { attempt, url })).rejects.toBeInstanceOf(AgentInputError)
+    }
+    for (const input of [{ url: back }, { url: back, attempt: 'nope' }, { url: back, attempt, extra: 1 }]) {
+      await expect(catalog.signInCallback('codex-acp', input)).rejects.toBeInstanceOf(AgentInputError)
+    }
+    await expect(catalog.cancelSignIn('codex-acp', {})).rejects.toThrow('attempt is required')
+    await expect(catalog.signInCallback('codex-acp', { attempt, url: back })).rejects.toBeInstanceOf(AgentConflictError)
+    fake.agents['codex-acp'] = { ...fake.agents['codex-acp'], signInStatus: { methodId: 'chat-gpt', status: 'running', on: 'phone', attempt, url: 'https://auth.openai.com/oauth/authorize?x=1', pid: 42 } }
+    expect((await catalog.list()).agents.find(agent => agent.id === 'codex-acp')?.signInStatus)
+      .toEqual({ methodId: 'chat-gpt', status: 'running', on: 'phone', attempt, url: 'https://auth.openai.com/oauth/authorize?x=1' })
+    // Another attempt's sheet reaches nothing.
+    const stale = '0a0a0a0a-0000-4000-8000-00000000000a'
+    await expect(catalog.signInCallback('codex-acp', { attempt: stale, url: back })).rejects.toThrow('This sign-in is no longer waiting')
+    expect(await catalog.cancelSignIn('codex-acp', { attempt: stale })).toEqual({ cancelled: false })
+    expect(await catalog.signInCallback('codex-acp', { attempt, url: back })).toEqual({ delivered: true, status: 302 })
+    expect(fake.calls.at(-1)).toEqual({ mode: 'sign-in-callback', argument: { id: 'codex-acp', attempt, url: back } })
+    expect(await catalog.cancelSignIn('codex-acp', { attempt })).toEqual({ cancelled: true })
+    expect(fake.calls.at(-1)).toEqual({ mode: 'sign-in-cancel', argument: { id: 'codex-acp', attempt } })
   })
 
   it('starts a sign-in with the launch environment of the display the owner sees', async () => {
@@ -178,6 +221,13 @@ describe('AgentCatalog', () => {
       '../bad': { installed: { version: '1', spec: { id: '../bad' } } },
       ok: { installed: { version: '1', spec: { id: 'other' } }, authMethods: [], signInStatus: { methodId: 'm', status: 'weird' } },
     } }))).toEqual({ ok: { authMethods: [] } })
+    expect(parseGuestState(JSON.stringify({ agents: {
+      phone: { signInStatus: { methodId: 'm', status: 'running', on: 'phone', attempt: '0a0a0a0a-0000-4000-8000-00000000000a', url: 'https://a.example/x', terminal: 'f'.repeat(32), pid: 9 } },
+      odd: { signInStatus: { methodId: 'm', status: 'running', on: 'mac', attempt: 'nope', url: 'javascript:alert(1)', terminal: '../x' } },
+    } }))).toEqual({
+      phone: { signInStatus: { methodId: 'm', status: 'running', on: 'phone', attempt: '0a0a0a0a-0000-4000-8000-00000000000a', url: 'https://a.example/x', terminal: 'f'.repeat(32) } },
+      odd: { signInStatus: { methodId: 'm', status: 'running' } },
+    })
     expect(publicSignIn([{ id: 'a', name: 'A' }, { id: 'e', name: 'E', type: 'env_var' }, null])).toEqual([{ id: 'a', name: 'A', type: 'agent' }])
   })
 })
@@ -224,9 +274,22 @@ describe('agent routes', () => {
     expect((await request('/v1/computer/settings', 'PATCH', { defaultAgent: 'nope' })).status).toBe(400)
     expect((await request('/v1/computer/settings', 'PATCH', { defaultAgent: 'goose' })).body.settings.defaultAgent).toBe('goose')
     expect((await request('/v1/computer/settings', 'PATCH', { defaultAgent: null })).body.settings.defaultAgent).toBeNull()
-    expect(await request('/v1/agents/claude-acp/sign-in', 'POST', { methodId: 'console-login' })).toEqual({ status: 200, body: { started: true, method: { id: 'console-login', name: 'Anthropic Console', type: 'terminal' } } })
+    // A caller from before phones and attempts sends only the method, and signs in on the display.
+    expect(await request('/v1/agents/claude-acp/sign-in', 'POST', { methodId: 'console-login' }))
+      .toEqual({ status: 200, body: { started: true, method: { id: 'console-login', name: 'Anthropic Console', type: 'terminal' }, attempt: expect.stringMatching(ATTEMPT) } })
+    expect(fake.calls.at(-1)).toMatchObject({ mode: 'sign-in', argument: { on: 'display' } })
     expect(fake.calls.at(-1)?.mode).toBe('sign-in')
     expect((await request('/v1/agents/claude-acp/sign-in', 'POST', { methodId: 'nope' })).status).toBe(400)
+    const phone = await request('/v1/agents/claude-acp/sign-in', 'POST', { methodId: 'console-login', on: 'phone' })
+    expect(phone).toMatchObject({ status: 200, body: { started: true, attempt: expect.stringMatching(ATTEMPT) } })
+    const { attempt } = phone.body
+    expect(fake.calls.at(-1)).toMatchObject({ mode: 'sign-in', argument: { on: 'phone', attempt } })
+    expect((await request('/v1/agents/claude-acp/sign-in/callback', 'POST', { attempt, url: 'https://example.com/' })).status).toBe(400)
+    expect((await request('/v1/agents/claude-acp/sign-in/callback', 'POST', { url: 'http://localhost:54545/callback?code=1' })).status).toBe(400)
+    expect(await request('/v1/agents/claude-acp/sign-in/callback', 'POST', { attempt, url: 'http://localhost:54545/callback?code=1' }))
+      .toEqual({ status: 409, body: { error: 'This sign-in is no longer waiting. Start it again.' } })
+    expect((await request('/v1/agents/claude-acp/sign-in/cancel', 'POST')).status).toBe(400)
+    expect(await request('/v1/agents/claude-acp/sign-in/cancel', 'POST', { attempt })).toEqual({ status: 200, body: { cancelled: false } })
     const after = await request('/v1/agents')
     expect(after.body.agents.find((agent: { id: string }) => agent.id === 'claude-acp')).toMatchObject({ installed: { version: '0.98.0' }, signIn: [{ id: 'claude-ai-login' }, { id: 'console-login' }] })
   })

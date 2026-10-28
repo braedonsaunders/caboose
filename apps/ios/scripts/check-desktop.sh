@@ -11,7 +11,7 @@ Switchyard (Desktop tab, no external display):
    remain visible during resizing and after it settles. Thunar fits its tile.
 2. Double-tap the grabber: the same full-screen app card as Apps opens, with its
    window menu, keyboard and close controls. Focus a different tile, then use the
-   right-side toolbar's Full Screen control -> Open App Full Screen: that app opens.
+   right-side toolbar's Full Screen control: that app opens directly.
    There is no separate Full Screen button centered above the tile. Repeat with
    the grabber menu, VoiceOver Full Screen action and Command-Option-F.
    Double-tap browser content: the browser receives it. Drag the grabber and long
@@ -31,16 +31,27 @@ Switchyard (Desktop tab, no external display):
    menu opens at the touch with a ring and haptic. A two-finger pinch or moving
    fingers must not open a menu. Long-press in Thunar also right-clicks.
 5. Enter and leave the browser's own full screen (F11). Browser chrome returns
-   on exit. After pulling back to a tile, another app can enter full screen.
+   on exit. Use the covering window's top tab to exit, then enter it again.
+   In the app card reveal native controls from the sidebar edge and choose
+   Window Options -> Exit App Full Screen. Browser controls return; the complete
+   picture stays within the viewport. Repeat with page/player fullscreen and a
+   different fullscreen app (a slideshow or game), including hardware Escape.
+   Exit App Full Screen remains offered even before fullscreen metadata arrives.
+   After pulling back to a tile, another app can enter full screen.
+   Play a video in a tile, then open that same app as a card and return repeatedly.
+   Resize/fold/rotate during playback: video stays registered over the base picture,
+   without a second moving image at the borders or video bleeding beyond the window.
+   Scroll the player partially out of view: clipping does not rescale its picture.
 6. Open a card from Apps and Home on the Duo, closed/open and rotated, with the
    sidebar on either side. Back, Switch App, Keyboard and Window Options are in
    the side toolbar; no window title or custom controls row takes app height.
    The app fills the height beside the bar, with no content under either side's
    safe area. Switch App lists the current title and every open app; select one,
    then edge-swipe back. Back returns to the originating tab without closing Linux.
-   From Desktop's trailing Full Screen control, Hide Desktop Bars expands the whole
-   desktop; its handle restores the sidebar. Card Full Screen is in the trailing
-   Window Options actions, never a centered floating button. Collapse the sidebar
+   Desktop's trailing Full Screen control opens the focused app card directly.
+   On Duo the card starts with controls hidden; swipe inward from the sidebar edge
+   to reveal them, then use Hide Sidebar or swipe outward on its controls to hide.
+   Card Full Screen is also in Window Options. Collapse the sidebar
    until toolbar actions overflow; open Full Screen, Switch App and Window Options:
    their system dialogs escape the sidebar group, with every action reachable and
    no clipped or near-zero-height submenu. Repeat with the keyboard open.
@@ -50,10 +61,17 @@ Switchyard (Desktop tab, no external display):
    Show/hide the keyboard and rotate/fold: the whole app fits above the keyboard
    and accessory row, and Hide Keyboard remains reachable. In Window Options,
    check Ask Agent About This Window (when available), Redraw and Close Window.
-   Enter Full Screen: controls disappear and the viewport grows. Tap or pull its
-   top handle to restore controls; VoiceOver can activate Show window controls,
+   Enter Full Screen: native controls disappear and the viewport grows. Reveal them
+   with the inward edge swipe (or the top handle); this preserves guest fullscreen.
+   Exit App Full Screen is a separate action. VoiceOver can activate Show window controls,
    Back, Switch App, Keyboard and Window Options. Open a dialog and a submenu in
    both modes: they fit and accept input. Dismiss the card: Desktop fits again.
+   On iPhone and iPad, open a spreadsheet as a card from Apps and from a tile.
+   Double-tap a cell into editing: the keyboard opens from the guest's editing
+   signal. Leave editing by tapping noneditable content: it closes. Hide it manually
+   and wait: it stays hidden until another editing tap. Return retains existing
+   dismissal behavior. Double-tap noneditable browser content to select/zoom:
+   the keyboard stays closed. Repeat with native Wayland and pointer-routed Xwayland.
 7. Switch Desktop -> Home -> Desktop. Columns retain their positions. Open an app
    from Apps: it opens as a card and edge-swiping moves to the next app.
    On Home, scroll Open, Pinned and Recent all the way right in every folded and
@@ -77,6 +95,16 @@ Native Terminal tab:
     Open the keyboard: the grid ends above its accessory keys. Hide it: the grid
     fills the height again. Repeat unfolded and rotated; the session menu stays
     accessible. On devices with horizontal bars, the grid stays between the bars.
+
+Shared keyboard accessory:
+12. In app cards, tiled/free Desktop, external-display trackpad and Terminal on
+    iPhone, Duo outer/inner displays and iPad, show the keyboard. Hide Keyboard
+    is always above the key row at the right, never in the ellipsis menu. Scroll
+    the key row: Hide stays visible. Hide, reopen, fold and rotate; content fits
+    above both rows. Ctrl/Alt modify one subsequent key, arrows repeat while held,
+    Escape/Tab/navigation work, and Return submits/dismisses outside code apps.
+    In remote apps verify Aa, QuickPath and marked-text composition; in Terminal
+    verify application-cursor arrows and explicit ANSI backgrounds still work.
 
 Capture evidence with:
   xcrun devicectl device info displays --device DEVICE

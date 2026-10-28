@@ -322,6 +322,11 @@ H.264 1088-line picture whose 1080 lines are visible). Every video stream is dra
 the window's own picture, ordered by `z` (higher on top); window pictures carry no alpha,
 so the server sends the visible region as `clip` instead of relying on a hole in the
 window. Video ids are their own namespace, unique for the server's lifetime.
+The client intersects `clip` (or `rect` when absent) with the window's bounds and `rect`;
+clipping preserves the scale and origin of the complete decoded picture. The window's
+picture and video layers share one window-pixel-to-view transform, including while the
+previous picture stretches during a resize. A playback layer has one active presentation
+owner; thumbnails and inactive presentations do not take it from the visible window.
 
 - The client lists in `hello.video_decoders` what it can play as a video stream. The server
   creates streams only in those codecs and sends `video` in `features`; anything else

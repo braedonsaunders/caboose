@@ -16,7 +16,9 @@ It is one file, `caboose-agentd.mjs`, on Node 22 with the official TypeScript SD
 | `run <task dir>` | One task. Started detached (`setsid`) by the host as `caboose` with the agent seat's launch environment (`/run/caboose/agent-display.env`: its `WAYLAND_DISPLAY`, Xwayland `DISPLAY=:101` and `XAUTHORITY`, toolkit backends and control socket) and the seat's D-Bus session bus `/run/user/1000/agent-bus`. |
 | `install <spec>` | Prefetches the agent, starts it once to learn its sign-in methods, records it as installed. Prints `{ installed: { version }, signIn: [...] }`. |
 | `probe <spec>` | `initialize` only; records and prints the sign-in methods. |
-| `sign-in <spec>` | Runs one sign-in method on the owner's display (see below). |
+| `sign-in <spec>` | Runs one sign-in method, on the phone or the owner's display (see below). |
+| `sign-in-callback <id> <attempt> <url>` | Delivers the loopback address sign-in `attempt` on the phone was sent back to. Prints `{ status }`. |
+| `sign-in-cancel <id> <attempt>` | Stops the agent's running sign-in if it is `attempt`. Prints `{ cancelled }`. |
 | `state` | Prints `{ runner, agents: { <id>: { installed?, authMethods?, signInStatus?, env? } } }`; `env` lists the variable names the agent's environment file sets, never their values. |
 | `set-env <id> <json>` | Applies `{ set?: { NAME: value }, remove?: [NAME] }` to `~/.config/caboose/agents/<id>.env`, keeping its other lines and comments, writing values in double quotes (one line each, at most 8192 characters), mode 0600, through a temporary file and a rename. Prints `{ env: [names] }`. |
 
@@ -159,16 +161,50 @@ a turn (including the history an agent replays on `session/load`) are not writte
   says so.
 - **Signed out.** An `auth_required` error (ACP code -32000) from `session/new`, `load`,
   `resume` or `prompt` ends the turn with an `auth_required` event and the runner exits.
-- **Sign-in** (`sign-in` mode, spec `{ agent, methodId, env? }`): progress in
-  `~/.local/share/caboose/agents/<id>/sign-in.json` `{ methodId, status: "running" |
-  "succeeded" | "failed", message?, startedAt, finishedAt? }`. An `agent` method is ACP
-  `authenticate`, with the agent started with `env`, the owner display's launch environment
-  from the host (its Wayland socket, Xwayland's `DISPLAY` and `XAUTHORITY`, toolkit hints),
-  plus the owner's session bus, so the browser it opens is on the owner's screen; it waits
-  up to 30 minutes. A `terminal` method opens
-  `xfce4-terminal` (else `x-terminal-emulator`) on that display running the agent's own
-  program with the method's `args` in place of the registry's, and its `env` over the
-  registry's; exit status 0 is success, after which the runner initializes the agent again.
+- **Sign-in** (`sign-in` mode, spec `{ agent, methodId, on?: "phone" | "display", attempt?,
+  env? }`, `on` defaulting to `"display"`, `attempt` a UUID the host chooses, else one is
+  made up): progress in `~/.local/share/caboose/agents/<id>/sign-in.json` `{ methodId,
+  status: "running" | "succeeded" | "failed", attempt, on, pid, url?, terminal?, message?,
+  startedAt, finishedAt? }`. An `agent` method is ACP `authenticate`, waiting up to 30
+  minutes. A `terminal` method runs the agent's own program with the method's `args` in
+  place of the registry's, and its `env` over the registry's; exit status 0 is success, after
+  which the runner initializes the agent again.
+  - **Attempts and the lock.** Every read-then-write of `sign-in.json` (starting, which stops
+    the running attempt first; each record of progress; cancelling; delivering a callback)
+    holds `agents/<id>/sign-in.lock`, created exclusively with the holder's pid. A lock
+    whose holder is gone, that stayed empty for 5 seconds, or that is older than two minutes
+    is taken over, through `sign-in.lock.takeover` so only one process does it and only while
+    the lock is unchanged. Progress is written only while `sign-in.json` still names this
+    attempt and it is still running; a runner that finds otherwise (replaced, cancelled or
+    finished) hangs up its terminal session, stops its agent, removes its own files and exits
+    1. Each attempt's files (its page list, browser commands, scripts, exit and environment
+    files) are in `agents/<id>/attempts/<attempt>/`, removed when it ends, so cleaning up
+    never touches another attempt's. Stopping an attempt reads the recorded pid's command line
+    (from `/proc`, else `ps`) and signals its process group only when it is the sign-in runner
+    of that attempt: SIGTERM, then SIGKILL after three seconds; once that runner is gone, its
+    attempt's directory is removed too. For tests,
+    `CABOOSE_AGENTD_SIGN_IN_PAUSE_MS` makes every holder wait between reading the state and
+    acting on it, so overlapping operations can be ordered exactly.
+  - **On the display**, the agent starts with `env`, the owner display's launch environment
+    from the host (its Wayland socket, Xwayland's `DISPLAY` and `XAUTHORITY`, toolkit
+    hints), plus the owner's session bus, so the browser it opens is on the owner's screen;
+    a `terminal` method opens `xfce4-terminal` (else `x-terminal-emulator`) there.
+  - **On the phone**, the desktop's variables are removed and the attempt's `bin`
+    (`xdg-open`, `x-www-browser`, `www-browser`, `sensible-browser`, `gnome-www-browser`,
+    each appending the pages it is given to the attempt's `pages`) comes first on `PATH`, with
+    `BROWSER` set to its `xdg-open`; the latest page is `url`. A `terminal` method runs in a
+    session of the terminal service, started with its `/start` route and the token in
+    `/run/caboose/display-token`, and the session id is `terminal`; its environment goes
+    through a file of mode 0600 that the session reads and removes.
+- **`sign-in-callback <id> <attempt> <url>`** fetches `url`, which must be `http://` on
+  `localhost`, `127.0.0.1` or `[::1]` with a port, inside the computer (trying both loopback
+  addresses for `localhost`), following up to five redirects that stay on the loopback,
+  within 30 seconds, and prints `{ status }`. It holds the sign-in lock throughout and
+  refuses unless `attempt` is the agent's running sign-in on the phone.
+- **`sign-in-cancel <id> <attempt>`** stops the agent's running sign-in if it is `attempt`
+  (its runner and terminal session), records it as failed with "Sign-in cancelled." and
+  prints `{ cancelled: true }`; any other attempt is left running and it prints
+  `{ cancelled: false }`.
 
 ## Install
 
@@ -188,7 +224,11 @@ pnpm --filter caboose-agentd test
 runs the real runner against `test/stand-in-agent.mjs`, a stand-in ACP agent written with the
 SDK's agent side: streaming, tool calls, plans, permissions (ask and auto, named options),
 cancel (including an agent that ignores it), replies on the same session, `session/resume`,
-`session/load` and the recap fallback, `auth_required`, both sign-in kinds, npx prefetch,
+`session/load` and the recap fallback, `auth_required`, both sign-in kinds on the display and
+on the phone (the page handed over, the callback delivered, a terminal session, and attempts:
+overlapping starts, a cancel overlapping a newer start, a replaced runner's late report, a
+stale callback, a lock left by a dead or hung holder, and never signalling a process that is
+not the attempt's runner), npx prefetch,
 a binary download with its checksum, the home-only file system, attachments and the owner's
 environment file, durable claims, duplicate suppression and interrupted execution.
 The host's focused recovery tests run with

@@ -332,8 +332,12 @@ Sessions outlive their connection: at most 16 exist, and a new one past that han
 one left unattached longest. Each keeps its last 256 KiB of output for reattaching, and while
 nobody is attached its output is read and kept, so the shell never blocks. Stopping the
 service hangs up every shell; what a shell started with `nohup` or `setsid` keeps running.
-`GET /sessions` and `GET /hangup?session=` serve the host's session routes. The protocol is
-in [Terminal](#terminal).
+`GET /sessions` and `GET /hangup?session=` serve the host's session routes.
+`GET /start?cols=&rows=&argv=` (argv a base64url JSON list of 1–64 strings, the first an
+absolute path) starts a session running that program instead of a shell, with the same
+environment, and answers `{ session }` for a client to attach to; the agent runner uses it
+for a terminal sign-in on the phone ([Signing in](#signing-in)). The protocol is in
+[Terminal](#terminal).
 
 **Notifications.** `caboose-notifications.service` runs `monitor.py`, which observes
 `org.freedesktop.Notifications.Notify` calls on the owner's session bus and writes each as a
@@ -1281,7 +1285,9 @@ delayed-execution policies, persistence/recovery requirements and focused tests.
 | `GET` | `/v1/agents` | The agents this computer can run (below). Never wakes the computer; shows the last known installed state while it is parked |
 | `POST` | `/v1/agents/:id/install` | → `{ agent }`. Prefetch the registry's current version and learn its sign-in methods; can take up to 15 minutes. 404 for an id not in the registry, 409 while the computer is not running or has no runner, 502 when the install fails |
 | `PUT` | `/v1/agents/:id/env` | `{ set?: { NAME: value }, remove?: [NAME] }` → `{ env: [NAME] }`. Names are shell-style; values are one line of at most 8192 characters. 400 for invalid input, 409 while the computer is not running |
-| `POST` | `/v1/agents/:id/sign-in` | `{ methodId }` → `{ started: true, method: { id, name, description?, type } }`. 400 for an unknown method |
+| `POST` | `/v1/agents/:id/sign-in` | `{ methodId, on?: "phone" \| "display" }` → `{ started: true, method: { id, name, description?, type }, attempt }`. `on` defaults to `"display"`. Each start is a new attempt that replaces the agent's running one ([Signing in](#signing-in)). 400 for an unknown method |
+| `POST` | `/v1/agents/:id/sign-in/callback` | `{ attempt, url }` → `{ delivered: true, status }`: hands the agent waiting on the computer's loopback the address sign-in `attempt`'s page sent the browser back to. `url` must be `http://localhost:<port>/…` (or `127.0.0.1`, `[::1]`). 400 for any other address or without an attempt, 409 unless `attempt` is the agent's running sign-in on the phone, 502 when nothing answers there |
+| `POST` | `/v1/agents/:id/sign-in/cancel` | `{ attempt }` → `{ cancelled }`: stops the agent's running sign-in if it is `attempt`; `cancelled: false` leaves any other attempt running. 400 without an attempt |
 | `POST` | `/v1/agent/tasks` | `{ prompt, agent?, approvals?: "ask" \| "auto", craftMcp?: boolean, attachments?: [{ name, type?, data (base64) }] }` → `{ id }`. 400 when no agent is given and no default is set; 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | Recent tasks, newest first |
 | `GET` | `/v1/agent/tasks/:id/transcript` | → `{ entries: TranscriptEntry[], truncated }`: every turn of the task's conversation, read from the end of its `transcript.jsonl` (at most 2 MiB; `truncated` when earlier lines were left out). 404 for an unknown task, 409 while the computer is not running |
@@ -1308,7 +1314,8 @@ routes answer 409 while the computer is not running or when its image has no run
     distribution: "npx" | "uvx" | "binary",
     installed: { version: string } | null,
     signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>,  // once known
-    signInStatus?: { methodId: string, status: "running" | "succeeded" | "failed", message?: string, startedAt?: string, finishedAt?: string },
+    signInStatus?: { methodId: string, status: "running" | "succeeded" | "failed", attempt?: string, on?: "phone" | "display",
+                     url?: string, terminal?: string, message?: string, startedAt?: string, finishedAt?: string },
     env?: string[]                               // variable names its environment file sets; never values
   }>,                                            // registry order; installed agents no longer in the registry last
   defaultAgent: string | null,
@@ -1373,19 +1380,53 @@ and trimmed, without the `session` and `mode` bookkeeping; each may carry `at`:
 ### Signing in
 
 Agents announce their sign-in methods in ACP `initialize`, which the runner records when an
-agent is installed, probed or run. Sign-in runs on the owner's display, with the launch
-environment from `/run/caboose/display.env`, which the host passes to the runner:
+agent is installed, probed or run. A method is one of two kinds:
 
-- **`agent`:** the runner calls ACP `authenticate`; the agent opens the computer's browser
-  at its own sign-in page, with its callback on the computer's localhost, and the owner
-  completes it on the phone.
-- **`terminal`:** the runner opens a terminal window running the agent's own program with
-  the method's `args` in place of the registry's, and its `env` over the registry's. Exit
-  status 0 is success; the runner then initializes the agent again.
+- **`agent`:** the runner calls ACP `authenticate`, and the agent opens its own sign-in
+  page, usually with its callback on the computer's localhost.
+- **`terminal`:** the runner runs the agent's own program with the method's `args` in place
+  of the registry's, and its `env` over the registry's, in a terminal. Exit status 0 is
+  success; the runner then initializes the agent again.
 
-Progress is reported as `signInStatus` in `GET /v1/agents`
-(`~/.local/share/caboose/agents/<id>/sign-in.json`). Credentials stay wherever the agent
-keeps them in the owner's home.
+A sign-in runs `on` the phone or the owner's display:
+
+- **On the phone** (the app's choice), nothing opens on the display. The runner removes the
+  desktop's variables (`DISPLAY`, `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP` and the like) and
+  puts first on `PATH` its own `xdg-open`, `x-www-browser`, `www-browser`,
+  `sensible-browser` and `gnome-www-browser`, with `BROWSER` naming one of them; each
+  records the web page it is given instead of opening it, and the latest is `signInStatus.url`.
+  The app shows that page in a private in-app browser. When the page sends the browser back
+  to the computer's loopback (`http://localhost:<port>/…`), the app does not load it but
+  sends it to `POST /v1/agents/:id/sign-in/callback`, and the runner fetches it inside the
+  computer, following redirects that stay on the loopback, so the agent's own callback
+  server receives it. A `terminal` method runs in a session of the guest terminal service
+  (`/start`), reported as `signInStatus.terminal`; the app attaches to it through
+  `/v1/terminal` to answer the program's prompts. Its environment reaches the session in a
+  file of mode 0600 that the session reads and removes. Providers that refuse to sign in
+  inside an app's browser (Google's accounts) need another of the page's options, or the
+  display.
+- **On the display**, with the launch environment from `/run/caboose/display.env`, which
+  the host passes to the runner, an `agent` method's page opens in the computer's browser
+  and a `terminal` method in a terminal window.
+
+Every start is a new **attempt**, a UUID the host chooses and returns, recorded in
+`signInStatus.attempt`. Starting replaces the agent's running attempt, whatever its `on`
+and whoever started it; a caller without an attempt (an app from before them) can only
+start. Delivering a callback and cancelling name their attempt and do nothing to any other,
+so a sheet left open from an older attempt never reaches a newer one. In the runner,
+starting, replacing, cancelling, every record of progress and delivering a callback each
+read and act on `sign-in.json` holding the agent's sign-in lock (`sign-in.lock`, created
+exclusively; one whose holder process is gone, that was never written, or that is older than
+two minutes is taken over, through a second lock so only one process takes it). A runner
+records progress only while its attempt is still the agent's and still running; once
+replaced, cancelled or finished it hangs up its terminal session, removes its own files and
+exits. Each attempt keeps its files (page list, browser commands, scripts) in its own
+directory, `agents/<id>/attempts/<attempt>/`, so no cleanup reaches another attempt's.
+Stopping an attempt signals the runner's process
+group only after reading the runner's command line to confirm it is that attempt's runner,
+with SIGKILL after three seconds, and hangs up its terminal session. Progress is reported as
+`signInStatus` in `GET /v1/agents` (`~/.local/share/caboose/agents/<id>/sign-in.json`).
+Credentials stay wherever the agent keeps them in the owner's home.
 
 ### The agent seat
 
@@ -1462,6 +1503,11 @@ device has a hardware decoder, AV1, and ImageIO for PNG and WebP tiles. Every wr
 window's texture is a blit on one shared Metal queue, which runs command buffers in commit
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
+The window picture and its video layers use the same mapping from the confirmed surface
+size to the view's bounds, including while a resize stretches the previous picture.
+Video clips intersect the window bounds without rescaling the decoded picture. Only the
+active presentation hosts a stream's playback layer; an inactive Yard relinquishes it to
+the app card, and a detached view releases its layers.
 
 - **Windows.** A Linux window opened from Home or Apps is an app card: full screen, sized
   to the phone. On a device with a vertical toolbar, the card starts with its controls
@@ -1474,6 +1520,15 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   title is in the switcher; Options includes Ask Agent, redraw and close. The switcher and
   options open system action dialogs outside the toolbar's overflow group. Full Screen
   hides the controls; its accessible top handle brings them back.
+  Exit App Full Screen in Options focuses the app, sends an Escape press and release,
+  and clears the guest fullscreen and maximized states. It is available even before the
+  app reports fullscreen. The tile's menu offers the same action; pulling an app-requested
+  fullscreen window back into its tile also sends Escape. Hardware Escape reaches the app.
+  Single taps, pointer clicks, double taps and native touch taps use the same bounded
+  keyboard-focus request: text-input-v3 decides whether editing began, with the guest's
+  text cursor as fallback. A double tap that selects or zooms does not itself request the
+  keyboard. Dismissing the keyboard, leaving the view and Return in a non-code app cancel
+  the pending request.
   An external display shows the windows floating, resizing and
   stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
   The green title-bar button maximizes above the dock: its title bar meets the desktop's
@@ -1596,6 +1651,12 @@ Pinned and recent apps are kept on the phone per computer.
   pasted multiline text and hardware Return leave it open. Otherwise autocorrect and
   capitals are on for prose and off in terminals and code editors, with an `Aa` toggle on
   the key bar.
+- **Keyboard accessory.** Remote app cards, tiled and free desktops, the external-display
+  trackpad and the native Terminal use one shared accessory. Hide Keyboard stays at the
+  top right above the horizontally scrolling key row; it never enters toolbar overflow.
+  The row offers Escape, Tab, sticky Ctrl/Alt, repeating arrows, navigation and shell symbols.
+  Remote inputs share the same text/composition and modifier handling, with an Aa control
+  for autocorrect; Terminal keeps its own terminal-byte semantics without prose correction.
 - **Pencil.** The client defines `pencil` samples (pressure, tilt, azimuth, hover), but the
   compositor does not advertise the `pencil` feature, so Apple Pencil acts as touch and
   Linux applications receive no pressure or tilt.
@@ -1664,8 +1725,11 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   quotes, inline styles and links, plus selectable fenced code with Copy. The chat list is
   searchable by title and agent. A running chat shows a live preview when the shared agent
   seat has an application window; Watch opens that real surface. A working agent can be stopped. Pending approvals show in the chat, on Home and as a banner over every screen, with the agent's always-allow option when it
-  has one. A task whose agent was signed out offers its sign-in methods, Connect a Model,
-  and asking another agent the same thing in a new chat. A window's menu hands the window
+  has one. A task whose agent was signed out offers Sign In and Ask Another (another agent
+  the same thing in a new chat, or Connect a Model). Sign In, there and in Settings › Agents,
+  opens a sheet that signs in on the phone: the sign-in page in a private in-app browser,
+  whose return to the computer's localhost goes to the agent, and a terminal sign-in's
+  terminal, with Sign In on Computer's Screen as the other way. A window's menu hands the window
   (screenshot, title, app) to an agent as an attachment.
 - **Connect a Model.** An API key instead of an account: OpenRouter (through the registry's
   `goose`, with `GOOSE_PROVIDER=openrouter`, `GOOSE_MODEL` from OpenRouter's public model

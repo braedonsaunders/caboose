@@ -429,6 +429,19 @@ final class YardModel {
         if let cover = coverWindow { pullBack(cover) } else if let focused = layout.focused { zoom(focused) }
     }
 
+    /// Available from every tile, even if the app has not reported its fullscreen state.
+    func exitAppFullscreen(_ window: Int) {
+        guard let session, let remote = session.windows[window], let tile = tiles[window] else { return }
+        let scale = pixelsPerPoint
+        let target = CGRect(x: tile.minX * scale, y: tile.minY * scale,
+                            width: tile.width * scale, height: tile.height * scale).integral
+        session.exitFullscreen(remote, frame: target)
+        zoomed = nil
+        coverProgress = 0
+        sent[window] = target
+        apply()
+    }
+
     /// The covering window followed back toward its tile by a finger, 0...1.
     func dragCover(progress: CGFloat) {
         coverProgress = min(1, max(0, progress))
@@ -459,7 +472,7 @@ final class YardModel {
                 let scale = self.pixelsPerPoint
                 let target = CGRect(x: tile.minX * scale, y: tile.minY * scale, width: tile.width * scale, height: tile.height * scale).integral
                 self.sent[window] = target
-                session.configure(remote, frame: target, state: ["fullscreen": false])
+                session.exitFullscreen(remote, frame: target)
             }
             self.apply()
         }

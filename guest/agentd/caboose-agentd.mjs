@@ -8,7 +8,9 @@
 //   caboose-agentd run <task dir>         one task: prompts from <dir>/inbox, transcript.jsonl out
 //   caboose-agentd install <spec base64>  prefetch an agent, learn its sign-in methods, record it
 //   caboose-agentd probe <spec base64>    initialize only: learn and record its sign-in methods
-//   caboose-agentd sign-in <spec base64>  run one sign-in method on the owner's display
+//   caboose-agentd sign-in <spec base64>  run one sign-in method, on the phone or the owner's display
+//   caboose-agentd sign-in-callback <id> <attempt> <url>  deliver a page a sign-in on the phone was sent back to
+//   caboose-agentd sign-in-cancel <id> <attempt>  stop the agent's running sign-in if it is that attempt
 //   caboose-agentd state                  print what is installed and known, as JSON
 //   caboose-agentd set-env <id> <json>    change an agent's environment file: { set?, remove? }
 import { spawn } from 'node:child_process'
@@ -270,18 +272,21 @@ const CLIENT_CAPABILITIES = {
   fs: { readTextFile: true, writeTextFile: true },
   // Agents run their own commands; Caboose does not host terminals for them.
   terminal: false,
-  // Terminal sign-in methods open a terminal window on the owner's display.
+  // Terminal sign-in methods run in a terminal the owner sees: on the phone, or a window on the display.
   auth: { terminal: true },
 }
 
 /**
  * Starts an agent and initializes ACP. `handlers` receives session updates and permission
- * requests. Resolves { connection, init, child, exited, stderrTail(), close() }.
+ * requests; `unset` names variables the agent must not inherit. Resolves { connection, init,
+ * child, exited, stderrTail(), close() }.
  */
-async function startAgent(spec, { cwd, env = {}, handlers = {}, log }) {
+async function startAgent(spec, { cwd, env = {}, unset = [], handlers = {}, log }) {
   if (spec.distribution === 'binary') await ensureBinary(spec)
   const { command, args } = launchCommand(spec)
-  const child = spawn(command, args, { cwd, env: { ...process.env, ...spec.env, ...await readEnvFile(spec.id), ...env }, stdio: ['pipe', 'pipe', 'pipe'] })
+  const childEnv = { ...process.env, ...spec.env, ...await readEnvFile(spec.id), ...env }
+  for (const name of unset) delete childEnv[name]
+  const child = spawn(command, args, { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] })
   child.stdin.on('error', () => {})
   let tail = ''
   let logged = 0
@@ -1077,30 +1082,76 @@ async function install(spec) {
 }
 
 /**
- * Runs one sign-in method on the owner's display. An "agent" method is ACP `authenticate`
- * (the agent opens the browser itself); a "terminal" method opens a terminal window running
- * the agent's own program with the method's arguments and environment. Progress goes to
- * agents/<id>/sign-in.json.
+ * Runs one sign-in method, `on` the phone or the owner's display. An "agent" method is ACP
+ * `authenticate` (the agent opens its sign-in page itself); a "terminal" method runs the
+ * agent's own program with the method's arguments and environment in a terminal. On the
+ * phone the terminal is a session of the terminal service that the app attaches to, and any
+ * page the sign-in opens is handed to the app rather than a browser here; on the display it
+ * is a terminal window and the page opens in the computer's browser.
+ *
+ * Each sign-in is one `attempt` (a UUID the host chooses; one is made up when the spec has
+ * none). Starting replaces the agent's running attempt, and every record of progress is
+ * written only while this attempt is still the agent's, all under the agent's sign-in lock;
+ * a runner whose attempt was replaced or cancelled stops. Progress goes to
+ * agents/<id>/sign-in.json, with `attempt`, `pid`, `on`, and on the phone the `url` of the
+ * page to show and the `terminal` session.
  */
-async function signIn({ agent, methodId, env: ownerEnv = {} }) {
+async function signIn({ agent, methodId, env: ownerEnv = {}, on = 'display', attempt = randomUUID() }) {
   const spec = readSpec(agent)
   if (typeof methodId !== 'string' || !methodId) throw new Error('methodId is required')
+  if (on !== 'phone' && on !== 'display') throw new Error('on must be "phone" or "display"')
+  if (typeof attempt !== 'string' || !ATTEMPT.test(attempt)) throw new Error('attempt must be a UUID')
   const dir = join(AGENTS_DIR, spec.id)
-  await mkdir(dir, { recursive: true })
   const status = join(dir, 'sign-in.json')
   const startedAt = new Date().toISOString()
-  const report = (state, extra = {}) => writeJson(status, { methodId, status: state, startedAt, ...extra, ...(state !== 'running' ? { finishedAt: new Date().toISOString() } : {}) })
-  await report('running')
-  const env = displayEnv(ownerEnv)
+  const progress = { on, attempt, pid: process.pid }
+  const record = (state, extra = {}) => ({ methodId, status: state, startedAt, ...progress, ...extra, ...(state !== 'running' ? { finishedAt: new Date().toISOString() } : {}) })
+  // Replacing the running attempt and recording this one are one step.
+  await withSignInLock(dir, async () => {
+    const current = await readJson(status)
+    await readPause()
+    if (current?.status === 'running') await stopRunner(current, dir)
+    await writeJson(status, record('running'))
+  })
+  /**
+   * Records progress while this attempt is still the agent's running sign-in; resolves false
+   * once it is not (replaced, cancelled, or already finished), so nothing is written over it.
+   */
+  const fenced = (state, extra) => withSignInLock(dir, async () => {
+    const current = await readJson(status)
+    await readPause()
+    if (current?.attempt !== attempt || current.status !== 'running') return false
+    await writeJson(status, record(state, extra))
+    return true
+  })
+  // Everything this attempt writes besides sign-in.json is its own, so cleaning up after it
+  // never touches another attempt's files.
+  const work = attemptDir(dir, attempt)
+  await mkdir(work, { recursive: true })
+  const pages = join(work, 'pages')
   let started
+  let session
+  /** This attempt was replaced or cancelled: leave nothing of it running. */
+  const abandon = async () => {
+    if (session) await terminalRequest(`/hangup?session=${session}`).catch(() => {})
+    await started?.close().catch(() => {})
+    await rm(work, { recursive: true, force: true })
+    process.exit(1)
+  }
+  const report = async (state, extra) => { if (!await fenced(state, extra)) await abandon() }
+  const env = on === 'phone' ? await pageCommands(work, pages) : displayEnv(ownerEnv)
+  const unset = on === 'phone' ? DESKTOP_VARS : []
+  const watcher = on === 'phone' ? watchPages(pages, url => { progress.url = url; return report('running') }) : undefined
   try {
-    started = await startAgent(spec, { cwd: HOME, env })
+    started = await startAgent(spec, { cwd: HOME, env, unset })
     const method = (started.init.authMethods ?? []).find(item => item?.id === methodId)
     if (!method) throw new Error(`${spec.name} has no sign-in method "${methodId}"`)
     if (method.type === 'terminal') {
       await started.close()
       started = undefined
-      const code = await runInTerminal(spec, method, env, dir)
+      const code = on === 'phone'
+        ? await runOnPhone(spec, method, env, work, id => { session = id; progress.terminal = id; return report('running') })
+        : await runInTerminal(spec, method, env, work)
       if (code !== 0) throw new Error(code === null ? 'The sign-in terminal closed before it finished.' : `The sign-in command exited with code ${code}.`)
       // Reinitialize, as the protocol asks after a terminal sign-in, and keep what it reports.
       await probe(spec)
@@ -1113,22 +1164,386 @@ async function signIn({ agent, methodId, env: ownerEnv = {} }) {
     } else {
       throw new Error(`Sign-in methods of type "${method.type}" are not supported.`)
     }
-    await report('succeeded')
+    await watcher?.stop()
+    if (!await fenced('succeeded')) process.exitCode = 1
   } catch (error) {
-    await report('failed', { message: clip(errorMessage(error), 1000) })
+    await watcher?.stop()
+    await fenced('failed', { message: clip(errorMessage(error), 1000) })
     process.exitCode = 1
   } finally {
     await started?.close()
+    await rm(work, { recursive: true, force: true })
   }
 }
 
-/** Opens a terminal window running the agent's program for a terminal sign-in method; resolves its exit status. */
-async function runInTerminal(spec, method, env, dir) {
+/** The directory of one attempt's own files: its page list, browser commands and scripts. */
+function attemptDir(dir, attempt) { return join(dir, 'attempts', attempt) }
+
+/**
+ * Cancels the agent's running sign-in if it is attempt `attempt`: stops its runner and
+ * terminal session and records it as failed. A different (newer) attempt is left alone.
+ * Resolves whether it was cancelled.
+ */
+async function cancelSignIn(id, attempt) {
+  if (!AGENT_ID.test(id ?? '')) throw new Error('invalid agent id')
+  if (typeof attempt !== 'string' || !ATTEMPT.test(attempt)) throw new Error('attempt must be a UUID')
+  const path = join(AGENTS_DIR, id, 'sign-in.json')
+  return withSignInLock(join(AGENTS_DIR, id), async () => {
+    const current = await readJson(path)
+    await readPause()
+    if (current?.status !== 'running' || current.attempt !== attempt) return false
+    await stopRunner(current, join(AGENTS_DIR, id))
+    const { pid: _pid, ...rest } = current
+    await writeJson(path, { ...rest, status: 'failed', message: 'Sign-in cancelled.', finishedAt: new Date().toISOString() })
+    return true
+  })
+}
+
+/**
+ * Stops a running attempt as recorded: its runner's process group (which holds the agent),
+ * only after checking that the pid is still the runner of that attempt, and its terminal
+ * session. A runner that ignores SIGTERM for three seconds is killed. Once its runner is gone,
+ * the attempt's own directory in the agent's `dir` goes too.
+ */
+async function stopRunner(current, dir) {
+  const pid = current.pid
+  const owns = () => runsAttempt(pid, current.attempt)
+  const ours = Number.isInteger(pid) && pid > 1 && pid !== process.pid
+  if (ours && await owns()) {
+    signalGroup(pid, 'SIGTERM')
+    for (let wait = 0; wait < 30 && await owns(); wait++) await sleep(100)
+    if (await owns()) signalGroup(pid, 'SIGKILL')
+    for (let wait = 0; wait < 10 && await owns(); wait++) await sleep(100)
+  }
+  if (typeof current.terminal === 'string' && TERMINAL_SESSION.test(current.terminal)) {
+    await terminalRequest(`/hangup?session=${current.terminal}`).catch(() => {})
+  }
+  if (typeof current.attempt === 'string' && ATTEMPT.test(current.attempt) && !(ours && await owns())) {
+    await rm(attemptDir(dir, current.attempt), { recursive: true, force: true })
+  }
+}
+
+function signalGroup(pid, signal) {
+  // The runner starts with setsid, so its pid is its process group.
+  try { process.kill(-pid, signal) } catch { try { process.kill(pid, signal) } catch {} }
+}
+
+/**
+ * Whether `pid` is the sign-in runner of `attempt`, read from its own command line, so a
+ * reused pid, or the runner of another attempt, is never signalled. A record from a runner
+ * that predates attempts has none, and matches a runner started without one.
+ */
+async function runsAttempt(pid, attempt) {
+  const proc = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => undefined)
+  const args = proc !== undefined ? proc.split('\0') : (await exec('ps', ['-o', 'command=', '-p', String(pid)]).catch(() => '')).trim().split(/\s+/)
+  const at = args.indexOf('sign-in')
+  if (at < 1 || !args.slice(0, at).some(arg => arg.includes('caboose-agentd'))) return false
+  try { return (decodeSpec(args[at + 1]).attempt ?? null) === (attempt ?? null) } catch { return false }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The sign-in lock.
+
+const ATTEMPT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const TERMINAL_SESSION = /^[0-9a-f]{32}$/
+const LOCK_WAIT_MS = 90_000
+/** Longer than anything done holding the lock: stopping a runner, or delivering a callback. */
+const LOCK_STALE_MS = 120_000
+/** How long a lock file may stay empty while its creator writes it. */
+const LOCK_WRITE_MS = 5_000
+
+/**
+ * Runs `work` holding the agent's sign-in lock (agents/<id>/sign-in.lock), so starting,
+ * replacing, cancelling, recording progress and delivering a callback never interleave,
+ * across processes. The lock names its holder's pid; one whose holder has died, that was
+ * never written, or that is older than LOCK_STALE_MS is taken over. Taking over goes through
+ * a second lock, so only one process does it, and only while the lock is still the one it
+ * judged stale.
+ */
+async function withSignInLock(dir, work) {
+  await mkdir(dir, { recursive: true })
+  const lock = join(dir, 'sign-in.lock')
+  const token = randomUUID()
+  const deadline = Date.now() + LOCK_WAIT_MS
+  while (!await createLock(lock, { pid: process.pid, token, at: Date.now() })) {
+    const held = await readFile(lock, 'utf8').catch(() => undefined)
+    const info = await stat(lock).catch(() => undefined)
+    if (held !== undefined && info && isStaleLock(held, info.mtimeMs)) await takeOver(lock, held)
+    if (Date.now() > deadline) throw new Error('Another sign-in change for this agent did not finish. Try again.')
+    await sleep(20)
+  }
+  try {
+    return await work()
+  } finally {
+    // Only our own: a lock taken over from us is someone else's now.
+    if ((await readJson(lock))?.token === token) await rm(lock, { force: true })
+  }
+}
+
+/**
+ * Waits `CABOOSE_AGENTD_SIGN_IN_PAUSE_MS` between reading the sign-in state and acting on
+ * it, under the lock, so tests can overlap operations at exactly the point a race would hurt.
+ */
+function readPause() {
+  const ms = Number(process.env.CABOOSE_AGENTD_SIGN_IN_PAUSE_MS)
+  return ms > 0 ? sleep(ms) : undefined
+}
+
+/** Creates `path` exclusively with `holder` in it; false when it exists. */
+async function createLock(path, holder) {
+  let handle
+  try { handle = await open(path, 'wx', 0o600) } catch (error) {
+    if (error.code === 'EEXIST') return false
+    throw error
+  }
+  try { await handle.writeFile(JSON.stringify(holder)); await handle.sync() } finally { await handle.close() }
+  return true
+}
+
+export function isStaleLock(text, modifiedMs, now = Date.now()) {
+  let holder
+  try { holder = JSON.parse(text) } catch { return now - modifiedMs > LOCK_WRITE_MS }
+  if (!Number.isInteger(holder?.pid) || holder.pid < 1 || !isAlive(holder.pid)) return true
+  return !(now - holder.at <= LOCK_STALE_MS)
+}
+
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true } catch (error) { return error.code === 'EPERM' }
+}
+
+async function takeOver(lock, judged) {
+  const guard = `${lock}.takeover`
+  if (!await createLock(guard, { pid: process.pid, at: Date.now() })) {
+    // A process that died taking over leaves this behind; taking over is quick.
+    const info = await stat(guard).catch(() => undefined)
+    if (info && Date.now() - info.mtimeMs > LOCK_WRITE_MS) await rm(guard, { force: true })
+    return
+  }
+  try {
+    if (await readFile(lock, 'utf8').catch(() => undefined) === judged) await rm(lock, { force: true })
+  } finally {
+    await rm(guard, { force: true })
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Signing in on the phone.
+
+/** Variables that point a program at the owner's desktop. A sign-in on the phone has none, so nothing opens there. */
+const DESKTOP_VARS = ['DISPLAY', 'WAYLAND_DISPLAY', 'XDG_CURRENT_DESKTOP', 'XDG_SESSION_DESKTOP', 'DESKTOP_SESSION', 'XDG_SESSION_TYPE',
+  'GNOME_DESKTOP_SESSION_ID', 'KDE_FULL_SESSION']
+/** Commands programs run to open a web page. */
+const BROWSER_COMMANDS = ['xdg-open', 'x-www-browser', 'www-browser', 'sensible-browser', 'gnome-www-browser']
+const TERMINAL_URL = `http://127.0.0.1:${Number(process.env.CABOOSE_TERMINAL_PORT) || 14701}`
+const TERMINAL_TOKEN = process.env.CABOOSE_TERMINAL_TOKEN_FILE ?? '/run/caboose/display-token'
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]'])
+const MAX_URL = 8192
+
+/**
+ * Writes, in the attempt's directory `work`, the commands a sign-in on the phone opens web
+ * pages with: each appends the pages it is given to `pages`, for the app to show. Resolves the
+ * variables that make a sign-in use them: PATH with them first, and BROWSER.
+ */
+export async function pageCommands(work, pages) {
+  const bin = join(work, 'bin')
+  await mkdir(bin, { recursive: true })
+  const script = [
+    '#!/bin/sh',
+    '# Written by caboose-agentd: hands a sign-in page to the phone instead of opening it here.',
+    'for page in "$@"; do',
+    `  case "$page" in http://*|https://*) printf '%s\\n' "$page" >> ${shellQuote(pages)} ;; esac`,
+    'done',
+    '',
+  ].join('\n')
+  for (const name of BROWSER_COMMANDS) {
+    await writeFile(join(bin, name), script)
+    await chmod(join(bin, name), 0o755)
+  }
+  return { PATH: `${bin}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`, BROWSER: join(bin, 'xdg-open') }
+}
+
+/** Calls `onPage` with each new page the sign-in hands over, until stopped. */
+function watchPages(path, onPage) {
+  let stopped = false
+  let last
+  const loop = (async () => {
+    while (!stopped) {
+      const page = latestPage(await readFile(path, 'utf8').catch(() => ''))
+      if (page && page !== last) {
+        last = page
+        await onPage(page)
+      }
+      await sleep(300)
+    }
+  })()
+  return { stop: async () => { stopped = true; await loop } }
+}
+
+/** The last web page in a list of pages, one per line. */
+export function latestPage(text) {
+  return text.split('\n').map(line => line.trim()).filter(isWebPage).at(-1)
+}
+
+function isWebPage(value) {
+  if (!value || value.length > MAX_URL) return false
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' || url.protocol === 'http:'
+  } catch { return false }
+}
+
+function shellQuote(value) { return `'${String(value).replaceAll("'", `'\\''`)}'` }
+
+/** A request to the computer's terminal service, with the token it checks. */
+async function terminalRequest(path) {
+  let token
+  try { token = await readFile(TERMINAL_TOKEN, 'utf8') } catch (error) { throw new Error(`The computer's terminal service is not available: ${errorMessage(error)}`) }
+  let response
+  try {
+    response = await fetch(`${TERMINAL_URL}${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) })
+  } catch (error) {
+    throw new Error(`The computer's terminal service did not answer: ${errorMessage(error.cause ?? error)}`)
+  }
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(`The computer's terminal service refused the sign-in: ${body.error ?? `HTTP ${response.status}`}`)
+  return body
+}
+
+/**
+ * Runs a terminal sign-in method in a session of the terminal service, for the app to attach
+ * to; `onSession` receives the session id. Its environment goes through a file (mode 0600)
+ * the session reads and removes, so keys never appear in a command line. Resolves the exit
+ * status, or null when the session ended without one (hung up) or the time ran out. Its
+ * files are in the attempt's directory `work`.
+ */
+async function runOnPhone(spec, method, env, work, onSession) {
   const methodArgs = Array.isArray(method.args) ? method.args.filter(arg => typeof arg === 'string') : []
   const methodEnv = method.env && typeof method.env === 'object' ? Object.fromEntries(Object.entries(method.env).filter(([key, value]) => ENV_NAME.test(key) && typeof value === 'string')) : {}
   const { command, args } = launchCommand(spec, methodArgs)
-  const exitFile = join(dir, `sign-in-${randomUUID()}.exit`)
-  const script = join(dir, 'sign-in.sh')
+  const exitFile = join(work, `${randomUUID()}.exit`)
+  const envFile = join(work, `${randomUUID()}.env`)
+  const vars = { ...spec.env, ...await readEnvFile(spec.id), ...env, ...methodEnv }
+  await writeFile(envFile, Object.entries(vars).filter(([key, value]) => ENV_NAME.test(key) && typeof value === 'string')
+    .map(([key, value]) => `export ${key}=${shellQuote(value)}`).join('\n') + '\n', { mode: 0o600 })
+  const script = join(work, 'phone.sh')
+  await writeFile(script, [
+    '#!/bin/sh',
+    '# Written by caboose-agentd: runs one terminal sign-in method for the phone and records its exit status.',
+    'status_file=$1; env_file=$2; shift 2',
+    `unset ${DESKTOP_VARS.join(' ')}`,
+    '. "$env_file"; rm -f "$env_file"',
+    'cd "$HOME" || exit 1',
+    '"$@"',
+    'code=$?',
+    'printf %s "$code" > "$status_file"',
+    'exit "$code"',
+    '',
+  ].join('\n'), { mode: 0o755 })
+  try {
+    const argv = Buffer.from(JSON.stringify(['/bin/sh', script, exitFile, envFile, command, ...args])).toString('base64url')
+    const { session } = await terminalRequest(`/start?cols=80&rows=24&argv=${argv}`)
+    if (typeof session !== 'string') throw new Error('The computer\'s terminal service did not start the sign-in.')
+    await onSession(session)
+    const deadline = Date.now() + SIGN_IN_TIMEOUT_MS
+    for (let poll = 1; ; poll++) {
+      const text = await readFile(exitFile, 'utf8').catch(() => undefined)
+      if (text !== undefined && text.trim() !== '') return Number.parseInt(text, 10)
+      if (poll % 10 === 0) {
+        const { sessions } = await terminalRequest('/sessions').catch(() => ({ sessions: undefined }))
+        if (Array.isArray(sessions) && !sessions.some(item => item?.id === session)) {
+          const late = await readFile(exitFile, 'utf8').catch(() => undefined)
+          return late ? Number.parseInt(late, 10) : null
+        }
+      }
+      if (Date.now() > deadline) {
+        await terminalRequest(`/hangup?session=${session}`).catch(() => {})
+        return null
+      }
+      await sleep(500)
+    }
+  } finally {
+    await rm(exitFile, { force: true })
+    await rm(envFile, { force: true })
+  }
+}
+
+/** An address on the computer's loopback that a sign-in on the phone was sent back to. */
+export function loopbackURL(value) {
+  let url
+  try { url = new URL(value) } catch { throw new Error('That is not a web address.') }
+  if (typeof value !== 'string' || value.length > MAX_URL || url.protocol !== 'http:' || !LOOPBACK.has(url.hostname) || !url.port || url.username || url.password) {
+    throw new Error('Only an http://localhost:<port> address on the computer can be delivered.')
+  }
+  return url
+}
+
+/**
+ * Delivers the page a sign-in on the phone was sent back to. It belongs to the agent's own
+ * server on the computer's loopback, so it is fetched here, following redirects that stay on
+ * the loopback, within 30 seconds. Only to attempt `attempt` while it is the agent's running
+ * sign-in on the phone, holding the sign-in lock throughout, so the attempt cannot be
+ * replaced or cancelled meanwhile. Resolves { status }.
+ */
+async function deliverCallback(id, attempt, value) {
+  if (!AGENT_ID.test(id ?? '')) throw new Error('invalid agent id')
+  if (typeof attempt !== 'string' || !ATTEMPT.test(attempt)) throw new Error('attempt must be a UUID')
+  const start = loopbackURL(value)
+  return withSignInLock(join(AGENTS_DIR, id), async () => {
+    const current = await readJson(join(AGENTS_DIR, id, 'sign-in.json'))
+    await readPause()
+    if (current?.status !== 'running' || current.attempt !== attempt || current.on !== 'phone') throw new Error('No sign-in is waiting for this page.')
+    return fetchLoopback(start, AbortSignal.timeout(CALLBACK_MS))
+  })
+}
+
+const CALLBACK_MS = 30_000
+
+async function fetchLoopback(first, signal) {
+  let url = first
+  let status
+  for (let hop = 0; hop < 5; hop++) {
+    let response
+    try {
+      response = await loopbackFetch(url, signal)
+    } catch (error) {
+      // An agent that has its answer often stops its server before its result page is read.
+      if (status !== undefined) return { status }
+      throw error
+    }
+    await response.arrayBuffer().catch(() => {})
+    status = response.status
+    const location = response.headers.get('location')
+    if (status < 300 || status >= 400 || !location) return { status }
+    const next = new URL(location, url)
+    // A redirect off the computer is the agent showing its own result page.
+    if (next.protocol !== 'http:' || !LOOPBACK.has(next.hostname)) return { status }
+    url = next
+  }
+  return { status }
+}
+
+async function loopbackFetch(url, signal) {
+  // `localhost` is either loopback address, and a server often listens on only one.
+  const hosts = url.hostname === 'localhost' ? ['127.0.0.1', '[::1]'] : [url.hostname]
+  let failure
+  for (const host of hosts) {
+    const target = new URL(url)
+    target.hostname = host
+    try { return await fetch(target, { redirect: 'manual', signal }) } catch (error) { failure = error }
+  }
+  throw new Error(`Nothing on the computer answered ${url.host}: ${errorMessage(failure?.cause ?? failure)}`)
+}
+
+/**
+ * Opens a terminal window running the agent's program for a terminal sign-in method, with its
+ * files in the attempt's directory `work`; resolves its exit status.
+ */
+async function runInTerminal(spec, method, env, work) {
+  const methodArgs = Array.isArray(method.args) ? method.args.filter(arg => typeof arg === 'string') : []
+  const methodEnv = method.env && typeof method.env === 'object' ? Object.fromEntries(Object.entries(method.env).filter(([key, value]) => ENV_NAME.test(key) && typeof value === 'string')) : {}
+  const { command, args } = launchCommand(spec, methodArgs)
+  const exitFile = join(work, `${randomUUID()}.exit`)
+  const script = join(work, 'terminal.sh')
   await writeFile(script, [
     '#!/bin/sh',
     '# Written by caboose-agentd: runs one terminal sign-in method and records its exit status.',
@@ -1221,6 +1636,8 @@ async function main(argv) {
     return print({ signIn: publicAuthMethods(init.authMethods), agentInfo: init.agentInfo ?? null })
   }
   if (mode === 'sign-in') return signIn(decodeSpec(argument))
+  if (mode === 'sign-in-callback') return print(await deliverCallback(argument, argv[2], argv[3]))
+  if (mode === 'sign-in-cancel') return print({ cancelled: await cancelSignIn(argument, argv[2]) })
   if (mode === 'state') return print(await state())
   if (mode === 'set-env') {
     let changes
@@ -1228,7 +1645,7 @@ async function main(argv) {
     return print({ env: await setEnv(argument, changes) })
   }
   if (mode === '--version') return print({ version: VERSION })
-  throw new Error('usage: caboose-agentd run <dir> | install <spec> | probe <spec> | sign-in <spec> | state | set-env <id> <json>')
+  throw new Error('usage: caboose-agentd run <dir> | install <spec> | probe <spec> | sign-in <spec> | sign-in-callback <id> <attempt> <url> | sign-in-cancel <id> <attempt> | state | set-env <id> <json>')
 }
 
 function print(value) { process.stdout.write(JSON.stringify(value) + '\n') }
