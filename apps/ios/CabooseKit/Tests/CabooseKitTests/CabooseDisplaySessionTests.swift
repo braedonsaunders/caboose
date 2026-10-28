@@ -396,6 +396,40 @@ final class FakeDecoder: PictureDecoder {
         #expect(session.windows.isEmpty)
     }
 
+    @Test func aStaleUpdateDoesNotSnapADraggedWindowBack() async throws {
+        let session = try await ready()
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100]))])
+        try await until("window") { session.windows[7] != nil }
+        let dragged = try #require(session.windows[7])
+        session.configure(dragged, frame: CGRect(x: 0, y: 0, width: 300, height: 300))
+        #expect(dragged.surface.pixelSize == CGSize(width: 100, height: 100)) // the surface waits for the server
+        stream.server([(.windowUpdate, ["id": 7, "geometry": [0, 0, 200, 200]]), (.windowCreate, window(8, geometry: [0, 0, 10, 10]))])
+        try await until("handled") { session.windows[8] != nil }
+        #expect(dragged.frame.size == CGSize(width: 300, height: 300))
+        stream.server([(.windowUpdate, ["id": 7, "geometry": [0, 0, 300, 300]]), (.windowUpdate, ["id": 7, "geometry": [0, 0, 310, 300]])])
+        try await until("confirmed") { dragged.frame.width == 310 } // after the answer, the server's word is final
+        try await until("surface") { dragged.surface.pixelSize == CGSize(width: 310, height: 300) }
+    }
+
+    @Test func aClosedConnectionCannotReachTheNextOne() async throws {
+        let first = MockStream(), second = MockStream()
+        var streams = [first, second]
+        let session = CabooseDisplaySession(stream: { streams.removeFirst() }, token: "t", displays: [display], decoders: [.hevc],
+                                            makeDecoder: { _ in FakeDecoder() })
+        session.connect()
+        session.disconnect()
+        session.connect()
+        second.deliver(.opened)
+        try await until("hello") { session.state == .authenticating }
+        first.deliver(.closed(nil)) // the old socket's close, arriving late
+        first.server([(.windowCreate, window(7, geometry: [0, 0, 10, 10]))])
+        second.server([(.hello, ["version": 0, "displays": [0], "encoders": ["hevc"], "features": []])])
+        try await until("ready") { session.state == .ready }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(session.state == .ready)
+        #expect(session.windows.isEmpty)
+    }
+
     // MARK: Pure helpers
 
     @Test func utf8Ranges() {

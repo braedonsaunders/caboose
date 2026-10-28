@@ -93,6 +93,10 @@ public struct AV1SequenceHeader: Equatable {
     public var maxWidth: Int
     public var maxHeight: Int
     public var fullRange: Bool
+    /// H.273 colour description: primaries, transfer characteristics, matrix (2 = unspecified).
+    public var colorPrimaries: Int
+    public var transferCharacteristics: Int
+    public var matrixCoefficients: Int
 
     public enum Failure: Error { case truncated }
 
@@ -164,6 +168,9 @@ public struct AV1SequenceHeader: Equatable {
             transfer = try bits.read(8)
             matrix = try bits.read(8)
         }
+        colorPrimaries = primaries
+        transferCharacteristics = transfer
+        matrixCoefficients = matrix
         chromaSamplePosition = 0
         if monochrome {
             fullRange = try bits.read(1) == 1
@@ -239,8 +246,7 @@ struct BitReader {
 /// M3 and later). The session is rebuilt whenever the sequence header changes.
 public final class AV1Decoder: PictureDecoder {
     private var session: VTDecompressionSession?
-    private var format: CMVideoFormatDescription?
-    private var sequenceHeader: Data?
+    private let bitstream = OBUFormatter()
 
     /// Whether this device decodes AV1 in hardware; the client offers AV1 only then.
     public static var isSupported: Bool { VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1) }
@@ -252,45 +258,17 @@ public final class AV1Decoder: PictureDecoder {
     public func invalidate() {
         if let session { VTDecompressionSessionInvalidate(session) }
         session = nil
-        format = nil
     }
 
     public func decode(_ temporalUnit: Data) throws -> CVPixelBuffer? {
-        var sample = Data()
-        for unit in try AV1OBU.units(in: temporalUnit) {
-            switch unit.type {
-            case AV1OBU.temporalDelimiter, AV1OBU.padding:
-                continue // an MP4 sample carries neither
-            case AV1OBU.sequenceHeader:
-                let sized = unit.sized
-                if sized != sequenceHeader {
-                    sequenceHeader = sized
-                    try rebuildSession(header: try AV1SequenceHeader(unit.payload), obu: sized)
-                }
-                sample.append(sized)
-            default:
-                sample.append(unit.sized)
-            }
+        let (bytes, changed) = try bitstream.sample(from: temporalUnit)
+        guard let format = bitstream.format else { throw H264DecoderError.noParameterSets }
+        if changed || session == nil {
+            invalidate()
+            session = try VideoToolboxSession.make(format)
         }
-        guard let session, let format else { throw H264DecoderError.noParameterSets }
-        guard !sample.isEmpty else { return nil }
-        let buffer = try VideoToolboxSession.sampleBuffer(sample, format: format)
+        guard let bytes, let session else { return nil }
+        let buffer = try VideoToolboxSession.sampleBuffer(bytes, format: format)
         return try VideoToolboxSession.decode(buffer, in: session) { invalidate() }
-    }
-
-    private func rebuildSession(header: AV1SequenceHeader, obu: Data) throws {
-        invalidate()
-        let extensions: [CFString: Any] = [
-            kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms: ["av1C": header.configurationRecord(sequenceHeader: obu)] as CFDictionary,
-            kCMFormatDescriptionExtension_FullRangeVideo: header.fullRange,
-        ]
-        var description: CMFormatDescription?
-        let status = CMVideoFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_AV1,
-            width: Int32(header.maxWidth), height: Int32(header.maxHeight),
-            extensions: extensions as CFDictionary, formatDescriptionOut: &description)
-        guard status == noErr, let description else { throw H264DecoderError.formatDescription(status) }
-        session = try VideoToolboxSession.make(description)
-        format = description
     }
 }

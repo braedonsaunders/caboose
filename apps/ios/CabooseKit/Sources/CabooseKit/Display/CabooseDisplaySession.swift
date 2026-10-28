@@ -44,7 +44,9 @@ public final class CabooseDisplaySession: DisplaySession {
     private let decoders: [DisplayCodec]
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private var stream: ByteStream?
-    private let pipelines = FramePipelineRegistry()
+    /// This connection's windows' decode pipelines; a new connection gets new ones, so nothing
+    /// a closed socket still delivers can reach the next.
+    private var pipelines = FramePipelineRegistry()
     private let echo = EchoMeter()
     private var pingTimer: Timer?
     private var buttons = 0
@@ -52,6 +54,9 @@ public final class CabooseDisplaySession: DisplaySession {
     /// What the server said about each window: geometry is relative to the parent for
     /// popups and dialogs, so their frames follow the parent.
     private var placement: [Int: (kind: WindowKind, parent: Int?, geometry: CGRect)] = [:]
+    /// Geometry the phone asked for and the server has not confirmed yet, with when: updates
+    /// still on their way from before it would otherwise snap a dragged window back.
+    private var pendingGeometry: [Int: (geometry: CGRect, at: CFTimeInterval)] = [:]
     private var lastVsync: [Int: UInt64] = [:]
     private var preedit: (text: String, cursor: (Int, Int))?
     private var lastClipboard: String?
@@ -89,22 +94,23 @@ public final class CabooseDisplaySession: DisplaySession {
         state = .connecting
         let stream = makeStream()
         self.stream = stream
+        pipelines = FramePipelineRegistry()
         let incoming = Incoming(pipelines: pipelines, echo: echo, makeDecoder: makeDecoder) { message in
             stream.send(DisplayFraming.encode(message.frame))
         }
         stream.open { [weak self] event in
             switch event {
             case .opened:
-                Task { @MainActor in self?.sendHello() }
+                Task { @MainActor in if self?.stream === stream { self?.sendHello() } }
             case .data(let data):
                 do {
                     let others = try incoming.receive(data)
-                    if !others.isEmpty { Task { @MainActor in self?.handle(others) } }
+                    if !others.isEmpty { Task { @MainActor in if self?.stream === stream { self?.handle(others) } } }
                 } catch {
                     stream.fail(error)
                 }
             case .closed(let error):
-                Task { @MainActor in self?.didClose(error) }
+                Task { @MainActor in if self?.stream === stream { self?.didClose(error) } }
             }
         }
     }
@@ -141,6 +147,7 @@ public final class CabooseDisplaySession: DisplaySession {
         for pipeline in pipelines.removeAll() { pipeline.close() }
         windows.removeAll()
         placement.removeAll()
+        pendingGeometry.removeAll()
         lastVsync.removeAll()
         focusedWindow = nil
         preedit = nil
@@ -231,7 +238,15 @@ public final class CabooseDisplaySession: DisplaySession {
         guard let window = windows[fields.id], var entry = placement[fields.id] else { return }
         if let kind = fields.kind { entry.kind = kind }
         if fields.parent != nil { entry.parent = fields.parent }
-        if let geometry = fields.geometry { entry.geometry = geometry }
+        if let geometry = fields.geometry {
+            // An older answer while a newer request is in flight (for up to a second) is skipped;
+            // the answer to the request, or anything after that second, is taken.
+            let stale = pendingGeometry[fields.id].map { geometry != $0.geometry && CACurrentMediaTime() - $0.at < 1 } ?? false
+            if !stale {
+                pendingGeometry[fields.id] = nil
+                entry.geometry = geometry
+            }
+        }
         placement[fields.id] = entry
         apply(fields, to: window)
         if fields.geometry != nil || fields.parent != nil { place(window) }
@@ -291,8 +306,9 @@ public final class CabooseDisplaySession: DisplaySession {
 
     /// Re-places a window and the popups and dialogs that hang off it.
     private func place(_ window: RemoteWindow) {
+        // The surface follows the sizes the server confirms, on the socket's queue in order with
+        // the pictures; only the frame the app lays out by moves here.
         guard let frame = absoluteFrame(window.id) else { return }
-        if frame.size != window.frame.size { pipelines[window.id]?.resize(width: Int(frame.width), height: Int(frame.height)) }
         window.frame = frame
         for (id, place) in placement where place.parent == window.id && place.kind != .toplevel {
             if let child = windows[id] { self.place(child) }
@@ -311,6 +327,7 @@ public final class CabooseDisplaySession: DisplaySession {
             entry.geometry = geometry
             placement[window.id] = entry
         }
+        pendingGeometry[window.id] = (geometry, CACurrentMediaTime())
         send(.configure(window: window.id, geometry: geometry, fullscreen: state["fullscreen"], maximized: state["maximized"]))
         if let fullscreen = state["fullscreen"] { window.isFullscreen = fullscreen }
         place(window)

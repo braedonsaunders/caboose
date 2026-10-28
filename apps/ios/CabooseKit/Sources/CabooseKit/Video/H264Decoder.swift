@@ -60,90 +60,31 @@ public protocol PictureDecoder: AnyObject {
 public final class H264Decoder: PictureDecoder {
     public let codec: VideoCodec
     private var session: VTDecompressionSession?
-    private var format: CMVideoFormatDescription?
-    private var vps: Data?
-    private var sps: Data?
-    private var pps: Data?
+    private let bitstream: NALFormatter
 
-    public init(codec: VideoCodec = .h264) { self.codec = codec }
+    public init(codec: VideoCodec = .h264) {
+        self.codec = codec
+        bitstream = NALFormatter(codec: codec)
+    }
 
     deinit { invalidate() }
 
     public func invalidate() {
         if let session { VTDecompressionSessionInvalidate(session) }
         session = nil
-        format = nil
     }
 
     /// Decodes one access unit synchronously and returns the picture it produced, if any.
     public func decode(_ accessUnit: Data) throws -> CVPixelBuffer? {
-        var vcl: [Data] = []
-        var parametersChanged = false
-        for unit in AnnexB.nalUnits(in: accessUnit) {
-            switch codec {
-            case .h264:
-                switch AnnexB.type(of: unit) {
-                case 7: if unit != sps { sps = unit; parametersChanged = true }
-                case 8: if unit != pps { pps = unit; parametersChanged = true }
-                case 1, 5: vcl.append(unit)
-                default: continue // SEI, AUD and filler carry nothing the decoder needs here.
-                }
-            case .hevc:
-                switch AnnexB.hevcType(of: unit) {
-                case 32: if unit != vps { vps = unit; parametersChanged = true }
-                case 33: if unit != sps { sps = unit; parametersChanged = true }
-                case 34: if unit != pps { pps = unit; parametersChanged = true }
-                case 0 ... 31: vcl.append(unit)
-                default: continue
-                }
-            }
+        let (bytes, changed) = try bitstream.sample(from: accessUnit)
+        if changed || session == nil {
+            guard let format = bitstream.format else { throw H264DecoderError.noParameterSets }
+            invalidate()
+            session = try VideoToolboxSession.make(format)
         }
-        if parametersChanged || session == nil { try rebuildSession() }
-        guard !vcl.isEmpty, let session, let format else { return nil }
-
-        var avcc = Data()
-        for unit in vcl {
-            var length = UInt32(unit.count).bigEndian
-            withUnsafeBytes(of: &length) { avcc.append(contentsOf: $0) }
-            avcc.append(unit)
-        }
-        let sample = try makeSampleBuffer(avcc, format: format)
+        guard let bytes, let session, let format = bitstream.format else { return nil }
+        let sample = try VideoToolboxSession.sampleBuffer(bytes, format: format)
         return try VideoToolboxSession.decode(sample, in: session) { invalidate() }
-    }
-
-    private func rebuildSession() throws {
-        let sets: [Data]
-        switch codec {
-        case .h264:
-            guard let sps, let pps else { throw H264DecoderError.noParameterSets }
-            sets = [sps, pps]
-        case .hevc:
-            guard let vps, let sps, let pps else { throw H264DecoderError.noParameterSets }
-            sets = [vps, sps, pps]
-        }
-        invalidate()
-        var description: CMFormatDescription?
-        let copies = sets.map { [UInt8]($0) }
-        let status = copies.withPointers { pointers in
-            let sizes = copies.map(\.count)
-            switch codec {
-            case .h264:
-                return CMVideoFormatDescriptionCreateFromH264ParameterSets(
-                    allocator: kCFAllocatorDefault, parameterSetCount: sets.count, parameterSetPointers: pointers,
-                    parameterSetSizes: sizes, nalUnitHeaderLength: 4, formatDescriptionOut: &description)
-            case .hevc:
-                return CMVideoFormatDescriptionCreateFromHEVCParameterSets(
-                    allocator: kCFAllocatorDefault, parameterSetCount: sets.count, parameterSetPointers: pointers,
-                    parameterSetSizes: sizes, nalUnitHeaderLength: 4, extensions: nil, formatDescriptionOut: &description)
-            }
-        }
-        guard status == noErr, let description else { throw H264DecoderError.formatDescription(status) }
-        session = try VideoToolboxSession.make(description)
-        format = description
-    }
-
-    private func makeSampleBuffer(_ avcc: Data, format: CMVideoFormatDescription) throws -> CMSampleBuffer {
-        try VideoToolboxSession.sampleBuffer(avcc, format: format)
     }
 }
 
@@ -207,16 +148,5 @@ enum VideoToolboxSession {
         }
         guard decodeStatus == noErr else { throw H264DecoderError.decode(decodeStatus) }
         return output
-    }
-}
-
-private extension Array where Element == [UInt8] {
-    /// Calls `body` with a stable pointer to each array's bytes.
-    func withPointers<R>(_ body: ([UnsafePointer<UInt8>]) -> R) -> R {
-        func nest(_ index: Int, _ pointers: [UnsafePointer<UInt8>]) -> R {
-            guard index < count else { return body(pointers) }
-            return self[index].withUnsafeBufferPointer { nest(index + 1, pointers + [$0.baseAddress!]) }
-        }
-        return nest(0, [])
     }
 }

@@ -330,6 +330,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// The first finger of a native touch sequence, to tell a tap (which may focus a text
     /// field, so the keyboard question is asked) from a drag.
     private var tapCandidate: (finger: ObjectIdentifier, at: CFTimeInterval, location: CGPoint)?
+    /// Every finger and Pencil that went down to the app. The rest of a touch goes wherever
+    /// it began, even if the window's touch support changes meanwhile.
+    private var nativeTouches = Set<ObjectIdentifier>()
+
+    /// Where a Pencil that is down on the app last was, so it can be cancelled.
+    private var pencilPoint: CGPoint?
+
+    private func isNative(_ touch: UITouch) -> Bool { nativeTouches.contains(ObjectIdentifier(touch)) }
 
     private func routesNatively(_ touch: UITouch) -> Bool {
         guard isInteractive, session != nil, let window = remoteWindow else { return false }
@@ -342,6 +350,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         let native = touches.filter(routesNatively)
+        nativeTouches.formUnion(native.map(ObjectIdentifier.init))
         if !native.isEmpty {
             stopMomentum()
             if let first = native.first, activeTouches.isEmpty, native.count == 1, first.type == .direct {
@@ -356,7 +365,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        let native = touches.filter(routesNatively)
+        let native = touches.filter(isNative)
         if let candidate = tapCandidate, let touch = native.first(where: { ObjectIdentifier($0) == candidate.finger }) {
             let location = touch.location(in: self)
             if hypot(location.x - candidate.location.x, location.y - candidate.location.y) > 10 { tapCandidate = nil }
@@ -367,7 +376,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        let native = touches.filter(routesNatively)
+        let native = touches.filter(isNative)
+        nativeTouches.subtract(native.map(ObjectIdentifier.init))
         deliver(native, .up, event)
         if let candidate = tapCandidate, let touch = native.first(where: { ObjectIdentifier($0) == candidate.finger }) {
             tapCandidate = nil
@@ -383,7 +393,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        let native = touches.filter(routesNatively)
+        let native = touches.filter(isNative)
+        nativeTouches.subtract(native.map(ObjectIdentifier.init))
         tapCandidate = nil
         deliver(native, .cancel, event)
         let rest = touches.subtracting(native)
@@ -426,6 +437,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             let pressure = phase == .up || phase == .cancel ? 0
                 : sample.maximumPossibleForce > 0 ? min(1, Double(sample.force / sample.maximumPossibleForce)) : 0.5
             let azimuth = Double(sample.azimuthAngle(in: self))
+            pencilPoint = phase == .up || phase == .cancel ? nil : point
             session.pencil(PencilSample(phase: pencilPhase, x: Double(point.x), y: Double(point.y), pressure: pressure,
                                         tilt: PencilSample.tilt(altitude: Double(sample.altitudeAngle), azimuth: azimuth),
                                         azimuth: Self.degrees(azimuth)), in: window)
@@ -434,13 +446,19 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     /// Lifts every finger the app still thinks is down, e.g. when the view leaves the screen.
     private func cancelTouches() {
-        guard !activeTouches.isEmpty else { return }
         if let window = remoteWindow, let session {
-            session.touch(activeTouches.values.map { TouchPoint(slot: $0.slot, phase: .cancel, x: Double($0.point.x), y: Double($0.point.y)) },
-                          in: window)
+            if !activeTouches.isEmpty {
+                session.touch(activeTouches.values.map { TouchPoint(slot: $0.slot, phase: .cancel, x: Double($0.point.x), y: Double($0.point.y)) },
+                              in: window)
+            }
+            if let point = pencilPoint {
+                session.pencil(PencilSample(phase: .cancel, x: Double(point.x), y: Double(point.y), pressure: 0, tilt: (0, 0), azimuth: 0), in: window)
+            }
         }
+        pencilPoint = nil
         activeTouches.removeAll()
         touchSlots.removeAll()
+        nativeTouches.removeAll()
         tapCandidate = nil
     }
 
