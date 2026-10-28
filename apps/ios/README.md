@@ -25,6 +25,10 @@ xcodegen generate
 open Caboose.xcodeproj
 ```
 
+The Terminal tab uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT), whose
+package runs a small build plug-in. Xcode asks once to **Trust & Enable** it; command-line
+builds pass `-skipPackagePluginValidation` to `xcodebuild`.
+
 Set your own team in `project.yml` (`DEVELOPMENT_TEAM`) to run on a device. The extensions'
 bundle ids are the app's plus a suffix (`.share`, `.files`, `.widgets`). All of them sign
 with the keychain group `<team>.com.braedonsaunders.caboose.shared`, through which they
