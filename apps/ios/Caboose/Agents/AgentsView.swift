@@ -93,6 +93,7 @@ struct AgentDetailView: View {
     @State private var newName = ""
     @State private var newValue = ""
     @State private var saving = false
+    @State private var signingIn: SignInMethod?
 
     var body: some View {
         let agents = model.agents
@@ -127,7 +128,7 @@ struct AgentDetailView: View {
                 if let methods = agent.signIn, !methods.isEmpty {
                     Section {
                         ForEach(methods) { method in
-                            Button { perform { try await agents.signIn(agent.id, with: method) } } label: {
+                            Button { signingIn = method } label: {
                                 VStack(alignment: .leading) {
                                     Text("Sign In: \(method.name)")
                                     if let detail = method.description { Text(detail).font(.caption).foregroundStyle(.secondary) }
@@ -138,7 +139,7 @@ struct AgentDetailView: View {
                     } header: {
                         Text("Sign In")
                     } footer: {
-                        Text("Opens on your computer's screen. Finish it there, in the Caboose window.")
+                        Text("Sign in right here: the agent's page opens on this iPhone, and the agent on your computer gets the sign-in.")
                     }
                 }
                 Section {
@@ -170,6 +171,9 @@ struct AgentDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .disabled(saving)
             .refreshable { await agents.refreshAgents() }
+            .sheet(item: $signingIn) { method in
+                AgentSignInView(agentID: agent.id, method: method).environment(model)
+            }
         } else {
             ContentUnavailableView("Agent Not Found", systemImage: "questionmark.circle")
         }
@@ -178,7 +182,7 @@ struct AgentDetailView: View {
     @ViewBuilder private func signInStatus(_ status: AgentListing.SignInStatus, methods: [SignInMethod]) -> some View {
         let name = methods.first { $0.id == status.methodId }?.name ?? status.methodId
         switch status.status {
-        case "running": Label("Signing in with \(name) on your computer…", systemImage: "hourglass").foregroundStyle(.secondary)
+        case "running": Label("Signing in with \(name)…", systemImage: "hourglass").foregroundStyle(.secondary)
         case "succeeded": Label("Signed in with \(name).", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
         default: Label("Sign-in with \(name) failed\(status.message.map { ": \($0)" } ?? ".")", systemImage: "exclamationmark.circle").foregroundStyle(.orange)
         }

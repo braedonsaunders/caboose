@@ -194,9 +194,18 @@ offer installed catalog MCP servers to the agent.
 **Connect a Model** uses an API key instead of an account: an OpenRouter key and any of its
 tool-using models (run by the registry's goose), or an Anthropic or OpenAI key (Claude Agent
 or Codex). The app installs the agent, puts the key in its environment in the computer, and
-makes it the default. A chat whose agent is signed out offers its sign-in, Connect a Model,
-or another agent. Settings › Agents installs and updates any registry agent, signs in to
-them on the computer's screen, edits their environment, and sets the default.
+makes it the default. A chat whose agent is signed out offers **Sign In** and **Ask
+Another** (another agent, or Connect a Model). Settings › Agents installs and updates any
+registry agent, signs in to them, edits their environment, and sets the default.
+
+Signing in happens on the phone (`AgentSignInView`). The computer runs the agent's own
+sign-in, but its page opens in a private browser in the sheet; when the page sends you back
+to the computer's localhost, the app hands that address to the agent on the computer, so a
+ChatGPT or similar login finishes without touching the computer's screen. A sign-in that
+runs in a terminal, such as Claude's, shows that terminal in the sheet to answer its prompts
+(the Terminal tab's view, pinned to that one session). Google accounts refuse to sign in
+inside an app's browser, so use another option the page offers, or **Sign In on Computer's
+Screen** from the sheet's menu. Leaving the sheet before it finishes cancels the sign-in.
 
 Agents run their GUI apps on the agent seat, a second display of the computer. The app
 connects to it as it does to the owner's display (`/v1/display?seat=agent`, without sound);

@@ -9,6 +9,9 @@ import UIKit
 /// network only detaches. Coming back reattaches from the last byte this view received and
 /// nothing is drawn twice. The model outlives the screen, so its scrollback survives the tab
 /// being rebuilt.
+///
+/// A model pinned to a session (an agent's sign-in) shows only that one: it never starts a
+/// shell, and when the session ends it stays ended.
 @MainActor @Observable
 final class TerminalModel {
     static let shared = TerminalModel()
@@ -31,8 +34,9 @@ final class TerminalModel {
     private(set) var title = String(localized: "Terminal")
     private(set) var sessions: [TerminalSessionInfo] = []
     private(set) var sessionID: String? {
-        didSet { UserDefaults.standard.set(sessionID, forKey: Self.sessionKey) }
+        didSet { if !pinned { UserDefaults.standard.set(sessionID, forKey: Self.sessionKey) } }
     }
+    @ObservationIgnored private let pinned: Bool
 
     @ObservationIgnored let view = CabooseTerminalView()
     @ObservationIgnored private var host: HostClient?
@@ -48,7 +52,15 @@ final class TerminalModel {
     private static let sessionKey = "caboose.terminal.session"
 
     private init() {
+        pinned = false
         sessionID = UserDefaults.standard.string(forKey: Self.sessionKey).flatMap { TerminalProtocol.isSessionID($0) ? $0 : nil }
+        view.owner = self
+    }
+
+    /// A model that shows only session `session`.
+    init(pinnedTo session: String) {
+        pinned = true
+        sessionID = TerminalProtocol.isSessionID(session) ? session : nil
         view.owner = self
     }
 
@@ -100,7 +112,7 @@ final class TerminalModel {
     /// `wake` is for the owner's own actions. Retries never wake the computer, so a terminal
     /// cut off by a park does not undo it.
     private func connect(wake: Bool) {
-        guard visible, let host, let size else { return }
+        guard visible, let host, let size, !pinned || sessionID != nil else { return }
         retry?.cancel()
         retry = nil
         connection?.close()
@@ -154,6 +166,10 @@ final class TerminalModel {
             offset = nil
             status = .exited(how)
             Task { await refreshSessions() }
+        case .sessionEnded where pinned:
+            sessionID = nil
+            offset = nil
+            status = .exited(String(localized: "ended"))
         case .sessionEnded:
             // The computer restarted or the session was closed elsewhere: start a fresh one.
             notice = String(localized: "[The previous session has ended. This is a new one.]")
@@ -243,7 +259,7 @@ extension TerminalModel: CabooseTerminalViewOwner {
             // Typing after an idle close comes straight back.
             reconnect()
             connection?.send(input: bytes)
-        } else if case .exited = status, bytes == Data([0x0d]) {
+        } else if case .exited = status, bytes == Data([0x0d]), !pinned {
             // Return after the shell has exited starts a new one, as in Terminal.
             newSession()
         }
