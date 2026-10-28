@@ -54,13 +54,14 @@ it('routes agent replies, approvals, files and links with the right status codes
   await once(fileServer, 'listening')
   close.push(() => new Promise(resolve => fileServer.close(() => resolve())))
   const runs: string[][] = []
+  const launch = vi.fn(async (_id: string, _path?: string) => {})
   const guest = { run: async (command: string, args: string[]) => {
     runs.push([command, ...args])
     if (command === '/usr/bin/python3' && args[2] === 'list') return '{}'
     return args[5]?.includes('while [ -e "$target" ]') ? '/home/caboose/Downloads/a.txt' : ''
   } }
   const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
-    park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {},
+    park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch,
     displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest,
     fileService: () => ({ url: `http://127.0.0.1:${(fileServer.address() as AddressInfo).port}`, token: 'test' }) }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: 'claude-acp' }, settingsLimits(), { load: async () => undefined, save: async () => {} })
@@ -75,6 +76,10 @@ it('routes agent replies, approvals, files and links with the right status codes
   expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(409)
   expect(await (await post('/v1/files', { name: 'a.txt', data: 'aGk=' })).json()).toEqual({ path: '/home/caboose/Downloads/a.txt' })
   await post('/v1/session', {})
+  expect((await post('/v1/fs/open', { path: 'Documents/a.psd', app: 'ai.storyteller.photocraft.desktop' })).status).toBe(200)
+  expect(launch).toHaveBeenCalledWith('ai.storyteller.photocraft.desktop', 'Documents/a.psd')
+  expect((await post('/v1/fs/open', { path: '../bad', app: 'a.desktop' })).status).toBe(400)
+  expect((await post('/v1/fs/open', { path: 'a', app: '../bad.desktop' })).status).toBe(400)
   expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(404)
   expect((await post(`/v1/agent/tasks/${missing}/approvals/${missing}`, { allow: true })).status).toBe(404)
   const { id } = await (await post('/v1/agent/tasks', { prompt: 'hi' })).json() as { id: string }

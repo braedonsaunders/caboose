@@ -254,7 +254,7 @@ HTTP API (JSON except streamed file contents, all behind `Authorization: Bearer 
 | `POST` | `/v1/fs/move?path=…` | move or rename with `{ destination }` |
 | `DELETE` | `/v1/fs/item?path=…` | move an item to the guest's Trash |
 | `GET` | `/v1/fs/changes?anchor=…` | query the inotify journal and its sync anchor |
-| `POST` | `/v1/fs/open` | `{ path }` → open a home-relative item on the owner display |
+| `POST` | `/v1/fs/open` | `{ path, app? }` → open a home-relative item on the owner display, optionally with a desktop entry id |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`: open an `http(s)` URL in the default browser on `:100` |
 
 Management status has this shape (resources are MiB and idle time is milliseconds):
@@ -752,6 +752,8 @@ provider supports coordinated writes back to the computer now.
 with base64 data, picks a unique name in `~/Downloads`, and uses the bulk service. Its JSON
 body still has to be held in memory, so new clients should use streamed `PUT /v1/fs/content`.
 The Share extension uploads from a temporary file and optionally opens it on the computer.
+`POST /v1/fs/open` accepts an optional `app` desktop entry ID; it checks the path through
+the file service and passes it as a file argument to that application’s desktop entry.
 `POST /v1/open` opens an `http(s)` URL on the owner's display; other schemes, control
 characters and spaces are rejected. It answers 409 while the computer is not running.
 

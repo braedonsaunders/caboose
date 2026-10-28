@@ -26,7 +26,7 @@ export interface Session { state: string; display: { path: string; token: string
 export interface Controller extends ComputerDriver<Session> {
   stats(): unknown
   apps(): Promise<App[]>
-  launch(id: string): Promise<void>
+  launch(id: string, path?: string): Promise<void>
   /** The owner's display in the guest: Xpra's WebSocket, or caboose-display's. */
   displayUrl: string
   /** The agent seat's Xpra (display :101). */
@@ -188,13 +188,15 @@ export function createCabooseServer(options: {
         if (typeof relative !== 'string' || !relative || relative.startsWith('/') || relative.split('/').some(part => !part || part === '.' || part === '..' || part.includes('\0'))) {
           throw new AgentInputError('invalid file path')
         }
+        if (input.app !== undefined && (typeof input.app !== 'string' || !/^[a-zA-Z0-9._-]+\.desktop$/.test(input.app))) throw new AgentInputError('invalid application id')
         return computer.wakeAndRun(async () => {
           if (!controller.fileService || !controller.guest()) throw new AgentUnavailableError()
           const service = controller.fileService(), url = new URL('/stat', service.url)
           url.searchParams.set('path', relative)
           const checked = await fetch(url, { headers: { authorization: `Bearer ${service.token}` } })
           if (!checked.ok) return json(response, checked.status, { error: 'file unavailable' })
-          await openOnDisplay(controller.guest()!, `/home/caboose/${relative}`)
+          if (typeof input.app === 'string') await controller.launch(input.app, relative)
+          else await openOnDisplay(controller.guest()!, `/home/caboose/${relative}`)
           return json(response, 200, { opened: true })
         })
       }
