@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildIosPairingUrl, canAskFirst, canReply, computeSettingsPatch, readSessionToken,
+  CabooseApiError, CabooseClient, DEFAULT_LIMITS, agentLabel, alwaysAllowOption, buildIosPairingUrl, canReply, computeSettingsPatch, hasUpdate,
+  orderAgents, readSessionToken, type AgentListing,
   validateSettingsInput, willRequireColdRestart, writeSessionToken, type ComputerSettings,
 } from './api.js'
 import { normalizePathname } from './navigation.js'
@@ -24,6 +25,9 @@ describe('settings', () => {
   it('sends only what changed', () => {
     expect(computeSettingsPatch(settings, { ...settings, name: ' Studio ', vcpus: 4 })).toEqual({ vcpus: 4 })
     expect(computeSettingsPatch(settings, settings)).toEqual({})
+    expect(computeSettingsPatch(settings, { ...settings, defaultAgent: 'goose' })).toEqual({ defaultAgent: 'goose' })
+    expect(computeSettingsPatch({ ...settings, defaultAgent: 'goose' }, { ...settings, defaultAgent: null })).toEqual({ defaultAgent: null })
+    expect(computeSettingsPatch({ ...settings, defaultAgent: 'goose' }, { ...settings, defaultAgent: 'goose' })).toEqual({})
   })
 
   it('knows when new resources need a cold restart', () => {
@@ -148,28 +152,55 @@ describe('agent tasks', () => {
     expect(canReply({ status: 'paused' })).toBe(false)
   })
 
-  it('answers an approval request, with a reason only when given', async () => {
+  it('answers an approval request, with a reason or a chosen option only when given', async () => {
     const { client, seen } = recording()
     await client.resolveAgentApproval('task', 'req', true)
-    await client.resolveAgentApproval('task', 'req', false, '  not that file  ')
+    await client.resolveAgentApproval('task', 'req', false, { message: '  not that file  ' })
+    await client.resolveAgentApproval('task', 'req', true, { optionId: 'always' })
     expect(seen.map(entry => [entry.url, entry.body])).toEqual([
       ['/v1/agent/tasks/task/approvals/req', { allow: true }],
       ['/v1/agent/tasks/task/approvals/req', { allow: false, message: 'not that file' }],
+      ['/v1/agent/tasks/task/approvals/req', { allow: true, optionId: 'always' }],
+    ])
+    expect(alwaysAllowOption({ id: 'r', tool: 't', summary: 's', options: [{ id: 'once', name: 'Allow', kind: 'allow_once' }, { id: 'always', name: 'Always', kind: 'allow_always' }] }))
+      .toEqual({ id: 'always', name: 'Always', kind: 'allow_always' })
+    expect(alwaysAllowOption({ id: 'r', tool: 't', summary: 's' })).toBeUndefined()
+  })
+
+  it('asks before acting for any agent, and leaves the agent to the host when none is chosen', async () => {
+    const { client, seen } = recording()
+    await client.startAgentTask({ prompt: 'p', agent: 'goose', approvals: 'ask' })
+    await client.startAgentTask({ prompt: 'p', approvals: 'auto', attachments: [{ name: 'a.png', type: 'image/png', data: 'aGk=' }] })
+    expect(seen.map(entry => entry.body)).toEqual([
+      { prompt: 'p', agent: 'goose', approvals: 'ask' },
+      { prompt: 'p', attachments: [{ name: 'a.png', type: 'image/png', data: 'aGk=' }] },
     ])
   })
 
-  it('asks before acting only for Claude Code', async () => {
+  it('lists, installs and signs in to registry agents', async () => {
     const { client, seen } = recording()
-    await client.startAgentTask({ prompt: 'p', agent: 'claude', approvals: 'ask' })
-    await client.startAgentTask({ prompt: 'p', agent: 'codex', approvals: 'ask' })
-    await client.startAgentTask({ prompt: 'p', agent: 'claude', approvals: 'auto', attachments: [{ name: 'a.png', type: 'image/png', data: 'aGk=' }] })
-    expect(seen.map(entry => entry.body)).toEqual([
-      { prompt: 'p', agent: 'claude', approvals: 'ask' },
-      { prompt: 'p', agent: 'codex' },
-      { prompt: 'p', agent: 'claude', attachments: [{ name: 'a.png', type: 'image/png', data: 'aGk=' }] },
+    await client.agents()
+    await client.installAgent('codex-acp')
+    await client.signInAgent('codex-acp', 'chat-gpt')
+    expect(seen.map(entry => [entry.method, entry.url, entry.body])).toEqual([
+      ['GET', '/v1/agents', undefined],
+      ['POST', '/v1/agents/codex-acp/install', undefined],
+      ['POST', '/v1/agents/codex-acp/sign-in', { methodId: 'chat-gpt' }],
     ])
-    expect(canAskFirst('claude')).toBe(true)
-    expect(canAskFirst('codex')).toBe(false)
+  })
+
+  it('orders agents installed first and names them', () => {
+    const agent = (id: string, installed: string | null, version = '1.0.0'): AgentListing => ({
+      id, name: id.toUpperCase(), version, description: '', icon: null, website: null, repository: null, license: null, distribution: 'npx',
+      installed: installed ? { version: installed } : null,
+    })
+    const agents = [agent('a', null), agent('b', '1.0.0'), agent('c', null), agent('d', '0.9.0')]
+    expect(orderAgents(agents, 'c').map(item => item.id)).toEqual(['c', 'b', 'd', 'a'])
+    expect(orderAgents(agents, null).map(item => item.id)).toEqual(['b', 'd', 'a', 'c'])
+    expect(agents.filter(hasUpdate).map(item => item.id)).toEqual(['d'])
+    expect(agentLabel({ agent: 'b', agentName: 'Bee' })).toBe('Bee')
+    expect(agentLabel({ agent: 'b' }, agents)).toBe('B')
+    expect(agentLabel({ agent: 'claude' })).toBe('claude')
   })
 })
 

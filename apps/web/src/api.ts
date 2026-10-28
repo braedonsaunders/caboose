@@ -16,6 +16,8 @@ export interface ComputerSettings {
   memoryMb: number
   vcpus: number
   idleMs: number
+  /** The ACP registry id tasks run when they name no agent. Absent from hosts older than the registry. */
+  defaultAgent?: string | null
 }
 
 export interface ComputerResources {
@@ -64,21 +66,62 @@ export interface SessionInfo {
   }
 }
 
-export type AgentKind = 'claude' | 'codex'
 export type TaskStatus = 'running' | 'paused' | 'succeeded' | 'failed' | 'cancelled'
 
 export type ApprovalMode = 'ask' | 'auto'
+
+/** A way to sign in to an agent, as the agent announced it over ACP. */
+export interface SignInMethod {
+  id: string
+  name: string
+  description?: string
+  /** "agent": the agent opens a browser sign-in on the computer's screen; "terminal": a terminal window runs its login. */
+  type: 'agent' | 'terminal'
+}
+
+export interface SignInStatus {
+  methodId: string
+  status: 'running' | 'succeeded' | 'failed'
+  message?: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+/** An agent from the Agent Client Protocol registry, as this computer can run it. */
+export interface AgentListing {
+  id: string
+  name: string
+  version: string
+  description: string
+  icon: string | null
+  website: string | null
+  repository: string | null
+  license: string | null
+  distribution: 'npx' | 'uvx' | 'binary'
+  installed: { version: string } | null
+  signIn?: SignInMethod[]
+  signInStatus?: SignInStatus
+}
+
+export interface AgentsResponse {
+  agents: AgentListing[]
+  defaultAgent: string | null
+  registry: { fetchedAt: string | null; error?: string }
+}
 
 /** A tool use the agent is waiting on the owner to allow or deny. */
 export interface PendingApproval {
   id: string
   tool: string
   summary: string
+  options?: Array<{ id: string; name: string; kind: string }>
 }
 
 export interface AgentTask {
   id: string
-  agent: AgentKind
+  /** The agent's registry id ("claude" or "codex" from hosts older than the registry). */
+  agent: string
+  agentName?: string
   prompt: string
   status: TaskStatus
   startedAt: string
@@ -89,6 +132,8 @@ export interface AgentTask {
   approvals?: ApprovalMode
   pendingApproval?: PendingApproval
   attachments?: string[]
+  /** Set when the agent was signed out: the ways to sign in. */
+  signIn?: SignInMethod[]
 }
 
 export interface AgentAttachment {
@@ -100,8 +145,9 @@ export interface AgentAttachment {
 
 export interface StartAgentTaskInput {
   prompt: string
-  agent: AgentKind
-  /** Claude only: ask the owner before each tool use. */
+  /** A registry id; the host's default agent when absent. */
+  agent?: string
+  /** Ask the owner before each tool use the agent requests permission for. */
   approvals?: ApprovalMode
   attachments?: AgentAttachment[]
 }
@@ -111,9 +157,25 @@ export function canReply(task: Pick<AgentTask, 'status'>): boolean {
   return task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled'
 }
 
-/** Only Claude Code can stop and ask; `codex exec` cannot. */
-export function canAskFirst(agent: AgentKind): boolean {
-  return agent === 'claude'
+/** What to call a task's agent. */
+export function agentLabel(task: Pick<AgentTask, 'agent' | 'agentName'>, agents?: AgentListing[]): string {
+  return task.agentName ?? agents?.find(agent => agent.id === task.agent)?.name ?? task.agent
+}
+
+/** Installed agents first (the default leading), then the rest in registry order. */
+export function orderAgents(agents: AgentListing[], defaultAgent: string | null): AgentListing[] {
+  const rank = (agent: AgentListing) => agent.id === defaultAgent ? 0 : agent.installed ? 1 : 2
+  return agents.map((agent, index) => ({ agent, index })).sort((a, b) => rank(a.agent) - rank(b.agent) || a.index - b.index).map(({ agent }) => agent)
+}
+
+/** An installed agent whose registry version has moved on. */
+export function hasUpdate(agent: Pick<AgentListing, 'installed' | 'version'>): boolean {
+  return Boolean(agent.installed && agent.installed.version !== agent.version)
+}
+
+/** The option of a pending approval that allows this kind of request from now on, if the agent offers one. */
+export function alwaysAllowOption(approval: PendingApproval): { id: string; name: string } | undefined {
+  return approval.options?.find(option => option.kind === 'allow_always')
 }
 
 export const DEFAULT_LIMITS: ComputerLimits = {
@@ -194,6 +256,7 @@ export function validateSettingsInput(
       memoryMb: input.memoryMb,
       vcpus: input.vcpus,
       idleMs: input.idleMs,
+      ...(input.defaultAgent !== undefined ? { defaultAgent: input.defaultAgent } : {}),
     },
   }
 }
@@ -208,6 +271,7 @@ export function computeSettingsPatch(
   if (next.memoryMb !== current.memoryMb) patch.memoryMb = next.memoryMb
   if (next.vcpus !== current.vcpus) patch.vcpus = next.vcpus
   if (next.idleMs !== current.idleMs) patch.idleMs = next.idleMs
+  if (next.defaultAgent !== undefined && next.defaultAgent !== (current.defaultAgent ?? null)) patch.defaultAgent = next.defaultAgent
   return patch
 }
 
@@ -364,9 +428,26 @@ export class CabooseClient {
     return this.request<AgentTask[]>('GET', '/v1/agent/tasks', { timeoutMs: 20_000 })
   }
 
+  agents(): Promise<AgentsResponse> {
+    return this.request<AgentsResponse>('GET', '/v1/agents', { timeoutMs: 30_000 })
+  }
+
+  /** Downloads the agent into the computer; this can take minutes for a large agent. */
+  installAgent(id: string): Promise<{ agent: AgentListing }> {
+    return this.request<{ agent: AgentListing }>('POST', `/v1/agents/${encodeURIComponent(id)}/install`, { timeoutMs: 900_000 })
+  }
+
+  signInAgent(id: string, methodId: string): Promise<{ started: true; method: SignInMethod }> {
+    return this.request<{ started: true; method: SignInMethod }>('POST', `/v1/agents/${encodeURIComponent(id)}/sign-in`, {
+      body: { methodId },
+      timeoutMs: 240_000,
+    })
+  }
+
   startAgentTask(input: StartAgentTaskInput): Promise<{ id: string }> {
-    const body: StartAgentTaskInput = { prompt: input.prompt, agent: input.agent }
-    if (input.approvals === 'ask' && canAskFirst(input.agent)) body.approvals = 'ask'
+    const body: StartAgentTaskInput = { prompt: input.prompt }
+    if (input.agent) body.agent = input.agent
+    if (input.approvals === 'ask') body.approvals = 'ask'
     if (input.attachments?.length) body.attachments = input.attachments
     return this.request<{ id: string }>('POST', '/v1/agent/tasks', {
       body,
@@ -381,9 +462,10 @@ export class CabooseClient {
     })
   }
 
-  resolveAgentApproval(id: string, requestId: string, allow: boolean, message?: string): Promise<{ resolved: boolean }> {
-    const body: { allow: boolean; message?: string } = { allow }
-    if (message?.trim()) body.message = message.trim()
+  resolveAgentApproval(id: string, requestId: string, allow: boolean, options: { message?: string; optionId?: string } = {}): Promise<{ resolved: boolean }> {
+    const body: { allow: boolean; message?: string; optionId?: string } = { allow }
+    if (options.message?.trim()) body.message = options.message.trim()
+    if (options.optionId) body.optionId = options.optionId
     return this.request<{ resolved: boolean }>(
       'POST',
       `/v1/agent/tasks/${encodeURIComponent(id)}/approvals/${encodeURIComponent(requestId)}`,

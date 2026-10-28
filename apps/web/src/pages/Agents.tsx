@@ -3,8 +3,11 @@ import { DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
 import {
   Alert, AlertDescription, Badge, Button, EmptyState, Label, PageContainer, PageHeader, Select, Switch, Textarea, toast,
 } from '@braedonsaunders/appkit-ui'
-import { Bot, ShieldQuestion } from 'lucide-react'
-import { CabooseApiError, canAskFirst, canReply, type AgentKind, type AgentTask, type CabooseClient } from '../api.js'
+import { Bot, KeyRound, ShieldQuestion } from 'lucide-react'
+import {
+  CabooseApiError, agentLabel, alwaysAllowOption, canReply, hasUpdate, orderAgents,
+  type AgentListing, type AgentTask, type AgentsResponse, type CabooseClient, type SignInMethod,
+} from '../api.js'
 import { isLiveTask, taskTone } from '../state.js'
 import type { ComputerHandle } from '../useComputer.js'
 
@@ -14,29 +17,53 @@ const LIVE_POLL_MS = 2_000
 
 export function Agents({ client, computer, onUnauthorized }: { client: CabooseClient; computer: ComputerHandle; onUnauthorized: () => void }) {
   const [tasks, setTasks] = React.useState<AgentTask[] | null>(null)
+  const [catalog, setCatalog] = React.useState<AgentsResponse | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [prompt, setPrompt] = React.useState('')
-  const [agent, setAgent] = React.useState<AgentKind>('claude')
+  const [agent, setAgent] = React.useState('')
   const [askFirst, setAskFirst] = React.useState(false)
   const [starting, setStarting] = React.useState(false)
+  const [installing, setInstalling] = React.useState<string | null>(null)
   const running = computer.status?.state === 'running'
+
+  const fail = React.useCallback((failure: unknown) => {
+    if (failure instanceof CabooseApiError && failure.isUnauthorized) onUnauthorized()
+    else setError(failure instanceof Error ? failure.message : String(failure))
+  }, [onUnauthorized])
 
   const refresh = React.useCallback(async () => {
     try {
       setTasks(await client.agentTasks())
       setError(null)
     } catch (failure) {
-      if (failure instanceof CabooseApiError && failure.isUnauthorized) onUnauthorized()
-      else setError(failure instanceof Error ? failure.message : String(failure))
+      fail(failure)
     }
-  }, [client, onUnauthorized])
+  }, [client, fail])
+
+  const refreshCatalog = React.useCallback(async () => {
+    try {
+      const next = await client.agents()
+      setCatalog(next)
+      setAgent(current => current || next.defaultAgent || orderAgents(next.agents, next.defaultAgent).find(entry => entry.installed)?.id || '')
+    } catch (failure) {
+      fail(failure)
+    }
+  }, [client, fail])
 
   const anyLive = tasks?.some(task => isLiveTask(task.status)) ?? false
+  const signingIn = catalog?.agents.some(entry => entry.signInStatus?.status === 'running') ?? false
   React.useEffect(() => { void refresh() }, [refresh])
+  // The installed state comes from the computer, so look again once it is running.
+  React.useEffect(() => { void refreshCatalog() }, [refreshCatalog, running])
   React.useEffect(() => {
     const timer = window.setInterval(() => { if (document.visibilityState === 'visible') void refresh() }, anyLive ? LIVE_POLL_MS : POLL_MS)
     return () => window.clearInterval(timer)
   }, [refresh, anyLive])
+  React.useEffect(() => {
+    if (!signingIn) return
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') void refreshCatalog() }, LIVE_POLL_MS)
+    return () => window.clearInterval(timer)
+  }, [refreshCatalog, signingIn])
 
   async function act(work: () => Promise<unknown>, failureMessage: string): Promise<boolean> {
     let ok = false
@@ -51,11 +78,37 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
     return ok
   }
 
-  async function answer(task: AgentTask, requestId: string, allow: boolean) {
+  async function answer(task: AgentTask, requestId: string, allow: boolean, optionId?: string) {
     await act(async () => {
-      const { resolved } = await client.resolveAgentApproval(task.id, requestId, allow)
+      const { resolved } = await client.resolveAgentApproval(task.id, requestId, allow, optionId ? { optionId } : {})
       if (!resolved) toast.info('That request was already answered or has ended.')
     }, allow ? 'Could not approve.' : 'Could not deny.')
+  }
+
+  async function install(entry: AgentListing) {
+    setInstalling(entry.id)
+    try {
+      const { agent: installed } = await client.installAgent(entry.id)
+      toast.success(`${installed.name} ${installed.installed?.version ?? ''} is installed.`)
+    } catch (failure) {
+      toast.error(failure instanceof Error ? failure.message : 'The install failed.')
+    } finally {
+      setInstalling(null)
+      await refreshCatalog()
+      await computer.refresh()
+    }
+  }
+
+  async function signIn(id: string, method: SignInMethod) {
+    try {
+      await client.signInAgent(id, method.id)
+      toast.info(method.type === 'terminal'
+        ? 'A terminal opened on your computer\'s screen. Finish signing in there.'
+        : 'The sign-in page opened in your computer\'s browser. Finish signing in on its screen.')
+    } catch (failure) {
+      toast.error(failure instanceof Error ? failure.message : 'Could not start the sign-in.')
+    }
+    await refreshCatalog()
   }
 
   async function start(event: React.FormEvent) {
@@ -64,7 +117,7 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
     if (!text) return
     setStarting(true)
     try {
-      await client.startAgentTask({ prompt: text, agent, approvals: askFirst ? 'ask' : 'auto' })
+      await client.startAgentTask({ prompt: text, ...(agent ? { agent } : {}), approvals: askFirst ? 'ask' : 'auto' })
       setPrompt('')
       toast.success('The agent is working on it.')
     } catch (failure) {
@@ -76,13 +129,26 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
     }
   }
 
+  const ordered = catalog ? orderAgents(catalog.agents, catalog.defaultAgent) : []
+  const installedAgents = ordered.filter(entry => entry.installed)
+  const availableAgents = ordered.filter(entry => !entry.installed)
+  const selected = ordered.find(entry => entry.id === agent)
+
   return (
     <PageContainer>
       <div className="mx-auto max-w-4xl space-y-6">
         <PageHeader
           title="Agents"
-          description="Claude Code and Codex work inside your computer on their own seat, signed in with your accounts. A running task keeps the computer awake."
+          description="Any agent from the Agent Client Protocol registry works inside your computer on its own seat, signed in with your own account. A running task keeps the computer awake."
         />
+
+        {catalog?.registry.error ? (
+          <Alert variant="warning">
+            <AlertDescription>
+              {catalog.agents.length ? `${catalog.registry.error} Showing the list from ${catalog.registry.fetchedAt ? new Date(catalog.registry.fetchedAt).toLocaleString() : 'earlier'}.` : catalog.registry.error}
+            </AlertDescription>
+          </Alert>
+        ) : null}
 
         <DashboardPanel title="New task" icon={<Bot className="size-4" aria-hidden />}>
           <form className="space-y-3" onSubmit={start}>
@@ -98,23 +164,44 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
               />
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <Select className="w-40" value={agent} onChange={event => setAgent(event.target.value as AgentKind)} disabled={!running}>
-                <option value="claude">Claude Code</option>
-                <option value="codex">Codex</option>
+              <Select
+                className="w-64"
+                aria-label="Agent"
+                value={agent}
+                placeholder={catalog ? 'Choose an agent' : 'Loading agents…'}
+                onChange={event => setAgent(event.target.value)}
+                disabled={!running || !catalog}
+              >
+                {installedAgents.length ? (
+                  <optgroup label="Installed">
+                    {installedAgents.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+                  </optgroup>
+                ) : null}
+                {availableAgents.length ? (
+                  <optgroup label="In the registry">
+                    {availableAgents.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+                  </optgroup>
+                ) : null}
               </Select>
-              <label className="flex items-center gap-2 text-sm" title={canAskFirst(agent) ? undefined : 'Codex cannot stop to ask; it works in its sandbox.'}>
-                <Switch
-                  checked={askFirst && canAskFirst(agent)}
-                  onChange={event => setAskFirst(event.target.checked)}
-                  disabled={!running || !canAskFirst(agent)}
-                />
+              <label className="flex items-center gap-2 text-sm" title="Every action the agent asks permission for waits for your answer.">
+                <Switch checked={askFirst} onChange={event => setAskFirst(event.target.checked)} disabled={!running} />
                 Ask before acting
               </label>
-              <Button type="submit" disabled={!running || starting || !prompt.trim()}>
+              <Button type="submit" disabled={!running || starting || !prompt.trim() || !agent}>
                 {starting ? 'Starting…' : 'Start task'}
               </Button>
               {!running ? <span className="text-sm text-muted-foreground">Wake the computer to start a task.</span> : null}
             </div>
+            {selected ? (
+              <AgentDetails
+                agent={selected}
+                isDefault={selected.id === catalog?.defaultAgent}
+                running={running}
+                installing={installing === selected.id}
+                onInstall={() => void install(selected)}
+                onSignIn={method => void signIn(selected.id, method)}
+              />
+            ) : null}
           </form>
         </DashboardPanel>
 
@@ -136,7 +223,7 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant={taskTone(task.status)}>{task.status}</Badge>
-                  <span className="text-sm font-medium">{task.agent === 'codex' ? 'Codex' : 'Claude Code'}</span>
+                  <span className="text-sm font-medium">{agentLabel(task, catalog?.agents)}</span>
                   <span className="text-xs text-muted-foreground">{new Date(task.startedAt).toLocaleString()}</span>
                   {task.approvals === 'ask' ? <Badge variant="secondary">asks first</Badge> : null}
                   {(task.turns ?? 1) > 1 ? <span className="text-xs text-muted-foreground">{task.turns} turns</span> : null}
@@ -167,6 +254,11 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
                         </span>
                         <div className="flex gap-2">
                           <Button size="sm" onClick={() => void answer(task, task.pendingApproval!.id, true)}>Approve</Button>
+                          {alwaysAllowOption(task.pendingApproval) ? (
+                            <Button size="sm" variant="outline" onClick={() => void answer(task, task.pendingApproval!.id, true, alwaysAllowOption(task.pendingApproval!)!.id)}>
+                              {alwaysAllowOption(task.pendingApproval)!.name}
+                            </Button>
+                          ) : null}
                           <Button size="sm" variant="outline" onClick={() => void answer(task, task.pendingApproval!.id, false)}>Deny</Button>
                         </div>
                       </div>
@@ -175,6 +267,9 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
                 ) : null}
                 {task.summary ? (
                   <p className="whitespace-pre-wrap rounded-md bg-muted p-3 text-sm text-muted-foreground">{task.summary}</p>
+                ) : null}
+                {task.signIn?.length && running ? (
+                  <SignInButtons methods={task.signIn} onSignIn={method => void signIn(task.agent, method)} />
                 ) : null}
                 {canReply(task) && running ? (
                   <ReplyForm onReply={text => act(() => client.replyToAgentTask(task.id, text), 'The reply was not sent.')} />
@@ -185,6 +280,59 @@ export function Agents({ client, computer, onUnauthorized }: { client: CabooseCl
         </div>
       </div>
     </PageContainer>
+  )
+}
+
+/** What the chosen agent is, whether it is installed, and how to sign in to it. */
+function AgentDetails({ agent, isDefault, running, installing, onInstall, onSignIn }: {
+  agent: AgentListing; isDefault: boolean; running: boolean; installing: boolean
+  onInstall: () => void; onSignIn: (method: SignInMethod) => void
+}) {
+  const status = agent.signInStatus
+  const statusMethod = agent.signIn?.find(method => method.id === status?.methodId)?.name ?? status?.methodId
+  return (
+    <div className="space-y-2 rounded-md border p-3 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        {agent.icon ? <img src={agent.icon} alt="" className="size-4 dark:invert" /> : null}
+        <span className="font-medium">{agent.name}</span>
+        <span className="text-xs text-muted-foreground">{agent.version}</span>
+        {isDefault ? <Badge variant="secondary">default</Badge> : null}
+        {agent.installed ? <Badge variant="success">installed {agent.installed.version}</Badge> : <Badge variant="outline">runs on first use</Badge>}
+        {agent.website || agent.repository ? (
+          <a className="text-xs underline" href={agent.website ?? agent.repository ?? undefined} target="_blank" rel="noreferrer">About</a>
+        ) : null}
+        <div className="ml-auto">
+          {!agent.installed || hasUpdate(agent) ? (
+            <Button type="button" size="sm" variant="outline" disabled={!running || installing} onClick={onInstall}>
+              {installing ? 'Installing…' : agent.installed ? `Update to ${agent.version}` : 'Install'}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      {agent.description ? <p className="text-muted-foreground">{agent.description}</p> : null}
+      {agent.signIn?.length ? <SignInButtons methods={agent.signIn} onSignIn={onSignIn} disabled={!running || status?.status === 'running'} /> : null}
+      {status ? (
+        <p className={status.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}>
+          {status.status === 'running' ? `Signing in with ${statusMethod}: finish it on your computer's screen.`
+            : status.status === 'succeeded' ? `Signed in with ${statusMethod}.`
+              : `Sign-in with ${statusMethod} failed${status.message ? `: ${status.message}` : '.'}`}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function SignInButtons({ methods, onSignIn, disabled }: { methods: SignInMethod[]; onSignIn: (method: SignInMethod) => void; disabled?: boolean }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <KeyRound className="size-4 text-muted-foreground" aria-hidden />
+      {methods.map(method => (
+        <Button key={method.id} type="button" size="sm" variant="outline" disabled={disabled} title={method.description} onClick={() => onSignIn(method)}>
+          Sign in: {method.name}
+        </Button>
+      ))}
+      <span className="text-xs text-muted-foreground">Opens on your computer's screen.</span>
+    </div>
   )
 }
 
