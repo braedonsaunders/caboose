@@ -103,7 +103,7 @@ start_printing() {
   [ ! -x /usr/local/libexec/caboose-phone-printer-setup ] || /usr/local/libexec/caboose-phone-printer-setup
 }
 case ${1:-} in
-  start) start_printing; start_display :100 14500 on ;;
+  start) start_printing || echo "Printing unavailable" >&2; start_display :100 14500 on ;;
   start-printing) start_printing ;;
   start-files)
     start-stop-daemon --start --oknodo --background --make-pidfile --pidfile /run/caboose/files.pid \
@@ -113,7 +113,7 @@ case ${1:-} in
     ;;
   start-agent) start_display :101 14501 off; ready :101 ;;
   ready) ready "${2:?display required}" ;;
-  start-display) start_printing; start_caboose_display ;;
+  start-display) start_printing || echo "Printing unavailable" >&2; start_caboose_display ;;
   ready-display) caboose-display-ready 120 ;;
   *) echo 'Usage: caboose-session start | start-agent | ready DISPLAY | start-display | ready-display' >&2; exit 2 ;;
 esac

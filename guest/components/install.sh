@@ -11,8 +11,14 @@ for pkg in "${packages[@]}"; do
   [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || :)" = installed ] || missing+=("$pkg")
 done
 if ((${#missing[@]})); then
-  apt-get update
-  apt-get install -y --no-install-recommends "${missing[@]}"
+  log=$(mktemp /tmp/caboose-apt.XXXXXXXX)
+  trap 'rm -f "$log"' EXIT
+  if ! apt-get update >"$log" 2>&1 || ! apt-get install -y --no-install-recommends "${missing[@]}" >>"$log" 2>&1; then
+    tail -n 80 "$log" >&2
+    exit 1
+  fi
+  rm -f "$log"
+  trap - EXIT
 fi
 install -Dm755 "$root/files/caboose-files.py" /opt/caboose/files/caboose-files.py
 install -Dm644 "$root/files/caboose-files.service" /etc/systemd/system/caboose-files.service
@@ -30,7 +36,8 @@ if [[ "$mode" = vm ]]; then
   systemctl daemon-reload
   systemctl restart caboose-notifications.service
   systemctl restart caboose-files.service
-  systemctl start cups.service caboose-phone-printer.service
+  systemctl start cups.service
+  systemctl restart caboose-phone-printer.service
 elif [[ "$mode" = container ]]; then
   if [ -s /run/caboose/files.pid ]; then
     pid=$(cat /run/caboose/files.pid)
