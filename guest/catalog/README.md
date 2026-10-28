@@ -19,3 +19,11 @@ The host never checks for a newer release; a pin change only makes an update ava
 for the owner to choose. Release checksums protect integrity, not against a malicious
 upstream release. The upstream launcher describes its package layout at
 <https://github.com/storytold/craft-launcher>.
+
+The additional `ai`, `fcproj`, `scraft` and camera-raw extensions are grounded in the
+pinned releases: [VectorCraft v0.17.0](https://github.com/storytold/vectorcraft/blob/v0.17.0/README.md),
+[FilmCraft v0.13.0](https://github.com/storytold/filmcraft/blob/v0.13.0/docs/project-files.md),
+[SoundCraft v0.13.1](https://github.com/storytold/soundcraft/blob/v0.13.1/packaging/linux/ai.storyteller.soundcraft.mime.xml),
+and [LightCraft v0.14.0](https://github.com/storytold/lightcraft/blob/v0.14.0/README.md).
+AI support depends on the PDF-compatible representation; RAW support varies by camera.
+Project files may reference media separately, which must also be available on the computer.

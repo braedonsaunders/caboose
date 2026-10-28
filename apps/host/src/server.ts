@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { AgentCatalog } from './agent-catalog.js'
-import { AppCatalog } from './app-catalog.js'
+import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWNLOADS } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
@@ -27,7 +27,7 @@ export interface Session { state: string; display: { path: string; token: string
 export interface Controller extends ComputerDriver<Session> {
   stats(): unknown
   apps(): Promise<App[]>
-  launch(id: string): Promise<void>
+  launch(id: string, path?: string): Promise<void>
   /** The owner's display in the guest: Xpra's WebSocket, or caboose-display's. */
   displayUrl: string
   /** The agent seat's Xpra (display :101). */
@@ -82,13 +82,14 @@ export function createCabooseServer(options: {
   }
   const home = new HomeOwnership()
   const catalog = new AgentCatalog(options.registry ?? new AgentRegistry(), () => controller.guest(), settings, home)
+  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire())
   const agents = new AgentTasks(() => controller.guest(), event => {
     broadcast(event)
     if (options.push) void options.push.event(event as AgentEvent, foregroundClients.size > 0).catch(error => console.error('Push event failed:', error))
     const job = agentJob(event as AgentEvent)
     if (job && options.activities) void options.activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
   }, () => computer.acquire(), {
-    resolver: catalog, home, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
+    resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
   })
   const desktopNotifications = new DesktopNotifications(() => controller.guest(), event => {
     broadcast({ type: 'notification', ...event })
@@ -96,7 +97,6 @@ export function createCabooseServer(options: {
   })
   let craftBusy = 0
   const craftJobs = new Set<string>()
-  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire())
   const media = new MediaHandoff(() => controller.guest(), broadcast)
   let fileAnchor: string | undefined
   let filePoll: ReturnType<typeof setInterval> | undefined
@@ -191,13 +191,15 @@ export function createCabooseServer(options: {
         if (typeof relative !== 'string' || !relative || relative.startsWith('/') || relative.split('/').some(part => !part || part === '.' || part === '..' || part.includes('\0'))) {
           throw new AgentInputError('invalid file path')
         }
+        if (input.app !== undefined && (typeof input.app !== 'string' || !/^[a-zA-Z0-9._-]+\.desktop$/.test(input.app))) throw new AgentInputError('invalid application id')
         return computer.wakeAndRun(async () => {
           if (!controller.fileService || !controller.guest()) throw new AgentUnavailableError()
           const service = controller.fileService(), url = new URL('/stat', service.url)
           url.searchParams.set('path', relative)
           const checked = await fetch(url, { headers: { authorization: `Bearer ${service.token}` } })
           if (!checked.ok) return json(response, checked.status, { error: 'file unavailable' })
-          await openOnDisplay(controller.guest()!, `/home/caboose/${relative}`)
+          if (typeof input.app === 'string') await controller.launch(input.app, relative)
+          else await openOnDisplay(controller.guest()!, `/home/caboose/${relative}`)
           return json(response, 200, { opened: true })
         })
       }

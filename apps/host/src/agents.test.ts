@@ -162,17 +162,29 @@ const REQUEST = '6f1c2a8e-1d2b-4c3d-8e4f-5a6b7c8d9e0f'
 const user = (turn: number, text = 'x') => ({ type: 'user', turn, text })
 const end = (turn: number, summary: string, stopReason = 'end_turn') => ({ type: 'turn_end', turn, stopReason, summary })
 
-function setup(options: { defaultAgent?: string | null } = {}) {
+function setup(options: { defaultAgent?: string | null; craftServers?: () => Promise<Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }>> } = {}) {
   const fake = fakeGuest()
   const events: AgentEvent[] = []
   const release = vi.fn()
   const acquire = vi.fn(() => release)
   const agents = resolver(options.defaultAgent === undefined ? 'stand-in' : options.defaultAgent)
-  const tasks = new AgentTasks(() => fake.guest, event => events.push(event), acquire, { resolver: agents, pollMs: 60_000, idleMs: 120_000 })
+  const tasks = new AgentTasks(() => fake.guest, event => events.push(event), acquire, { resolver: agents, pollMs: 60_000, idleMs: 120_000, craftServers: options.craftServers })
   return { fake, events, release, acquire, agents, tasks }
 }
 
 describe('AgentTasks', () => {
+  it('records catalog servers and honors the per-task opt-out', async () => {
+    const server = { name: 'caboose-photo', command: 'photocraft-cli', args: ['mcp'], env: [] }
+    const lookup = vi.fn(async () => [server])
+    const { fake, tasks } = setup({ craftServers: lookup })
+    const first = await tasks.start({ prompt: 'edit' })
+    expect(JSON.parse(fake.task(first.id).files.get('task.json')!).craftServers).toEqual([server])
+    const second = await tasks.start({ prompt: 'edit', craftMcp: false })
+    expect(JSON.parse(fake.task(second.id).files.get('task.json')!).craftServers).toEqual([])
+    expect(lookup).toHaveBeenCalledTimes(1)
+    await expect(tasks.start({ prompt: 'edit', craftMcp: 'no' })).rejects.toThrow('craftMcp must be a boolean')
+  })
+
   it('starts a task through the runner, streams its transcript, and releases the lease when the turn ends', async () => {
     const { fake, events, release, tasks } = setup()
     const task = await tasks.start({ prompt: 'Run the tests', agent: 'stand-in' })
@@ -181,7 +193,7 @@ describe('AgentTasks', () => {
     const state = fake.task(task.id)
     expect(JSON.parse(state.files.get('task.json')!)).toEqual({
       agent: { id: 'stand-in', name: 'Stand-in', version: '1.0.0', distribution: 'npx', package: '@example/stand-in@1.0.0', args: [], env: {} },
-      cwd: `/home/caboose/Agents/${task.id}`, approvals: 'auto', idleMs: 120_000,
+      cwd: `/home/caboose/Agents/${task.id}`, approvals: 'auto', idleMs: 120_000, craftServers: [],
     })
     expect(JSON.parse(state.inbox[0]!)).toEqual({ type: 'prompt', turn: 1, text: 'Run the tests' })
     const start = fake.calls.find(call => fake.scriptOf(call)?.includes('> task.json'))!

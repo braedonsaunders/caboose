@@ -13,7 +13,8 @@ struct CabooseApp: App {
                 .environment(model)
                 .preferredColorScheme(.dark)
                 .onOpenURL { url in
-                    if let credentials = Credentials(link: url) { model.connect(with: credentials) }
+                    if url.isFileURL { model.documents.receive(url) }
+                    else if let credentials = Credentials(link: url) { model.connect(with: credentials) }
                     else if url.scheme == "caboose", url.host == "task", let id = url.pathComponents.dropFirst().first { model.notificationTaskID = id }
                 }
                 .onContinueUserActivity(CSSearchableItemActionType) { activity in
@@ -74,6 +75,21 @@ struct RootView: View {
             if model.phase == .ready, !model.externalDisplayActive { ApprovalBanner() }
         }
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
+        .sheet(item: Binding(get: { model.phase == .ready ? model.documents.pending : nil }, set: { _ in })) { item in
+            OpenDocumentPicker(item: item).environment(model).interactiveDismissDisabled()
+        }
+        .alert("Document conflict", isPresented: Binding(get: { !model.documents.conflicts.isEmpty && model.documents.pending == nil }, set: { _ in })) {
+            if let conflict = model.documents.conflicts.first {
+                Button("Keep Computer Copy") { Task { await model.documents.resolve(conflict, keepComputer: true, model: model) } }
+                Button("Keep Original") { Task { await model.documents.resolve(conflict, keepComputer: false, model: model) } }
+            }
+        } message: {
+            Text("Both the original and the computer copy of \(model.documents.conflicts.first?.record.name ?? "this document") changed. Choose which version to keep.")
+        }
+        .alert("Document sync", isPresented: Binding(get: { model.documents.error != nil && model.documents.pending == nil && model.documents.conflicts.isEmpty }, set: { if !$0 { model.documents.error = nil } })) {
+            Button("Retry") { model.documents.error = nil; model.documents.requestSync(model: model) }
+            Button("OK", role: .cancel) { model.documents.error = nil }
+        } message: { Text(model.documents.error ?? "") }
         .sheet(isPresented: Bindable(model).settingsPresented) {
             ComputerSettingsView().environment(model)
         }

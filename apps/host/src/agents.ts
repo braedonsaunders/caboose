@@ -80,6 +80,7 @@ export interface AgentResolver {
 
 export interface AgentTaskOptions {
   resolver: AgentResolver
+  craftServers?: () => Promise<Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }>>
   pollMs?: number
   /** Starts the agent seat's display; defaults to the microVM's systemd unit. */
   ensureSeat?: () => Promise<void>
@@ -261,6 +262,7 @@ export class AgentTasks {
   private timer: ReturnType<typeof setInterval> | undefined
   private polling = false
   private readonly resolver: AgentResolver
+  private readonly craftServers?: AgentTaskOptions["craftServers"]
   private readonly pollMs: number
   private readonly ensureSeat?: () => Promise<void>
   private readonly idleMs: number
@@ -273,6 +275,7 @@ export class AgentTasks {
     options: AgentTaskOptions,
   ) {
     this.resolver = options.resolver
+    this.craftServers = options.craftServers
     this.pollMs = options.pollMs ?? 1000
     this.ensureSeat = options.ensureSeat
     this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS
@@ -297,6 +300,7 @@ export class AgentTasks {
     const agentId = this.readAgent(input.agent)
     const approvals = input.approvals === 'ask' ? 'ask' : input.approvals === 'auto' || input.approvals === undefined ? 'auto' : undefined
     if (!approvals) throw new AgentInputError('approvals must be "ask" or "auto"')
+    if (input.craftMcp !== undefined && typeof input.craftMcp !== 'boolean') throw new AgentInputError('craftMcp must be a boolean')
     const files = readAttachments(input.attachments)
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
@@ -311,7 +315,8 @@ export class AgentTasks {
         await writeGuestFile(guest, `${path}.part`, file.data)
         await asCaboose(guest, 'mv -- "$1.part" "$1"', [path])
       }
-      const config = JSON.stringify({ agent: launch, cwd: dir, approvals, idleMs: this.idleMs })
+      const craftServers = input.craftMcp === false ? [] : await this.craftServers?.() ?? []
+      const config = JSON.stringify({ agent: launch, cwd: dir, approvals, idleMs: this.idleMs, craftServers })
       const message = JSON.stringify({ type: 'prompt', turn: 1, text: prompt,
         ...(files.length ? { attachments: files.map((file, index) => ({ path: attachments[index], name: file.name, ...(file.type ? { mimeType: file.type } : {}) })) } : {}) })
       await asCaboose(guest, START_SCRIPT, [dir, prompt, agentId, launch.name, approvals, config, message]).catch(rethrowRunnerMissing)

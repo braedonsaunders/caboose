@@ -81,7 +81,13 @@ if sys.argv[1] == 'launch':
     for fd in (0, 1, 2):
         os.dup2(devnull, fd)
     try:
-        launched = info.launch([], None)
+        files = []
+        if len(sys.argv) > 3:
+            relative = sys.argv[3]
+            if not relative or relative.startswith('/') or any(part in ('', '.', '..') for part in relative.split('/')) or '\0' in relative:
+                raise ValueError('Invalid file path')
+            files = [Gio.File.new_for_path(str(pathlib.Path.home() / relative))]
+        launched = info.launch(files, None)
     finally:
         os.dup2(saved, 2)
     if not launched:
