@@ -11,7 +11,7 @@ enum TerminalTheme {
     static let foreground = UIColor(hex: 0xE6EBF2)
     static let amber = UIColor(hex: 0xF5A623)
     /// How much of the wallpaper behind the tab shows through the terminal's own background.
-    static let backgroundOpacity: CGFloat = 0.82
+    static let backgroundOpacity: CGFloat = 0.5
     static let selection = amber.withAlphaComponent(0.34)
 
     /// Black, red, green, yellow, blue, magenta, cyan, white; then the bright eight.

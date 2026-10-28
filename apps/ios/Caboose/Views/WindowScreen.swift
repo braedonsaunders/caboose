@@ -8,59 +8,53 @@ struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @State private var chromeVisible = true
     @State private var askingAbout: RemoteWindow?
+    @State private var showingApps = false
+    @State private var showingOptions = false
     /// How far the card has been swiped sideways, and the picture of the app it reveals.
     @State private var swipe: CGFloat = 0
     @State private var neighbour: (id: Int, picture: CGImage?)?
 
     var body: some View {
-        ZStack(alignment: .top) {
-            Color.black.ignoresSafeArea()
-            if let window = model.window(model.presentedWindowID) {
-                VStack(spacing: chromeVisible ? 8 : 0) {
-                    if chromeVisible { chrome(for: window) }
-                    GeometryReader { proxy in
-                        // Keys go to the topmost dialog, if one is up, else to the window.
-                        let popups = model.auxiliaryWindows(for: window)
-                        let keyTarget = popups.last { !$0.isOverrideRedirect }?.id ?? window.id
-                        let frames = popupFrames(popups, over: window, size: proxy.size)
-                        ZStack(alignment: .topLeading) {
-                            RemoteWindowCanvas(window: window, keyboardVisible: model.keyboardVisible && keyTarget == window.id)
-                                .frame(width: proxy.size.width, height: proxy.size.height)
-                                .modifier(WindowDrop(window: window, pixelsPerPoint: model.pixelsPerPoint))
-                            ForEach(popups) { popup in
-                                if let frame = frames[popup.id] {
-                                    RemoteWindowCanvas(window: popup, keyboardVisible: model.keyboardVisible && keyTarget == popup.id)
-                                        .frame(width: frame.width, height: frame.height)
-                                        .offset(x: frame.minX, y: frame.minY)
-                                        .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
-                                        .onAppear { fitDialog(popup, over: window, in: proxy.size) }
-                                        .onChange(of: proxy.size) { _, size in fitDialog(popup, over: window, in: size) }
-                                }
-                            }
-                        }
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .clipped()
-                        .offset(x: swipe)
-                        .background(alignment: .topLeading) { neighbourCard(width: proxy.size.width) }
-                        .overlay { cardEdges(from: window, width: proxy.size.width) }
-                        .onChange(of: window.isFullscreen) { _, fullscreen in
-                            withAnimation(.snappy) { chromeVisible = !fullscreen }
-                        }
-                        .onAppear { fit(window, to: proxy.size) }
-                        .onChange(of: proxy.size) { _, size in fit(window, to: size) }
-                        .onChange(of: window.id) { _, _ in fit(window, to: proxy.size) }
+        NavigationStack {
+            ZStack(alignment: .top) {
+                Color.black.ignoresSafeArea()
+                if let window = model.window(model.presentedWindowID) {
+                    WindowCardViewport(controlsVisible: chromeVisible) { proxy in
+                        surface(for: window, size: proxy.size)
                     }
+                    if !chromeVisible { exitFullScreenHandle }
+                } else {
+                    ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .ignoresSafeArea(.container, edges: chromeVisible ? .bottom : .all)
-                if !chromeVisible { exitFullScreenHandle }
-            } else {
-                ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .navigationTitle(model.window(model.presentedWindowID)?.title ?? "Window")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(removing: .title)
+            .toolbar {
+                if let window = model.window(model.presentedWindowID) { controls(for: window) }
+            }
+            .toolbarVisibility(chromeVisible ? .automatic : .hidden, for: .navigationBar)
+            .overlay(alignment: .top) { ApprovalBanner().padding(.top, 8) }
+            .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
+            .statusBarHidden(!chromeVisible)
+            .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
         }
-        .overlay(alignment: .top) {
-            ApprovalBanner().padding(.top, chromeVisible ? 56 : 8)
+        .tint(Brand.amber)
+        .confirmationDialog("Switch App", isPresented: $showingApps, titleVisibility: .visible) {
+            ForEach(cardOrder) { other in
+                Button { model.presentedWindowID = other.id } label: {
+                    Label(other.title.isEmpty ? "Window" : other.title,
+                          systemImage: other.id == model.presentedWindowID ? "checkmark" : "macwindow")
+                }
+            }
+        } message: {
+            Text(model.window(model.presentedWindowID)?.title ?? "Window")
         }
-        .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
+        .confirmationDialog("Window Options", isPresented: $showingOptions, titleVisibility: .visible) {
+            if let window = model.window(model.presentedWindowID) { windowActions(for: window) }
+        } message: {
+            Text(model.connectionSummary)
+        }
         .fullScreenCover(item: Binding(
             get: { model.media.handedOff },
             set: { if $0 == nil, model.media.handedOff != nil { Task { await model.media.finished(at: nil) } } })) { media in
@@ -69,8 +63,40 @@ struct WindowScreen: View {
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }
-        .statusBarHidden(!chromeVisible)
-        .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
+    }
+
+    /// Keep the remote surface separate from the shell's toolbar and presentation tree.
+    private func surface(for window: RemoteWindow, size: CGSize) -> some View {
+        // Keys go to the topmost dialog, if one is up, else to the window.
+        let popups = model.auxiliaryWindows(for: window)
+        let keyTarget = popups.last { !$0.isOverrideRedirect }?.id ?? window.id
+        let frames = popupFrames(popups, over: window, size: size)
+        return ZStack(alignment: .topLeading) {
+            RemoteWindowCanvas(window: window, keyboardVisible: model.keyboardVisible && keyTarget == window.id)
+                .frame(width: size.width, height: size.height)
+                .modifier(WindowDrop(window: window, pixelsPerPoint: model.pixelsPerPoint))
+            ForEach(popups) { popup in
+                if let frame = frames[popup.id] {
+                    RemoteWindowCanvas(window: popup, keyboardVisible: model.keyboardVisible && keyTarget == popup.id)
+                        .frame(width: frame.width, height: frame.height)
+                        .offset(x: frame.minX, y: frame.minY)
+                        .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+                        .onAppear { fitDialog(popup, over: window, in: size) }
+                        .onChange(of: size) { _, size in fitDialog(popup, over: window, in: size) }
+                }
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipped()
+        .offset(x: swipe)
+        .background(alignment: .topLeading) { neighbourCard(width: size.width) }
+        .overlay { cardEdges(from: window, width: size.width) }
+        .onChange(of: window.isFullscreen) { _, fullscreen in
+            withAnimation(.snappy) { chromeVisible = !fullscreen }
+        }
+        .onAppear { fit(window, to: size) }
+        .onChange(of: size) { _, size in fit(window, to: size) }
+        .onChange(of: window.id) { _, _ in fit(window, to: size) }
     }
 
     // MARK: Swiping between apps
@@ -143,71 +169,59 @@ struct WindowScreen: View {
 
     /// In full screen, a pull-down tab at the top edge brings the controls back.
     private var exitFullScreenHandle: some View {
-        Capsule()
-            .fill(.white.opacity(0.35))
-            .frame(width: 44, height: 5)
-            .padding(.top, 6)
-            .frame(width: 120, height: 28, alignment: .top)
-            .contentShape(Rectangle())
-            .onTapGesture { withAnimation(.snappy) { chromeVisible = true } }
-            .gesture(DragGesture(minimumDistance: 8).onEnded { value in
-                if value.translation.height > 12 { withAnimation(.snappy) { chromeVisible = true } }
-            })
-            .accessibilityLabel("Show window controls")
-            .accessibilityAddTraits(.isButton)
+        Button {
+            withAnimation(.snappy) { chromeVisible = true }
+        } label: {
+            Capsule()
+                .fill(.white.opacity(0.35))
+                .frame(width: 44, height: 5)
+                .padding(.top, 6)
+                .frame(width: 120, height: 44, alignment: .top)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .gesture(DragGesture(minimumDistance: 8).onEnded { value in
+            if value.translation.height > 12 { withAnimation(.snappy) { chromeVisible = true } }
+        })
+        .accessibilityLabel("Show window controls")
     }
 
-    private func chrome(for window: RemoteWindow) -> some View {
-        HStack(spacing: 10) {
-            Button { model.presentedWindowID = nil } label: {
-                Image(systemName: "square.grid.2x2").frame(width: 40, height: 40)
+    /// Native icon items join the system's side bar on Duo and fit a horizontal toolbar
+    /// elsewhere. The window title stays in the switcher instead of taking a content row.
+    @ToolbarContentBuilder private func controls(for window: RemoteWindow) -> some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button("Back to \(model.selectedTab.rawValue.capitalized)", systemImage: "chevron.backward") {
+                model.presentedWindowID = nil
             }
-            .glassEffect(.regular.interactive(), in: .circle)
-
-            Menu {
-                ForEach(model.appWindows) { other in
-                    Button { model.presentedWindowID = other.id } label: {
-                        Label(other.title.isEmpty ? "Window" : other.title,
-                              systemImage: other.id == window.id ? "checkmark" : "macwindow")
-                    }
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    if let icon = model.icon(for: window) { Image(uiImage: icon).resizable().frame(width: 20, height: 20) }
-                    Text(window.title.isEmpty ? "Window" : window.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 14)
-                .frame(height: 40)
-            }
-            .glassEffect(.regular.interactive(), in: .capsule)
-
-            Spacer(minLength: 0)
-
-            Button { model.keyboardVisible.toggle() } label: {
-                Image(systemName: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard").frame(width: 40, height: 40)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
-
-            Menu {
-                Section(model.connectionSummary) {}
-                Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
-                if model.agents.available {
-                    Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
-                }
-                if let video = model.media.available, window.appClass?.name.lowercased().contains("chromium") == true {
-                    Button("Play on iPhone or Apple TV", systemImage: "play.tv") { Task { await model.media.playHere(video) } }
-                }
-                Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
-                Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
-            } label: {
-                Image(systemName: "ellipsis").frame(width: 40, height: 40)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
+            .labelStyle(.iconOnly)
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 4)
-        .foregroundStyle(.white)
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button("Switch App", systemImage: "macwindow.on.rectangle") { showingApps = true }
+                .labelStyle(.iconOnly)
+                .accessibilityValue(window.title.isEmpty ? "Window" : window.title)
+
+            Button(model.keyboardVisible ? "Hide Keyboard" : "Keyboard",
+                   systemImage: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard") {
+                model.keyboardVisible.toggle()
+            }
+            .labelStyle(.iconOnly)
+
+            Button("Window Options", systemImage: "ellipsis") { showingOptions = true }
+                .labelStyle(.iconOnly)
+        }
+    }
+
+    /// Present actions outside the toolbar so a vertical overflow group cannot clip them.
+    @ViewBuilder private func windowActions(for window: RemoteWindow) -> some View {
+        Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
+        if model.agents.available {
+            Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
+        }
+        if let video = model.media.available, window.appClass?.name.lowercased().contains("chromium") == true {
+            Button("Play on iPhone or Apple TV", systemImage: "play.tv") { Task { await model.media.playHere(video) } }
+        }
+        Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
+        Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
     }
 
     /// Fill the shown area with the window, in Linux pixels.
@@ -253,6 +267,25 @@ struct WindowScreen: View {
         })
         return DesktopGeometry.popupFrames(windows: windows, rootFrames: [parent.id: root],
                                           viewport: CGRect(origin: .zero, size: size), pixelsPerPoint: scale)
+    }
+}
+
+/// Reads the toolbar environment inside the card's navigation stack, where the system
+/// supplies its actual edge. Only a vertical bar frees the top/bottom container insets;
+/// both horizontal safe edges and the software keyboard remain protected.
+private struct WindowCardViewport<Content: View>: View {
+    @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
+    let controlsVisible: Bool
+    let content: (GeometryProxy) -> Content
+
+    var body: some View {
+        GeometryReader(content: content)
+            .ignoresSafeArea(.container, edges: ignoredEdges)
+    }
+
+    private var ignoredEdges: Edge.Set {
+        if !controlsVisible { return .all }
+        return barEdge == nil ? [] : [.top, .bottom]
     }
 }
 

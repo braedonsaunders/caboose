@@ -20,6 +20,7 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
     private var pinchStartSize: CGFloat = 0
     private var observers: [NSObjectProtocol] = []
     private let linkTapDelegate = LinkTapDelegate()
+    private let readingTapDelegate = LinkTapDelegate()
     private static let fontSizeKey = "caboose.terminal.fontSize"
 
     private(set) var fontSize: CGFloat = {
@@ -33,9 +34,10 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
         super.init(frame: .zero, font: nil, options: options)
         terminalDelegate = self
         applyFont()
-        nativeBackgroundColor = TerminalTheme.background
+        // TerminalScreen paints the navy field behind the transparent grid.
+        nativeBackgroundColor = .clear
         nativeForegroundColor = TerminalTheme.foreground
-        backgroundOpacity = TerminalTheme.backgroundOpacity
+        backgroundOpacity = 0
         isOpaque = false
         backgroundColor = .clear
         installColors(TerminalTheme.ansi)
@@ -64,6 +66,19 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
                 tap.require(toFail: linkTap)
             }
         }
+        let readingTap = UITapGestureRecognizer(target: self, action: #selector(hideKeyboardForReading(_:)))
+        readingTapDelegate.shouldBegin = { [weak self] point in
+            guard let self, self.isFirstResponder else { return false }
+            return self.bounds.insetBy(dx: self.bounds.width * 0.2, dy: self.bounds.height * 0.2).contains(point)
+                && self.link(at: point) == nil
+        }
+        readingTap.delegate = readingTapDelegate
+        addGestureRecognizer(readingTap)
+        for recognizer in gestureRecognizers ?? [] {
+            guard let tap = recognizer as? UITapGestureRecognizer, tap !== readingTap, tap !== linkTap else { continue }
+            if tap.numberOfTapsRequired > 1 { readingTap.require(toFail: tap) }
+            else { tap.require(toFail: readingTap) }
+        }
         let center = NotificationCenter.default
         for name in [Notification.Name.terminalViewControlModifierReset, .terminalViewMetaModifierReset] {
             observers.append(center.addObserver(forName: name, object: self, queue: .main) { [weak self] _ in
@@ -78,11 +93,9 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
         observers.forEach(NotificationCenter.default.removeObserver)
     }
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        // The GPU renderer draws the same picture with less CPU; the view falls back to Core
-        // Graphics on a device without Metal.
-        if window != nil { try? setUseMetal(true) }
+    @objc private func hideKeyboardForReading(_ tap: UITapGestureRecognizer) {
+        guard tap.state == .ended else { return }
+        _ = resignFirstResponder()
     }
 
     // MARK: Text size

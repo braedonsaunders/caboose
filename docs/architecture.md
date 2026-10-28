@@ -347,13 +347,27 @@ runtimes. Downloads go directly from the guest, are size- and SHA-256-checked be
 installs them, and are kept in `/var/lib/caboose/catalog` for rollback. Release installs
 also install `mesa-vulkan-drivers` and `libgl1-mesa-dri`. Debian applications cannot be
 rolled back. Installed versions come from dpkg; failures and interrupted operations are
-recorded in the guest and reported on the next listing.
+recorded in the guest and reported on the next listing. A guest operation lock, retained
+by package-manager children, distinguishes active work from an interrupted worker. A
+retry of failed or interrupted work completes pending dpkg configuration before trying
+the requested operation again, even when dpkg already reports the application installed.
 
 Only one catalog operation runs at a time, and it holds a computer lease. A second
 operation, a park, a restart or a Craft job receives 409 while one runs. A pack installs
 its entries in order and continues past individual failures. The listing reports the last
 observed state while the computer is parked and never wakes it. `/v1/apps` discovers
-installed desktop entries independently.
+installed desktop entries independently. Listings include the active operation's progress;
+a host that rediscovers it holds a lease and observes it until it ends. A command-channel
+timeout alone does not mark a still-active guest operation failed or release its lease.
+
+Download progress measures the bytes currently in the release file against its pinned
+size. `value` is that download fraction, capped at 1; it is never an overall installation
+percentage. `downloadedBytes` and `totalBytes` accompany it. Preparation, verification,
+repository refresh, package installation, package configuration (including triggers) and
+removal are indeterminate, with `value: null`. Package setup can continue after dpkg
+reports the application's version; only the installer finishing completes the operation.
+The Shelf names the current stage. The Library also shows download bytes and offers
+Retry for failed or interrupted operations even when the application is already installed.
 
 Craft applications (`ai.storyteller.<name>.desktop`) are launched on the owner display's
 Xwayland, with `WAYLAND_DISPLAY` removed and `GDK_BACKEND`, `WINIT_UNIX_BACKEND` and
@@ -648,7 +662,7 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | `computer.upgrade` | `{ upgrade: { state, version?, message? } }` | A guest component update starts, finishes or fails (see [Guest components](#guest-components)) |
 | `notification` | `{ id, app, summary, body, created }` | A desktop notification on the owner's display |
 | `fs.changed` | `{ anchor }` | The home changed (see [Files](#files)) |
-| `catalog.progress` | `{ id, operation, phase, message?, stage?, value? }` | A catalog operation is `queued`, `installing`, `finished` or `failed`; `stage` and `value` (0–1 or null) report download progress |
+| `catalog.progress` | `{ id, operation, phase, message?, stage?, value?, downloadedBytes?, totalBytes? }` | A catalog operation is `queued`, `installing`, `finished` or `failed`. Stages are `preparing`, `downloading`, `verifying`, `refreshing`, `installing`, `configuring`, `removing` and `finished`. Only `downloading` has a measured `value` (0–1) and byte counts; other stages have `value: null` |
 | `catalog.changed` | `{ id? }` | After each application in an operation, and once when the operation ends |
 | `job.progress` | `{ job: { id, kind, title, status, detail } }` | A Craft job starts, succeeds or fails |
 | `agent.task.*` | see [Agents](#tasks) | Agent task activity |
@@ -800,7 +814,7 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/catalog` | `{ packs, apps }`: each catalog entry with `installedVersion`, `canRollback`, `lastError`, `interrupted`, `iconData`, `pinnedVersion`, `updateAvailable` and `progress` |
+| `GET` | `/v1/catalog` | `{ packs, apps }`: each catalog entry with `installedVersion`, `canRollback`, `lastError`, `interrupted`, `active`, `iconData`, `pinnedVersion`, `updateAvailable` and `progress` |
 | `POST` | `/v1/catalog/:id/install`, `/update`, `/rollback` | Queue an operation → 202 `{ accepted: true }` |
 | `DELETE` | `/v1/catalog/:id` | Queue removal → 202 |
 | `POST` | `/v1/catalog/packs/:id/install` | Queue every application in a pack → 202 |
@@ -1415,7 +1429,13 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
 - **Windows.** A Linux window opened from Home or Apps is an app card: full screen, sized
   to the phone, and a swipe in from either side edge goes to the next or previous open app
-  in the order they opened. An external display shows the windows floating, resizing and
+  in the order they opened. Back, the app switcher, Keyboard and Window Options use the
+  system toolbar: on a vertical-bar device they sit on the side and the app uses the full
+  height beside it; elsewhere they occupy a compact horizontal toolbar within the safe
+  area. The window title is in the switcher; Options includes Ask Agent, redraw and close.
+  The switcher and options open system action dialogs outside the toolbar's overflow group.
+  Full Screen hides the controls; its accessible top handle brings them back.
+  An external display shows the windows floating, resizing and
   stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
   The green title-bar button maximizes above the dock: its title bar meets the desktop's
   top edge, and its content ends eight UI-scaled points above the dock. Rotation and UI
@@ -1436,8 +1456,9 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   most about eight times a second. The gaps resize (snapping to the presets, with haptic
   detents). The grabber at a tile's top carries it to a new column, into a stack or onto
   another tile; a tap gives the tile the keyboard, and a double tap opens the same
-  full-screen app card as Apps. The visible Full Screen button, the grabber's menu and
-  accessibility action, and ⌘⌥F also open that card. The card keeps Desktop selected
+  full-screen app card as Apps. The Desktop toolbar's trailing Full Screen control opens
+  the focused app as that card; the grabber's menu and accessibility action, and ⌘⌥F
+  also open it. The card keeps Desktop selected
   underneath; dismissing it restores the tile layout. Only the presented card sends window
   geometry while it is up. Its measured content area, including changes to its controls,
   rotation and folding, replaces the guest display size; the complete picture fits while
@@ -1494,8 +1515,9 @@ Pinned and recent apps are kept on the phone per computer.
   and clipped to its measured content viewport; folding, rotation and tab changes report
   that viewport again. Home's Open, Pinned and Recent rows receive the measured column
   width and clip within it; recent file names and paths truncate within the same column.
-  Full Screen hides the bars and gives the desktop the whole display; a handle at the
-  top brings them back. No screen disables the vertical bar.
+  The Desktop toolbar's Full Screen action dialog also offers Hide Desktop Bars, giving the
+  desktop the whole display; a handle at the top brings the bars back. No screen disables
+  the vertical bar.
 - **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. Home's
   AirPlay control remembers the AirPlay output the computer's sound last played on (from the
   audio session's route) and, on a tap, switches the session to long-form video routing and
@@ -1548,13 +1570,17 @@ truecolor, 256 colours, bold and italic, the alternate screen, mouse reporting, 
 paste and OSC 8 links. CabooseKit holds the protocol (`Terminal/`: messages, closes, keys,
 and `TerminalConnection`, which tracks the output offset); the app holds the view.
 
-- **Look.** Caboose Night: SF Mono on the icon's navy (`#0E1626`) at 82% opacity over the
+- **Look.** Caboose Night: SF Mono on the icon's navy (`#0E1626`) at 50% opacity over the
   wallpaper, cream text, an amber cursor and selection, and a sixteen-colour palette from
   which the 256-colour cube derives. Pinch, or Larger and Smaller Text in the session menu,
   sets the size from 8 to 28 points; it is kept on the phone. Like Desktop, the terminal
   fills the screen beside a vertical sidebar without a title strip or outer margins.
   The grid has a ten-point inset inside its navy background to keep text and the cursor
-  clear of the edges; the keyboard still reduces the grid's height.
+  clear of the edges; one uniform background covers both inset and grid. The keyboard opens
+  when entering Terminal and still reduces the grid's height. A single tap in the middle
+  hides it for reading; another tap shows it again. Links and double-tap selection retain
+  their actions. Sessions and computer lifecycle actions open system action dialogs, so
+  the Duo's toolbar overflow does not constrain a nested menu's height.
 - **Input.** A key row above the keyboard has Esc, Tab, sticky Ctrl and Alt (for the row's
   keys and the keyboard's next one), arrows that repeat while held, `` | ~ / - _ ` \ : * $ ``,
   Home, End, Page Up and Page Down, and Hide Keyboard. Unmodified arrows follow the

@@ -398,8 +398,12 @@ The pinned catalog in [`guest/catalog`](../../guest/catalog/README.md) is served
 `GET /v1/catalog`. Install, update, rollback and removal are asynchronous; watch
 `catalog.progress` and `catalog.changed` on `/v1/control`. The guest downloads and verifies
 release packages before APT runs, and Debian packages come from the signed Debian 13
-repositories. One catalog operation runs at a time; an interrupted one is reported by the
-next listing. Rollback is available only when an earlier release package is cached.
+repositories. Progress percentages describe measured release-download bytes only;
+verification, package installation and triggers show indeterminate stages. One catalog
+operation runs at a time. Listings distinguish a lock-held active operation from an
+interrupted worker; the host observes surviving work and holds its lease until it ends.
+Retry completes pending dpkg configuration even if the application already reports an
+installed version. Rollback is available only when an earlier release package is cached.
 
 Craft jobs run a fixed list of installed catalog CLI operations, as `caboose`, on files
 staged in `~/.caboose-jobs/<job>` through `/v1/fs`. The contract, formats, progress events

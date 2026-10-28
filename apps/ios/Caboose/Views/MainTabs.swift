@@ -42,6 +42,31 @@ struct MainTabs: View {
             set: { if !$0 { model.presentedAgentWindowID = nil } })) {
             AgentWindowScreen().environment(model)
         }
+        .confirmationDialog("Computer", isPresented: $model.lifecycleActionsPresented, titleVisibility: .visible) {
+            if let upgrade = model.computerStatus?.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
+                // The detail is in Computer settings, held to a few lines there.
+                Button(title, systemImage: upgrade.state == "failed" ? "exclamationmark.triangle" : "arrow.down.circle") {
+                    model.settingsPresented = true
+                }
+            }
+            Group {
+                switch model.phase {
+                case .ready:
+                    Button("Park", systemImage: "moon.zzz") { Task { try? await model.parkComputer() } }
+                        .disabled(model.parking)
+                    if model.computerStatus?.capabilities.restart == true {
+                        Button("Restart…", systemImage: "arrow.clockwise", role: .destructive) { model.restartConfirmationPresented = true }
+                    }
+                case .parked, .failed:
+                    Button("Turn On", systemImage: "power") { Task { await model.wake() } }
+                case .displayElsewhere:
+                    Button("Show Here", systemImage: "iphone") { Task { await model.wake() } }
+                    Button("Park", systemImage: "moon.zzz") { Task { try? await model.parkComputer() } }
+                case .waking, .connecting, .restarting, .needsSetup:
+                    EmptyView()
+                }
+            }
+        }
         .confirmationDialog("Restart your computer?", isPresented: $model.restartConfirmationPresented, titleVisibility: .visible) {
             Button("Restart", role: .destructive) { Task { await model.restartComputer() } }
         } message: {
@@ -114,31 +139,7 @@ struct LifecycleMenu: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        Menu {
-            if let upgrade = model.computerStatus?.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
-                // The detail is in Computer settings, held to a few lines there.
-                Button(title, systemImage: upgrade.state == "failed" ? "exclamationmark.triangle" : "arrow.down.circle") {
-                    model.settingsPresented = true
-                }
-            }
-            Section(state.title) {
-                switch model.phase {
-                case .ready:
-                    Button("Park", systemImage: "moon.zzz") { Task { try? await model.parkComputer() } }
-                        .disabled(model.parking)
-                    if model.computerStatus?.capabilities.restart == true {
-                        Button("Restart…", systemImage: "arrow.clockwise", role: .destructive) { model.restartConfirmationPresented = true }
-                    }
-                case .parked, .failed:
-                    Button("Turn On", systemImage: "power") { Task { await model.wake() } }
-                case .displayElsewhere:
-                    Button("Show Here", systemImage: "iphone") { Task { await model.wake() } }
-                    Button("Park", systemImage: "moon.zzz") { Task { try? await model.parkComputer() } }
-                case .waking, .connecting, .restarting, .needsSetup:
-                    EmptyView()
-                }
-            }
-        } label: {
+        Button { model.lifecycleActionsPresented = true } label: {
             Label {
                 Text(state.title)
             } icon: {
@@ -148,6 +149,7 @@ struct LifecycleMenu: View {
             }
         }
         .accessibilityLabel("Computer: \(state.title)")
+
     }
 
     private var state: (title: String, symbol: String, color: Color, busy: Bool) {
