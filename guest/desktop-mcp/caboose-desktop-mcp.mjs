@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// caboose-desktop-mcp — lets an agent see and drive GUI apps on the agent seat (its own
-// Caboose Display, whose apps run on Xwayland :101), so it never touches the owner's display. An MCP server over stdio (newline-delimited
-// JSON-RPC 2.0), with no dependencies beyond node: and what the image has: a11y.py beside
-// this file (the accessibility tree, through python3 and AT-SPI), and the X tools xdotool,
-// wmctrl and ImageMagick's import. caboose-agentd gives it to every ACP agent in session/new,
-// and answers the agent's permission requests itself.
+// caboose-desktop-mcp — lets an agent see and drive GUI apps on the agent seat, its own
+// Caboose Display, so it never touches the owner's display. An MCP server over stdio
+// (newline-delimited JSON-RPC 2.0), with no dependencies beyond node: and two helpers beside
+// this file: a11y.py (the accessibility tree, through python3 and AT-SPI) and seat.py (the
+// seat's windows, pointer, keyboard and pictures, through its control socket). Wayland and
+// X11 applications are driven alike. caboose-agentd gives it to every ACP agent in
+// session/new, and answers the agent's permission requests itself.
 import { execFile, spawn } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,8 +18,9 @@ const run = promisify(execFile)
 const DISPLAY = process.env.CABOOSE_AGENT_DISPLAY ?? ':101'
 const env = { ...process.env, DISPLAY }
 const PROTOCOL = '2025-06-18'
-// Installed side by side: /opt/caboose/desktop-mcp.mjs and /opt/caboose/a11y.py.
+// Installed side by side: /opt/caboose/desktop-mcp.mjs, a11y.py and seat.py.
 const A11Y = fileURLToPath(new URL('./a11y.py', import.meta.url))
+const SEAT = fileURLToPath(new URL('./seat.py', import.meta.url))
 // What a launched app needs to build its accessibility tree: GTK's bridge must not be
 // switched off (NO_AT_BRIDGE, GTK_A11Y=none), Chromium and Electron read
 // ACCESSIBILITY_ENABLED, Firefox GNOME_ACCESSIBILITY, Qt QT_LINUX_ACCESSIBILITY_ALWAYS_ON.
@@ -70,17 +72,17 @@ const tools = [
     name: 'screenshot',
     description: 'Capture the agent display as a PNG. Coordinates in other tools use this image\'s pixels. Slower and '
       + 'costlier than elements, find and read_text: use it for what the accessibility tree does not show.',
-    inputSchema: { type: 'object', properties: { window: { type: 'string', description: 'Optional window id from list_windows to capture only that window' } } },
+    inputSchema: { type: 'object', properties: { window: { type: 'integer', description: 'Optional window id from list_windows to capture only that window' } } },
   },
   {
     name: 'list_windows',
-    description: 'List open windows on the agent display with id, title, and geometry.',
+    description: 'List open windows on the agent display, bottom to top, with id, title, application, geometry and which has the keyboard.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'focus',
     description: 'Raise and focus a window by id.',
-    inputSchema: { type: 'object', properties: { window: { type: 'string' } }, required: ['window'] },
+    inputSchema: { type: 'object', properties: { window: { type: 'integer' } }, required: ['window'] },
   },
   {
     name: 'click',
@@ -140,47 +142,19 @@ async function a11y(command, options) {
   return [{ type: 'text', text: stdout.trim() }]
 }
 
-async function xdotool(...args) {
-  await run('xdotool', args, { env, timeout: 15_000 })
-}
-
-async function capture(xid) {
-  const { stdout } = await run('import', ['-window', xid, 'png:-'], { env, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: 20_000 })
-  return Buffer.from(stdout)
-}
-
-/**
- * The agent display as one image in screen coordinates. Xwayland runs rootless, so its root
- * window has no picture of its own; instead each viewable window is captured and laid out
- * where it is, bottom to top.
- */
-async function captureSeat() {
-  const { stdout } = await run('xprop', ['-root', '-notype', '_NET_CLIENT_LIST_STACKING'], { env, timeout: 5_000 }).catch(() => ({ stdout: '' }))
-  const windows = []
-  for (const xid of stdout.match(/0x[0-9a-f]+/gi) ?? []) {
-    const info = (await run('xwininfo', ['-id', xid], { env, timeout: 5_000 }).catch(() => ({ stdout: '' }))).stdout
-    const field = name => Number(new RegExp(`${name}:\\s+(-?\\d+)`).exec(info)?.[1] ?? NaN)
-    const [x, y, width, height] = [field('Absolute upper-left X'), field('Absolute upper-left Y'), field('Width'), field('Height')]
-    if (/IsViewable/.test(info) && [x, y, width, height].every(Number.isFinite) && width > 1 && height > 1) windows.push({ xid, x, y, width, height })
-  }
-  if (!windows.length) return undefined
-  const right = Math.min(4096, Math.max(...windows.map(w => w.x + w.width)))
-  const bottom = Math.min(4096, Math.max(...windows.map(w => w.y + w.height)))
-  const dir = await mkdtemp(join(tmpdir(), 'caboose-shot-'))
+/** Runs seat.py on the agent seat; it answers one JSON object, or exits 1 with {"error"}. */
+async function seat(...args) {
   try {
-    const layers = []
-    for (const [index, w] of windows.entries()) {
-      const file = join(dir, `${index}.png`)
-      await writeFile(file, await capture(w.xid))
-      layers.push(file, '-geometry', `+${w.x}+${w.y}`, '-composite')
-    }
-    const { stdout: png } = await run('convert', ['-size', `${right}x${bottom}`, 'xc:#1e1e1e', ...layers, 'png:-'],
-      { env, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: 30_000 })
-    return Buffer.from(png)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
+    const { stdout } = await run('python3', [SEAT, ...args], { env, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 })
+    return JSON.parse(stdout)
+  } catch (error) {
+    let answer
+    try { answer = JSON.parse(error.stdout) } catch { throw error }
+    throw new Error(answer.error ?? 'the seat refused')
   }
 }
+
+const BUTTONS = { 1: 'left', 2: 'middle', 3: 'right' }
 
 const handlers = {
   elements: () => a11y('elements', {}),
@@ -192,49 +166,50 @@ const handlers = {
   },
   read_text: () => a11y('text', {}),
   async screenshot({ window }) {
-    if (window !== undefined && !/^(0x[0-9a-f]+|\d+)$/i.test(String(window))) throw new Error('window must be an id from list_windows')
-    const png = window !== undefined ? await capture(String(window)) : await captureSeat()
-    if (!png) return [{ type: 'text', text: 'No windows are open on the agent display.' }]
-    return [{ type: 'image', data: png.toString('base64'), mimeType: 'image/png' }]
+    if (window !== undefined && !Number.isInteger(window)) throw new Error('window must be an id from list_windows')
+    const dir = await mkdtemp(join(tmpdir(), 'caboose-shot-'))
+    try {
+      const file = join(dir, 'seat.png')
+      await seat('screenshot', '--out', file, ...(window === undefined ? [] : ['--window', String(window)]))
+      return [{ type: 'image', data: (await readFile(file)).toString('base64'), mimeType: 'image/png' }]
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   },
   async list_windows() {
-    const { stdout } = await run('wmctrl', ['-lG'], { env, timeout: 10_000 })
-    const windows = stdout.trim().split('\n').filter(Boolean).map(line => {
-      const [id, desktop, x, y, w, h, , ...title] = line.trim().split(/\s+/)
-      return { id, desktop: Number(desktop), x: Number(x), y: Number(y), width: Number(w), height: Number(h), title: title.join(' ') }
-    })
-    return [{ type: 'text', text: JSON.stringify(windows, null, 2) }]
+    const { windows } = await seat('windows')
+    const listed = windows.map(w => ({ id: w.id, kind: w.kind, title: w.title, app: w.app_id,
+      x: w.rect[0], y: w.rect[1], width: w.rect[2], height: w.rect[3], focused: w.focused, ...(w.parent == null ? {} : { parent: w.parent }) }))
+    return [{ type: 'text', text: listed.length ? JSON.stringify(listed, null, 2) : 'No windows are open on the agent display.' }]
   },
   async focus({ window }) {
-    if (!/^(0x[0-9a-f]+|\d+)$/i.test(String(window))) throw new Error('window must be an id from list_windows')
-    await run('wmctrl', ['-ia', String(window)], { env, timeout: 10_000 })
+    if (!Number.isInteger(window)) throw new Error('window must be an id from list_windows')
+    await seat('focus', String(window))
     return [{ type: 'text', text: `Focused ${window}.` }]
   },
   async click({ x, y, button = 1, count = 1 }) {
-    await xdotool('mousemove', '--sync', int(x, 'x'), int(y, 'y'), 'click', '--repeat', int(count, 'count'), int(button, 'button'))
+    if (!BUTTONS[button]) throw new Error('button must be 1 (left), 2 (middle) or 3 (right)')
+    if (![1, 2, 3].includes(count)) throw new Error('count must be 1, 2 or 3')
+    await seat('click', int(x, 'x'), int(y, 'y'), '--button', BUTTONS[button], '--count', String(count))
     return [{ type: 'text', text: `Clicked button ${button} at ${x},${y}.` }]
   },
   async drag({ x1, y1, x2, y2 }) {
-    await xdotool('mousemove', '--sync', int(x1, 'x1'), int(y1, 'y1'), 'mousedown', '1',
-      'mousemove', '--sync', int(x2, 'x2'), int(y2, 'y2'), 'mouseup', '1')
+    await seat('drag', int(x1, 'x1'), int(y1, 'y1'), int(x2, 'x2'), int(y2, 'y2'))
     return [{ type: 'text', text: `Dragged from ${x1},${y1} to ${x2},${y2}.` }]
   },
   async type({ text }) {
     if (typeof text !== 'string') throw new Error('text must be a string')
-    await xdotool('type', '--delay', '8', '--', text)
+    await seat('type', '--', text)
     return [{ type: 'text', text: `Typed ${text.length} characters.` }]
   },
   async key({ combo }) {
     if (typeof combo !== 'string' || !/^[A-Za-z0-9_+]+$/.test(combo)) throw new Error('combo must look like "ctrl+s" or "Return"')
-    await xdotool('key', '--', combo)
+    await seat('key', '--', combo)
     return [{ type: 'text', text: `Pressed ${combo}.` }]
   },
   async scroll({ x, y, dx = 0, dy = 0 }) {
-    await xdotool('mousemove', '--sync', int(x, 'x'), int(y, 'y'))
-    const steps = []
-    if (dy) steps.push('click', '--repeat', String(Math.min(50, Math.abs(dy))), dy > 0 ? '5' : '4')
-    if (dx) steps.push('click', '--repeat', String(Math.min(50, Math.abs(dx))), dx > 0 ? '7' : '6')
-    if (steps.length) await xdotool(...steps)
+    const clamp = (value, name) => String(Math.max(-50, Math.min(50, Number(int(value, name)))))
+    await seat('scroll', int(x, 'x'), int(y, 'y'), clamp(dx, 'dx'), clamp(dy, 'dy'))
     return [{ type: 'text', text: `Scrolled ${dx},${dy} at ${x},${y}.` }]
   },
   async launch({ command }) {

@@ -21,9 +21,9 @@ describe('screen', () => {
     expect(runs[0]!.slice(0, 4)).toEqual(['/usr/sbin/runuser', '-u', 'caboose', '--'])
     expect(runs[0]!.slice(4)).toEqual(['/usr/bin/env', 'DISPLAY=:110', '/bin/sh', '-c', ON_DISPLAY, 'sh', ':110', '/usr/bin/python3', '/opt/caboose/a11y.py', 'elements', '--display', ':110'])
     await screenType(guest, { text: '-rf is just text' })
-    expect(runs[1]!.slice(-3)).toEqual(['4', '--', '-rf is just text'])
+    expect(runs[1]!.slice(-4)).toEqual(['/opt/caboose/seat.py', 'type', '--', '-rf is just text'])
     await screenKeys(guest, { keys: 'ctrl+shift+T Enter' })
-    expect(runs[2]!.slice(-2)).toEqual(['ctrl+shift+t', 'Return'])
+    expect(runs[2]!.slice(-5)).toEqual(['/opt/caboose/seat.py', 'key', '--', 'ctrl+shift+t', 'Return'])
   })
 
   it('uses the X display and environment Caboose Display reports', async () => {

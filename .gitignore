@@ -12,3 +12,4 @@ guest/image/out/
 .swiftpm/
 .build/
 apps/ios/Caboose/Config/Local.xcconfig
+__pycache__/

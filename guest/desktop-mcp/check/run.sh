@@ -109,11 +109,12 @@ check 'id from a closed window rejected (exit 3)' test "$code" = 3
 check 'replacement window untouched' bash -c "! grep -q 'clicked Save' $logs/agent2.log"
 pkill -u caboose -f fixture.py; pkill -u caboose mousepad; pkill Xvfb; sleep 1
 
-echo '== Caboose Display: the owner display (:110) and the agent seat (:101), as the computer runs them'
+echo '== Caboose Display: the owner display and the agent seat, as the computer runs them'
 # The flags that bear on this check; the rest (token, encoder, sound) do not. Each instance
 # writes its launch environment once it is ready, as the computer's units do.
 install -d -o caboose -g caboose -m 0700 /run/user/1000
-for bus in bus agent-bus; do
+# Session buses of their own, as on the computer (the X checks above used the user bus).
+for bus in owner-bus agent-bus; do
   [ -S "/run/user/1000/$bus" ] || runuser -u caboose -- dbus-daemon --session --address="unix:path=/run/user/1000/$bus" --fork >/dev/null
 done
 display() {  # display NAME BUS ARGS...
@@ -122,33 +123,71 @@ display() {  # display NAME BUS ARGS...
     CABOOSE_VIDEO_SOCKET="/run/user/1000/caboose-video-$name.sock" \
     /usr/local/bin/caboose-display --no-auth --no-audio --env-file "$logs/$name.env" "$@" >"$logs/$name.log" 2>&1 &
 }
-display owner bus --listen 127.0.0.1:14600
-display agent agent-bus --listen 127.0.0.1:14601 --socket wayland-caboose-agent --x-display 101 --x11-only
+display owner owner-bus --listen 127.0.0.1:14600
+display agent agent-bus --listen 127.0.0.1:14601 --socket wayland-caboose-agent --x-display 101
 for name in owner agent; do for _ in $(seq 1 100); do [ -s "$logs/$name.env" ] && break; sleep 0.1; done; done
 check 'both instances wrote their launch environment' bash -c "[ -s $logs/owner.env ] && [ -s $logs/agent.env ]"
-check 'the agent seat names no Wayland socket' bash -c "! grep -q WAYLAND_DISPLAY $logs/agent.env && grep -q \"GDK_BACKEND='x11'\" $logs/agent.env"
+check 'each instance names its own control socket' bash -c "grep -q 'CABOOSE_DISPLAY_CONTROL=.*/wayland-caboose-0/control.sock' $logs/owner.env && grep -q 'CABOOSE_DISPLAY_CONTROL=.*/wayland-caboose-agent/control.sock' $logs/agent.env"
 check 'each instance has its own X authority' bash -c "[ \"\$(grep XAUTHORITY $logs/owner.env)\" != \"\$(grep XAUTHORITY $logs/agent.env)\" ]"
 # As caboose-host and the agent runner run things: as caboose, with only the seat's launch
 # environment (and its session bus).
 on() {  # on owner|agent COMMAND...
-  local name=$1 bus=bus; shift; [ "$name" = agent ] && bus=agent-bus
+  local name=$1 bus=owner-bus; shift; [ "$name" = agent ] && bus=agent-bus
   runuser -u caboose -- env -i HOME=/home/caboose PATH=/usr/bin:/bin:/usr/local/bin DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/$bus" \
     /bin/sh -c 'set -a; . "$0"; set +a; exec "$@"' "$logs/$name.env" "$@"
 }
 seat() { on agent /usr/bin/python3 /opt/caboose/a11y.py "$@"; }
 owner() { on owner /usr/bin/python3 /opt/caboose/a11y.py "$@"; }
+windows() { on "$1" /usr/bin/python3 /opt/caboose/seat.py windows; }
 owner bus --display :110 --wait 30 > "$logs/bus110.json"; seat bus --display :101 --wait 30 > "$logs/bus101.json"
-check 'each display gets its own accessibility bus' bash -c "[[ \$(python3 -c 'import json; print(json.load(open(\"$logs/bus110.json\"))[\"address\"] != json.load(open(\"$logs/bus101.json\"))[\"address\"])') == True ]]"
-check 'AT_SPI_BUS published on both displays' bash -c "for n in owner agent; do runuser -u caboose -- env -i sh -c 'set -a; . \"\$0\"; xprop -root AT_SPI_BUS' $logs/\$n.env | grep -q unix: || exit 1; done"
-# The owner's screen tools reach X11 windows; a GTK app is pointed at Xwayland for this check.
-on owner env GDK_BACKEND=x11 python3 /src/check/fixture.py --title 'Owner window' --log "$logs/cd-owner.log" --dialog >/dev/null 2>&1 &
+check 'each seat uses its session bus for accessibility' bash -c "grep -q '\"source\": \"session bus\"' $logs/bus110.json && grep -q '\"source\": \"session bus\"' $logs/bus101.json"
+check 'each seat has its own accessibility bus' bash -c "[[ \$(python3 -c 'import json; print(json.load(open(\"$logs/bus110.json\"))[\"address\"] != json.load(open(\"$logs/bus101.json\"))[\"address\"])') == True ]]"
+check 'AT_SPI_BUS on each Xwayland is its seat bus' bash -c "for n in owner agent; do d=\$(runuser -u caboose -- env -i sh -c 'set -a; . \"\$0\"; xprop -root AT_SPI_BUS' $logs/\$n.env); [ \$n = owner ] && b=$logs/bus110.json || b=$logs/bus101.json; grep -qF \"\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[\"address\"])' \$b)\" <<< \"\$d\" || exit 1; done"
+
+echo '== The owner display: a native Wayland app and an X11 app, as the screen routes read them'
+on owner python3 /src/check/fixture.py --title 'Owner Wayland' --log "$logs/ow.log" --dialog >/dev/null 2>&1 &
+wait_for "$logs/ow.log" ready; sleep 1
+check 'the GTK app is a Wayland window' yes "$(windows owner | py "any(w['title'] == 'Save changes?' and w['x11'] is None for w in d['windows'])")"
+oelements=$(owner elements --display :110)
+check 'Wayland dialog: Save, Cancel, field and check box listed' yes "$(echo "$oelements" | py "{('button', 'Save'), ('button', 'Cancel'), ('text', 'File name'), ('check box', 'Keep a backup')} <= {(e['role'].replace('push ', ''), e['name']) for e in d['elements']}")"
+check 'Wayland dialog: bounds lie inside the window' yes "$(windows owner | python3 -c "
+import json, sys
+win = [w for w in json.load(sys.stdin)['windows'] if w['title'] == 'Save changes?'][0]
+x, y, w, h = win['rect']
+els = json.loads(sys.argv[1])['elements']
+print('yes' if els and all(x <= e['bounds']['x'] and e['bounds']['x'] + e['bounds']['width'] <= x + w and y <= e['bounds']['y'] and e['bounds']['y'] + e['bounds']['height'] <= y + h for e in els) else 'no')" "$oelements")"
+owner act --display :110 --element "$(echo "$oelements" | id_of 'File name' text)" --action set-text --text 'owner wrote this' >/dev/null
+check 'Wayland dialog: set-text' wait_for "$logs/ow.log" 'text owner wrote this'
+owner act --display :110 --element "$(echo "$oelements" | id_of 'Keep a backup' 'check box')" --action press >/dev/null
+check 'Wayland dialog: press toggles the check box' wait_for "$logs/ow.log" 'toggled True'
+# The screen routes' typing and shortcuts go through the seat's keyboard to the focused window.
+owner act --display :110 --element "$(echo "$oelements" | id_of 'File name' text)" --action focus >/dev/null
+on owner python3 /opt/caboose/seat.py key -- ctrl+a BackSpace >/dev/null
+on owner python3 /opt/caboose/seat.py type -- '-typed by the screen route' >/dev/null
+check 'seat keys and typing reach the focused Wayland field' wait_for "$logs/ow.log" 'text -typed by the screen route'
+owner act --display :110 --element "$(echo "$oelements" | id_of Save button)" --action press >/dev/null
+check 'Wayland dialog: press Save' wait_for "$logs/ow.log" 'clicked Save'
+pkill -u caboose -f 'title Owner Wayland'; sleep 0.5
+on owner env GDK_BACKEND=x11 python3 /src/check/fixture.py --title 'Owner X11' --log "$logs/ox.log" --dialog >/dev/null 2>&1 &
+wait_for "$logs/ox.log" ready; sleep 1
+check 'the X11 app is an Xwayland window' yes "$(windows owner | py "any(w['title'] == 'Save changes?' and w['x11'] for w in d['windows'])")"
+xsave=$(owner find --display :110 --query save --role button | py "d['elements'][0]['id'] if len(d['elements']) == 1 else ''")
+check 'X11 dialog: Save found' test -n "$xsave"
+owner act --display :110 --element "$xsave" --action press >/dev/null
+check 'X11 dialog: press Save' wait_for "$logs/ox.log" 'clicked Save'
+pkill -u caboose -f 'title Owner X11'; sleep 0.5
+
+echo '== The agent seat with nobody watching: Wayland apps, kept apart from the owner'
+on owner python3 /src/check/fixture.py --title 'Owner window' --log "$logs/cd-owner.log" --dialog >/dev/null 2>&1 &
 on agent python3 /src/check/fixture.py --title 'Agent window' --log "$logs/cd-agent.log" --dialog >/dev/null 2>&1 &
 wait_for "$logs/cd-owner.log" ready; wait_for "$logs/cd-agent.log" ready; sleep 2
-check 'owner app on Xwayland is accessible' yes "$(owner find --display :110 --query save --role button | py "[e['name'] for e in d['elements']] == ['Save']")"
-xsave=$(seat find --display :101 --query save --role button | py "d['elements'][0]['id'] if len(d['elements']) == 1 else ''")
-check 'agent app found with nobody watching' test -n "$xsave"
+asave=$(seat find --display :101 --query save --role button | py "d['elements'][0]['id'] if len(d['elements']) == 1 else ''")
+check 'agent app found with nobody watching' test -n "$asave"
 check 'agent seat lists no owner window' yes "$(seat find --display :101 --query owner | py "d['elements'] == []")"
-seat act --display :101 --element "$xsave" --action press >/dev/null
+osave=$(owner find --display :110 --query save --role button | py "d['elements'][0]['id']")
+seat act --display :101 --element "$osave" --action press >"$logs/cd-cross.json"; cross=$?
+check 'owner element id rejected on the agent seat (exit 3)' test "$cross" = 3
+seat act --display :101 --element "$asave" --action press >/dev/null
 check 'press on the agent seat' wait_for "$logs/cd-agent.log" 'clicked Save'
 check 'owner window untouched' bash -c "! grep -q 'clicked Save' $logs/cd-owner.log"
 pkill -u caboose -f 'title Agent window'; sleep 0.5
@@ -163,8 +202,7 @@ mcp() {  # one tool call per server process, so calls run strictly in order
 }
 on agent python3 /src/check/fixture.py --title 'Seat window' --log "$logs/seat.log" --dialog >/dev/null 2>&1 &
 wait_for "$logs/seat.log" ready; sleep 1
-win=$(on agent xdotool search --name '^Save changes\?$' | tail -n 1)
-check 'the dialog is viewable with no client attached' bash -c "runuser -u caboose -- env -i sh -c 'set -a; . \"\$0\"; xwininfo -id $win' $logs/agent.env | grep -q IsViewable"
+check 'mcp list_windows shows the dialog' yes "$(mcp list_windows '{}' | py "any(w['title'] == 'Save changes?' for w in json.loads(d['result']['content'][0]['text']))")"
 centre() {
   seat find --display :101 --query "$1" ${2:+--role "$2"} |
     python3 -c "import json, sys; b = json.load(sys.stdin)['elements'][0]['bounds']; print(b['x'] + b['width'] // 2, b['y'] + b['height'] // 2)"
@@ -184,10 +222,11 @@ check 'mcp screenshot shows the new window, not a blank seat' test "${colours:-0
 pkill -u caboose -f 'title Seat window'; sleep 0.5
 
 # Chromium reads /etc/chromium.d/caboose-accessibility; --no-sandbox only because this test
-# container has no user namespaces for its sandbox. With no Wayland socket it runs on X11.
-on agent chromium --no-sandbox --no-first-run --disable-gpu --user-data-dir="$logs/chromium" \
+# container has no user namespaces for its sandbox. It runs as a native Wayland client.
+on agent chromium --ozone-platform=wayland --no-sandbox --no-first-run --disable-gpu --user-data-dir="$logs/chromium" \
   --window-size=900,700 file:///src/check/page.html >"$logs/chromium.log" 2>&1 &
 for _ in $(seq 1 60); do seat find --display :101 --query Subscribe | grep -q '"button"' && break; sleep 0.5; done
+check 'chromium is a Wayland window' yes "$(windows agent | py "any('Chromium' in w['title'] and w['x11'] is None for w in d['windows'])")"
 page=$(seat elements --display :101)
 check 'chromium: link and button inside the page listed' yes "$(echo "$page" | py "{('link', 'Read the docs'), ('button', 'Subscribe'), ('entry', 'Email')} <= {(e['role'], e['name']) for e in d['elements']}")"
 email=$(echo "$page" | id_of Email entry)
@@ -196,9 +235,10 @@ seat act --display :101 --element "$email" --action set-text --text 'me@example.
 seat act --display :101 --element "$(echo "$page" | id_of Subscribe button)" --action press >/dev/null
 sleep 1
 check 'chromium: set-text and press ran the page' yes "$(seat elements --display :101 | py "d['window']['title'].startswith('Subscribed me@example.com')")"
-seat act --display :101 --element "$(echo "$page" | id_of 'Read the docs' link)" --action press >/dev/null
+read -r lx ly <<< "$(centre 'Read the docs' link)"
+mcp click "{\"x\":$lx,\"y\":$ly}" >/dev/null
 sleep 1
-check 'chromium: page text, and the link followed' yes "$(seat text --display :101 | py "'PAGE-BODY-TEXT with Read the docs inside a sentence.' in d['text'] and 'page.html#docs' in d['text']")"
+check 'chromium: a click at the link'"'"'s bounds follows it' yes "$(seat text --display :101 | py "'PAGE-BODY-TEXT with Read the docs inside a sentence.' in d['text'] and 'page.html#docs' in d['text']")"
 
 echo '== caboose-desktop-mcp over stdio, driving the page'
 printf '%s\n' \

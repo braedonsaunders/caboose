@@ -371,8 +371,9 @@ def pids_elsewhere(display):
     return pids
 
 
-class Screen:
-    """The requested display: its windows, the focused one, and the processes on it alone."""
+class XScreen:
+    """An X display: its windows, the focused one, and the processes on it alone. Element
+    bounds on it are root-window (screen) coordinates."""
 
     def __init__(self, name):
         display_number(name)
@@ -380,13 +381,191 @@ class Screen:
         self.clients = self.display.clients()
         self.elsewhere = None
 
+    def focused(self):
+        return self.display.focused(self.clients)
+
     def window(self, xid):
         return {"title": self.display.title(xid), "app": self.display.app_class(xid)}
+
+    def title(self, xid):
+        return self.display.title(xid)
+
+    def pid(self, xid):
+        return self.display.pid(xid)
+
+    def rect(self, xid):
+        return self.display.rect(xid)
+
+    def frame_rect(self, xid):
+        return self.display.rect(xid)
+
+    def size(self):
+        return self.display.size()
+
+    def origin(self, xid):
+        return None
+
+    def popup_origin(self, pid, size):
+        return None
+
+    def bus_display(self):
+        return self.display
 
     def confined(self, pid):
         if self.elsewhere is None:
             self.elsewhere = pids_elsewhere(self.display)
         return pid not in self.elsewhere
+
+    def activate(self, xid):
+        pass
+
+    def click(self, xid, x, y):
+        """A click at (x, y), which only lands while the window is actually shown."""
+        attrs = self.display.attributes(xid)
+        if attrs is None or attrs.map_state != IS_VIEWABLE:
+            raise Failure("element has no accessible action, and its window is not on screen to click")
+        subprocess.run(["xdotool", "mousemove", "--sync", str(x), str(y), "click", "1"],
+                       env=dict(os.environ, DISPLAY=self.display.name), check=True, timeout=15,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    def replace_text(self, xid, text):
+        """Select all, delete, and type `text`, into that X window alone (xdotool --window)."""
+        env = dict(os.environ, DISPLAY=self.display.name)
+        quiet = {"env": env, "check": True, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        subprocess.run(["xdotool", "key", "--window", str(xid), "ctrl+a", "BackSpace"], timeout=15, **quiet)
+        if text:
+            subprocess.run(["xdotool", "type", "--window", str(xid), "--delay", "4", "--", text], timeout=120, **quiet)
+
+
+class SeatScreen:
+    """A Caboose Display seat through its control socket (seat.py): Wayland and X11 windows
+    alike, with each one's process, geometry and focus from the compositor. Bounds are in the
+    compositor's logical space. An X11 (Xwayland) window's elements report it directly; a
+    Wayland window's report positions within their surface, placed at the surface's origin."""
+
+    def __init__(self, name):
+        from seat import Seat, SeatError
+        self.SeatError = SeatError
+        try:
+            self.seat = Seat()
+            listing = self.seat.windows()
+        except SeatError as error:
+            raise Failure(str(error)) from None
+        windows = listing.get("windows", [])
+        self.records = {w["id"]: w for w in windows}
+        self.clients = [w["id"] for w in windows]
+        self._focused = listing.get("focused")
+        bounds = listing.get("bounds") or [0, 0, 0, 0]
+        self._size = (bounds[0] + bounds[2], bounds[1] + bounds[3])
+        self.elsewhere = None
+        # The seat's Xwayland, when it has one: where X11 applications find the accessibility bus.
+        self.display = None
+        if name:
+            try:
+                self.display = Display(name)
+            except Failure:
+                self.display = None
+
+    def _owner(self, wid):
+        """A popup's owner: the window an open menu belongs to."""
+        seen = set()
+        while wid in self.records and self.records[wid]["kind"] == "popup" and wid not in seen:
+            seen.add(wid)
+            parent = self.records[wid].get("parent")
+            if parent is None:
+                break
+            wid = parent
+        return wid
+
+    def focused(self):
+        if self._focused in self.records:
+            return self._owner(self._focused)
+        for wid in reversed(self.clients):
+            if self.records[wid]["kind"] != "popup":
+                return wid
+        return None
+
+    def window(self, wid):
+        record = self.records[wid]
+        return {"title": record.get("title") or "", "app": record.get("app_id") or ""}
+
+    def title(self, wid):
+        return (self.records.get(wid) or {}).get("title") or ""
+
+    def pid(self, wid):
+        return (self.records.get(wid) or {}).get("pid")
+
+    def rect(self, wid):
+        record = self.records.get(wid)
+        if record is None:
+            return None
+        x, y, w, h = record["rect"]
+        return {"x": x, "y": y, "width": w, "height": h}
+
+    def frame_rect(self, wid):
+        """Where the window's top-level accessible is: its whole surface, for a Wayland window."""
+        record = self.records.get(wid)
+        if record is None:
+            return None
+        if record.get("x11"):
+            return self.rect(wid)
+        x, y, w, h = record["surface"]
+        return {"x": x, "y": y, "width": w, "height": h}
+
+    def size(self):
+        return self._size
+
+    def origin(self, wid):
+        record = self.records.get(wid)
+        if record is None or record.get("x11"):
+            return None
+        return (record["surface"][0], record["surface"][1])
+
+    def popup_origin(self, pid, size):
+        """The surface origin of the Wayland popup of `pid` whose surface is `size` (w, h)."""
+        for wid in reversed(self.clients):
+            record = self.records[wid]
+            if record["kind"] != "popup" or record.get("x11") or record.get("pid") != pid:
+                continue
+            _, _, w, h = record["surface"]
+            if abs(w - size[0]) <= 2 and abs(h - size[1]) <= 2:
+                return (record["surface"][0], record["surface"][1])
+        return None
+
+    def bus_display(self):
+        return self.display
+
+    def confined(self, pid):
+        if self.elsewhere is None:
+            from seat import pids_on_other_seats
+            self.elsewhere = pids_on_other_seats(self.seat.path)
+        return pid not in self.elsewhere
+
+    def activate(self, wid):
+        try:
+            self.seat.focus(wid)
+        except self.SeatError as error:
+            raise Failure(str(error)) from None
+
+    def click(self, wid, x, y):
+        try:
+            self.seat.click(x, y)
+        except self.SeatError as error:
+            raise Failure(str(error)) from None
+
+    def replace_text(self, wid, text):
+        try:
+            self.seat.key("ctrl+a", "BackSpace")
+            self.seat.type(text)
+        except self.SeatError as error:
+            raise Failure(str(error)) from None
+
+
+def make_screen(name):
+    """The seat through its control socket when the display has one, else plain X."""
+    if os.environ.get("CABOOSE_DISPLAY_CONTROL"):
+        return SeatScreen(name)
+    return XScreen(name)
 
 
 # --- The accessibility bus ---------------------------------------------------------------
@@ -427,16 +606,42 @@ def _a11y_of_session(address):
         return None
 
 
+def _activation_environment(address, variables):
+    """Add `variables` to the environment a session bus starts services with."""
+    if not variables:
+        return
+    Gio, GLib = _gio()
+    try:
+        connection = _connect(address)
+        try:
+            connection.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                 "UpdateActivationEnvironment", GLib.Variant("(a{ss})", (variables,)), None,
+                                 Gio.DBusCallFlags.NONE, 5000, None)
+            # A user bus run by systemd starts services as systemd units, from its environment.
+            try:
+                connection.call_sync("org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+                                     "org.freedesktop.systemd1.Manager", "SetEnvironment",
+                                     GLib.Variant("(as)", ([f"{k}={v}" for k, v in variables.items()],)), None,
+                                     Gio.DBusCallFlags.NO_AUTO_START, 5000, None)
+            except Exception:
+                pass
+        finally:
+            connection.close_sync(None)
+    except Exception:
+        pass
+
+
 def bus_sources(display):
     """Where this display's accessibility bus may be, most specific first."""
     sources = []
     if CALLER_BUS:
         return [("AT_SPI_BUS_ADDRESS", "a11y", CALLER_BUS)]
-    root_a11y = display.string(display.root, "AT_SPI_BUS")
-    if root_a11y:
-        sources.append(("AT_SPI_BUS", "a11y", root_a11y.strip("\0").strip()))
-    for label, address in display_session_buses(display):
-        sources.append((label, "session", address))
+    if display is not None:
+        root_a11y = display.string(display.root, "AT_SPI_BUS")
+        if root_a11y:
+            sources.append(("AT_SPI_BUS", "a11y", root_a11y.strip("\0").strip()))
+        for label, address in display_session_buses(display):
+            sources.append((label, "session", address))
     env_session = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
     if env_session:
         sources.append(("DBUS_SESSION_BUS_ADDRESS", "session", env_session))
@@ -497,7 +702,7 @@ class Bus:
             if state["tried"]:
                 self.address = None
                 return
-            raise Failure(f"no accessibility bus found for display {display.name}")
+            raise Failure(f"no accessibility bus found for display {display.name if display else os.environ.get('DISPLAY', '')}")
         self.address, self.label = address, label
         self.state = {"next": after, "tried": state["tried"] + [address]}
         os.environ["AT_SPI_BUS_ADDRESS"] = address
@@ -644,16 +849,28 @@ class Tree:
             pass
         return ""
 
-    def bounds(self, node):
+    def bounds(self, node, origin=None):
+        """The element's rectangle: screen coordinates, or with `origin` (a Wayland surface's
+        position) its window coordinates moved there."""
         try:
             if node.get_component_iface() is None:
                 return None
-            rect = self.Atspi.Component.get_extents(node, self.Atspi.CoordType.SCREEN)
+            kind = self.Atspi.CoordType.SCREEN if origin is None else self.Atspi.CoordType.WINDOW
+            rect = self.Atspi.Component.get_extents(node, kind)
         except Exception:
             return None
         if rect.width <= 0 or rect.height <= 0:
             return None
-        return {"x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height}
+        dx, dy = origin or (0, 0)
+        return {"x": rect.x + dx, "y": rect.y + dy, "width": rect.width, "height": rect.height}
+
+    def window_size(self, node):
+        """The size of a top-level accessible in its own window coordinates."""
+        try:
+            rect = self.Atspi.Component.get_extents(node, self.Atspi.CoordType.WINDOW)
+            return rect.width, rect.height
+        except Exception:
+            return None
 
     def actions(self, node):
         try:
@@ -714,10 +931,14 @@ def _norm(text):
     return " ".join((text or "").split()).casefold()
 
 
-def match_frame(tree, app, screen, xid, active):
-    """The application's top-level accessible for X window `xid`, and the app's open popups."""
-    rect = screen.display.rect(xid)
-    title = _norm(screen.display.title(xid))
+def match_frame(tree, app, screen, wid, active):
+    """The application's top-level accessible for window `wid`, and the app's open popups:
+    ((index, accessible, origin) or None, [(index, accessible, bounds, origin)], rect)."""
+    rect = screen.rect(wid)
+    expected = screen.frame_rect(wid)
+    origin = screen.origin(wid)
+    pid = screen.pid(wid)
+    title = _norm(screen.title(wid))
     best, best_score, popups, showing = None, 0, [], []
     for index, top in tree.children(app):
         if top is None:
@@ -730,19 +951,25 @@ def match_frame(tree, app, screen, xid, active):
             name = _norm(top.get_name())
         except Exception:
             continue
-        bounds = tree.bounds(top)
         if role in tree.popup_roles and not name and tree.has(states, "SHOWING"):
-            popups.append((index, top, bounds))
+            if origin is None:
+                popups.append((index, top, tree.bounds(top), None))
+            else:
+                size = tree.window_size(top)
+                at = screen.popup_origin(pid, size) if size else None
+                if at is not None:
+                    popups.append((index, top, tree.bounds(top, at), at))
         if role not in tree.top_roles:
             continue
         showing.append((index, top))
+        bounds = tree.bounds(top, origin)
         score = 0
         if title and name == title:
             score += 4
         elif title and name and (name in title or title in name):
             score += 2
-        if rect and bounds and abs(bounds["x"] - rect["x"]) <= 64 and abs(bounds["y"] - rect["y"]) <= 64 \
-                and abs(bounds["width"] - rect["width"]) <= 128 and abs(bounds["height"] - rect["height"]) <= 128:
+        if expected and bounds and abs(bounds["x"] - expected["x"]) <= 64 and abs(bounds["y"] - expected["y"]) <= 64 \
+                and abs(bounds["width"] - expected["width"]) <= 128 and abs(bounds["height"] - expected["height"]) <= 128:
             score += 3
         if active and tree.has(states, "ACTIVE"):
             score += 2
@@ -751,34 +978,49 @@ def match_frame(tree, app, screen, xid, active):
     if best is None and len(showing) == 1:
         best = showing[0]
     frame_index = best[0] if best else None
-    popups = [(index, top, bounds) for index, top, bounds in popups if index != frame_index]
-    return best, popups, rect
+    popups = [popup for popup in popups if popup[0] != frame_index]
+    return ((best[0], best[1], origin) if best else None), popups, rect
+
+
+def top_origin(screen, wid, pid, tree, top):
+    """Where the top-level accessible `top` (the window, or one of its popups) is placed:
+    None for screen coordinates."""
+    origin = screen.origin(wid)
+    if origin is None or top is None:
+        return origin
+    size = tree.window_size(top)
+    frame = screen.frame_rect(wid)
+    if size and not (frame and abs(frame["width"] - size[0]) <= 2 and abs(frame["height"] - size[1]) <= 2):
+        popup = screen.popup_origin(pid, size)
+        if popup is not None:
+            return popup
+    return origin
 
 
 class Target:
     """The focused window on the requested display and its accessible application."""
 
     def __init__(self, display_name):
-        self.screen = Screen(display_name)
+        self.screen = make_screen(display_name)
         self.bus = None
         self.app = None
         self.note = None
-        self.xid = self.screen.display.focused(self.screen.clients)
+        self.xid = self.screen.focused()
         self.window = self.screen.window(self.xid) if self.xid else None
         if not self.xid:
             self.note = "No window is open on this display."
             return
-        self.pid = self.screen.display.pid(self.xid)
+        self.pid = self.screen.pid(self.xid)
         if self.pid is None:
             self.note = "The focused window does not report its process, so its accessibility tree cannot be matched."
             return
         if not self.screen.confined(self.pid):
             self.note = "The focused window's application also has windows on another display, so it is not read."
             return
-        self.bus = Bus(self.screen.display)
+        self.bus = Bus(self.screen.bus_display())
         self.app = self.bus.application(self.pid)
         if self.app is None:
-            self.bus.retry(self.screen.display)
+            self.bus.retry(self.screen.bus_display())
             self.note = "The focused window's application exposes no accessibility tree; use a screenshot."
             return
         self.tree = Tree(self.bus.Atspi)
@@ -790,13 +1032,13 @@ class Target:
             self.window["app"] = name
 
     def roots(self):
-        """(path, accessible, clip) to read: open popups first, then the window itself."""
+        """(path, accessible, clip, origin) to read: open popups first, then the window."""
         frame, popups, rect = match_frame(self.tree, self.app, self.screen, self.xid, True)
-        width, height = self.screen.display.size()
+        width, height = self.screen.size()
         screen_rect = {"x": 0, "y": 0, "width": width, "height": height}
-        roots = [([index], top, screen_rect) for index, top, _ in popups]
+        roots = [([index], top, screen_rect, origin) for index, top, _, origin in popups]
         if frame is not None:
-            roots.append(([frame[0]], frame[1], rect or screen_rect))
+            roots.append(([frame[0]], frame[1], rect or screen_rect, frame[2]))
         elif not roots:
             self.note = "The focused window was not found in its application's accessibility tree; use a screenshot."
         return roots
@@ -841,7 +1083,7 @@ def collect(target, query=None, role=None):
         role_name = tree.Atspi.role_get_name(node_role) or "unknown"
         if not role_matches(role_name, role):
             return True
-        bounds = tree.bounds(node)
+        bounds = tree.bounds(node, origin[0])
         if bounds is None or not intersects(bounds, clip[0]):
             return True
         found.append({
@@ -850,9 +1092,9 @@ def collect(target, query=None, role=None):
         })
         return True
 
-    clip = [None]
-    for path, root, rect in target.roots():
-        clip[0] = rect
+    clip, origin = [None], [None]
+    for path, root, rect, at in target.roots():
+        clip[0], origin[0] = rect, at
         tree.walk(root, path, visit)
         if len(found) >= MAX_ELEMENTS:
             break
@@ -931,7 +1173,7 @@ def read_text(target):
             return ""
         return f"\n{text}\n" if _role(child) in tree.block_roles else f"{SOFT}{text}{SOFT}"
 
-    pieces = [text_of(root, 0) for _, root, _ in reversed(target.roots())]
+    pieces = [text_of(root, 0) for _, root, _, _ in reversed(target.roots())]
     text = "\n".join(pieces)
     text = re.sub(r"[ \t\x00]*\n[ \t\x00]*", "\n", text)
     text = re.sub(r" ?\x00+ ?", " ", text)  # one space where pieces meet, never two
@@ -953,16 +1195,16 @@ def resolve(display_name, element):
         raise Failure("element not found", NOT_FOUND)
     xid, pid = int(match.group(1), 16), int(match.group(2))
     path = [int(i) for i in match.group(3).split(".")]
-    screen = Screen(display_name)
-    if xid not in screen.clients or screen.display.pid(xid) != pid or not screen.confined(pid):
+    screen = make_screen(display_name)
+    if xid not in screen.clients or screen.pid(xid) != pid or not screen.confined(pid):
         raise Failure("element not found", NOT_FOUND)
-    bus = Bus(screen.display)
+    bus = Bus(screen.bus_display())
     app = bus.application(pid)
     if app is None:
-        bus.retry(screen.display)
+        bus.retry(screen.bus_display())
         raise Failure("element not found", NOT_FOUND)
     tree = Tree(bus.Atspi)
-    node = app
+    node, top = app, None
     for index in path:
         try:
             node = node.get_child_at_index(index) if index < node.get_child_count() else None
@@ -970,6 +1212,7 @@ def resolve(display_name, element):
             node = None
         if node is None:
             raise Failure("element not found", NOT_FOUND)
+        top = top or node
     states = tree.states(node)
     try:
         role = node.get_role()
@@ -977,24 +1220,11 @@ def resolve(display_name, element):
         raise Failure("element not found", NOT_FOUND)
     if states is None or tree.has(states, "DEFUNCT") or tree.fingerprint(role, tree.name(node, role, states)) != match.group(4):
         raise Failure("element not found", NOT_FOUND)
-    return screen, xid, tree, node, states
-
-
-def pointer_click(screen, xid, bounds):
-    """Click the centre of `bounds`, which only lands while the window is actually shown."""
-    attrs = screen.display.attributes(xid)
-    if attrs is None or attrs.map_state != IS_VIEWABLE:
-        raise Failure("element has no accessible action, and its window is not on screen to click")
-    display = screen.display.name
-    x = bounds["x"] + bounds["width"] // 2
-    y = bounds["y"] + bounds["height"] // 2
-    subprocess.run(["xdotool", "mousemove", "--sync", str(x), str(y), "click", "1"],
-                   env=dict(os.environ, DISPLAY=display), check=True, timeout=15,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    return screen, xid, tree, node, states, top_origin(screen, xid, pid, tree, top)
 
 
 def act(display_name, element, action, text):
-    screen, xid, tree, node, states = resolve(display_name, element)
+    screen, xid, tree, node, states, origin = resolve(display_name, element)
     if action == "press":
         if not (tree.has(states, "ENABLED") or tree.has(states, "SENSITIVE")):
             raise Failure("element is disabled")
@@ -1007,10 +1237,10 @@ def act(display_name, element, action, text):
                 except Exception:
                     pass
                 break
-        bounds = tree.bounds(node)
+        bounds = tree.bounds(node, origin)
         if bounds is None or not tree.has(states, "SHOWING"):
             raise Failure("element has no action and is not on screen")
-        pointer_click(screen, xid, bounds)
+        screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
         return
     if action == "focus":
         try:
@@ -1027,11 +1257,11 @@ def act(display_name, element, action, text):
                 return
         except Exception:
             pass
-        # No EditableText (Chromium's and Electron's fields): focus it through AT-SPI, then
-        # send the keys to its X window alone (xdotool --window). That reaches no other
-        # window, whether or not anyone is watching the display.
+        # No EditableText (Chromium's and Electron's fields): focus its window and the field
+        # through AT-SPI, then replace the text with keys sent to that window.
         if not tree.has(states, "EDITABLE"):
             raise Failure("element is not editable")
+        screen.activate(xid)
         try:
             focused = node.get_component_iface() is not None and tree.Atspi.Component.grab_focus(node)
         except Exception:
@@ -1039,11 +1269,7 @@ def act(display_name, element, action, text):
         if not focused:
             raise Failure("element cannot take focus to type into")
         time.sleep(0.15)
-        env = dict(os.environ, DISPLAY=display_name)
-        quiet = {"env": env, "check": True, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-        subprocess.run(["xdotool", "key", "--window", str(xid), "ctrl+a", "BackSpace"], timeout=15, **quiet)
-        if text:
-            subprocess.run(["xdotool", "type", "--window", str(xid), "--delay", "4", "--", text], timeout=120, **quiet)
+        screen.replace_text(xid, text)
         return
     raise Failure(f"unknown action {action}", 2)
 
@@ -1081,6 +1307,9 @@ def command_bus(display_name, wait):
     display, the X11 autolaunch bus, or failing those one started here for the display."""
     deadline = time.monotonic() + max(0.0, wait)
     launched = None
+    session = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    if os.environ.get("CABOOSE_DISPLAY_CONTROL") and session:
+        return seat_bus(display_name, session, deadline)
 
     def settle(display):
         for _ in range(20):
@@ -1117,6 +1346,38 @@ def command_bus(display_name, wait):
         if time.monotonic() >= deadline:
             raise Failure(f"no accessibility bus could be started for display {display_name}")
         time.sleep(0.5)
+
+
+def seat_bus(display_name, session, deadline):
+    """A Caboose Display seat's accessibility bus: its session bus's. Wayland applications
+    find it through the session bus; it is published as AT_SPI_BUS on the seat's Xwayland
+    too, so X11 applications on the seat join the same bus."""
+    # at-spi-bus-launcher names its socket after DISPLAY (bus_110, bus_101): without it, the
+    # seats' launchers would share one path and the second would take the first's socket.
+    # It is started by the session bus on first use, with that bus's activation environment.
+    _activation_environment(session, {key: os.environ[key] for key in ("DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR")
+                                       if os.environ.get(key)})
+    while True:
+        address = _a11y_of_session(session)
+        if address and _alive(address):
+            break
+        if time.monotonic() >= deadline:
+            raise Failure("the seat's session bus has no accessibility bus")
+        time.sleep(0.5)
+    display = None
+    try:
+        display = Display(display_name)
+        if root_a11y_bus(display) != address:
+            env = dict(os.environ, DISPLAY=display_name)
+            subprocess.run(["xprop", "-root", "-f", "AT_SPI_BUS", "8s", "-set", "AT_SPI_BUS", address], env=env,
+                           check=True, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except (Failure, OSError, subprocess.SubprocessError):
+        return {"address": address, "source": "session bus",
+                "note": "AT_SPI_BUS could not be set on the seat's Xwayland, so X11 applications may use another bus."}
+    finally:
+        if display is not None:
+            display.close()
+    return {"address": address, "source": "session bus"}
 
 
 VALUE_OPTIONS = {"--display", "--query", "--role", "--element", "--action", "--text", "--wait"}
