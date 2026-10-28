@@ -74,6 +74,13 @@ each one falls back to the one below it.
    stream, with a video codec at the video's own size and frame rate, hardware encoded
    where available. The window around it keeps sharp, lossless UI updates, and the client
    layers the two. No heuristics are involved.
+   **Deferred until there is a GPU renderer.** No application in the guests as shipped
+   presents video this way. Chromium runs with `--disable-gpu`, Firefox renders video
+   with software WebRender, and mpv and VLC use RGB shm or EGL outputs without a GPU.
+   GStreamer's `waylandsink` would, but it is in gst-plugins-bad, which no guest
+   installs. Overlay subsurfaces appear with GPU rendering, and on GPU hosts those players
+   decode through layer 1 already. Until then the compositor offers no YUV formats, so such
+   a player falls back to RGB buffers, which the window picture or layer 3 carries.
 3. **Detected motion (X11 and everything else).** A region that updates at video rates is
    encoded as video, at the size it is actually shown on the client, as Xpra does today.
 
