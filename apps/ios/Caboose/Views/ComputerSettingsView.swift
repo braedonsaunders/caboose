@@ -21,15 +21,23 @@ struct ComputerSettingsView: View {
                 if let status = model.computerStatus, draft != nil {
                     form(status)
                 } else if let loadError {
-                    ContentUnavailableView {
-                        Label("Settings unavailable", systemImage: "exclamationmark.triangle")
-                    } description: {
-                        Text(loadError)
-                    } actions: {
-                        Button("Try Again") { Task { await load() } }.buttonStyle(.glass)
+                    Form {
+                        FilesSettingsSection()
+                        Section {
+                            ContentUnavailableView {
+                                Label("Settings unavailable", systemImage: "exclamationmark.triangle")
+                            } description: {
+                                Text(loadError)
+                            } actions: {
+                                Button("Try Again") { Task { await load() } }.buttonStyle(.glass)
+                            }
+                        }
                     }
                 } else {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Form {
+                        FilesSettingsSection()
+                        Section { ProgressView() }
+                    }
                 }
             }
             .navigationTitle("Computer")
@@ -77,6 +85,7 @@ struct ComputerSettingsView: View {
     private func form(_ status: HostClient.ComputerStatus) -> some View {
         let limits = status.limits
         Form {
+            FilesSettingsSection()
             if let upgrade = status.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
                 Section {
                     if upgrade.state == "failed" {
