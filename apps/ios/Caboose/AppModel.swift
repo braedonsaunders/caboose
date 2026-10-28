@@ -171,6 +171,8 @@ final class AppModel {
         settingsPresented = false
         recentFiles = []
         selectedTab = .home
+        deviceDesktopActive = false
+        desktopStageSize = .zero
         if let credentials { FileDomains.remove(credentials) }
         Credentials.clear()
         credentials = nil
@@ -336,7 +338,7 @@ final class AppModel {
             desktop.sync(with: Array(session.windows.values))
             for (index, window) in appWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
                 placedWindowIDs.insert(window.id)
-                session.configure(window, frame: desktop.placement(for: window, index: index))
+                session.configure(window, frame: desktop.remembered(window) ?? desktop.placement(for: window, index: index))
                 desktop.raise(window.id)
             }
             // Dialogs and tool windows: over their parent, or centred, never left at the origin.
@@ -420,13 +422,21 @@ final class AppModel {
         updateDeviceDesktop()
     }
 
-    /// The phone's own desktop is up exactly while the Desktop tab is selected and no TV has
-    /// the desktop; elsewhere each window is a full-screen card.
+    /// The phone's own desktop comes up when the Desktop tab is selected and stays up as the
+    /// owner moves between tabs, so coming back shows it exactly as it was: no relayout, no
+    /// reconfigure. It goes down only for a full-screen card (`leaveDeviceDesktop`) or a TV.
     func updateDeviceDesktop() {
-        let wanted = selectedTab == .desktop && !externalDisplayActive && desktopStageSize != .zero
-        if wanted, !deviceDesktopActive { openDeviceDesktop(size: desktopStageSize) }
-        else if wanted { deviceDesktopResized(to: desktopStageSize) }
-        else if !wanted, deviceDesktopActive { closeDeviceDesktop() }
+        guard selectedTab == .desktop, !externalDisplayActive, desktopStageSize != .zero else { return }
+        if !deviceDesktopActive { openDeviceDesktop(size: desktopStageSize) }
+        else { deviceDesktopResized(to: desktopStageSize) }
+    }
+
+    /// Takes the phone's desktop down so a window can be a full-screen card, keeping each
+    /// window's place on it for when the desktop comes back.
+    private func leaveDeviceDesktop() {
+        guard deviceDesktopActive else { return }
+        if let session { desktop.remember(Array(session.windows.values)) }
+        closeDeviceDesktop()
     }
 
     func openDeviceDesktop(size: CGSize) {
@@ -435,7 +445,9 @@ final class AppModel {
         externalSize = size
         // The phone's own desktop renders at 2x like the rest of the app, not the screen's 3x:
         // indistinguishable at arm's length, and under half the pixels to encode and send.
-        desktop = DesktopModel(pixelsPerPoint: min(2, max(1, UIScreen.main.scale)))
+        // Coming back, it is the same desktop: stacking, minimized windows and their places.
+        let scale = min(2, max(1, UIScreen.main.scale))
+        if !(desktop.directTouch && desktop.pixelsPerPoint == scale) { desktop = DesktopModel(pixelsPerPoint: scale) }
         desktop.directTouch = true
         desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
@@ -715,10 +727,11 @@ final class AppModel {
             }
             return
         }
-        if desktopActive {
+        if externalDisplayActive || (deviceDesktopActive && selectedTab == .desktop) {
             openOnDesktop(app)
             return
         }
+        leaveDeviceDesktop()
         if let existing = appWindows.first(where: { matches($0, app) }) {
             presentedWindowID = existing.id
             return
@@ -763,6 +776,7 @@ final class AppModel {
     /// window opens full screen on the phone.
     func openFile(_ path: String) async {
         guard let credentials else { return }
+        if !(deviceDesktopActive && selectedTab == .desktop) { leaveDeviceDesktop() }
         openingFileSince = Date()
         do {
             try await HostShortcutFiles(credentials: credentials).open(path)
@@ -776,7 +790,8 @@ final class AppModel {
 
     /// Shows a window as a full-screen card, leaving the phone's desktop first if it is up.
     func show(windowID: Int) {
-        if selectedTab == .desktop { selectedTab = .home; updateDeviceDesktop() }
+        if selectedTab == .desktop { selectedTab = .home }
+        leaveDeviceDesktop()
         presentedWindowID = windowID
     }
 
