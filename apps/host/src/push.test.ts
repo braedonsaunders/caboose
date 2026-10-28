@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { notificationFor, PushDevices, PushService } from './push.js'
+import { deviceFingerprint, notificationFor, PushDevices, PushService } from './push.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -51,4 +51,21 @@ it('does not delete a device re-registered while a push is in flight', async () 
   complete({ status: 410, reason: 'Unregistered' })
   await pending
   expect(devices.list()).toHaveLength(1)
+})
+it('lists devices by fingerprint, never by token, and removes one by its fingerprint', async () => {
+  const { path, devices } = await store()
+  await devices.register({ token, environment: 'sandbox', kinds: ['approval', 'task'] })
+  await devices.register({ token: 'cd'.repeat(32), environment: 'production', kinds: ['desktop'] })
+  const summaries = devices.summaries()
+  expect(summaries).toEqual([
+    { id: deviceFingerprint(token), environment: 'sandbox', kinds: ['approval', 'task'] },
+    { id: deviceFingerprint('cd'.repeat(32)), environment: 'production', kinds: ['desktop'] },
+  ])
+  expect(JSON.stringify(summaries)).not.toContain(token)
+  expect(summaries[0]!.id).toMatch(/^[0-9a-f]{16}$/)
+  await expect(devices.removeById('not-an-id')).rejects.toThrow('invalid device id')
+  expect(await devices.removeById('0'.repeat(16))).toBe(false)
+  expect(await devices.removeById(summaries[0]!.id)).toBe(true)
+  expect(devices.list().map(device => device.token)).toEqual(['cd'.repeat(32)])
+  expect((await PushDevices.open(path)).list()).toHaveLength(1)
 })

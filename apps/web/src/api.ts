@@ -1,3 +1,7 @@
+import type { CatalogOperation, CatalogResponse, LaunchableApp } from './catalog.js'
+import { fsQuery, joinPath, numberedName, type FileItem } from './files.js'
+import type { ComponentsUpgrade, HealthStatus, HostInfo } from './host.js'
+
 export type ComputerState = 'parked' | 'waking' | 'running' | 'parking' | 'restarting' | 'error'
 
 export interface LimitRange {
@@ -41,14 +45,21 @@ export interface ComputerStatus {
   }
   capabilities: {
     restart: boolean
+    /** APNs is configured. Absent from hosts older than push notifications. */
+    push?: boolean
   }
+  /** The guest-components upgrade on the last wake, from hosts that run one. */
+  upgrade?: ComponentsUpgrade | null
   lastError: string | null
 }
 
-export interface HealthStatus {
-  host: string
-  kvm: boolean
-  desk?: Record<string, unknown>
+export type PushKind = 'approval' | 'task' | 'desktop'
+
+/** A phone registered for push notifications; `id` is a fingerprint of its token, never the token. */
+export interface PushDevice {
+  id: string
+  environment: 'sandbox' | 'production'
+  kinds: PushKind[]
 }
 
 export interface SessionInfo {
@@ -333,8 +344,9 @@ export class CabooseApiError extends Error {
     this.name = 'CabooseApiError'
   }
 
+  /** The host rejected the token. A 403 is not this: the file service uses it for a permission the computer denies. */
   get isUnauthorized(): boolean {
-    return this.status === 401 || this.status === 403
+    return this.status === 401
   }
 
   get isConflict(): boolean {
@@ -350,11 +362,12 @@ export class CabooseClient {
     private readonly fetchImpl: typeof fetch = (input, init) => globalThis.fetch(input, init),
   ) {}
 
-  private async request<T>(
+  /** Sends a request and returns the successful response; failures become CabooseApiError. */
+  private async send(
     method: string,
     path: string,
-    options: { body?: unknown; timeoutMs?: number } = {},
-  ): Promise<T> {
+    options: { body?: BodyInit; headers?: Record<string, string>; timeoutMs?: number; accept?: string } = {},
+  ): Promise<Response> {
     const token = this.getToken().trim()
     const controller = new AbortController()
     const timeoutMs = options.timeoutMs ?? 30_000
@@ -362,34 +375,29 @@ export class CabooseClient {
 
     try {
       const headers: Record<string, string> = {
-        Accept: 'application/json',
+        Accept: options.accept ?? 'application/json',
+        ...options.headers,
       }
       if (token) {
         headers.Authorization = `Bearer ${token}`
-      }
-      if (options.body !== undefined) {
-        headers['Content-Type'] = 'application/json'
       }
 
       const fetchImpl = this.fetchImpl
       const response = await fetchImpl(`${this.baseUrl}${path}`, {
         method,
         headers,
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        body: options.body,
         signal: controller.signal,
       })
 
-      const text = await response.text()
-      let parsed: unknown = undefined
-      if (text) {
+      if (!response.ok) {
+        const text = await response.text()
+        let parsed: unknown = undefined
         try {
-          parsed = JSON.parse(text)
+          parsed = text ? JSON.parse(text) : undefined
         } catch {
           parsed = undefined
         }
-      }
-
-      if (!response.ok) {
         const message =
           parsed && typeof parsed === 'object' && 'error' in parsed && typeof (parsed as { error: unknown }).error === 'string'
             ? (parsed as { error: string }).error
@@ -397,15 +405,42 @@ export class CabooseClient {
         throw new CabooseApiError(response.status, message)
       }
 
-      return parsed as T
+      // The caller reads the body, so the timeout keeps covering a slow download.
+      const body = response.body
+      if (!body) return response
+      const timed = body.pipeThrough(new TransformStream({ flush: () => clearTimeout(timer) }))
+      return new Response(timed, { status: response.status, statusText: response.statusText, headers: response.headers })
     } catch (error) {
+      clearTimeout(timer)
       if (error instanceof CabooseApiError) throw error
       if (error instanceof Error && error.name === 'AbortError') {
         throw new CabooseApiError(408, 'The computer operation timed out.')
       }
       throw new CabooseApiError(0, error instanceof Error ? error.message : 'Network error')
-    } finally {
-      clearTimeout(timer)
+    }
+  }
+
+  private async request<T>(
+    method: string,
+    path: string,
+    options: { body?: unknown; timeoutMs?: number } = {},
+  ): Promise<T> {
+    const response = await this.send(method, path, {
+      ...(options.body !== undefined ? { body: JSON.stringify(options.body), headers: { 'Content-Type': 'application/json' } } : {}),
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    })
+    let text: string
+    try {
+      text = await response.text()
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw new CabooseApiError(408, 'The computer operation timed out.')
+      throw new CabooseApiError(0, error instanceof Error ? error.message : 'Network error')
+    }
+    if (!text) return undefined as T
+    try {
+      return JSON.parse(text) as T
+    } catch {
+      return undefined as T
     }
   }
 
@@ -434,6 +469,95 @@ export class CabooseClient {
 
   health(): Promise<HealthStatus> {
     return this.request<HealthStatus>('GET', '/v1/health', { timeoutMs: 15_000 })
+  }
+
+  host(): Promise<HostInfo> {
+    return this.request<HostInfo>('GET', '/v1/host', { timeoutMs: 15_000 })
+  }
+
+  pushDevices(): Promise<{ devices: PushDevice[] }> {
+    return this.request<{ devices: PushDevice[] }>('GET', '/v1/devices/push', { timeoutMs: 15_000 })
+  }
+
+  removePushDevice(id: string): Promise<{ removed: true }> {
+    return this.request<{ removed: true }>('DELETE', `/v1/devices/push/${encodeURIComponent(id)}`, { timeoutMs: 15_000 })
+  }
+
+  /** The catalog with installed versions and operation state; the last observed state while parked. */
+  catalog(): Promise<CatalogResponse> {
+    return this.request<CatalogResponse>('GET', '/v1/catalog', { timeoutMs: 60_000 })
+  }
+
+  /** Queues an operation; the host answers 202 and the catalog then reports its progress. */
+  startCatalogOperation(id: string, operation: CatalogOperation): Promise<{ accepted: true }> {
+    const app = `/v1/catalog/${encodeURIComponent(id)}`
+    return operation === 'remove'
+      ? this.request<{ accepted: true }>('DELETE', app, { timeoutMs: 30_000 })
+      : this.request<{ accepted: true }>('POST', `${app}/${operation}`, { timeoutMs: 30_000 })
+  }
+
+  installPack(id: string): Promise<{ accepted: true }> {
+    return this.request<{ accepted: true }>('POST', `/v1/catalog/packs/${encodeURIComponent(id)}/install`, { timeoutMs: 30_000 })
+  }
+
+  /** Launchable apps; answers 409 while the computer is not running. */
+  apps(): Promise<LaunchableApp[]> {
+    return this.request<LaunchableApp[]>('GET', '/v1/apps', { timeoutMs: 90_000 })
+  }
+
+  launchApp(id: string): Promise<{ launched: true }> {
+    return this.request<{ launched: true }>('POST', `/v1/apps/${encodeURIComponent(id)}/launch`, { timeoutMs: 60_000 })
+  }
+
+  /** Lists a home-relative folder. Every /v1/fs request wakes a parked computer. */
+  async listFiles(path: string): Promise<FileItem[]> {
+    const { items } = await this.request<{ items: FileItem[] }>('GET', `/v1/fs/list?${fsQuery(path)}`, { timeoutMs: 300_000 })
+    return items
+  }
+
+  /** Streams a file's bytes; the caller reads the body. */
+  downloadFile(path: string): Promise<Response> {
+    return this.send('GET', `/v1/fs/content?${fsQuery(path)}`, { accept: '*/*', timeoutMs: 3_600_000 })
+  }
+
+  /**
+   * Uploads a new file into a folder without replacing anything: a taken name becomes
+   * "name (2).ext", as the host's own Downloads uploads do. Returns the path it was saved at.
+   */
+  async uploadFile(directory: string, name: string, body: Blob): Promise<string> {
+    for (let n = 1; n <= 100; n++) {
+      const path = joinPath(directory, numberedName(name, n))
+      try {
+        await this.send('PUT', `/v1/fs/content?${fsQuery(path)}`, {
+          body,
+          headers: { 'If-None-Match': '*', 'Content-Type': body.type || 'application/octet-stream' },
+          timeoutMs: 3_600_000,
+        })
+        return path
+      } catch (failure) {
+        if (failure instanceof CabooseApiError && (failure.status === 412 || failure.status === 409)) continue
+        throw failure
+      }
+    }
+    throw new CabooseApiError(409, `Too many files named like ${name} already exist here.`)
+  }
+
+  createFolder(path: string): Promise<FileItem> {
+    return this.request<FileItem>('POST', `/v1/fs/mkdir?${fsQuery(path)}`, { timeoutMs: 300_000 })
+  }
+
+  moveFile(path: string, destination: string): Promise<FileItem> {
+    return this.request<FileItem>('POST', `/v1/fs/move?${fsQuery(path)}`, { body: { destination }, timeoutMs: 300_000 })
+  }
+
+  /** Moves an item to the computer's Trash. */
+  trashFile(path: string): Promise<{ deleted: true }> {
+    return this.request<{ deleted: true }>('DELETE', `/v1/fs/item?${fsQuery(path)}`, { timeoutMs: 300_000 })
+  }
+
+  /** Opens a file or folder with its default app on the computer's screen. */
+  openOnComputer(path: string): Promise<{ opened: true }> {
+    return this.request<{ opened: true }>('POST', '/v1/fs/open', { body: { path }, timeoutMs: 300_000 })
   }
 
   agentTasks(): Promise<AgentTask[]> {

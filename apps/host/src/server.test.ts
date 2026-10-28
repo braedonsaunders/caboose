@@ -11,6 +11,8 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { AgentRegistry } from './registry.js'
 import { createCabooseServer, type Controller } from './server.js'
 import { SettingsStore, settingsLimits } from './settings.js'
+import { describeHost } from './host-info.js'
+import { config } from './config.js'
 
 const close: Array<() => Promise<void>> = []
 afterEach(async () => { for (const f of close.splice(0)) await f() })
@@ -115,8 +117,39 @@ it('exposes authenticated push registration and capability only when configured'
   expect((await request('POST', device)).status).toBe(200)
   expect(devices.list()).toEqual([device])
   expect(await (await fetch(base + '/v1/computer', { headers: { authorization: 'Bearer owner' } })).json()).toMatchObject({ capabilities: { push: true } })
+  const listed = await fetch(base + '/v1/devices/push', { headers: { authorization: 'Bearer owner' } })
+  expect(listed.status).toBe(200)
+  const { devices: summaries } = await listed.json() as { devices: Array<{ id: string }> }
+  expect(summaries).toEqual([{ id: expect.stringMatching(/^[0-9a-f]{16}$/), environment: 'sandbox', kinds: ['approval'] }])
+  expect(JSON.stringify(summaries)).not.toContain(device.token)
+  expect((await fetch(base + '/v1/devices/push')).status).toBe(401)
+  const removeById = (id: string, auth = true) => fetch(`${base}/v1/devices/push/${id}`, { method: 'DELETE', headers: auth ? { authorization: 'Bearer owner' } : {} })
+  expect((await removeById(summaries[0]!.id, false)).status).toBe(401)
+  expect((await removeById('nope')).status).toBe(400)
+  expect((await removeById('0'.repeat(16))).status).toBe(404)
+  expect((await removeById(summaries[0]!.id)).status).toBe(200)
+  expect(devices.list()).toEqual([])
+  expect((await request('POST', device)).status).toBe(200)
   expect((await request('DELETE', { token: device.token })).status).toBe(200)
   expect(devices.list()).toEqual([])
+})
+
+it('lists push devices only when push is configured, and describes the host when told how it started', async () => {
+  const controller: Controller = { wake: async () => { throw new Error('not used') }, park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const env = { CABOOSE_OWNER_TOKEN: 'owner-secret-token', CABOOSE_RUNTIME: 'container', CABOOSE_GPU: 'none' }
+  const host = describeHost(config(env), env, { push: false, liveActivities: false })
+  const app = createCabooseServer({ token: 'owner', settings, controller, host })
+  app.server.listen(0, '127.0.0.1')
+  await once(app.server, 'listening')
+  close.unshift(() => new Promise(resolve => app.server.close(() => resolve())))
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const get = (path: string, auth = true) => fetch(base + path, { headers: auth ? { authorization: 'Bearer owner' } : {} })
+  expect((await get('/v1/devices/push')).status).toBe(503)
+  expect((await get('/v1/host', false)).status).toBe(401)
+  const described = await (await get('/v1/host')).json()
+  expect(described).toMatchObject({ runtime: 'container', display: 'xpra-ws', gpu: 'none', image: 'caboose-computer:latest', push: false })
+  expect(JSON.stringify(described)).not.toContain('owner-secret-token')
 })
 
 

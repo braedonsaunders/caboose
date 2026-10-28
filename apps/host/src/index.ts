@@ -5,6 +5,7 @@ import { config } from './config.js'
 import { createContainerController } from './container-driver.js'
 import { createController } from './driver.js'
 import { createCabooseServer } from './server.js'
+import { describeHost } from './host-info.js'
 import { AgentRegistry } from './registry.js'
 import { openSettings } from './settings.js'
 import { join, resolve } from 'node:path'
@@ -20,7 +21,8 @@ const push = sender ? new PushService(await PushDevices.open(join(deployment.ima
 const activities = apns && sender ? new ActivityService(await ActivityStore.open(join(deployment.imageRoot, 'activities.json')), message => sender.send(message), apns.topic) : undefined
 const registry = new AgentRegistry({ url: deployment.agentRegistryUrl, cachePath: join(deployment.imageRoot, 'agent-registry.json') })
 const webRoot = process.env.CABOOSE_WEB_ROOT ? resolve(process.env.CABOOSE_WEB_ROOT) : fileURLToPath(new URL('../../web/dist', import.meta.url))
-const app = createCabooseServer({ token: deployment.token, settings, registry, push, activities, agentIdleMs: deployment.agentIdleMs,
+const host = describeHost(deployment, process.env, { push: !!push, liveActivities: !!activities })
+const app = createCabooseServer({ token: deployment.token, settings, registry, push, activities, host, agentIdleMs: deployment.agentIdleMs,
   controller: deployment.runtime === 'container'
     ? createContainerController(deployment, { settings: () => settings.get() })
     : createController(deployment, { settings: () => settings.get() }), webRoot })

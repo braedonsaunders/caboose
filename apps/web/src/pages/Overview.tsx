@@ -110,12 +110,12 @@ export function Overview({ client, computer, token }: { client: CabooseClient; c
 
         <DashboardPanel title="Connect your iPhone" icon={<Smartphone className="size-4" aria-hidden />}>
           <div className="space-y-3 text-sm">
-            <p className="text-muted-foreground">
+            <p className="text-fg-muted">
               Open this link on an iPhone with Caboose installed to sign it in to this host. The link carries
               your owner token, so share it only with your own devices.
             </p>
             {showPairing ? (
-              <code className="block break-all rounded-md bg-muted p-3 text-xs">{pairing}</code>
+              <code className="block break-all rounded-md bg-bg-subtle p-3 text-xs">{pairing}</code>
             ) : null}
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" size="sm" onClick={() => setShowPairing(value => !value)}>
