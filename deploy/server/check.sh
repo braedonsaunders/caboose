@@ -58,7 +58,7 @@ out=$(docker run --rm -v "$here:/server:ro" debian:trixie-slim bash -c '
   printf "CABOOSE_STATE_DIR=/srv/retained-computers\n" > /opt/caboose-server/.env
   bash /server/install.sh --domain caboose.example.com --force --dry-run' 2>&1) || fail 'upgrade dry run'
 grep -q 'would set CABOOSE_STATE_DIR=/srv/retained-computers' <<<"$out" || fail 'upgrade lost the saved state directory'
-pass 'installer dry run, saved state directory, and refusal of an invalid domain' 
+pass 'installer dry run, saved state directory, and refusal of an invalid domain'
 
 [[ $e2e == 1 ]] || exit 0
 
