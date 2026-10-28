@@ -159,8 +159,9 @@ The system Thunar action is a default; existing user-defined actions take preced
 `GET /v1/computer` reports `upgrade: null | { state, version?, message? }`, and
 `/v1/control` broadcasts `computer.upgrade { upgrade }` plus updated management status.
 States are `checking`, `updating`, `succeeded`, and `failed`. A failure does not prevent
-the display opening. Old containers retain their writable layer and use the same guest
-upgrade, but Docker cannot add a port mapping to an existing container: if its port 14700
+the display opening. Before starting an existing container display, the host installs the guarded session bootstrap
+from the same bundle on a best-effort basis; missing printing helpers do not prevent display
+startup. Old containers retain their writable layer and use the same guest upgrade, but Docker cannot add a port mapping to an existing container: if its port 14700
 mapping is absent the success message says to recreate the container to enable Files.
 Back up its writable layer and home before replacing it; installed packages in that layer
 are otherwise lost. The Computer sheet shows progress, failures and this warning.

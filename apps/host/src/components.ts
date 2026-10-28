@@ -28,6 +28,14 @@ export async function readBundle(directory = root): Promise<Bundle> {
 
 export function needsUpgrade(installed: string, wanted: string): boolean { return installed.trim() !== wanted }
 
+/** Repair the old container's session bootstrap before display startup, without installing packages. */
+export async function prepareContainerSession(guest: AgentGuest, directory = root): Promise<void> {
+  const script = await readFile(join(directory, 'container/caboose-session'))
+  const encoded = script.toString('base64')
+  if (encoded.length > CHUNK) throw new Error('Container session bootstrap is too large for guest exec')
+  await guest.run('/bin/sh', ['-c', `set -e; tmp=$(mktemp /usr/local/bin/.caboose-session.XXXXXXXX); trap 'rm -f "$tmp"' EXIT; printf %s "$1" | base64 -d > "$tmp"; chmod 0755 "$tmp"; if ! cmp -s "$tmp" /usr/local/bin/caboose-session; then mv -f "$tmp" /usr/local/bin/caboose-session; fi`, 'sh', encoded], 30_000)
+}
+
 /** Root-owned staging; arguments are bounded below the guest exec channel's per-argument limit. */
 export async function upgradeComponents(guest: AgentGuest, mode: ComponentsMode, onStatus: (s: UpgradeStatus) => void, bundle?: Bundle): Promise<void> {
   onStatus({ state: 'checking' })

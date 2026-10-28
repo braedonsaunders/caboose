@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { upgradeComponents, readBundle, type UpgradeStatus } from '../../apps/host/src/components.js'
+import { upgradeComponents, readBundle, prepareContainerSession, type UpgradeStatus } from '../../apps/host/src/components.js'
 import type { AgentGuest } from '../../apps/host/src/agents.js'
 
 const name = `caboose-upgrade-check-${randomUUID().slice(0, 8)}`
@@ -13,6 +13,8 @@ try {
   const run = (command: string, args: string[]) => docker('exec', '-u', 'root', name, command, ...args)
   run('/bin/sh', ['-c', 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 iproute2 dbus && useradd -m -u 1000 caboose && mkdir -p /home/caboose/Documents /run/caboose && echo keep > /home/caboose/Documents/sentinel && echo token > /run/caboose/xpra-token && chown caboose:caboose /run/caboose/xpra-token'])
   const guest: AgentGuest = { run: async (cmd, args) => run(cmd, args) }
+  await prepareContainerSession(guest)
+  run('/usr/local/bin/caboose-session', ['start-printing'])
   const events: UpgradeStatus[] = []
   const bundle = await readBundle()
   await upgradeComponents(guest, 'container', s => events.push(s), bundle)

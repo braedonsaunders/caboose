@@ -24,6 +24,6 @@ queues a sample URL and file, prints a PDF, and drains the guest handoff queue t
 all three events. Disconnect phone control clients first: the check consumes pending
 handoffs, so do not run it with requests you want to keep. It creates a real CUPS job.
 This can also be run in a disposable Debian 13 container with the source mounted at
-`/src`, a `caboose` user created, and `bash /src/install.sh` run first. Full share-sheet,
+`/src`, a `caboose` user created, and the shared components installer run first; see `guest/components/README.md`. Full share-sheet,
 AirPrint and background behavior requires the paired iOS device and a real computer;
 follow the checks in `apps/ios/README.md`.
