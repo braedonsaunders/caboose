@@ -106,6 +106,19 @@ async function pendingApproval(dir) {
 }
 
 describe('a turn', () => {
+  it('offers profile tools only when the host enables them on a profile task', async () => {
+    const t = await task()
+    const config = JSON.parse(await readFile(join(t.dir, 'task.json'), 'utf8'))
+    await writeFile(join(t.dir, 'task.json'), JSON.stringify({ ...config, profileId: '11111111-1111-4111-8111-111111111111', agentTools: true }))
+    await writeFile(join(t.dir, 'profile-instructions.txt'), 'Be helpful.')
+    await t.prompt(1, 'hello')
+    t.start()
+    await t.turnEnd(1)
+    expect((await t.texts(1)).some(text => text.includes('mcp: caboose-desktop,caboose-agent-tools'))).toBe(true)
+    for (let i = 0; i < 50 && await stat(join(t.dir, 'tool-turn')).then(() => true, () => false); i++) await new Promise(resolve => setTimeout(resolve, 20))
+    await expect(stat(join(t.dir, 'tool-turn'))).rejects.toThrow()
+  })
+
   it('offers installed catalog servers to an ACP session', async () => {
     const t = await task({ craftServers: [
       { name: 'caboose-photocraft', command: 'photocraft-cli', args: ['mcp'], env: [] },

@@ -22,6 +22,7 @@
   "phone/printer-setup",
   "phone/caboose-phone-printer.service",
   "agentd/caboose-agentd.mjs",
+  "agentd/agent-tools.mjs",
   "agentd/package.json",
   "agentd/install.sh"
 ]

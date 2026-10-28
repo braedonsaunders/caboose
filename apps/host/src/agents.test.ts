@@ -4,6 +4,7 @@ import {
   readAttachments, transcriptEntry, type AgentEvent, type AgentGuest, type AgentResolver,
 } from './agents.js'
 import type { AgentLaunch } from './registry.js'
+import type { AgentToolJournal } from './agent-tools-journal.js'
 
 const b64 = (text: string | Buffer) => Buffer.from(text).toString('base64')
 const line = (event: object) => JSON.stringify(event)
@@ -1144,6 +1145,22 @@ describe('persistent profile tasks', () => {
         await expect(restored.start(input, { id, profile: { ...profile, instructions: 'Different' } })).rejects.toThrow(AgentConflictError)
       } finally { restored.pause() }
     } finally { s.tasks.pause() }
+  })
+  it('binds profile tools before admission and does not enable them without a journal', async () => {
+    const fake = fakeGuest()
+    const bindTask = vi.fn(async () => {})
+    const journal = { bindTask } as unknown as AgentToolJournal
+    const tasks = new AgentTasks(() => fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000, toolJournal: async () => journal })
+    try {
+      fake.beforeLaunch(() => { expect(bindTask).toHaveBeenCalledTimes(1) })
+      const result = await tasks.start({ prompt: 'hello', profileId: profile.id }, { profile })
+      expect(bindTask).toHaveBeenCalledWith(result.id, profile.id)
+      expect(JSON.parse(fake.task(result.id).files.get('task.json')!).agentTools).toBe(true)
+      fake.beforeLaunch(() => {})
+      const ordinary = await tasks.start({ prompt: 'hello' })
+      expect(JSON.parse(fake.task(ordinary.id).files.get('task.json')!).agentTools).toBeUndefined()
+      expect(bindTask).toHaveBeenCalledTimes(1)
+    } finally { tasks.pause() }
   })
   it('rejects unresolved profiles and arbitrary workspace paths before guest writes', async () => {
     const s = setup()

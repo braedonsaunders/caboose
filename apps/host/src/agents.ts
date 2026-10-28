@@ -4,6 +4,8 @@ import type { HomeOwnership } from './home.js'
 import { decodeBase64, sanitizeFileName, uniqueName, writeGuestFile } from './files.js'
 import type { AgentLaunch } from './registry.js'
 import { AGENT_DISPLAY_ENV_PATH } from './display.js'
+import type { AgentToolJournal } from './agent-tools-journal.js'
+import { pollAgentTools } from './agent-tools-mailbox.js'
 
 /**
  * Agent tasks: any Agent Client Protocol (ACP) agent from the registry, run inside the
@@ -118,6 +120,8 @@ export interface AgentResolver {
 
 export interface AgentTaskOptions {
   resolver: AgentResolver
+  /** Enables profile tools only after a host-owned binding is persisted. */
+  toolJournal?: () => Promise<AgentToolJournal | null>
   craftServers?: () => Promise<Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }>>
   pollMs?: number
   /** Starts the agent seat's display; defaults to the microVM's systemd unit. */
@@ -375,6 +379,8 @@ export class AgentTasks {
   private timer: ReturnType<typeof setInterval> | undefined
   private polling = false
   private readonly resolver: AgentResolver
+  private readonly toolJournal?: AgentTaskOptions["toolJournal"]
+  private toolPolling = false
   private readonly craftServers?: AgentTaskOptions["craftServers"]
   private readonly pollMs: number
   private readonly ensureSeat?: () => Promise<void>
@@ -388,6 +394,7 @@ export class AgentTasks {
     options: AgentTaskOptions,
   ) {
     this.resolver = options.resolver
+    this.toolJournal = options.toolJournal
     this.craftServers = options.craftServers
     this.pollMs = options.pollMs ?? 1000
     this.ensureSeat = options.ensureSeat
@@ -448,6 +455,8 @@ export class AgentTasks {
     const agentId = this.readAgent(input.agent)
     const launch = await this.resolver.launch(agentId)
     const journal: DeliveryJournal = { ...emptyJournal(), original, turns: 1, intent: { id: randomUUID(), turn: 1, replies: [] } }
+    const toolJournal = profile && this.toolJournal ? await this.toolJournal() : null
+    if (profile && toolJournal) await toolJournal.bindTask(id, profile.id)
     const dir = `${HOME}/Agents/${id}`
     const staging = `${HOME}/Agents/.${id}.${randomUUID()}`
     const attachments = files.map(file => `${dir}/attachments/${file.name}`)
@@ -466,7 +475,7 @@ export class AgentTasks {
         await writeGuestFile(guest, `${staging}/profile-instructions.txt`, Buffer.from(profile.instructions))
       }
       const config = JSON.stringify({ agent: launch, cwd: profile?.workspace ?? dir, approvals, idleMs: this.idleMs, craftServers,
-        ...(profile ? { profileId: profile.id } : {}) })
+        ...(profile ? { profileId: profile.id } : {}), ...(toolJournal ? { agentTools: true } : {}) })
       const message = JSON.stringify({ type: 'prompt', turn: 1, deliveryId: journal.intent!.id, text: prompt,
         ...(files.length ? { attachments: files.map((file, index) => ({ path: attachments[index], name: file.name, ...(file.type ? { mimeType: file.type } : {}) })) } : {}) })
       await writeGuestFile(guest, `${staging}/initial-prompt.json`, Buffer.from(message))
@@ -977,8 +986,26 @@ export class AgentTasks {
 
   private ensurePolling(): void {
     if (this.timer) return
-    this.timer = setInterval(() => { void this.poll() }, this.pollMs)
+    this.timer = setInterval(() => { void this.poll(); void this.pollTools() }, this.pollMs)
     this.timer.unref()
+  }
+
+  private async pollTools(): Promise<void> {
+    if (this.toolPolling || !this.toolJournal || !this.timer) return
+    const guest = this.guest()
+    if (!guest) return
+    this.toolPolling = true
+    try {
+      const journal = await this.toolJournal()
+      if (!journal || !this.timer) return
+      const live = [...this.tracked.values()].flatMap(({ task }) => task.status === 'running' && task.profileId && journal.profileForTask(task.id) === task.profileId
+        ? [{ id: task.id, profileId: task.profileId, turn: task.turns }] : [])
+      await pollAgentTools(guest, journal, live, task => {
+        const current = this.tracked.get(task.id)?.task
+        return Boolean(this.timer && current?.status === 'running' && current.profileId === task.profileId && current.turns === task.turn)
+      })
+    } catch (error) { console.error('Agent tool mailbox failed:', error) }
+    finally { this.toolPolling = false }
   }
 
   /**

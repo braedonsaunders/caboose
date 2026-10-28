@@ -8,6 +8,8 @@ dest=/opt/caboose/agentd
 install -d -m 0755 "$dest"
 install -m 0755 "$here/caboose-agentd.mjs" "$dest/.caboose-agentd.mjs.tmp"
 mv -f "$dest/.caboose-agentd.mjs.tmp" "$dest/caboose-agentd.mjs"
+install -m 0755 "$here/agent-tools.mjs" "$dest/.agent-tools.mjs.tmp"
+mv -f "$dest/.agent-tools.mjs.tmp" "$dest/agent-tools.mjs"
 # Only what runs in the guest: no test tooling.
 node -e '
 const source = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))

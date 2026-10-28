@@ -59,6 +59,10 @@ Conventions used throughout:
 - Everything the guest produces (queue files, state files, command output) is untrusted
   input. The host validates it field by field before it reaches a client.
 
+Profile tasks can use host-scoped memory and routine MCP tools over a bounded task-directory
+mailbox; the host owns the task/profile binding and durable request receipts. The mailbox
+never carries an owner or phone bearer token. See [agent routines](agent-routines.md#agent-tools-and-durability).
+
 ## 2. The computer
 
 ### Guest image

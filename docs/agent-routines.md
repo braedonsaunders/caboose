@@ -149,3 +149,33 @@ src/agent-routines.test.ts --maxWorkers=1 --minWorkers=1`, and host typechecking
 cover polling grace, skip/coalesce, overlap, profile/routine changes during wake,
 restart recovery before/after admission, persistence failures, same-UUID retries,
 bounded history, DST/exhaustion, private-file reopening and shutdown without timers.
+
+## Agent tools and durability
+
+A profile task can use the `caboose-agent-tools` MCP server to read its identity,
+list, save, update and forget its memories, and list, read, create, edit, pause,
+delete, run and inspect the history of its own routines. Routine schedules are the
+AppKit JSON union above: the model supplies an IANA timezone and translates the
+owner's request to a schedule. It asks for missing timezone information. These tools
+cannot change a profile's provider, approvals, or unrelated capabilities.
+
+The host enables the tools only for a task with a host-owned, durable task/profile
+binding and a configured dispatcher. The guest stdio server writes bounded UUID
+requests to the task's mailbox; the host polls tracked running tasks independently of
+turn delivery, verifies the current task and turn, and supplies the bound profile to
+its dispatcher. It writes the result to the mailbox over the guest command channel.
+The host owner and phone bearer credentials never enter this channel or the guest.
+The mailbox is not an isolation boundary among processes running as the shared guest
+user: such processes can read and modify mailbox traffic. The host enforces profile
+scope and opens mailbox paths without following symlinks.
+
+Before dispatch, a private host journal fsyncs an intent with the request ID, scope,
+and payload fingerprint; a completed result is also persisted. Reusing the same ID
+with different content or scope fails. A pending intent after a crash is reported as
+uncertain and is not executed again. The caller must inspect current memories or
+routines before making a new request. A timeout or closed stdio connection can occur
+after the host began an operation, so the result is similarly uncertain. This protects
+against repeating the same request ID, not a new ID the caller chooses after a timeout.
+The journal is single-process, capped at 256 receipts per task, 2000 task bindings and
+receipts per computer, and 32 MiB; when full, tools fail rather than discard receipts.
+A host restart restores bindings from the private journal, never from guest files.

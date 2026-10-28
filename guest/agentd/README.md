@@ -207,3 +207,11 @@ identity/instruction/memory snapshot (at most 400 KB). The runner supplies this 
 text block on every turn; user transcript entries retain only the actual owner prompt.
 Missing or oversized profile context fails the runner instead of silently dropping identity.
 The host keeps `profile-id` alongside the config to restore the task's identity after restart.
+
+Profile tasks configured by the host with its agent-tool journal advertise the
+`caboose-agent-tools` stdio MCP server. It uses `tool-turn` and the bounded
+`tool-mailbox` in the task directory to exchange UUID requests and responses with
+the host. Stdio close cancels pending waits; a timeout reports that an operation may
+have completed. The mailbox carries no owner or phone bearer token. All guest agent
+processes share the `caboose` user; the host enforces profile scope independently.
+See [agent routines](../../docs/agent-routines.md#agent-tools-and-durability).
