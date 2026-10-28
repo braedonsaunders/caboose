@@ -3,8 +3,8 @@
 This document is under verification against Xpra 6.5.5; it is not yet a complete
 client contract. Source references below are pinned to the 6.5.5 release. The guest image builder
 pins `xpra 6.5.5-r0-1` and configures `XPRA_BACKWARDS_COMPATIBLE=0` with Xpra’s
-file authenticator. The complete image and host lifecycle still require a
-successful end-to-end test.
+file authenticator. The real-host end-to-end checks are documented in
+`guest/image/README.md` and `apps/host/README.md`.
 
 ## Transport and framing
 
