@@ -84,6 +84,28 @@ with the token in that file.
 executable). A user service needs a running user systemd manager, access to `/dev/kvm`, and
 the non-interactive privileges above.
 
+### Bundle
+
+`scripts/bundle.sh <linux|darwin> <amd64|arm64> <outdir>` builds a self-contained host for
+native installs, without Docker: `caboose-host-<os>-<arch>.tar.zst`, plus a line in
+`<outdir>/SHA256SUMS`. It needs pnpm and zstd and runs from a checkout on any OS. The archive
+holds one directory, `caboose-host/`:
+
+| Path | What |
+| --- | --- |
+| `bin/caboose-host` | The launcher: the bundled Node runs `app/apps/host/dist/index.js`. It follows symlinks, so `/usr/local/bin/caboose-host` can point at it. |
+| `bin/cloud-hypervisor` | Linux only: Cloud Hypervisor v54.0 (static, checked by SHA-256), used unless `CABOOSE_VMM_PATH` is set. |
+| `bin/caboose-setup-disks` | `scripts/setup-disks.sh`, which prepares a reflink-capable disk root. |
+| `node/` | Node v22.23.4 for the target, checked against nodejs.org's SHA-256. |
+| `app/` | The compiled host with its production dependencies (`ws` and `appkit-desk`, plain JavaScript), the console, and the guest assets the host installs. |
+| `defaults.env` | The release's pinned `CABOOSE_BASE_IMAGE` and `CABOOSE_CONTAINER_IMAGE`, used only when the environment does not set them. |
+| `VERSION` | The release, from `CABOOSE_VERSION` or `git describe`. |
+
+The release workflow attaches the `linux-amd64`, `linux-arm64` and `darwin-arm64` bundles and
+`SHA256SUMS` to each GitHub Release. `scripts/check-bundle.sh <bundle>` extracts one, starts it
+through a symlink with an empty environment and a fresh state directory, and expects the
+console, a generated owner token, and an API that refuses requests without it.
+
 ### Self-host with Docker
 
 `deploy/compose.yaml` runs `apps/host/Dockerfile` with the microVM runtime. Use an amd64

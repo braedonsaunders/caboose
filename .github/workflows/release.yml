@@ -83,3 +83,39 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/caboose-host:${{ env.TAG }}
             ${{ env.REGISTRY }}/caboose-host:latest
+
+  # Native installs (deploy/linux, the macOS app, the Windows distro) start from these.
+  bundles:
+    needs: [computer, base]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      CABOOSE_VERSION: ${{ inputs.tag || github.ref_name }}
+      CABOOSE_BASE_IMAGE: ghcr.io/${{ github.repository_owner }}/caboose-base:${{ inputs.tag || github.ref_name }}@${{ needs.base.outputs.digest }}
+      CABOOSE_CONTAINER_IMAGE: ghcr.io/${{ github.repository_owner }}/caboose-computer:${{ inputs.tag || github.ref_name }}@${{ needs.computer.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Build the bundles
+        run: |
+          for target in 'linux amd64' 'linux arm64' 'darwin arm64'; do
+            # shellcheck disable=SC2086
+            bash apps/host/scripts/bundle.sh $target dist/release
+          done
+      - name: Check the Linux bundle
+        run: bash apps/host/scripts/check-bundle.sh dist/release/caboose-host-linux-amd64.tar.zst
+      - name: Attach them to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          prerelease=()
+          [[ $TAG == *-* ]] && prerelease=(--prerelease)
+          # Other release workflows attach to the same release, so creating it may race.
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes "${prerelease[@]}" ||
+            gh release view "$TAG" >/dev/null
+          gh release upload "$TAG" dist/release/* --clobber
