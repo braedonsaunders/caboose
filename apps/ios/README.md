@@ -49,7 +49,14 @@ time; the server paces itself on those acknowledgements.
 
 ## How input works
 
-Swipe scrolls with momentum, tap clicks, double-tap double-clicks, long press is a right
-click and long press then move drags with the primary button. A trackpad or mouse hovers,
-clicks and right-clicks precisely. The iOS keyboard types through `UIKeyInput`; hardware
+Swipe scrolls with momentum, tap clicks, double-tap double-clicks, a two-finger tap or a
+long press is a right click, and long press then move drags with the primary button. A
+trackpad or mouse hovers, clicks and right-clicks precisely.
+
+With the desktop on a TV the phone is a trackpad: one finger moves the cursor, tap clicks,
+two fingers scroll, a two-finger tap right-clicks, two quick taps double-click and tap then
+touch and move drags. Those rules live in `CabooseKit/Input/TrackpadGestures.swift` and are
+unit-tested with staggered fingers, because real fingers never land or lift together.
+On a device, check that a two-finger tap opens a context menu even right after a tap,
+that two fingers that move scroll without a click, and that tap-tap opens a desktop file. The iOS keyboard types through `UIKeyInput`; hardware
 keys are sent as X keys, with ⌘ mapped to Control so ⌘C/⌘V/⌘T do what Mac users expect.
