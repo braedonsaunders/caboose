@@ -301,3 +301,16 @@ by a simulator build. On a signed device paired to a deployed computer, check:
 - **AirPlay.** With an AirPlay device in reach, play to it once from Home's route picker;
   Home then names it, and its main control reconnects or offers it as the Automatically
   AirPlay setting allows. Park, Turn On and Restart from the lifecycle menu.
+
+## Agent conversations
+
+The Agents tab has a native composer for camera, Photos, Files and explicit speech
+recognition. Unsent input stays with each chat while the app is open; failed sends keep
+its text and files. Responses use the host's live draft snapshots and transcript events,
+with native markdown blocks, selectable code and Copy. Tool progress and approvals appear
+inline, and an existing agent-seat window has a live preview and Watch action.
+
+Run `scripts/check-agents.sh` for the real-device checklist against a matching host. It
+covers streaming, same-named queued attachments and Send Now, approvals, seat takeover,
+speech permissions, failed sends and chat switching. No scheduled-task or cross-agent
+memory feature is implied by the composer; conversation continuity belongs to the ACP agent.

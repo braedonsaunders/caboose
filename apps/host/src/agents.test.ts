@@ -88,7 +88,7 @@ describe('readAttachments', () => {
   })
 })
 
-interface FakeTask { transcript: Buffer; exitCode: string; stderr: string; approvals: Map<string, { json: string; decision?: string }>; files: Map<string, string>; inbox: string[] }
+interface FakeTask { draft?: object; transcript: Buffer; exitCode: string; stderr: string; approvals: Map<string, { json: string; decision?: string }>; files: Map<string, string>; inbox: string[] }
 
 /**
  * A guest that answers the host's scripts from in-memory task directories: the batched poll,
@@ -99,6 +99,7 @@ function fakeGuest() {
   const tasks = new Map<string, FakeTask>()
   const calls: string[][] = []
   let polls = 0
+  let beforeCancel: (() => Promise<void>) | undefined
   let listing = ''
   const task = (id: string): FakeTask => {
     let entry = tasks.get(id)
@@ -121,6 +122,7 @@ function fakeGuest() {
           const state = task(id)
           const data = state.transcript.subarray(Number(rest[i + 1])).subarray(0, max)
           out += `T\t${id}\t${state.exitCode}\t${state.exitCode ? b64(state.stderr) : ''}\t${data.toString('base64')}\n`
+          out += `D\t${id}\t${state.draft ? b64(JSON.stringify(state.draft)) : ''}\n`
           for (const [requestId, request] of state.approvals) {
             if (request.decision === undefined) out += `A\t${id}\t${requestId}\t${b64(request.json)}\n`
           }
@@ -159,13 +161,17 @@ function fakeGuest() {
         state.exitCode = ''
         return 'delivered\n'
       }
-      if (script.includes('"type":"cancel"')) task(idOf(rest[0]!)).inbox.push('cancel')
+      if (script.includes('"type":"cancel"')) {
+        await beforeCancel?.()
+        task(idOf(rest[0]!)).inbox.push('cancel')
+      }
       return ''
     },
   }
   return {
     guest, calls, task,
     get polls() { return polls },
+    beforeCancel: (hook: () => Promise<void>) => { beforeCancel = hook },
     setListing: (value: string) => { listing = value },
     append: (id: string, event: object) => { const state = task(id); state.transcript = Buffer.concat([state.transcript, Buffer.from(JSON.stringify(event) + '\n')]) },
     exit: (id: string, code: string, message = '') => { task(id).exitCode = code; task(id).stderr = message },
@@ -384,6 +390,120 @@ describe('AgentTasks', () => {
     expect(tasks.list()[0]).toMatchObject({ status: 'succeeded', summary: 'A short poem.', turns: 2 })
     const texts = events.filter(event => event.type === 'agent.task.output').map(event => (event as { text: string }).text)
     expect(texts).toEqual(['A short poem.'])
+  })
+
+  it('streams validated current-turn drafts once and clears them on commit or stop', async () => {
+    const { fake, events, tasks } = setup()
+    const task = await tasks.start({ prompt: 'stream' })
+    fake.append(task.id, user(1))
+    const state = fake.task(task.id)
+    state.draft = { turn: 1, after: state.transcript.length, kind: 'text', text: 'Hello' }
+    await tasks.poll()
+    expect(tasks.list()[0]?.draft).toEqual({ turn: 1, kind: 'text', text: 'Hello' })
+    await tasks.poll()
+    expect(events.filter(e => e.type === 'agent.task.draft')).toHaveLength(1)
+    fake.append(task.id, { type: 'text', text: 'Hello world' })
+    // Even a stale file cannot duplicate text now committed in the transcript.
+    await tasks.poll()
+    expect(tasks.list()[0]?.draft).toBeUndefined()
+    for (const draft of [
+      { turn: 2, after: state.transcript.length, kind: 'text', text: 'wrong turn' },
+      { turn: 1, after: state.transcript.length + 10, kind: 'text', text: 'ahead of transcript' },
+      { turn: 1, after: state.transcript.length, kind: 'tool', text: 'invalid' },
+      { turn: 1, after: state.transcript.length, kind: 'text', text: 'x'.repeat(16_001) },
+    ]) { state.draft = draft; await tasks.poll(); expect(tasks.list()[0]?.draft).toBeUndefined() }
+    state.draft = { turn: 1, after: state.transcript.length, kind: 'thought', text: 'Thinking' }
+    await tasks.poll()
+    await tasks.cancel(task.id)
+    expect(tasks.list()[0]?.draft).toBeUndefined()
+  })
+
+  it('keeps queued files distinct and delivers them both automatically and with Send Now', async () => {
+    const { fake, tasks } = setup()
+    const task = await tasks.start({ prompt: 'read these later' })
+    const file = { name: 'notes.txt', type: 'text/plain', data: b64('hello') }
+    await Promise.all([
+      tasks.reply(task.id, { prompt: 'first', attachments: [file] }),
+      tasks.reply(task.id, { prompt: 'second', attachments: [file] }),
+    ])
+    const paths = tasks.list()[0]!.queuedAttachments!.flat()
+    expect(new Set(paths).size).toBe(2)
+    expect(paths.every(path => fake.task(task.id).files.get(path) === 'hello')).toBe(true)
+    await tasks.sendNow(task.id)
+    let message = JSON.parse(fake.task(task.id).inbox.at(-1)!)
+    expect(message.text).toBe('first\n\nsecond')
+    expect(message.attachments.map((a: { path: string }) => a.path)).toEqual(paths)
+    expect(tasks.list()[0]!.queuedAttachments).toBeUndefined()
+    await tasks.reply(task.id, { prompt: 'third', attachments: [file] })
+    fake.append(task.id, user(2))
+    fake.append(task.id, end(2, 'done'))
+    await tasks.poll()
+    await vi.waitFor(() => expect(tasks.list()[0]?.turns).toBe(3))
+    message = JSON.parse(fake.task(task.id).inbox.at(-1)!)
+    expect(message.attachments[0]).toMatchObject({ name: 'notes.txt', mimeType: 'text/plain' })
+    expect(message.text).toBe('third')
+  })
+
+  it('claims Send Now before cancellation yields to a normal polled turn end', async () => {
+    const { fake, tasks, events, release } = setup()
+    const task = await tasks.start({ prompt: 'working' })
+    await tasks.reply(task.id, { prompt: 'queued', attachments: [{ name: 'notes.txt', data: b64('contents') }] })
+    let resume!: () => void
+    let entered!: () => void
+    const gate = new Promise<void>(resolve => { resume = resolve })
+    const cancelling = new Promise<void>(resolve => { entered = resolve })
+    fake.beforeCancel(async () => { entered(); await gate })
+    const sending = tasks.sendNow(task.id)
+    await cancelling
+    fake.append(task.id, user(1))
+    fake.append(task.id, end(1, 'finished just before cancellation'))
+    await tasks.poll()
+    expect(release).not.toHaveBeenCalled()
+    expect(fake.task(task.id).inbox).toHaveLength(1)
+    resume()
+    await sending
+    const prompts = fake.task(task.id).inbox.filter(value => value !== 'cancel').map(value => JSON.parse(value))
+    expect(prompts.filter(prompt => prompt.turn === 2)).toHaveLength(1)
+    expect(prompts.at(-1)).toMatchObject({ turn: 2, text: 'queued', attachments: [{ name: 'notes.txt' }] })
+    expect(tasks.list()[0]?.turns).toBe(2)
+    expect(events.filter(event => event.type === 'agent.task.replied')).toHaveLength(1)
+    expect(events.filter(event => event.type === 'agent.task.finished')).toHaveLength(0)
+  })
+
+  it('restores waiting files when Send Now delivery fails after the old turn finishes', async () => {
+    const { fake, tasks, release } = setup()
+    const task = await tasks.start({ prompt: 'working' })
+    await tasks.reply(task.id, { prompt: 'queued', attachments: [{ name: 'notes.txt', data: b64('contents') }] })
+    const paths = tasks.list()[0]!.queuedAttachments
+    fake.beforeCancel(async () => {
+      fake.append(task.id, user(1)); fake.append(task.id, end(1, 'done'))
+      await tasks.poll()
+    })
+    const run = fake.guest.run
+    fake.guest.run = async (command, args, timeout) => {
+      if (args.some(arg => arg.includes('echo launched'))) throw new Error('delivery failed')
+      return run(command, args, timeout)
+    }
+    await expect(tasks.sendNow(task.id)).rejects.toThrow('delivery failed')
+    expect(tasks.list()[0]).toMatchObject({ queued: ['queued'], queuedAttachments: paths, status: 'succeeded' })
+    expect(release).toHaveBeenCalledTimes(1)
+    fake.guest.run = run
+    await tasks.sendNow(task.id)
+    expect(tasks.list()[0]).toMatchObject({ status: 'running', turns: 2 })
+    expect(tasks.list()[0]!.queued).toBeUndefined()
+  })
+
+  it('bounds files across concurrent queued replies and supports files on a finished reply', async () => {
+    const { fake, tasks } = setup()
+    const task = await tasks.start({ prompt: 'x' })
+    const file = { name: 'a.txt', data: b64('a') }
+    const replies = await Promise.allSettled(Array.from({ length: 5 }, () => tasks.reply(task.id, { prompt: 'more', attachments: [file] })))
+    expect(replies.filter(r => r.status === 'fulfilled')).toHaveLength(4)
+    expect(tasks.list()[0]!.queuedAttachments!.flat()).toHaveLength(4)
+    await tasks.cancel(task.id)
+    await tasks.reply(task.id, { prompt: 'again', attachments: [file] })
+    expect(JSON.parse(fake.task(task.id).inbox.at(-1)!).attachments).toHaveLength(1)
+    await expect(tasks.reply(task.id, { prompt: 'bad', attachments: [{ name: 'bad', data: '!' }] })).rejects.toThrow()
   })
 
   it('refuses replies it cannot honour', async () => {

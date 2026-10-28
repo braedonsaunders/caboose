@@ -5,7 +5,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 mode=${1:?expected image-vm, image-container, vm or container}
 case "$mode" in image-vm|image-container|vm|container) ;; *) exit 2;; esac
 export DEBIAN_FRONTEND=noninteractive
-packages=(cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1)
+packages=(nodejs npm cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1)
 missing=()
 for pkg in "${packages[@]}"; do
   [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || :)" = installed ] || missing+=("$pkg")
@@ -26,6 +26,7 @@ install -Dm755 "$root/terminal/caboose-terminal.py" /opt/caboose/terminal/caboos
 install -Dm644 "$root/terminal/caboose-terminal.service" /etc/systemd/system/caboose-terminal.service
 sh "$root/notifications/install.sh"
 bash "$root/phone/install.sh"
+sh "$root/agentd/install.sh"
 install -d -m 0755 /usr/local/share/caboose
 if [[ "$mode" = *container ]]; then
   install -Dm755 "$root/components/container-services.sh" /usr/local/libexec/caboose-components-services

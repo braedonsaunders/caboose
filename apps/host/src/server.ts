@@ -434,8 +434,12 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     }
     const reply = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/reply$/.exec(path)
     if (request.method === 'POST' && reply?.[1]) {
-      const input = await readJson(request)
+      const input = await readJson(request, TASK_BODY_LIMIT)
       return json(response, 200, { task: await computer.run(() => agents.reply(reply[1]!, input)) })
+    }
+    const sendNow = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/send-now$/.exec(path)
+    if (request.method === 'POST' && sendNow?.[1]) {
+      return json(response, 200, { task: await computer.run(() => agents.sendNow(sendNow[1]!)) })
     }
     const approval = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/approvals\/([0-9a-f-]{36})$/.exec(path)
     if (request.method === 'POST' && approval?.[1] && approval[2]) {
