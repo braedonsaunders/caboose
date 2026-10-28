@@ -12,6 +12,15 @@ The iPhone and iPad app, and **CabooseKit**, its native Xpra client.
 - `Caboose/` — the app: setup, wake, Home (open windows and the computer's apps), and the
   full-screen window screen.
 
+## Computer settings
+
+Home's menu, the parked screen and the failure screen open **Computer**: the computer's name,
+the memory and cores it boots with (applied on the next restart, with a banner until then),
+how long it waits before parking, Park Now, Restart (confirmed first: open apps close, the
+disk is kept) and Change Computer. It reads and writes the host's management API
+(`GET /v1/computer`, `PATCH /v1/computer/settings`, `POST /v1/computer/restart`, see
+`docs/architecture.md`) and follows `computer.settings` events on the control socket.
+
 ## Build
 
 ```sh

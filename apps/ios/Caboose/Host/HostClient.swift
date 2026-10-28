@@ -33,6 +33,51 @@ struct HostClient: Sendable {
         }
     }
 
+    /// `GET /v1/computer`: the computer's settings and what it is running with now.
+    struct ComputerStatus: Decodable, Equatable, Sendable {
+        struct Settings: Codable, Equatable, Sendable {
+            var name: String
+            var memoryMb: Int
+            var vcpus: Int
+            var idleMs: Int
+        }
+        struct Resources: Decodable, Equatable, Sendable {
+            var memoryMb: Int
+            var vcpus: Int
+        }
+        struct Clients: Decodable, Equatable, Sendable {
+            var display: Int
+            var control: Int
+        }
+        struct Tasks: Decodable, Equatable, Sendable {
+            var running: Int
+            var paused: Int
+        }
+        struct Capabilities: Decodable, Equatable, Sendable {
+            var restart: Bool
+        }
+        struct Bounds: Decodable, Equatable, Sendable {
+            var min: Int
+            var max: Int
+            var range: ClosedRange<Int> { min ... Swift.max(min, max) }
+        }
+        struct Limits: Decodable, Equatable, Sendable {
+            var memoryMb: Bounds
+            var vcpus: Bounds
+            var idleMs: Bounds
+        }
+        var state: String
+        var settings: Settings
+        var activeResources: Resources?
+        var restartRequired: Bool
+        var clients: Clients
+        var tasks: Tasks
+        var capabilities: Capabilities
+        var lastError: String?
+        /// The bounds `PATCH /v1/computer/settings` accepts.
+        var limits: Limits
+    }
+
     enum Failure: LocalizedError {
         case unauthorized
         case notRunning
@@ -64,6 +109,18 @@ struct HostClient: Sendable {
         let _: [String: String] = try await request("POST", "/v1/session/park", timeout: 120)
     }
 
+    func computer() async throws -> ComputerStatus { try await request("GET", "/v1/computer", timeout: 20) }
+
+    /// Saves only the settings that changed; the host rejects unknown or out-of-range values.
+    func updateSettings(_ changes: [String: JSONValue]) async throws -> ComputerStatus {
+        try await request("PATCH", "/v1/computer/settings", body: changes, timeout: 30)
+    }
+
+    /// Cold restart: open apps close, the disk is kept. Callers confirm with the person first.
+    func restart() async throws -> ComputerStatus {
+        try await request("POST", "/v1/computer/restart", body: ["confirm": .bool(true)], timeout: 300)
+    }
+
     /// The WebSocket URL for a path on this host (http → ws, https → wss).
     func socketURL(_ path: String) -> URL {
         var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
@@ -71,7 +128,7 @@ struct HostClient: Sendable {
         return components.url!
     }
 
-    func request<T: Decodable>(_ method: String, _ path: String, body: [String: String]? = nil,
+    func request<T: Decodable>(_ method: String, _ path: String, body: [String: JSONValue]? = nil,
                                timeout: TimeInterval) async throws -> T {
         var request = URLRequest(url: baseURL.appendingPathComponent(path), timeoutInterval: timeout)
         request.httpMethod = method
@@ -79,7 +136,7 @@ struct HostClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            request.httpBody = try JSONEncoder().encode(body)
         }
         let data: Data, response: URLResponse
         do {
@@ -93,11 +150,32 @@ struct HostClient: Sendable {
             return try JSONDecoder().decode(T.self, from: data)
         case 401, 403:
             throw Failure.unauthorized
+        case 409 where path.hasPrefix("/v1/computer"):
+            let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"]
+            throw Failure.server(status, message)
         case 409:
             throw Failure.notRunning
         default:
             let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"]
             throw Failure.server(status, message)
+        }
+    }
+}
+
+/// A JSON request value: just what the host API takes.
+enum JSONValue: Encodable, Equatable, Sendable, ExpressibleByStringLiteral {
+    case string(String)
+    case int(Int)
+    case bool(Bool)
+
+    init(stringLiteral value: String) { self = .string(value) }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try container.encode(value)
+        case .int(let value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
         }
     }
 }

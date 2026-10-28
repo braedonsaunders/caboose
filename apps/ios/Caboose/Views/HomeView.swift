@@ -49,7 +49,8 @@ struct HomeView: View {
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Caboose")
+                Text(model.computerStatus?.settings.name ?? model.computer?.name ?? "Caboose")
+                    .lineLimit(1)
                     .font(.system(size: 34, weight: .bold, design: .rounded))
                 HStack(spacing: 6) {
                     Circle().fill(.green).frame(width: 7, height: 7)
@@ -62,9 +63,9 @@ struct HomeView: View {
                     Label("\(Int(latency)) ms to your computer", systemImage: "speedometer")
                 }
                 Button("Park Computer Now", systemImage: "moon.zzz") {
-                    Task { try? await model.host?.park(); model.sceneEnteredBackground() }
+                    Task { try? await model.parkComputer() }
                 }
-                Button("Change Computer", systemImage: "arrow.left.arrow.right", role: .destructive) { model.signOut() }
+                Button("Computer Settings", systemImage: "gearshape") { model.settingsPresented = true }
             } label: {
                 Image(systemName: "train.side.rear.car")
                     .font(.title2)
