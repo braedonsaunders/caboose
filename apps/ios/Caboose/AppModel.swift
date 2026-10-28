@@ -36,6 +36,11 @@ final class AppModel {
     private(set) var desktop = DesktopModel(pixelsPerPoint: 1)
     private var externalSize: CGSize = .zero
     private var placedWindowIDs = Set<Int>()
+    /// Last frames of the computer's windows, by Xpra window id, for instant resume.
+    private var frameCache: [Int: CGImage] = [:]
+    private var reconnectAttempts = 0
+    private var reconnectTask: Task<Void, Never>?
+    private var sceneActive = true
 
     private var launchStartedAt: Date?
     private var knownWindowIDs = Set<Int>()
@@ -81,14 +86,16 @@ final class AppModel {
 
     // MARK: Lifecycle
 
-    func wake() async {
+    /// Wakes the computer and opens the display. `quiet` keeps the current screen in place,
+    /// for reconnects the person should not have to notice.
+    func wake(quiet: Bool = false) async {
         guard let host else { phase = .needsSetup; return }
         if case .ready = phase, session?.state == .ready { return }
-        phase = .waking
+        if !quiet { phase = .waking }
         do {
             let wake = try await host.wake()
             computer = wake.computer
-            phase = .connecting
+            if !quiet { phase = .connecting }
             startSession(host: host, display: wake.display)
             Task { await refreshApps() }
         } catch {
@@ -97,12 +104,20 @@ final class AppModel {
     }
 
     func sceneBecameActive() {
+        sceneActive = true
         offerPasteboardIfChanged()
         if session == nil || session?.state != .ready { Task { await wake() } }
     }
 
     /// Leaving the app closes the display; the computer keeps every app running and parks on idle.
     func sceneEnteredBackground() {
+        sceneActive = false
+        reconnectTask?.cancel()
+        if let session {
+            frameCache = session.windows.reduce(into: [:]) { cache, entry in
+                if let image = entry.value.surface.snapshot() { cache[entry.key] = image }
+            }
+        }
         session?.disconnect()
         session = nil
         knownWindowIDs.removeAll()
@@ -136,6 +151,7 @@ final class AppModel {
         session.onOpenURL = { url in UIApplication.shared.open(url) }
         session.onNotification = { note in Self.post(note) }
         session.onRaise = { [weak self] wid in self?.presentedWindowID = wid }
+        session.cachedFrame = { [weak self] wid in self?.frameCache[wid] }
         self.session = session
         session.connect()
         observeSession()
@@ -160,10 +176,17 @@ final class AppModel {
         guard let session else { return }
         switch session.state {
         case .ready:
+            reconnectAttempts = 0
             if phase != .ready { phase = .ready }
         case .closed(let reason):
-            if case .ready = phase { phase = .failed(reason ?? "The display connection closed.") }
-            else if phase == .connecting { phase = .failed(reason ?? "Could not open the display.") }
+            // A dropped connection while the app is in use is retried quietly; only give up after a few tries.
+            if sceneActive, reconnectAttempts < 4 {
+                scheduleReconnect()
+            } else if case .ready = phase {
+                phase = .failed(reason ?? "The display connection closed.")
+            } else if phase == .connecting {
+                phase = .failed(reason ?? "Could not open the display.")
+            }
         default:
             break
         }
@@ -184,6 +207,19 @@ final class AppModel {
         if launching != nil, let newest = added.compactMap({ session.windows[$0] }).first(where: { !$0.isAuxiliary }) {
             launching = nil
             presentedWindowID = newest.id
+        }
+    }
+
+    private func scheduleReconnect() {
+        guard reconnectTask == nil else { return }
+        reconnectAttempts += 1
+        let delay = Double(1 << (reconnectAttempts - 1))
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.reconnectTask = nil
+            self.session = nil
+            await self.wake(quiet: true)
         }
     }
 

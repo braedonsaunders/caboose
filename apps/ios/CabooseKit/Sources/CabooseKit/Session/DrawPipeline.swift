@@ -45,6 +45,11 @@ final class DrawPipeline: @unchecked Sendable {
         queue.async { [surface] in surface.resize(width: width, height: height) }
     }
 
+    /// Paints a cached frame before the first live draw.
+    func seed(_ image: CGImage) {
+        queue.async { [surface] in surface.upload(image: image, x: 0, y: 0) }
+    }
+
     func close() {
         queue.async { [decoder] in decoder.invalidate() }
     }
