@@ -84,6 +84,28 @@ with the token in that file.
 executable). A user service needs a running user systemd manager, access to `/dev/kvm`, and
 the non-interactive privileges above.
 
+### Bundle
+
+`scripts/bundle.sh <linux|darwin> <amd64|arm64> <outdir>` builds a self-contained host for
+native installs, without Docker: `caboose-host-<os>-<arch>.tar.zst`, plus a line in
+`<outdir>/SHA256SUMS`. It needs pnpm and zstd and runs from a checkout on any OS. The archive
+holds one directory, `caboose-host/`:
+
+| Path | What |
+| --- | --- |
+| `bin/caboose-host` | The launcher: the bundled Node runs `app/apps/host/dist/index.js`. It follows symlinks, so `/usr/local/bin/caboose-host` can point at it. |
+| `bin/cloud-hypervisor` | Linux only: Cloud Hypervisor v54.0 (static, checked by SHA-256), used unless `CABOOSE_VMM_PATH` is set. |
+| `bin/caboose-setup-disks` | `scripts/setup-disks.sh`, which prepares a reflink-capable disk root. |
+| `node/` | Node v22.23.4 for the target, checked against nodejs.org's SHA-256. |
+| `app/` | The compiled host with its production dependencies (`ws` and `appkit-desk`, plain JavaScript), the console, and the guest assets the host installs. |
+| `defaults.env` | The release's pinned `CABOOSE_BASE_IMAGE` and `CABOOSE_CONTAINER_IMAGE`, used only when the environment does not set them. |
+| `VERSION` | The release, from `CABOOSE_VERSION` or `git describe`. |
+
+The release workflow attaches the `linux-amd64`, `linux-arm64` and `darwin-arm64` bundles and
+`SHA256SUMS` to each GitHub Release. `scripts/check-bundle.sh <bundle>` extracts one, starts it
+through a symlink with an empty environment and a fresh state directory, and expects the
+console, a generated owner token, and an API that refuses requests without it.
+
 ### Self-host with Docker
 
 `deploy/compose.yaml` runs `apps/host/Dockerfile` with the microVM runtime. Use an amd64
@@ -166,7 +188,6 @@ the three packages public in its package settings before anonymous pulls work.
 | --- | --- | --- |
 | `CABOOSE_OWNER_TOKEN` | generated | A bearer token for every `/v1` request, beside accounts (the installers use it). Unset: generated once into `${CABOOSE_IMAGE_ROOT}/owner-token`. |
 | `CABOOSE_DATABASE_URL` | unset | Postgres for accounts and tenants. Unset: an embedded PGlite database in `${CABOOSE_IMAGE_ROOT}/identity`. |
-| `CABOOSE_PUBLIC_URL` | `http://127.0.0.1:<port>` | Where people reach the console, for sign-in. Requests from any origin a browser used to reach the host are accepted too. |
 | `CABOOSE_AUTH_SECRET` | generated | Signs sessions; 32 characters or more. Unset: generated once into `${CABOOSE_IMAGE_ROOT}/auth-secret`. |
 | `CABOOSE_BIND` | `127.0.0.1` | Listen address (`0.0.0.0` for every IPv4 interface). |
 | `CABOOSE_PORT` | `7310` | Listen port. |
@@ -174,6 +195,8 @@ the three packages public in its package settings before anonymous pulls work.
 | `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
+| `CABOOSE_PUBLIC_URL` | unset | Where phones reach this host from anywhere, such as `https://caboose.example.com`; listed first in pairing links and used as the console auth base URL (auth defaults to loopback when unset). |
+| `CABOOSE_MDNS` | `on` | `off` stops advertising `_caboose._tcp` on the LAN. |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor (microVM). |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container`. |
 | `CABOOSE_BASE_IMAGE` | empty (release: pinned) | OCI reference fetched when the disk root lacks the image (microVM). |
@@ -403,7 +426,7 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft if needed, launches it and requires a new window. Close any PhotoCraft window first. |
 | `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |
 | `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk; the owner's computer is only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
-| `node apps/host/scripts/check-accounts.mjs` | Accounts and tenants: the setup state and the owner token's view, then a throwaway tenant with a memory quota, a computer within it made and one beyond it refused, a resize past it refused, and both deleted. It makes no accounts. |
+| `node apps/host/scripts/check-accounts.mjs` | Accounts and tenants: the setup state and the owner token's view, then a throwaway tenant with a memory quota, a computer within it made and one beyond it refused, a resize past it refused, and both deleted. It makes no accounts and verifies that setup requires its code even on loopback. |
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
 | `node apps/host/scripts/check-terminal.mjs` | Opens a terminal through `/v1/terminal` (waking the computer), checks the login shell's environment, resizes, lists the session, detaches, reattaches from its offset and receives what was written meanwhile, then exits the shell with a code. A failed check hangs the session up. |
 | `node apps/host/scripts/check-fs.mjs` | Creates a temporary directory, uploads, lists, downloads a byte range, moves, and trashes its files and the directory. |

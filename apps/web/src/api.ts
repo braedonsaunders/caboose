@@ -276,12 +276,20 @@ export function formatIdleDuration(idleMs: number): string {
  * The link Caboose on an iPhone opens to sign in: the host's address and a pairing code it
  * trades through `POST /v1/pair` for its own token. It never carries a token.
  */
-export function buildPairingLink(hostOrigin: string, code: string): string {
-  const params = new URLSearchParams({
-    host: hostOrigin.replace(/\/+$/, ''),
-    code: code.trim(),
-  })
+export function buildPairingLink(hosts: string | readonly string[], code: string): string {
+  // Every address the phone may reach the host at: the first as `host`, the rest as `alt`.
+  const [host = '', ...alternates] = (typeof hosts === 'string' ? [hosts] : hosts).map(url => url.replace(/\/+$/, ''))
+  const params = new URLSearchParams({ host })
+  for (const alternate of alternates) params.append('alt', alternate)
+  params.append('code', code.trim())
   return `caboose://connect?${params.toString()}`
+}
+
+/** `GET /v1/host/reach`: every address a phone can use, best first, and how each is provided. */
+export interface Reach {
+  addresses: Array<{ url: string; kind: 'public' | 'tailscale' | 'lan' }>
+  mdns: { enabled: boolean; name: string | null }
+  tailscale: { installed: boolean; loggedIn: boolean; name?: string; serving: boolean; httpsUrl?: string; error?: string }
 }
 
 /** A code as people read it aloud: two groups of four. */
@@ -311,7 +319,7 @@ export class CabooseApiError extends Error {
 /** Routes about the host and its computers, never scoped to one computer. */
 function isHostPath(path: string): boolean {
   return path === '/v1/health' || path === '/v1/host' || path === '/v1/computers' || path === '/v1/me'
-    || ['/v1/computers/', '/v1/tenants', '/v1/setup', '/v1/invites/', '/v1/auth/'].some(prefix => path.startsWith(prefix))
+    || ['/v1/host/', '/v1/computers/', '/v1/tenants', '/v1/setup', '/v1/invites/', '/v1/auth/'].some(prefix => path.startsWith(prefix))
 }
 
 export class CabooseClient {
@@ -542,6 +550,16 @@ export class CabooseClient {
 
   host(): Promise<HostInfo> {
     return this.request<HostInfo>('GET', '/v1/host', { timeoutMs: 15_000 })
+  }
+
+  /** Where phones can reach this host (docs/architecture.md, Reachability). */
+  reach(): Promise<Reach> {
+    return this.request<Reach>('GET', '/v1/host/reach', { timeoutMs: 20_000 })
+  }
+
+  /** Turns Tailscale's HTTPS serve for this host on or off. */
+  setTailscale(enabled: boolean): Promise<Reach> {
+    return this.request<Reach>('PUT', '/v1/host/reach/tailscale', { body: { enabled }, timeoutMs: 30_000 })
   }
 
   pushDevices(): Promise<{ devices: PushDevice[] }> {

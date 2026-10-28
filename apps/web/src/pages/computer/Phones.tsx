@@ -10,6 +10,7 @@ import {
 } from '../../api.js'
 import { TabIntro, errorMessage, useVisibleInterval } from '../../components/common.js'
 import { QrCode } from '../../components/QrCode.js'
+import { pairingAddresses } from '../../remote-access.js'
 import type { ComputerHandle } from '../../useComputer.js'
 
 const KINDS: Array<{ kind: PushKind; label: string; description: string }> = [
@@ -149,7 +150,7 @@ function SignInsPanel({ client, name, onUnauthorized }: { client: CabooseClient;
   const [phones, setPhones] = React.useState<PhoneSignIn[] | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState<string | null>(null)
-  const [pairing, setPairing] = React.useState<{ code: PairingCode; known: Set<string> } | null>(null)
+  const [pairing, setPairing] = React.useState<{ code: PairingCode; known: Set<string>; addresses: string[] } | null>(null)
   const [now, setNow] = React.useState(() => Date.now())
 
   const refresh = React.useCallback(async () => {
@@ -183,7 +184,9 @@ function SignInsPanel({ client, name, onUnauthorized }: { client: CabooseClient;
     setBusy('pair')
     try {
       const known = new Set((phones ?? []).map(phone => phone.id))
-      setPairing({ code: await client.startPairing(id), known })
+      // Every address the phone may reach the host at goes in the link; an older host cannot say.
+      const [code, reach] = await Promise.all([client.startPairing(id), client.reach().catch(() => null)])
+      setPairing({ code, known, addresses: pairingAddresses(reach, window.location.origin) })
       setNow(Date.now())
     } catch (failure) {
       if (failure instanceof CabooseApiError && failure.isUnauthorized) return onUnauthorized()
@@ -214,7 +217,8 @@ function SignInsPanel({ client, name, onUnauthorized }: { client: CabooseClient;
     }
   }
 
-  const link = pairing ? buildPairingLink(window.location.origin, pairing.code.code) : ''
+  const unreachable = pairing !== null && pairing.addresses.length === 0
+  const link = pairing && !unreachable ? buildPairingLink(pairing.addresses, pairing.code.code) : ''
   const remaining = pairing ? Math.max(0, Math.ceil((Date.parse(pairing.code.expiresAt) - now) / 60_000)) : 0
 
   return (
@@ -226,9 +230,16 @@ function SignInsPanel({ client, name, onUnauthorized }: { client: CabooseClient;
       <div className="space-y-4">
         {pairing ? (
           <div className="flex flex-col gap-4 rounded-md border border-border p-4 sm:flex-row sm:items-center">
-            {expired ? null : <QrCode value={link} size={176} label={`Pairing code for ${name}`} />}
+            {expired || unreachable ? null : <QrCode value={link} size={176} label={`Pairing code for ${name}`} />}
             <div className="min-w-0 flex-1 space-y-3 text-sm">
-              {expired ? (
+              {unreachable && !expired ? (
+                <Alert variant="warning">
+                  <AlertTitle>No phone can reach this host yet</AlertTitle>
+                  <AlertDescription>
+                    It listens only on this machine. Make it reachable under Host › Remote access, then make a new code.
+                  </AlertDescription>
+                </Alert>
+              ) : expired ? (
                 <>
                   <p className="font-medium">This code has expired.</p>
                   <p className="text-fg-muted">Codes last ten minutes. Make another to sign a phone in.</p>
@@ -244,7 +255,7 @@ function SignInsPanel({ client, name, onUnauthorized }: { client: CabooseClient;
                 </>
               )}
               <div className="flex flex-wrap gap-2">
-                {expired ? (
+                {expired || unreachable ? (
                   <Button size="sm" onClick={() => void start()} disabled={busy !== null}>New code</Button>
                 ) : (
                   <Button

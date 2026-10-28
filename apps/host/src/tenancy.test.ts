@@ -9,6 +9,7 @@ import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens, type ComputerRecord } fr
 import { openIdentityDatabase, type IdentityDatabase } from './identity/database.js'
 import { Identity } from './identity/service.js'
 import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
+import { ReachService, Tailscale } from './reach.js'
 import { SettingsStore, settingsLimits, type ComputerSettings } from './settings.js'
 
 let root: string
@@ -46,6 +47,7 @@ beforeAll(async () => {
   await writeFile(join(webRoot, 'index.html'), '<!doctype html><title>Caboose</title>')
   const app = createCabooseServer({
     token: 'owner-token-for-tests', ...owner, identity, webRoot,
+    reach: new ReachService({ bind: '127.0.0.1', port: 7310, publicUrl: 'https://caboose.example.com', mdns: false, id: 'test-host', name: () => 'Caboose', tailscale: new Tailscale(7310, null) }),
     fleet: { computers, phones: PhoneTokens.memory(), open, defaults: { memoryMb: 2048, vcpus: 2, idleMs: 600_000 }, maxRunning: 4, diskBytes: async record => disks.get(record.id) ?? 0 },
   })
   app.server.listen(0, '127.0.0.1')
@@ -111,6 +113,10 @@ describe('a host with accounts and tenants', () => {
     const listed = await (await operator('/v1/computers')).json()
     expect(listed.computers).toEqual([expect.objectContaining({ id: 'owner', tenantId: home })])
     expect((await operator('/v1/health')).status).toBe(200)
+    expect((await operator('/v1/host/reach')).status).toBe(200)
+    const unavailable = await operator('/v1/host/reach/tailscale', { method: 'PUT', body: { enabled: true } })
+    expect(unavailable.status).toBe(409)
+    expect((await unavailable.json()).error).toMatch(/Tailscale is not installed/)
     // The owner token keeps working beside accounts.
     expect((await fetch(`${base}/v1/computers`, { headers: { authorization: 'Bearer owner-token-for-tests' } })).status).toBe(200)
   })
@@ -159,6 +165,8 @@ describe('a host with accounts and tenants', () => {
     expect((await parent('/v1/computer')).status).toBe(403)
     expect((await parent('/v1/health')).status).toBe(403)
     expect((await parent('/v1/host')).status).toBe(403)
+    expect((await parent('/v1/host/reach')).status).toBe(403)
+    expect((await parent('/v1/host/reach/tailscale', { method: 'PUT', body: { enabled: true } })).status).toBe(403)
     expect((await parent('/v1/tenants', { method: 'POST', body: { name: 'Mine' } })).status).toBe(403)
     expect((await parent(`/v1/tenants/${home}`)).status).toBe(404)
     expect((await parent(`/v1/tenants/${family}`, { method: 'PATCH', body: { quotas: { memoryMb: null } } })).status).toBe(403)
@@ -166,7 +174,16 @@ describe('a host with accounts and tenants', () => {
     expect((await parent('/v1/computers', { method: 'POST', body: { name: 'Elsewhere', tenantId: home } })).status).toBe(400)
     expect((await parent(`/v1/computers/${theirs[0]!.id}`, { method: 'PATCH', body: { tenantId: home } })).status).toBe(400)
     expect((await (await parent(`/v1/computers/${theirs[0]!.id}`, { method: 'PATCH', body: { person: 'Samuel' } })).json()).person).toBe('Samuel')
-    expect((await parent(`/v1/computers/${theirs[0]!.id}/pairing`, { method: 'POST' })).status).toBe(201)
+    const pairing = await parent(`/v1/computers/${theirs[0]!.id}/pairing`, { method: 'POST' })
+    expect(pairing.status).toBe(201)
+    const { code } = await pairing.json()
+    const paired = await browser()('/v1/pair', { method: 'POST', body: { code, deviceName: 'Family phone' } })
+    expect(paired.status).toBe(201)
+    const { token: phoneToken } = await paired.json()
+    const phone = browser()
+    const headers = { authorization: `Bearer ${phoneToken}` }
+    expect((await phone('/v1/host/reach', { headers })).status).toBe(403)
+    expect((await phone('/v1/host/reach/tailscale', { method: 'PUT', body: { enabled: false }, headers })).status).toBe(403)
     expect((await (await parent(`/v1/tenants/${family}/administrators`)).json()).administrators.map((admin: { email: string }) => admin.email)).toEqual(['parent@example.com'])
 
     // Signed out, the session no longer works.
