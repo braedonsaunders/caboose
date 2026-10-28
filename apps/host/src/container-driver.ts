@@ -47,12 +47,17 @@ export function detectGpu(exists: (path: string) => boolean = existsSync): GpuKi
   return 'none'
 }
 
-/** `docker run` arguments that hand the container the GPU. */
-export function gpuArgs(kind: GpuKind): string[] {
+/**
+ * `docker run` arguments that hand the container the GPU. With a render node the
+ * container also gets /dev/udmabuf when the host has it: the Caboose VA-API driver exports
+ * its decode surfaces through it, so GL players keep video passthrough (guest/vaapi).
+ */
+export function gpuArgs(kind: GpuKind, exists: (path: string) => boolean = existsSync): string[] {
+  const udmabuf = exists('/dev/udmabuf') ? ['--device', '/dev/udmabuf'] : []
   switch (kind) {
     case 'wsl': return ['--device', '/dev/dxg', '-v', '/usr/lib/wsl:/usr/lib/wsl:ro', '-e', 'LD_LIBRARY_PATH=/usr/lib/wsl/lib', '-e', 'CABOOSE_GPU=wsl']
-    case 'nvidia': return ['--gpus', 'all', '-e', 'NVIDIA_DRIVER_CAPABILITIES=all', '-e', 'CABOOSE_GPU=nvidia']
-    case 'dri': return ['--device', '/dev/dri', '-e', 'CABOOSE_GPU=dri']
+    case 'nvidia': return ['--gpus', 'all', '-e', 'NVIDIA_DRIVER_CAPABILITIES=all', ...udmabuf, '-e', 'CABOOSE_GPU=nvidia']
+    case 'dri': return ['--device', '/dev/dri', ...udmabuf, '-e', 'CABOOSE_GPU=dri']
     case 'none': return ['-e', 'CABOOSE_GPU=none']
   }
 }
@@ -102,7 +107,7 @@ export function createContainerController(config: Config, dependencies: { docker
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
       '-p', '127.0.0.1:14500:14500', '-p', '127.0.0.1:14501:14501', '-p', '127.0.0.1:14600:14600',
       '-v', `${config.containerHome}:/home/caboose`,
-      ...gpuArgs(gpu),
+      ...gpuArgs(gpu, dependencies.exists),
       ...config.containerArgs,
       config.containerImage,
     ]

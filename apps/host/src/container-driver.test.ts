@@ -114,7 +114,10 @@ describe('GPU selection', () => {
 
   it('hands each kind to the container its own way', () => {
     expect(gpuArgs('nvidia')).toEqual(expect.arrayContaining(['--gpus', 'all', 'CABOOSE_GPU=nvidia']))
-    expect(gpuArgs('dri')).toEqual(expect.arrayContaining(['--device', '/dev/dri']))
+    expect(gpuArgs('dri', () => false)).toEqual(['--device', '/dev/dri', '-e', 'CABOOSE_GPU=dri'])
+    expect(gpuArgs('dri', path => path === '/dev/udmabuf')).toEqual(['--device', '/dev/dri', '--device', '/dev/udmabuf', '-e', 'CABOOSE_GPU=dri'])
+    expect(gpuArgs('nvidia', path => path === '/dev/udmabuf')).toEqual(expect.arrayContaining(['--device', '/dev/udmabuf']))
+    expect(gpuArgs('wsl', () => true)).not.toContain('/dev/udmabuf')
     expect(gpuArgs('none')).toEqual(['-e', 'CABOOSE_GPU=none'])
   })
 
