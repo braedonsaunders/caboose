@@ -62,7 +62,9 @@ Against a real computer, with the host on `CABOOSE_DISPLAY=caboose` and a window
 CABOOSE_HOST_URL=http://host:7310 CABOOSE_HOST_TOKEN=… swift test --filter LiveCabooseDisplay
 ```
 
-It wakes the computer, connects through the relay, waits for every window's keyframe,
+Or straight to a compositor, such as the dev container in `guest/display`, with
+`CABOOSE_DISPLAY_URL=ws://box:14600/ CABOOSE_DISPLAY_TOKEN=…` instead. It wakes the computer
+(through a host), connects, waits for every window's keyframe,
 ticks vsync at 120 Hz for ten seconds (`CABOOSE_VIDEO_SECONDS`), and prints the server's
 encoders and features, the windows, pictures per second, failed decodes and the round
 trip.
