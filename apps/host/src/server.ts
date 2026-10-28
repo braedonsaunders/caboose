@@ -90,6 +90,11 @@ export function createCabooseServer(options: { token: string; idleMs: number; co
       if (request.method === 'POST' && cancel?.[1]) {
         return json(response, 200, { cancelled: await agents.cancel(cancel[1]) })
       }
+      const hold = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/(pause|resume)$/.exec(path)
+      if (request.method === 'POST' && hold?.[1]) {
+        const id = hold[1]
+        return json(response, 200, hold[2] === 'pause' ? { paused: await agents.pauseTask(id) } : { resumed: await agents.resumeTask(id) })
+      }
       return json(response, 404, { error: 'not found' })
     })().catch(error => {
       if (error instanceof AgentInputError) return json(response, 400, { error: error.message })

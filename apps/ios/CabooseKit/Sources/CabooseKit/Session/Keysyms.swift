@@ -50,6 +50,14 @@ public enum Keysyms {
         "}": ("braceright", true), "~": ("asciitilde", true),
     ]
 
+    /// The keystrokes that type one character. A character of several scalars (a ZWJ emoji,
+    /// a flag, a skin tone, a decomposed accent) is typed scalar by scalar; the app composes it.
+    public static func strokes(for character: Character) -> [KeyStroke] {
+        if let stroke = stroke(for: character) { return [stroke] }
+        guard character.unicodeScalars.count > 1 else { return [] }
+        return character.unicodeScalars.compactMap { stroke(for: Character($0)) }
+    }
+
     /// The keystroke for one typed character, or nil for one with no keysym.
     public static func stroke(for character: Character) -> KeyStroke? {
         if character == "\n" || character == "\r" { return special["Return"] }

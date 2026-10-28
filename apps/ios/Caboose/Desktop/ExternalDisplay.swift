@@ -10,13 +10,14 @@ final class ExternalSceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
         MainActor.assumeIsolated {
             let model = AppModel.shared
+            // Connect first: it creates the desktop model the trackpad and this screen share.
+            let screen = windowScene.screen
+            model.externalDisplayConnected(size: screen.bounds.size, scale: screen.scale)
             let window = UIWindow(windowScene: windowScene)
             let root = DesktopView(desktop: model.desktop).environment(model).preferredColorScheme(.dark)
             window.rootViewController = UIHostingController(rootView: root)
             window.isHidden = false
             self.window = window
-            let screen = windowScene.screen
-            model.externalDisplayConnected(size: screen.bounds.size, scale: screen.scale)
         }
     }
 

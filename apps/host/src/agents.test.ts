@@ -107,6 +107,53 @@ describe('AgentTasks', () => {
     tasks.pause()
   })
 
+  it('pauses a task for take-over and continues it on hand-back', async () => {
+    const fake = fakeGuest()
+    const events: AgentEvent[] = []
+    const tasks = new AgentTasks(() => fake.guest, event => events.push(event), () => () => {}, 60_000)
+    const task = await tasks.start({ prompt: 'fill the form', agent: 'claude' })
+    expect(await tasks.resumeTask(task.id)).toBe(false)
+    expect(await tasks.pauseTask(task.id)).toBe(true)
+    expect(fake.calls.at(-1)?.join(' ')).toContain('kill -STOP -- -"$pid"')
+    expect(tasks.list()[0]?.status).toBe('paused')
+    expect(await tasks.resumeTask(task.id)).toBe(true)
+    expect(fake.calls.at(-1)?.join(' ')).toContain('kill -CONT')
+    await tasks.pauseTask(task.id)
+    expect(await tasks.cancel(task.id)).toBe(true)
+    expect(fake.calls.at(-1)?.join(' ')).toMatch(/kill -TERM.*kill -CONT/)
+    expect(events.map(event => event.type)).toEqual(['agent.task.started', 'agent.task.paused', 'agent.task.resumed',
+      'agent.task.paused', 'agent.task.finished'])
+    tasks.pause()
+  })
+
+  it('restores tasks from the guest after a host restart', async () => {
+    const b64 = (text: string) => Buffer.from(text).toString('base64')
+    const running = '11111111-1111-4111-8111-111111111111'
+    const done = '22222222-2222-4222-8222-222222222222'
+    const orphan = '33333333-3333-4333-8333-333333333333'
+    const listing = [
+      [running, 'codex', '1790000300', '', '1', '512', b64('keep going'), b64('{}')],
+      [done, 'claude', '1790000200', '0', '0', '900', b64('run tests'),
+        b64(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'All green.' }))],
+      [orphan, 'claude', '1790000100', '', '0', '10', b64('lost'), ''],
+    ].map(fields => fields.join('\t')).join('\n')
+    const guest: AgentGuest = { run: async (_command, args) => args.some(arg => arg.includes('ls -1t')) ? listing : '' }
+    const events: AgentEvent[] = []
+    const release = vi.fn()
+    const acquire = vi.fn(() => release)
+    const tasks = new AgentTasks(() => guest, event => events.push(event), acquire, 60_000)
+    await tasks.restore()
+    await tasks.restore()
+    expect(tasks.list().map(task => [task.id, task.status, task.agent])).toEqual([
+      [running, 'running', 'codex'], [done, 'succeeded', 'claude'], [orphan, 'failed', 'claude'],
+    ])
+    expect(tasks.list()[0]?.prompt).toBe('keep going')
+    expect(tasks.list()[1]?.summary).toBe('All green.')
+    expect(acquire).toHaveBeenCalledTimes(1)
+    expect(events).toEqual([])
+    tasks.pause()
+  })
+
   it('rejects bad input and a parked computer', async () => {
     const tasks = new AgentTasks(() => undefined, () => {}, () => () => {}, 60_000)
     await expect(tasks.start({ prompt: '', agent: 'claude' })).rejects.toBeInstanceOf(AgentInputError)

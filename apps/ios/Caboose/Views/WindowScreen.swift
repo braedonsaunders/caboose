@@ -29,13 +29,33 @@ struct WindowScreen: View {
                 }
                 .padding(.top, chromeVisible ? 52 : 0)
                 .ignoresSafeArea(.container, edges: .bottom)
-                if chromeVisible { chrome(for: window) }
+                if chromeVisible {
+                    chrome(for: window)
+                } else {
+                    exitFullScreenHandle
+                }
             } else {
                 ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .statusBarHidden(!chromeVisible)
         .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
+    }
+
+    /// In full screen, a pull-down tab at the top edge brings the controls back.
+    private var exitFullScreenHandle: some View {
+        Capsule()
+            .fill(.white.opacity(0.35))
+            .frame(width: 44, height: 5)
+            .padding(.top, 6)
+            .frame(width: 120, height: 28, alignment: .top)
+            .contentShape(Rectangle())
+            .onTapGesture { withAnimation(.snappy) { chromeVisible = true } }
+            .gesture(DragGesture(minimumDistance: 8).onEnded { value in
+                if value.translation.height > 12 { withAnimation(.snappy) { chromeVisible = true } }
+            })
+            .accessibilityLabel("Show window controls")
+            .accessibilityAddTraits(.isButton)
     }
 
     private func chrome(for window: RemoteWindow) -> some View {

@@ -82,6 +82,7 @@ final class AppModel {
     func signOut() {
         session?.disconnect()
         session = nil
+        agents.reset()
         Credentials.clear()
         credentials = nil
         phase = .needsSetup
@@ -102,7 +103,7 @@ final class AppModel {
             startSession(host: host, display: wake.display)
             agents.detach()
             agents.attach(host: host)
-            agents.openSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
+            agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await refreshApps() }
         } catch {
             phase = .failed(error.localizedDescription)
