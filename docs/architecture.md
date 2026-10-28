@@ -1123,13 +1123,15 @@ Pinned and recent apps are kept on the phone per computer.
   its Automatically AirPlay setting allows. Beside it is the system route picker
   (`AVRoutePickerView`). The desktop reaches a TV only when the owner starts Screen
   Mirroring; the app then claims the external display as a desktop.
-- **Background.** One choice covers the app's tabs and the desktop on the phone and on a
+- **Wallpaper.** The desktop's wallpaper is the phone's, not the guest's (the compositor
+  draws no desktop), so one choice covers every tab and the desktop on the phone and on a
   TV: the brand gradient, photographs that change every quarter hour, one photograph, or the
-  owner's own picture, kept on the phone. On the phone a sheer of the brand gradient lies
-  over a photograph, which extends under the bars. The last photograph is cached so no
-  screen starts black.
+  owner's own picture from Photos, kept on the phone. It is chosen from Computer settings,
+  the Desktop's overflow menu or a long press on Home's background. On the phone a sheer of
+  the brand gradient lies over a photograph, which extends under the bars. The last
+  photograph is cached so no screen starts black.
 - **Computer settings.** The Computer sheet edits the management settings, shows
-  `restartRequired`, parks, restarts after confirmation and chooses the background.
+  `restartRequired`, parks, restarts after confirmation and chooses the wallpaper.
 
 ### Input
 

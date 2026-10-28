@@ -191,7 +191,7 @@ struct ComputerSettingsView: View {
                     LabeledContent {
                         Text(backgroundName)
                     } label: {
-                        Label("Background", systemImage: "photo.on.rectangle")
+                        Label("Wallpaper", systemImage: "photo.on.rectangle")
                     }
                 }
             }

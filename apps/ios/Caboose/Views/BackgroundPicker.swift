@@ -59,7 +59,7 @@ struct BackgroundPicker: View {
             .padding(20)
         }
         .background { ShellBackground() }
-        .navigationTitle("Background")
+        .navigationTitle("Wallpaper")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: picked) { _, item in
             guard let item else { return }

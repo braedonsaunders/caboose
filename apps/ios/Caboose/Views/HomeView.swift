@@ -4,8 +4,11 @@ import UniformTypeIdentifiers
 
 /// The app's front door: the computer and what it is doing, the agents at work, the apps
 /// and files the owner reaches for, and the actions they take most.
+/// A long press on the background, between and around the cards, chooses the wallpaper.
 struct HomeScreen: View {
     @Environment(AppModel.self) private var model
+    @State private var viewport: CGFloat = 0
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -24,9 +27,19 @@ struct HomeScreen: View {
                     .padding(.top, 8)
                     .padding(.bottom, 32)
                     .frame(maxWidth: 720)
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: viewport, alignment: .top)
+                    .background {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onLongPressGesture(minimumDuration: 0.5) {
+                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                model.wallpaperPickerPresented = true
+                            }
+                            .accessibilityAction(named: "Choose Wallpaper") { model.wallpaperPickerPresented = true }
+                    }
                 }
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewport = $0 }
             .scrollIndicators(.hidden)
             .background { ShellBackground() }
             .refreshable {

@@ -176,15 +176,17 @@ parks the computer, and hands anything bigger to a computer agent. A window's `â
 
 The cog in every tab's toolbar opens **Computer**: the computer's name, the memory and cores
 it boots with (applied on the next restart), how long it waits before parking, Park Now,
-Restart, the background, and Change Computer. Beside the cog, the lifecycle menu shows the
+Restart, the wallpaper, and Change Computer. Beside the cog, the lifecycle menu shows the
 computer's state and offers Turn On, Park and Restart as they apply. Both use the host's
 management API (`docs/architecture.md`) and follow `computer.settings` events on the control
 socket. The Apps tab's Shelf offers optional applications from the computer's pinned
 catalog; Library groups them into packs and offers updates, rollback to a cached release,
 and removal.
 
-The background covers the app's tabs and the desktop, here and on a TV: the brand gradient,
-photographs that change every quarter hour, one photograph, or a picture of your own.
+The wallpaper lies behind every tab and the desktop, here and on a TV: the brand gradient,
+photographs that change every quarter hour, one photograph, or a picture of your own from
+Photos. Choose it in Computer settings, from the Desktop's overflow menu, or with a long
+press on Home's background.
 
 The same sheet shows the progress and any failure of a guest component update the host
 runs at wake. A container created without the Files port mapping shows that it must be

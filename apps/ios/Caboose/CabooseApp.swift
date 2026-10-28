@@ -70,6 +70,17 @@ struct RootView: View {
             Button("Retry") { model.documents.error = nil; model.documents.requestSync(model: model) }
             Button("OK", role: .cancel) { model.documents.error = nil }
         } message: { Text(model.documents.error ?? "") }
+        .sheet(isPresented: Bindable(model).wallpaperPickerPresented) {
+            NavigationStack {
+                BackgroundPicker()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done", systemImage: "checkmark") { model.wallpaperPickerPresented = false }
+                        }
+                    }
+            }
+            .environment(model)
+        }
         .sheet(isPresented: Bindable(model).settingsPresented) {
             ComputerSettingsView().environment(model)
         }

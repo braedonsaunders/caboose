@@ -559,6 +559,8 @@ final class AppModel {
 
     /// A park is underway.
     private(set) var parking = false
+    /// The wallpaper picker, from Home's background, the Desktop's menu or settings.
+    var wallpaperPickerPresented = false
     /// The owner asked to restart and is being asked to confirm.
     var restartConfirmationPresented = false
 
