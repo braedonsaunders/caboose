@@ -1,0 +1,350 @@
+//! caboose-display: Caboose's headless Wayland compositor. See docs/display.md.
+
+mod config;
+mod displays;
+mod encode;
+mod input;
+mod keymap;
+mod net;
+mod render;
+mod session;
+mod state;
+mod stream;
+mod text_input;
+mod windows;
+mod xwm;
+
+use config::{Config, Parsed, RendererChoice};
+use encode::Encoders;
+use smithay::backend::renderer::pixman::PixmanRenderer;
+use smithay::backend::renderer::ImportDma;
+use smithay::input::keyboard::{xkb, XkbConfig};
+use smithay::reexports::calloop::channel::{channel, Event as ChannelEvent};
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
+use smithay::reexports::wayland_server::Display;
+use smithay::utils::Clock;
+use smithay::wayland::compositor::CompositorState;
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::dmabuf::DmabufState;
+use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shell::xdg::XdgShellState;
+use smithay::wayland::shm::ShmState;
+use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::xwayland_shell::XWaylandShellState;
+use smithay::xwayland::{X11Wm, XWayland, XWaylandEvent};
+use state::{ClientState, State};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Environment for applications started under the compositor. Toolkits are pointed at
+/// Wayland first, X11 (through Xwayland) second.
+const TOOLKIT_ENV: &[(&str, &str)] = &[
+    ("GDK_BACKEND", "wayland,x11"),
+    ("QT_QPA_PLATFORM", "wayland;xcb"),
+    ("MOZ_ENABLE_WAYLAND", "1"),
+    ("SDL_VIDEODRIVER", "wayland,x11"),
+    ("ELECTRON_OZONE_PLATFORM_HINT", "auto"),
+];
+
+fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("CABOOSE_DISPLAY_LOG")
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+    let config = match config::parse(std::env::args().skip(1)) {
+        Ok(Parsed::Run(c)) => c,
+        Ok(Parsed::Help) => {
+            print!("{}", config::USAGE);
+            return;
+        }
+        Err(e) => {
+            eprintln!("caboose-display: {e}\n\n{}", config::USAGE);
+            std::process::exit(2);
+        }
+    };
+    if let Err(e) = run(config) {
+        eprintln!("caboose-display: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn first_render_node() -> Option<std::path::PathBuf> {
+    let mut nodes: Vec<_> = std::fs::read_dir("/dev/dri")
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("renderD")))
+        .collect();
+    nodes.sort();
+    nodes.into_iter().next()
+}
+
+fn launch_env(config: &Config, x_display: Option<u32>) -> Vec<(String, String)> {
+    let mut env = vec![("WAYLAND_DISPLAY".to_owned(), config.socket.clone())];
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        env.push(("XDG_RUNTIME_DIR".into(), dir));
+    }
+    if let Some(n) = x_display {
+        env.push(("DISPLAY".into(), format!(":{n}")));
+    }
+    env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    env
+}
+
+/// Once the compositor (and Xwayland) are up: the env file for launchers, and the
+/// command to run, if any.
+fn ready(state: &mut State, x_display: Option<u32>) {
+    let env = launch_env(&state.config, x_display);
+    if let Some(path) = &state.config.env_file {
+        let body: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+        let tmp = path.with_extension("tmp");
+        let written = std::fs::write(&tmp, body).and_then(|_| std::fs::rename(&tmp, path));
+        if let Err(e) = written {
+            tracing::warn!("cannot write {}: {e}", path.display());
+        }
+    }
+    tracing::info!("ready: WAYLAND_DISPLAY={}{}", state.config.socket, x_display.map(|n| format!(" DISPLAY=:{n}")).unwrap_or_default());
+    if let Some((program, args)) = state.config.command.split_first() {
+        let mut command = std::process::Command::new(program);
+        command.args(args).envs(env);
+        match command.spawn() {
+            Ok(mut child) => {
+                let (tx, rx) = channel::<std::process::ExitStatus>();
+                std::thread::spawn(move || {
+                    if let Ok(status) = child.wait() {
+                        let _ = tx.send(status);
+                    }
+                });
+                let _ = state.handle.insert_source(rx, |event, _, state: &mut State| {
+                    if let ChannelEvent::Msg(status) = event {
+                        tracing::info!("command exited: {status}");
+                        state.signal.stop();
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::error!("cannot start {program}: {e}");
+                state.signal.stop();
+            }
+        }
+    }
+}
+
+fn run(config: Config) -> Result<(), String> {
+    let render_node = config.render_node.clone().or_else(first_render_node);
+    let encoders = Encoders::probe(config.encoder, render_node.as_deref(), config.settings.clone());
+    if config.list_encoders {
+        for b in &encoders.backends {
+            println!("{}", b.describe());
+        }
+        return Ok(());
+    }
+    if encoders.backends.is_empty() {
+        return Err("no usable encoder".into());
+    }
+    for b in &encoders.backends {
+        tracing::info!("encoder: {}", b.describe());
+    }
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        return Err("XDG_RUNTIME_DIR is not set".into());
+    }
+
+    let mut event_loop: EventLoop<'static, State> = EventLoop::try_new().map_err(|e| e.to_string())?;
+    let display: Display<State> = Display::new().map_err(|e| e.to_string())?;
+    let dh = display.handle();
+
+    let renderer = match config.renderer {
+        RendererChoice::Auto | RendererChoice::Pixman => {
+            render::Renderer::Pixman(PixmanRenderer::new().map_err(|e| format!("pixman: {e}"))?)
+        }
+        RendererChoice::Gles => return Err("the gles renderer is not built into this version".into()),
+    };
+    tracing::info!("renderer: {}", renderer.name());
+
+    let compositor = CompositorState::new::<State>(&dh);
+    let xdg_shell = XdgShellState::new::<State>(&dh);
+    let shm = ShmState::new::<State>(&dh, vec![]);
+    let mut dmabuf = DmabufState::new();
+    let dmabuf_global = match &renderer {
+        render::Renderer::Pixman(r) => {
+            let formats: Vec<_> = r.dmabuf_formats().into_iter().collect();
+            (!formats.is_empty()).then(|| dmabuf.create_global::<State>(&dh, formats))
+        }
+    };
+    OutputManagerState::new_with_xdg_output::<State>(&dh);
+    XdgDecorationState::new::<State>(&dh);
+    ViewporterState::new::<State>(&dh);
+    FractionalScaleManagerState::new::<State>(&dh);
+    CursorShapeManagerState::new::<State>(&dh);
+    let mut seat_state = smithay::input::SeatState::new();
+    let mut seat = seat_state.new_wl_seat(&dh, "seat0");
+    seat.add_keyboard(XkbConfig::default(), 400, 30).map_err(|e| format!("keyboard: {e}"))?;
+    seat.add_pointer();
+    seat.add_touch();
+    let data_device = DataDeviceState::new::<State>(&dh);
+    let primary_selection = PrimarySelectionState::new::<State>(&dh);
+    let xwayland_shell = XWaylandShellState::new::<State>(&dh);
+    let text_inputs = text_input::TextInputs::new(&dh);
+
+    // The same keymap the seat compiled from the default names.
+    let xkb_context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    let keymap = xkb::Keymap::new_from_names(&xkb_context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+        .ok_or("cannot compile the default keymap")?;
+    let mut input = input::InputState::default();
+    input.keysyms = keymap::Keysyms::from_keymap(&keymap);
+
+    let handle = event_loop.handle();
+    let net = net::Net::listen(config.listen, &handle).map_err(|e| format!("listen on {}: {e}", config.listen))?;
+    tracing::info!("listening on ws://{}", net.local);
+
+    let (done_tx, done_rx) = channel();
+    handle
+        .insert_source(done_rx, |event, _, state: &mut State| {
+            if let ChannelEvent::Msg(done) = event {
+                state.on_encoded(done);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    handle
+        .insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state: &mut State| {
+            state.slow_tick();
+            TimeoutAction::ToDuration(Duration::from_secs(1))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let socket = ListeningSocketSource::with_name(&config.socket).map_err(|e| format!("socket {}: {e}", config.socket))?;
+    handle
+        .insert_source(socket, |stream, _, state: &mut State| {
+            if let Err(e) = state.dh.insert_client(stream, Arc::new(ClientState::default())) {
+                tracing::warn!("cannot add a Wayland client: {e}");
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    handle
+        .insert_source(Generic::new(display, Interest::READ, Mode::Level), |_, display, state: &mut State| {
+            // SAFETY: the display is not dropped while the loop runs.
+            unsafe {
+                display.get_mut().dispatch_clients(state).map_err(std::io::Error::other)?;
+            }
+            Ok(PostAction::Continue)
+        })
+        .map_err(|e| e.to_string())?;
+
+    let spec = &config.display;
+    let mut displays = displays::Displays::default();
+    displays.replace(
+        &dh,
+        &[caboose_display_protocol::Display {
+            id: 0,
+            width: spec.width,
+            height: spec.height,
+            scale: spec.scale,
+            refresh_hz: spec.refresh_hz,
+            hdr: false,
+        }],
+    );
+
+    let x_display = config.x_display;
+    let mut state = State {
+        dh: dh.clone(),
+        handle: handle.clone(),
+        signal: event_loop.get_signal(),
+        clock: Clock::new(),
+        config,
+        compositor,
+        xdg_shell,
+        shm,
+        dmabuf,
+        dmabuf_global,
+        seat_state,
+        data_device,
+        primary_selection,
+        xwayland_shell,
+        seat,
+        xwm: None,
+        text_inputs,
+        windows: Default::default(),
+        displays,
+        renderer,
+        encoders,
+        net,
+        session: None,
+        done_tx,
+        input,
+        generation: 0,
+        stats: Default::default(),
+        cursor: None,
+    };
+
+    let spawned = x_display.and_then(|number| {
+        // Xwayland's socket directory; systemd-tmpfiles makes it on a booted system.
+        let dir = std::path::Path::new("/tmp/.X11-unix");
+        if !dir.exists() {
+            use std::os::unix::fs::PermissionsExt;
+            if std::fs::create_dir(dir).and_then(|_| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o1777))).is_err() {
+                tracing::warn!("cannot create {}", dir.display());
+            }
+        }
+        match XWayland::spawn(
+            &dh,
+            Some(number),
+            std::iter::empty::<(String, String)>(),
+            true,
+            std::process::Stdio::null(),
+            std::process::Stdio::inherit(),
+            |_| (),
+        ) {
+            Ok(x) => Some(x),
+            Err(e) => {
+                tracing::error!("cannot start Xwayland on :{number}: {e}; continuing without X11");
+                None
+            }
+        }
+    });
+    match spawned {
+        Some((xwayland, client)) => {
+            handle
+                .insert_source(xwayland, move |event, _, state: &mut State| match event {
+                    XWaylandEvent::Ready { x11_socket, display_number } => {
+                        match X11Wm::start_wm(state.handle.clone(), x11_socket, client.clone()) {
+                            Ok(wm) => {
+                                state.xwm = Some(wm);
+                                ready(state, Some(display_number));
+                            }
+                            Err(e) => {
+                                tracing::error!("X11 window manager: {e}");
+                                ready(state, None);
+                            }
+                        }
+                    }
+                    XWaylandEvent::Error => {
+                        tracing::error!("Xwayland failed to start; continuing without X11");
+                        ready(state, None);
+                    }
+                })
+                .map_err(|e| e.to_string())?;
+        }
+        None => ready(&mut state, None),
+    }
+
+    event_loop.run(None, &mut state, |state| state.tick()).map_err(|e| e.to_string())?;
+    let s = &state.stats;
+    tracing::info!(
+        "exiting: {} frames, {} bytes, {} renders ({} unchanged), {} ms encode CPU",
+        s.frames,
+        s.bytes,
+        s.renders,
+        s.unchanged_renders,
+        s.encode_cpu_us / 1000
+    );
+    Ok(())
+}
