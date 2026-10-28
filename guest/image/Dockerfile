@@ -17,4 +17,5 @@ COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/caboose-
 COPY desktop-mcp /builder/desktop-mcp
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /builder/display/
 COPY display/caboose-display-ready display/systemd/caboose-display.service /builder/display/
+COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /builder/agentd/
 ENTRYPOINT ["/builder/build-inside.sh"]

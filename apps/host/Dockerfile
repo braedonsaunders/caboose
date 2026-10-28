@@ -4,6 +4,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/host/package.json apps/host/package.json
 COPY apps/web/package.json apps/web/package.json
+COPY guest/agentd/package.json guest/agentd/package.json
 RUN pnpm install --frozen-lockfile
 
 FROM build-deps AS host-build

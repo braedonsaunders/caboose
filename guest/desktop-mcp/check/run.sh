@@ -19,18 +19,15 @@ as_user() { runuser -u caboose -- env -i HOME=/home/caboose PATH=/usr/bin:/bin "
 logs=/tmp/a11y-check
 install -d -o caboose -g caboose "$logs"
 
-echo '== install.sh: helper, accessibility switches, and MCP registration'
+echo '== install.sh: helper and accessibility switches, no per-agent registration'
 home=/home/caboose
-echo '{"numStartups": 3}' > "$home/.claude.json"
-chown caboose:caboose "$home/.claude.json"
 sh /src/install.sh && sh /src/install.sh  # twice: it must be idempotent
 check 'helper installed' test -x /opt/caboose/a11y.py -a -x /opt/caboose/desktop-mcp.mjs
 check 'chromium flags installed' grep -q force-renderer-accessibility /etc/chromium.d/caboose-accessibility
 check 'toolkit-accessibility defaults on' bash -c '[[ $(runuser -u caboose -- env HOME=/home/caboose gsettings get org.gnome.desktop.interface toolkit-accessibility) == true ]]'
-check 'claude settings merged' yes "$(py "d['numStartups'] == 3 and d['mcpServers']['caboose-desktop']['type'] == 'stdio'" < "$home/.claude.json")"
-check 'codex registered once' bash -c "[[ \$(grep -c '^\[mcp_servers.caboose-desktop\]' $home/.codex/config.toml) == 1 ]]"
+check 'no agent config written' bash -c "[[ ! -e $home/.claude.json && ! -e $home/.codex ]]"
 check 'vscode argv.json' grep -q '"force-renderer-accessibility": true' "$home/.vscode/argv.json"
-check 'configs owned by caboose' bash -c "[[ -z \$(find $home/.codex $home/.vscode $home/.claude.json ! -uid 1000) ]]"
+check 'configs owned by caboose' bash -c "[[ -z \$(find $home/.vscode ! -uid 1000) ]]"
 
 echo '== Xvfb :100 and :101 sharing one session bus and one accessibility registry'
 for d in 100 101; do Xvfb ":$d" -screen 0 1280x800x24 -nolisten tcp >"$logs/xvfb$d.log" 2>&1 & done

@@ -39,7 +39,9 @@ Wayland client. Xpra remains the default display.
 With the host session running, run `docker exec -u root caboose-owner bash -s <
 guest/container/check.sh` to check the live Xpra encoder and MP3 dependencies.
 Use `apps/host/scripts/e2e.sh` to check the host/display protocol and parking.
-The image also installs media handoff (`guest/media-handoff/install.sh`); check it with
+The image also installs the agent runner (`guest/agentd/install.sh`), which runs any
+Agent Client Protocol agent for the host's tasks; `apps/host/scripts/check-agent-shell.sh`
+checks it in a Debian container. It installs media handoff (`guest/media-handoff/install.sh`); check it with
 `docker exec -u root caboose-owner bash -s < guest/media-handoff/check.sh`.
 Docker pause retains RAM only while Docker and WSL remain running; after a
 restart, home files persist but the process tree does not.

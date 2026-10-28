@@ -46,9 +46,9 @@ Caboose starts from the other end:
   separate frame.
 - **Resumable, not rebooted.** Your computer parks with its memory. Reopen the app and
   every program is exactly where you left it.
-- **Shared with agents, without fighting them.** Claude Code and Codex run on the same
-  machine on their own seat, so they never steal your pointer. They keep working while
-  your phone is locked, and you can take over any time.
+- **Shared with agents, without fighting them.** Any agent from the Agent Client
+  Protocol registry runs on the same machine on its own seat, so it never steals your
+  pointer. Agents keep working while your phone is locked, and you can take over any time.
 - **Yours.** Open source and self-hostable, and you bring your own model accounts. The
   host holds no model keys.
 
@@ -80,7 +80,7 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 | **Host** (`apps/host`) | `caboose-host`, TypeScript on Node 22. Owner-token auth, computer lifecycle (wake, lease, park with memory, cold restart), a display relay that never decodes a pixel, the agent task API, and the management API. |
 | **Console** (`apps/web`) | The self-host web console the host serves: state and resources, wake, park and restart, settings, agent tasks, and the link that signs an iPhone in. |
 | **The computer** (`guest/`) | A Debian 13 golden image on Cloud Hypervisor. Each computer is a copy-on-write clone, so it costs nothing up front and keeps its own installs. The image includes Chromium, Firefox, VS Code, LibreOffice, GIMP, Obsidian, Docker, a modern shell kit, and Claude Code, Codex, OpenCode and Gemini CLI. On a GPU host it can run as a container with NVENC, VA-API or D3D12 instead. |
-| **Agent seat** | A second display only agents use, plus `caboose-desktop-mcp`, which gives CLI agents screenshot, click, type, scroll and launch tools for GUI apps. |
+| **Agents** | Any agent in the [Agent Client Protocol registry](https://github.com/agentclientprotocol/registry), installed and signed in from the console, run by `caboose-agentd` in the computer on a second display only agents use, with `caboose-desktop-mcp` giving them screenshot, click, type, scroll and launch tools for GUI apps. |
 
 ## How it works
 
@@ -165,12 +165,13 @@ terminal, use it, leave, and come back to find it exactly as you left it.
 | [`guest/image`](guest/image) | The golden machine image: Debian 13, Xpra seamless, apps and agent CLIs |
 | [`guest/container`](guest/container) | The same computer as a GPU container, for WSL2 and Linux GPU hosts |
 | [`guest/display`](guest/display) | Caboose Display: the per-window display server, its protocol and golden vectors (Rust) |
+| [`guest/agentd`](guest/agentd) | `caboose-agentd`: the ACP client that runs any registry agent for a task |
 | [`guest/desktop-mcp`](guest/desktop-mcp) | GUI tools for agents on their own seat |
 | [`docs`](docs) | Architecture, the Xpra protocol notes and the Caboose Display design |
 
 Each component's README covers how to build, run and test it. Pure logic is unit-tested
-(`swift test` in `apps/ios/CabooseKit`, and `pnpm test` at the root for the host and
-console). Anything that touches KVM, Xpra or a device has a scripted check next to the
+(`swift test` in `apps/ios/CabooseKit`, and `pnpm test` at the root for the host,
+console and agent runner). Anything that touches KVM, Xpra or a device has a scripted check next to the
 code.
 
 Caboose is built on [AppKit](https://github.com/braedonsaunders/appkit), notably

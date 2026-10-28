@@ -59,7 +59,7 @@ export function gpuArgs(kind: GpuKind): string[] {
 
 export function createContainerController(config: Config, dependencies: { docker?: Docker; exists?: (path: string) => boolean; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void> } = {}): Controller {
   const docker = dependencies.docker ?? dockerCli()
-  const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs }
+  const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs, defaultAgent: null }
   /** What the container was created with; settings changes apply on the next restart. */
   let resources: ComputerResources | null = null
   let lastError: string | null = null

@@ -36,7 +36,8 @@ The staging files remain available for inspection after installation.
 
 The builder installs Xpra 6.5.5 from its upstream repository, pinned with APT,
 the desktop MCP server and its accessibility helper from `guest/desktop-mcp` (which also
-switches on the apps' accessibility trees), and the Bunkhouse guest agent
+switches on the apps' accessibility trees), the agent runner from `guest/agentd` (with the
+ACP SDK it pins), and the Bunkhouse guest agent
 at a pinned source revision with appkit-desk
 0.6.0. The agent listens on vsock port 5252. Xpra starts only when the host has
 written its per-wake password; it does not run automatically at boot. A separate `caboose-xpra-agent.service`
@@ -62,9 +63,11 @@ run `sudo bash apps.sh`. It does not reboot the computer. Debian packages come
 from its signed APT repositories; OpenCode, mise, Lazydocker and Obsidian are pinned
 to upstream release assets with checked SHA-256 hashes, and npm agent versions and
 their registry integrity values are pinned. Obsidian is proprietary software.
-Agents require the owner's own account or credentials, entered in their terminal.
-OpenCode and Gemini are interactive terminal agents; the host task API currently
-supports Claude Code and Codex only.
+These agent CLIs are for the owner's own terminal and need the owner's account or
+credentials. Agent tasks are not limited to them: the host runs any agent in the Agent
+Client Protocol registry through `caboose-agentd` (`guest/agentd`), installing it into the
+home directory on demand. `apps.sh` adds `uv`/`uvx` (pinned, checksum-verified) for agents
+published as Python packages and `bzip2` for agents shipped as `.tar.bz2`.
 
 | Category | Caboose lineup |
 | --- | --- |

@@ -44,6 +44,8 @@ COPY image/apps.sh /tmp/caboose-apps.sh
 RUN bash /tmp/caboose-apps.sh
 COPY desktop-mcp /tmp/desktop-mcp
 RUN /tmp/desktop-mcp/install.sh
+COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /tmp/agentd/
+RUN /tmp/agentd/install.sh && rm -rf /tmp/agentd
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff
 RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \

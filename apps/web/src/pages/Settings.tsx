@@ -3,8 +3,8 @@ import {
   Alert, AlertDescription, AlertTitle, Button, Input, PageContainer, PageHeader, Select, SettingsRow, SettingsSection, toast,
 } from '@braedonsaunders/appkit-ui'
 import {
-  computeSettingsPatch, effectiveLimits, formatIdleDuration, formatMemoryMb, validateSettingsInput,
-  willRequireColdRestart, type CabooseClient, type ComputerSettings,
+  computeSettingsPatch, effectiveLimits, formatIdleDuration, formatMemoryMb, orderAgents, validateSettingsInput,
+  willRequireColdRestart, type AgentsResponse, type CabooseClient, type ComputerSettings,
 } from '../api.js'
 import { useComputerActions } from '../actions.js'
 import { idleChoices, isTransitioning, memoryChoices } from '../state.js'
@@ -13,6 +13,7 @@ import { RollingWordmark } from '../brand/Logo.js'
 
 function same(a: ComputerSettings | null, b: ComputerSettings | null): boolean {
   return Boolean(a && b) && a!.name === b!.name && a!.memoryMb === b!.memoryMb && a!.vcpus === b!.vcpus && a!.idleMs === b!.idleMs
+    && (a!.defaultAgent ?? null) === (b!.defaultAgent ?? null)
 }
 
 export function Settings({ client, computer }: { client: CabooseClient; computer: ComputerHandle }) {
@@ -21,6 +22,17 @@ export function Settings({ client, computer }: { client: CabooseClient; computer
   const [draft, setDraft] = React.useState<ComputerSettings | null>(status?.settings ?? null)
   const [saving, setSaving] = React.useState(false)
   const baseline = React.useRef<ComputerSettings | null>(status?.settings ?? null)
+  const [catalog, setCatalog] = React.useState<AgentsResponse | null>(null)
+  const [catalogError, setCatalogError] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    let current = true
+    client.agents().then(
+      next => { if (current) setCatalog(next) },
+      failure => { if (current) setCatalogError(failure instanceof Error ? failure.message : String(failure)) },
+    )
+    return () => { current = false }
+  }, [client])
 
   // Follow changes made elsewhere (the iPhone, another tab) unless there are edits in progress here.
   React.useEffect(() => {
@@ -97,6 +109,32 @@ export function Settings({ client, computer }: { client: CabooseClient; computer
             }
           />
         </SettingsSection>
+
+        {draft.defaultAgent !== undefined ? (
+          <SettingsSection
+            title="Agents"
+            description="Agents come from the Agent Client Protocol registry. Install them and sign in from the Agents page."
+          >
+            <SettingsRow
+              title="Default agent"
+              description={catalogError ?? catalog?.registry.error ?? 'Runs tasks that do not name an agent, such as ones from the iPhone or the API.'}
+              control={
+                <Select
+                  className="w-64"
+                  aria-label="Default agent"
+                  value={draft.defaultAgent ?? ''}
+                  disabled={!catalog}
+                  onChange={event => update({ defaultAgent: event.target.value || null })}
+                >
+                  <option value="">None: choose for each task</option>
+                  {catalog ? orderAgents(catalog.agents, status.settings.defaultAgent ?? null).map(agent => (
+                    <option key={agent.id} value={agent.id}>{agent.installed ? `${agent.name} (installed)` : agent.name}</option>
+                  )) : null}
+                </Select>
+              }
+            />
+          </SettingsSection>
+        ) : null}
 
         <SettingsSection
           title="Resources"

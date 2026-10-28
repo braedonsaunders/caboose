@@ -71,8 +71,13 @@ real-machine checks require the built guest and are separate from unit tests.
 
 ## Agents and files
 
-Agent tasks (`/v1/agent/tasks`), replies, approvals, attachments, `POST /v1/files` and
-`POST /v1/open` are specified in `../../docs/architecture.md` § Agents. The host talks to
+Agents (`/v1/agents`, install and sign-in), agent tasks (`/v1/agent/tasks`), replies,
+approvals, attachments, `POST /v1/files` and `POST /v1/open` are specified in
+`../../docs/architecture.md` § Agents. Agents come from the Agent Client Protocol registry
+(`src/registry.ts`; `CABOOSE_AGENT_REGISTRY_URL` selects a mirror), cached in
+`${CABOOSE_IMAGE_ROOT}/agent-registry.json`, and run in the computer by `caboose-agentd`
+(`guest/agentd`); the host has no code for any particular agent. `CABOOSE_AGENT_IDLE_MS`
+sets how long an agent stays running after a turn, waiting for a reply. The host talks to
 the guest only through the driver's `guest().run(command, args)`; file contents are sent
 as base64 argument chunks and decoded in the guest, so both the microVM and container
 drivers support them without a stdin channel.
@@ -82,24 +87,27 @@ guest's accessibility helper `/opt/caboose/a11y.py` (see `guest/desktop-mcp`) an
 as `caboose` on `:100`. `guest/desktop-mcp/check-a11y.sh` runs that helper in real Xvfb and
 Xpra sessions under Docker.
 
-The guest scripts behind these routes (the batched poll, replies, approval decisions,
-restore after a host restart, attachments and Downloads) run for real in a Debian 13
-container with stand-in `claude` and `codex` CLIs. This needs only Docker:
+The guest scripts behind these routes (task start, the batched poll, replies, approval
+decisions, cancel, restore after a host restart, sign-in, attachments and Downloads) run
+for real in a Debian 13 container, where the real `caboose-agentd`, installed by its own
+`install.sh`, drives a stand-in ACP agent: the same session continuing, a new runner
+reloading a session or recapping it, a signed-out agent signed in through
+`authenticate`. This needs only Docker (and network for the image build):
 
 ```sh
 apps/host/scripts/check-agent-shell.sh
 ```
 
-Against a real host whose computer has Claude Code signed in (and Codex, for `--codex`),
-the agent check saves a file to `~/Downloads`, runs a Claude task that asks before acting
-with an attachment, approves it through the API, replies, and with `--codex` resumes a
-Codex thread. `--open` also opens https://example.com on the owner's display. It starts
-real agent runs on the owner's accounts.
+Against a real host, the agent check saves a file to `~/Downloads`, lists the registry,
+and runs a task with the given agent (default: the computer's default agent) that asks
+before acting with an attachment, approves it through the API, and replies. The agent must
+be signed in; `--install` installs it first. `--open` also opens https://example.com on
+the owner's display. It starts real agent runs on the owner's account.
 
 ```sh
 export CABOOSE_URL=https://computer.example.com
 # Supply CABOOSE_OWNER_TOKEN through your private environment.
-node apps/host/scripts/check-agents.mjs [--codex] [--open]
+node apps/host/scripts/check-agents.mjs [--agent <registry id>] [--install] [--open]
 ```
 
 ## Media handoff
