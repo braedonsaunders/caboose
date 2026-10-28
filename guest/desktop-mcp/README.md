@@ -1,6 +1,6 @@
 # caboose-desktop-mcp
 
-An MCP server (stdio, JSON-RPC 2.0) that lets a CLI agent — Claude Code or Codex — see and drive GUI apps on the agent seat, display `:101`, without ever touching
+An MCP server (stdio, JSON-RPC 2.0) that lets an agent see and drive GUI apps on the agent seat, display `:101`, without ever touching
 the owner's display. Beside it, `a11y.py` reads and acts on a display's accessibility tree;
 the desktop tools use it on `:101`, and caboose-host's `/v1/screen` routes use it on `:100`.
 
@@ -21,21 +21,13 @@ on a control by id rather than by guessed coordinates.
 | `list_windows`, `focus` | `window` | windows with geometry; raise one |
 | `click`, `drag`, `type`, `key`, `scroll` | coordinates, text, keys | pointer and keyboard by coordinates |
 | `launch` | `command` | start an app on `:101`, with the accessibility environment below |
-| `approve` | `tool_name`, `input` | Claude Code's permission prompt (below) |
 
 A failure comes back as a tool error with a sentence the model can act on; an id that no
 longer resolves says to list the window again.
 
-`approve` is Claude Code's `--permission-prompt-tool` for tasks started with
-`approvals: "ask"` (caboose-host passes `--permission-prompt-tool mcp__caboose-desktop__approve`).
-Called with `{ tool_name, input }`, it writes `approvals/<uuid>.json` `{ tool, input, requestedAt }`
-(long input strings cut to 2000 characters) under `$CABOOSE_TASK_DIR`, or the working
-directory when that is unset, and waits without a time limit for `approvals/<uuid>.decision`
-`{ allow, message? }`, which caboose-host writes when the owner answers. It then returns
-`{"behavior":"allow","updatedInput":<input>}` or `{"behavior":"deny","message":…}` as text.
-Both files are written to a temporary name and renamed, so neither side reads half a file.
-Verified against Claude Code 2.1.310: allow runs the tool, deny returns the message to the
-model as the tool's error, and the environment and working directory reach the server.
+caboose-agentd passes the server to every agent in ACP `session/new` (with
+`CABOOSE_AGENT_DISPLAY=:101`) and answers the agent's permission requests itself, so
+asking before acting needs nothing from this server.
 
 ## `a11y.py`
 
@@ -165,17 +157,13 @@ The accessibility tools need none of this. `press` on an element without an acti
 
 ## Install
 
-`install.sh` (run by the image and container builds as root, after the apps and CLIs):
+`install.sh` (run by the image and container builds as root, after the apps):
 
 - copies `caboose-desktop-mcp.mjs` to `/opt/caboose/desktop-mcp.mjs` and `a11y.py` to
   `/opt/caboose/a11y.py`;
 - installs the Chromium flags file, the GSettings override and VS Code's `argv.json`;
-- registers the server for user `caboose` (uid 1000), merging into existing settings rather
-  than replacing them: Claude Code in `~/.claude.json` (`mcpServers`), Codex in
-  `~/.codex/config.toml` (`[mcp_servers.caboose-desktop]`). Each runs `node /opt/caboose/desktop-mcp.mjs` with
-  `CABOOSE_AGENT_DISPLAY=:101`.
-
-caboose-host allows its tools for Claude tasks with `--allowedTools mcp__caboose-desktop`.
+- registers nothing per agent: caboose-agentd hands the server to each ACP agent in
+  `session/new`.
 
 **Runtime:** Node (no packages), python3 with `python3-pyatspi`, at-spi2-core, dbus-x11
 (`dbus-launch`), `xdotool`, `wmctrl` and ImageMagick's `import`, all in the image.
@@ -184,8 +172,7 @@ caboose-host allows its tools for Claude tasks with `--allowedTools mcp__caboose
 ## Test
 
 - `node selftest.mjs` checks the protocol, the tool list and its order, schemas, argument
-  validation, that helper failures come back as tool errors, and both `approve` answers,
-  without an X server.
+  validation, and that helper failures come back as tool errors, without an X server.
 - `./check-a11y.sh` proves the helper in a real X session under Docker on any amd64 or arm64
   machine; no KVM. It builds `caboose-a11y-check` from `check/Dockerfile` (Debian 13 with
   Xvfb, Xpra 6.5.5 from its signed repository, D-Bus, at-spi2-core, Mousepad, Chromium and

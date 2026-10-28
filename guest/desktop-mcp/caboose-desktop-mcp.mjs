@@ -1,19 +1,16 @@
 #!/usr/bin/env node
-// caboose-desktop-mcp — lets a CLI agent (Claude Code, Codex) see and
-// drive GUI apps on the agent seat, display :101, so it never touches the owner's display.
-// An MCP server over stdio (newline-delimited JSON-RPC 2.0), with no dependencies beyond
-// node: and what the image has: a11y.py beside this file (the accessibility tree, through
-// python3 and AT-SPI), and the X tools xdotool, wmctrl and ImageMagick's import. It also
-// carries `approve`, the permission-prompt tool through which a Claude task asks its owner
-// before acting.
+// caboose-desktop-mcp — lets an agent see and drive GUI apps on the agent seat, display :101,
+// so it never touches the owner's display. An MCP server over stdio (newline-delimited
+// JSON-RPC 2.0), with no dependencies beyond node: and what the image has: a11y.py beside
+// this file (the accessibility tree, through python3 and AT-SPI), and the X tools xdotool,
+// wmctrl and ImageMagick's import. caboose-agentd gives it to every ACP agent in session/new,
+// and answers the agent's permission requests itself.
 import { execFile, spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
-import { setTimeout as sleep } from 'node:timers/promises'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
@@ -115,28 +112,7 @@ const tools = [
     description: 'Start a GUI application on the agent display, e.g. "chromium https://example.com" or "libreoffice --calc".',
     inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
   },
-  {
-    name: 'approve',
-    description: 'Permission prompt for Claude Code (--permission-prompt-tool): asks the computer\'s owner whether a tool may run, and waits for the answer.',
-    inputSchema: { type: 'object', properties: { tool_name: { type: 'string' }, input: { type: 'object' }, tool_use_id: { type: 'string' } }, required: ['tool_name', 'input'] },
-  },
 ]
-
-// The task directory caboose-host launched the agent in; Claude starts its MCP servers in
-// its own working directory, so that is the fallback when the variable does not reach us.
-const APPROVALS = join(process.env.CABOOSE_TASK_DIR || process.cwd(), 'approvals')
-const DECISION_POLL_MS = Number(process.env.CABOOSE_APPROVAL_POLL_MS) || 500
-
-/** A copy of a tool input small enough to show the owner: long strings are cut. */
-function preview(value, depth = 0) {
-  if (typeof value === 'string') return value.length > 2000 ? `${value.slice(0, 2000)}…` : value
-  if (Array.isArray(value)) return depth > 4 ? '[…]' : value.slice(0, 50).map(item => preview(item, depth + 1))
-  if (value && typeof value === 'object') {
-    if (depth > 4) return '{…}'
-    return Object.fromEntries(Object.entries(value).slice(0, 50).map(([key, item]) => [key, preview(item, depth + 1)]))
-  }
-  return value
-}
 
 function int(value, name) {
   if (!Number.isInteger(value) || value < -100000 || value > 100000) throw new Error(`${name} must be an integer`)
@@ -231,29 +207,6 @@ const handlers = {
     return a11y('act', { element: text(id, 'id', 500), action: 'set-text', text: value })
   },
   read_text: () => a11y('text', {}),
-  // Writes approvals/<id>.json { tool, input } and waits for approvals/<id>.decision
-  // { allow, message? } from caboose-host, then answers in Claude Code's permission-prompt
-  // format. Both files are written whole and renamed into place, so neither side reads half.
-  async approve({ tool_name: tool, input }) {
-    if (typeof tool !== 'string' || !tool) throw new Error('tool_name must be a string')
-    const id = randomUUID()
-    await mkdir(APPROVALS, { recursive: true })
-    const request = join(APPROVALS, `${id}.json`)
-    await writeFile(`${request}.tmp`, JSON.stringify({ tool, input: preview(input ?? {}), requestedAt: new Date().toISOString() }))
-    await rename(`${request}.tmp`, request)
-    for (;;) {
-      const text = await readFile(join(APPROVALS, `${id}.decision`), 'utf8').catch(() => undefined)
-      if (text !== undefined) {
-        let decision
-        try { decision = JSON.parse(text) } catch { decision = { allow: false, message: 'The answer could not be read.' } }
-        const answer = decision?.allow === true
-          ? { behavior: 'allow', updatedInput: input ?? {} }
-          : { behavior: 'deny', message: typeof decision?.message === 'string' && decision.message ? decision.message : 'The owner declined this action.' }
-        return [{ type: 'text', text: JSON.stringify(answer) }]
-      }
-      await sleep(DECISION_POLL_MS)
-    }
-  },
   async screenshot({ window }) {
     await reveal()
     if (window !== undefined && !/^(0x[0-9a-f]+|\d+)$/i.test(String(window))) throw new Error('window must be an id from list_windows')

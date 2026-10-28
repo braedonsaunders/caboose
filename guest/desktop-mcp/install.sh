@@ -1,7 +1,8 @@
 #!/bin/sh
-# Install caboose-desktop-mcp and its accessibility helper into the guest, switch on the
-# accessibility trees of the apps it reads, and register it with the agent CLIs for user
-# caboose. Run inside the image build (as root), after Node, the apps and the CLIs.
+# Install caboose-desktop-mcp and its accessibility helper into the guest and switch on the
+# accessibility trees of the apps it reads. caboose-agentd passes the server to every ACP
+# agent in session/new, so no agent needs it registered. Run inside the image build (as
+# root), after Node and the apps.
 set -eu
 here=$(dirname "$0")
 install -d -m 0755 /opt/caboose
@@ -20,30 +21,10 @@ fi
 home=/home/caboose
 # Directories under the home are created owned by caboose (uid 1000), never by root.
 userdir() { for dir in "$@"; do [ -d "$dir" ] || install -d -o 1000 -g 1000 -m 0700 "$dir"; done; }
-userdir "$home/.vscode" "$home/.codex"
+userdir "$home/.vscode"
 python3 - "$home" <<'PY'
-import json, os, re, sys
+import os, sys
 home = sys.argv[1]
-server = {"command": "node", "args": ["/opt/caboose/desktop-mcp.mjs"], "env": {"CABOOSE_AGENT_DISPLAY": ":101"}}
-
-def merge(path, update):
-    """Add Caboose's entry to a JSON config, keeping everything else in it."""
-    data = {}
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as handle:
-            text = handle.read()
-        if text.strip():
-            data = json.loads(text)
-    update(data)
-    with open(path + ".tmp", "w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
-        handle.write("\n")
-    os.replace(path + ".tmp", path)
-
-# Claude Code reads user-scope MCP servers from ~/.claude.json.
-merge(f"{home}/.claude.json", lambda data: data.setdefault("mcpServers", {}).update(
-    {"caboose-desktop": {"type": "stdio", **server}}))
-
 # VS Code (Electron) builds its renderer's accessibility tree with this switch. argv.json
 # is JSON with comments, so the key is inserted, not parsed and rewritten.
 path = f"{home}/.vscode/argv.json"
@@ -61,14 +42,4 @@ else:
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(text)
 PY
-# Codex reads MCP servers from ~/.codex/config.toml.
-if ! grep -qs '^\[mcp_servers.caboose-desktop\]' "$home/.codex/config.toml"; then
-    cat >> "$home/.codex/config.toml" <<'TOML'
-
-[mcp_servers.caboose-desktop]
-command = "node"
-args = ["/opt/caboose/desktop-mcp.mjs"]
-env = { CABOOSE_AGENT_DISPLAY = ":101" }
-TOML
-fi
-chown -R 1000:1000 "$home/.claude.json" "$home/.codex" "$home/.vscode"
+chown -R 1000:1000 "$home/.vscode"
