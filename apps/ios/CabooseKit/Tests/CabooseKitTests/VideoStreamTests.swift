@@ -151,6 +151,25 @@ import Testing
         #expect(window.videos.isEmpty)
     }
 
+    /// A motion stream ends with a window picture that repaints its region, then video.destroy:
+    /// the video stays until that picture is applied (and a view has shown it), never before.
+    @Test func anEndedVideoWaitsForTheRepaint() async throws {
+        let base = CabooseDisplaySessionTests()
+        let session = try await base.ready()
+        base.stream.server([(.windowCreate, base.window(7, geometry: [0, 0, 64, 64]))])
+        try await base.until("window") { session.windows[7] != nil }
+        let window = try #require(session.windows[7])
+        base.stream.server([(.videoCreate, ["id": 4, "window": 7, "rect": [8, 8, 32, 32], "codec": "h264", "source": "motion"])])
+        try await base.until("video") { window.videos.count == 1 }
+        let container = ObjectIdentifier(try #require(window.videos.first).container)
+        base.stream.server([(.frame, base.frame(7, pts: 1000, keyframe: true)), (.videoDestroy, ["id": 4])])
+        try await base.until("retired") { window.videos.isEmpty }
+        let repaint = try #require(window.retiringVideos[container])
+        #expect(repaint > 0 && repaint == window.surface.generation, "the generation that includes the repaint")
+        // No view showed it: after a second the session lets it go anyway.
+        try await base.until("pruned") { window.retiringVideos.isEmpty }
+    }
+
     @Test func helloOffersTheSameDecodersForVideo() async throws {
         let base = CabooseDisplaySessionTests()
         let session = base.makeSession()

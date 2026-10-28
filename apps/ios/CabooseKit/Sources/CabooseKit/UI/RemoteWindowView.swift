@@ -118,9 +118,18 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let videos = window?.videos ?? []
+        // An ended video stays over its region until this view has shown the window picture
+        // that repaints it; until then the layout is looked at again every refresh.
+        var retiring: [CALayer] = []
         for container in hostedVideos where container.superlayer === layer && !videos.contains(where: { $0.container === container }) {
-            container.removeFromSuperlayer()
+            if let repaint = window?.retiringVideos[ObjectIdentifier(container)],
+               presentedGeneration == .max || presentedGeneration < repaint {
+                retiring.append(container)
+            } else {
+                container.removeFromSuperlayer()
+            }
         }
+        if !retiring.isEmpty { laidOutVideos = nil }
         let scale = 1 / pixelsPerPoint
         func points(_ rect: CGRect) -> CGRect {
             CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale)
@@ -132,7 +141,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             video.container.zPosition = CGFloat(video.z)
             video.layer.frame = points(video.rect.offsetBy(dx: -clip.minX, dy: -clip.minY))
         }
-        hostedVideos = videos.map(\.container)
+        hostedVideos = videos.map(\.container) + retiring
         CATransaction.commit()
     }
 
