@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { constants, existsSync, readFileSync } from 'node:fs'
 import { access, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { createDeskHost, createCloudHypervisorBackend, type DeskHandle, type DeskBackend } from '@braedonsaunders/appkit-desk'
+import { createDeskHost, createCloudHypervisorBackend, type DeskHandle, type DeskBackend, type DeskHostOptions } from '@braedonsaunders/appkit-desk'
 import type { Config } from './config.js'
 import { configureGuest, ensureNetwork, GUEST_ADDRESS, TAP_DEVICE } from './network.js'
 import type { App, Controller, Session } from './server.js'
@@ -12,7 +12,10 @@ export interface ComputerResources { memoryMb: number; vcpus: number }
 
 const COMPUTER_ID = 'owner'
 const APPKIT_LEASE_MS = 90_000
-export function createController(config: Config, dependencies: { backend?: DeskBackend; network?: () => Promise<void>; deviceExists?: (path: string) => boolean; settings?: () => ComputerSettings } = {}): Controller {
+/** Snapshots record the host CPU they were taken on; tests off Linux supply the signature. */
+type SnapshotSignature = Pick<DeskHostOptions, 'cpuSignature' | 'readSnapshotSignature' | 'writeSnapshotSignature'>
+
+export function createController(config: Config, dependencies: { backend?: DeskBackend; network?: () => Promise<void>; deviceExists?: (path: string) => boolean; settings?: () => ComputerSettings; snapshotSignature?: SnapshotSignature } = {}): Controller {
   const host = createDeskHost({
     imageRoot: config.imageRoot, vmmPath: config.vmmPath,
     // No console=ttyS0: appkit-desk launches with --serial off, and a kernel told to use a
@@ -20,6 +23,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
     kernelCmdline: 'root=/dev/vda3 rw',
     runtimeDir: join(config.imageRoot, 'runtime'), backend: dependencies.backend ?? createCloudHypervisorBackend({ connectTimeoutMs: 120_000 }),
     ...(dependencies.deviceExists ? { deviceExists: dependencies.deviceExists } : {}),
+    ...dependencies.snapshotSignature,
     parkWithMemory: true, idleSuspendMs: APPKIT_LEASE_MS, defaultLeaseMs: APPKIT_LEASE_MS,
     ports: { onEvent: () => {}, audit: () => {} },
   })
@@ -132,17 +136,13 @@ export function createController(config: Config, dependencies: { backend?: DeskB
         }
       }
       clearHeartbeat()
-      const lifecycleHost: typeof host & { shutdown?: (id: string) => Promise<void> } = host
-      if (desk && lifecycleHost.shutdown) {
-        await lifecycleHost.shutdown(COMPUTER_ID)
-      } else {
-        // Older AppKit has only park/destroy. Park syncs the disk before snapshotting.
-        // Also covers parked disks on a fresh host whose in-memory desk registry is empty.
-        await host.suspend(COMPUTER_ID)
-      }
+      // Stops a running computer without writing a memory image and drops a parked one's
+      // snapshot; the disk is kept. Never destroy(), which deletes the user's disk.
+      await host.shutdown(COMPUTER_ID)
       desk = undefined
       displayToken = ''
-      // Discard memory only. Never use destroy(), which deletes the user's disk.
+      // A computer parked before this host process started is unknown to appkit-desk,
+      // so its snapshot is removed here too.
       await rm(snapshotPath, { recursive: true, force: true })
       resources = null
       return controller.wake()
