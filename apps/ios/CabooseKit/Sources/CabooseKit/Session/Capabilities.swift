@@ -93,7 +93,9 @@ public struct ClientCapabilities: Sendable {
                 "rgb_formats": ["BGRX", "BGRA", "RGBX", "RGBA"],
                 "window-icon": ["png"],
                 "icons": ["max_size": [128, 128], "greedy": true],
-                "transparency": true,
+                // Opaque windows only. With transparency, Xpra keeps browser windows in BGRA, and
+                // for BGRA it offers WebP alone: no H.264, so video played at 2 fps as 1.6 MB stills.
+                "transparency": false,
                 "rgb_lz4": false,
                 // Video only (never text): the server may encode a video smaller to keep its
                 // frame rate, and the client scales it back up on the GPU.
