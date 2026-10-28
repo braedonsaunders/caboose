@@ -259,8 +259,8 @@ enum Brand {
             ties.fill(Path(roundedRect: CGRect(x: x, y: 116, width: 14, height: 11), cornerRadius: 2), with: .foreground)
             k += 1
         }
-        let line = line([CGPoint(x: rail.0, y: 106), CGPoint(x: rail.1, y: 106)])
-        context.stroke(line.trimmedPath(from: 0, to: railDrawn), with: .foreground,
+        let railPath = line([CGPoint(x: rail.0, y: 106), CGPoint(x: rail.1, y: 106)])
+        context.stroke(railPath.trimmedPath(from: 0, to: railDrawn), with: .foreground,
                        style: StrokeStyle(lineWidth: 12, lineCap: .round))
     }
 
