@@ -46,6 +46,9 @@ struct RootView: View {
                 FailureView(message: message)
             case .ready where model.externalDisplayActive:
                 TrackpadScreen(desktop: model.desktop)
+            case .ready where model.deviceDesktopActive:
+                DeviceDesktopScreen()
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
             case .ready:
                 HomeView()
                     .fullScreenCover(isPresented: Binding(

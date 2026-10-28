@@ -26,9 +26,11 @@ struct DesktopView: View {
                         .padding(.bottom, 10 * desktop.ui)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                Cursor(hit: desktop.hovered, ui: desktop.ui)
-                    .position(desktop.cursor)
-                    .allowsHitTesting(false)
+                if desktop.showsCursor {
+                    Cursor(hit: desktop.hovered, ui: desktop.ui)
+                        .position(desktop.cursor)
+                        .allowsHitTesting(false)
+                }
             }
             .coordinateSpace(name: "desktop")
             .onAppear {
@@ -123,7 +125,9 @@ struct Dock: View {
     var body: some View {
         let ui = desktop.ui
         HStack(spacing: 10 * ui) {
-            ForEach(model.dockApps) { app in
+            // As many as fit: a phone held upright has room for fewer than a TV.
+            let fit = max(3, Int((desktop.size.width - 120 * ui) / (62 * ui)))
+            ForEach(model.dockApps.prefix(fit)) { app in
                 let hot = desktop.hovered == .dock(app.id)
                 VStack(spacing: 3 * ui) {
                     Group {

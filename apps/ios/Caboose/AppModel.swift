@@ -184,7 +184,7 @@ final class AppModel {
     /// The screen the computer lays windows out for: the big screen at its own pixels when
     /// one is connected, else the phone.
     private func displayCapabilities() -> ClientCapabilities {
-        if externalDisplayActive {
+        if desktopActive {
             // The big screen at its own pixels: a real desktop, not a scaled phone.
             let scale = desktop.pixelsPerPoint
             // Linux text grows with the desktop's size factor, through the DPI it is told.
@@ -234,7 +234,7 @@ final class AppModel {
         let current = Set(session.windows.keys)
         let added = current.subtracting(knownWindowIDs)
         knownWindowIDs = current
-        if externalDisplayActive {
+        if desktopActive {
             desktop.sync(with: Array(session.windows.values))
             for (index, window) in appWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
                 placedWindowIDs.insert(window.id)
@@ -284,13 +284,56 @@ final class AppModel {
 
     // MARK: External display
 
-    func externalDisplayConnected(size: CGSize, scale: CGFloat) {
+    /// The desktop on this phone's or iPad's own screen, without a TV: the same windows,
+    /// dock and Launchpad, driven by touch (and by a mouse or trackpad on an iPad).
+    private(set) var deviceDesktopActive = false
+    /// A desktop is up, on a TV or on this screen: windows float instead of filling the phone.
+    var desktopActive: Bool { externalDisplayActive || deviceDesktopActive }
+
+    private func desktopUI(forWidth width: CGFloat) -> CGFloat {
+        (deviceDesktopActive ? DesktopModel.deviceUI(forWidth: width) : DesktopModel.automaticUI(forWidth: width)) * desktopZoom
+    }
+
+    func openDeviceDesktop(size: CGSize) {
+        guard !externalDisplayActive, size.width > 0, size.height > 0 else { return }
+        deviceDesktopActive = true
         externalSize = size
-        desktop = DesktopModel(pixelsPerPoint: max(1, scale))
-        desktop.ui = DesktopModel.automaticUI(forWidth: size.width) * desktopZoom
+        desktop = DesktopModel(pixelsPerPoint: max(1, UIScreen.main.scale))
+        desktop.directTouch = true
+        desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
         desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
+        presentedWindowID = nil
+        keyboardVisible = false
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        reconnectForDisplayChange()
+    }
+
+    /// Rotation, Stage Manager or Split View changed the desktop's size.
+    func deviceDesktopResized(to size: CGSize) {
+        guard deviceDesktopActive, size.width > 0, size.height > 0, size != externalSize else { return }
+        externalSize = size
+        desktop.size = size
+        desktop.ui = desktopUI(forWidth: size.width)
+        reconnectForDisplayChange()
+    }
+
+    func closeDeviceDesktop() {
+        guard deviceDesktopActive else { return }
+        deviceDesktopActive = false
+        keyboardVisible = false
+        reconnectForDisplayChange()
+    }
+
+    func externalDisplayConnected(size: CGSize, scale: CGFloat) {
+        // The TV takes the desktop over from the phone's own screen.
+        deviceDesktopActive = false
+        externalSize = size
+        desktop = DesktopModel(pixelsPerPoint: max(1, scale))
         externalDisplayActive = true
+        desktop.ui = desktopUI(forWidth: size.width)
+        desktop.size = size
+        desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
         presentedWindowID = nil
         reconnectForDisplayChange()
     }
@@ -307,7 +350,7 @@ final class AppModel {
         guard zoom != desktopZoom else { return }
         desktopZoom = zoom
         UserDefaults.standard.set(Double(zoom), forKey: "desktopZoom")
-        desktop.ui = DesktopModel.automaticUI(forWidth: externalSize.width) * zoom
+        desktop.ui = desktopUI(forWidth: externalSize.width)
         // Linux learns its new DPI from the next hello; the apps keep running.
         reconnectForDisplayChange()
     }
