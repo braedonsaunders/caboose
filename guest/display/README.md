@@ -160,6 +160,31 @@ probe. Every check asserts on what arrived, not on a picture:
 | `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer (measured: 42.4 → 50.3 dB, one 34 kB picture); a blinking caret costs at most 4 extra pictures in 6 s, not one per blink (measured: 16 against 13) |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
+### Profile
+
+`scripts/profile.py` measures the server CPU per update for Chromium at the display sizes
+the app uses. It connects with a phone's display (1179×2556 at 3×) or a TV's
+(3840×2160 at 2×) and maximizes the window, as the app does. It then types, scrolls an
+article, or leaves a caret blinking, and prints the server's CPU per picture and its
+split by thread:
+
+    guest/display/scripts/dev.sh python3 scripts/profile.py [phone|tv] [type|scroll|caret] [-- FLAGS]
+
+On the machine below, with `--encoder-threads` at its default:
+
+| Display | Workload | Pictures in 9 s | Server CPU | Before (four encoder threads above 1080p) |
+| --- | --- | --- | --- | --- |
+| phone | typing | 63 | 9.1% of a core | 11.9–13.8% |
+| phone | scrolling | 79 | 17.5% | 24–25% |
+| phone | caret | 27 | 5.4% | 8.2–8.5% |
+| TV | typing | 69 | 21.5% | 25.3% |
+| TV | scrolling | 64 | 32.0% | 37.9% |
+| TV | caret | 27 | 9.3% | 11.4% |
+
+Nearly all of it is libx264 (the `encode-N` threads). Its cost has a floor that scales with
+the picture, whatever changed: one typed glyph is 6.4 ms at 1179×2556 and 18.5 ms at
+3840×2160 on one thread (`bench_text`).
+
 ### Measured
 
 On an AMD Ryzen 7 2700X (2018, 8 cores) shared with other work, software rendering and

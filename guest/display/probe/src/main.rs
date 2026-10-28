@@ -42,7 +42,8 @@ OPTIONS:
                            key:KEYSYM[+mod...] (press and release; mods shift, control,
                            mod1, mod4), text:STRING, edit:N:STRING (delete N before,
                            then commit), copy:STRING (the phone's clipboard), tap:X,Y,
-                           click:X,Y, wait:MS
+                           click:X,Y, wait:MS, maximize (fill the display),
+                           scroll:X,Y,DY (precise, DY pixels)
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -329,7 +330,7 @@ fn save_png(frame: &ff::frame::Video, crop: proto::Rect, path: &std::path::Path)
 /// The messages for one `--actions` step. `wait:MS` is returned as a Ping carrying the
 /// delay, which the caller turns into a pause.
 fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
-    let (verb, arg) = action.split_once(':').ok_or_else(|| format!("bad action {action}"))?;
+    let (verb, arg) = action.split_once(':').unwrap_or((action, ""));
     let point = |a: &str| -> Result<(f64, f64), String> {
         let (x, y) = a.split_once(',').ok_or_else(|| format!("bad point {a}"))?;
         Ok((x.parse().map_err(|_| format!("bad x {x}"))?, y.parse().map_err(|_| format!("bad y {y}"))?))
@@ -375,6 +376,26 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 .to_vec()
         }
         "wait" => vec![Message::Ping { t_us: arg.parse().map_err(|_| format!("bad wait {arg}"))? }],
+        // The window fills its display, as the phone shows one window at a time.
+        "maximize" => vec![Message::Configure(proto::Configure {
+            id,
+            maximized: Some(true),
+            activated: Some(true),
+            ..Default::default()
+        })],
+        // scroll:X,Y,DY scrolls by DY pixels (precise, as a trackpad or a touch drag) at X,Y.
+        "scroll" => {
+            let mut parts = arg.splitn(3, ',');
+            let mut next = || parts.next().and_then(|v| v.parse::<f64>().ok()).ok_or(format!("bad scroll {arg}"));
+            let (x, y, dy) = (next()?, next()?, next()?);
+            vec![Message::Pointer(proto::Pointer {
+                id,
+                x,
+                y,
+                buttons: 0,
+                scroll: Some(proto::Scroll { dx: 0.0, dy, precise: true }),
+            })]
+        }
         _ => return Err(format!("unknown action {verb}")),
     })
 }
