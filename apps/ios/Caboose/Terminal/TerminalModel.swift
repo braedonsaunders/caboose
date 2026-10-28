@@ -58,8 +58,9 @@ final class TerminalModel {
     func show(host: HostClient?) {
         if host?.baseURL != self.host?.baseURL || host?.token != self.host?.token {
             disconnect()
-            if self.host != nil {
-                // Another computer: its sessions are not this one's.
+            if self.host != nil, host?.token != self.host?.token {
+                // Another sign-in, so another computer: its sessions are not this one's. The
+                // same computer at another address (home, or the VPN) keeps its session.
                 sessionID = nil
                 offset = nil
             }
@@ -67,7 +68,7 @@ final class TerminalModel {
         }
         visible = true
         guard host != nil else { status = .failed(String(localized: "Pair with your computer to open a terminal.")); return }
-        if connection == nil, retry == nil, canReconnectOnItsOwn { connect() }
+        if connection == nil, retry == nil, canReconnectOnItsOwn { connect(wake: true) }
     }
 
     /// The screen went away or the app went to the background: detach, leaving the shell running.
@@ -94,15 +95,17 @@ final class TerminalModel {
         if status == .live { status = .reconnecting }
     }
 
-    private func connect() {
+    /// `wake` is for the owner's own actions. Retries never wake the computer, so a terminal
+    /// cut off by a park does not undo it.
+    private func connect(wake: Bool) {
         guard visible, let host, let size else { return }
         retry?.cancel()
         retry = nil
         connection?.close()
-        let url = TerminalProtocol.url(base: host.baseURL, columns: size.columns, rows: size.rows, session: sessionID, offset: sessionID == nil ? nil : offset, wake: true)
+        let url = TerminalProtocol.url(base: host.baseURL, columns: size.columns, rows: size.rows, session: sessionID, offset: sessionID == nil ? nil : offset, wake: wake)
         let connection = TerminalConnection(transport: URLSessionTerminalTransport(url: url, token: host.token))
         self.connection = connection
-        nonisolated(unsafe) let view = view
+        let view = view
         connection.start { [weak self, weak connection] event in
             // Output is fed in order on the connection's queue; SwiftTerm parses off the main thread.
             switch event {
@@ -154,7 +157,7 @@ final class TerminalModel {
             notice = String(localized: "[The previous session has ended. This is a new one.]")
             sessionID = nil
             offset = nil
-            connect()
+            connect(wake: false)
         case .replaced:
             status = .elsewhere
         case .idle:
@@ -178,7 +181,7 @@ final class TerminalModel {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
             self.retry = nil
-            self.connect()
+            self.connect(wake: false)
         }
     }
 
@@ -188,7 +191,7 @@ final class TerminalModel {
     func reconnect() {
         status = .reconnecting
         attempt = 0
-        connect()
+        connect(wake: true)
     }
 
     func newSession() {
@@ -197,7 +200,7 @@ final class TerminalModel {
         offset = nil
         status = .starting
         view.feed(text: "\u{1b}c")
-        connect()
+        connect(wake: true)
     }
 
     func open(_ session: TerminalSessionInfo) {
@@ -207,7 +210,7 @@ final class TerminalModel {
         // This view holds none of that session's output: it arrives as a replay with a reset.
         offset = nil
         status = .starting
-        connect()
+        connect(wake: true)
     }
 
     /// Hangs up the shell; its exit then arrives on the connection.
@@ -238,6 +241,9 @@ extension TerminalModel: CabooseTerminalViewOwner {
             // Typing after an idle close comes straight back.
             reconnect()
             connection?.send(input: bytes)
+        } else if case .exited = status, bytes == Data([0x0d]) {
+            // Return after the shell has exited starts a new one, as in Terminal.
+            newSession()
         }
     }
 
@@ -245,7 +251,7 @@ extension TerminalModel: CabooseTerminalViewOwner {
         guard columns > 1, rows > 1 else { return }
         let first = size == nil
         size = (columns, rows)
-        if first { if visible, connection == nil, retry == nil, canReconnectOnItsOwn { connect() } } else { connection?.resize(columns: columns, rows: rows) }
+        if first { if visible, connection == nil, retry == nil, canReconnectOnItsOwn { connect(wake: true) } } else { connection?.resize(columns: columns, rows: rows) }
     }
 
     func terminal(_ view: CabooseTerminalView, titled title: String) {

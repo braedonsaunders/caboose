@@ -1315,9 +1315,11 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   is a haptic and a flash. The grid follows the view: rotation, the keyboard, the vertical
   bar and pinch each send a resize. Leaving the app or the tab detaches; coming back
   reattaches from the last byte received, so nothing repeats. A dropped connection retries
-  after 0.5, 1, 2, 4 and 8 s, then every 15 s. When the shell exits, another device takes
+  after 0.5, 1, 2, 4 and 8 s, then every 15 s; only opening the tab or an action wakes a
+  parked computer (`wake=1`), never a retry. When the shell exits, another device takes
   the session, or the connection closes as idle, the screen says so with one action (New
-  Session, Show Here, Reconnect); typing after an idle close reconnects. A session that
+  Session, Show Here, Reconnect); typing after an idle close reconnects, and Return after an
+  exit starts a new session. A session that
   ended while away is replaced with a new one, with a note.
 - **Sessions.** The session menu starts a new session, switches between the computer's
   sessions (`GET /v1/terminal/sessions`) and closes the current one. The current session's
