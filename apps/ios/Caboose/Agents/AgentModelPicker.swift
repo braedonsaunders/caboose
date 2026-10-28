@@ -56,6 +56,8 @@ struct AgentModelPicker: View {
                         else if state?.currentModelKnown == false { Text("Your selection applies when this chat resumes for its next message.") }
                         else if taskID != nil { Text("Your selection applies to the next message. Current model: \(models.availableModels.first(where: { $0.id == models.currentModelId })?.name ?? models.currentModelId).") }
                     }
+                } else if busy {
+                    Text("Models will be available when this turn finishes.").foregroundStyle(.secondary)
                 } else if error == nil {
                     Text(agentID.isEmpty ? "Choose an agent first." : "This agent does not advertise model selection.")
                         .foregroundStyle(.secondary)
@@ -69,6 +71,7 @@ struct AgentModelPicker: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .task(id: agentID + (taskID ?? "")) { await load() }
+            .onChange(of: busy) { _, busy in if !busy { Task { await load() } } }
         }
     }
 
