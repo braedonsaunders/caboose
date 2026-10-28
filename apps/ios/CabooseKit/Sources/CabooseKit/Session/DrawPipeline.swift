@@ -33,6 +33,7 @@ final class DrawPipeline: @unchecked Sendable {
     private let queue: DispatchQueue
     private let decoder = H264Decoder()
     private let send: @Sendable (XpraPacket) -> Void
+    private var lastRefresh: UInt64 = 0 // on `queue`
 
     init(windowID: Int, width: Int, height: Int, send: @escaping @Sendable (XpraPacket) -> Void) {
         self.windowID = windowID
@@ -73,6 +74,12 @@ final class DrawPipeline: @unchecked Sendable {
                 .int(Int64(sequence)), .int(Int64(windowID)), .int(Int64(width)), .int(Int64(height)),
                 .int(micros), RValue(failure),
             ]))
+            // A lost update leaves stale pixels until that area changes again; ask for the
+            // whole window once, at most every second.
+            if !failure.isEmpty, start &- lastRefresh > 1_000_000_000 {
+                lastRefresh = start
+                send(XpraPacket("window-refresh", [.int(Int64(windowID)), 0, 100, .dict([]), .dict([])]))
+            }
         }
     }
 
@@ -92,7 +99,7 @@ final class DrawPipeline: @unchecked Sendable {
             }
         case "jpeg", "webp", "png", "png/P", "png/L":
             guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw DrawError.undecodable(coding) }
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw DrawError.undecodable(coding, data) }
             surface.upload(image: image, x: x, y: y)
         case "rgb32", "rgb24":
             if options["lz4"]?.int ?? 0 > 0 || options["zlib"]?.int ?? 0 > 0 { throw DrawError.compressed }
@@ -115,17 +122,27 @@ final class DrawPipeline: @unchecked Sendable {
 
 enum DrawError: Error, CustomStringConvertible {
     case unsupported(String)
-    case undecodable(String)
+    case undecodable(String, Data)
     case compressed
     case badPixels
 
     var description: String {
         switch self {
         case .unsupported(let coding): "unsupported encoding \(coding)"
-        case .undecodable(let coding): "could not decode \(coding)"
+        case .undecodable(let coding, let data): "could not decode \(coding) (\(DrawError.describe(data)))"
         case .compressed: "compressed rgb was not requested"
         case .badPixels: "pixel data shorter than its geometry"
         }
+    }
+
+    /// Enough of an undecodable image to tell why from the server's log: its size and, for a
+    /// RIFF container such as WebP, the first chunk type (VP8, VP8L or VP8X).
+    static func describe(_ data: Data) -> String {
+        let bytes = [UInt8](data.prefix(16))
+        if bytes.count >= 16, bytes[0 ..< 4] == [0x52, 0x49, 0x46, 0x46] {
+            return "\(data.count) bytes, \(String(decoding: bytes[12 ..< 16], as: UTF8.self))"
+        }
+        return "\(data.count) bytes, starts \(bytes.prefix(8).map { String(format: "%02x", $0) }.joined())"
     }
 }
 

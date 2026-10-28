@@ -16,6 +16,21 @@ struct TrackpadScreen: View {
                 Label("Desktop on your display", systemImage: "tv")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
+                Button { model.adjustDesktopZoom(by: 1 / 1.15) } label: {
+                    Image(systemName: "textformat.size.smaller").frame(width: 40, height: 40)
+                }
+                .glassEffect(.regular.interactive(), in: .circle)
+                .accessibilityLabel("Smaller")
+                Button { model.adjustDesktopZoom(by: 1.15) } label: {
+                    Image(systemName: "textformat.size.larger").frame(width: 40, height: 40)
+                }
+                .glassEffect(.regular.interactive(), in: .circle)
+                .accessibilityLabel("Larger")
+                Button { WallpaperStore.shared.next() } label: {
+                    Image(systemName: "photo.on.rectangle.angled").frame(width: 40, height: 40)
+                }
+                .glassEffect(.regular.interactive(), in: .circle)
+                .accessibilityLabel("New wallpaper")
                 Button { model.keyboardVisible.toggle() } label: {
                     Image(systemName: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
                         .frame(width: 40, height: 40)

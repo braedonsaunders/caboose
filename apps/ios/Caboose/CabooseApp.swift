@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct CabooseApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel.shared
     @Environment(\.scenePhase) private var scenePhase
 
@@ -14,6 +15,7 @@ struct CabooseApp: App {
                     if let credentials = Credentials(link: url) { model.connect(with: credentials) }
                 }
                 .onAppear { AppModel.requestNotificationPermission() }
+                .externalDesktopAccessory(model)
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {

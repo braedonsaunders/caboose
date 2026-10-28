@@ -193,6 +193,7 @@ public final class XpraSession {
             case "window-destroy":
                 if let wid = packet[0]?.int { destroyWindow(wid) }
             case "window-icon": setIcon(packet)
+            case "cursor-data": setCursor(packet)
             case "window-move-resize":
                 if let wid = packet[0]?.int { moveResize(wid, x: packet[1]?.int, y: packet[2]?.int, width: packet[3]?.int, height: packet[4]?.int) }
             case "window-resized":
@@ -224,6 +225,7 @@ public final class XpraSession {
     private func didReceiveHello(_ packet: XpraPacket) {
         let caps = packet[0] ?? .dict([])
         serverVersion = caps["version"]?.string
+        preciseWheel = caps["wheel.precise"]?.bool ?? caps["wheel"]?["precise"]?.bool ?? false
         // The server defers its keymap until the client describes its keyboard. Without it,
         // modifiers in key events are ignored (no Shift, so "(" types "9"). The layout equals
         // the server default, so force it to apply.
@@ -416,8 +418,51 @@ public final class XpraSession {
         send("pointer-button", [-1, 0, .int(Int64(window.id)), .int(Int64(button)), .bool(pressed), position, props])
     }
 
-    /// Precise scrolling; deltas in pixels, positive down/right.
+    /// Whether the server takes fractional wheel motion. Xpra on Xvfb drives the pointer
+    /// through XTest, which has no precise wheel: it asserts on `pointer-wheel` and drops it.
+    public private(set) var preciseWheel = false
+
+    /// How far content moves for one wheel click in a GTK or Chromium app at 2x, in pixels,
+    /// so a swipe moves the page about as far as the finger.
+    static let pixelsPerWheelStep: CGFloat = 110
+    private var wheelRemainder = CGPoint.zero
+
+    /// The shape of the pointer as the server last drew it, by its X cursor name
+    /// ("text", "xterm", "pointer", …), or nil when the server sent none or no name.
+    public private(set) var cursorName: String?
+    /// Increments on every cursor change, so a view can tell a fresh answer from a stale one.
+    public private(set) var cursorSerial = 0
+
+    private func setCursor(_ packet: XpraPacket) {
+        // cursor-data [encoding, w, h, xhot, yhot, serial, pixels, name]; legacy "cursor"
+        // [encoding, x, y, w, h, xhot, yhot, serial, pixels, name, …]; [""] for the default.
+        let name: String?
+        if packet.arguments.count >= 10 { name = packet[9]?.string }
+        else if packet.arguments.count >= 8 { name = packet[7]?.string }
+        else { name = nil }
+        cursorName = name.flatMap { $0.isEmpty ? nil : $0.lowercased() }
+        cursorSerial &+= 1
+    }
+
+    /// Whether the pointer is over editable text, by the shape the app chose for it.
+    public var cursorIsText: Bool? {
+        guard let cursorName else { return nil }
+        return ["text", "xterm", "ibeam", "vertical-text"].contains(cursorName)
+    }
+
+    /// Scrolling; deltas in pixels, positive down/right. Precise wheel motion when the server
+    /// takes it, otherwise whole wheel clicks with the remainder carried to the next call.
     public func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, modifiers: [String] = []) {
+        guard preciseWheel else {
+            wheelRemainder.x += dx
+            wheelRemainder.y += dy
+            let steps = (x: Int(wheelRemainder.x / Self.pixelsPerWheelStep), y: Int(wheelRemainder.y / Self.pixelsPerWheelStep))
+            wheelRemainder.x -= CGFloat(steps.x) * Self.pixelsPerWheelStep
+            wheelRemainder.y -= CGFloat(steps.y) * Self.pixelsPerWheelStep
+            for _ in 0 ..< min(abs(steps.y), 12) { click(window, button: steps.y > 0 ? 5 : 4, at: point, modifiers) }
+            for _ in 0 ..< min(abs(steps.x), 12) { click(window, button: steps.x > 0 ? 7 : 6, at: point, modifiers) }
+            return
+        }
         let (position, _) = pointer(window, point, modifiers)
         let buttons = RValue.list(buttonsDown.sorted().map { .int(Int64($0)) })
         let mods = RValue.list(modifiers.map { RValue($0) })
@@ -429,6 +474,14 @@ public final class XpraSession {
             let distance = Int64((abs(dx) * 1000 / 120).rounded())
             send("pointer-wheel", [.int(Int64(window.id)), .int(dx > 0 ? 7 : 6), .int(distance), position, mods, buttons])
         }
+    }
+
+    /// Starts a new scroll gesture, so a remainder from the last one does not leak into it.
+    public func resetScroll() { wheelRemainder = .zero }
+
+    private func click(_ window: RemoteWindow, button: Int, at point: CGPoint, _ modifiers: [String]) {
+        pointerButton(in: window, button: button, pressed: true, at: point, modifiers: modifiers)
+        pointerButton(in: window, button: button, pressed: false, at: point, modifiers: modifiers)
     }
 
     public func key(_ stroke: KeyStroke, pressed: Bool, in window: RemoteWindow?, extraModifiers: [String] = []) {

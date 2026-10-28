@@ -29,6 +29,12 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
     private var scrollRemainder = CGPoint.zero
     private var momentum = CGPoint.zero
     private var momentumLink: CADisplayLink?
+
+    /// Asks the host app to show or hide the software keyboard. Set it and a tap shows the
+    /// keyboard only when it lands on editable text (the app switched to a text cursor) and
+    /// hides it when it lands anywhere else; leave it nil and every tap shows the keyboard.
+    public var onKeyboardWanted: ((Bool) -> Void)?
+    private var focusCheck: (since: CFTimeInterval, serial: Int)?
     /// Ctrl/Alt from the key bar, applied to the next key and then released.
     private var stickyModifiers = Set<String>()
     private lazy var keyBar: KeyBar = {
@@ -174,12 +180,37 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         stopMomentum()
         click(at: gesture.location(in: self))
-        if !isFirstResponder { becomeFirstResponder() }
+        tapped()
     }
 
     @objc private func handlePointerClick(_ gesture: UITapGestureRecognizer) {
         click(at: gesture.location(in: self))
-        if !isFirstResponder { becomeFirstResponder() }
+        tapped()
+    }
+
+    private func tapped() {
+        guard onKeyboardWanted != nil, let session else {
+            if !isFirstResponder { becomeFirstResponder() }
+            return
+        }
+        focusCheck = (CACurrentMediaTime(), session.cursorSerial)
+    }
+
+    /// The app answers a tap by redrawing the cursor: a text cursor means a text field took
+    /// focus. Waits briefly for a fresh cursor; an unchanged one is still the answer, and a
+    /// server that names no cursors falls back to showing the keyboard.
+    fileprivate func checkFocus() {
+        guard let check = focusCheck, let session, let onKeyboardWanted else { return }
+        let elapsed = CACurrentMediaTime() - check.since
+        let fresh = session.cursorSerial != check.serial
+        guard fresh || elapsed > 0.35 else { return }
+        if let isText = session.cursorIsText {
+            onKeyboardWanted(isText)
+            focusCheck = nil
+        } else if elapsed > 1.2 {
+            onKeyboardWanted(true)
+            focusCheck = nil
+        }
     }
 
     @objc private func handleSecondaryClick(_ gesture: UITapGestureRecognizer) {
@@ -246,6 +277,7 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
         case .began:
             stopMomentum()
             scrollRemainder = .zero
+            session?.resetScroll()
             move(to: gesture.location(in: self))
         case .changed:
             let translation = gesture.translation(in: self)
@@ -410,6 +442,7 @@ private final class DisplayLinkTarget: NSObject {
 
     @MainActor @objc func tick() {
         guard let view else { return }
+        view.checkFocus()
         view.present()
     }
 

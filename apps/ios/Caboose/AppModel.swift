@@ -143,8 +143,9 @@ final class AppModel {
         if externalDisplayActive {
             // The big screen at its own pixels: a real desktop, not a scaled phone.
             let scale = desktop.pixelsPerPoint
+            // Linux text grows with the desktop's size factor, through the DPI it is told.
             caps = ClientCapabilities(desktopWidth: Int(externalSize.width * scale), desktopHeight: Int(externalSize.height * scale),
-                                      dpi: Int(96 * scale), refreshRate: 60)
+                                      dpi: Int((96 * scale * desktop.ui).rounded()), refreshRate: 60)
         } else {
             let bounds = UIScreen.main.bounds
             let longSide = max(bounds.width, bounds.height)
@@ -248,10 +249,28 @@ final class AppModel {
     func externalDisplayConnected(size: CGSize, scale: CGFloat) {
         externalSize = size
         desktop = DesktopModel(pixelsPerPoint: max(1, scale))
+        desktop.ui = DesktopModel.automaticUI(forWidth: size.width) * desktopZoom
         desktop.size = size
         desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
         externalDisplayActive = true
         presentedWindowID = nil
+        reconnectForDisplayChange()
+    }
+
+    /// The owner's adjustment to the desktop's automatic size, kept across sessions.
+    var desktopZoom: CGFloat = {
+        let saved = UserDefaults.standard.double(forKey: "desktopZoom")
+        return saved > 0 ? saved : 1
+    }()
+
+    /// Makes everything on the big screen larger or smaller, Linux apps included.
+    func adjustDesktopZoom(by factor: CGFloat) {
+        let zoom = min(2.5, max(0.6, desktopZoom * factor))
+        guard zoom != desktopZoom else { return }
+        desktopZoom = zoom
+        UserDefaults.standard.set(Double(zoom), forKey: "desktopZoom")
+        desktop.ui = DesktopModel.automaticUI(forWidth: externalSize.width) * zoom
+        // Linux learns its new DPI from the next hello; the apps keep running.
         reconnectForDisplayChange()
     }
 

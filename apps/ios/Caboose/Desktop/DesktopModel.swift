@@ -20,8 +20,16 @@ final class DesktopModel {
         case resize(Int)
     }
 
-    static let titleBarHeight: CGFloat = 30
-    static let dockHeight: CGFloat = 76
+    /// How much larger than a Mac at arm's length the desktop draws, for the distance it is
+    /// seen from: title bars, the dock, the cursor and (through the DPI it asks Linux for)
+    /// the apps' own text all grow by it, so a 4K TV across a room reads like a laptop.
+    var ui: CGFloat = 1
+    var titleBarHeight: CGFloat { 30 * ui }
+    var dockHeight: CGFloat { 76 * ui }
+
+    /// The size factor for a display this many points wide: a 1600-point-wide desktop reads
+    /// well across a room, so wider ones scale up to match.
+    static func automaticUI(forWidth width: CGFloat) -> CGFloat { max(1, width / 1600) }
 
     let pixelsPerPoint: CGFloat
     var size: CGSize = .zero
@@ -55,13 +63,13 @@ final class DesktopModel {
 
     /// The window's content rect in desktop points.
     func contentRect(_ window: RemoteWindow) -> CGRect {
-        CGRect(x: window.frame.minX / pixelsPerPoint, y: window.frame.minY / pixelsPerPoint + (window.isAuxiliary ? 0 : Self.titleBarHeight),
+        CGRect(x: window.frame.minX / pixelsPerPoint, y: window.frame.minY / pixelsPerPoint + (window.isAuxiliary ? 0 : titleBarHeight),
                width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
     }
 
     func chromeRect(_ window: RemoteWindow) -> CGRect {
         let content = contentRect(window)
-        return window.isAuxiliary ? content : content.inset(by: UIEdgeInsets(top: -Self.titleBarHeight, left: 0, bottom: 0, right: 0))
+        return window.isAuxiliary ? content : content.inset(by: UIEdgeInsets(top: -titleBarHeight, left: 0, bottom: 0, right: 0))
     }
 
     func hitTest(_ point: CGPoint, windows: [Int: RemoteWindow]) -> Hit {
@@ -159,7 +167,7 @@ final class DesktopModel {
         switch drag.hit {
         case .titleBar(let id):
             guard let window = session.windows[id] else { return }
-            let top = DesktopModel.titleBarHeight * pixelsPerPoint
+            let top = titleBarHeight * pixelsPerPoint
             session.configure(window, frame: CGRect(x: drag.frame.minX + dx, y: max(top, drag.frame.minY + dy),
                                                     width: drag.frame.width, height: drag.frame.height))
         case .resize(let id):
@@ -184,11 +192,11 @@ final class DesktopModel {
 
     /// A good first place for a new window: centred, cascading, clear of the dock.
     func placement(for window: RemoteWindow, index: Int) -> CGRect {
-        let usable = CGSize(width: size.width, height: size.height - Self.dockHeight - Self.titleBarHeight)
+        let usable = CGSize(width: size.width, height: size.height - dockHeight - titleBarHeight)
         let width = min(window.frame.width / pixelsPerPoint, usable.width * 0.8)
         let height = min(window.frame.height / pixelsPerPoint, usable.height * 0.85)
-        let offset = CGFloat(index % 6) * 28
-        let origin = CGPoint(x: (size.width - width) / 2 - 84 + offset, y: Self.titleBarHeight + 40 + offset)
+        let offset = CGFloat(index % 6) * 28 * ui
+        let origin = CGPoint(x: (size.width - width) / 2 - 84 * ui + offset, y: titleBarHeight + 40 * ui + offset)
         return CGRect(x: origin.x * pixelsPerPoint, y: origin.y * pixelsPerPoint,
                       width: width * pixelsPerPoint, height: height * pixelsPerPoint).integral
     }
