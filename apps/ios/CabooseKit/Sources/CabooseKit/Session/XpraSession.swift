@@ -313,10 +313,13 @@ public final class XpraSession {
             id: nid, appName: packet[2]?.string ?? "", summary: packet[5]?.string ?? "", body: packet[6]?.string ?? ""))
     }
 
+    /// `ping`: monotonic ms, wall-clock ms?, source id? → `ping_echo`: echoed ms, load1, load5,
+    /// load15, latency ms, source id. Every element must be a real value; Xpra rejects None.
     private func answerPing(_ packet: XpraPacket) {
-        let echo = packet[0] ?? .int(0)
-        let sid = packet[2] ?? RValue("")
-        send("ping_echo", [echo, 0, 0, 0, 0, sid])
+        let echo: RValue = packet[0]?.int.map { .int(Int64($0)) } ?? .int(0)
+        let sid = RValue(packet[2]?.string ?? "")
+        let latency = Int64((latencyMs ?? 0).rounded())
+        send("ping_echo", [echo, 0, 0, 0, .int(latency), sid])
     }
 
     private func measureLatency(_ packet: XpraPacket) {
