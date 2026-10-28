@@ -1,15 +1,28 @@
-FROM node:22-bookworm-slim AS build
+FROM node:22-bookworm-slim AS build-deps
 WORKDIR /src
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/host/package.json apps/host/package.json
+COPY apps/web/package.json apps/web/package.json
 RUN pnpm install --frozen-lockfile
+
+FROM build-deps AS host-build
 COPY apps/host/tsconfig.json apps/host/tsconfig.json
 COPY apps/host/src apps/host/src
 RUN pnpm --filter caboose-host exec tsc --outDir dist && \
-    cp apps/host/src/guest-apps.py apps/host/dist/ && \
-    rm -rf node_modules apps/host/node_modules && \
-    pnpm install --prod --frozen-lockfile
+    cp apps/host/src/guest-apps.py apps/host/dist/
+
+FROM build-deps AS web-build
+COPY apps/web apps/web
+RUN pnpm --filter caboose-web build
+
+# Keep browser dependencies and build tooling out of the running host.
+FROM node:22-bookworm-slim AS host-deps
+WORKDIR /src
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/host/package.json apps/host/package.json
+RUN pnpm --filter caboose-host... install --prod --frozen-lockfile
 
 FROM debian:bookworm-slim AS vmm
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
@@ -20,10 +33,11 @@ FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends iproute2 iptables procps qemu-utils xfsprogs util-linux && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=vmm /cloud-hypervisor /usr/local/bin/cloud-hypervisor
-COPY --from=build /src/node_modules ./node_modules
-COPY --from=build /src/apps/host/node_modules ./apps/host/node_modules
-COPY --from=build /src/apps/host/package.json ./apps/host/package.json
-COPY --from=build /src/apps/host/dist ./apps/host/dist
+COPY --from=host-deps /src/node_modules ./node_modules
+COPY --from=host-deps /src/apps/host/node_modules ./apps/host/node_modules
+COPY --from=host-deps /src/apps/host/package.json ./apps/host/package.json
+COPY --from=host-build /src/apps/host/dist ./apps/host/dist
+COPY --from=web-build /src/apps/web/dist ./apps/web/dist
 COPY apps/host/scripts/setup-disks.sh /usr/local/bin/setup-disks
 COPY apps/host/scripts/container-entrypoint.sh /usr/local/bin/caboose-entrypoint
 ENV CABOOSE_IMAGE_ROOT=/data/caboose/disks CABOOSE_BIND=0.0.0.0

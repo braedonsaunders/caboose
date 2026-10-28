@@ -48,7 +48,7 @@ can be lost.
 The host serves the compiled `apps/web/dist` at its root, or the directory selected
 by `CABOOSE_WEB_ROOT`. Static assets and SPA routes are public; every `/v1` request
 requires the owner bearer token. Missing web assets return 404. The Docker image
-must contain the built web app; a host-only checkout can still use the API without it.
+builds and includes the web app; a host-only checkout can still use the API without it.
 Do not point `CABOOSE_WEB_ROOT` at a source or data directory.
 
 Run the management contract check against a real host (Node 22+):
@@ -113,6 +113,14 @@ Then start from the repository root:
 docker compose -f deploy/compose.yaml up -d --build
 ```
 
+The Docker build compiles both `caboose-host` and `caboose-web` from the workspace
+lockfile. It packages the console at `/app/apps/web/dist`, which the host serves
+by default; no separate web server or port is needed. Open `http://localhost:7310`
+on the server, or your HTTPS proxy URL, and enter the owner token. The console
+keeps the token in browser session storage; the token is supplied only at runtime,
+never during the image build. For a source checkout, build the console with
+`pnpm --filter caboose-web build` before starting the host.
+
 The service listens on host loopback port 7310 by default. Set
 `CABOOSE_PUBLISH_ADDRESS` in `deploy/.env` to a specific host address (or
 `0.0.0.0` for all interfaces) when a trusted reverse proxy or network needs
@@ -121,7 +129,7 @@ proxy for network access. The container is privileged for KVM, loop mounts,
 and TAP networking; only run it on a trusted host. Its private Docker network
 namespace contains its TAP, forwarding and NAT rules, while Docker itself
 manages the published port on the host. The guest can reach networks available
-to the container. Cloud Hypervisor is pinned to the amd64 v49.0 static release.
+to the container. Cloud Hypervisor is pinned to the amd64 v54.0 static release.
 
 The service can start and report health before a guest image is installed, but
 cannot wake a computer until `base.raw`, `vmlinux`, and `initrd` are present in
@@ -130,8 +138,9 @@ into the mounted disk root (for example, `docker cp base.raw
 $(docker compose -f deploy/compose.yaml ps -q caboose-host):/data/caboose/disks/base.raw`,
 and likewise for the kernel and initrd). The container deployment has not yet
 been verified end to end. `apps/host/scripts/check-container.sh` checks the real
-container's network namespace, TAP/NAT, KVM access, reflinks and authenticated
-health. The `e2e.sh` check above requires the Xpra client and a built guest;
+container's network namespace, TAP/NAT, KVM access, reflinks, authenticated
+health and bundled console (HTML, compiled assets, SPA routing and API auth).
+The `e2e.sh` check above requires the Xpra client and a built guest;
 its first wake is cold only if no saved snapshot exists.
 
 To rotate the token, replace `CABOOSE_OWNER_TOKEN` in `deploy/.env` with a new

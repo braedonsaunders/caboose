@@ -1,7 +1,24 @@
 .git
+.worktrees
+**/.git
 **/node_modules
+**/.pnpm-store
 **/dist
 **/.env
 **/.env.*
 **/out
 **/.build
+**/.swiftpm
+**/build
+**/DerivedData
+**/*.xcodeproj
+**/Local.xcconfig
+**/.DS_Store
+# Guest disks, saved memory and pairing credentials never belong in an image.
+**/*.raw
+**/*.qcow2
+**/*.xfs.img
+**/*.snapshot
+**/overlays
+**/caboose.json
+**/*pairing*.json

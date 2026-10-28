@@ -1,1 +1,13 @@
-{"name":"caboose","private":true,"packageManager":"pnpm@10.20.0","engines":{"node":">=22"},"scripts":{"test":"pnpm -r test","typecheck":"pnpm -r typecheck"}}
+{
+  "name": "caboose",
+  "private": true,
+  "packageManager": "pnpm@10.20.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  }
+}
