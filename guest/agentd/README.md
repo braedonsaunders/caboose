@@ -16,7 +16,9 @@ It is one file, `caboose-agentd.mjs`, on Node 22 with the official TypeScript SD
 | `run <task dir>` | One task. Started detached (`setsid`) by the host as `caboose` with the agent seat's launch environment (`/run/caboose/agent-display.env`: its `WAYLAND_DISPLAY`, Xwayland `DISPLAY=:101` and `XAUTHORITY`, toolkit backends and control socket) and the seat's D-Bus session bus `/run/user/1000/agent-bus`. |
 | `install <spec>` | Prefetches the agent, starts it once to learn its sign-in methods, records it as installed. Prints `{ installed: { version }, signIn: [...] }`. |
 | `probe <spec>` | `initialize` only; records and prints the sign-in methods. |
-| `sign-in <spec>` | Runs one sign-in method on the owner's display (see below). |
+| `sign-in <spec>` | Runs one sign-in method, on the phone or the owner's display (see below). |
+| `sign-in-callback <id> <url>` | Delivers the loopback address a sign-in on the phone was sent back to. Prints `{ status }`. |
+| `sign-in-cancel <id>` | Stops the agent's running sign-in. Prints `{ cancelled }`. |
 | `state` | Prints `{ runner, agents: { <id>: { installed?, authMethods?, signInStatus?, env? } } }`; `env` lists the variable names the agent's environment file sets, never their values. |
 | `set-env <id> <json>` | Applies `{ set?: { NAME: value }, remove?: [NAME] }` to `~/.config/caboose/agents/<id>.env`, keeping its other lines and comments, writing values in double quotes (one line each, at most 8192 characters), mode 0600, through a temporary file and a rename. Prints `{ env: [names] }`. |
 
@@ -159,16 +161,32 @@ a turn (including the history an agent replays on `session/load`) are not writte
   says so.
 - **Signed out.** An `auth_required` error (ACP code -32000) from `session/new`, `load`,
   `resume` or `prompt` ends the turn with an `auth_required` event and the runner exits.
-- **Sign-in** (`sign-in` mode, spec `{ agent, methodId, env? }`): progress in
+- **Sign-in** (`sign-in` mode, spec `{ agent, methodId, on?: "phone" | "display", env? }`,
+  `on` defaulting to `"display"`): progress in
   `~/.local/share/caboose/agents/<id>/sign-in.json` `{ methodId, status: "running" |
-  "succeeded" | "failed", message?, startedAt, finishedAt? }`. An `agent` method is ACP
-  `authenticate`, with the agent started with `env`, the owner display's launch environment
-  from the host (its Wayland socket, Xwayland's `DISPLAY` and `XAUTHORITY`, toolkit hints),
-  plus the owner's session bus, so the browser it opens is on the owner's screen; it waits
-  up to 30 minutes. A `terminal` method opens
-  `xfce4-terminal` (else `x-terminal-emulator`) on that display running the agent's own
-  program with the method's `args` in place of the registry's, and its `env` over the
-  registry's; exit status 0 is success, after which the runner initializes the agent again.
+  "succeeded" | "failed", on, pid, url?, terminal?, message?, startedAt, finishedAt? }`. An
+  `agent` method is ACP `authenticate`, waiting up to 30 minutes. A `terminal` method runs
+  the agent's own program with the method's `args` in place of the registry's, and its
+  `env` over the registry's; exit status 0 is success, after which the runner initializes
+  the agent again. A new sign-in first stops the agent's running one.
+  - **On the display**, the agent starts with `env`, the owner display's launch environment
+    from the host (its Wayland socket, Xwayland's `DISPLAY` and `XAUTHORITY`, toolkit
+    hints), plus the owner's session bus, so the browser it opens is on the owner's screen;
+    a `terminal` method opens `xfce4-terminal` (else `x-terminal-emulator`) there.
+  - **On the phone**, the desktop's variables are removed and `agents/<id>/sign-in-bin`
+    (`xdg-open`, `x-www-browser`, `www-browser`, `sensible-browser`, `gnome-www-browser`,
+    each appending the pages it is given to `sign-in.pages`) comes first on `PATH`, with
+    `BROWSER` set to its `xdg-open`; the latest page is `url`. A `terminal` method runs in a
+    session of the terminal service, started with its `/start` route and the token in
+    `/run/caboose/display-token`, and the session id is `terminal`; its environment goes
+    through a file of mode 0600 that the session reads and removes.
+- **`sign-in-callback <id> <url>`** fetches `url`, which must be `http://` on `localhost`,
+  `127.0.0.1` or `[::1]` with a port, inside the computer (trying both loopback addresses
+  for `localhost`), following up to five redirects that stay on the loopback, and prints
+  `{ status }`. It refuses when the agent has no sign-in running.
+- **`sign-in-cancel <id>`** stops the agent's running sign-in (SIGTERM to the runner's
+  process group, after checking the pid is still a sign-in runner), hangs up its terminal
+  session, records it as failed with "Sign-in cancelled." and prints `{ cancelled }`.
 
 ## Install
 
@@ -188,7 +206,9 @@ pnpm --filter caboose-agentd test
 runs the real runner against `test/stand-in-agent.mjs`, a stand-in ACP agent written with the
 SDK's agent side: streaming, tool calls, plans, permissions (ask and auto, named options),
 cancel (including an agent that ignores it), replies on the same session, `session/resume`,
-`session/load` and the recap fallback, `auth_required`, both sign-in kinds, npx prefetch,
+`session/load` and the recap fallback, `auth_required`, both sign-in kinds on the display and
+on the phone (the page handed over, the callback delivered, a terminal session, cancelling
+and replacing a sign-in), npx prefetch,
 a binary download with its checksum, the home-only file system, attachments and the owner's
 environment file, durable claims, duplicate suppression and interrupted execution.
 The host's focused recovery tests run with

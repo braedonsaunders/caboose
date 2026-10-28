@@ -407,7 +407,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       return json(response, 200, { launched: true })
     }
     if (request.method === 'GET' && path === '/v1/agents') return json(response, 200, await catalog.list())
-    const agentAction = /^\/v1\/agents\/([^/]+)\/(install|sign-in)$/.exec(path)
+    const agentAction = /^\/v1\/agents\/([^/]+)\/(install|sign-in|sign-in\/callback|sign-in\/cancel)$/.exec(path)
     if (request.method === 'POST' && agentAction?.[1]) {
       const id = decodeURIComponent(agentAction[1])
       const input = await readJson(request)
@@ -416,6 +416,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         broadcastSettings()
         return json(response, 200, { agent })
       }
+      if (agentAction[2] === 'sign-in/callback') return json(response, 200, await leased(() => catalog.signInCallback(id, input)))
+      if (agentAction[2] === 'sign-in/cancel') return json(response, 200, await leased(() => catalog.cancelSignIn(id)))
       return json(response, 200, await leased(() => catalog.signIn(id, input)))
     }
     const agentEnv = /^\/v1\/agents\/([^/]+)\/env$/.exec(path)

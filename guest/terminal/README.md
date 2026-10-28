@@ -20,6 +20,11 @@ runs as `caboose` on port 14701. The protocol is in
 - **Flow.** Output for an attached client is read only as fast as the client takes it, so
   a slow client slows the shell. With nobody attached, output is read into the replay, so
   the shell never blocks.
+- **Programs.** `GET /start?cols=&rows=&argv=<base64url JSON list>` starts a session running
+  that program (1–64 strings, the first an absolute path) instead of a login shell, with the
+  same environment, and answers `{ "session": "<id>" }`; a client then attaches with
+  `session=<id>`. The session ends when the program exits. The agent runner uses this for an
+  agent's terminal sign-in on the phone.
 - **Listing.** `GET /sessions` lists the sessions with their title, foreground program and
   its directory; `GET /hangup?session=<id>` hangs one up.
 
@@ -45,12 +50,13 @@ Stopping the service hangs up every shell (`KillMode=process`, so what a shell s
 
 ## Test
 
-- `test_logic.py` unit-tests the query and control-message parsing, the replay and its
+- `test_logic.py` unit-tests the query, start and control-message parsing, the replay and its
   offsets, mode and title tracking, the shell's environment and the token check. The host's
   test suite runs it (`src/terminal-logic.test.ts`), or run `python3 guest/terminal/test_logic.py`.
 - `check-service.py` runs the real service in Linux: a login shell, resize, detach and
   reattach from an offset, a replay with modes, a second client replacing the first, a
-  4 MB burst, a bad control message, exit codes, hangup and the session cap. From the
+  4 MB burst, a bad control message, exit codes, hangup, a started program and the session
+  cap. From the
   repository root, with Docker:
 
   ```sh
