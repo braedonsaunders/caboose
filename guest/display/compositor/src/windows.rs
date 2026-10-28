@@ -228,22 +228,21 @@ impl Windows {
             Some(p) => origin - self.logical_origin(p, displays),
             None => origin - d.origin,
         };
-        let geometry = Rect::new(to_px(d, relative.x), to_px(d, relative.y), to_px(d, local.size.w), to_px(d, local.size.h));
+        let geometry =
+            Rect::new(to_px(d, relative.x), to_px(d, relative.y), to_px(d, local.size.w), to_px(d, local.size.h));
         let (title, app_id, min, max, fullscreen) = match &w.surface {
             Surface::Toplevel(t) => {
                 let (title, app_id) = title_app_id(t.wl_surface());
                 let (min, max) = min_max(t.wl_surface());
                 let fullscreen = t.with_pending_state(|s| {
-                    s.states.contains(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen)
+                    s.states.contains(
+                        smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+                    )
                 });
                 (title, app_id, size_px(d, min), size_px(d, max), fullscreen)
             }
             Surface::Popup(p) => {
-                let app_id = w
-                    .parent
-                    .and_then(|p| self.describe(p, displays))
-                    .map(|p| p.app_id)
-                    .unwrap_or_default();
+                let app_id = w.parent.and_then(|p| self.describe(p, displays)).map(|p| p.app_id).unwrap_or_default();
                 let _ = p;
                 (String::new(), app_id, None, None, false)
             }

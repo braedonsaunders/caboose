@@ -53,9 +53,16 @@ pub fn prepare(runtime_dir: &Path, number: u32) -> std::io::Result<Prepared> {
     std::fs::File::open("/dev/urandom")?.read_exact(&mut cookie)?;
     let authority = dir.join("Xauthority");
     let tmp = dir.join("Xauthority.tmp");
-    std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?.write_all(&entry(number, &cookie))?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?
+        .write_all(&entry(number, &cookie))?;
     std::fs::rename(&tmp, &authority)?;
-    let real = find_in_path("Xwayland").ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Xwayland is not on PATH"))?;
+    let real = find_in_path("Xwayland")
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Xwayland is not on PATH"))?;
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin)?;
     let link = bin.join("Xwayland");

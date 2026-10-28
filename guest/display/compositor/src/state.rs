@@ -26,7 +26,7 @@ use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource};
 use smithay::utils::{Clock, IsAlive, Monotonic, Serial, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    get_parent, is_sync_subsurface, with_states, with_surface_tree_downward, CompositorClientState, CompositorHandler,
+    get_parent, is_sync_subsurface, with_surface_tree_downward, CompositorClientState, CompositorHandler,
     CompositorState, SurfaceAttributes, TraversalAction,
 };
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
@@ -36,12 +36,12 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
 };
-use smithay::wayland::selection::primary_selection::{set_primary_focus, PrimarySelectionHandler, PrimarySelectionState};
+use smithay::wayland::selection::primary_selection::{
+    set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
+};
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
-use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
-};
+use smithay::wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
 use smithay::xwayland::{X11Surface, X11Wm};
@@ -161,7 +161,6 @@ pub struct State {
     pub xdg_shell: XdgShellState,
     pub shm: ShmState,
     pub dmabuf: DmabufState,
-    pub dmabuf_global: Option<DmabufGlobal>,
     pub seat_state: SeatState<State>,
     pub data_device: DataDeviceState,
     pub primary_selection: PrimarySelectionState,
@@ -376,13 +375,10 @@ impl State {
     pub fn tick(&mut self) {
         self.sync_windows();
         self.render_streams();
-        self.windows_flush_xwm();
         if let Err(e) = self.dh.flush_clients() {
             tracing::warn!("flushing Wayland clients: {e}");
         }
     }
-
-    fn windows_flush_xwm(&mut self) {}
 }
 
 impl BufferHandler for State {
@@ -403,10 +399,9 @@ impl CompositorHandler for State {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
-        if let Renderer::Pixman(r) = &mut self.renderer {
-            // Import now so a client's shm buffer is released as early as possible.
-            let _ = smithay::backend::renderer::utils::import_surface_tree(r, surface);
-        }
+        let Renderer::Pixman(r) = &mut self.renderer;
+        // Import now so a client's shm buffer is released as early as possible.
+        let _ = smithay::backend::renderer::utils::import_surface_tree(r, surface);
         // xdg surfaces get their initial configure on their first commit.
         if let Some(id) = self.windows.by_surface(surface) {
             match &self.windows.get(id).unwrap().surface {
@@ -514,9 +509,11 @@ impl XdgShellHandler for State {
     fn popup_destroyed(&mut self, surface: PopupSurface) {
         if let Some(id) = self.windows.by_popup(&surface) {
             if self.input.popup_grab == Some(id) {
-                self.input.popup_grab = self.windows.get(id).and_then(|w| w.parent).filter(|p| {
-                    self.windows.get(*p).is_some_and(|w| matches!(w.surface, Surface::Popup(_)))
-                });
+                self.input.popup_grab = self
+                    .windows
+                    .get(id)
+                    .and_then(|w| w.parent)
+                    .filter(|p| self.windows.get(*p).is_some_and(|w| matches!(w.surface, Surface::Popup(_))));
             }
             self.remove_window(id);
         }
@@ -535,7 +532,11 @@ impl XdgShellHandler for State {
     fn title_changed(&mut self, _surface: ToplevelSurface) {}
     fn app_id_changed(&mut self, _surface: ToplevelSurface) {}
 
-    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>) {
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
         if let Some(id) = self.windows.by_toplevel(&surface) {
             self.configure_window(&proto::Configure { id, fullscreen: Some(true), ..Default::default() });
         }
@@ -594,7 +595,11 @@ impl State {
         for other in self.windows.iter() {
             match &other.surface {
                 Surface::Toplevel(t) if other.id != id => {
-                    let changed = t.with_pending_state(|s| s.states.unset(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated));
+                    let changed = t.with_pending_state(|s| {
+                        s.states.unset(
+                            smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated,
+                        )
+                    });
                     if changed && t.is_initial_configure_sent() {
                         t.send_pending_configure();
                     }
@@ -607,7 +612,10 @@ impl State {
         }
         match &w.surface {
             Surface::Toplevel(t) => {
-                t.with_pending_state(|s| s.states.set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated));
+                t.with_pending_state(|s| {
+                    s.states
+                        .set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated)
+                });
                 if t.is_initial_configure_sent() {
                     t.send_pending_configure();
                 }
@@ -725,14 +733,3 @@ smithay::delegate_viewporter!(State);
 smithay::delegate_fractional_scale!(State);
 smithay::delegate_cursor_shape!(State);
 smithay::delegate_xwayland_shell!(State);
-
-/// The title of a toplevel, for logs.
-pub fn toplevel_title(t: &ToplevelSurface) -> String {
-    with_states(t.wl_surface(), |states| {
-        states
-            .data_map
-            .get::<XdgToplevelSurfaceData>()
-            .and_then(|d| d.lock().unwrap().title.clone())
-            .unwrap_or_default()
-    })
-}

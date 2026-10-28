@@ -2,17 +2,17 @@
 //!
 //! Every encoder implements [`Encoder`]. Which ones a stream can get is decided once at
 //! start-up by [`Encoders::probe`], which opens each candidate and encodes a test
-//! picture: NVENC (h264/hevc/av1_nvenc through libavcodec, from system memory), the
-//! zero-copy VA-API encoder (dmabuf in, when the render node has an encode entrypoint),
-//! and the software encoders (libx264, libx265), which always work.
+//! picture: NVENC (h264/hevc/av1_nvenc through libavcodec, from system memory) and the
+//! software encoders (libx264, libx265), which always work.
+//!
+//! The zero-copy encoders of docs/display.md (dmabuf → NVENC through CUDA external
+//! memory, dmabuf → VA-API) need a GPU renderer that composes windows into dmabufs;
+//! they are new [`Input`] kinds and [`Backend`]s behind this same trait.
 
 pub mod convert;
 pub mod lavc;
-#[cfg(feature = "vaapi")]
-pub mod vaapi;
 
 use caboose_display_protocol::{Codec, Rect};
-use smithay::backend::allocator::dmabuf::Dmabuf;
 use std::fmt;
 
 /// Pixels in system memory, 4 bytes per pixel, little-endian XRGB8888/ARGB8888
@@ -35,14 +35,6 @@ impl CpuImage {
 /// What an encoder consumes.
 pub enum Input<'a> {
     Cpu(&'a CpuImage),
-    /// A GPU buffer, encoded without leaving GPU memory.
-    Dmabuf(&'a Dmabuf),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputKind {
-    Cpu,
-    Dmabuf,
 }
 
 /// One encoded picture in Annex-B.
@@ -73,7 +65,6 @@ pub trait Encoder: Send {
     fn codec(&self) -> Codec;
     /// Short name for logs and `--list-encoders`, e.g. `libx264`.
     fn name(&self) -> &'static str;
-    fn input_kind(&self) -> InputKind;
     /// Coded size; the input must be exactly this size.
     fn coded_size(&self) -> (u32, u32);
     /// Encodes one picture. `keyframe` forces an IDR with parameter sets. `damage`
@@ -88,7 +79,8 @@ pub struct Settings {
     /// Constant rate factor for the software encoders, constant quality for NVENC
     /// (lower is better quality).
     pub crf: u32,
-    /// Worker threads per software encoder.
+    /// Worker threads per software encoder; 0 picks by picture size (one up to 1080p,
+    /// where a second thread costs more CPU than it saves time, four above).
     pub threads: u32,
     /// x264 preset. `ultrafast` keeps the CPU cost per update lowest.
     pub preset: String,
@@ -96,7 +88,17 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { crf: 23, threads: 2, preset: "ultrafast".into() }
+        Self { crf: 23, threads: 0, preset: "ultrafast".into() }
+    }
+}
+
+impl Settings {
+    pub fn threads_for(&self, width: u32, height: u32) -> u32 {
+        match self.threads {
+            0 if width as u64 * height as u64 > 1920 * 1088 => 4,
+            0 => 1,
+            n => n,
+        }
     }
 }
 
@@ -105,24 +107,12 @@ impl Default for Settings {
 pub enum Backend {
     Software(Codec),
     Nvenc(Codec),
-    #[cfg(feature = "vaapi")]
-    Vaapi { codec: Codec, device: std::path::PathBuf },
 }
 
 impl Backend {
     pub fn codec(&self) -> Codec {
         match self {
             Backend::Software(c) | Backend::Nvenc(c) => *c,
-            #[cfg(feature = "vaapi")]
-            Backend::Vaapi { codec, .. } => *codec,
-        }
-    }
-
-    pub fn input_kind(&self) -> InputKind {
-        match self {
-            Backend::Software(_) | Backend::Nvenc(_) => InputKind::Cpu,
-            #[cfg(feature = "vaapi")]
-            Backend::Vaapi { .. } => InputKind::Dmabuf,
         }
     }
 
@@ -130,8 +120,6 @@ impl Backend {
         match self {
             Backend::Software(c) => format!("{} ({})", c.as_str(), lavc::encoder_name(lavc::Family::Software, *c)),
             Backend::Nvenc(c) => format!("{} ({})", c.as_str(), lavc::encoder_name(lavc::Family::Nvenc, *c)),
-            #[cfg(feature = "vaapi")]
-            Backend::Vaapi { codec, device } => format!("{} (VA-API on {})", codec.as_str(), device.display()),
         }
     }
 
@@ -139,8 +127,6 @@ impl Backend {
     pub fn alignment(&self) -> u32 {
         match self {
             Backend::Software(_) | Backend::Nvenc(_) => 2,
-            #[cfg(feature = "vaapi")]
-            Backend::Vaapi { .. } => 16,
         }
     }
 
@@ -149,9 +135,9 @@ impl Backend {
             Backend::Software(c) => {
                 Ok(Box::new(lavc::LavcEncoder::new(lavc::Family::Software, *c, width, height, settings)?))
             }
-            Backend::Nvenc(c) => Ok(Box::new(lavc::LavcEncoder::new(lavc::Family::Nvenc, *c, width, height, settings)?)),
-            #[cfg(feature = "vaapi")]
-            Backend::Vaapi { codec, device } => Ok(Box::new(vaapi::VaapiEncoder::new(*codec, device, width, height)?)),
+            Backend::Nvenc(c) => {
+                Ok(Box::new(lavc::LavcEncoder::new(lavc::Family::Nvenc, *c, width, height, settings)?))
+            }
         }
     }
 }
@@ -169,15 +155,13 @@ pub enum Choice {
     Auto,
     Software,
     Nvenc,
-    #[cfg(feature = "vaapi")]
-    Vaapi,
 }
 
 impl Encoders {
     /// Finds the usable encoders. Hardware ones come first (HEVC, then AV1, then
     /// H.264); the software ones prefer H.264, because x265 costs several times the CPU
     /// of x264.
-    pub fn probe(choice: Choice, render_node: Option<&std::path::Path>, settings: Settings) -> Self {
+    pub fn probe(choice: Choice, settings: Settings) -> Self {
         ffmpeg_next::init().ok();
         // libavcodec logs every failed probe at error level; the outcome is logged below.
         ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Fatal);
@@ -190,19 +174,6 @@ impl Encoders {
                 }
             }
         }
-        #[cfg(feature = "vaapi")]
-        if matches!(choice, Choice::Auto | Choice::Vaapi) {
-            if let Some(node) = render_node {
-                for codec in [Codec::Hevc, Codec::H264] {
-                    match vaapi::probe(codec, node) {
-                        Ok(()) => backends.push(Backend::Vaapi { codec, device: node.to_owned() }),
-                        Err(e) => tracing::info!("VA-API {} unavailable on {}: {e}", codec.as_str(), node.display()),
-                    }
-                }
-            }
-        }
-        #[cfg(not(feature = "vaapi"))]
-        let _ = render_node;
         if matches!(choice, Choice::Auto | Choice::Software) {
             for codec in [Codec::H264, Codec::Hevc] {
                 match lavc::probe(lavc::Family::Software, codec) {

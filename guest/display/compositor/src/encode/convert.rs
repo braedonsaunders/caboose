@@ -69,7 +69,15 @@ struct Band<'a> {
     v: &'a mut [u8],
 }
 
-fn convert_band(src: &[u8], stride: usize, clips: &[(usize, usize, usize, usize)], b: Band<'_>, ys: usize, us: usize, vs: usize) {
+fn convert_band(
+    src: &[u8],
+    stride: usize,
+    clips: &[(usize, usize, usize, usize)],
+    b: Band<'_>,
+    ys: usize,
+    us: usize,
+    vs: usize,
+) {
     for &(x0, y0, x1, y1) in clips {
         let lo = y0.max(b.top);
         let hi = y1.min(b.top + b.rows);
@@ -105,14 +113,16 @@ pub fn bgrx_to_i420(src: &[u8], stride: usize, width: u32, height: u32, rects: O
     let I420 { y, y_stride, u, u_stride, v, v_stride } = dst;
     let (y, u, v) = (&mut y[..h * y_stride], &mut u[..h / 2 * u_stride], &mut v[..h / 2 * v_stride]);
     // Below about a quarter of a 1080p picture, threads cost more than they save.
-    let threads = if area > 512 * 1024 { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(4) } else { 1 };
+    let threads =
+        if area > 512 * 1024 { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(4) } else { 1 };
     if threads == 1 {
         convert_band(src, stride, &clips, Band { top: 0, rows: h, y, u, v }, y_stride, u_stride, v_stride);
         return;
     }
     let rows = (h / 2).div_ceil(threads) * 2;
     std::thread::scope(|scope| {
-        let bands = y.chunks_mut(rows * y_stride).zip(u.chunks_mut(rows / 2 * u_stride)).zip(v.chunks_mut(rows / 2 * v_stride));
+        let bands =
+            y.chunks_mut(rows * y_stride).zip(u.chunks_mut(rows / 2 * u_stride)).zip(v.chunks_mut(rows / 2 * v_stride));
         for (i, ((y, u), v)) in bands.enumerate() {
             let clips = &clips;
             let band = Band { top: i * rows, rows: y.len() / y_stride, y, u, v };
@@ -126,7 +136,14 @@ pub fn bgrx_to_i420(src: &[u8], stride: usize, width: u32, height: u32, rects: O
 /// shadow, and returns them merged into horizontal runs. Applications often damage
 /// more than they repaint (a whole widget for a blinking caret); comparing is far
 /// cheaper than converting, so only what really changed is converted and encoded.
-pub fn changed_blocks(src: &[u8], shadow: &mut [u8], stride: usize, width: u32, height: u32, rects: &[Rect]) -> Vec<Rect> {
+pub fn changed_blocks(
+    src: &[u8],
+    shadow: &mut [u8],
+    stride: usize,
+    width: u32,
+    height: u32,
+    rects: &[Rect],
+) -> Vec<Rect> {
     const MB: usize = 16;
     let (w, h) = (width as usize, height as usize);
     let cols = w.div_ceil(MB);
@@ -185,13 +202,26 @@ mod tests {
 
     fn run(src: &[u8], w: u32, h: u32, rects: Option<&[Rect]>, p: &mut (Vec<u8>, Vec<u8>, Vec<u8>)) {
         let (y, u, v) = p;
-        bgrx_to_i420(src, w as usize * 4, w, h, rects, I420 { y, y_stride: w as usize, u, u_stride: w as usize / 2, v, v_stride: w as usize / 2 });
+        bgrx_to_i420(
+            src,
+            w as usize * 4,
+            w,
+            h,
+            rects,
+            I420 { y, y_stride: w as usize, u, u_stride: w as usize / 2, v, v_stride: w as usize / 2 },
+        );
     }
 
     #[test]
     fn limited_range_reference_colours() {
         // black, white, red, green, blue (B, G, R, X)
-        let cases = [([0, 0, 0], (16, 128, 128)), ([255, 255, 255], (235, 128, 128)), ([0, 0, 255], (82, 90, 240)), ([0, 255, 0], (144, 54, 34)), ([255, 0, 0], (41, 240, 110))];
+        let cases = [
+            ([0, 0, 0], (16, 128, 128)),
+            ([255, 255, 255], (235, 128, 128)),
+            ([0, 0, 255], (82, 90, 240)),
+            ([0, 255, 0], (144, 54, 34)),
+            ([255, 0, 0], (41, 240, 110)),
+        ];
         for (bgr, (ey, eu, ev)) in cases {
             let src: Vec<u8> = (0..4).flat_map(|_| [bgr[0], bgr[1], bgr[2], 0]).collect();
             let mut p = planes(2, 2);
@@ -264,7 +294,10 @@ mod tests {
         let mut shadow = src.clone();
         src[16 * 4] = 1;
         src[32 * 4] = 1;
-        assert_eq!(changed_blocks(&src, &mut shadow, stride, w, h, &[Rect::new(0, 0, 64, 16)]), vec![Rect::new(16, 0, 32, 16)]);
+        assert_eq!(
+            changed_blocks(&src, &mut shadow, stride, w, h, &[Rect::new(0, 0, 64, 16)]),
+            vec![Rect::new(16, 0, 32, 16)]
+        );
     }
 
     #[test]

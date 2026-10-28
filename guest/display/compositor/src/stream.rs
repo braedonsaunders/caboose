@@ -99,7 +99,8 @@ impl Worker {
                     }
                     let (_, enc) = encoder.as_mut().unwrap();
                     let damage = if fresh { None } else { job.damage.as_deref() };
-                    let result: Result<_, EncodeError> = enc.encode(Input::Cpu(&job.image), job.keyframe || fresh, damage);
+                    let result: Result<_, EncodeError> =
+                        enc.encode(Input::Cpu(&job.image), job.keyframe || fresh, damage);
                     let result = result
                         .map(|p| Encoded {
                             codec: enc.codec(),
@@ -193,6 +194,9 @@ impl Stream {
         self.in_flight.clear();
         self.need_keyframe = true;
         self.dirty = true;
+        // A picture still at the old worker is dropped when it comes back (its
+        // generation is stale); the new client gets a new worker and image.
+        self.encoding = false;
         self.worker = None;
     }
 
@@ -244,8 +248,7 @@ mod tests {
 
     #[test]
     fn callbacks_wait_while_at_the_limit() {
-        let mut s = Stream::default();
-        s.encoding = true;
+        let mut s = Stream { encoding: true, ..Default::default() };
         s.in_flight.push_back(1);
         assert!(!s.can_release_callbacks());
         s.encoding = false;

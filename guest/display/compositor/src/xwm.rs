@@ -24,13 +24,16 @@ impl State {
     /// focused X11 window, else the X11 toplevel under its origin.
     fn x11_owner(&self, window: &X11Surface) -> Option<u64> {
         if let Some(parent) = window.is_transient_for() {
-            if let Some(id) =
-                self.windows.find(|w| matches!(&w.surface, Surface::X11(x) if x.window_id() == parent && !x.is_override_redirect()))
+            if let Some(id) = self
+                .windows
+                .find(|w| matches!(&w.surface, Surface::X11(x) if x.window_id() == parent && !x.is_override_redirect()))
             {
                 return Some(id);
             }
         }
-        if let Some(crate::state::KeyboardFocus::X11(focused)) = self.seat.get_keyboard().and_then(|k| k.current_focus()) {
+        if let Some(crate::state::KeyboardFocus::X11(focused)) =
+            self.seat.get_keyboard().and_then(|k| k.current_focus())
+        {
             if let Some(id) = self.windows.by_x11(&focused) {
                 return Some(id);
             }
@@ -138,7 +141,13 @@ impl XwmHandler for State {
         let _ = window.configure(geo);
     }
 
-    fn configure_notify(&mut self, _xwm: XwmId, window: X11Surface, _geometry: Rectangle<i32, Logical>, _above: Option<u32>) {
+    fn configure_notify(
+        &mut self,
+        _xwm: XwmId,
+        window: X11Surface,
+        _geometry: Rectangle<i32, Logical>,
+        _above: Option<u32>,
+    ) {
         if let Some(id) = self.windows.by_x11(&window) {
             let now = self.now_us();
             if let Some(w) = self.windows.get_mut(id) {
@@ -149,25 +158,41 @@ impl XwmHandler for State {
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(id) = self.windows.by_x11(&window) {
-            self.configure_window(&caboose_display_protocol::Configure { id, maximized: Some(true), ..Default::default() });
+            self.configure_window(&caboose_display_protocol::Configure {
+                id,
+                maximized: Some(true),
+                ..Default::default()
+            });
         }
     }
 
     fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(id) = self.windows.by_x11(&window) {
-            self.configure_window(&caboose_display_protocol::Configure { id, maximized: Some(false), ..Default::default() });
+            self.configure_window(&caboose_display_protocol::Configure {
+                id,
+                maximized: Some(false),
+                ..Default::default()
+            });
         }
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(id) = self.windows.by_x11(&window) {
-            self.configure_window(&caboose_display_protocol::Configure { id, fullscreen: Some(true), ..Default::default() });
+            self.configure_window(&caboose_display_protocol::Configure {
+                id,
+                fullscreen: Some(true),
+                ..Default::default()
+            });
         }
     }
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(id) = self.windows.by_x11(&window) {
-            self.configure_window(&caboose_display_protocol::Configure { id, fullscreen: Some(false), ..Default::default() });
+            self.configure_window(&caboose_display_protocol::Configure {
+                id,
+                fullscreen: Some(false),
+                ..Default::default()
+            });
         }
     }
 
@@ -184,8 +209,12 @@ impl XwmHandler for State {
 
     fn send_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
         let result = match selection {
-            SelectionTarget::Clipboard => request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|e| e.to_string()),
-            SelectionTarget::Primary => request_primary_client_selection(&self.seat, mime_type, fd).map_err(|e| e.to_string()),
+            SelectionTarget::Clipboard => {
+                request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|e| e.to_string())
+            }
+            SelectionTarget::Primary => {
+                request_primary_client_selection(&self.seat, mime_type, fd).map_err(|e| e.to_string())
+            }
         };
         if let Err(e) = result {
             tracing::debug!("X11 selection request: {e}");

@@ -80,15 +80,9 @@ fn main() {
     }
 }
 
-fn first_render_node() -> Option<std::path::PathBuf> {
-    let mut nodes: Vec<_> = std::fs::read_dir("/dev/dri")
-        .ok()?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("renderD")))
-        .collect();
-    nodes.sort();
-    nodes.into_iter().next()
-}
+/// The compositor's own GPU selection, passed on so applications render the same way
+/// (Mesa's D3D12 driver on WSL, a VA-API driver choice).
+const PASSED_ENV: &[&str] = &["GALLIUM_DRIVER", "MESA_D3D12_DEFAULT_ADAPTER_NAME", "LIBVA_DRIVER_NAME"];
 
 fn launch_env(config: &Config, x_display: Option<u32>, xauthority: Option<&std::path::Path>) -> Vec<(String, String)> {
     let mut env = vec![("WAYLAND_DISPLAY".to_owned(), config.socket.clone())];
@@ -102,6 +96,7 @@ fn launch_env(config: &Config, x_display: Option<u32>, xauthority: Option<&std::
         }
     }
     env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    env.extend(PASSED_ENV.iter().filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v))));
     env
 }
 
@@ -110,14 +105,19 @@ fn launch_env(config: &Config, x_display: Option<u32>, xauthority: Option<&std::
 fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::path::Path>) {
     let env = launch_env(&state.config, x_display, xauthority);
     if let Some(path) = &state.config.env_file {
-        let body: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
-        let tmp = path.with_extension("tmp");
-        let written = std::fs::write(&tmp, body).and_then(|_| std::fs::rename(&tmp, path));
-        if let Err(e) = written {
+        // KEY=VALUE lines, values single-quoted for sh. Written in place: the file may
+        // be pre-created by root in a directory the compositor cannot write, and
+        // readers wait for readiness before reading it.
+        let body: String = env.iter().map(|(k, v)| format!("{k}='{}'\n", v.replace('\'', "'\\''"))).collect();
+        if let Err(e) = std::fs::write(path, body) {
             tracing::warn!("cannot write {}: {e}", path.display());
         }
     }
-    tracing::info!("ready: WAYLAND_DISPLAY={}{}", state.config.socket, x_display.map(|n| format!(" DISPLAY=:{n}")).unwrap_or_default());
+    tracing::info!(
+        "ready: WAYLAND_DISPLAY={}{}",
+        state.config.socket,
+        x_display.map(|n| format!(" DISPLAY=:{n}")).unwrap_or_default()
+    );
     if let Some((program, args)) = state.config.command.split_first() {
         let mut command = std::process::Command::new(program);
         command.args(args).envs(env);
@@ -180,8 +180,7 @@ fn stop_on_signals(handle: &smithay::reexports::calloop::LoopHandle<'static, Sta
 }
 
 fn run(config: Config) -> Result<(), String> {
-    let render_node = config.render_node.clone().or_else(first_render_node);
-    let encoders = Encoders::probe(config.encoder, render_node.as_deref(), config.settings.clone());
+    let encoders = Encoders::probe(config.encoder, config.settings.clone());
     if config.list_encoders {
         for b in &encoders.backends {
             println!("{}", b.describe());
@@ -203,10 +202,7 @@ fn run(config: Config) -> Result<(), String> {
     let dh = display.handle();
 
     let renderer = match config.renderer {
-        RendererChoice::Auto | RendererChoice::Pixman => {
-            render::Renderer::Pixman(PixmanRenderer::new().map_err(|e| format!("pixman: {e}"))?)
-        }
-        RendererChoice::Gles => return Err("the gles renderer is not built into this version".into()),
+        RendererChoice::Pixman => render::Renderer::Pixman(PixmanRenderer::new().map_err(|e| format!("pixman: {e}"))?),
     };
     tracing::info!("renderer: {}", renderer.name());
 
@@ -214,12 +210,13 @@ fn run(config: Config) -> Result<(), String> {
     let xdg_shell = XdgShellState::new::<State>(&dh);
     let shm = ShmState::new::<State>(&dh, vec![]);
     let mut dmabuf = DmabufState::new();
-    let dmabuf_global = match &renderer {
-        render::Renderer::Pixman(r) => {
-            let formats: Vec<_> = r.dmabuf_formats().into_iter().collect();
-            (!formats.is_empty()).then(|| dmabuf.create_global::<State>(&dh, formats))
-        }
-    };
+    // linux-dmabuf: the pixman renderer maps linear dmabufs, so clients that allocate
+    // GPU buffers can hand them over without a copy into shm.
+    let render::Renderer::Pixman(r) = &renderer;
+    let formats: Vec<_> = r.dmabuf_formats().into_iter().collect();
+    if !formats.is_empty() {
+        dmabuf.create_global::<State>(&dh, formats);
+    }
     OutputManagerState::new_with_xdg_output::<State>(&dh);
     XdgDecorationState::new::<State>(&dh);
     ViewporterState::new::<State>(&dh);
@@ -261,7 +258,8 @@ fn run(config: Config) -> Result<(), String> {
         })
         .map_err(|e| e.to_string())?;
 
-    let socket = ListeningSocketSource::with_name(&config.socket).map_err(|e| format!("socket {}: {e}", config.socket))?;
+    let socket =
+        ListeningSocketSource::with_name(&config.socket).map_err(|e| format!("socket {}: {e}", config.socket))?;
     handle
         .insert_source(socket, |stream, _, state: &mut State| {
             if let Err(e) = state.dh.insert_client(stream, Arc::new(ClientState::default())) {
@@ -304,7 +302,6 @@ fn run(config: Config) -> Result<(), String> {
         xdg_shell,
         shm,
         dmabuf,
-        dmabuf_global,
         seat_state,
         data_device,
         primary_selection,
@@ -330,7 +327,10 @@ fn run(config: Config) -> Result<(), String> {
         let dir = std::path::Path::new("/tmp/.X11-unix");
         if !dir.exists() {
             use std::os::unix::fs::PermissionsExt;
-            if std::fs::create_dir(dir).and_then(|_| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o1777))).is_err() {
+            if std::fs::create_dir(dir)
+                .and_then(|_| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o1777)))
+                .is_err()
+            {
                 tracing::warn!("cannot create {}", dir.display());
             }
         }
