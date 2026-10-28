@@ -23,6 +23,36 @@ async function rule(table: string, chain: string, args: string[]): Promise<void>
   }
 }
 
+/** Private, link-local (cloud metadata), CGNAT/Tailscale and reserved ranges. */
+export const FENCED_RANGES = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10',
+  '127.0.0.0/8', '0.0.0.0/8', '192.0.0.0/24', '198.18.0.0/15', '224.0.0.0/4', '240.0.0.0/4']
+
+/**
+ * The rules that fence the guest, in order, for a chain the host owns outright. The guest
+ * may open nothing on the host (the host opens the display relay itself; DNS is public and
+ * the clock is set over vsock), and by default reaches only the public internet.
+ */
+export function fenceRules(guestLan: boolean): { input: string[][]; forward: string[][] } {
+  const established = ['-m', 'conntrack', '--ctstate', 'ESTABLISHED,RELATED', '-j', 'RETURN']
+  return {
+    input: [established, ['-j', 'DROP']],
+    forward: [
+      established,
+      ...(guestLan ? [] : FENCED_RANGES.map(range => ['-d', range, '-j', 'REJECT', '--reject-with', 'icmp-net-prohibited'])),
+      ['-j', 'RETURN'],
+    ],
+  }
+}
+
+/** Creates (or refills) a chain and makes sure the built-in chain jumps to it first. */
+async function ownChain(chain: string, from: 'INPUT' | 'FORWARD', rules: string[][]): Promise<void> {
+  if (!await exists('iptables', ['-N', chain])) await privileged('iptables', ['-F', chain])
+  for (const args of rules) await privileged('iptables', ['-A', chain, ...args])
+  if (!await exists('iptables', ['-C', from, '-i', TAP, '-j', chain])) {
+    await privileged('iptables', ['-I', from, '1', '-i', TAP, '-j', chain])
+  }
+}
+
 /** Persistent named TAP: it must exist before both boot and snapshot restore. */
 export async function ensureNetwork(): Promise<void> {
   if (!await exists('ip', ['link', 'show', 'dev', TAP])) {
@@ -33,6 +63,9 @@ export async function ensureNetwork(): Promise<void> {
   await privileged('ip', ['addr', 'replace', `${HOST}/30`, 'dev', TAP])
   await privileged('ip', ['link', 'set', 'dev', TAP, 'up'])
   await privileged('sysctl', ['-w', 'net.ipv4.ip_forward=1'])
+  const fence = fenceRules(process.env.CABOOSE_GUEST_LAN === 'allow')
+  await ownChain('CABOOSE-IN', 'INPUT', fence.input)
+  await ownChain('CABOOSE-FWD', 'FORWARD', fence.forward)
   await rule('nat', 'POSTROUTING', ['-s', `${GUEST_ADDRESS}/32`, '!', '-o', TAP, '-j', 'MASQUERADE'])
   await rule('filter', 'FORWARD', ['-i', TAP, '-s', `${GUEST_ADDRESS}/32`, '-j', 'ACCEPT'])
   await rule('filter', 'FORWARD', ['-o', TAP, '-d', `${GUEST_ADDRESS}/32`, '-m', 'conntrack', '--ctstate', 'ESTABLISHED,RELATED', '-j', 'ACCEPT'])

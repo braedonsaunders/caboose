@@ -11,6 +11,7 @@ services:
     environment:
       CABOOSE_OWNER_TOKEN: ${CABOOSE_OWNER_TOKEN:?Set CABOOSE_OWNER_TOKEN in deploy/.env}
       CABOOSE_DISK_SIZE: ${CABOOSE_DISK_SIZE:-400G}
+      CABOOSE_GUEST_LAN: ${CABOOSE_GUEST_LAN:-deny}
     volumes:
       - ${CABOOSE_STATE_DIR:-/data/caboose}:/data/caboose
     healthcheck:
