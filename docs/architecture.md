@@ -788,8 +788,8 @@ on demand; the system can generate previews for materialized files. Separate ser
 thumbnail generation is not implemented. Files access wakes a parked computer; an offline
 host is reported to Files as unreachable. Device behavior requires the real-host and device
 checks in the component READMEs.
-Document-type associations and an app-level open-in-place workflow are a later lane; the
-provider supports coordinated writes back to the computer now.
+The provider supports coordinated writes back to the computer. The app-level open workflow
+and its separate external-document sync are described in Open in place.
 
 `POST /v1/files` remains available for existing clients: it accepts `{ name, data, open? }`
 with base64 data, picks a unique name in `~/Downloads`, and uses the bulk service. Its JSON
@@ -799,6 +799,44 @@ The Share extension uploads from a temporary file and optionally opens it on the
 the file service and passes it as a file argument to that application’s desktop entry.
 `POST /v1/open` opens an `http(s)` URL on the owner's display; other schemes, control
 characters and spaces are rejected. It answers 409 while the computer is not running.
+
+## Open in place
+
+The iOS build derives its alternate-handler document declarations from `guest/catalog/catalog.json`;
+`apps/ios/scripts/document-types.py --write` updates the checked snapshot and the build checks it
+before generating the app Info.plist. Catalog extensions without a recorded system identifier get
+an imported Caboose UTI. The list is limited to associations recorded in the catalog; an empty
+file type list is not evidence that an app handles a type.
+
+A file URL delivered to the app opens a chooser of catalog applications that list its extension
+or type, including installable apps with progress, and other installed apps. For an external file,
+Caboose coordinates a read, streams a snapshot to `Caboose Documents/<uuid>/<filename>` through
+`/v1/fs`, stores the security-scoped bookmark and paired-computer identity in the application
+group, and launches the selected desktop entry with the file. A copy delivered into the app’s Inbox is identified as a copy and the chooser warns that
+changes cannot return to its source. The chooser is also in the Share extension. It asks for an in-place representation; if the provider only offers a temporary copy,
+the extension warns that edits cannot be written back and only proceeds after the user chooses
+Open Copy. The extension cannot itself bring the containing app to the foreground; returning to
+Caboose shows the launched window when it can identify it. A Files URL belonging to Caboose's own
+File Provider is translated through the provider's shared identifier index and opens its existing
+computer path without a copy. If the index is unavailable, opening fails instead of silently
+making another copy.
+
+For an external original with a persistent bookmark, the app compares a hash of a coordinated
+local snapshot and the remote file's ETag to the last synchronized versions. A single changed
+side is copied to the other; both changed presents Keep Original or Keep Computer Copy. Downloads
+are version-checked again before a coordinated replacement, and writes to the computer carry
+`If-Match`. A changed original during a replacement or a changed remote version fails the attempt
+and is checked again rather than silently choosing a winner. The app reconciles after `fs.changed`
+and when it resumes or reconnects, so changes made while suspended are caught up when iOS runs it
+again; iOS does not guarantee continuous execution or immediate synchronization while suspended.
+Failures and stale bookmarks are shown in the app. The service's precondition is not atomic with a
+Linux application's direct write, as described in Files. A deleted or renamed computer copy is
+reported as a sync error; automatic rebinding is not supported.
+
+The app, Share extension and File Provider require the `group.com.braedonsaunders.caboose`
+application group in their signing profile, in addition to their keychain access group. A signed
+device and real computer are required to verify provider bookmarks, extension handoff, coordinated
+replacement and resumed sync; run `apps/ios/scripts/check-open-in-place.sh` and follow its checks.
 
 ## Media handoff
 

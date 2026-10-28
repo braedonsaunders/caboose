@@ -28,6 +28,7 @@ final class AppModel {
     var notificationTaskID: String?
     var askFocusRequested = false
     let catalog = CatalogCenter()
+    let documents = OpenDocumentCenter()
     /// Videos playing on the computer that can move to the phone.
     let media = MediaHandoff()
     let phone = PhoneHandoff()
@@ -81,7 +82,7 @@ final class AppModel {
             self.phone.handle(type, event)
             if type == "fs.changed" { self.refreshFileSearch() }
             if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
-            if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials) }
+            if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials); self.documents.requestSync(model: self) }
         }
         catalog.onChange = { [weak self] in await self?.refreshApps() }
         media.attach(host: { [weak self] in self?.host })
@@ -132,6 +133,7 @@ final class AppModel {
         session = nil
         agents.reset()
         catalog.reset()
+        documents.reset()
         media.reset()
         phone.reset()
         computerStatus = nil
@@ -172,6 +174,7 @@ final class AppModel {
             PushCoordinator.shared.synchronize()
             LiveActivityCoordinator.shared.connected()
             catalog.attach(host)
+            documents.requestSync(model: self)
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await media.refresh() }
             Task { await refreshApps() }
@@ -185,6 +188,8 @@ final class AppModel {
     func sceneBecameActive() {
         sceneActive = true
         phone.setActive(true)
+        documents.requestSync(model: self)
+        showSharedDocumentIfAvailable()
         offerPasteboardIfChanged()
         if phase != .displayElsewhere, session == nil || session?.state != .ready { Task { await wake() } }
     }
@@ -314,9 +319,23 @@ final class AppModel {
         if let presented = presentedWindowID, !current.contains(presented) {
             presentedWindowID = appWindows.first?.id
         }
-        if launching != nil, let newest = added.compactMap({ session.windows[$0] }).first(where: { !$0.isAuxiliary }) {
+        if let target = launching, let newest = added.compactMap({ session.windows[$0] }).first(where: { !$0.isAuxiliary && matches($0, target) }) {
             launching = nil
             presentedWindowID = newest.id
+        }
+        showSharedDocumentIfAvailable()
+    }
+
+    private func showSharedDocumentIfAvailable() {
+        let shared = UserDefaults(suiteName: OpenDocumentStore.group)
+        if let id = shared?.string(forKey: "document-open-desktop-id"),
+           shared?.string(forKey: "document-open-domain") == credentials?.fileDomainIdentifier {
+            let app = apps.first(where: { $0.id == id }) ?? HostClient.App(id: id, name: id, icon: "", categories: [], exec: "")
+            if let window = appWindows.first(where: { matches($0, app) }) {
+                presentedWindowID = window.id
+                shared?.removeObject(forKey: "document-open-desktop-id")
+                shared?.removeObject(forKey: "document-open-domain")
+            }
         }
     }
 
@@ -638,6 +657,12 @@ final class AppModel {
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
         }
+    }
+
+    func showLaunchedDocument(_ app: CatalogApp) {
+        let target = apps.first(where: { $0.id == app.desktopId }) ?? HostClient.App(id: app.desktopId, name: app.name, icon: "", categories: [], exec: "")
+        if let existing = appWindows.first(where: { matches($0, target) }) { presentedWindowID = existing.id }
+        else { launching = target; launchStartedAt = Date() }
     }
 
     func matches(_ window: RemoteWindow, _ app: HostClient.App) -> Bool {

@@ -15,19 +15,21 @@ final class ItemIndex {
     }
     private let lock = NSLock()
     private let key: String
+    private let defaults = UserDefaults(suiteName: "group.com.braedonsaunders.caboose") ?? .standard
     private var paths: [String: String]
     private var identities: [String: String]
     private var tombstones: [String: String]
     private init(id: String) {
         key = "file-provider-index-v1-" + id
-        paths = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
-        identities = UserDefaults.standard.dictionary(forKey: key + "-identities") as? [String: String] ?? [:]
-        tombstones = UserDefaults.standard.dictionary(forKey: key + "-deleted") as? [String: String] ?? [:]
+        paths = defaults.dictionary(forKey: key) as? [String: String] ?? UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        identities = defaults.dictionary(forKey: key + "-identities") as? [String: String] ?? UserDefaults.standard.dictionary(forKey: key + "-identities") as? [String: String] ?? [:]
+        tombstones = defaults.dictionary(forKey: key + "-deleted") as? [String: String] ?? UserDefaults.standard.dictionary(forKey: key + "-deleted") as? [String: String] ?? [:]
+        save()
     }
     private func save() {
-        UserDefaults.standard.set(paths, forKey: key)
-        UserDefaults.standard.set(identities, forKey: key + "-identities")
-        UserDefaults.standard.set(tombstones, forKey: key + "-deleted")
+        defaults.set(paths, forKey: key)
+        defaults.set(identities, forKey: key + "-identities")
+        defaults.set(tombstones, forKey: key + "-deleted")
     }
     func identifier(_ path: String) -> NSFileProviderItemIdentifier {
         if path.isEmpty { return .rootContainer }
