@@ -66,6 +66,12 @@ try {
   await call('/v1/computer', { bearer: phone, expect: 401 })
   console.log('A paired phone reached only its computer, and signing it out locked it out.')
 } finally {
+  // The host waits for a components upgrade itself; waiting here too keeps the check's timing honest.
+  for (let waited = 0; waited < 300_000; waited += 2_000) {
+    const state = (await call(`/v1/computers/${made.id}`)).upgrade?.state
+    if (state !== 'checking' && state !== 'updating') break
+    await new Promise(resolve => setTimeout(resolve, 2_000))
+  }
   await call(`/v1/computers/${made.id}`, { method: 'DELETE', body: { confirm: true } })
   await call(`/v1/computers/${made.id}`, { expect: 404 })
   console.log(`Deleted ${made.id} with its disk.`)
