@@ -120,6 +120,11 @@ public final class XpraSession {
     }
     private var audioStartSent = false
     private let otherAudioPackets = Counter()
+    private let echo = EchoMeter()
+
+    /// Typing echo: the median time from a key leaving the phone to the next picture of that
+    /// window arriving, over the last 20 keys. What "laggy typing" is, as a number.
+    public var typingEchoMs: Int? { echo.median }
     private var buttonsDown = Set<Int>()
     private var lastClipboardSent: String?
     private var pingTimer: Timer?
@@ -143,6 +148,7 @@ public final class XpraSession {
         let pipelines = self.pipelines
         let audio = self.audio
         let otherAudio = self.otherAudioPackets
+        let echo = self.echo
         let transport = XpraTransport(url: url, token: token) { [weak self] event in
             switch event {
             case .opened:
@@ -153,6 +159,7 @@ public final class XpraSession {
                     // Draws go straight to their window's decode queue, never through the main actor.
                     let packet = PacketNames.normalized(packet)
                     if packet.type == "window-draw", let wid = packet[0]?.int, let pipeline = pipelines[wid] {
+                        echo.drew(wid)
                         pipeline.draw(packet)
                     } else if packet.type == "audio-data", packet[0]?.string != AudioStream.codec {
                         otherAudio.increment()
@@ -445,6 +452,20 @@ public final class XpraSession {
         send("window-refresh", [.int(Int64(window.id)), 0, 100, .dict([]), .dict([])])
     }
 
+    /// Changes the screen the server lays windows out for — size, DPI, refresh rate — on the
+    /// live connection, so plugging in a TV or resizing text keeps every window stream open.
+    public func reconfigure(_ new: ClientCapabilities) {
+        capabilities.desktopWidth = new.desktopWidth
+        capabilities.desktopHeight = new.desktopHeight
+        capabilities.dpi = new.dpi
+        capabilities.refreshRate = new.refreshRate
+        send("display-configure", [[
+            "desktop-size": [.int(Int64(new.desktopWidth)), .int(Int64(new.desktopHeight))],
+            "dpi": ["x": .int(Int64(new.dpi)), "y": .int(Int64(new.dpi))],
+            "vrefresh": .int(Int64(new.refreshRate)),
+        ]])
+    }
+
     public func suspend() { send("suspend", [true, .list(windows.keys.map { .int(Int64($0)) })]) }
     public func resume() { send("resume", [true, .list(windows.keys.map { .int(Int64($0)) })]) }
 
@@ -528,6 +549,7 @@ public final class XpraSession {
     }
 
     public func key(_ stroke: KeyStroke, pressed: Bool, in window: RemoteWindow?, extraModifiers: [String] = []) {
+        if pressed, let window { echo.keySent(window.id) }
         let modifiers = Array(Set(stroke.modifiers + extraModifiers)).sorted()
         send("keyboard-event", [.int(Int64(window?.id ?? 0)), RValue(stroke.name), .bool(pressed), [
             "modifiers": .list(modifiers.map { RValue($0) }),
@@ -621,4 +643,32 @@ final class Counter: @unchecked Sendable {
     private var count = 0
     func increment() { lock.lock(); count += 1; lock.unlock() }
     var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
+/// Times key presses to the next draw of the same window, from any thread.
+final class EchoMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: (wid: Int, at: UInt64)?
+    private var samples: [Int] = []
+
+    func keySent(_ wid: Int) {
+        lock.lock(); defer { lock.unlock() }
+        if pending == nil { pending = (wid, DispatchTime.now().uptimeNanoseconds) }
+    }
+
+    func drew(_ wid: Int) {
+        lock.lock(); defer { lock.unlock() }
+        guard let key = pending, key.wid == wid else { return }
+        pending = nil
+        let ms = Int((DispatchTime.now().uptimeNanoseconds - key.at) / 1_000_000)
+        guard ms < 3000 else { return }
+        samples.append(ms)
+        if samples.count > 20 { samples.removeFirst() }
+    }
+
+    var median: Int? {
+        lock.lock(); defer { lock.unlock() }
+        guard !samples.isEmpty else { return nil }
+        return samples.sorted()[samples.count / 2]
+    }
 }

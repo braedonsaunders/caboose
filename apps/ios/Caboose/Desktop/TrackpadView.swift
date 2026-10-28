@@ -40,6 +40,9 @@ struct TrackpadScreen: View {
             Trackpad(desktop: desktop, keyboardVisible: model.keyboardVisible)
                 .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(.white.opacity(0.12)))
+            TimelineView(.periodic(from: .now, by: 2)) { _ in
+                Text(model.connectionSummary).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
             Text("Tap to click · two fingers to scroll · tap with two to right-click · tap then drag to move")
                 .font(.caption)
                 .foregroundStyle(.secondary)

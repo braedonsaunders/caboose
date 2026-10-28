@@ -98,6 +98,7 @@ struct WindowScreen: View {
             .glassEffect(.regular.interactive(), in: .circle)
 
             Menu {
+                Section(model.connectionSummary) {}
                 Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
                 Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
                 Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
