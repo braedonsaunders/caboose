@@ -37,6 +37,13 @@ External display, then iPad Desktop set to Free:
 9. Use F11 in Chromium: browser full screen covers the display and hides the dock.
    Use F11 again: all browser and window controls return. Repeat after maximizing.
 
+Native Terminal tab:
+10. On a Duo with a vertical sidebar, open Terminal: the grid reaches the top,
+    bottom and outer edge beside the sidebar, without a Terminal title strip.
+    Open the keyboard: the grid ends above its accessory keys. Hide it: the grid
+    fills the height again. Repeat unfolded and rotated; the session menu stays
+    accessible. On devices with horizontal bars, the grid stays between the bars.
+
 Capture evidence with:
   xcrun devicectl device info displays --device DEVICE
   xcrun devicectl device capture screenshot --device DEVICE --destination shot.png

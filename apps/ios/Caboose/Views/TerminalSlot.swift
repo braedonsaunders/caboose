@@ -5,7 +5,7 @@ import SwiftTerm
 
 /// Where the native terminal (`Caboose/Terminal/`, built on SwiftTerm) joins the shell. It is
 /// part of the build exactly when the app links SwiftTerm; until then the Terminal tab and
-/// the shell's terminal actions are absent. The terminal sets its own title and session items
+/// the shell's terminal actions are absent. The terminal supplies its session items
 /// and draws its grid translucent; the shell adds the wallpaper behind it and its own trailing
 /// pair, as on every tab.
 @MainActor
