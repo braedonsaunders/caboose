@@ -281,7 +281,10 @@ private struct YardKeyCommands: View {
             key("Move Up", .upArrow, shift: true) { yard.moveFocused(.up) }
             key("Move Down", .downArrow, shift: true) { yard.moveFocused(.down) }
             key("Cycle Width", "r") { yard.cycleWidth() }
-            key("Full Screen", "f") { yard.toggleZoom() }
+            key("Full Screen", "f") {
+                if yard.coverWindow != nil { yard.toggleZoom() }
+                else if let id = yard.layout.focused { model.show(windowID: id) }
+            }
             key("Full Width", "f", shift: true) { yard.toggleFullWidth() }
             key("Close Window", "w") { if let id = yard.layout.focused { yard.close(id) } }
             key("Overview", "o") { withAnimation(.smooth(duration: 0.35)) { yard.overviewOpen.toggle() } }
