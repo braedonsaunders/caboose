@@ -23,10 +23,28 @@ public struct TypingBuffer: Equatable, Sendable {
     public private(set) var text = ""
     public private(set) var selection = NSRange(location: 0, length: 0)
     public private(set) var marked: NSRange?
+    /// Off (Xpra): marked text is typed live and retyped as it changes. On (a protocol with
+    /// a preedit, like Caboose Display's text input): marked text stays local, edits leave
+    /// it out, and it reaches the remote app as one `.type` when it is committed.
+    public var marksAsPreedit = false
 
-    public init() {}
+    public init(marksAsPreedit: Bool = false) {
+        self.marksAsPreedit = marksAsPreedit
+    }
 
     var length: Int { (text as NSString).length }
+
+    /// The composition in progress, when marked text is a preedit.
+    public var preedit: String? {
+        guard marksAsPreedit, let marked else { return nil }
+        return (text as NSString).substring(with: marked)
+    }
+
+    /// What the remote app has: everything, or everything but a preedit.
+    private var remote: String {
+        guard marksAsPreedit, let marked else { return text }
+        return (text as NSString).replacingCharacters(in: marked, with: "")
+    }
 
     /// Forgets everything, e.g. after Return, a tap elsewhere or a non-text key.
     public mutating func reset() {
@@ -42,8 +60,9 @@ public struct TypingBuffer: Equatable, Sendable {
     /// Replaces a range with text and leaves the caret after it.
     public mutating func replace(_ range: NSRange, with string: String) -> [Edit] {
         let range = clamp(range)
+        let before = remote
         marked = nil
-        let edits = apply(range, string)
+        let edits = apply(range, string, before)
         selection = NSRange(location: range.location + (string as NSString).length, length: 0)
         return finish(edits, committing: string)
     }
@@ -65,31 +84,35 @@ public struct TypingBuffer: Equatable, Sendable {
         return replace(previous, with: "")
     }
 
-    /// Marked text is composition in progress. It is typed live so the remote app shows it,
-    /// and recomposing it retypes only what changed.
+    /// Marked text is composition in progress. Typed live (unless it is a preedit), so the
+    /// remote app shows it, and recomposing it retypes only what changed.
     public mutating func setMarked(_ string: String, selectedRange: NSRange) -> [Edit] {
         let range = clamp(marked ?? selection)
-        let edits = apply(range, string)
+        let before = remote
+        text = (text as NSString).replacingCharacters(in: range, with: string)
         let count = (string as NSString).length
         marked = count > 0 ? NSRange(location: range.location, length: count) : nil
         let caret = min(max(0, selectedRange.location), count)
         selection = NSRange(location: range.location + caret, length: min(max(0, selectedRange.length), count - caret))
-        return edits
+        return Self.diff(from: before, to: remote)
     }
 
-    /// Commits marked text as it stands; the remote app already has it.
-    public mutating func unmark() {
-        guard let marked else { return }
+    /// Commits marked text as it stands: nothing to send when it was typed live, the
+    /// composed text when it was a preedit.
+    @discardableResult
+    public mutating func unmark() -> [Edit] {
+        guard let marked else { return [] }
+        let before = remote
         selection = NSRange(location: NSMaxRange(marked), length: 0)
         self.marked = nil
+        return Self.diff(from: before, to: remote)
     }
 
     // MARK: Internals
 
-    private mutating func apply(_ range: NSRange, _ string: String) -> [Edit] {
-        let old = text
+    private mutating func apply(_ range: NSRange, _ string: String, _ before: String) -> [Edit] {
         text = (text as NSString).replacingCharacters(in: range, with: string)
-        return Self.diff(from: old, to: text)
+        return Self.diff(from: before, to: remote)
     }
 
     /// Return ends the line in the remote app, so nothing before it may be edited again;
