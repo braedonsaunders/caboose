@@ -542,9 +542,12 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     await computer.park(closeSockets)
   }
 
-  /** Deletes the computer once queued work is done: its sockets close, its tasks end and its disk goes. */
+  /**
+   * Deletes the computer once queued work is done: its sockets close, its tasks end and its
+   * disk goes. A components upgrade the host started on its own is waited for, not refused.
+   */
   async function destroy(): Promise<void> {
-    await upgradeWork
+    await upgradeWork?.catch(() => {})
     await computer.retire(async () => {
       closeSockets()
       agents.computerRestarted()
@@ -553,7 +556,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     })
   }
 
-  return { id, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy, busy: () => upgrading || appCatalog.busy || craftBusy > 0 }
+  return { id, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
+    /** What someone started on the computer that deleting it would cut short, if anything. */
+    operation: () => appCatalog.busy ? 'An app is being installed, updated or removed on this computer' : craftBusy > 0 ? 'A Craft job is running on this computer' : null,
+  }
 }
 
 type ComputerRuntime = ReturnType<typeof createComputerRuntime>
@@ -637,7 +643,8 @@ export function createCabooseServer(options: ComputerPieces & {
     const fleet = options.fleet
     if (runtime.id === OWNER_COMPUTER || !fleet) throw new ComputerConflictError("The owner's computer cannot be deleted")
     if (deleting.has(runtime.id)) throw new ComputerConflictError('Computer is already being deleted')
-    if (runtime.busy()) throw new ComputerConflictError('An operation is in progress on this computer')
+    const operation = runtime.operation()
+    if (operation) throw new ComputerConflictError(`${operation}; delete it when that finishes`)
     deleting.add(runtime.id)
     try {
       await runtime.destroy()
