@@ -63,7 +63,11 @@ final class AppModel {
         agents.onComputer = { [weak self] status in self?.computerStatus = status }
     }
 
-    var host: HostClient? { credentials.map { HostClient(baseURL: $0.hostURL, token: $0.token) } }
+    var host: HostClient? { credentials.map { HostClient(baseURL: activeHostURL ?? $0.hostURL, token: $0.token) } }
+    /// The host address this wake reached — the LAN or the VPN one — chosen at each wake.
+    private(set) var activeHostURL: URL?
+    /// Reached through another of the host's addresses (a VPN, away from home).
+    var isRemote: Bool { activeHostURL != nil && activeHostURL != credentials?.hostURL }
 
     /// Normal application windows, most recently raised first.
     var appWindows: [RemoteWindow] {
@@ -83,6 +87,7 @@ final class AppModel {
     func connect(with credentials: Credentials) {
         credentials.save()
         self.credentials = credentials
+        activeHostURL = nil
         Task { await wake() }
     }
 
@@ -94,6 +99,7 @@ final class AppModel {
         settingsPresented = false
         Credentials.clear()
         credentials = nil
+        activeHostURL = nil
         phase = .needsSetup
     }
 
@@ -102,6 +108,10 @@ final class AppModel {
     /// Wakes the computer and opens the display. `quiet` keeps the current screen in place,
     /// for reconnects the person should not have to notice.
     func wake(quiet: Bool = false) async {
+        if let credentials, credentials.candidates.count > 1 {
+            let reached = await credentials.reachableURL()
+            if reached != activeHostURL { activeHostURL = reached }
+        }
         guard let host else { phase = .needsSetup; return }
         if case .ready = phase, session?.state == .ready { return }
         if !quiet { phase = .waking }
