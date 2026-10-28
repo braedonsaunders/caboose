@@ -50,6 +50,37 @@ Zero copy on WSL waits on the cross-process buffer sharing that WSL does not hav
 (active work: a Cookiekira/niri issue to validate a GLES → D3D12-VA proof of concept,
 microsoft/wslg#469). A box that needs zero-copy 4K runs Linux natively.
 
+## Video, for every app
+
+Video is not a special case for particular sites or apps. It is handled at the operating
+system's own seams, so any program that plays video benefits. There are three layers;
+each one falls back to the one below it.
+
+1. **Codec passthrough (zero server cost).** The computer ships a Caboose VA-API driver,
+   the standard Linux interface for hardware video decoding. Chromium, Firefox, mpv, VLC,
+   GStreamer and FFmpeg all decode through it. The driver does not decode. It
+   reconstitutes the compressed bitstream (H.264, HEVC, VP9, AV1) from the parameter and
+   slice buffers and forwards it, as is, to the client as a `video` stream bound to the
+   window and rectangle it plays in. The client decodes it in hardware and layers it into
+   the window at the app's own timestamps, with audio kept in sync. This is the same idea
+   as RDP and Citrix multimedia redirection, applied at the decode interface every Linux
+   player shares. It gives the original quality, near-zero server CPU and no GPU. Content
+   the client cannot decode, or that the app reads back (canvas, effects), falls back to
+   layer 2.
+2. **Video surfaces (first class in the compositor).** On Wayland, players present video
+   on its own subsurface in a YUV format (NV12/P010): the overlay path used by Chromium,
+   Firefox, mpv, GStreamer and VLC. The compositor treats that subsurface as its own
+   stream, with a video codec at the video's own size and frame rate, hardware encoded
+   where available. The window around it keeps sharp, lossless UI updates, and the client
+   layers the two. No heuristics are involved.
+3. **Detected motion (X11 and everything else).** A region that updates at video rates is
+   encoded as video, at the size it is actually shown on the client, as Xpra does today.
+
+Protocol additions: `video.create { id, window, rect, codec, extradata?, source: passthrough|surface|motion }`,
+`video.frame { id, pts_us, keyframe, data }`, `video.update { id, rect, clip, z }`,
+`video.destroy { id }`, and client `video.ack`/`video.keyframe`. "Play on iPhone / Apple
+TV" (media handoff) stays as a user action layered on top, not as the mechanism.
+
 ## Caboose Display Protocol (v0)
 
 Binary frames over the `/v1/display` WebSocket. Version is negotiated in `hello`.
@@ -81,4 +112,6 @@ Client → server
 2. **Zero copy on a Linux GPU.** dmabuf → NVENC (CUDA) and dmabuf → VA-API, plus Vulkan Video where present. Success: Chromium 4K60 video at ≥55 fps on the phone/TV, under 30 ms from frame to decode on a LAN.
 3. **Input that is native.** wl_touch multitouch, Pencil via tablet-v2, text-input-v3 IME from the iOS keyboard.
 4. **Pacing and polish.** Frame callbacks paced on vsync (ProMotion 120 Hz), HDR/EDR, lossless text tiles, Opus audio in sync with video.
-5. **Default where it can be.** The host picks Caboose Display when the computer has a GPU and the image has it, and falls back to Xpra otherwise. The app supports both.
+5. **Video for every app.** Video surfaces (layer 2), then the VA-API codec-passthrough
+   driver (layer 1) with in-window layering and A/V sync on the client.
+6. **Default where it can be.** The host picks Caboose Display when the computer has a GPU and the image has it, and falls back to Xpra otherwise. The app supports both.
