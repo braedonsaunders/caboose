@@ -71,9 +71,10 @@ base swap.
 - **Guest agent.** The appkit-desk guest agent (vsock 5252) for exec, jobs,
   observe/a11y and agent input. Agents drive the machine through it; humans drive
   it through Xpra.
-- **Agent seat.** A second Xpra display (`:101`) is reserved for agents so an
+- **Agent seat.** A second Xpra display (`:101`, WebSocket port `14501`) is reserved for agents so an
   agent never steals the user's pointer; its windows appear in the app's Agent
-  space.
+  space. Its service is installed for on-demand start and uses the same per-wake
+  token as the human display. The host starts and relays it on demand.
 
 ### Runtimes
 

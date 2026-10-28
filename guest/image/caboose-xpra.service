@@ -1,0 +1,16 @@
+[Unit]
+Description=Caboose seamless application display
+After=network.target
+
+[Service]
+User=caboose
+Group=caboose
+Environment=HOME=/home/caboose
+Environment=XPRA_BACKWARDS_COMPATIBLE=0
+Environment=GDK_SCALE=1
+Environment=QT_QPA_PLATFORMTHEME=gtk3
+ExecStart=/usr/bin/xpra seamless :100 --daemon=no --bind-ws=0.0.0.0:14500 --ws-auth=file:filename=/run/caboose/xpra-token --html=off --clipboard=on --notifications=on --file-transfer=on --mdns=off --printing=off --webcam=off --speaker=off
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
