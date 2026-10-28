@@ -696,7 +696,11 @@ container arguments or URL credentials. The values are fixed until the host rest
 ### Files
 
 The `/v1/fs` routes relay to the guest file service without buffering a whole file. Each
-**wakes** the computer and holds a lease until its response completes. The host forwards
+**wakes** the computer and holds a lease until its response completes. Disconnecting a client
+cancels its relay, including when it disconnects while waiting for the computer. A relay
+with no transfer progress for 60 seconds is cancelled: the host returns 504 if the response
+has not started, or closes an incomplete response. Active transfers have no total duration
+limit. The host forwards
 the `Content-Type`, `Content-Length`, `Range`, `If-Match` and `If-None-Match` request
 headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Ranges` and
 `ETag` response headers.
