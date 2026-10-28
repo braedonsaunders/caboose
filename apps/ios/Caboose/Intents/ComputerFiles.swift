@@ -1,4 +1,5 @@
 import AppIntents
+import CabooseKit
 import Foundation
 
 /// The home-relative file operations needed by Shortcuts. The host implements these
@@ -110,9 +111,9 @@ struct SaveComputerFilesIntent: AppIntent {
         let client = try shortcutFiles()
         var paths: [String] = []
         for file in files {
-            let name = (file.filename as NSString).lastPathComponent
-            guard !name.isEmpty, name != ".", name != ".." else { throw HostClient.Failure.server(400, "Invalid filename.") }
-            let path = folder.isEmpty ? name : folder + "/" + name
+            guard let path = ShortcutPath.destination(folder: folder, filename: file.filename) else {
+                throw HostClient.Failure.server(400, "Choose a valid folder and filename within your computer home.")
+            }
             let temporary: URL?
             let source: URL
             if let url = file.fileURL { source = url; temporary = nil }

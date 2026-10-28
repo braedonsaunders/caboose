@@ -296,3 +296,10 @@ Apps and files used through file actions can appear in Spotlight. On a paired de
 run each action in Shortcuts, verify Siri phrases, open an indexed app and file, and
 check that sign-out removes search entries. These integrations require a real device and
 a computer with the `/v1/fs` service.
+
+The Computer widget displays the latest fetched state and running agent count; the
+Control Center Computer Power toggle wakes or parks it. On a signed paired device, add
+the widget and control, compare the displayed state with Computer settings, and toggle
+the computer in both directions. WidgetKit schedules refreshes and may delay updates.
+File suggestions currently show files in the home root; Spotlight file entries are
+cleared on a file-change notification.

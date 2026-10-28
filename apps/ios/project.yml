@@ -79,8 +79,11 @@ targets:
       - path: Widgets
         excludes: ["Info.plist"]
       - path: Shared
+      - path: Caboose/Host/Credentials.swift
+      - path: Caboose/Host/HostClient.swift
     settings:
       base:
+        CODE_SIGN_ENTITLEMENTS: Widgets/Widgets.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.braedonsaunders.caboose.widgets
         PRODUCT_NAME: CabooseWidgets
         INFOPLIST_FILE: Widgets/Info.plist

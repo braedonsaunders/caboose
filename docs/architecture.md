@@ -20,7 +20,12 @@ an eventual result. App shortcuts offer phrases to Siri and Shortcuts.
 The app indexes the current app list with Core Spotlight. Files used through its file
 intents are indexed; an `fs.changed` event invalidates file entries so stale paths are
 not offered. Selecting an indexed entry opens it on the computer. Signing out clears
-Caboose's index.
+Caboose's index. File entity suggestions currently enumerate only the home root.
+
+The WidgetKit extension reads shared Keychain credentials to fetch computer state and
+the running agent count without waking the computer. Its Home and Lock Screen widget
+refreshes on WidgetKit's schedule; the Control Center power toggle wakes or parks the
+computer. A signed device is needed to verify shared Keychain access and control behavior.
 
 ## Notifications
 

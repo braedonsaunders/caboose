@@ -4,7 +4,11 @@ import WidgetKit
 
 @main
 struct CabooseWidgets: WidgetBundle {
-    var body: some Widget { JobActivityWidget() }
+    var body: some Widget {
+        JobActivityWidget()
+        ComputerWidget()
+        ComputerPowerControl()
+    }
 }
 
 struct JobActivityWidget: Widget {
