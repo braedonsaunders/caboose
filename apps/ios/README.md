@@ -131,24 +131,41 @@ Control so ⌘C, ⌘V and ⌘T do what Mac users expect.
 
 ## Agents
 
-The Ask bar on the Agents tab starts a task with the computer's default agent or any agent installed
-from the Agent Client Protocol registry. **Ask Before Acting** makes the agent stop before
-each action until you tap Allow (or the agent's always-allow option) or Deny, on the task
-card or on the banner that shows over any screen. A finished task takes a reply that
-continues the same conversation. Settings › Agents installs and updates agents, signs in to
-them on the computer's screen, gives one an API key or other environment, and sets the
-default. **Use Craft App Tools** controls whether new tasks offer installed catalog MCP
-servers to the agent.
+The Agents tab is a conversation with **Caboose**. Where Apple Intelligence is available,
+what you type goes to Apple's on-device model (`Caboose/Agents/OnDevice*.swift`): it answers
+("how's it going?" reads where every agent stands), opens apps and pages, types, presses
+shortcuts and buttons in the focused window by name, parks the computer, and hands anything
+bigger to the computer's default agent. Without Apple Intelligence, or when the composer's
+menu names an agent, the message starts a task with that agent directly. The conversation
+is kept on the phone (`ConversationLog` in CabooseKit).
+
+A task shows in the conversation as a live card — its plan's progress, the step it is on,
+anything it needs from you — and running tasks stay pinned along the top. Tap one for its
+whole thread (`AgentThreadView`): your messages, the agent's answers, its thoughts, tool
+calls, plan and permissions, and how much context it has used, read from the host's
+transcript route and then live. Reply to continue the same session, stop it, watch its
+window on the agent seat, or ask another agent the same thing. **Ask Before Acting** makes
+the agent stop before each action until you tap Allow (or its always-allow option) or Deny,
+on the card, in the thread or on the banner over any screen. **Use Craft App Tools**
+controls whether new tasks offer installed catalog MCP servers to the agent.
+
+**Connect a Model** uses an API key instead of an account: an OpenRouter key and any of its
+tool-using models (run by the registry's goose), or an Anthropic or OpenAI key (Claude Agent
+or Codex). The app installs the agent, puts the key in its environment in the computer, and
+makes it the default. A task whose agent is signed out offers its sign-in, Connect a Model,
+or another agent. Settings › Agents installs and updates any registry agent, signs in to
+them on the computer's screen, edits their environment, and sets the default.
 
 Agents run their GUI apps on the agent seat, a second display of the computer. The app
-connects to it as it does to the owner's display (`/v1/display?seat=agent`, without sound),
-and its windows appear in the Agent space, where you can watch them, take over and hand back.
-
-Where Apple Intelligence is available the bar also offers **On iPhone**: Apple's on-device
-model (`Caboose/Agents/OnDevice*.swift`). It opens apps and pages, types, presses shortcuts,
-presses buttons in the focused window by name (through the host's accessibility routes),
-parks the computer, and hands anything bigger to a computer agent. A window's `…` menu has
+connects to it as it does to the owner's display (`/v1/display?seat=agent`, without sound);
+watch its windows from a task's thread, take over and hand back. A window's `…` menu has
 **Ask Agent About This Window**, which sends its screenshot, title and app with your request.
+
+`OnDeviceEval/` measures the on-device model on a device, including the status questions.
+On a device paired to a running computer, check: ask "how's it going?" with no tasks, then
+with one running, and see Caboose answer without starting a task; ask for real work and see
+the live card tick through its plan; open it and see the thread fill in; connect an
+OpenRouter key and see goose become the default and finish a task.
 
 ## iOS integration
 

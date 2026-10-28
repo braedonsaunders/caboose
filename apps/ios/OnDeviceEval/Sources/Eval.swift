@@ -28,6 +28,10 @@ final class RecordingActions: ComputerActions, @unchecked Sendable {
         return "Window: App — Window\n" + screen.enumerated().map { "\($0.offset + 1). \($0.element.role) \"\($0.element.name)\"" }.joined(separator: "\n")
     }
     func click(element number: Int) async throws -> String { record("click_element", ["number": String(number)]); return "Pressed." }
+    func status() async throws -> String {
+        record("check_agents", [:])
+        return "- Claude Agent, asked “tidy my Downloads folder”, is working (step 2 of 3): Move 12 PDFs"
+    }
 }
 
 func emit(_ object: [String: Any]) {

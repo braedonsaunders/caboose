@@ -51,6 +51,14 @@ final class AgentCenter {
     }
 
     private(set) var tasks: [Task] = []
+    /// Each task's conversation as far as it is known: read from the host when opened, then live.
+    private(set) var threads: [String: AgentThread] = [:]
+    /// The conversation with Caboose itself: what the owner asked and what the iPhone did about it.
+    private(set) var conversation = ConversationLog.load(from: AgentCenter.conversationURL)
+    /// A task to show, asked for from elsewhere in the app (Home, a notification); the Agents tab opens it.
+    var focusedTask: String?
+    /// Text for the composer to take, from a suggestion.
+    var draft: String?
     /// The registry's agents as this computer sees them, installed first.
     private(set) var catalog: [AgentListing] = []
     private(set) var defaultAgent: String?
@@ -58,7 +66,8 @@ final class AgentCenter {
     /// Agents being installed now.
     private(set) var installing: Set<String> = []
     /// Requests the iPhone's own model handled, newest first.
-    private(set) var localRuns: [OnDeviceRun] = []
+    var localRuns: [ConversationMessage] { conversation.messages.reversed() }
+    private var onDevice: OnDeviceConversation?
     private(set) var output: [String: [Line]] = [:]
     private(set) var available = true
     var lastError: String?
@@ -76,6 +85,7 @@ final class AgentCenter {
 
     func attach(host: HostClient) {
         self.host = host
+        onDevice = nil // a new connection; the next message starts a session with it
         openControl()
         Swift.Task { await refresh() }
         Swift.Task { await refreshAgents() }
@@ -96,9 +106,12 @@ final class AgentCenter {
         seatToken = nil
         tasks = []
         output = [:]
+        threads = [:]
         catalog = []
         defaultAgent = nil
-        localRuns = []
+        onDevice = nil
+        conversation.clear()
+        saveConversation()
         available = true
     }
 
@@ -122,22 +135,106 @@ final class AgentCenter {
     /// Starts a task with agent `agent` (a registry id), or the owner's default agent when nil.
     @discardableResult
     func ask(_ prompt: String, agent: String?, askFirst: Bool = false, attachments: [Attachment] = []) async -> Bool {
-        guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        await start(prompt, agent: agent, askFirst: askFirst, attachments: attachments) != nil
+    }
+
+    /// Starts a task and returns its id, or nil when it could not start (`lastError` says why).
+    func start(_ prompt: String, agent: String?, askFirst: Bool = false, attachments: [Attachment] = []) async -> String? {
+        guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         let approvals = askFirst ? "ask" : "auto"
         do {
             let id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments, craftMcp: UserDefaults.standard.object(forKey: "caboose.agent.craftMcp") as? Bool ?? true)
             if !tasks.contains(where: { $0.id == id }) {
                 let chosen = agent ?? defaultAgent ?? ""
                 tasks.insert(Task(id: id, agent: chosen, agentName: listing(chosen)?.name, prompt: prompt, status: "running",
-                                  turns: 1, approvals: approvals), at: 0)
+                                  startedAt: Self.timestamp(Date()), turns: 1, approvals: approvals), at: 0)
             }
+            if threads[id] == nil { threads[id] = AgentThread(entries: [], prompt: prompt) }
             openSeatIfNeeded()
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            return true
+            return id
         } catch {
             lastError = error.localizedDescription
-            return false
+            return nil
         }
+    }
+
+    /// Asks Caboose: the iPhone's own model where Apple Intelligence is available, which answers,
+    /// acts, or hands the work to `agent` (the default agent when nil); otherwise that agent directly.
+    func send(_ prompt: String, agent: String?, askFirst: Bool = false) async {
+        if OnDeviceAgent.isAvailable {
+            await askOnDevice(prompt, delegatingTo: agent, askFirst: askFirst)
+        } else {
+            await start(prompt, agent: agent, askFirst: askFirst)
+        }
+    }
+
+    /// Runs a task's request again with another agent, as a new task.
+    func retry(_ task: Task, with agent: String?) async -> String? {
+        let last = threads[task.id]?.lastTurn?.prompt ?? ""
+        let prompt = last.isEmpty ? task.prompt : last
+        return await start(prompt, agent: agent, askFirst: task.approvals == "ask")
+    }
+
+    // MARK: Threads
+
+    /// Reads a task's whole conversation from the host. Live entries that arrive meanwhile are kept.
+    func loadThread(_ id: String) async {
+        guard let host, let task = tasks.first(where: { $0.id == id }), !loadingThreads.contains(id) else { return }
+        loadingThreads.insert(id)
+        pendingEntries[id] = []
+        defer { loadingThreads.remove(id); pendingEntries[id] = nil }
+        do {
+            let read = try await host.agentTranscript(id)
+            var thread = AgentThread(entries: read.entries, prompt: task.prompt, truncated: read.truncated)
+            let recent = read.entries.suffix(64)
+            for entry in pendingEntries[id] ?? [] where !recent.contains(entry) { thread.append(entry) }
+            threads[id] = thread
+        } catch {
+            // A parked computer or an older host: the live entries and the task's summary stand in.
+            if threads[id] == nil { threads[id] = AgentThread(entries: [], prompt: task.prompt) }
+        }
+    }
+
+    func isLoading(_ id: String) -> Bool { loadingThreads.contains(id) }
+
+    private var loadingThreads: Set<String> = []
+    private var pendingEntries: [String: [TranscriptEntry]] = [:]
+
+    private func record(_ entry: TranscriptEntry, for id: String) {
+        if loadingThreads.contains(id) { pendingEntries[id, default: []].append(entry) }
+        if threads[id] == nil, let task = tasks.first(where: { $0.id == id }) { threads[id] = AgentThread(entries: [], prompt: task.prompt) }
+        threads[id]?.append(entry)
+    }
+
+    /// One line per recent task for the on-device model: what it was asked, and where it stands.
+    func statusReport() -> String {
+        guard !tasks.isEmpty else { return "No agent has been given a task yet." }
+        return tasks.prefix(6).map { task in
+            let name = name(of: task)
+            let asked = task.prompt.count > 90 ? task.prompt.prefix(90) + "…" : Substring(task.prompt)
+            let state: String
+            if let approval = task.pendingApproval {
+                state = "waiting for the owner to allow \(approval.tool)"
+            } else if task.isRunning {
+                let thread = threads[task.id]
+                let progress = thread?.progress.map { " (step \($0.done + 1) of \($0.total))" } ?? ""
+                state = task.status == "paused" ? "paused" : "working\(progress): \(thread?.activity ?? output[task.id]?.last?.text ?? "just started")"
+            } else if task.signIn?.isEmpty == false {
+                state = "stopped: \(name) needs signing in"
+            } else {
+                state = "\(task.status): \(task.summary ?? "")"
+            }
+            return "- \(name), asked “\(asked)”, is \(state.count > 300 ? String(state.prefix(300)) + "…" : state)"
+        }.joined(separator: "\n")
+    }
+
+    static func timestamp(_ date: Date) -> String { date.formatted(.iso8601) }
+
+    /// When a task started, from the host's ISO time.
+    static func started(_ task: Task) -> Date? {
+        guard let value = task.startedAt else { return nil }
+        return (try? Date(value, strategy: .iso8601)) ?? (try? Date(value, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
     }
 
     // MARK: Agents
@@ -185,6 +282,25 @@ final class AgentCenter {
         await refreshAgents()
     }
 
+    /// Connects a model provider with the owner's key: installs the agent that runs it if needed,
+    /// gives it the key (and the model), and makes it the default agent.
+    func connect(_ provider: ModelProvider, key: String, model: String?, progress: (String) -> Void) async throws {
+        guard let host else { throw HostClient.Failure.server(409, "Connect to your computer first.") }
+        if catalog.isEmpty { await refreshAgents() }
+        guard let agent = listing(provider.agent) else {
+            throw HostClient.Failure.server(404, "\(provider.name) needs \(provider.agent) from the agent registry, which this computer cannot see yet.")
+        }
+        if !agent.isInstalled {
+            progress("Installing \(agent.name) on your computer…")
+            try await install(agent)
+        }
+        progress("Saving your key in your computer…")
+        _ = try await host.setAgentEnv(agent.id, set: provider.environment(key: key, model: model))
+        progress("Making \(agent.name) the default…")
+        _ = try await host.updateSettings(["defaultAgent": .string(agent.id)])
+        await refreshAgents()
+    }
+
     func makeDefault(_ agentID: String) async throws {
         guard let host else { return }
         _ = try await host.updateSettings(["defaultAgent": .string(agentID)])
@@ -192,15 +308,40 @@ final class AgentCenter {
     }
 
     /// Hands a request to the iPhone's own model; it acts through the host or delegates to `fallback`.
-    func askOnDevice(_ prompt: String, delegatingTo fallback: String?) async {
+    func askOnDevice(_ prompt: String, delegatingTo fallback: String?, askFirst: Bool = false) async {
         guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let run = OnDeviceRun(prompt: prompt)
-        localRuns.insert(run, at: 0)
-        if localRuns.count > 10 { localRuns.removeLast() }
-        await OnDeviceAgent(host: host, center: self, delegate: fallback).run(run)
+        let message = ConversationMessage(prompt: prompt)
+        conversation.append(message)
+        saveConversation()
+        if onDevice == nil { onDevice = OnDeviceConversation(host: host, center: self) }
+        await onDevice?.respond(to: message.id, prompt: prompt, delegate: fallback, askFirst: askFirst)
     }
 
-    func dismiss(_ run: OnDeviceRun) { localRuns.removeAll { $0.id == run.id } }
+    func dismiss(_ message: ConversationMessage) {
+        conversation.remove(message.id)
+        saveConversation()
+    }
+
+    /// Forgets the conversation with Caboose; the computer's tasks stay.
+    func clearConversation() {
+        conversation.clear()
+        onDevice = nil
+        saveConversation()
+    }
+
+    /// Updates a message the on-device model is working on.
+    func updateMessage(_ id: UUID, _ change: (inout ConversationMessage) -> Void) {
+        conversation.update(id, change)
+        if conversation.messages.first(where: { $0.id == id })?.status != .working { saveConversation() }
+    }
+
+    private func saveConversation() {
+        do { try conversation.save(to: Self.conversationURL) } catch { lastError = error.localizedDescription }
+    }
+
+    private static var conversationURL: URL {
+        URL.applicationSupportDirectory.appending(path: "Agents", directoryHint: .isDirectory).appending(path: "conversation.json")
+    }
 
     /// Continues a finished task's conversation.
     func reply(to task: Task, _ prompt: String) async {
@@ -209,6 +350,7 @@ final class AgentCenter {
             let updated = try await host.replyToAgentTask(task.id, prompt: prompt)
             replace(updated)
             output[task.id, default: []].append(Line(kind: "prompt", text: prompt))
+            threads[task.id]?.begin(turn: updated.turns ?? (task.turns ?? 1) + 1, prompt: prompt)
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         } catch {
             lastError = error.localizedDescription
@@ -334,11 +476,14 @@ final class AgentCenter {
         case "agent.task.started":
             if !tasks.contains(where: { $0.id == id }) {
                 tasks.insert(Task(id: id, agent: event["agent"] as? String ?? "", agentName: event["agentName"] as? String,
-                                  prompt: event["prompt"] as? String ?? "", status: "running", turns: 1), at: 0)
+                                  prompt: event["prompt"] as? String ?? "", status: "running", startedAt: Self.timestamp(Date()), turns: 1), at: 0)
             }
             openSeatIfNeeded()
         case "agent.task.output":
             output[id, default: []].append(Line(kind: event["kind"] as? String ?? "text", text: event["text"] as? String ?? ""))
+        case "agent.task.event":
+            if let entry = Self.decode(TranscriptEntry.self, event["entry"]) { record(entry, for: id) }
+            return
         case "agent.task.paused", "agent.task.resumed":
             if let index = tasks.firstIndex(where: { $0.id == id }) {
                 tasks[index].status = type == "agent.task.paused" ? "paused" : "running"
@@ -359,6 +504,7 @@ final class AgentCenter {
                 tasks[index].turns = event["turn"] as? Int ?? (tasks[index].turns ?? 1) + 1
                 let prompt = event["prompt"] as? String ?? ""
                 if output[id]?.last?.text != prompt { output[id, default: []].append(Line(kind: "prompt", text: prompt)) }
+                threads[id]?.begin(turn: tasks[index].turns ?? 1, prompt: prompt)
             }
             openSeatIfNeeded()
         case "agent.task.approval":
@@ -392,6 +538,14 @@ final class AgentCenter {
 
 extension HostClient {
     func agentTasks() async throws -> [AgentCenter.Task] { try await request("GET", "/v1/agent/tasks", timeout: 20) }
+
+    struct Transcript: Decodable {
+        var entries: [TranscriptEntry]
+        var truncated: Bool
+    }
+
+    /// Every turn of a task's conversation; 409 while the computer is parked.
+    func agentTranscript(_ id: String) async throws -> Transcript { try await request("GET", "/v1/agent/tasks/\(id)/transcript", timeout: 30) }
 
     func replyToAgentTask(_ id: String, prompt: String) async throws -> AgentCenter.Task {
         struct Replied: Decodable { var task: AgentCenter.Task }

@@ -976,6 +976,7 @@ specified in `guest/agentd/README.md`; in short:
 | `POST` | `/v1/agents/:id/sign-in` | `{ methodId }` → `{ started: true, method: { id, name, description?, type } }`. 400 for an unknown method |
 | `POST` | `/v1/agent/tasks` | `{ prompt, agent?, approvals?: "ask" \| "auto", craftMcp?: boolean, attachments?: [{ name, type?, data (base64) }] }` → `{ id }`. 400 when no agent is given and no default is set; 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | Recent tasks, newest first |
+| `GET` | `/v1/agent/tasks/:id/transcript` | → `{ entries: TranscriptEntry[], truncated }`: every turn of the task's conversation, read from the end of its `transcript.jsonl` (at most 2 MiB; `truncated` when earlier lines were left out). 404 for an unknown task, 409 while the computer is not running |
 | `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`. 409 while the task is running or paused, or for a task that cannot be continued; 404 for an unknown task |
 | `POST` | `/v1/agent/tasks/:id/approvals/:requestId` | `{ allow: boolean, message?, optionId? }` → `{ resolved }`; `false` when that request is no longer waiting |
 | `POST` | `/v1/agent/tasks/:id/cancel` | → `{ cancelled }` |
@@ -1037,6 +1038,22 @@ Control-socket events:
 | `agent.task.replied` | `{ id, prompt, turn }` |
 | `agent.task.approval` | `{ id, request: { id, tool, summary, options? } }`, once per request |
 | `agent.task.approval.resolved` | `{ id, requestId, allow }` |
+| `agent.task.event` | `{ id, turn, entry: TranscriptEntry }`: each entry of the current turn as the host reads it |
+
+A `TranscriptEntry` is one line of the runner's transcript (guest/agentd/README.md), checked
+and trimmed, without the `session` and `mode` bookkeeping; each may carry `at`:
+
+```ts
+| { type: "user", turn, text, attachments?: string[] }
+| { type: "text" | "thought" | "notice", text }                 // at most 16000 characters
+| { type: "tool" | "tool_update", toolId, title, kind, status, detail? }  // ACP tool kind and status
+| { type: "plan", entries: Array<{ content, status }> }
+| { type: "permission", requestId: string | null, tool, summary, auto }
+| { type: "permission_resolved", requestId, allow, message? }
+| { type: "usage", used, size, cost?: { amount, currency } }
+| { type: "turn_end", turn, stopReason, summary }
+| { type: "turn_failed" | "auth_required", turn, message }
+```
 
 ### Signing in
 
@@ -1211,11 +1228,29 @@ Pinned and recent apps are kept on the phone per computer.
 
 ### Agent space
 
-- **Ask bar.** Starts tasks with the default agent or any installed one, optionally asking
-  before acting. Pending approvals show on the task card and as a banner over every screen,
-  with the agent's always-allow option when it has one. Finished tasks take replies, and a
-  task whose agent was signed out offers its sign-in methods. A window's menu hands the
-  window (screenshot, title, app) to an agent as an attachment.
+- **Conversation.** The Agents tab is a conversation with Caboose. Where Apple Intelligence
+  is available a message goes to the on-device model (below), which answers, acts, or hands
+  the work to the default agent; otherwise, or when the composer names an agent, it starts a
+  task directly. The conversation (what the owner asked, the steps the model took, its
+  reply, the task it handed over) is kept on the phone, at most 80 messages, in
+  `Application Support/Agents/conversation.json`. Each task shows in it as a live card: its
+  plan's progress and current step from `agent.task.event`, approvals, and how it ended.
+  Running and waiting tasks are pinned above the conversation.
+- **Threads.** A task opens into its whole conversation from
+  `GET /v1/agent/tasks/:id/transcript`, then follows `agent.task.event`: prompts, messages,
+  collapsible thoughts, tool calls grouped and updated in place, the plan as a checklist,
+  permissions with their answers, and context use. Finished tasks take replies; running
+  ones can be stopped or watched on the seat. Pending approvals show on the card, in the
+  thread and as a banner over every screen, with the agent's always-allow option when it
+  has one. A task whose agent was signed out offers its sign-in methods, Connect a Model,
+  and running the same request with another agent. A window's menu hands the window
+  (screenshot, title, app) to an agent as an attachment.
+- **Connect a Model.** An API key instead of an account: OpenRouter (through the registry's
+  `goose`, with `GOOSE_PROVIDER=openrouter`, `GOOSE_MODEL` from OpenRouter's public model
+  list of tool-using models, and `OPENROUTER_API_KEY`), Anthropic (`claude-acp`,
+  `ANTHROPIC_API_KEY`) or OpenAI (`codex-acp`, `OPENAI_API_KEY`). The app installs the
+  agent, sets its environment with `PUT /v1/agents/:id/env`, and makes it the default; the
+  host learns nothing new.
 - **Agent seat.** The Agent space watches the seat with a second `CabooseDisplaySession`
   on `/v1/display?seat=agent` that plays no sound, so there is one stream of sound: the
   owner's display. Take Over and Hand Back pause and resume tasks.
@@ -1223,9 +1258,11 @@ Pinned and recent apps are kept on the phone per computer.
   sign in on the computer's screen, add or remove environment variables such as an API key,
   and choose the default agent. Registry icons are SVG, which iOS does not draw, so agents
   show their initials.
-- **On-device model.** Where Apple Intelligence is available, the Ask bar also offers the
-  phone's Foundation Models model. It runs on the device and sends nothing to a model
-  provider. Its tools act through the host: launch an app (`/v1/apps/:id/launch`), open a
+- **On-device model.** Where Apple Intelligence is available, Caboose's replies come from
+  the phone's Foundation Models model. It runs on the device and sends nothing to a model
+  provider, and keeps one session across messages until its context fills. It answers
+  questions about the agents from the task list and their threads (`check_agents`). Its
+  tools act through the host: launch an app (`/v1/apps/:id/launch`), open a
   page or search (`/v1/open`), type or press keys (`/v1/screen/type`, `/v1/screen/keys`),
   look at the focused window and press a control by name (`/v1/screen/elements`,
   `/v1/screen/act`), park the computer, and delegate anything that needs several steps,

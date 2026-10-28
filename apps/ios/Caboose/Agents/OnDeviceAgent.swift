@@ -1,63 +1,15 @@
+import CabooseKit
 import Foundation
 import FoundationModels
-import Observation
 import SwiftUI
 
-/// One request the iPhone's own model handled: what it did, and what it said.
-@MainActor @Observable
-final class OnDeviceRun: Identifiable {
-    enum Status { case working, done, failed }
-    let id = UUID()
-    let prompt: String
-    private(set) var steps: [String] = []
-    private(set) var reply: String?
-    private(set) var status: Status = .working
-    private(set) var seconds: Double?
-
-    init(prompt: String) { self.prompt = prompt }
-
-    func add(_ step: String) { steps.append(step) }
-
-    func finish(_ reply: String, failed: Bool = false, seconds: Double) {
-        self.reply = reply
-        self.seconds = seconds
-        status = failed ? .failed : .done
-    }
-}
-
-/// The Ask bar's "On iPhone" agent: Apple's on-device Foundation Models model, acting on the
-/// computer through the host. It does quick things itself and delegates real work to one of
-/// the computer's agents (docs/architecture.md § App, On iPhone).
-struct OnDeviceAgent {
-    let host: HostClient
-    let center: AgentCenter
-    /// The registry id of the agent that takes real work; nil for the owner's default agent.
-    let delegate: String?
-
+/// Apple's on-device Foundation Models model as Caboose's voice: it answers, acts on the
+/// computer through the host, and delegates real work to one of the computer's agents
+/// (docs/architecture.md § App, On iPhone).
+enum OnDeviceAgent {
     static var isAvailable: Bool { SystemLanguageModel.default.availability == .available }
 
-    @MainActor
-    func run(_ run: OnDeviceRun) async {
-        let started = Date()
-        let apps = (try? await host.apps()) ?? []
-        let actions = HostActions(host: host, apps: apps, run: run, center: center, fallback: delegate)
-        let agents = center.installedAgents.map(\.name)
-        let session = LanguageModelSession(
-            model: .default, tools: OnDeviceTools.all(actions),
-            instructions: OnDeviceTools.instructions(apps: apps.map { OnDeviceTools.describe(app: $0.name, categories: $0.categories) },
-                                                     agents: agents.isEmpty ? ["the default agent"] : agents))
-        do {
-            let response = try await session.respond(to: run.prompt, options: GenerationOptions(sampling: .greedy))
-            run.finish(response.content, seconds: Date().timeIntervalSince(started))
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        } catch let error as LanguageModelSession.GenerationError {
-            run.finish(Self.describe(error), failed: true, seconds: Date().timeIntervalSince(started))
-        } catch {
-            run.finish(error.localizedDescription, failed: true, seconds: Date().timeIntervalSince(started))
-        }
-    }
-
-    private static func describe(_ error: LanguageModelSession.GenerationError) -> String {
+    static func describe(_ error: LanguageModelSession.GenerationError) -> String {
         switch error {
         case .exceededContextWindowSize: "That was too much for the on-device model. Try a shorter request, or pick another agent."
         case .guardrailViolation: "The on-device model declined that request."
@@ -67,26 +19,113 @@ struct OnDeviceAgent {
     }
 }
 
+/// One conversation with the on-device model. Its session carries over from message to
+/// message, so a follow-up ("and the other one?") has the earlier ones in view; it starts
+/// over when its context is full.
+@MainActor
+final class OnDeviceConversation {
+    let host: HostClient
+    private weak var center: AgentCenter?
+    private var session: LanguageModelSession?
+    private var actions: HostActions?
+
+    init(host: HostClient, center: AgentCenter) {
+        self.host = host
+        self.center = center
+    }
+
+    func respond(to id: UUID, prompt: String, delegate: String?, askFirst: Bool) async {
+        guard let center else { return }
+        let started = Date()
+        do {
+            let (session, actions) = try await prepared(fresh: false)
+            actions.begin(message: id, fallback: delegate, askFirst: askFirst)
+            let reply: String
+            do {
+                reply = try await session.respond(to: prompt, options: GenerationOptions(sampling: .greedy)).content
+            } catch LanguageModelSession.GenerationError.exceededContextWindowSize {
+                // The conversation outgrew the model's context: start over with this message alone.
+                let (fresh, freshActions) = try await prepared(fresh: true)
+                freshActions.begin(message: id, fallback: delegate, askFirst: askFirst)
+                reply = try await fresh.respond(to: prompt, options: GenerationOptions(sampling: .greedy)).content
+            }
+            center.updateMessage(id) {
+                $0.reply = reply
+                $0.status = .done
+                $0.seconds = Date().timeIntervalSince(started)
+            }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } catch let error as LanguageModelSession.GenerationError {
+            fail(id, OnDeviceAgent.describe(error), started)
+        } catch {
+            fail(id, error.localizedDescription, started)
+        }
+    }
+
+    private func fail(_ id: UUID, _ reason: String, _ started: Date) {
+        center?.updateMessage(id) {
+            $0.reply = reason
+            $0.status = .failed
+            $0.seconds = Date().timeIntervalSince(started)
+        }
+    }
+
+    /// The session to use: the running one, or a new one with the computer's current apps and agents.
+    private func prepared(fresh: Bool) async throws -> (LanguageModelSession, HostActions) {
+        if !fresh, let session, let actions, !session.isResponding { return (session, actions) }
+        guard let center else { throw CancellationError() }
+        let apps = (try? await host.apps()) ?? []
+        let actions = HostActions(host: host, apps: apps, center: center)
+        let agents = center.installedAgents.map(\.name)
+        let session = LanguageModelSession(
+            model: .default, tools: OnDeviceTools.all(actions),
+            instructions: OnDeviceTools.instructions(apps: apps.map { OnDeviceTools.describe(app: $0.name, categories: $0.categories) },
+                                                     agents: agents.isEmpty ? ["the default agent"] : agents))
+        // A message sent while another is still answering gets its own session for now.
+        if self.session?.isResponding != true || fresh {
+            self.session = session
+            self.actions = actions
+        }
+        return (session, actions)
+    }
+}
+
 /// Carries out the model's tool calls through the host, noting each on the run.
 final class HostActions: ComputerActions, @unchecked Sendable {
     private let host: HostClient
     private let apps: [HostClient.App]
-    private let run: OnDeviceRun
     private let center: AgentCenter
-    private let fallback: String?
+    /// The message being answered, and the agent it hands work to (nil for the default).
+    private var message: UUID?
+    private var fallback: String?
+    private var askFirst = false
     /// What look_at_screen numbered, so click_element can press it.
     private var elements: [HostClient.ScreenElement] = []
     private let lock = NSLock()
 
-    init(host: HostClient, apps: [HostClient.App], run: OnDeviceRun, center: AgentCenter, fallback: String?) {
+    init(host: HostClient, apps: [HostClient.App], center: AgentCenter) {
         self.host = host
         self.apps = apps
-        self.run = run
         self.center = center
-        self.fallback = fallback
     }
 
-    private func note(_ step: String) async { await MainActor.run { run.add(step) } }
+    func begin(message: UUID, fallback: String?, askFirst: Bool) {
+        lock.withLock {
+            self.message = message
+            self.fallback = fallback
+            self.askFirst = askFirst
+        }
+    }
+
+    private func note(_ step: String) async {
+        guard let id = lock.withLock({ message }) else { return }
+        await MainActor.run { center.updateMessage(id) { $0.steps.append(step) } }
+    }
+
+    func status() async throws -> String {
+        await note("Checked on the agents")
+        return await MainActor.run { center.statusReport() }
+    }
 
     func launch(app name: String) async throws -> String {
         guard let app = Self.match(name, in: apps) else { return "There is no app called \(name). Apps: \(apps.map(\.name).joined(separator: ", "))." }
@@ -123,6 +162,7 @@ final class HostActions: ComputerActions, @unchecked Sendable {
 
     func delegate(task: String, agent: String?) async throws -> String {
         // The agent the user named, among those installed; otherwise the chosen one, or the default.
+        let (fallback, askFirst) = lock.withLock { (self.fallback, self.askFirst) }
         let (id, name) = await MainActor.run { () -> (String?, String) in
             let installed = center.installedAgents
             let wanted = agent?.lowercased() ?? ""
@@ -132,8 +172,13 @@ final class HostActions: ComputerActions, @unchecked Sendable {
             return (id, id.flatMap { center.listing($0)?.name } ?? "The default agent")
         }
         await note("Handed to \(name)")
-        let started = await center.ask(task, agent: id)
-        return started ? "\(name) started the task and will report back." : "\(name) could not start the task."
+        let started = await center.start(task, agent: id, askFirst: askFirst)
+        if let started, let message = lock.withLock({ self.message }) {
+            await MainActor.run { center.updateMessage(message) { $0.taskID = started } }
+        }
+        if started != nil { return "\(name) started the task and will report back." }
+        let reason = await MainActor.run { center.lastError } ?? ""
+        return "\(name) could not start the task. \(reason)"
     }
 
     func look() async throws -> String {
@@ -193,45 +238,5 @@ extension HostClient {
 
     func pressOnScreen(_ keys: String) async throws {
         let _: [String: Bool] = try await request("POST", "/v1/screen/keys", body: ["keys": .string(keys)], timeout: 30)
-    }
-}
-
-/// A request the iPhone handled, on Home beside the computer's tasks.
-struct OnDeviceCard: View {
-    @Environment(AppModel.self) private var model
-    let run: OnDeviceRun
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 10) {
-                Group {
-                    switch run.status {
-                    case .working: ProgressView().controlSize(.small)
-                    case .done: Image(systemName: "iphone").foregroundStyle(.tint)
-                    case .failed: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
-                    }
-                }
-                .frame(width: 20)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(run.prompt).font(.subheadline.weight(.semibold)).lineLimit(2)
-                    ForEach(Array(run.steps.enumerated()), id: \.offset) { _, step in
-                        Label(step, systemImage: "arrow.turn.down.right").font(.caption).foregroundStyle(.cyan)
-                    }
-                    if let reply = run.reply, !reply.isEmpty {
-                        Text(reply).font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer(minLength: 0)
-                if run.status != .working {
-                    Button { model.agents.dismiss(run) } label: { Image(systemName: "xmark").font(.caption) }
-                        .buttonStyle(.plain).foregroundStyle(.secondary)
-                }
-            }
-            if let seconds = run.seconds {
-                Text("On iPhone · \(seconds, specifier: "%.1f") s").font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-        .padding(14)
-        .glassEffect(.regular, in: .rect(cornerRadius: 18))
     }
 }

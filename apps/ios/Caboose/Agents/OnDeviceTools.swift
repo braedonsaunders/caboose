@@ -14,6 +14,8 @@ protocol ComputerActions: Sendable {
     /// The focused window's controls, numbered.
     func look() async throws -> String
     func click(element number: Int) async throws -> String
+    /// Where the computer's agents stand: what each was asked and what it is doing.
+    func status() async throws -> String
 }
 
 /// The on-device agent's tools and instructions, shared by the app and its evaluation so the
@@ -21,7 +23,8 @@ protocol ComputerActions: Sendable {
 enum OnDeviceTools {
     static func all(_ actions: any ComputerActions) -> [any Tool] {
         [LaunchApp(actions: actions), OpenURL(actions: actions), TypeText(actions: actions), PressKeys(actions: actions),
-         LookAtScreen(actions: actions), ClickElement(actions: actions), ParkComputer(actions: actions), Delegate(actions: actions)]
+         LookAtScreen(actions: actions), ClickElement(actions: actions), ParkComputer(actions: actions), Delegate(actions: actions),
+         CheckAgents(actions: actions)]
     }
 
     /// Apps as the model should see them: the name, and what it is for when the desktop entry says.
@@ -37,7 +40,10 @@ enum OnDeviceTools {
 
     static func instructions(apps: [String], agents: [String]) -> String {
         """
-        You are the Ask bar in Caboose, an iPhone app for the user's own Linux computer. You act by calling tools.
+        You are Caboose, the assistant in an iPhone app for the user's own Linux computer. You talk briefly and warmly, \
+        and you act by calling tools.
+        When the user asks how things are going, what the agents are doing, whether something is done, or about a task \
+        they gave earlier: check_agents, then answer from what it says in one or two sentences.
         Do quick things yourself:
         - open an app: launch_app
         - open a web page or a web search: open_url
@@ -49,7 +55,7 @@ enum OnDeviceTools {
         Hand anything that needs several steps, code, files, research or judgement to an agent with delegate, \
         writing a complete task description. Composing something new — a message, a poem, a document — is work for an agent; \
         type_text only types words the user gave you.
-        If the user is only chatting, reply in one short sentence and call no tool.
+        If the user is only chatting, reply in one or two short sentences and call no tool.
         Never type shell commands that delete or overwrite files.
         Apps: \(apps.joined(separator: ", ")).
         Agents for delegate: \(agents.joined(separator: ", ")).
@@ -146,4 +152,12 @@ struct Delegate: Tool {
     func call(arguments: Arguments) async throws -> String {
         try await actions.delegate(task: arguments.task, agent: arguments.agent.isEmpty ? nil : arguments.agent)
     }
+}
+
+struct CheckAgents: Tool {
+    let actions: any ComputerActions
+    let name = "check_agents"
+    let description = "See what each of the computer's agents was asked and where it stands: working on a step, waiting for the user, finished, or failed."
+    @Generable struct Arguments {}
+    func call(arguments: Arguments) async throws -> String { try await actions.status() }
 }
