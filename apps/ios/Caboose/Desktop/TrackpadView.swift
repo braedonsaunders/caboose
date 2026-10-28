@@ -93,7 +93,7 @@ final class TrackpadSurface: RemoteTextInputView {
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    private var session: XpraSession? { model?.session }
+    private var session: (any DisplaySession)? { model?.session }
 
     private func centroid(_ event: UIEvent?) -> CGPoint? {
         guard let touches = event?.touches(for: self)?.filter({ $0.phase != .ended && $0.phase != .cancelled }), !touches.isEmpty
@@ -160,19 +160,9 @@ final class TrackpadSurface: RemoteTextInputView {
         return desktop.stacking.reversed().compactMap { session.windows[$0] }.first { !$0.isAuxiliary && desktop.isVisible($0.id) }
     }
 
-    override func send(_ edits: [TypingBuffer.Edit]) {
-        let window = focusedWindow
-        for edit in edits {
-            switch edit {
-            case .backspace(let count):
-                guard let stroke = Keysyms.special["BackSpace"] else { continue }
-                for _ in 0 ..< count {
-                    session?.key(stroke, pressed: true, in: window)
-                    session?.key(stroke, pressed: false, in: window)
-                }
-            case .type(let text):
-                session?.type(text, in: window)
-            }
-        }
-    }
+    override func send(_ edits: [TypingBuffer.Edit]) { session?.edit(edits, in: focusedWindow) }
+
+    override var sendsMarkedTextAsPreedit: Bool { session?.composesText ?? false }
+
+    override func sendPreedit(_ text: String, selection: NSRange) { session?.compose(text, selection: selection, in: focusedWindow) }
 }
