@@ -255,6 +255,14 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
             [true, false].map(|pressed| Message::Key(proto::Key { keysym, pressed, mods: mods.clone() })).to_vec()
         }
         "text" => vec![Message::Text(proto::Text { commit: Some(arg.to_owned()), ..Default::default() })],
+        // edit:N:STRING deletes N grapheme clusters before the cursor and commits STRING,
+        // as an autocorrection does.
+        "edit" => {
+            let (n, text) = arg.split_once(':').ok_or_else(|| format!("bad edit {arg}"))?;
+            let n: u32 = n.parse().map_err(|_| format!("bad edit count {n}"))?;
+            let commit = (!text.is_empty()).then(|| text.to_owned());
+            vec![Message::Text(proto::Text { commit, delete_before: Some(n), ..Default::default() })]
+        }
         "tap" => {
             let (x, y) = point(arg)?;
             [proto::TouchPhase::Down, proto::TouchPhase::Up]

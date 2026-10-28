@@ -232,6 +232,22 @@ def check_popup():
     return with_server(CHROMIUM + ["--window-size=900,400", f"--app={PAGES}/popup.html"], run)
 
 
+def check_autocorrect():
+    # The iOS keyboard's shapes: autocorrect replaces the last character and types on
+    # ("caboose" -> "caboose!"), a delete-key press is delete_before without a commit,
+    # and one deletion removes one grapheme cluster (an emoji with a skin tone).
+    actions = "text:caboose;edit:1:e!;edit:2:;edit:0:d;text: ok 👍🏽;edit:1:;wait:800"
+    def run(proc, token):
+        time.sleep(4)
+        r = probe(["--token-file", token, "--duration", "6", "--windows", "1", "--actions", actions])
+        title = r["windows"][0]["title"]
+        if title != "none|caboosd ok":
+            raise Failed(f"expected 'none|caboosd ok', the page has {title!r}")
+        return "commit + delete_before edits apply exactly, a deletion removes one grapheme cluster"
+    return with_server(CHROMIUM + ["--enable-wayland-ime", "--wayland-text-input-version=3", "--window-size=900,400",
+                                   f"--app={PAGES}/input.html"], run)
+
+
 def check_text_input_on_connect():
     def run(proc, token):
         time.sleep(4)
@@ -268,6 +284,7 @@ CHECKS = [
     ("replace", check_replace),
     ("popup", check_popup),
     ("text-input-on-connect", check_text_input_on_connect),
+    ("autocorrect", check_autocorrect),
     ("idle", check_idle),
 ]
 
