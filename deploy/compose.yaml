@@ -1,0 +1,21 @@
+services:
+  caboose-host:
+    build:
+      context: ..
+      dockerfile: apps/host/Dockerfile
+    privileged: true
+    restart: unless-stopped
+    stop_grace_period: 2m
+    ports:
+      - "${CABOOSE_PUBLISH_ADDRESS:-127.0.0.1}:7310:7310"
+    environment:
+      CABOOSE_OWNER_TOKEN: ${CABOOSE_OWNER_TOKEN:?Set CABOOSE_OWNER_TOKEN in deploy/.env}
+      CABOOSE_DISK_SIZE: ${CABOOSE_DISK_SIZE:-400G}
+    volumes:
+      - ${CABOOSE_STATE_DIR:-/data/caboose}:/data/caboose
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7310/v1/health',{headers:{authorization:'Bearer '+process.env.CABOOSE_OWNER_TOKEN}}).then(async r=>{if(!r.ok || !(await r.json()).kvm) process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
