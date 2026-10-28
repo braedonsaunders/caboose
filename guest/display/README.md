@@ -96,6 +96,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `reconnect` | window ids survive a reconnect and each window restarts with a keyframe |
 | `replace` | a second client takes over; the first gets `bye(shutdown)` |
 | `popup` | a `<select>` list is its own popup window with the page as parent |
+| `text-input-on-connect` | a client that connects after a field was focused is still told text input is enabled |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 ### Measured
@@ -142,7 +143,9 @@ caboose-display-probe --check --token-file /run/caboose/xpra-token   # readiness
 ```
 
 `--save` writes each window's stream and last decoded picture (PNG); `--type`, `--click`
-and `--touch` send input once a window shows; `--json` prints a machine-readable report.
+and `--touch` send input once a window shows, and `--actions` replays a sequence of keys,
+text, taps and clicks (`--window` picks the window); `--json` prints a machine-readable
+report.
 
 ## In the guest
 

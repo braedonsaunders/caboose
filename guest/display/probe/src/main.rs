@@ -35,6 +35,10 @@ OPTIONS:
     --type TEXT            once a window shows, send TEXT as a text commit to it
     --click X,Y            once a window shows, click there (window-local pixels)
     --touch X,Y            once a window shows, tap there with one finger
+    --window ID            the window --actions are for [default: the first that shows]
+    --actions LIST         once a window shows, run `;`-separated actions 300 ms apart:
+                           key:KEYSYM[+mod...] (press and release; mods shift, control,
+                           mod1, mod4), text:STRING, tap:X,Y, click:X,Y, wait:MS
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -52,6 +56,8 @@ struct Args {
     type_text: Option<String>,
     click: Option<(f64, f64)>,
     touch: Option<(f64, f64)>,
+    actions: Vec<String>,
+    window: Option<u64>,
     check: bool,
     json: bool,
 }
@@ -84,6 +90,8 @@ fn parse_args() -> Result<Args, String> {
         type_text: None,
         click: None,
         touch: None,
+        actions: Vec::new(),
+        window: None,
         check: false,
         json: false,
     };
@@ -125,6 +133,8 @@ fn parse_args() -> Result<Args, String> {
                     a.touch = point;
                 }
             }
+            "--actions" => a.actions = value()?.split(';').map(str::to_owned).filter(|s| !s.is_empty()).collect(),
+            "--window" => a.window = Some(value()?.parse().map_err(|_| "bad --window")?),
             "--check" => a.check = true,
             "--json" => a.json = true,
             "-h" | "--help" => {
@@ -227,6 +237,46 @@ fn save_png(frame: &ff::frame::Video, crop: proto::Rect, path: &std::path::Path)
     encoder.write_header().and_then(|mut w| w.write_image_data(&pixels)).map_err(|e| e.to_string())
 }
 
+/// The messages for one `--actions` step. `wait:MS` is returned as a Ping carrying the
+/// delay, which the caller turns into a pause.
+fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
+    let (verb, arg) = action.split_once(':').ok_or_else(|| format!("bad action {action}"))?;
+    let point = |a: &str| -> Result<(f64, f64), String> {
+        let (x, y) = a.split_once(',').ok_or_else(|| format!("bad point {a}"))?;
+        Ok((x.parse().map_err(|_| format!("bad x {x}"))?, y.parse().map_err(|_| format!("bad y {y}"))?))
+    };
+    Ok(match verb {
+        "key" => {
+            let mut parts = arg.split('+');
+            let sym = parts.next().unwrap_or_default();
+            let keysym =
+                u32::from_str_radix(sym.trim_start_matches("0x"), 16).map_err(|_| format!("bad keysym {sym}"))?;
+            let mods: Vec<String> = parts.map(str::to_owned).collect();
+            [true, false].map(|pressed| Message::Key(proto::Key { keysym, pressed, mods: mods.clone() })).to_vec()
+        }
+        "text" => vec![Message::Text(proto::Text { commit: Some(arg.to_owned()), ..Default::default() })],
+        "tap" => {
+            let (x, y) = point(arg)?;
+            [proto::TouchPhase::Down, proto::TouchPhase::Up]
+                .map(|phase| {
+                    Message::Touch(proto::Touch {
+                        id,
+                        points: vec![proto::TouchPoint { slot: 0, phase, x, y, force: None, radius: None }],
+                    })
+                })
+                .to_vec()
+        }
+        "click" => {
+            let (x, y) = point(arg)?;
+            [proto::buttons::LEFT, 0]
+                .map(|buttons| Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None }))
+                .to_vec()
+        }
+        "wait" => vec![Message::Ping { t_us: arg.parse().map_err(|_| format!("bad wait {arg}"))? }],
+        _ => return Err(format!("unknown action {verb}")),
+    })
+}
+
 fn send(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, m: &Message) -> Result<(), String> {
     ws.send(WsMessage::Binary(proto::encode(m).into())).map_err(|e| e.to_string())
 }
@@ -288,6 +338,9 @@ fn run(args: Args) -> Result<bool, String> {
     let mut decoders: BTreeMap<u64, Decoder> = BTreeMap::new();
     let mut hello: Option<proto::ServerHello> = None;
     let mut acted = false;
+    let mut pending: std::collections::VecDeque<String> = args.actions.iter().cloned().collect();
+    let mut target: Option<u64> = None;
+    let mut next_action = Instant::now();
     let vsync_interval = Duration::from_secs_f64(1.0 / args.displays[0].refresh_hz.max(1.0));
     let mut next_vsync = Instant::now();
     let mut text_input_events = 0u32;
@@ -297,6 +350,19 @@ fn run(args: Args) -> Result<bool, String> {
 
     'outer: while start.elapsed() < args.duration {
         let now = Instant::now();
+        if let (Some(id), Some(action)) = (target, pending.front().cloned()) {
+            if now >= next_action {
+                pending.pop_front();
+                next_action = now + Duration::from_millis(300);
+                for m in action_messages(id, &action)? {
+                    if let Message::Ping { t_us } = m {
+                        next_action = now + Duration::from_millis(t_us);
+                        continue;
+                    }
+                    send(&mut ws, &m)?;
+                }
+            }
+        }
         if hello.is_some() && now >= next_vsync {
             for d in &args.displays {
                 send(&mut ws, &Message::Vsync { display: d.id, t_us: monotonic_us() })?;
@@ -423,6 +489,13 @@ fn run(args: Args) -> Result<bool, String> {
                     send(&mut ws, &Message::Ack { id: f.id, pts_us: f.pts_us, decoded_us })?;
                     if decoded_us < 0 {
                         send(&mut ws, &Message::RequestKeyframe { id: f.id })?;
+                    }
+                    if target.is_none()
+                        && got
+                        && args.window.is_none_or(|w| w == f.id)
+                        && windows.get(&f.id).is_some_and(|w| w.kind != "popup")
+                    {
+                        target = Some(f.id);
                     }
                     if !acted && got {
                         acted = true;

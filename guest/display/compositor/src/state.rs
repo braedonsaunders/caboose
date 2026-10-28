@@ -625,6 +625,7 @@ impl State {
             }
             Surface::Popup(_) => {}
         }
+        tracing::info!("keyboard focus: window {id}");
         let serial = self.next_serial();
         keyboard.set_focus(self, Some(focus), serial);
     }

@@ -165,6 +165,15 @@ impl TextInputs {
         !inputs.is_empty()
     }
 
+    /// The text-input state of `surface` now: `Some(purpose)` when it is enabled.
+    pub fn enabled_purpose(&mut self, surface: &WlSurface) -> Option<Option<&'static str>> {
+        self.live().find_map(|i| {
+            let inner = i.data::<InputData>().unwrap().inner.lock().unwrap();
+            (inner.current.enabled && inner.entered.as_ref() == Some(surface))
+                .then(|| inner.current.purpose.map(purpose_name))
+        })
+    }
+
     /// Whether the surface reported surrounding text (so deletions are exact).
     pub fn has_surrounding(&mut self, surface: &WlSurface) -> bool {
         self.enabled_on(surface)

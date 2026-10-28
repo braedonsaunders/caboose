@@ -106,6 +106,9 @@ impl State {
             // Before hello, or a replaced client still talking: nothing to act on.
             return;
         }
+        if !matches!(message, Message::Vsync { .. } | Message::Ack { .. }) {
+            tracing::debug!("connection {conn}: {message:?}");
+        }
         match message {
             Message::Vsync { display, t_us: _ } => self.on_vsync(display),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -191,6 +194,18 @@ impl State {
         self.sync_windows();
         if let Some(cursor) = self.cursor.clone() {
             self.net.send(conn, &cursor);
+        }
+        // Text input enabled before this client connected still needs the keyboard; the
+        // toggle itself went to no one (or to the previous client).
+        if let Some(surface) = self.keyboard_focus_surface() {
+            if let (Some(purpose), Some(id)) =
+                (self.text_inputs.enabled_purpose(&surface), self.window_of_surface(&surface))
+            {
+                if self.windows.get(id).is_some_and(|w| w.announced.is_some()) {
+                    let state = proto::TextInputState { id, enabled: true, purpose: purpose.map(str::to_owned) };
+                    self.net.send(conn, &Message::TextInput(state));
+                }
+            }
         }
     }
 

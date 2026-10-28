@@ -232,6 +232,19 @@ def check_popup():
     return with_server(CHROMIUM + ["--window-size=900,400", f"--app={PAGES}/popup.html"], run)
 
 
+def check_text_input_on_connect():
+    def run(proc, token):
+        time.sleep(4)
+        # The page focused its field long before this client: it must still be told.
+        for attempt in (1, 2):
+            r = probe(["--token-file", token, "--duration", "2", "--windows", "1"])
+            if r["text_input_events"] < 1:
+                raise Failed(f"connection {attempt} was not told text input is enabled")
+        return "each new client is told the focused field has text input enabled"
+    return with_server(CHROMIUM + ["--enable-wayland-ime", "--wayland-text-input-version=3", "--window-size=900,400",
+                                   f"--app={PAGES}/input.html"], run)
+
+
 def check_idle():
     def run(proc, token):
         r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--server-pid", str(proc.pid)])
@@ -254,6 +267,7 @@ CHECKS = [
     ("reconnect", check_reconnect),
     ("replace", check_replace),
     ("popup", check_popup),
+    ("text-input-on-connect", check_text_input_on_connect),
     ("idle", check_idle),
 ]
 
