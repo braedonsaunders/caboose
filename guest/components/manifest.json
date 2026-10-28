@@ -4,6 +4,8 @@
   "components/version.py",
   "files/caboose-files.py",
   "files/caboose-files.service",
+  "terminal/caboose-terminal.py",
+  "terminal/caboose-terminal.service",
   "notifications/install.sh",
   "notifications/monitor.py",
   "notifications/daemon.py",

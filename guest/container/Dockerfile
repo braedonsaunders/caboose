@@ -43,6 +43,7 @@ COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /tmp/agentd
 RUN /tmp/agentd/install.sh && rm -rf /tmp/agentd
 COPY components /tmp/bundle/components
 COPY files /tmp/bundle/files
+COPY terminal /tmp/bundle/terminal
 COPY notifications /tmp/bundle/notifications
 COPY phone /tmp/bundle/phone
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
