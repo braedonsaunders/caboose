@@ -74,3 +74,42 @@ it('routes agent replies, approvals, files and links with the right status codes
   expect(await (await post('/v1/open', { url: 'https://example.com' })).json()).toEqual({ opened: true })
   expect(runs.at(-1)?.at(-1)).toBe('https://example.com/')
 })
+
+it('relays phone events only to authenticated phone controls and serves staged files', async () => {
+  let drains = 0
+  const id = 'a'.repeat(32)
+  const event = { type: 'phone.share', id, path: `/home/caboose/.cache/caboose/phone/files/${id}`, name: 'test.txt', size: 3, contentType: 'text/plain' }
+  const guest = { run: vi.fn(async (_command: string, args: string[]) => {
+    if (args.includes('drain')) { drains++; return JSON.stringify(drains === 1 ? [event] : []) }
+    if (args.includes('info')) return '3'
+    if (args.includes('read')) return 'YWJj'
+    return ''
+  }) }
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+    park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {},
+    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const auth = { authorization: 'Bearer owner' }
+  expect((await fetch(`${base}/v1/phone/files/${id}`)).status).toBe(401)
+  expect((await fetch(`${base}/v1/session`, { method: 'POST', headers: auth })).status).toBe(200)
+  const control = new WebSocket(base.replace('http:', 'ws:') + '/v1/control', { headers: auth })
+  const seen: unknown[] = []
+  control.on('message', data => seen.push(JSON.parse(String(data))))
+  await once(control, 'open')
+  await new Promise(resolve => setTimeout(resolve, 50))
+  expect(drains).toBe(0)
+  const phone = new WebSocket(base.replace('http:', 'ws:') + '/v1/control?phone=1', { headers: auth })
+  const received: unknown[] = []
+  phone.on('message', data => received.push(JSON.parse(String(data))))
+  await once(phone, 'open')
+  await vi.waitFor(() => expect(received).toContainEqual(event))
+  expect(seen).not.toContainEqual(event)
+  expect(await (await fetch(`${base}/v1/phone/files/${id}`, { headers: auth })).json()).toEqual({ data: 'YWJj' })
+  expect((await fetch(`${base}/v1/phone/files/bad`, { headers: auth })).status).toBe(400)
+  phone.close(); control.close()
+  await Promise.all([once(phone, 'close'), once(control, 'close')])
+})

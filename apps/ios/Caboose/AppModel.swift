@@ -27,6 +27,7 @@ final class AppModel {
     let agents = AgentCenter()
     /// Videos playing on the computer that can move to the phone.
     let media = MediaHandoff()
+    let phone = PhoneHandoff()
     /// A window on the agent seat being watched or taken over full screen.
     var presentedAgentWindowID: Int?
     private(set) var credentials: Credentials?
@@ -66,8 +67,12 @@ final class AppModel {
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
         agents.onComputer = { [weak self] status in self?.computerStatus = status }
-        agents.onEvent = { [weak self] type, event in self?.media.handle(type, event) }
+        agents.onEvent = { [weak self] type, event in
+            self?.media.handle(type, event)
+            self?.phone.handle(type, event)
+        }
         media.attach(host: { [weak self] in self?.host })
+        phone.attach(host: { [weak self] in self?.host })
     }
 
     var host: HostClient? { credentials.map { HostClient(baseURL: activeHostURL ?? $0.hostURL, token: $0.token) } }
@@ -103,6 +108,7 @@ final class AppModel {
         session = nil
         agents.reset()
         media.reset()
+        phone.reset()
         computerStatus = nil
         settingsPresented = false
         Credentials.clear()
@@ -125,6 +131,9 @@ final class AppModel {
         if !quiet { phase = .waking }
         do {
             let wake = try await host.wake()
+            // A wake may finish after backgrounding or changing computers. Do not attach
+            // an old computer's control channel in either case.
+            guard sceneActive, self.host?.token == host.token, self.host?.baseURL == host.baseURL else { return }
             computer = wake.computer
             if !quiet { phase = .connecting }
             startSession(host: host, display: wake.display)
@@ -141,6 +150,7 @@ final class AppModel {
 
     func sceneBecameActive() {
         sceneActive = true
+        phone.setActive(true)
         offerPasteboardIfChanged()
         if phase != .displayElsewhere, session == nil || session?.state != .ready { Task { await wake() } }
     }
@@ -148,6 +158,7 @@ final class AppModel {
     /// Leaving the app closes the display; the computer keeps every app running and parks on idle.
     func sceneEnteredBackground() {
         sceneActive = false
+        phone.setActive(false)
         reconnectTask?.cancel()
         if let session {
             frameCache = session.windows.reduce(into: [:]) { cache, entry in
@@ -175,7 +186,7 @@ final class AppModel {
         session.onClipboardText = { text in UIPasteboard.general.string = text }
         session.clipboardProvider = { UIPasteboard.general.string }
         session.onBell = { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
-        session.onOpenURL = { url in UIApplication.shared.open(url) }
+        session.onOpenURL = { [weak self] url in self?.phone.open(url) }
         session.onNotification = { note in Self.post(note) }
         session.onRaise = { [weak self] wid in self?.presentedWindowID = wid }
         session.cachedFrame = { [weak self] wid in self?.frameCache[wid] }

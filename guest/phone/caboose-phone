@@ -1,0 +1,140 @@
+#!/usr/bin/python3
+"""Queue owner-initiated handoffs; the host reads the queue as the desktop user."""
+import base64
+import json
+import mimetypes
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+import uuid
+
+HOME = pathlib.Path.home()
+ROOT = HOME / '.cache/caboose/phone'
+QUEUE = ROOT / 'queue'
+FILES = ROOT / 'files'
+LIMIT = 10 * 1024 * 1024
+ID = re.compile(r'^[0-9a-f]{32}$')
+SCHEMES = {'http', 'https', 'mailto', 'tel', 'sms', 'facetime', 'facetime-audio', 'maps', 'geo'}
+
+
+def prepare():
+    for d in (ROOT, QUEUE, FILES):
+        d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    now = time.time()
+    for d in (QUEUE, FILES):
+        for f in d.iterdir():
+            try:
+                if f.is_file() and now - f.stat().st_mtime > 86400:
+                    f.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def enqueue(event):
+    prepare()
+    if len(list(QUEUE.glob('*.json'))) >= 100:
+        raise ValueError('The phone handoff queue is full; connect the phone and try again')
+    fd, path = tempfile.mkstemp(prefix='.event-', dir=QUEUE)
+    try:
+        with os.fdopen(fd, 'w') as out:
+            json.dump(event, out, separators=(',', ':'))
+        os.replace(path, QUEUE / (f'{time.time_ns():020d}-' + uuid.uuid4().hex + '.json'))
+    finally:
+        if os.path.exists(path): os.unlink(path)
+
+
+def handoff_file(path, kind, name=None):
+    prepare()
+    source = pathlib.Path(path)
+    if not source.is_file(): raise ValueError('Choose a regular file')
+    if source.stat().st_size > LIMIT: raise ValueError('Files are limited to 10 MiB')
+    file_id = uuid.uuid4().hex
+    target = FILES / file_id
+    try:
+        # Copy a snapshot, bounded even if the source grows while it is being copied.
+        with source.open('rb') as inp, target.open('xb') as out:
+            os.chmod(target, 0o600)
+            size = 0
+            while True:
+                chunk = inp.read(65536)
+                if not chunk: break
+                size += len(chunk)
+                if size > LIMIT: raise ValueError('Files are limited to 10 MiB')
+                out.write(chunk)
+        name = pathlib.Path(name or source.name).name[:200] or 'file'
+        name = ''.join(c for c in name if ord(c) >= 32 and ord(c) != 127) or 'file'
+        content_type = 'application/pdf' if kind == 'phone.print' else (mimetypes.guess_type(name)[0] or 'application/octet-stream')
+        if kind == 'phone.print':
+            with target.open('rb') as f:
+                if f.read(5) != b'%PDF-': raise ValueError('Print job is not PDF')
+        enqueue({'type': kind, 'id': file_id, 'path': str(target), 'name': name, 'size': size, 'contentType': content_type})
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+
+
+def main():
+    action = pathlib.Path(sys.argv[0]).name
+    args = sys.argv[1:]
+    if action == 'caboose-open':
+        if len(args) != 1: raise ValueError('Usage: caboose-open URL')
+        url = args[0]
+        if len(url) > 8192 or any(ord(c) <= 32 or ord(c) == 127 for c in url) or urllib.parse.urlsplit(url).scheme.lower() not in SCHEMES:
+            raise ValueError('Unsupported or invalid URL')
+        enqueue({'type': 'phone.open', 'url': url})
+    elif action == 'caboose-share':
+        if not args: raise ValueError('Usage: caboose-share FILE [FILE ...]')
+        for path in args: handoff_file(path, 'phone.share')
+    elif action == 'caboose-phone':
+        if len(args) >= 2 and args[0] == 'print': handoff_file(args[1], 'phone.print', args[2] if len(args) > 2 else 'Print job.pdf')
+        elif args == ['drain']:
+            prepare()
+            # Each rename claims an event before reading, preventing duplicate delivery on overlapping polls.
+            events = []
+            budget = 45000
+            for path in sorted(QUEUE.glob('*.json'))[:50]:
+                try: size = path.stat().st_size
+                except FileNotFoundError: continue
+                if events and size + 1 > budget: break
+                budget -= min(size + 1, budget)
+                claimed = path.with_suffix('.claimed')
+                try:
+                    path.rename(claimed)
+                    if claimed.stat().st_size <= 16384:
+                        events.append(json.loads(claimed.read_text()))
+                except (FileNotFoundError, ValueError, OSError): pass
+                finally: claimed.unlink(missing_ok=True)
+            print(json.dumps(events, separators=(',', ':')))
+        elif len(args) == 2 and args[0] == 'info' and ID.fullmatch(args[1]):
+            import stat
+            fd = os.open(FILES / args[1], os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as f:
+                info = os.fstat(f.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > LIMIT or time.time() - info.st_mtime > 86400:
+                    raise ValueError('File is unavailable')
+                print(info.st_size)
+        elif len(args) == 4 and args[0] == 'read' and ID.fullmatch(args[1]):
+            offset, length = int(args[2]), int(args[3])
+            if offset < 0 or not 0 < length <= 49152 or offset > LIMIT: raise ValueError('Invalid range')
+            # Refuse symlinks even though the guest is already the owner's computer.
+            fd = os.open(FILES / args[1], os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as f:
+                f.seek(offset)
+                sys.stdout.write(base64.b64encode(f.read(length)).decode())
+        else: raise ValueError('Usage: caboose-phone drain | read ID OFFSET LENGTH | print FILE [NAME]')
+    else: raise ValueError('Unknown command')
+
+if __name__ == '__main__':
+    try: main()
+    except (ValueError, OSError) as e:
+        print('caboose-phone: ' + str(e), file=sys.stderr)
+        if (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')) and shutil.which('notify-send'):
+            try: subprocess.run(['notify-send', 'iPhone handoff failed', str(e)], timeout=3, check=False)
+            except (OSError, subprocess.TimeoutExpired): pass
+        sys.exit(1)

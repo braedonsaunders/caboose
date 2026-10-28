@@ -56,3 +56,9 @@ profile is based on the [Moby seccomp v0.2.1 default](https://github.com/moby/pr
 (Apache-2.0), with clone/unshare allowed for user, PID and network namespaces;
 mount, UTS, IPC and cgroup namespace creation remains blocked. It must be
 reviewed against the Docker version and local security requirements.
+
+## iOS handoff and printing
+
+The container installs the same commands, desktop integration and iPhone CUPS queue as
+the microVM; `caboose-session` starts CUPS for either owner display. See
+[`guest/phone/README.md`](../phone/README.md) for behavior and the scripted guest check.

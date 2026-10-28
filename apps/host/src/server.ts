@@ -8,6 +8,7 @@ import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from '.
 import { HomeOwnership } from './home.js'
 import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
 import { AgentRegistry } from './registry.js'
+import { PhoneHandoff, readPhoneFile } from './phone.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
 import type { DisplayProtocol } from './config.js'
 import type { ComputerResources } from './driver.js'
@@ -63,6 +64,7 @@ export function createCabooseServer(options: {
   const computer = new ComputerLifecycle(controller, settings.get().idleMs)
   const sockets = new Set<WebSocket>()
   const controls = new Set<WebSocket>()
+  const phoneControls = new Set<WebSocket>()
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024, handleProtocols: protocols => protocols.has('binary') ? 'binary' : false })
   function broadcast(event: unknown): void {
     const message = JSON.stringify(event)
@@ -74,8 +76,15 @@ export function createCabooseServer(options: {
     resolver: catalog, home, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
   })
   const media = new MediaHandoff(() => controller.guest(), broadcast)
+  const phone = new PhoneHandoff(() => controller.guest(), event => {
+    const message = JSON.stringify(event)
+    for (const socket of phoneControls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
+  })
   /** Media is polled only while the computer is already running and someone is watching it. */
-  function syncMedia(): void { media.setActive(computer.state === 'running' && sockets.size - controls.size > 0) }
+  function syncMedia(): void {
+    media.setActive(computer.state === 'running' && sockets.size - controls.size > 0)
+    phone.setActive(computer.state === 'running' && phoneControls.size > 0)
+  }
   function managementStatus() {
     const desired = settings.get()
     const active = controller.activeResources()
@@ -215,6 +224,8 @@ export function createCabooseServer(options: {
         const input = await readJson(request)
         return json(response, 200, await computer.run(() => screen(controller.guest(), input)))
       }
+      const phoneFile = /^\/v1\/phone\/files\/([^/]+)$/.exec(path)
+      if (request.method === 'GET' && phoneFile?.[1]) return json(response, 200, await leased(() => readPhoneFile(controller.guest(), phoneFile[1]!)))
       if (request.method === 'POST' && path === '/v1/files') {
         const input = await readJson(request, FILE_BODY_LIMIT)
         return json(response, 200, await computer.run(() => saveDownload(controller.guest(), input)))
@@ -269,10 +280,13 @@ export function createCabooseServer(options: {
     try {
       wss.handleUpgrade(request, socket, head, client => {
         sockets.add(client)
-        if (path === '/v1/control') controls.add(client)
+        if (path === '/v1/control') {
+          controls.add(client)
+          if (url.searchParams.get('phone') === '1') phoneControls.add(client)
+        }
         syncMedia()
         client.on('error', () => client.terminate())
-        client.once('close', () => { sockets.delete(client); controls.delete(client); release(); syncMedia() })
+        client.once('close', () => { sockets.delete(client); controls.delete(client); phoneControls.delete(client); release(); syncMedia() })
         if (path === '/v1/control') {
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))

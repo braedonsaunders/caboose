@@ -213,3 +213,12 @@ random value, then run `docker compose -f deploy/compose.yaml up -d` to
 recreate the service. Update every client; the old token stops working. Keep
 this file private and never commit it. The token is also visible to Docker
 administrators through container configuration.
+
+## iOS handoff
+
+The host relays validated guest `phone.open`, `phone.share`, and `phone.print` events
+only to owner-authenticated `/v1/control?phone=1` sockets, and only polls while one is
+connected. `GET /v1/phone/files/:id` reads a staged file through the guest command
+channel; it does not accept arbitrary guest paths or wake the computer. See
+`../../docs/architecture.md` § iOS weave for the schema, limits and delivery semantics,
+and `../../guest/phone/README.md` for the guest-side CUPS and command check.

@@ -127,3 +127,9 @@ requires a client connected with speaker playback enabled.
 Login and interactive Bash shells on `:100` discover Xpra's PulseAudio server
 from its X11 root property; an explicitly configured `PULSE_SERVER` is preserved,
 and the separate `:101` agent seat is not redirected to the owner's speaker.
+
+## iOS handoff and printing
+
+The image installs the commands, desktop handlers and iPhone CUPS queue described in
+[`guest/phone/README.md`](../phone/README.md), including the scripted guest check. The
+queue uses the same handoff for Xpra and Caboose Display.
