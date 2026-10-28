@@ -1,5 +1,8 @@
 import { once } from 'node:events'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { PushDevices, PushService } from './push.js'
 import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -73,4 +76,28 @@ it('routes agent replies, approvals, files and links with the right status codes
   expect((await post('/v1/open', { url: 'file:///etc/passwd' })).status).toBe(400)
   expect(await (await post('/v1/open', { url: 'https://example.com' })).json()).toEqual({ opened: true })
   expect(runs.at(-1)?.at(-1)).toBe('https://example.com/')
+})
+
+
+it('exposes authenticated push registration and capability only when configured', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'caboose-push-api-'))
+  close.push(() => rm(root, { recursive: true, force: true }))
+  const devices = await PushDevices.open(join(root, 'devices.json'))
+  const push = new PushService(devices, { send: async () => ({ status: 200 }) })
+  const controller: Controller = { wake: async () => { throw new Error('not used') }, park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller, push })
+  app.server.listen(0, '127.0.0.1')
+  await once(app.server, 'listening')
+  close.unshift(() => new Promise(resolve => app.server.close(() => resolve())))
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const request = (method: string, body: object, auth = true) => fetch(base + '/v1/devices/push', { method, headers: { ...(auth ? { authorization: 'Bearer owner' } : {}), 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  const device = { token: 'ab'.repeat(32), environment: 'sandbox', kinds: ['approval'] }
+  expect((await request('POST', device, false)).status).toBe(401)
+  expect((await request('POST', { ...device, environment: 'other' })).status).toBe(400)
+  expect((await request('POST', device)).status).toBe(200)
+  expect(devices.list()).toEqual([device])
+  expect(await (await fetch(base + '/v1/computer', { headers: { authorization: 'Bearer owner' } })).json()).toMatchObject({ capabilities: { push: true } })
+  expect((await request('DELETE', { token: device.token })).status).toBe(200)
+  expect(devices.list()).toEqual([])
 })

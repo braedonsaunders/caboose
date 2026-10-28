@@ -12,6 +12,8 @@ import { SettingsInputError, type SettingsStore } from './settings.js'
 import type { DisplayProtocol } from './config.js'
 import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
+import type { PushService } from './push.js'
+import type { AgentEvent } from './agents.js'
 import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenType } from './screen.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
@@ -58,6 +60,7 @@ export function createCabooseServer(options: {
   registry?: AgentRegistry
   /** How long a task's runner keeps its agent after a turn, waiting for a reply. */
   agentIdleMs?: number
+  push?: PushService
 }) {
   const { controller, token, settings } = options
   const computer = new ComputerLifecycle(controller, settings.get().idleMs)
@@ -70,7 +73,10 @@ export function createCabooseServer(options: {
   }
   const home = new HomeOwnership()
   const catalog = new AgentCatalog(options.registry ?? new AgentRegistry(), () => controller.guest(), settings, home)
-  const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), {
+  const agents = new AgentTasks(() => controller.guest(), event => {
+    broadcast(event)
+    if (options.push) void options.push.event(event as AgentEvent, controls.size > 0)
+  }, () => computer.acquire(), {
     resolver: catalog, home, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
   })
   const media = new MediaHandoff(() => controller.guest(), broadcast)
@@ -85,7 +91,7 @@ export function createCabooseServer(options: {
       restartRequired: controller.hasSavedState() && (!active || active.memoryMb !== desired.memoryMb || active.vcpus !== desired.vcpus),
       clients: { display: sockets.size - controls.size, control: controls.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
-      capabilities: { restart: typeof controller.restart === 'function' },
+      capabilities: { restart: typeof controller.restart === 'function', push: !!options.push },
       lastError: computer.lastError ?? controller.lastError?.() ?? null,
     }
   }
@@ -121,6 +127,16 @@ export function createCabooseServer(options: {
       }
       if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
       if (request.method === 'GET' && path === '/v1/health') return json(response, 200, controller.stats())
+      if (path === '/v1/devices/push' && request.method === 'POST') {
+        if (!options.push) return json(response, 503, { error: 'push unavailable' })
+        await options.push.devices.register(await readJson(request))
+        return json(response, 200, { registered: true })
+      }
+      if (path === '/v1/devices/push' && request.method === 'DELETE') {
+        if (!options.push) return json(response, 503, { error: 'push unavailable' })
+        await options.push.devices.remove((await readJson(request)).token)
+        return json(response, 200, { removed: true })
+      }
       if (request.method === 'GET' && path === '/v1/computer') return json(response, 200, managementStatus())
       if (request.method === 'PATCH' && path === '/v1/computer/settings') {
         const input = await readJson(request)

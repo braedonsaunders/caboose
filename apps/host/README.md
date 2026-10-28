@@ -213,3 +213,18 @@ random value, then run `docker compose -f deploy/compose.yaml up -d` to
 recreate the service. Update every client; the old token stops working. Keep
 this file private and never commit it. The token is also visible to Docker
 administrators through container configuration.
+
+## APNs
+
+Set all of `CABOOSE_APNS_KEY_PATH` (a private P-256 .p8 file),
+`CABOOSE_APNS_KEY_ID`, `CABOOSE_APNS_TEAM_ID`, and `CABOOSE_APNS_TOPIC` to enable
+the host APNs provider. Keep the key and environment private. Devices are stored
+in `push-devices.json` under `CABOOSE_IMAGE_ROOT` with mode 0600. The API and
+current limitations are described in `../../docs/architecture.md` § Notifications.
+The iOS app does not yet register itself, so registration requires an API client.
+
+On a host with real credentials and at least one registered device, run
+`node apps/host/scripts/check-push.mjs [device-index]` from the repository root.
+It sends a test alert to the indexed registered device (default 0); APNs acceptance
+is not proof of device delivery, so check the device too. The index does not print
+tokens.
