@@ -223,7 +223,8 @@ past individual failures. Catalog operations hold a computer lease.
 
 The host runs the installer as root through the same argument-only guest channel on both
 runtimes. Downloads go directly from the guest, are size- and SHA-256-checked before APT
-installs them, and are retained for rollback. A successful change retains the prior cached
+installs them, and are retained for rollback. Release installs also ensure Mesa software
+rendering packages are present on older computers. A successful change retains the prior cached
 release where available. APT apps do not promise rollback. Package state and failures are
 recorded in the guest and installed versions come from dpkg; interrupted operations are
 reported on the next listing. The catalog listing uses the last observed state while the

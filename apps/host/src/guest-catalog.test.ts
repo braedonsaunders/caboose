@@ -34,4 +34,5 @@ it('verifies guest downloads before invoking apt and retains the previous releas
   expect(state.current.version).toBe('1.0.0')
   expect(state.previous.version).toBe('2.0.0')
   expect(readFileSync(log, 'utf8')).toContain('example-1.0.0.deb')
+  expect(readFileSync(log, 'utf8')).toContain('mesa-vulkan-drivers libgl1-mesa-dri')
 })

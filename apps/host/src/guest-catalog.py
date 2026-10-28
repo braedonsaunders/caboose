@@ -118,7 +118,7 @@ with (ROOT / 'install.lock').open('w') as lock:
             record['stage'] = 'installing'
             save(path, record)
             run(['apt-get', 'update'])
-            run(['apt-get', 'install', '-y', '--no-install-recommends', '--allow-downgrades', str(artifact)])
+            run(['apt-get', 'install', '-y', '--no-install-recommends', '--allow-downgrades', str(artifact), 'mesa-vulkan-drivers', 'libgl1-mesa-dri'])
             if current and current != target:
                 record['previous'] = current
             record['current'] = target
