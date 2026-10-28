@@ -6,8 +6,8 @@ import SwiftUI
 ///
 /// The windows keep every touch on them. The yard's own gestures live where the apps have
 /// nothing: the gaps between tiles resize them, the grabber at the top of a tile carries it,
-/// the screen's side edges and the rail along the bottom move along the track, and ⌘⌥ with
-/// the arrows, R, F, W, O and Return does all of it from a keyboard.
+/// the screen's side edges and the dock's column cars move along the track, and ⌘⌥ with the
+/// arrows, R, F, W, O, A and Return does all of it from a keyboard. The dock is always there.
 struct SwitchyardView: View {
     static let space = "switchyard"
 
@@ -17,53 +17,16 @@ struct SwitchyardView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let windows = model.session?.windows ?? [:]
-            let tiles = yard.tiles
-            let live = yard.liveWindows
-            let keyTarget = yard.keyTarget(in: windows)
+            // The dock keeps the bottom, just clear of the home indicator; tiles have the rest.
+            let bottom = max(6, proxy.safeAreaInsets.bottom - 10)
+            let area = CGSize(width: proxy.size.width, height: max(0, proxy.size.height - YardDock.height - 6 - bottom))
             ZStack(alignment: .topLeading) {
-                if let carry = yard.carry, let preview = carry.preview {
-                    RoundedRectangle(cornerRadius: yard.metrics.cornerRadius, style: .continuous)
-                        .fill(.white.opacity(0.1))
-                        .strokeBorder(Brand.amber.opacity(0.9), lineWidth: 1.5)
-                        .frame(width: preview.width, height: preview.height)
-                        .offset(x: preview.minX, y: preview.minY)
-                        .transition(.opacity)
-                        .allowsHitTesting(false)
-                }
-                ForEach(yard.layout.windows.filter { live.contains($0) && $0 != yard.fullscreenWindow }, id: \.self) { id in
-                    if let window = windows[id], let rect = tiles[id] {
-                        let carried = yard.carry?.window == id
-                        YardTile(window: window, yard: yard, rect: rect, focused: yard.layout.focused == id,
-                                 keyboard: model.keyboardVisible && keyTarget == id, onAsk: { askingAbout = $0 })
-                            .scaleEffect(carried ? (yard.carry?.rect.width ?? rect.width) / max(1, rect.width) : 1, anchor: .top)
-                            // Scaled about its top centre, so the centre follows the finger.
-                            .offset(x: carried ? yard.carry!.rect.midX - rect.width / 2 : rect.minX,
-                                    y: carried ? yard.carry!.rect.minY : rect.minY)
-                            .shadow(color: .black.opacity(carried ? 0.45 : 0), radius: 24, y: 14)
-                            .zIndex(carried ? 2 : 0)
-                            .transition(.asymmetric(insertion: .scale(scale: 0.92).combined(with: .opacity),
-                                                    removal: .scale(scale: 0.86).combined(with: .opacity)))
-                    }
-                }
-                handles
-                if let id = yard.fullscreenWindow, let window = windows[id] {
-                    YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: false,
-                                keyboard: model.keyboardVisible && keyTarget == id) {}
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .overlay(alignment: .top) { leaveFullscreenHandle(id) }
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                        .zIndex(3)
-                }
-                popups(windows, keyTarget: keyTarget)
-                edges
-                if yard.layout.isEmpty {
-                    YardLauncher(yard: yard, inline: true)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                } else {
-                    YardRail(yard: yard)
-                        .frame(width: proxy.size.width, height: proxy.size.height, alignment: .bottom)
-                        .zIndex(4)
+                VStack(spacing: 0) {
+                    tracks(size: area)
+                    YardDock(yard: yard, width: proxy.size.width - 16)
+                        .padding(.top, 6)
+                        .padding(.bottom, bottom)
+                        .frame(maxWidth: .infinity)
                 }
                 if yard.overviewOpen {
                     YardOverview(yard: yard)
@@ -71,7 +34,7 @@ struct SwitchyardView: View {
                         .transition(.opacity.combined(with: .scale(scale: 1.06)))
                         .zIndex(5)
                 }
-                if yard.launcherOpen, !yard.layout.isEmpty {
+                if yard.launcherOpen {
                     YardLauncher(yard: yard, inline: false)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         .transition(.opacity.combined(with: .scale(scale: 1.04)))
@@ -79,18 +42,67 @@ struct SwitchyardView: View {
                 }
                 YardKeyCommands(yard: yard)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
-            .coordinateSpace(name: Self.space)
-            .clipped()
-            .onAppear { yard.resize(to: proxy.size) }
-            .onChange(of: proxy.size) { _, size in yard.resize(to: size) }
-            // An app going full screen, or leaving it, is laid out again at once.
-            .onChange(of: yard.fullscreenWindow) { _, _ in yard.apply() }
-            .animation(.smooth(duration: 0.35), value: yard.fullscreenWindow)
         }
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }
+    }
+
+    /// The tiles on their track, in the space above the dock.
+    private func tracks(size: CGSize) -> some View {
+        let windows = model.session?.windows ?? [:]
+        let tiles = yard.tiles
+        let live = yard.liveWindows
+        let keyTarget = yard.keyTarget(in: windows)
+        return ZStack(alignment: .topLeading) {
+            if let carry = yard.carry, let preview = carry.preview {
+                RoundedRectangle(cornerRadius: yard.metrics.cornerRadius, style: .continuous)
+                    .fill(.white.opacity(0.1))
+                    .strokeBorder(Brand.amber.opacity(0.9), lineWidth: 1.5)
+                    .frame(width: preview.width, height: preview.height)
+                    .offset(x: preview.minX, y: preview.minY)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+            ForEach(yard.layout.windows.filter { live.contains($0) && $0 != yard.fullscreenWindow }, id: \.self) { id in
+                if let window = windows[id], let rect = tiles[id] {
+                    let carried = yard.carry?.window == id
+                    YardTile(window: window, yard: yard, rect: rect, focused: yard.layout.focused == id,
+                             keyboard: model.keyboardVisible && keyTarget == id, onAsk: { askingAbout = $0 })
+                        .scaleEffect(carried ? (yard.carry?.rect.width ?? rect.width) / max(1, rect.width) : 1, anchor: .top)
+                        // Scaled about its top centre, so the centre follows the finger.
+                        .offset(x: carried ? yard.carry!.rect.midX - rect.width / 2 : rect.minX,
+                                y: carried ? yard.carry!.rect.minY : rect.minY)
+                        .shadow(color: .black.opacity(carried ? 0.45 : 0), radius: 24, y: 14)
+                        .zIndex(carried ? 2 : 0)
+                        .transition(.asymmetric(insertion: .scale(scale: 0.92).combined(with: .opacity),
+                                                removal: .scale(scale: 0.86).combined(with: .opacity)))
+                }
+            }
+            handles
+            if let id = yard.fullscreenWindow, let window = windows[id] {
+                YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: false,
+                            keyboard: model.keyboardVisible && keyTarget == id) {}
+                    .frame(width: size.width, height: size.height)
+                    .overlay(alignment: .top) { leaveFullscreenHandle(id) }
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    .zIndex(3)
+            }
+            popups(windows, keyTarget: keyTarget)
+            edges
+            if yard.layout.isEmpty {
+                YardLauncher(yard: yard, inline: true)
+                    .frame(width: size.width, height: size.height)
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .coordinateSpace(name: Self.space)
+        .clipped()
+        .onAppear { yard.resize(to: size) }
+        .onChange(of: size) { _, size in yard.resize(to: size) }
+        // An app going full screen, or leaving it, is laid out again at once.
+        .onChange(of: yard.fullscreenWindow) { _, _ in yard.apply() }
+        .animation(.smooth(duration: 0.35), value: yard.fullscreenWindow)
     }
 
     /// A small tab at the top of a full-screen window takes it back into its tile.

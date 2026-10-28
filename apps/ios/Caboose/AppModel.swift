@@ -459,7 +459,7 @@ final class AppModel {
         desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
         desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
-        prepareYard(size: size)
+        prepareYard()
         presentedWindowID = nil
         keyboardVisible = false
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -470,7 +470,6 @@ final class AppModel {
     func deviceDesktopResized(to size: CGSize) {
         guard deviceDesktopActive, size.width > 0, size.height > 0, size != externalSize else { return }
         externalSize = size
-        yard.resize(to: size)
         desktop.size = size
         desktop.ui = desktopUI(forWidth: size.width)
         reconnectForDisplayChange()
@@ -747,7 +746,7 @@ final class AppModel {
             // The same windows, rearranged: tiled into the yard, or set floating again.
             placedWindowIDs.removeAll()
             yard.invalidate()
-            if newValue == .tiled { prepareYard(size: externalSize) }
+            if newValue == .tiled { prepareYard() }
             sessionChanged()
         }
     }
@@ -757,13 +756,12 @@ final class AppModel {
     /// The yard is the desktop on this screen: the Desktop tab, no TV, tiled.
     var yardActive: Bool { deviceDesktopActive && deviceDesktopStyle == .tiled }
 
-    private func prepareYard(size: CGSize) {
+    private func prepareYard() {
         yard.storageKey = credentials.map { "switchyard." + $0.fileDomainIdentifier }
         // The same pixels as the floating desktop: 2x, whatever the screen.
         yard.pixelsPerPoint = desktop.pixelsPerPoint
         yard.session = session
         yard.learnAppClasses { [weak self] id in self?.session?.windows[id]?.appClass?.name }
-        yard.resize(to: size)
     }
 
     /// Takes a window out of the yard to its full-screen card, where the side edges swipe

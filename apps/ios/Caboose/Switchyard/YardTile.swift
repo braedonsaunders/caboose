@@ -189,16 +189,29 @@ final class YardSurfaceView: UIView {
         let size = natural.width > 0 && natural.height > 0 ? natural : bounds.size
         content.transform = .identity
         content.bounds = CGRect(origin: .zero, size: size)
-        let matches = abs(size.width - bounds.width) < 1 && abs(size.height - bounds.height) < 1
-        if stretch, !matches {
+        let wider = size.width > bounds.width + 1, taller = size.height > bounds.height + 1
+        if stretch, abs(size.width - bounds.width) > 1 || abs(size.height - bounds.height) > 1 {
             // Fill the tile from its top-left corner, as the new layout will.
             let scale = max(bounds.width / size.width, bounds.height / size.height)
-            content.transform = CGAffineTransform(scaleX: scale, y: scale)
-            content.center = CGPoint(x: size.width * scale / 2, y: size.height * scale / 2)
-        } else if size.width < bounds.width - 1 || size.height < bounds.height - 1 {
-            content.center = CGPoint(x: max(size.width / 2, bounds.midX), y: max(size.height / 2, bounds.midY))
+            place(scale: scale, size: size, centred: false)
+        } else if wider || taller {
+            // An app that will not go as small as its tile (a minimum width of its own) is
+            // shown whole, a little smaller, rather than cut off at the tile's edge.
+            let scale = min(bounds.width / size.width, bounds.height / size.height)
+            place(scale: scale, size: size, centred: true)
         } else {
-            content.center = CGPoint(x: size.width / 2, y: size.height / 2)
+            place(scale: 1, size: size, centred: true)
         }
+    }
+
+    /// Scales the window about its top-left corner and places it at the top of the tile,
+    /// centred across it when it is narrower.
+    private func place(scale: CGFloat, size: CGSize, centred: Bool) {
+        if scale != 1 { content.transform = CGAffineTransform(scaleX: scale, y: scale) }
+        let shown = CGSize(width: size.width * scale, height: size.height * scale)
+        let x = centred ? max(0, (bounds.width - shown.width) / 2) : 0
+        // Shrunk to fit, it keeps to the top like any tile; a small window sits in the middle.
+        let y = centred && scale >= 1 ? max(0, (bounds.height - shown.height) / 2) : 0
+        content.center = CGPoint(x: x + shown.width / 2, y: y + shown.height / 2)
     }
 }
