@@ -142,9 +142,10 @@ export class AgentRoutines {
   }
   private report(error: unknown) { try { this.options.onError?.(error) } catch {} }
   list(): AgentRoutine[] { return structuredClone(this.state.routines) }
-  get(id: string): AgentRoutine {
+  get(id: string, expectedProfileId?: string): AgentRoutine {
     const r = this.state.routines.find(r => r.id === id)
     if (!r) throw new AgentNotFoundError('Routine not found')
+    if (expectedProfileId !== undefined && r.profileId !== expectedProfileId) throw new AgentInputError('Routine does not belong to this profile')
     return structuredClone(r)
   }
   history(id?: string): AgentRoutineRun[] { return structuredClone(this.state.runs.filter(r => !id || r.routineId === id).map(r => ({ ...r, input: {} })).reverse()) }
@@ -158,17 +159,18 @@ export class AgentRoutines {
       const next = structuredClone(this.state); next.routines.push(r); await this.commit(next); return structuredClone(r)
     })
   }
-  update(id: string, value: unknown): Promise<AgentRoutine> {
+  update(id: string, value: unknown, expectedProfileId?: string): Promise<AgentRoutine> {
     return this.serial(async () => {
-      const previous = this.get(id), input = fields(value, previous), now = this.now()
+      const previous = this.get(id, expectedProfileId), input = fields(value, previous), now = this.now()
+      if (expectedProfileId !== undefined && input.profileId !== expectedProfileId) throw new AgentInputError('Routine does not belong to this profile')
       const next = structuredClone(this.state), r = next.routines.find(r => r.id === id)!
       const snapshot = await this.options.runtime.snapshot(input.profileId, input.prompt)
       Object.assign(r, input, { profileRevision: snapshot?.revision ?? null, revision: r.revision + 1, updatedAt: now, nextAt: nextOccurrence(input.schedule, now) })
       await this.commit(next); return structuredClone(r)
     })
   }
-  delete(id: string): Promise<void> {
-    return this.serial(async () => { this.get(id); const next = structuredClone(this.state); next.routines = next.routines.filter(r => r.id !== id); await this.commit(next) })
+  delete(id: string, expectedProfileId?: string): Promise<void> {
+    return this.serial(async () => { this.get(id, expectedProfileId); const next = structuredClone(this.state); next.routines = next.routines.filter(r => r.id !== id); await this.commit(next) })
   }
   /** Await after every profile mutation, including archive/restore, before acknowledging it. */
   profileChanged(profileId: string): Promise<void> {
@@ -181,10 +183,10 @@ export class AgentRoutines {
       await this.commit(next)
     })
   }
-  async runNow(id: string): Promise<AgentRoutineRun> {
+  async runNow(id: string, expectedProfileId?: string): Promise<AgentRoutineRun> {
     const run = await this.serial(async () => {
-      const next = structuredClone(this.state), routine = next.routines.find(r => r.id === id)
-      if (!routine) throw new AgentNotFoundError('Routine not found')
+      this.get(id, expectedProfileId)
+      const next = structuredClone(this.state), routine = next.routines.find(r => r.id === id)!
       if (routine.paused || next.runs.some(r => r.routineId === id && pending(r))) throw new AgentConflictError('Routine paused or already active')
       const run = await this.reserve(next, routine, this.now(), 'manual')
       if (!run) throw new AgentConflictError('Profile missing or archived')

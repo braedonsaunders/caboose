@@ -37,3 +37,61 @@ it('scopes memory and routine tools to the bound profile and keeps deleted-run h
     expect(await run('profile_read')).toMatchObject({ id: mine.id, archived: true })
   } finally { await routines.close() }
 })
+
+function barrier() {
+  let release!: () => void
+  const wait = new Promise<void>(resolve => { release = resolve })
+  return { wait, release }
+}
+
+it.each(['routine_update', 'routine_pause', 'routine_delete', 'routine_run'])('rechecks profile authority inside serialized %s after reassignment', async tool => {
+  const profiles = new AgentProfiles({ version: 1, profiles: [] }, { save: async () => {} })
+  const mine = await profiles.create({ name: 'Mine', agent: 'claude-acp' })
+  const other = await profiles.create({ name: 'Other', agent: 'claude-acp' })
+  const entered = barrier(), resume = barrier()
+  let hold = false
+  const routines = await AgentRoutines.create({ load: async () => undefined, save: async () => { if (hold) { entered.release(); await resume.wait } } }, {
+    runtime: { snapshot: async id => ({ revision: id, input: {} }), acquire: async () => () => {}, lookup: async () => null, start: async () => ({ status: 'succeeded' }) },
+  })
+  try {
+    const routine = await routines.create({ name: 'Original', profileId: mine.id, prompt: 'Report', schedule: { kind: 'daily', timeZone: 'UTC', time: '09:00' } })
+    hold = true
+    const ownerEdit = routines.update(routine.id, { profileId: other.id })
+    await entered.wait
+    const dispatch = agentAutomation(profiles, async () => routines, () => {})
+    const operation = dispatch({ taskId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', profileId: mine.id, turn: 1 }, tool,
+      { id: routine.id, ...(tool === 'routine_update' ? { patch: { name: 'Forbidden' } } : tool === 'routine_pause' ? { paused: true } : {}) })
+    const rejection = expect(operation).rejects.toThrow('does not belong')
+    resume.release()
+    await ownerEdit
+    await rejection
+    expect(routines.get(routine.id)).toMatchObject({ profileId: other.id, name: 'Original', paused: false })
+    expect(routines.history()).toEqual([])
+  } finally { resume.release(); await routines.close() }
+})
+
+it('merges omitted memory fields after pending owner edits and rejects mutation after pending archive', async () => {
+  const entered = barrier(), resume = barrier()
+  let hold = false
+  const profiles = new AgentProfiles({ version: 1, profiles: [] }, { save: async () => { if (hold) { entered.release(); await resume.wait } } })
+  const mine = await profiles.create({ name: 'Mine', agent: 'claude-acp' })
+  const saved = await profiles.remember(mine.id, { title: 'Old title', content: 'Old content' })
+  const memory = saved.memories[0]!
+  const routines = await AgentRoutines.create({ load: async () => undefined, save: async () => {} }, {
+    runtime: { snapshot: async () => null, acquire: async () => () => {}, lookup: async () => null, start: async () => ({ status: 'succeeded' }) },
+  })
+  const dispatch = agentAutomation(profiles, async () => routines, () => {})
+  const scope = { taskId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', profileId: mine.id, turn: 1 }
+  try {
+    hold = true
+    const ownerEdit = profiles.remember(mine.id, { title: 'Owner title', content: 'Old content' }, memory.id)
+    await entered.wait
+    const patch = dispatch(scope, 'memory_update', { id: memory.id, content: 'Agent content' })
+    resume.release(); await ownerEdit; await patch
+    expect(profiles.get(mine.id).memories[0]).toMatchObject({ title: 'Owner title', content: 'Agent content' })
+    const archive = profiles.update(mine.id, { archived: true })
+    const rejected = expect(dispatch(scope, 'memory_update', { id: memory.id, content: 'Forbidden' })).rejects.toThrow('archived')
+    await archive; await rejected
+    expect(profiles.get(mine.id).memories[0]!.content).toBe('Agent content')
+  } finally { resume.release(); await routines.close() }
+})

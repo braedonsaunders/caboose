@@ -44,9 +44,7 @@ export function agentAutomation(profiles: AgentProfiles, getRoutines: () => Prom
         else keys(args, ['id'])
         const memoryId = tool === 'memory_remember' ? undefined : identifier(args.id)
         const { id: _id, ...patch } = args
-        const previous = memoryId ? profile.memories.find(memory => memory.id === memoryId) : undefined
-        const input = tool === 'memory_update' && previous ? { title: previous.title, content: previous.content, ...patch } : patch
-        const updated = tool === 'memory_forget' ? await profiles.forget(profile.id, memoryId!) : await profiles.remember(profile.id, input, memoryId)
+        const updated = tool === 'memory_forget' ? await profiles.forget(profile.id, memoryId!, true) : await profiles.remember(profile.id, patch, memoryId, true)
         committed = true
         await routines.profileChanged(profile.id); changed()
         return tool === 'memory_forget' ? { deleted: true } : { id: memoryId ?? updated.memories.at(-1)!.id }
@@ -65,16 +63,16 @@ export function agentAutomation(profiles: AgentProfiles, getRoutines: () => Prom
         keys(args, ['id', 'patch']); const routine = ownRoutine(args.id)
         if (!args.patch || typeof args.patch !== 'object' || Array.isArray(args.patch)) throw new ToolValidationError('patch must be an object')
         keys(args.patch as Record<string, unknown>, routineFields)
-        const updated = await routines.update(routine.id, args.patch)
+        const updated = await routines.update(routine.id, args.patch, scope.profileId)
         return { id: updated.id, nextAt: updated.nextAt, paused: updated.paused }
       }
       if (tool === 'routine_pause') {
         keys(args, ['id', 'paused']); const routine = ownRoutine(args.id)
         if (typeof args.paused !== 'boolean') throw new ToolValidationError('paused must be a boolean')
-        await routines.update(routine.id, { paused: args.paused }); return { id: routine.id, paused: args.paused }
+        await routines.update(routine.id, { paused: args.paused }, scope.profileId); return { id: routine.id, paused: args.paused }
       }
-      if (tool === 'routine_delete') { keys(args, ['id']); await routines.delete(ownRoutine(args.id).id); return { deleted: true } }
-      if (tool === 'routine_run') { keys(args, ['id']); const run = await routines.runNow(ownRoutine(args.id).id); return { id: run.id, status: run.status } }
+      if (tool === 'routine_delete') { keys(args, ['id']); await routines.delete(identifier(args.id), scope.profileId); return { deleted: true } }
+      if (tool === 'routine_run') { keys(args, ['id']); const run = await routines.runNow(identifier(args.id), scope.profileId); return { id: run.id, status: run.status } }
       if (tool === 'routine_history') {
         keys(args, ['id', 'limit']); const limit = page(args.limit, 20, 1, 20)
         const id = args.id === undefined ? undefined : identifier(args.id)

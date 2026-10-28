@@ -8,6 +8,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, expect, it, vi } from 'vitest'
+import { START_SCRIPT, REPLY_SCRIPT } from './agents.js'
 import { AgentRegistry } from './registry.js'
 import { createCabooseServer, type Controller } from './server.js'
 import { SettingsStore, settingsLimits } from './settings.js'
@@ -58,10 +59,19 @@ it('routes agent replies, approvals, files and links with the right status codes
   await once(fileServer, 'listening')
   close.push(() => new Promise(resolve => fileServer.close(() => resolve())))
   const runs: string[][] = []
+  const transcripts = new Map<string, string>()
   const launch = vi.fn(async (_id: string, _path?: string) => {})
   const guest = { ownerEnv: ['DISPLAY=:110'], run: async (command: string, args: string[]) => {
     runs.push([command, ...args])
     if (command === '/usr/bin/python3' && args[2] === 'list') return '{}'
+    // This route fixture models a runner that immediately claims admitted prompts.
+    // Durable delivery now asks for that evidence before draining queued replies.
+    if (args[5] === START_SCRIPT) transcripts.set(args[7]!, JSON.stringify({ type: 'user', turn: 1, text: args[8] }))
+    if (args[5] === REPLY_SCRIPT) {
+      transcripts.set(args[7]!, (transcripts.get(args[7]!) ?? '') + '\n' + JSON.stringify({ type: 'user', turn: Number(args[9]), text: 'claimed reply' }))
+      return 'claimed'
+    }
+    if (args[8]?.startsWith('// caboose delivery evidence')) return JSON.stringify({ journal: '', receipt: '', receiptExists: false, inbox: '', published: '', transcript: transcripts.get(args[7]!) ?? '', alive: true })
     return args[5]?.includes('while [ -e "$target" ]') ? '/home/caboose/Downloads/a.txt' : ''
   } }
   const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),

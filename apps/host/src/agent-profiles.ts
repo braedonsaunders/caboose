@@ -143,16 +143,17 @@ export class AgentProfiles {
     })
   }
 
-  remember(id: string, value: unknown, memoryId?: string): Promise<AgentProfile> {
+  remember(id: string, value: unknown, memoryId?: string, requireActive = false): Promise<AgentProfile> {
     const input = object(value)
     keys(input, ['title', 'content'])
-    const title = text(input.title, 'title', 120)
-    const content = text(input.content, 'content', 8_000)
     return this.change(state => {
       const profile = state.profiles.find(profile => profile.id === id)
       if (!profile) throw new AgentNotFoundError('Agent profile not found')
+      if (requireActive && profile.archived) throw new AgentConflictError('This profile is archived; ask the owner to restore it')
       const previous = memoryId ? profile.memories.find(memory => memory.id === memoryId) : undefined
       if (memoryId && !previous) throw new AgentNotFoundError('Memory not found')
+      const title = text(input.title === undefined ? previous?.title : input.title, 'title', 120)
+      const content = text(input.content === undefined ? previous?.content : input.content, 'content', 8_000)
       if ((!previous && profile.memories.length >= MAX_MEMORIES) || profile.memories.reduce((n, memory) => n + memory.content.length, 0) - (previous?.content.length ?? 0) + content.length > MAX_MEMORY_TEXT) throw new AgentConflictError('Agent memory is full; edit or remove an existing memory')
       const now = new Date().toISOString()
       if (previous) Object.assign(previous, { title, content, updatedAt: now })
@@ -162,10 +163,11 @@ export class AgentProfiles {
     })
   }
 
-  forget(id: string, memoryId: string): Promise<AgentProfile> {
+  forget(id: string, memoryId: string, requireActive = false): Promise<AgentProfile> {
     return this.change(state => {
       const profile = state.profiles.find(profile => profile.id === id)
       if (!profile) throw new AgentNotFoundError('Agent profile not found')
+      if (requireActive && profile.archived) throw new AgentConflictError('This profile is archived; ask the owner to restore it')
       const index = profile.memories.findIndex(memory => memory.id === memoryId)
       if (index < 0) throw new AgentNotFoundError('Memory not found')
       profile.memories.splice(index, 1)

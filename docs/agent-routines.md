@@ -167,7 +167,7 @@ its dispatcher. It writes the result to the mailbox over the guest command chann
 The host owner and phone bearer credentials never enter this channel or the guest.
 The mailbox is not an isolation boundary among processes running as the shared guest
 user: such processes can read and modify mailbox traffic. The host enforces profile
-scope and opens mailbox paths without following symlinks.
+scope and opens mailbox paths without following symlinks. Routine mutations recheck the bound profile inside the scheduler write queue, including after an owner reassigns a routine. Partial memory edits merge omitted fields inside the profile write queue, preserving concurrent owner edits.
 
 Before dispatch, a private host journal fsyncs an intent with the request ID, scope,
 and payload fingerprint; a completed result is also persisted. Reusing the same ID
