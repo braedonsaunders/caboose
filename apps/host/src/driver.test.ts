@@ -32,7 +32,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
       },
     }
     const network = vi.fn(async () => {})
-    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const }
+    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, display: 'xpra-ws' as const }
     const desired = { name: 'My computer', memoryMb: 512, vcpus: 1, idleMs: 60000 }
     const dependencies = { backend, network, deviceExists: () => true, snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} }, settings: () => desired }
     const controller = createController(config, dependencies)
@@ -72,8 +72,42 @@ it('reports a legacy snapshot as having unknown active resources', async () => {
   try {
     await mkdir(join(root, 'overlays', 'owner.snapshot'), { recursive: true })
     const controller = createController({ token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000,
-      imageRoot: root, memoryMb: 2048, vcpus: 2, vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' })
+      imageRoot: root, memoryMb: 2048, vcpus: 2, vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', display: 'xpra-ws' })
     expect(controller.hasSavedState()).toBe(true)
     expect(controller.activeResources()).toBeNull()
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('serves caboose-display instead of Xpra when the owner display is configured for it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'caboose-test-'))
+  try {
+    for (const file of ['base.raw', 'vmlinux', 'initrd']) await writeFile(join(root, file), '')
+    const commands: string[] = []
+    const backend: DeskBackend = {
+      async boot(plan) {
+        return {
+          deskId: plan.deskId,
+          async request(command) {
+            if (command.op === 'exec') commands.push([command.command, ...(command.args ?? [])].join(' '))
+            return { exitCode: 0, signal: null, stdout: '[]', stderr: '', truncated: false }
+          },
+          subscribe: () => () => {},
+          shutdown: async () => {},
+          park: async () => {},
+        }
+      },
+    }
+    const controller = createController({ token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1,
+      vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', display: 'caboose-display' },
+    { backend, network: async () => {}, deviceExists: () => true })
+    const session = await controller.wake()
+    expect(session.display.protocol).toBe('caboose-display')
+    expect(controller.displayUrl).toMatch(/:14600\/$/)
+    expect(commands.some(command => command.includes('caboose-display.service') && command.includes('ready-display'))).toBe(true)
+    expect(commands.some(command => command.includes('caboose-xpra.service'))).toBe(false)
+    await controller.apps()
+    expect(commands.at(-1)).toContain('WAYLAND_DISPLAY=wayland-caboose-0')
+    expect(commands.at(-1)).toContain('DISPLAY=:110')
+    await controller.park()
   } finally { await rm(root, { recursive: true, force: true }) }
 })

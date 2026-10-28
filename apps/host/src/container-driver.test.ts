@@ -26,10 +26,11 @@ function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
   return { docker, calls }
 }
 
-const settings = config({
+const env = {
   CABOOSE_OWNER_TOKEN: 'x', CABOOSE_RUNTIME: 'container', CABOOSE_MEMORY_MB: '6144', CABOOSE_VCPUS: '4',
   CABOOSE_CONTAINER_IMAGE: 'caboose-computer:gpu', CABOOSE_CONTAINER_HOME: '/srv/caboose/home', CABOOSE_CONTAINER_ARGS: '--security-opt seccomp=unconfined',
-})
+}
+const settings = config(env)
 
 describe('createContainerController', () => {
   it('creates the computer with the GPU, its home and loopback-only displays, then starts the session', async () => {
@@ -45,6 +46,27 @@ describe('createContainerController', () => {
     expect(execs[0]).toContain('/run/caboose/xpra-token')
     expect(execs).toEqual(expect.arrayContaining(['/usr/local/bin/caboose-session start', '/usr/local/bin/caboose-session ready :100']))
     expect(controller.guest()).toBeDefined()
+  })
+
+  it('starts caboose-display instead of Xpra :100 when configured, with its launch environment', async () => {
+    const fake = fakeDocker('missing')
+    const controller = createContainerController(config({ ...env, CABOOSE_DISPLAY: 'caboose' }), { fence: async () => {}, docker: fake.docker, exists: () => false })
+    const session = await controller.wake()
+    expect(session.display.protocol).toBe('caboose-display')
+    expect(controller.displayUrl).toBe('ws://127.0.0.1:14600/')
+    expect(fake.calls.find(call => call[0] === 'run')).toEqual(expect.arrayContaining(['-p', '127.0.0.1:14600:14600']))
+    const execs = fake.calls.filter(call => call[0] === 'exec').map(call => call.slice(4).join(' '))
+    expect(execs).toEqual(expect.arrayContaining(['/usr/local/bin/caboose-session start-display', '/usr/local/bin/caboose-session ready-display']))
+    expect(execs).not.toContain('/usr/local/bin/caboose-session start')
+    await controller.apps()
+    expect(fake.calls.at(-1)).toEqual(expect.arrayContaining(['WAYLAND_DISPLAY=wayland-caboose-0', 'DISPLAY=:110', 'GDK_BACKEND=wayland,x11']))
+  })
+
+  it('reads the display protocol from CABOOSE_DISPLAY, Xpra by default', () => {
+    expect(config(env).display).toBe('xpra-ws')
+    expect(config({ ...env, CABOOSE_DISPLAY: 'xpra' }).display).toBe('xpra-ws')
+    expect(config({ ...env, CABOOSE_DISPLAY: 'caboose' }).display).toBe('caboose-display')
+    expect(() => config({ ...env, CABOOSE_DISPLAY: 'vnc' })).toThrow('CABOOSE_DISPLAY')
   })
 
   it('parks by freezing and resumes with the same display token', async () => {

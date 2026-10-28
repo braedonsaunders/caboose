@@ -7,6 +7,7 @@ import type { ComputerResources } from './driver.js'
 import type { App, Controller, Session } from './server.js'
 import type { ComputerSettings } from './settings.js'
 import { fenceBridge } from './network.js'
+import { OWNER_DISPLAYS } from './display.js'
 
 /** The computer's own Docker network, so its bridge interface has a known name to fence. */
 export const CONTAINER_NETWORK = 'caboose'
@@ -20,7 +21,8 @@ export const CONTAINER_BRIDGE = 'caboose-br0'
  *
  * The image provides `caboose-session start | start-agent | ready <display>`, which runs
  * D-Bus, PulseAudio and the Xpra displays as `caboose`, reading the per-wake token from
- * /run/caboose/xpra-token. Displays are published on loopback only.
+ * /run/caboose/xpra-token, and `start-display | ready-display` for caboose-display instead
+ * of Xpra :100 (`CABOOSE_DISPLAY=caboose`). Displays are published on loopback only.
  *
  * Parking freezes the container (cgroup freezer): memory stays in RAM and resume is
  * instant, but unlike a microVM snapshot it does not survive a restart of the host;
@@ -63,6 +65,7 @@ export function createContainerController(config: Config, dependencies: { docker
   let lastError: string | null = null
   const name = config.containerName
   const gpu: GpuKind = config.gpu === 'auto' ? detectGpu(dependencies.exists) : config.gpu
+  const owner = OWNER_DISPLAYS[config.display]
   let displayToken = ''
   let running = false
 
@@ -95,7 +98,7 @@ export function createContainerController(config: Config, dependencies: { docker
       '--restart', 'no',
       '--label', `caboose.memory-mb=${size.memoryMb}`, '--label', `caboose.vcpus=${size.vcpus}`,
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
-      '-p', '127.0.0.1:14500:14500', '-p', '127.0.0.1:14501:14501',
+      '-p', '127.0.0.1:14500:14500', '-p', '127.0.0.1:14501:14501', '-p', '127.0.0.1:14600:14600',
       '-v', `${config.containerHome}:/home/caboose`,
       ...gpuArgs(gpu),
       ...config.containerArgs,
@@ -110,7 +113,7 @@ export function createContainerController(config: Config, dependencies: { docker
 
   async function guestApps(action: string, id?: string): Promise<string> {
     const script = await readFile(new URL('./guest-apps.py', import.meta.url), 'utf8')
-    return exec('caboose', '/usr/bin/env', ['DISPLAY=:100', 'HOME=/home/caboose', '/usr/bin/python3', '-c', script, action, ...(id ? [id] : [])], 60_000)
+    return exec('caboose', '/usr/bin/env', [...owner.launchEnv, 'HOME=/home/caboose', '/usr/bin/python3', '-c', script, action, ...(id ? [id] : [])], 60_000)
   }
 
   /** The size an existing container was created with (survives a host restart). */
@@ -125,7 +128,7 @@ export function createContainerController(config: Config, dependencies: { docker
   }
 
   const controller: Controller = {
-    displayUrl: 'ws://127.0.0.1:14500/',
+    displayUrl: `ws://127.0.0.1:${owner.port}/`,
     agentDisplayUrl: 'ws://127.0.0.1:14501/',
     async ensureAgentSeat() {
       await exec('root', '/usr/local/bin/caboose-session', ['start-agent'], 120_000)
@@ -157,10 +160,15 @@ export function createContainerController(config: Config, dependencies: { docker
           // Xpra reads the password file on each connection; never put a newline in it.
           await exec('root', '/bin/sh', ['-c', 'install -d -m 0755 /run/caboose; printf %s "$1" > /run/caboose/xpra-token; chown caboose:caboose /run/caboose/xpra-token; chmod 0600 /run/caboose/xpra-token', 'sh', displayToken])
         }
-        await exec('root', '/usr/local/bin/caboose-session', ['start'], 240_000)
-        await exec('root', '/usr/local/bin/caboose-session', ['ready', ':100'], 240_000)
+        if (config.display === 'caboose-display') {
+          await exec('root', '/usr/local/bin/caboose-session', ['start-display'], 240_000)
+          await exec('root', '/usr/local/bin/caboose-session', ['ready-display'], 240_000)
+        } else {
+          await exec('root', '/usr/local/bin/caboose-session', ['start'], 240_000)
+          await exec('root', '/usr/local/bin/caboose-session', ['ready', ':100'], 240_000)
+        }
         const size = resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }
-        return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'xpra-ws' }, computer: { name: settings().name, image: gpu === 'none' ? 'Debian 13' : 'Debian 13 · GPU', ...size } }
+        return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: config.display }, computer: { name: settings().name, image: gpu === 'none' ? 'Debian 13' : 'Debian 13 · GPU', ...size } }
       } catch (error) {
         running = false
         throw error
