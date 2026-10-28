@@ -3,7 +3,41 @@ import Observation
 import UIKit
 
 struct CatalogPack: Decodable, Identifiable { let id: String; let name: String }
-struct CatalogProgress: Decodable { let id: String; let operation: String; let phase: String; let message: String?; let stage: String?; let value: Double? }
+struct CatalogProgress: Decodable {
+    let id: String
+    let operation: String
+    let phase: String
+    let message: String?
+    let stage: String?
+    let value: Double?
+    let downloadedBytes: Int64?
+    let totalBytes: Int64?
+    var downloadFraction: Double? {
+        guard phase == "installing", stage == "downloading", let downloadedBytes, let totalBytes,
+              downloadedBytes >= 0, totalBytes > 0 else { return nil }
+        return min(1, Double(downloadedBytes) / Double(totalBytes))
+    }
+    var label: String {
+        if phase == "queued" { return "Queued" }
+        if phase == "failed" { return "Needs attention" }
+        if let message, !message.isEmpty { return message }
+        switch stage {
+        case "downloading": return downloadFraction.map { "Downloading \(Int($0 * 100))%" } ?? "Downloading"
+        case "verifying": return "Verifying download"
+        case "refreshing": return "Refreshing packages"
+        case "configuring": return "Completing package setup"
+        case "removing": return "Removing"
+        case "preparing": return "Preparing"
+        default: return operation == "remove" ? "Removing" : "Installing packages"
+        }
+    }
+    var downloadDetail: String? {
+        guard downloadFraction != nil, let downloadedBytes, let totalBytes else { return nil }
+        let received = ByteCountFormatter.string(fromByteCount: downloadedBytes, countStyle: .file)
+        let total = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        return "\(received) of \(total)"
+    }
+}
 struct CatalogApp: Decodable, Identifiable {
     struct Source: Decodable { let kind: String; let size: Int? }
     struct FileTypes: Decodable { let extensions: [String]; let utTypes: [String] }
@@ -23,6 +57,7 @@ struct CatalogApp: Decodable, Identifiable {
     let lastError: String?
     let interrupted: Bool
     var progress: CatalogProgress?
+    var needsRecovery: Bool { !busy && (interrupted || lastError != nil || progress?.phase == "failed") }
     var busy: Bool { progress?.phase == "queued" || progress?.phase == "installing" }
     var icon: UIImage? {
         guard let iconData, let comma = iconData.firstIndex(of: ","), let data = Data(base64Encoded: String(iconData[iconData.index(after: comma)...])) else { return nil }
@@ -65,7 +100,7 @@ final class CatalogCenter {
         if type == "catalog.progress", let id = event["id"] as? String,
            let operation = event["operation"] as? String, let phase = event["phase"] as? String,
            let index = apps.firstIndex(where: { $0.id == id }) {
-            apps[index].progress = CatalogProgress(id: id, operation: operation, phase: phase, message: event["message"] as? String, stage: event["stage"] as? String, value: event["value"] as? Double)
+            apps[index].progress = CatalogProgress(id: id, operation: operation, phase: phase, message: event["message"] as? String, stage: event["stage"] as? String, value: event["value"] as? Double, downloadedBytes: (event["downloadedBytes"] as? NSNumber)?.int64Value, totalBytes: (event["totalBytes"] as? NSNumber)?.int64Value)
             if phase == "finished" && operation == "install" { recentInstalls.insert(id) }
             if phase == "failed" { error = event["message"] as? String ?? "The application could not be installed." }
         }

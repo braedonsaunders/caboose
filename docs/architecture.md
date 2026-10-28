@@ -347,13 +347,27 @@ runtimes. Downloads go directly from the guest, are size- and SHA-256-checked be
 installs them, and are kept in `/var/lib/caboose/catalog` for rollback. Release installs
 also install `mesa-vulkan-drivers` and `libgl1-mesa-dri`. Debian applications cannot be
 rolled back. Installed versions come from dpkg; failures and interrupted operations are
-recorded in the guest and reported on the next listing.
+recorded in the guest and reported on the next listing. A guest operation lock, retained
+by package-manager children, distinguishes active work from an interrupted worker. A
+retry of failed or interrupted work completes pending dpkg configuration before trying
+the requested operation again, even when dpkg already reports the application installed.
 
 Only one catalog operation runs at a time, and it holds a computer lease. A second
 operation, a park, a restart or a Craft job receives 409 while one runs. A pack installs
 its entries in order and continues past individual failures. The listing reports the last
 observed state while the computer is parked and never wakes it. `/v1/apps` discovers
-installed desktop entries independently.
+installed desktop entries independently. Listings include the active operation's progress;
+a host that rediscovers it holds a lease and observes it until it ends. A command-channel
+timeout alone does not mark a still-active guest operation failed or release its lease.
+
+Download progress measures the bytes currently in the release file against its pinned
+size. `value` is that download fraction, capped at 1; it is never an overall installation
+percentage. `downloadedBytes` and `totalBytes` accompany it. Preparation, verification,
+repository refresh, package installation, package configuration (including triggers) and
+removal are indeterminate, with `value: null`. Package setup can continue after dpkg
+reports the application's version; only the installer finishing completes the operation.
+The Shelf names the current stage. The Library also shows download bytes and offers
+Retry for failed or interrupted operations even when the application is already installed.
 
 Craft applications (`ai.storyteller.<name>.desktop`) are launched on the owner display's
 Xwayland, with `WAYLAND_DISPLAY` removed and `GDK_BACKEND`, `WINIT_UNIX_BACKEND` and
@@ -648,7 +662,7 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | `computer.upgrade` | `{ upgrade: { state, version?, message? } }` | A guest component update starts, finishes or fails (see [Guest components](#guest-components)) |
 | `notification` | `{ id, app, summary, body, created }` | A desktop notification on the owner's display |
 | `fs.changed` | `{ anchor }` | The home changed (see [Files](#files)) |
-| `catalog.progress` | `{ id, operation, phase, message?, stage?, value? }` | A catalog operation is `queued`, `installing`, `finished` or `failed`; `stage` and `value` (0–1 or null) report download progress |
+| `catalog.progress` | `{ id, operation, phase, message?, stage?, value?, downloadedBytes?, totalBytes? }` | A catalog operation is `queued`, `installing`, `finished` or `failed`. Stages are `preparing`, `downloading`, `verifying`, `refreshing`, `installing`, `configuring`, `removing` and `finished`. Only `downloading` has a measured `value` (0–1) and byte counts; other stages have `value: null` |
 | `catalog.changed` | `{ id? }` | After each application in an operation, and once when the operation ends |
 | `job.progress` | `{ job: { id, kind, title, status, detail } }` | A Craft job starts, succeeds or fails |
 | `agent.task.*` | see [Agents](#tasks) | Agent task activity |
@@ -800,7 +814,7 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/catalog` | `{ packs, apps }`: each catalog entry with `installedVersion`, `canRollback`, `lastError`, `interrupted`, `iconData`, `pinnedVersion`, `updateAvailable` and `progress` |
+| `GET` | `/v1/catalog` | `{ packs, apps }`: each catalog entry with `installedVersion`, `canRollback`, `lastError`, `interrupted`, `active`, `iconData`, `pinnedVersion`, `updateAvailable` and `progress` |
 | `POST` | `/v1/catalog/:id/install`, `/update`, `/rollback` | Queue an operation → 202 `{ accepted: true }` |
 | `DELETE` | `/v1/catalog/:id` | Queue removal → 202 |
 | `POST` | `/v1/catalog/packs/:id/install` | Queue every application in a pack → 202 |
