@@ -201,6 +201,23 @@ def check_reconnect():
     return with_server(["weston-simple-shm"], run)
 
 
+def check_reconnect_idle():
+    # A window streamed in place from its shm buffer (xterm: one surface, even size) that
+    # draws nothing between two clients: the second client's keyframe must still be the
+    # window's picture, read from the buffer.
+    def run(proc, token):
+        pictures = []
+        for _ in range(2):
+            out = tempfile.mkdtemp(prefix="idle-")
+            probe(["--token-file", token, "--duration", "2", "--windows", "1", "--save", out])
+            pictures.append(open(os.path.join(out, "window-1.png"), "rb").read())
+            time.sleep(1)
+        if pictures[0] != pictures[1]:
+            raise Failed("the second client's picture of an idle window differs from the first's")
+        return f"an idle window's picture is the same for a second client ({len(pictures[1])} byte PNG)"
+    return with_server(["xterm", "-geometry", "80x24", "-e", "sh", "-c", "ls -l /usr/bin | head -20; exec sleep 600"], run)
+
+
 def check_replace():
     def run(proc, token):
         first = subprocess.Popen(
@@ -445,6 +462,7 @@ CHECKS = [
     ("chromium", check_chromium_motion),
     ("chromium-text-input", check_chromium_text_input),
     ("reconnect", check_reconnect),
+    ("reconnect-idle", check_reconnect_idle),
     ("replace", check_replace),
     ("popup", check_popup),
     ("text-input-on-connect", check_text_input_on_connect),
