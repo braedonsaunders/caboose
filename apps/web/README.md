@@ -10,6 +10,24 @@ owner token, then see and manage the computer.
 - **Settings** — name, memory, vCPUs, auto-park and the default agent, validated against
   the host's `limits`. Edits made from another device are followed unless there are unsaved
   edits here; "Save and restart" applies new resources in one step.
+- **Apps** — open any app installed in the computer on its screen, and manage the optional
+  catalog: install, update, roll back or remove an app, or install a whole pack. Queued and
+  running operations show their stage and progress, and failures show the installer's error.
+  While the computer is parked the catalog shows what was installed when it last ran.
+- **Files** — browse the computer's home folder (hidden files on request), download a file,
+  upload into the folder you are in (a taken name becomes "name (2)", nothing is replaced),
+  create a folder, rename, move to the Trash, or open an item on the computer's screen. The
+  folder is in the address (`/files?path=…`), so back and forward work. Every file request
+  wakes a parked computer, so a parked one is woken only when you ask.
+- **Devices** — the phones registered for push notifications, by a fingerprint of their
+  token, with the kinds each one enabled (approvals, tasks, desktop) and whether it uses
+  APNs development or production; remove one. When the host has no APNs key it says how to
+  configure one.
+- **System** — the host version, runtime, display protocol, GPU, image, push and Live
+  Activities configuration, health from `/v1/health`, the guest-components upgrade where the
+  host reports one, the last lifecycle error, and the non-secret `CABOOSE_*` variables it
+  started with. These are read-only: they change by editing the host's environment and
+  restarting it, which the page explains.
 - **Agents** — pick any agent from the Agent Client Protocol registry (installed ones
   first), install or update it, sign in to it on the computer's screen or give it an API key
   (its environment in the computer; names are shown, values never), and start a task
@@ -17,12 +35,19 @@ owner token, then see and manage the computer.
   Deny on the task); pause, resume or cancel it, sign in from a task that found its agent
   signed out, and reply to a finished task to continue its conversation.
 
-It is built on AppKit (`appkit-ui` for the shell, settings layout, forms, confirm
-dialog and toasts; `appkit-dashboard` for metric cards and panels). It talks only to
+It is built on AppKit (`appkit-ui` for the shell, settings layout, forms, tables, progress,
+confirm and prompt dialogs and toasts; `appkit-dashboard` for metric cards and panels). It talks only to
 the documented `/v1` API (see `docs/architecture.md`): the token lives in session
 storage for the tab and is sent as `Authorization: Bearer`, never in a URL. Status and
 tasks are polled over HTTP, which holds no lease, so an open console never keeps the
 computer awake.
+
+Not in the console yet: upload progress for a single large file (the browser's `fetch`
+reports none; the page shows which file is uploading), choosing which app opens a file
+(`/v1/fs/open` accepts an `app`, the console uses the default handler), naming a phone (the
+host stores only its token), Live Activity registrations, and media handoff. A download is
+held in the browser's memory before it is saved, because the token goes in a header and a
+plain link cannot carry it.
 
 ## Brand
 

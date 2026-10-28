@@ -38,7 +38,7 @@ export function Wordmark({ height, motion = 'none', lit = true, className, decor
 /** A busy state in the brand's voice: the wordmark rolling over its label. */
 export function RollingWordmark({ label }: { label: string }) {
   return (
-    <div role="status" className="flex flex-col items-center justify-center gap-4 py-16 text-muted-foreground">
+    <div role="status" className="flex flex-col items-center justify-center gap-4 py-16 text-fg-muted">
       <Wordmark height={44} motion="rolling" className="text-foreground" decorative />
       <span className="text-sm">{label}</span>
     </div>

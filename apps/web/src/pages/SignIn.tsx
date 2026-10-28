@@ -38,7 +38,7 @@ export function SignIn({ onSignIn }: { onSignIn: (token: string) => void }) {
             <Wordmark height={52} motion="intro" />
           </CardTitle>
           <CardDescription>
-            Manage the computer this host runs: its settings, parking, restarts and agents.
+            Manage the computer this host runs: its apps, files, agents, settings and parking.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -54,7 +54,7 @@ export function SignIn({ onSignIn }: { onSignIn: (token: string) => void }) {
                 onChange={event => setToken(event.target.value)}
                 aria-invalid={error ? true : undefined}
               />
-              <p className="text-sm text-muted-foreground">
+              <p className="text-sm text-fg-muted">
                 The <code>CABOOSE_OWNER_TOKEN</code> this host was started with.
               </p>
             </div>

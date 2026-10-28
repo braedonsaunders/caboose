@@ -208,6 +208,11 @@ describe('navigation and actions', () => {
   it('maps any path onto a page, so SPA fallbacks land somewhere real', () => {
     expect(normalizePathname('/settings/')).toBe('/settings')
     expect(normalizePathname('/agents/abc')).toBe('/agents')
+    expect(normalizePathname('/files?path=Documents')).toBe('/files')
+    expect(normalizePathname('/apps/')).toBe('/apps')
+    expect(normalizePathname('/devices')).toBe('/devices')
+    expect(normalizePathname('/system/x')).toBe('/system')
+    expect(normalizePathname('/filesystem')).toBe('/')
     expect(normalizePathname('/nope')).toBe('/')
   })
 
@@ -229,5 +234,106 @@ describe('agent environment', () => {
     expect(envProblem('1KEY', 'x')).toMatch(/variable name/)
     expect(envProblem('KEY', '')).toBe('Enter a value.')
     expect(envProblem('KEY', 'two\nlines')).toMatch(/one line/)
+  })
+})
+
+describe('host surfaces', () => {
+  function recording(respond: (url: string, init?: RequestInit) => Response = () => new Response('{}', { status: 200 })) {
+    const seen: Array<{ url: string; method?: string; headers: Record<string, string>; body: unknown }> = []
+    const client = new CabooseClient(() => 't', '', async (url, init) => {
+      seen.push({ url: String(url), method: init?.method, headers: init?.headers as Record<string, string>, body: init?.body })
+      return respond(String(url), init)
+    })
+    return { client, seen }
+  }
+
+  it('queues catalog operations on the documented routes', async () => {
+    const { client, seen } = recording(() => new Response('{"accepted":true}', { status: 202 }))
+    await client.catalog()
+    await client.startCatalogOperation('photocraft', 'install')
+    await client.startCatalogOperation('photocraft', 'update')
+    await client.startCatalogOperation('photocraft', 'rollback')
+    await client.startCatalogOperation('photocraft', 'remove')
+    await client.installPack('creative-studio')
+    await client.apps()
+    await client.launchApp('ai.storyteller.photocraft.desktop')
+    expect(seen.map(entry => [entry.method, entry.url])).toEqual([
+      ['GET', '/v1/catalog'],
+      ['POST', '/v1/catalog/photocraft/install'],
+      ['POST', '/v1/catalog/photocraft/update'],
+      ['POST', '/v1/catalog/photocraft/rollback'],
+      ['DELETE', '/v1/catalog/photocraft'],
+      ['POST', '/v1/catalog/packs/creative-studio/install'],
+      ['GET', '/v1/apps'],
+      ['POST', '/v1/apps/ai.storyteller.photocraft.desktop/launch'],
+    ])
+  })
+
+  it('lists, renames, trashes and opens files by home-relative path', async () => {
+    const { client, seen } = recording(url => new Response(url.includes('/list') ? '{"items":[]}' : '{}', { status: 200 }))
+    expect(await client.listFiles('My Files')).toEqual([])
+    await client.createFolder('My Files/New')
+    await client.moveFile('a.txt', 'b.txt')
+    await client.trashFile('b.txt')
+    await client.openOnComputer('Documents/a b.pdf')
+    expect(seen.map(entry => [entry.method, entry.url, entry.body])).toEqual([
+      ['GET', '/v1/fs/list?path=My%20Files', undefined],
+      ['POST', '/v1/fs/mkdir?path=My%20Files%2FNew', undefined],
+      ['POST', '/v1/fs/move?path=a.txt', JSON.stringify({ destination: 'b.txt' })],
+      ['DELETE', '/v1/fs/item?path=b.txt', undefined],
+      ['POST', '/v1/fs/open', JSON.stringify({ path: 'Documents/a b.pdf' })],
+    ])
+    expect(seen.every(entry => entry.headers.Authorization === 'Bearer t')).toBe(true)
+  })
+
+  it('uploads without replacing: a taken name becomes a numbered copy', async () => {
+    const taken = new Set(['Downloads/photo.png', 'Downloads/photo (2).png'])
+    const { client, seen } = recording(url => {
+      const path = decodeURIComponent(url.split('path=')[1]!)
+      return taken.has(path) ? new Response('{"error":"version mismatch"}', { status: 412 }) : new Response('{}', { status: 201 })
+    })
+    const saved = await client.uploadFile('Downloads', 'photo.png', new Blob(['x'], { type: 'image/png' }))
+    expect(saved).toBe('Downloads/photo (3).png')
+    expect(seen.map(entry => entry.url)).toEqual([
+      '/v1/fs/content?path=Downloads%2Fphoto.png',
+      '/v1/fs/content?path=Downloads%2Fphoto%20(2).png',
+      '/v1/fs/content?path=Downloads%2Fphoto%20(3).png',
+    ])
+    expect(seen[0]!.method).toBe('PUT')
+    expect(seen[0]!.headers['If-None-Match']).toBe('*')
+    expect(seen[0]!.headers['Content-Type']).toBe('image/png')
+  })
+
+  it('downloads bytes and reports a missing file with the host error', async () => {
+    const { client } = recording(url => url.includes('gone')
+      ? new Response('{"error":"not found"}', { status: 404 })
+      : new Response(new Uint8Array([1, 2, 3]), { status: 200 }))
+    const response = await client.downloadFile('a.bin')
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]))
+    const failure = await client.downloadFile('gone.bin').catch(error => error)
+    expect(failure).toBeInstanceOf(CabooseApiError)
+    expect(failure.status).toBe(404)
+    expect(failure.message).toBe('not found')
+  })
+
+  it('treats a file permission denial as an error, not a stale token', async () => {
+    const { client } = recording(() => new Response('{"error":"access denied"}', { status: 403 }))
+    const failure = await client.listFiles('root-only').catch(error => error)
+    expect(failure.status).toBe(403)
+    expect(failure.isUnauthorized).toBe(false)
+  })
+
+  it('lists push devices and removes one by fingerprint, and reads the host description', async () => {
+    const { client, seen } = recording()
+    await client.pushDevices()
+    await client.removePushDevice('0123456789abcdef')
+    await client.host()
+    await client.health()
+    expect(seen.map(entry => [entry.method, entry.url])).toEqual([
+      ['GET', '/v1/devices/push'],
+      ['DELETE', '/v1/devices/push/0123456789abcdef'],
+      ['GET', '/v1/host'],
+      ['GET', '/v1/health'],
+    ])
   })
 })
