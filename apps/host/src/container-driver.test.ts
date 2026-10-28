@@ -129,7 +129,7 @@ describe('GPU selection', () => {
 describe('container settings and restart', () => {
   it('sizes a new computer from the settings and restarts cold into the new size', async () => {
     const fake = fakeDocker('missing')
-    let desired = { name: 'Studio', memoryMb: 8192, vcpus: 6, idleMs: 60_000 }
+    let desired = { name: 'Studio', memoryMb: 8192, vcpus: 6, idleMs: 60_000, defaultAgent: null }
     const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false, settings: () => desired })
     const first = await controller.wake()
     expect(first.computer).toMatchObject({ name: 'Studio', memoryMb: 8192, vcpus: 6 })

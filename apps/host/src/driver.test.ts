@@ -33,8 +33,8 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
       },
     }
     const network = vi.fn(async () => {})
-    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, display: 'xpra-ws' as const }
-    const desired = { name: 'My computer', memoryMb: 512, vcpus: 1, idleMs: 60000 }
+    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, display: 'xpra-ws' as const, agentRegistryUrl: '', agentIdleMs: 1000 }
+    const desired = { name: 'My computer', memoryMb: 512, vcpus: 1, idleMs: 60000, defaultAgent: null }
     const dependencies = { backend, network, deviceExists: () => true, snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} }, settings: () => desired }
     const controller = createController(config, dependencies)
     expect(controller.activeResources()).toBeNull()
@@ -73,7 +73,7 @@ it('reports a legacy snapshot as having unknown active resources', async () => {
   try {
     await mkdir(join(root, 'overlays', 'owner.snapshot'), { recursive: true })
     const controller = createController({ token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000,
-      imageRoot: root, memoryMb: 2048, vcpus: 2, vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', display: 'xpra-ws' })
+      imageRoot: root, memoryMb: 2048, vcpus: 2, vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', display: 'xpra-ws', agentRegistryUrl: '', agentIdleMs: 1000 })
     expect(controller.hasSavedState()).toBe(true)
     expect(controller.activeResources()).toBeNull()
   } finally { await rm(root, { recursive: true, force: true }) }
@@ -100,7 +100,7 @@ it('serves caboose-display instead of Xpra when the owner display is configured 
       },
     }
     const controller = createController({ token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1,
-      vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', display: 'caboose-display' },
+      vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', display: 'caboose-display', agentRegistryUrl: '', agentIdleMs: 1000 },
     { backend, network: async () => {}, deviceExists: () => true,
       snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} } })
     const session = await controller.wake()

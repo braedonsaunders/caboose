@@ -200,7 +200,7 @@ describe('media routes', () => {
       displayUrl: `ws://127.0.0.1:${(upstream.address() as AddressInfo).port}`, agentDisplayUrl: 'ws://127.0.0.1:1',
       guest: () => running ? fake.guest : undefined,
     }
-    const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600_000 }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+    const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
     const app = createCabooseServer({ token: 'owner', settings, controller })
     app.server.listen(0, '127.0.0.1')
     await once(app.server, 'listening')

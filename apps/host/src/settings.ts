@@ -7,7 +7,12 @@ export interface ComputerSettings {
   memoryMb: number
   vcpus: number
   idleMs: number
+  /** The ACP registry id a task runs when it names no agent; null until the owner picks one. */
+  defaultAgent: string | null
 }
+
+/** An ACP registry agent id. Whether it exists in the registry is checked by the caller. */
+export const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/
 
 export interface SettingsLimits {
   memoryMb: { min: number; max: number }
@@ -35,6 +40,12 @@ export function updateSettings(current: ComputerSettings, input: Record<string, 
         throw new SettingsInputError('name must be 1–80 characters without control characters')
       }
       next.name = name.trim()
+    } else if (key === 'defaultAgent') {
+      const value = input.defaultAgent
+      if (value !== null && (typeof value !== 'string' || !AGENT_ID_PATTERN.test(value))) {
+        throw new SettingsInputError('defaultAgent must be an agent id from the registry, or null')
+      }
+      next.defaultAgent = value
     } else if (key === 'memoryMb' || key === 'vcpus' || key === 'idleMs') {
       const value = input[key]
       const { min, max } = limits[key]

@@ -47,7 +47,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
   const owner = OWNER_DISPLAYS[config.display]
   /** What an app launched onto the owner's display needs; caboose-display's is read at each wake. */
   let launchEnv = owner.launchEnv ?? []
-  const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs }
+  const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs, defaultAgent: null }
   function clearHeartbeat(): void {
     if (heartbeat) clearInterval(heartbeat)
     heartbeat = undefined

@@ -1,10 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
-import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
+import { AgentCatalog } from './agent-catalog.js'
+import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { openUrl, saveDownload } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
 import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
+import { AgentRegistry } from './registry.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
 import type { DisplayProtocol } from './config.js'
 import type { ComputerResources } from './driver.js'
@@ -49,7 +51,13 @@ async function readJson(request: IncomingMessage, limit = 64 * 1024): Promise<Re
   throw new AgentInputError('request body must be a JSON object')
 }
 
-export function createCabooseServer(options: { token: string; settings: SettingsStore; controller: Controller; webRoot?: string }) {
+export function createCabooseServer(options: {
+  token: string; settings: SettingsStore; controller: Controller; webRoot?: string
+  /** The ACP agent registry; defaults to the public registry, cached in memory only. */
+  registry?: AgentRegistry
+  /** How long a task's runner keeps its agent after a turn, waiting for a reply. */
+  agentIdleMs?: number
+}) {
   const { controller, token, settings } = options
   const computer = new ComputerLifecycle(controller, settings.get().idleMs)
   const sockets = new Set<WebSocket>()
@@ -59,7 +67,10 @@ export function createCabooseServer(options: { token: string; settings: Settings
     const message = JSON.stringify(event)
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
   }
-  const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), 1000, () => controller.ensureAgentSeat())
+  const catalog = new AgentCatalog(options.registry ?? new AgentRegistry(), () => controller.guest(), settings)
+  const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), {
+    resolver: catalog, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
+  })
   const media = new MediaHandoff(() => controller.guest(), broadcast)
   /** Media is polled only while the computer is already running and someone is watching it. */
   function syncMedia(): void { media.setActive(computer.state === 'running' && sockets.size - controls.size > 0) }
@@ -75,6 +86,15 @@ export function createCabooseServer(options: { token: string; settings: Settings
       capabilities: { restart: typeof controller.restart === 'function' },
       lastError: computer.lastError ?? controller.lastError?.() ?? null,
     }
+  }
+  /**
+   * Long guest work (an agent install can take minutes) holds a lease so the computer is not
+   * parked under it, without queueing every other request behind it as computer.run would.
+   */
+  async function leased<R>(work: () => Promise<R>): Promise<R> {
+    if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running')
+    const release = computer.acquire()
+    try { return await work() } finally { release() }
   }
   function broadcastSettings(): void { broadcast({ type: 'computer.settings', computer: managementStatus() }) }
   function closeSockets(): void { for (const socket of sockets) socket.terminate() }
@@ -101,7 +121,9 @@ export function createCabooseServer(options: { token: string; settings: Settings
       if (request.method === 'GET' && path === '/v1/health') return json(response, 200, controller.stats())
       if (request.method === 'GET' && path === '/v1/computer') return json(response, 200, managementStatus())
       if (request.method === 'PATCH' && path === '/v1/computer/settings') {
-        const updated = await settings.update(await readJson(request))
+        const input = await readJson(request)
+        if ('defaultAgent' in input) await catalog.ensureKnown(input.defaultAgent)
+        const updated = await settings.update(input)
         computer.setIdleMs(updated.idleMs)
         broadcastSettings()
         return json(response, 200, managementStatus())
@@ -133,6 +155,18 @@ export function createCabooseServer(options: { token: string; settings: Settings
       if (request.method === 'POST' && match?.[1]) {
         await computer.run(() => controller.launch(decodeURIComponent(match[1]!)))
         return json(response, 200, { launched: true })
+      }
+      if (request.method === 'GET' && path === '/v1/agents') return json(response, 200, await catalog.list())
+      const agentAction = /^\/v1\/agents\/([^/]+)\/(install|sign-in)$/.exec(path)
+      if (request.method === 'POST' && agentAction?.[1]) {
+        const id = decodeURIComponent(agentAction[1])
+        const input = await readJson(request)
+        if (agentAction[2] === 'install') {
+          const agent = await leased(() => catalog.install(id))
+          broadcastSettings()
+          return json(response, 200, { agent })
+        }
+        return json(response, 200, await leased(() => catalog.signIn(id, input)))
       }
       if (path === '/v1/agent/tasks' && request.method === 'GET') return json(response, 200, agents.list())
       if (path === '/v1/agent/tasks' && request.method === 'POST') {
@@ -187,6 +221,7 @@ export function createCabooseServer(options: { token: string; settings: Settings
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof AgentConflictError || error instanceof ComputerConflictError) return json(response, 409, { error: error.message })
+      if (error instanceof AgentOperationError) return json(response, 502, { error: error.message })
       console.error('Caboose request failed:', error)
       if (!response.headersSent) json(response, 500, { error: 'computer operation failed' })
       else response.destroy()
