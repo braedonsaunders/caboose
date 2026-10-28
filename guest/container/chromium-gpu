@@ -1,9 +1,17 @@
-# Mesa D3D12 is available to WSL containers through /dev/dxg.
-if [ "${CABOOSE_GPU:-none}" = wsl ]; then
-  export GALLIUM_DRIVER=d3d12
-  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --use-gl=angle --use-angle=gl"
-fi
 # Under Caboose Display, Chromium is a native Wayland client (no X11 round trips).
 if [ -n "${WAYLAND_DISPLAY:-}" ]; then
   CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=wayland"
+fi
+# Mesa D3D12 is available to WSL containers through /dev/dxg.
+if [ "${CABOOSE_GPU:-none}" = wsl ]; then
+  export GALLIUM_DRIVER=d3d12
+  if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    # Chromium's Wayland GPU path needs a DRM render node, which WSL does not have: its
+    # GPU process fails over and presents fewer frames than software raster (measured
+    # on an RTX 4080: 41 against 52 fps for 1080p video). Video still reaches the phone
+    # through the VA-API passthrough driver.
+    CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-gpu"
+  else
+    CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --use-gl=angle --use-angle=gl"
+  fi
 fi
