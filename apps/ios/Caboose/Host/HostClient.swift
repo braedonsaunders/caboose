@@ -61,6 +61,11 @@ struct HostClient: Sendable {
             var restart: Bool
             var push: Bool?
         }
+        struct Upgrade: Decodable, Equatable, Sendable {
+            var state: String
+            var version: String?
+            var message: String?
+        }
         struct Bounds: Decodable, Equatable, Sendable {
             var min: Int
             var max: Int
@@ -79,6 +84,7 @@ struct HostClient: Sendable {
         var tasks: Tasks
         var capabilities: Capabilities
         var lastError: String?
+        var upgrade: Upgrade?
         /// The bounds `PATCH /v1/computer/settings` accepts.
         var limits: Limits
     }

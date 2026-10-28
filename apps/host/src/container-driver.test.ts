@@ -19,6 +19,7 @@ function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
       case 'stop': status = 'exited'; return ''
       case 'rm': status = 'missing'; return ''
       case 'network': return ''
+      case 'port': return '127.0.0.1:14700\n'
       case 'exec':
         if (args.includes('list')) return '[]'
         if (args.includes('/run/caboose/display.env')) return DISPLAY_ENV
@@ -84,6 +85,15 @@ describe('createContainerController', () => {
     expect(fake.calls.some(call => call[0] === 'unpause')).toBe(true)
     expect(second.display.token).toBe(first.display.token)
     expect(fake.calls.filter(call => call[0] === 'run')).toHaveLength(1)
+  })
+
+  it('reports a missing Files port mapping on an existing container', async () => {
+    const fake = fakeDocker('running')
+    const docker: Docker = async (args, timeout) => args[0] === 'port' ? '' : fake.docker(args, timeout)
+    const controller = createContainerController(settings, { fence: async () => {}, docker, exists: () => false })
+    await controller.wake()
+    expect(controller.componentsWarning?.()).toBe('Recreate the container to enable Files.')
+    expect(fake.calls.some(call => call[0] === 'rm')).toBe(false)
   })
 
   it('starts a stopped computer instead of recreating it', async () => {

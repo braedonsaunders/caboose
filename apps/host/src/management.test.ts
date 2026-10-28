@@ -11,7 +11,7 @@ import { openSettings } from './settings.js'
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close() })
 
-async function fixture() {
+async function fixture(configure?: (controller: Controller) => void) {
   const root = await mkdtemp(join(tmpdir(), 'caboose-management-'))
   cleanup.push(() => rm(root, { recursive: true, force: true }))
   const defaults = { name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600000, defaultAgent: null }
@@ -26,6 +26,7 @@ async function fixture() {
     stats: () => ({ kvm: true }), apps: async () => [], launch: async () => {},
     displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined,
   }
+  configure?.(controller)
   const webRoot = join(root, 'web')
   await mkdir(join(webRoot, 'assets'), { recursive: true })
   await writeFile(join(webRoot, 'index.html'), '<!doctype html><title>Caboose</title>')
@@ -123,4 +124,26 @@ it('serves public SPA files without exposing API paths or escaping the asset roo
   expect((await fetch(base + '/%2e%2e%2fprivate.txt')).status).toBe(403)
   expect((await fetch(base + '/leak.txt')).status).toBe(403)
   expect((await fetch(base + '/.env')).status).toBe(403)
+})
+
+it('reports asynchronous component updates without blocking the display', async () => {
+  let finish!: (value: string) => void
+  const pending = new Promise<string>(resolve => { finish = resolve })
+  const { request, base } = await fixture(controller => {
+    controller.componentsMode = 'vm'
+    controller.guest = () => ({ run: async () => pending })
+  })
+  expect((await request('/v1/session', 'POST')).status).toBe(200)
+  const socket = new WebSocket(base.replace('http:', 'ws:') + '/v1/control', { headers: { authorization: 'Bearer owner' } })
+  cleanup.push(async () => { socket.terminate() })
+  const events: any[] = []
+  socket.on('message', data => events.push(JSON.parse(String(data))))
+  await once(socket, 'open')
+  expect((await (await request('/v1/computer')).json()).upgrade.state).toBe('checking')
+  expect((await request('/v1/session/park', 'POST')).status).toBe(409)
+  // Deliberately invalid staging path: the error is visible and does not affect the display.
+  finish('invalid staging path')
+  await vi.waitFor(async () => expect((await (await request('/v1/computer')).json()).upgrade.state).toBe('failed'))
+  expect(events.some(e => e.type === 'computer.upgrade' && e.upgrade.state === 'failed')).toBe(true)
+  expect((await (await request('/v1/computer')).json()).state).toBe('running')
 })

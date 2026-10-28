@@ -1,0 +1,46 @@
+#!/bin/bash
+# Install Caboose's own guest plumbing. The bundle is rooted at the parent of this file.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+mode=${1:?expected image-vm, image-container, vm or container}
+case "$mode" in image-vm|image-container|vm|container) ;; *) exit 2;; esac
+export DEBIAN_FRONTEND=noninteractive
+packages=(cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1)
+missing=()
+for pkg in "${packages[@]}"; do
+  [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || :)" = installed ] || missing+=("$pkg")
+done
+if ((${#missing[@]})); then
+  log=$(mktemp /tmp/caboose-apt.XXXXXXXX)
+  trap 'rm -f "$log"' EXIT
+  if ! dpkg --configure -a >"$log" 2>&1 || ! apt-get update >>"$log" 2>&1 || ! apt-get install -y --no-install-recommends "${missing[@]}" >>"$log" 2>&1; then
+    tail -n 80 "$log" >&2
+    exit 1
+  fi
+  rm -f "$log"
+  trap - EXIT
+fi
+install -Dm755 "$root/files/caboose-files.py" /opt/caboose/files/caboose-files.py
+install -Dm644 "$root/files/caboose-files.service" /etc/systemd/system/caboose-files.service
+sh "$root/notifications/install.sh"
+bash "$root/phone/install.sh"
+install -d -m 0755 /usr/local/share/caboose
+if [[ "$mode" = *container ]]; then
+  install -Dm755 "$root/components/container-services.sh" /usr/local/libexec/caboose-components-services
+else
+  mkdir -p /var/lib/systemd/linger
+  touch /var/lib/systemd/linger/caboose
+  systemctl enable caboose-files.service caboose-notifications.service cups.service caboose-phone-printer.service
+fi
+if [[ "$mode" = vm ]]; then
+  systemctl daemon-reload
+  systemctl restart caboose-notifications.service
+  systemctl restart caboose-files.service
+  systemctl start cups.service
+  systemctl restart caboose-phone-printer.service
+elif [[ "$mode" = container ]]; then
+  /usr/local/libexec/caboose-components-services restart
+fi
+version=$(python3 "$root/components/version.py" "$root")
+printf '%s\n' "$version" > /usr/local/share/caboose/components.version.tmp
+mv -f /usr/local/share/caboose/components.version.tmp /usr/local/share/caboose/components.version

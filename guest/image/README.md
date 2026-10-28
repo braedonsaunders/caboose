@@ -141,8 +141,7 @@ and the separate `:101` agent seat is not redirected to the owner's speaker.
 The image installs `guest/files/caboose-files.py` and `caboose-files.service`; the host starts
 it as `caboose` after writing the per-wake display token. It listens on guest port 14700 and
 serves home-confined file operations and inotify changes. See `docs/architecture.md` § Files
-and `apps/host/README.md` for the API and real-host check. Existing computer disks need a
-guest-side upgrade to install the service; rebuilding the golden image affects new disks.
+and `apps/host/README.md` for the API and real-host check. The host upgrades existing disks automatically using `guest/components`; see the host README for checks.
 ## Desktop notifications
 
 The owner session's D-Bus notification monitor writes a bounded private queue under
@@ -159,3 +158,5 @@ a disposable Debian container without a VM or APNs credentials.
 The image installs the commands, desktop handlers and iPhone CUPS queue described in
 [`guest/phone/README.md`](../phone/README.md), including the scripted guest check. The
 queue uses the same handoff for Xpra and Caboose Display.
+
+Both builders install Caboose plumbing with `guest/components/install.sh`; the host uses the same installer to update existing guests. See `guest/components/README.md`.

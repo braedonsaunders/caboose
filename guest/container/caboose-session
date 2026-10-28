@@ -38,7 +38,7 @@ start_notifications() {
     >>"$CABOOSE_HOME/.cache/caboose-notifications.log" 2>&1 < /dev/null &
 }
 install -d -o caboose -g caboose -m 0700 "$CABOOSE_HOME/.cache"
-start_notifications
+[ ! -f /opt/caboose/notifications/monitor.py ] || start_notifications
 # Start the display's accessibility bus before any app, so every app on it joins that bus
 # (see guest/desktop-mcp/README.md). Safe to repeat; an app still runs without it.
 a11y_bus() {
@@ -98,11 +98,12 @@ start_caboose_display() {
     setsid caboose-display --env-file /run/caboose/display.env >>"$log" 2>&1 < /dev/null &
 }
 start_printing() {
+  [ -x /usr/local/libexec/caboose-phone-printer-setup ] && command -v lpstat >/dev/null && [ -x /usr/sbin/cupsd ] || return 0
   if ! lpstat -r 2>/dev/null | grep -q 'scheduler is running'; then /usr/sbin/cupsd; fi
-  /usr/local/libexec/caboose-phone-printer-setup
+  [ ! -x /usr/local/libexec/caboose-phone-printer-setup ] || /usr/local/libexec/caboose-phone-printer-setup
 }
 case ${1:-} in
-  start) start_printing; start_display :100 14500 on ;;
+  start) start_printing || echo "Printing unavailable" >&2; start_display :100 14500 on ;;
   start-files)
     start-stop-daemon --start --oknodo --background --make-pidfile --pidfile /run/caboose/files.pid \
       --chuid caboose:caboose --exec /usr/bin/python3 -- /opt/caboose/files/caboose-files.py
@@ -111,7 +112,7 @@ case ${1:-} in
     ;;
   start-agent) start_display :101 14501 off; ready :101 ;;
   ready) ready "${2:?display required}" ;;
-  start-display) start_printing; start_caboose_display ;;
+  start-display) start_printing || echo "Printing unavailable" >&2; start_caboose_display ;;
   ready-display) caboose-display-ready 120 ;;
   *) echo 'Usage: caboose-session start | start-agent | ready DISPLAY | start-display | ready-display' >&2; exit 2 ;;
 esac
