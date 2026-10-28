@@ -226,7 +226,6 @@ struct QuickActions: View {
     private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
 
     var body: some View {
-        let terminal = model.partitionedApps.main.first { $0.categories.contains("TerminalEmulator") }
         LazyVGrid(columns: columns, spacing: 12) {
             if model.agents.available {
                 tile("Ask an Agent", "sparkles") {
@@ -234,11 +233,9 @@ struct QuickActions: View {
                     model.askFocusRequested = true
                 }
             }
-            // The native terminal when the app has one, else the computer's own terminal app.
+            // The native terminal only. The computer's own terminal apps stay in Apps and the dock.
             if TerminalSlot.isFilled {
                 tile("Terminal", "apple.terminal") { model.selectedTab = .terminal }
-            } else if let terminal {
-                tile("Terminal", "apple.terminal") { model.open(terminal) }
             }
         }
     }
