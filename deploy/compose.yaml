@@ -1,5 +1,7 @@
 services:
   caboose-host:
+    # A release (pinned to its computer images); `--build` builds this checkout instead.
+    image: ghcr.io/braedonsaunders/caboose-host:${CABOOSE_VERSION:-latest}
     build:
       context: ..
       dockerfile: apps/host/Dockerfile
@@ -10,7 +12,8 @@ services:
       # One origin serves both the web console (/) and authenticated API (/v1).
       - "${CABOOSE_PUBLISH_ADDRESS:-127.0.0.1}:7310:7310"
     environment:
-      CABOOSE_OWNER_TOKEN: ${CABOOSE_OWNER_TOKEN:?Set CABOOSE_OWNER_TOKEN in deploy/.env}
+      # Optional: without it the host generates one in /data/caboose/disks/owner-token.
+      CABOOSE_OWNER_TOKEN: ${CABOOSE_OWNER_TOKEN:-}
       CABOOSE_MEMORY_MB: ${CABOOSE_MEMORY_MB:-6144}
       CABOOSE_VCPUS: ${CABOOSE_VCPUS:-4}
       CABOOSE_DISK_SIZE: ${CABOOSE_DISK_SIZE:-400G}
@@ -18,7 +21,7 @@ services:
     volumes:
       - ${CABOOSE_STATE_DIR:-/data/caboose}:/data/caboose
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7310/v1/health',{headers:{authorization:'Bearer '+process.env.CABOOSE_OWNER_TOKEN}}).then(async r=>{if(!r.ok || !(await r.json()).kvm) process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7310/v1/health',{headers:{authorization:'Bearer '+(process.env.CABOOSE_OWNER_TOKEN||require('fs').readFileSync(process.env.CABOOSE_IMAGE_ROOT+'/owner-token','utf8').trim())}}).then(async r=>{if(!r.ok || !(await r.json()).kvm) process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       retries: 3

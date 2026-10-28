@@ -136,18 +136,18 @@ Compose.
 
 ```sh
 git clone https://github.com/braedonsaunders/caboose.git && cd caboose
-
-# A long random owner token, kept private
-umask 077 && printf 'CABOOSE_OWNER_TOKEN=%s\n' "$(openssl rand -hex 32)" > deploy/.env
-
 docker compose -f deploy/compose.yaml up -d --build
+
+# The owner token the host generated on first start
+docker compose -f deploy/compose.yaml exec caboose-host cat /data/caboose/disks/owner-token
 ```
 
 Then:
 
-1. **Build the computer's image** with `guest/image/build.sh`. It writes `base.raw`,
-   `vmlinux` and `initrd` to `/data/caboose/disks`, the host's disk root
-   ([guest/image](guest/image/README.md)).
+1. **Install the computer's image.** A release host fetches it on first start and verifies
+   it; until the first release is published, build it with `guest/image/build.sh`, which
+   writes `base.raw`, `vmlinux` and `initrd` to `/data/caboose/disks`, the host's disk root
+   ([guest/image](guest/image/README.md), [apps/host › Images](apps/host/README.md#images)).
 2. **Open the console** at `http://localhost:7310` (or behind your HTTPS proxy), sign in
    with the owner token, and use **Computer › Phones › Connect a phone** to sign the app in.
 3. **Build the iOS app** with XcodeGen ([apps/ios](apps/ios/README.md)).
