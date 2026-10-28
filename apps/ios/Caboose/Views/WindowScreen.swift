@@ -6,6 +6,7 @@ import SwiftUI
 struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @State private var chromeVisible = true
+    @State private var askingAbout: RemoteWindow?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -44,6 +45,18 @@ struct WindowScreen: View {
             } else {
                 ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .overlay(alignment: .top) {
+            ApprovalBanner().padding(.top, chromeVisible ? 56 : 8)
+        }
+        .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
+        .fullScreenCover(item: Binding(
+            get: { model.media.handedOff },
+            set: { if $0 == nil, model.media.handedOff != nil { Task { await model.media.finished(at: nil) } } })) { media in
+            MediaPlayerScreen(media: media).environment(model)
+        }
+        .sheet(item: $askingAbout) { window in
+            AskAboutWindowSheet(window: window).environment(model)
         }
         .statusBarHidden(!chromeVisible)
         .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
@@ -100,6 +113,12 @@ struct WindowScreen: View {
             Menu {
                 Section(model.connectionSummary) {}
                 Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
+                if model.agents.available {
+                    Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
+                }
+                if let video = model.media.available, window.appClass?.name.lowercased().contains("chromium") == true {
+                    Button("Play on iPhone or Apple TV", systemImage: "play.tv") { Task { await model.media.playHere(video) } }
+                }
                 Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
                 Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
             } label: {
@@ -187,10 +206,13 @@ struct RemoteWindowPreview: UIViewRepresentable {
         let view = RemoteWindowView(session: nil, window: window)
         view.isInteractive = false
         view.pixelsPerPoint = max(1, window.frame.width / 150)
+        view.pacer = model.session // a live preview is paced like any window on screen
+        view.showsVideo = false // the window's own screen plays its videos
         return view
     }
 
     func updateUIView(_ view: RemoteWindowView, context: Context) {
+        view.pacer = model.session
         if view.remoteWindow?.id != window.id { view.attach(window) }
         view.pixelsPerPoint = max(1, window.frame.width / 150)
     }

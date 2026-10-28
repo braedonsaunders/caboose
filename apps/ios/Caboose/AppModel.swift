@@ -23,10 +23,13 @@ final class AppModel {
 
     private(set) var phase: Phase
     let agents = AgentCenter()
+    /// Videos playing on the computer that can move to the phone.
+    let media = MediaHandoff()
     /// A window on the agent seat being watched or taken over full screen.
     var presentedAgentWindowID: Int?
     private(set) var credentials: Credentials?
-    private(set) var session: XpraSession?
+    /// The owner's display: Caboose Display where the host serves it, otherwise Xpra.
+    private(set) var session: (any DisplaySession)?
     private(set) var computer: HostClient.Session.Computer?
     private(set) var apps: [HostClient.App] = []
     private(set) var appIcons: [String: UIImage] = [:]
@@ -61,6 +64,8 @@ final class AppModel {
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
         agents.onComputer = { [weak self] status in self?.computerStatus = status }
+        agents.onEvent = { [weak self] type, event in self?.media.handle(type, event) }
+        media.attach(host: { [weak self] in self?.host })
     }
 
     var host: HostClient? { credentials.map { HostClient(baseURL: activeHostURL ?? $0.hostURL, token: $0.token) } }
@@ -95,6 +100,7 @@ final class AppModel {
         session?.disconnect()
         session = nil
         agents.reset()
+        media.reset()
         computerStatus = nil
         settingsPresented = false
         Credentials.clear()
@@ -123,6 +129,7 @@ final class AppModel {
             agents.detach()
             agents.attach(host: host)
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
+            Task { await media.refresh() }
             Task { await refreshApps() }
             Task { try? await refreshComputer() }
         } catch {
@@ -159,8 +166,10 @@ final class AppModel {
         lastDisplay = display
         let caps = displayCapabilities()
         placedWindowIDs.removeAll()
-        let session = XpraSession(displayURL: host.socketURL(display.path), token: host.token, password: display.token,
-                                  capabilities: caps)
+        let url = host.socketURL(display.path)
+        let session: any DisplaySession = display.protocol == HostClient.Session.Display.cabooseDisplay
+            ? CabooseDisplaySession(displayURL: url, token: host.token, password: display.token, capabilities: caps)
+            : XpraSession(displayURL: url, token: host.token, password: display.token, capabilities: caps)
         session.onClipboardText = { text in UIPasteboard.general.string = text }
         session.clipboardProvider = { UIPasteboard.general.string }
         session.onBell = { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
@@ -420,6 +429,8 @@ final class AppModel {
     /// The host's management status: settings, what the machine runs with, and whether a restart applies them.
     private(set) var computerStatus: HostClient.ComputerStatus?
     var settingsPresented = false
+    /// Settings › Agents on its own, from the Ask bar's menu.
+    var showAgentSettings = false
 
     func refreshComputer() async throws {
         guard let host else { return }

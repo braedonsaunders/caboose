@@ -1,7 +1,8 @@
 import Foundation
 import Security
 
-/// Where your computer lives and the token that opens it. The token is kept in the Keychain.
+/// Where your computer lives and the token that opens it, kept in the Keychain in the
+/// app's shared access group so the share extension can reach the same computer.
 struct Credentials: Equatable {
     var hostURL: URL
     var token: String
@@ -13,33 +14,53 @@ struct Credentials: Equatable {
     var candidates: [URL] { [hostURL] + alternateURLs.filter { $0 != hostURL } }
 
     private static let service = "com.braedonsaunders.caboose.host"
+    /// The host's addresses, one per line, preferred first.
+    private static let addressesService = "com.braedonsaunders.caboose.host.addresses"
     private static let hostKey = "caboose.hostURL"
     private static let alternatesKey = "caboose.alternateHostURLs"
 
+    /// New items go to the first group in the `keychain-access-groups` entitlement, the
+    /// group the app and its share extension share; reads search every group they have.
     static func load() -> Credentials? {
+        if let token = read(service), !token.isEmpty,
+           let urls = read(addressesService).map({ $0.split(separator: "\n").compactMap { URL(string: String($0)) } }),
+           let host = urls.first {
+            return Credentials(hostURL: host, token: token, alternateURLs: Array(urls.dropFirst()))
+        }
+        // Before the share extension, the addresses lived in the app's own defaults and the
+        // token in the app's private access group: move them to the shared group once.
         if let text = UserDefaults.standard.string(forKey: hostKey), let url = URL(string: text),
-           let token = readToken(), !token.isEmpty {
+           let token = read(service), !token.isEmpty {
             let alternates = (UserDefaults.standard.stringArray(forKey: alternatesKey) ?? []).compactMap(URL.init(string:))
-            return Credentials(hostURL: url, token: token, alternateURLs: alternates)
+            let credentials = Credentials(hostURL: url, token: token, alternateURLs: alternates)
+            credentials.save()
+            return credentials
         }
         return developmentDefaults()
     }
 
     func save() {
-        UserDefaults.standard.set(hostURL.absoluteString, forKey: Self.hostKey)
-        UserDefaults.standard.set(alternateURLs.map(\.absoluteString), forKey: Self.alternatesKey)
-        let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: Self.service]
-        SecItemDelete(query as CFDictionary)
-        var item = query
-        item[kSecValueData] = Data(token.utf8)
-        item[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(item as CFDictionary, nil)
+        Self.write(Self.service, token)
+        Self.write(Self.addressesService, candidates.map(\.absoluteString).joined(separator: "\n"))
+        UserDefaults.standard.removeObject(forKey: Self.hostKey)
+        UserDefaults.standard.removeObject(forKey: Self.alternatesKey)
     }
 
     static func clear() {
         UserDefaults.standard.removeObject(forKey: hostKey)
         UserDefaults.standard.removeObject(forKey: alternatesKey)
-        SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service] as CFDictionary)
+        for service in [service, addressesService] {
+            SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service] as CFDictionary)
+        }
+    }
+
+    private static func write(_ service: String, _ value: String) {
+        let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: service]
+        SecItemDelete(query as CFDictionary)
+        var item = query
+        item[kSecValueData] = Data(value.utf8)
+        item[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
+        SecItemAdd(item as CFDictionary, nil)
     }
 
     /// Parses `caboose://connect?host=<url>&token=<token>[&alt=<url>…]`.
@@ -87,7 +108,7 @@ struct Credentials: Equatable {
         }
     }
 
-    private static func readToken() -> String? {
+    private static func read(_ service: String) -> String? {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword, kSecAttrService: service,
             kSecReturnData: true, kSecMatchLimit: kSecMatchLimitOne,

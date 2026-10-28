@@ -84,28 +84,149 @@ TV" (media handoff) stays as a user action layered on top, not as the mechanism.
 
 ## Caboose Display Protocol (v0)
 
-Binary frames over the `/v1/display` WebSocket. Version is negotiated in `hello`.
-Little-endian. The type is one byte, then a u32 length, then the payload. Metadata
-is CBOR; frames carry raw NAL units.
+The server is `caboose-display` in the guest, on WebSocket `0.0.0.0:14600` (any path; it
+accepts the `binary` subprotocol). The host relays it exactly as it relays Xpra; `14601` is
+reserved for an agent seat. One client is served at a time: a new authenticated client
+replaces the previous one, whose socket is closed. The Rust codec is
+`guest/display/protocol`, and `guest/display/vectors/` pins every message byte for byte.
 
-Server → client
-- `hello { version, displays, encoders: ["hevc","av1","h264"], features }`
-- `window.create { id, parent?, kind: toplevel|popup|dialog, title, app_id, icon?, geometry, min/max, fullscreen }`
-- `window.update { id, …changed fields }` · `window.destroy { id }`
-- `frame { id, codec, keyframe, pts_us, rect, crop, data }`. One encoded picture of one
-  window, in Annex-B, with `crop` for encoder padding (NVENC pads 2160 → 2176).
-- `tile { id, rect, format: png|webp-lossless, data }`. Lossless refresh of static content.
-- `cursor { id?, image, hotspot } | cursor.named { name }` (text cursors drive the iOS keyboard)
-- `clipboard`, `notification`, `audio { codec: opus, pts_us, data }` (Opus, in sync with `pts_us`)
+### Framing and encoding
 
-Client → server
-- `hello { version, decoders, displays: [{ id, width, height, scale, refresh_hz, hdr }] }`
-- `vsync { display, t_us }`. The client's display ticks; frame callbacks are released on them.
-- `ack { id, pts_us, decoded_us }`. Flow control and latency accounting.
-- `configure { id, geometry, fullscreen?, maximized?, activated? }` · `close { id }` · `request_keyframe { id }`
-- input: `touch { id, slot, phase, x, y, force?, radius? }`, `pencil { …, pressure, tilt, azimuth }`,
-  `pointer { id, x, y, buttons, scroll{dx,dy,precise} }`, `key { keysym, pressed, mods }`,
-  `text { commit, preedit?, cursor? }` (text-input-v3: autocorrect, dictation, CJK)
+- The client parses a **byte stream**. WebSocket message boundaries carry no meaning (the
+  server happens to write one protocol message per WebSocket message).
+- Each message is `type: u8`, `length: u32` little-endian, then `payload[length]`. The
+  payload is always exactly one CBOR map with text keys. Binary content (NAL units, OBUs,
+  PNG, Opus) is a CBOR byte string field, so it is raw bytes on the wire.
+- The largest payload is 16 MiB minus the 5-byte header (the relay's WebSocket
+  `maxPayload` is 16 MiB). A larger announced length is a protocol error and closes the
+  connection.
+- Unknown types are skipped by length. Unknown keys are ignored. A known type whose payload
+  does not decode is dropped and the stream continues.
+- **Encoders are canonical**, so vectors compare byte for byte in both directions:
+  definite lengths, integers in the shortest form, every float as float64 (`0xfb`), map
+  keys sorted bytewise on their encoded form (RFC 8949 §4.2.1; for short text keys, the
+  shorter key first, then lexicographic), and optional fields absent rather than null.
+  **Decoders are liberal**: any key order, any integer or float width, tags read through,
+  and an integer where a float is expected.
+
+### Coordinates and ids
+
+- Everything is in **display pixels**, the `width`/`height` of a display in the client's
+  `hello`. Geometry and rects are `[x, y, w, h]` integers; sizes are `[w, h]`; input
+  positions are floats.
+- A toplevel's `geometry` is relative to its display's origin. A popup's or dialog's is
+  relative to its parent's geometry origin and may be negative. Geometry is the xdg window
+  geometry: client-side shadows are outside it and are cropped out of the stream.
+- `frame.rect` is window-local display pixels (origin = the window's geometry origin).
+  `frame.crop` is the visible part of the decoded picture in picture pixels (encoders pad,
+  for example NVENC 2160 → 2176). When the two sizes differ the client scales, which also
+  covers a scale-1 Xwayland window on a scale-3 display. Input `x`/`y` are window-local,
+  with the same origin as `rect`.
+- Window ids are unique for the server's lifetime and survive reconnects, so a client can
+  keep a last-frame cache per id.
+
+### Handshake
+
+The client speaks first, as soon as the socket opens, with `hello` carrying the
+`display.token` from `/v1/session`. The server re-reads the per-wake token file on every
+hello. On a mismatch it sends `bye { reason: "auth" }` and closes; on an unsupported
+version, `bye { reason: "version" }`. Otherwise it answers `hello` with the display ids it
+accepted, `encoders` = its encoders ∩ the client's decoders in the server's preference
+order, and its `features`; then sends `window.create` for every live window, followed by a
+keyframe of each.
+
+`features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
+`cursor-named`, `tiles`, `audio`, `xwayland`. A feature is listed only when the server
+implements it.
+
+### Pacing and flow control
+
+- `pts_us` is the server's `CLOCK_MONOTONIC` at the surface commit, in microseconds.
+- The client sends `vsync` once per refresh of each display that shows a window. Frame
+  callbacks of a window are released on a vsync of its display, and only while fewer than
+  2 of its frames are unacknowledged (`ack` matches by `pts_us`). A window whose display
+  sends no vsync is throttled like a minimised one: it gets frame callbacks once a second.
+- `ack.decoded_us` is the decode duration, or `-1` if decoding failed, after which the
+  client also sends `request_keyframe`. The next frame after `request_keyframe`, a
+  reconnect, or a size change is a keyframe with parameter sets.
+
+### Messages
+
+Server → client (`0x01`–`0x7F`):
+
+| Type | Name | Fields (`?` optional) |
+| --- | --- | --- |
+| `0x01` | `hello` | `version: uint`, `displays: [uint]`, `encoders: [codec]`, `features: [text]` |
+| `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool` |
+| `0x03` | `window.update` | `id` plus any `window.create` field that changed |
+| `0x04` | `window.destroy` | `id` |
+| `0x10` | `frame` | `id`, `codec: "hevc"\|"av1"\|"h264"`, `keyframe: bool`, `pts_us: uint`, `rect`, `crop`, `data: bytes` |
+| `0x11` | `tile` | `id`, `rect`, `format: "png"\|"webp-lossless"`, `data: bytes` |
+| `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
+| `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
+| `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …) |
+| `0x30` | `clipboard` | `mime`, `data: bytes` |
+| `0x31` | `notification` | `id`, `app`, `summary`, `body` |
+| `0x40` | `audio` | `codec: "opus"`, `pts_us`, `data: bytes` |
+| `0x7E` | `pong` | `t_us` (echoed from `ping`) |
+| `0x7F` | `bye` | `reason: "auth"\|"version"\|"shutdown"\|"protocol"` |
+
+Client → server (`0x81`–`0xFF`):
+
+| Type | Name | Fields (`?` optional) |
+| --- | --- | --- |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]` |
+| `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
+| `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
+| `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
+| `0x85` | `close` | `id` |
+| `0x86` | `request_keyframe` | `id` |
+| `0x87` | `displays` | `displays: [display]`; replaces the set on a live session (rotation, a TV plugged in, a zoom change). The server re-lays-out and answers with `window.update` |
+| `0x90` | `touch` | `id`, `points: [{ slot, phase: "down"\|"motion"\|"up"\|"cancel", x, y, force?, radius? }]`; one message is one `wl_touch.frame` |
+| `0x91` | `pencil` | `id`, `phase: "down"\|"motion"\|"up"\|"cancel"\|"hover"\|"leave"`, `x`, `y`, `pressure` (0…1), `tilt: [x_deg, y_deg]`, `azimuth_deg` |
+| `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool }` (pixels when precise, otherwise wheel clicks) |
+| `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
+| `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
+| `0xA0` | `clipboard` | `mime`, `data: bytes` |
+| `0xFE` | `ping` | `t_us`, answered by `pong` for round-trip time |
+
+A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: float, hdr: bool }`.
+
+- `frame.data` is Annex-B for H.264 and HEVC, with parameter sets on keyframes; for AV1 it is
+  one temporal unit of low-overhead OBUs with the sequence header on keyframes.
+- `text` is text-input-v3. Deletions (`delete_before`, `delete_after`, in grapheme
+  clusters) are sent to every surface as BackSpace and Delete presses, one per cluster,
+  before the commit; that removes one grapheme cluster in every toolkit, where
+  `delete_surrounding_text` depends on the application's surrounding-text bookkeeping
+  (Chromium drops it). The commit and pre-edit text go through text-input-v3 when the
+  focused surface has it enabled; otherwise (an X11 app through Xwayland, for example)
+  the commit is typed as key presses and pre-edit text is not shown.
+- `text_input` fires when the focused window's text-input-v3 is enabled or disabled. With
+  the `text-input-v3` feature the client shows and hides the keyboard from it, and treats a
+  `text` cursor shape only as a fallback.
+- Clients keep pointer gestures (tap, long-press right-click, swipe to scroll) for
+  `xwayland: true` windows and send real touch to native Wayland ones, because most X11
+  apps turn a touch drag into a selection.
+
+## Status
+
+`guest/display` implements milestone 1 and the CPU path of the design; its README has the
+measurements and the scripted checks.
+
+- **Done:** the protocol and its vectors; the headless compositor with Xwayland, wl_shm and
+  linear dmabufs; one stream per toplevel, dialog, popup and X11 window; single-buffer
+  windows read in place without composition, the rest damage-tracked; changed-block
+  detection and libx264 macroblock hints, so the server's CPU follows what changes on
+  screen; libx264, libx265 and NVENC (from system memory, the WSL2
+  path) behind one `Encoder` trait; pacing on vsync with acknowledgement-based flow
+  control; pointer, multitouch, keys and text-input-v3 input; reconnect and replacement;
+  the container and microVM integration (installed, not the default).
+- **Next:** a GPU renderer that composes into dmabufs, and the zero-copy encoders on it
+  (dmabuf → NVENC through CUDA external memory, dmabuf → VA-API); lossless tiles; clipboard,
+  cursor images, Pencil and audio; the `video.*` layers.
+- **Not measurable here yet:** milestone 2's success criterion needs a Linux host with an
+  encode-capable GPU. The development machine's GPU (Radeon HD 7450) has VA-API decode
+  only, and the RTX 4080 machine runs WSL2, which has no DRM render node.
 
 ## Milestones
 

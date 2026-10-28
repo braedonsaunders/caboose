@@ -1,0 +1,8 @@
+{
+  "name": "pong",
+  "description": "",
+  "messages": [
+    {"direction": "server", "type": "pong", "type_id": 126, "fields": {"t_us": 98765432100}}
+  ],
+  "hex": "7e0f000000a164745f75731b00000016fee0e524"
+}

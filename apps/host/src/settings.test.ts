@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { openSettings, settingsLimits, SettingsStore, updateSettings } from './settings.js'
 
-const defaults = { name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600_000 }
+const defaults = { name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600_000, defaultAgent: null }
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 
@@ -12,10 +12,20 @@ it('validates partial settings without coercion or changing the original', () =>
   expect(updateSettings(defaults, { name: '  My computer  ', memoryMb: 4096 }, settingsLimits())).toEqual({ ...defaults, name: 'My computer', memoryMb: 4096 })
   for (const input of [{ name: '' }, { name: 'a\nb' }, { name: 'x'.repeat(81) }, { memoryMb: '4096' },
     { memoryMb: 511 }, { memoryMb: 65537 }, { vcpus: 0 }, { vcpus: 1.5 }, { vcpus: 33 },
-    { idleMs: 0 }, { idleMs: 59999 }, { idleMs: 86400001 }, { token: 'new-token' }]) {
+    { idleMs: 0 }, { idleMs: 59999 }, { idleMs: 86400001 }, { token: 'new-token' },
+    { defaultAgent: '' }, { defaultAgent: 'Claude' }, { defaultAgent: '../x' }, { defaultAgent: 3 }]) {
     expect(() => updateSettings(defaults, input, settingsLimits())).toThrow()
   }
   expect(defaults.name).toBe('Caboose')
+  expect(updateSettings(defaults, { defaultAgent: 'codex-acp' }, settingsLimits()).defaultAgent).toBe('codex-acp')
+  expect(updateSettings({ ...defaults, defaultAgent: 'codex-acp' }, { defaultAgent: null }, settingsLimits()).defaultAgent).toBeNull()
+})
+
+it('reads settings saved before there was a default agent', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'caboose-settings-')); roots.push(root)
+  const path = join(root, 'caboose.json')
+  await writeFile(path, JSON.stringify({ name: 'Old', memoryMb: 2048, vcpus: 2, idleMs: 600_000 }))
+  expect((await openSettings(path, defaults)).get()).toEqual({ ...defaults, name: 'Old' })
 })
 
 it('retains successful settings across restarts with private atomic storage', async () => {

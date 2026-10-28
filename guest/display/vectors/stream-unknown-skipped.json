@@ -1,0 +1,10 @@
+{
+  "name": "stream-unknown-skipped",
+  "description": "Three server messages back to back with an unknown type 0x50 between them; a v0 client skips it by length.",
+  "messages": [
+    {"direction": "server", "type": "cursor.named", "type_id": 33, "fields": {"name": "default"}},
+    {"direction": "server", "type": null, "type_id": 80, "payload_hex": "a166667574757265f5"},
+    {"direction": "server", "type": "window.destroy", "type_id": 4, "fields": {"id": 12}}
+  ],
+  "hex": "210e000000a1646e616d656764656661756c745009000000a166667574757265f50405000000a16269640c"
+}

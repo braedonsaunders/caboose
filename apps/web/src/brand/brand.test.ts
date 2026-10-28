@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  INK_DARK, INK_LIGHT, LETTER_X, TIE, appIconSvg, carSvg, faviconSvg, readmeWordmarkSvg, wordmarkSvg,
+  INK_DARK, INK_LIGHT, LETTER_X, TIE, appIconSvg, faviconSvg, readmeWordmarkSvg, wordmarkSvg,
 } from './brand.js'
 
 // The checked-in brand files are this module's output. `vitest -u` rewrites them.
@@ -17,6 +17,17 @@ describe('generated brand files', () => {
   it('console favicon', async () => {
     await expect(faviconSvg() + '\n').toMatchFileSnapshot('../../public/favicon.svg')
   })
+})
+
+describe('standalone files parse as XML', () => {
+  // An <img> parses SVG strictly. A double hyphen inside a comment is a fatal XML
+  // error that shows as a broken image, though browsers forgive it in inline SVG.
+  const files = { light: readmeWordmarkSvg('light'), dark: readmeWordmarkSvg('dark'), icon: appIconSvg(), favicon: faviconSvg() }
+  for (const [name, svg] of Object.entries(files)) {
+    it(`${name}: comments never contain "--"`, () => {
+      for (const [, body] of svg.matchAll(/<!--([\s\S]*?)-->/g)) expect(body).not.toContain('--')
+    })
+  }
 })
 
 describe('geometry', () => {
@@ -47,20 +58,21 @@ describe('rendering', () => {
   })
 
   it('still logos carry no animation, and every animated one honours reduced motion', () => {
-    expect(carSvg({ ink: 'currentColor', motion: 'none' })).not.toContain('@keyframes')
+    expect(wordmarkSvg({ ink: 'currentColor', motion: 'none' })).not.toContain('@keyframes')
     for (const motion of ['intro', 'rolling'] as const) {
       expect(wordmarkSvg({ ink: 'currentColor', motion })).toContain('prefers-reduced-motion')
-      expect(carSvg({ ink: 'currentColor', motion })).toContain('prefers-reduced-motion')
     }
   })
 
-  it('a parked car keeps its windows dark', () => {
-    expect(carSvg({ ink: '#000', lights: true })).toContain('<g fill="#F5A623">')
-    expect(carSvg({ ink: '#000', lights: false })).toContain('<g fill="#000" opacity=".22">')
+  it('a parked computer shows its hubs unlit', () => {
+    expect(wordmarkSvg({ ink: '#000' }).match(/fill="#F5A623"/g)).toHaveLength(2)
+    const parked = wordmarkSvg({ ink: '#000', lit: false })
+    expect(parked).not.toContain('#F5A623')
+    expect(parked.match(/r="10" fill="#000" opacity=".22"/g)).toHaveLength(2)
   })
 
   it('sizes from height when given, from CSS when not', () => {
-    expect(carSvg({ ink: '#000', height: 34 })).toContain('width="40.6" height="34"')
-    expect(carSvg({ ink: '#000' })).not.toMatch(/<svg[^>]* height=/)
+    expect(wordmarkSvg({ ink: '#000', height: 37 })).toContain('width="167.2" height="37"')
+    expect(wordmarkSvg({ ink: '#000' })).not.toMatch(/<svg[^>]* height=/)
   })
 })

@@ -9,10 +9,23 @@ import UIKit
 /// size divided by `pixelsPerPoint`, so pixels land 1:1 on a scale that matches it.
 /// Presentation copies the window texture into the drawable only when a draw changed it.
 @MainActor
-public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGestureRecognizerDelegate {
+public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDelegate {
     public override static var layerClass: AnyClass { CAMetalLayer.self }
 
-    public weak var session: XpraSession?
+    public weak var session: (any DisplaySession)?
+    /// The session whose pictures this view shows, told of each refresh of the screen it is
+    /// on so the server paces the window to it. Set it on display-only views too; it is
+    /// `session` when nil.
+    public weak var pacer: (any DisplaySession)?
+    /// Which of the session's displays this view is on, for vsync pacing.
+    public var displayID = 0
+    /// Whether this view plays the window's videos. A video plays in one view at a time, so
+    /// thumbnails leave it to the window's main view.
+    public var showsVideo = true {
+        didSet { laidOutVideos = nil }
+    }
+    private var laidOutVideos: (window: ObjectIdentifier, layout: Int, scale: CGFloat)?
+    private var hostedVideos: [CALayer] = []
     public private(set) var remoteWindow: RemoteWindow?
     public var pixelsPerPoint: CGFloat = 2
     /// When false the view only displays (thumbnails, previews).
@@ -43,7 +56,7 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
         return bar
     }()
 
-    public init(session: XpraSession?, window: RemoteWindow?) {
+    public init(session: (any DisplaySession)?, window: RemoteWindow?) {
         self.session = session
         super.init(frame: .zero)
         metalLayer.device = SurfaceRenderer.shared.device
@@ -61,17 +74,27 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     public func attach(_ window: RemoteWindow?) {
+        if window !== remoteWindow {
+            resetTyping()
+            cancelTouches()
+            laidOutVideos = nil
+        }
         remoteWindow = window
+        prefersProse = autocorrectChoice ?? !Self.isCodeApp(window)
         presentedGeneration = .max
         metalLayer.isOpaque = !(window?.hasAlpha ?? false)
     }
 
     public override func didMoveToWindow() {
         super.didMoveToWindow()
+        if self.window == nil { cancelTouches() }
         displayLink?.invalidate()
         displayLink = nil
         guard self.window != nil, superview != nil else { return }
-        let link = CADisplayLink(target: DisplayLinkTarget(self), selector: #selector(DisplayLinkTarget.tick))
+        // The link of the screen the view is on, a TV's included, so ticks are that screen's refreshes.
+        let target = DisplayLinkTarget(self), tick = #selector(DisplayLinkTarget.tick(_:))
+        let link = self.window?.windowScene?.screen.displayLink(withTarget: target, selector: tick)
+            ?? CADisplayLink(target: target, selector: tick)
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
         link.add(to: .main, forMode: .common)
         displayLink = link
@@ -79,8 +102,38 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
 
     public override func layoutSubviews() {
         super.layoutSubviews()
+        laidOutVideos = nil
         metalLayer.contentsScale = pixelsPerPoint
         presentedGeneration = .max
+    }
+
+    /// Puts each of the window's videos over its picture: the stream's layer at its `rect`,
+    /// inside a container cut to its `clip`, in `z` order. Runs only when one of them changed.
+    fileprivate func layoutVideos() {
+        let window = showsVideo ? remoteWindow : nil
+        let key = window.map { (ObjectIdentifier($0), $0.videoLayout, pixelsPerPoint) }
+        if let key, let laid = laidOutVideos, laid == key { return }
+        if key == nil, hostedVideos.isEmpty { return }
+        laidOutVideos = key
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let videos = window?.videos ?? []
+        for container in hostedVideos where container.superlayer === layer && !videos.contains(where: { $0.container === container }) {
+            container.removeFromSuperlayer()
+        }
+        let scale = 1 / pixelsPerPoint
+        func points(_ rect: CGRect) -> CGRect {
+            CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale)
+        }
+        for video in videos {
+            let clip = video.clip ?? video.rect
+            if video.container.superlayer !== layer { layer.addSublayer(video.container) }
+            video.container.frame = points(clip)
+            video.container.zPosition = CGFloat(video.z)
+            video.layer.frame = points(video.rect.offsetBy(dx: -clip.minX, dy: -clip.minY))
+        }
+        hostedVideos = videos.map(\.container)
+        CATransaction.commit()
     }
 
     fileprivate func present() {
@@ -117,6 +170,9 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
 
     private func click(at point: CGPoint, button: Int = 1) {
         guard let window = remoteWindow, let session else { return }
+        // A click can move focus or the caret, so iOS must not edit text from before it.
+        resetTyping()
+        caretAnchor = point
         move(to: point)
         session.focus(window)
         session.pointerButton(in: window, button: button, pressed: true, at: lastPointer)
@@ -173,11 +229,19 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
 
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(handleHover(_:)))
         addGestureRecognizer(hover)
+
+        // Fingers on a window that takes touch, and a Pencil on one that takes a tablet, go to
+        // the app as they are (touchesBegan and friends); the gestures never see them.
+        for recognizer in [tap, pointerClick, secondaryClick, doubleTap, twoFingerTap, pointerDrag] { recognizer.delegate = self }
     }
 
     public func gestureRecognizer(_ gesture: UIGestureRecognizer,
                                   shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         false
+    }
+
+    public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        !routesNatively(touch)
     }
 
     public override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
@@ -197,6 +261,7 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
     }
 
     private func tapped() {
+        prefersProse = autocorrectChoice ?? !Self.isCodeApp(remoteWindow)
         guard onKeyboardWanted != nil, let session else {
             if !isFirstResponder { becomeFirstResponder() }
             return
@@ -213,6 +278,11 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
         let fresh = session.cursorSerial != check.serial
         guard fresh || elapsed > 0.35 else { return }
         if let isText = session.cursorIsText {
+            // The app says what the field takes: no autocorrect in a terminal or a password.
+            if isText, autocorrectChoice == nil, let purpose = session.textPurpose {
+                prefersProse = !["terminal", "password", "pin", "url", "email", "number", "digits", "phone", "date", "time", "datetime"]
+                    .contains(purpose)
+            }
             onKeyboardWanted(isText)
             focusCheck = nil
         } else if elapsed > 1.2 {
@@ -275,8 +345,165 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
     }
 
     @objc private func handleHover(_ gesture: UIHoverGestureRecognizer) {
+        // A Pencil hovering above an iPad (zOffset above zero) is in a tablet's proximity.
+        if gesture.zOffset > 0, let window = remoteWindow, window.acceptsPencil, let session {
+            let point = pixelPoint(gesture.location(in: self))
+            let hovering = gesture.state == .began || gesture.state == .changed
+            let azimuth = Double(gesture.azimuthAngle(in: self))
+            session.pencil(PencilSample(phase: hovering ? .hover : .leave, x: Double(point.x), y: Double(point.y), pressure: 0,
+                                        tilt: PencilSample.tilt(altitude: Double(gesture.altitudeAngle), azimuth: azimuth),
+                                        azimuth: Self.degrees(azimuth)), in: window)
+            return
+        }
         guard gesture.state == .began || gesture.state == .changed else { return }
         move(to: gesture.location(in: self))
+    }
+
+    // MARK: Native touch and Pencil
+
+    /// Fingers down on a window that takes touch: their slots and last positions, so a
+    /// view that goes away mid-touch can cancel them.
+    private var touchSlots = TouchSlots<ObjectIdentifier>()
+    private var activeTouches: [ObjectIdentifier: (slot: Int, point: CGPoint)] = [:]
+    /// The first finger of a native touch sequence, to tell a tap (which may focus a text
+    /// field, so the keyboard question is asked) from a drag.
+    private var tapCandidate: (finger: ObjectIdentifier, at: CFTimeInterval, location: CGPoint)?
+    /// Every finger and Pencil that went down to the app. The rest of a touch goes wherever
+    /// it began, even if the window's touch support changes meanwhile.
+    private var nativeTouches = Set<ObjectIdentifier>()
+
+    /// Where a Pencil that is down on the app last was, so it can be cancelled.
+    private var pencilPoint: CGPoint?
+
+    private func isNative(_ touch: UITouch) -> Bool { nativeTouches.contains(ObjectIdentifier(touch)) }
+
+    private func routesNatively(_ touch: UITouch) -> Bool {
+        guard isInteractive, session != nil, let window = remoteWindow else { return false }
+        switch touch.type {
+        case .direct: return window.acceptsTouch
+        case .pencil: return window.acceptsPencil
+        default: return false
+        }
+    }
+
+    public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let native = touches.filter(routesNatively)
+        nativeTouches.formUnion(native.map(ObjectIdentifier.init))
+        if !native.isEmpty {
+            stopMomentum()
+            if let first = native.first, activeTouches.isEmpty, native.count == 1, first.type == .direct {
+                tapCandidate = (ObjectIdentifier(first), first.timestamp, first.location(in: self))
+            } else {
+                tapCandidate = nil
+            }
+            deliver(native, .down, event)
+        }
+        let rest = touches.subtracting(native)
+        if !rest.isEmpty { super.touchesBegan(rest, with: event) }
+    }
+
+    public override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let native = touches.filter(isNative)
+        if let candidate = tapCandidate, let touch = native.first(where: { ObjectIdentifier($0) == candidate.finger }) {
+            let location = touch.location(in: self)
+            if hypot(location.x - candidate.location.x, location.y - candidate.location.y) > 10 { tapCandidate = nil }
+        }
+        deliver(native, .motion, event)
+        let rest = touches.subtracting(native)
+        if !rest.isEmpty { super.touchesMoved(rest, with: event) }
+    }
+
+    public override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let native = touches.filter(isNative)
+        nativeTouches.subtract(native.map(ObjectIdentifier.init))
+        deliver(native, .up, event)
+        if let candidate = tapCandidate, let touch = native.first(where: { ObjectIdentifier($0) == candidate.finger }) {
+            tapCandidate = nil
+            if touch.timestamp - candidate.at < 0.35, activeTouches.isEmpty {
+                // The app takes the tap itself; ask afterwards whether it focused a text field.
+                resetTyping()
+                caretAnchor = touch.location(in: self)
+                tapped()
+            }
+        }
+        let rest = touches.subtracting(native)
+        if !rest.isEmpty { super.touchesEnded(rest, with: event) }
+    }
+
+    public override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let native = touches.filter(isNative)
+        nativeTouches.subtract(native.map(ObjectIdentifier.init))
+        tapCandidate = nil
+        deliver(native, .cancel, event)
+        let rest = touches.subtracting(native)
+        if !rest.isEmpty { super.touchesCancelled(rest, with: event) }
+    }
+
+    /// One `touch` message per UIKit event is one wl_touch.frame: every finger that changed, together.
+    private func deliver(_ touches: Set<UITouch>, _ phase: TouchPhase, _ event: UIEvent?) {
+        guard !touches.isEmpty, let window = remoteWindow, let session else { return }
+        var points: [TouchPoint] = []
+        for touch in touches {
+            if touch.type == .pencil {
+                deliverPencil(touch, phase, event, window, session)
+                continue
+            }
+            let key = ObjectIdentifier(touch)
+            let slot = touchSlots.slot(for: key)
+            let point = pixelPoint(touch.location(in: self))
+            let force = touch.maximumPossibleForce > 0 ? Double(touch.force / touch.maximumPossibleForce) : nil
+            points.append(TouchPoint(slot: slot, phase: phase, x: Double(point.x), y: Double(point.y), force: force,
+                                     radius: Double(touch.majorRadius * pixelsPerPoint)))
+            if phase == .up || phase == .cancel {
+                touchSlots.release(key)
+                activeTouches[key] = nil
+            } else {
+                activeTouches[key] = (slot, point)
+            }
+        }
+        if !points.isEmpty { session.touch(points, in: window) }
+    }
+
+    /// Pencil samples arrive at up to 240 Hz, coalesced into each 120 Hz event; all of them go,
+    /// so strokes keep their shape.
+    private func deliverPencil(_ touch: UITouch, _ phase: TouchPhase, _ event: UIEvent?, _ window: RemoteWindow, _ session: any DisplaySession) {
+        if phase == .down { resetTyping() }
+        let samples = phase == .motion ? (event?.coalescedTouches(for: touch) ?? [touch]) : [touch]
+        let pencilPhase = PencilPhase(rawValue: phase.rawValue) ?? .motion
+        for sample in samples {
+            let point = pixelPoint(sample.location(in: self))
+            let pressure = phase == .up || phase == .cancel ? 0
+                : sample.maximumPossibleForce > 0 ? min(1, Double(sample.force / sample.maximumPossibleForce)) : 0.5
+            let azimuth = Double(sample.azimuthAngle(in: self))
+            pencilPoint = phase == .up || phase == .cancel ? nil : point
+            session.pencil(PencilSample(phase: pencilPhase, x: Double(point.x), y: Double(point.y), pressure: pressure,
+                                        tilt: PencilSample.tilt(altitude: Double(sample.altitudeAngle), azimuth: azimuth),
+                                        azimuth: Self.degrees(azimuth)), in: window)
+        }
+    }
+
+    /// Lifts every finger the app still thinks is down, e.g. when the view leaves the screen.
+    private func cancelTouches() {
+        if let window = remoteWindow, let session {
+            if !activeTouches.isEmpty {
+                session.touch(activeTouches.values.map { TouchPoint(slot: $0.slot, phase: .cancel, x: Double($0.point.x), y: Double($0.point.y)) },
+                              in: window)
+            }
+            if let point = pencilPoint {
+                session.pencil(PencilSample(phase: .cancel, x: Double(point.x), y: Double(point.y), pressure: 0, tilt: (0, 0), azimuth: 0), in: window)
+            }
+        }
+        pencilPoint = nil
+        activeTouches.removeAll()
+        touchSlots.removeAll()
+        nativeTouches.removeAll()
+        tapCandidate = nil
+    }
+
+    /// Radians as compass degrees, 0 ≤ d < 360.
+    static func degrees(_ radians: Double) -> Double {
+        let degrees = radians * 180 / .pi
+        return degrees < 0 ? degrees + 360 : degrees
     }
 
     /// Swiping scrolls, like any iOS app: content follows the finger, with momentum after release.
@@ -330,27 +557,41 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
         momentum = .zero
     }
 
-    // MARK: Keyboard — software keyboard through UIKeyInput, hardware keys through presses.
+    // MARK: Keyboard — the software keyboard through UITextInput, hardware keys through presses.
 
     public override var canBecomeFirstResponder: Bool { isInteractive }
-    public var hasText: Bool { true }
-    public var autocorrectionType: UITextAutocorrectionType = .no
-    public var autocapitalizationType: UITextAutocapitalizationType = .none
-    public var spellCheckingType: UITextSpellCheckingType = .no
-    public var smartQuotesType: UITextSmartQuotesType = .no
-    public var smartDashesType: UITextSmartDashesType = .no
-    public var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
-    public var keyboardType: UIKeyboardType = .asciiCapable
-    public var keyboardAppearance: UIKeyboardAppearance = .dark
-    public var returnKeyType: UIReturnKeyType = .default
-
     public override var inputAccessoryView: UIView? { isInteractive ? keyBar : nil }
 
-    public func insertText(_ text: String) {
-        guard !stickyModifiers.isEmpty else {
-            session?.type(text, in: remoteWindow)
-            return
-        }
+    public override var prefersProse: Bool {
+        didSet { keyBar.show(autocorrect: prefersProse) }
+    }
+
+    /// The owner's autocorrect choice from the key bar; nil follows the app (off for code).
+    private var autocorrectChoice: Bool?
+
+    /// Terminals and code editors, where autocorrect and automatic capitals get in the way.
+    public static func isCodeApp(_ window: RemoteWindow?) -> Bool {
+        guard let app = window?.appClass else { return false }
+        let name = "\(app.instance) \(app.name)".lowercased()
+        return ["term", "xterm", "kitty", "alacritty", "konsole", "foot", "tilix", "wezterm", "ghostty",
+                "code", "codium", "cursor", "zed", "vim", "emacs", "mousepad", "gedit", "kate", "sublime"]
+            .contains { name.contains($0) }
+    }
+
+    public override func send(_ edits: [TypingBuffer.Edit]) {
+        session?.edit(edits, in: remoteWindow)
+    }
+
+    /// Caboose Display composes IME text in the app itself (text-input-v3 preedit).
+    public override var sendsMarkedTextAsPreedit: Bool { session?.composesText ?? false }
+
+    public override func sendPreedit(_ text: String, selection: NSRange) {
+        session?.compose(text, selection: selection, in: remoteWindow)
+    }
+
+    public override func insertText(_ text: String) {
+        guard !stickyModifiers.isEmpty else { return super.insertText(text) }
+        resetTyping()
         for character in text {
             guard let stroke = Keysyms.stroke(for: Character(character.lowercased())) else { continue }
             pressAndRelease(stroke, modifiers: Array(stickyModifiers))
@@ -363,8 +604,12 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
         case .modifier(let name):
             if stickyModifiers.contains(name) { stickyModifiers.remove(name) } else { stickyModifiers.insert(name) }
             keyBar.show(activeModifiers: stickyModifiers)
+        case .autocorrect:
+            autocorrectChoice = !prefersProse
+            prefersProse = !prefersProse
         case .key(let name):
             guard let stroke = Keysyms.special[name] else { return }
+            resetTyping()
             pressAndRelease(stroke, modifiers: Array(stickyModifiers))
             releaseSticky()
         case .text(let text):
@@ -383,13 +628,16 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
         keyBar.show(activeModifiers: stickyModifiers)
     }
 
-    public func deleteBackward() {
+    public override func deleteBackward() {
+        guard !stickyModifiers.isEmpty else { return super.deleteBackward() }
+        resetTyping()
         guard let stroke = Keysyms.special["BackSpace"] else { return }
         pressAndRelease(stroke, modifiers: Array(stickyModifiers))
         releaseSticky()
     }
 
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        resetTyping()
         var unhandled = Set<UIPress>()
         for press in presses {
             if let (stroke, modifiers) = Self.stroke(for: press) {
@@ -448,9 +696,15 @@ private final class DisplayLinkTarget: NSObject {
     weak var view: RemoteWindowView?
     init(_ view: RemoteWindowView) { self.view = view }
 
-    @MainActor @objc func tick() {
-        guard let view else { return }
+    @MainActor @objc func tick(_ link: CADisplayLink) {
+        guard let view else { link.invalidate(); return }
+        // A window shown is a window paced: the server releases its frames on these ticks,
+        // at the screen's own rate (120 Hz on ProMotion).
+        if let pacer = view.pacer ?? view.session, view.remoteWindow != nil {
+            pacer.displayWillRefresh(view.displayID, targetTimestamp: link.targetTimestamp)
+        }
         view.checkFocus()
+        view.layoutVideos()
         view.present()
     }
 

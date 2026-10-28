@@ -1,0 +1,8 @@
+{
+  "name": "text-replace",
+  "description": "Autocorrect: delete two grapheme clusters before the cursor and commit the replacement.",
+  "messages": [
+    {"direction": "client", "type": "text", "type_id": 148, "fields": {"commit": "the ", "delete_before": 2}}
+  ],
+  "hex": "941c000000a266636f6d6d697464746865206d64656c6574655f6265666f726502"
+}

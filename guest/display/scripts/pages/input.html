@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- A text field that covers the page, so any tap lands in it and keeps it focused, and
+     a log of the last pointer. The title carries what arrived (`<pointer>|<text>`), so a
+     headless check can read it from window.update. -->
+<meta charset="utf-8">
+<title>Caboose input</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; font: 28px system-ui, sans-serif; }
+  textarea { box-sizing: border-box; display: block; width: 100%; height: calc(100% - 64px);
+             margin: 0; padding: 16px; border: 0; font: inherit; resize: none; }
+  #log { height: 64px; line-height: 64px; padding: 0 16px; color: #333; background: #eee; }
+</style>
+<textarea id="field" autofocus placeholder="type here"></textarea>
+<div id="log">no input yet</div>
+<script>
+  const log = document.getElementById('log');
+  const field = document.getElementById('field');
+  let pointer = 'none';
+  field.focus();
+  const report = () => { document.title = `${pointer}|${field.value}`; };
+  addEventListener('pointerdown', e => {
+    pointer = e.pointerType;
+    log.textContent = `${e.pointerType} down at ${Math.round(e.clientX)},${Math.round(e.clientY)}`;
+    report();
+  });
+  field.addEventListener('input', report);
+</script>

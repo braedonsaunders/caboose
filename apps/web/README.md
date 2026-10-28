@@ -7,10 +7,15 @@ owner token, then see and manage the computer.
   and working agents; Wake, Park now and Restart (confirmed first); a restart-required
   notice when saved memory or vCPUs wait on a cold boot; the last lifecycle error; and
   the `caboose://connect` link that signs an iPhone in to this host.
-- **Settings** — name, memory, vCPUs and auto-park, validated against the host's
-  `limits`. Edits made from another device are followed unless there are unsaved
+- **Settings** — name, memory, vCPUs, auto-park and the default agent, validated against
+  the host's `limits`. Edits made from another device are followed unless there are unsaved
   edits here; "Save and restart" applies new resources in one step.
-- **Agents** — start a Claude Code or Codex task, and pause, resume or cancel tasks.
+- **Agents** — pick any agent from the Agent Client Protocol registry (installed ones
+  first), install or update it, sign in to it on the computer's screen or give it an API key
+  (its environment in the computer; names are shown, values never), and start a task
+  that can ask before acting (answered with Approve, the agent's always-allow option, or
+  Deny on the task); pause, resume or cancel it, sign in from a task that found its agent
+  signed out, and reply to a finished task to continue its conversation.
 
 It is built on AppKit (`appkit-ui` for the shell, settings layout, forms, confirm
 dialog and toasts; `appkit-dashboard` for metric cards and panels). It talks only to
@@ -18,6 +23,18 @@ the documented `/v1` API (see `docs/architecture.md`): the token lives in sessio
 storage for the tab and is sent as `Authorization: Bearer`, never in a URL. Status and
 tasks are polled over HTTP, which holds no lease, so an open console never keeps the
 computer awake.
+
+## Brand
+
+`src/brand/brand.ts` draws every Caboose logo from one set of numbers: the README
+wordmarks and app icon in `.github/assets`, `public/favicon.svg`, and the console's
+`<Wordmark>` component (`src/brand/Logo.tsx`), which renders the same SVG in the current
+text colour. The sign-in page draws the wordmark in. The wordmark in the sidebar has its
+hubs lit while the computer is up and unlit while it is parked. Loading states roll it.
+The app icon and favicon are one of its wheels on navy. `brand.test.ts` holds the checked-in files to the generator's output; after
+changing `brand.ts`, regenerate them with `pnpm --filter caboose-web test -u`, then
+render the iOS icon with `apps/ios/scripts/render-app-icon.sh`. The iOS app draws the same
+geometry natively in `apps/ios/Caboose/Brand/CabooseBrand.swift`; keep the two in step.
 
 ## Develop
 

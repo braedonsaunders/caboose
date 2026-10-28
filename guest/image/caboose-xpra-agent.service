@@ -9,7 +9,15 @@ Environment=HOME=/home/caboose
 Environment=XPRA_BACKWARDS_COMPATIBLE=0
 Environment=GDK_SCALE=1
 Environment=QT_QPA_PLATFORMTHEME=gtk3
-ExecStart=/usr/bin/xpra seamless :101 --daemon=no --bind-ws=0.0.0.0:14501 --ws-auth=file:filename=/run/caboose/xpra-token --html=off --clipboard=on --notifications=on --file-transfer=on --mdns=off --printing=off --webcam=off --speaker=off
+# Accessibility trees for a11y.py: Chromium and Electron, Firefox, Qt. Xpra's packaged
+# config switches GTK's bridge off for the apps it starts (NO_AT_BRIDGE=1, GTK_A11Y=none);
+# the --env and --start-env options below switch it back on.
+Environment=ACCESSIBILITY_ENABLED=1
+Environment=GNOME_ACCESSIBILITY=1
+Environment=QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
+ExecStart=/usr/bin/xpra seamless :101 --daemon=no --bind-ws=0.0.0.0:14501 --ws-auth=file:filename=/run/caboose/xpra-token --env=NO_AT_BRIDGE=0 --start-env=GTK_A11Y=atspi --html=off --clipboard=on --notifications=on --file-transfer=on --mdns=off --printing=off --webcam=off --speaker=off
+# Start the display's accessibility bus before any app, so every app on it joins that bus.
+ExecStartPost=-/usr/bin/python3 /opt/caboose/a11y.py bus --display :101 --wait 30
 Restart=on-failure
 
 [Install]

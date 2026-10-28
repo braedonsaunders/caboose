@@ -1,0 +1,8 @@
+{
+  "name": "liberal-window-update",
+  "description": "Not canonical: keys out of order, an id as uint32, a float16 where none is needed, an unknown key. It must decode; re-encoding gives the canonical payload.",
+  "messages": [
+    {"direction": "server", "type": "window.update", "type_id": 3, "fields": {"id": 7, "title": "x"}, "payload_hex": "a3657469746c6561786a6675747572655f6b657981f93e006269641a00000007", "canonical_payload_hex": "a262696407657469746c656178"}
+  ],
+  "hex": "0320000000a3657469746c6561786a6675747572655f6b657981f93e006269641a00000007"
+}

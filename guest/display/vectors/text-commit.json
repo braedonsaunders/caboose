@@ -1,0 +1,8 @@
+{
+  "name": "text-commit",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "text", "type_id": 148, "fields": {"commit": "naïve café 👍"}}
+  ],
+  "hex": "941a000000a166636f6d6d6974716e61c3af766520636166c3a920f09f918d"
+}

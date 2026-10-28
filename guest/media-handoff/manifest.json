@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Caboose media handoff",
+  "version": "1.0.0",
+  "description": "Offers videos playing on your Caboose computer to the Caboose app, so they can play on your iPhone or Apple TV.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwn2+lgiu7QHrTObL7ScZxRUoXb/WBHwwP7AmJui9d0lBoMdHvh1gZ4/qI4eCJA+DHjmWMKgyxvoeOrWKX2JVm/r6f6afoNpuzQnAEPQui02SSq6Nqux5TFJd01n1b38+Nw1ua6kiLLrEZ6PpHDXgvfiIR/cle647kHcuMnNY8HK/4uLziC76hO85fo4v9COzOau94Q8qKlQ1f1JS20KoVs/D/NwNBzg6Qc3kyZiphZV+kJF8qyhvhJuCTC1MVlhG7IJAxB8L/PTYrUZ//mSWHsj5HQArBAlymDocBZLsZF3Vm1A9YWQoakwfNkEV3G8y3h/uWwGKWssvWgh0MzSnLQIDAQAB",
+  "minimum_chrome_version": "120",
+  "permissions": ["nativeMessaging", "storage", "alarms"],
+  "background": { "service_worker": "service-worker.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "all_frames": true,
+      "run_at": "document_start",
+      "js": ["media-kind.js", "content.js"]
+    }
+  ]
+}

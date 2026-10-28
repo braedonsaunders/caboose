@@ -69,6 +69,61 @@ restart banner, and restart. Confirm the disk document remains, the old open
 applications are gone, and the display reconnects with the new resources. These
 real-machine checks require the built guest and are separate from unit tests.
 
+## Agents and files
+
+Agents (`/v1/agents`, install and sign-in), agent tasks (`/v1/agent/tasks`), replies,
+approvals, attachments, `POST /v1/files` and `POST /v1/open` are specified in
+`../../docs/architecture.md` § Agents. Agents come from the Agent Client Protocol registry
+(`src/registry.ts`; `CABOOSE_AGENT_REGISTRY_URL` selects a mirror), cached in
+`${CABOOSE_IMAGE_ROOT}/agent-registry.json`, and run in the computer by `caboose-agentd`
+(`guest/agentd`); the host has no code for any particular agent. `CABOOSE_AGENT_IDLE_MS`
+sets how long an agent stays running after a turn, waiting for a reply. The host talks to
+the guest only through the driver's `guest().run(command, args)`; file contents are sent
+as base64 argument chunks and decoded in the guest, so both the microVM and container
+drivers support them without a stdin channel.
+
+The owner-screen routes (`/v1/screen/*`, § Screen) are in `src/screen.ts`: they run the
+guest's accessibility helper `/opt/caboose/a11y.py` (see `guest/desktop-mcp`) and `xdotool`
+as `caboose` on `:100`. `guest/desktop-mcp/check-a11y.sh` runs that helper in real Xvfb and
+Xpra sessions under Docker.
+
+The guest scripts behind these routes (task start, the batched poll, replies, approval
+decisions, cancel, restore after a host restart, sign-in, attachments and Downloads) run
+for real in a Debian 13 container, where the real `caboose-agentd`, installed by its own
+`install.sh`, drives a stand-in ACP agent: the same session continuing, a new runner
+reloading a session or recapping it, a signed-out agent signed in through
+`authenticate`. This needs only Docker (and network for the image build):
+
+```sh
+apps/host/scripts/check-agent-shell.sh
+```
+
+Against a real host, the agent check saves a file to `~/Downloads`, lists the registry,
+and runs a task with the given agent (default: the computer's default agent) that asks
+before acting with an attachment, approves it through the API, and replies. The agent must
+be signed in; `--install` installs it first. `--open` also opens https://example.com on
+the owner's display. It starts real agent runs on the owner's account.
+
+```sh
+export CABOOSE_URL=https://computer.example.com
+# Supply CABOOSE_OWNER_TOKEN through your private environment.
+node apps/host/scripts/check-agents.mjs [--agent <registry id>] [--install] [--open]
+```
+
+## Media handoff
+
+`src/media.ts` reads the video playing in the computer's Chromium from the guest's
+`/home/caboose/.cache/caboose/media.json` (written by `guest/media-handoff`) about once a
+second, only while the computer is already running and a display client is connected,
+and broadcasts `media.playing` / `media.stopped` on the control socket. `GET /v1/media`
+returns the current state (null unless running; it never wakes or leases the computer).
+`POST /v1/media/:id/control` with `{ "action": "pause" }` or
+`{ "action": "play", "position": 42.5 }` writes a command for the guest as user `caboose`
+and returns `{ "sent": true }`, or 409 while the computer is not running. The contract is
+in `../../docs/architecture.md` § Media handoff. Unit tests fake the guest; check a real
+guest with `guest/media-handoff/check.sh`, then play a video in Chromium and watch
+`GET /v1/media` while the app is connected.
+
 The unverified user-service template is `systemd/caboose-host.service`. Set
 `CABOOSE_HOST_DIR` to the absolute path of `apps/host` and `CABOOSE_NODE` to
 the absolute Node executable in `~/.config/caboose/host.env`, in addition to the
@@ -80,6 +135,16 @@ interface; the service does not terminate TLS.
 The guest is fenced: it can open no connection to the host, and it reaches only the
 public internet, not private, link-local (cloud metadata), CGNAT or Tailscale
 addresses. Set `CABOOSE_GUEST_LAN=allow` to let a self-hosted computer reach your LAN.
+
+`CABOOSE_DISPLAY` picks the owner's display server. `xpra` (the default) runs Xpra
+on display `:100` and relays guest port 14500. `caboose` runs caboose-display instead
+(docs/display.md): the microVM's `caboose-display.service`, ready once
+`caboose-display-ready 60` has a hello answered, or `caboose-session start-display` and
+`ready-display` in a container. The relay then targets guest port 14600, `/v1/session`
+returns `protocol: "caboose-display"`, and apps launch with the environment
+caboose-display writes to `/run/caboose/display.env` (its Wayland socket, Xwayland's display
+and cookie, toolkit hints), read at every wake. The agent seat stays Xpra `:101` either
+way. The image must include caboose-display.
 
 `CABOOSE_OWNER_TOKEN=... apps/host/scripts/e2e.sh` uses the local Xpra client
 to authenticate an Xpra hello over the relay, parks, resumes, and repeats.

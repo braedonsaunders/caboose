@@ -28,6 +28,11 @@ public final class SurfaceRenderer: @unchecked Sendable {
 ///
 /// Draws arrive on the window's decode queue; presentation reads `texture` on the main
 /// thread. The lock guards replacement of the texture on resize, never the GPU work.
+///
+/// Every write — CPU pixels, decoded video, scrolls, resizes — is a GPU command on the one
+/// shared queue, which runs command buffers in the order they are committed. A write
+/// therefore never races the presenter's read or the next write, and no draw waits for
+/// the GPU to finish before the decode queue takes the next one.
 public final class WindowSurface: @unchecked Sendable {
     private let renderer = SurfaceRenderer.shared
     private let lock = NSLock()
@@ -61,18 +66,26 @@ public final class WindowSurface: @unchecked Sendable {
                       to: next, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
             blit.endEncoding()
             commands.commit()
-            commands.waitUntilCompleted()
         }
         backing = next
         pixelSize = CGSize(width: width, height: height)
         generation &+= 1
     }
 
-    /// Uploads tightly or loosely packed BGRA pixels into a region.
+    /// Uploads tightly or loosely packed BGRA pixels into a region, staged through a buffer
+    /// so the copy is queued behind the GPU writes before it.
     public func upload(bgra bytes: UnsafeRawPointer, rowBytes: Int, x: Int, y: Int, width: Int, height: Int) {
         guard let texture, let region = clamp(x: x, y: y, width: width, height: height, in: texture) else { return }
         let offset = (region.origin.y - y) * rowBytes + (region.origin.x - x) * 4
-        texture.replace(region: region, mipmapLevel: 0, withBytes: bytes.advanced(by: offset), bytesPerRow: rowBytes)
+        let length = (region.size.height - 1) * rowBytes + region.size.width * 4
+        guard let staging = renderer.device.makeBuffer(bytes: bytes.advanced(by: offset), length: length, options: .storageModeShared),
+              let commands = renderer.queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder()
+        else { return }
+        blit.copy(from: staging, sourceOffset: 0, sourceBytesPerRow: rowBytes,
+                  sourceBytesPerImage: rowBytes * region.size.height, sourceSize: region.size,
+                  to: texture, destinationSlice: 0, destinationLevel: 0, destinationOrigin: region.origin)
+        blit.endEncoding()
+        commands.commit()
         bump()
     }
 
@@ -105,7 +118,8 @@ public final class WindowSurface: @unchecked Sendable {
             kCFAllocatorDefault, renderer.textureCache, pixelBuffer, nil, .bgra8Unorm, sourceWidth, sourceHeight, 0, &cvTexture)
         guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture) else { return }
         if let encodedSize, Int(encodedSize.width) < width || Int(encodedSize.height) < height {
-            scale(source, encoded: encodedSize, into: CGRect(x: x, y: y, width: width, height: height), keeping: cvTexture)
+            scale(source, from: CGRect(origin: .zero, size: encodedSize), into: CGRect(x: x, y: y, width: width, height: height),
+                  keeping: cvTexture)
             return
         }
         guard let region = clamp(x: x, y: y, width: min(width, sourceWidth), height: min(height, sourceHeight), in: texture),
@@ -117,21 +131,48 @@ public final class WindowSurface: @unchecked Sendable {
         blit.endEncoding()
         commands.addCompletedHandler { _ in _ = cvTexture } // keep the CVMetalTexture alive until the copy lands
         commands.commit()
-        // CPU uploads write the same texture; finish the GPU copy before the next draw lands.
-        commands.waitUntilCompleted()
         bump()
     }
 
-    private func scale(_ source: MTLTexture, encoded: CGSize, into rect: CGRect, keeping cvTexture: CVMetalTexture) {
+    /// Draws the `crop` of a decoded picture — its visible part, without the encoder's padding
+    /// (NVENC codes 2160 lines as 2176) — into `rect` of the window: copied 1:1 when the sizes
+    /// match, scaled on the GPU when they do not.
+    public func upload(pixelBuffer: CVPixelBuffer, crop: CGRect, into rect: CGRect) {
+        guard let texture else { return }
+        let sourceWidth = CVPixelBufferGetWidth(pixelBuffer), sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
+        let crop = crop.integral.intersection(CGRect(x: 0, y: 0, width: sourceWidth, height: sourceHeight))
+        let rect = rect.integral
+        guard !crop.isEmpty, !rect.isEmpty else { return }
+        var cvTexture: CVMetalTexture?
+        CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault, renderer.textureCache, pixelBuffer, nil, .bgra8Unorm, sourceWidth, sourceHeight, 0, &cvTexture)
+        guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture) else { return }
+        guard crop.size == rect.size else {
+            scale(source, from: crop, into: rect, keeping: cvTexture)
+            return
+        }
+        guard let region = clamp(x: Int(rect.minX), y: Int(rect.minY), width: Int(rect.width), height: Int(rect.height), in: texture),
+              let commands = renderer.queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder()
+        else { return }
+        let origin = MTLOrigin(x: Int(crop.minX) + region.origin.x - Int(rect.minX), y: Int(crop.minY) + region.origin.y - Int(rect.minY), z: 0)
+        blit.copy(from: source, sourceSlice: 0, sourceLevel: 0, sourceOrigin: origin, sourceSize: region.size,
+                  to: texture, destinationSlice: 0, destinationLevel: 0, destinationOrigin: region.origin)
+        blit.endEncoding()
+        commands.addCompletedHandler { _ in _ = cvTexture } // keep the CVMetalTexture alive until the copy lands
+        commands.commit()
+        bump()
+    }
+
+    private func scale(_ source: MTLTexture, from crop: CGRect, into rect: CGRect, keeping cvTexture: CVMetalTexture) {
         guard let texture, let commands = renderer.queue.makeCommandBuffer(),
               let region = clamp(x: Int(rect.minX), y: Int(rect.minY), width: Int(rect.width), height: Int(rect.height), in: texture)
         else { return }
         let scaler = MPSImageBilinearScale(device: renderer.device)
-        // Map the encoded picture (top-left `encoded` of the decoded buffer, which may be padded)
-        // onto `rect`, and write only inside it.
-        var transform = MPSScaleTransform(scaleX: Double(rect.width) / Double(encoded.width),
-                                          scaleY: Double(rect.height) / Double(encoded.height),
-                                          translateX: Double(rect.minX), translateY: Double(rect.minY))
+        // Map `crop` of the decoded buffer (which may be padded) onto `rect`, and write only inside it.
+        let scaleX = Double(rect.width) / Double(crop.width), scaleY = Double(rect.height) / Double(crop.height)
+        var transform = MPSScaleTransform(scaleX: scaleX, scaleY: scaleY,
+                                          translateX: Double(rect.minX) - Double(crop.minX) * scaleX,
+                                          translateY: Double(rect.minY) - Double(crop.minY) * scaleY)
         scaler.clipRect = MTLRegion(origin: region.origin, size: region.size)
         withUnsafePointer(to: &transform) { pointer in
             scaler.scaleTransform = pointer
@@ -139,7 +180,6 @@ public final class WindowSurface: @unchecked Sendable {
         }
         commands.addCompletedHandler { _ in _ = cvTexture }
         commands.commit()
-        commands.waitUntilCompleted()
         bump()
     }
 
@@ -167,14 +207,17 @@ public final class WindowSurface: @unchecked Sendable {
             blit.endEncoding()
         }
         commands.commit()
-        // CPU uploads write the same texture; finish the GPU copy before the next draw lands.
-        commands.waitUntilCompleted()
         bump()
     }
 
     /// The current pixels as an image, for showing a window instantly before its stream resumes.
     public func snapshot() -> CGImage? {
         guard let texture else { return nil }
+        // Reading on the CPU needs every queued write to have landed.
+        if let fence = renderer.queue.makeCommandBuffer() {
+            fence.commit()
+            fence.waitUntilCompleted()
+        }
         let rowBytes = texture.width * 4
         var pixels = [UInt8](repeating: 0, count: rowBytes * texture.height)
         texture.getBytes(&pixels, bytesPerRow: rowBytes, from: MTLRegionMake2D(0, 0, texture.width, texture.height), mipmapLevel: 0)

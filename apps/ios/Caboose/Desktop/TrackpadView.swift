@@ -78,7 +78,7 @@ struct Trackpad: UIViewRepresentable {
 }
 
 /// Raw multi-touch tracking; gesture recognizers add too much latency for a cursor.
-final class TrackpadSurface: UIView, UIKeyInput {
+final class TrackpadSurface: RemoteTextInputView {
     weak var desktop: DesktopModel?
     weak var model: AppModel?
 
@@ -93,7 +93,7 @@ final class TrackpadSurface: UIView, UIKeyInput {
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    private var session: XpraSession? { model?.session }
+    private var session: (any DisplaySession)? { model?.session }
 
     private func centroid(_ event: UIEvent?) -> CGPoint? {
         guard let touches = event?.touches(for: self)?.filter({ $0.phase != .ended && $0.phase != .cancelled }), !touches.isEmpty
@@ -137,9 +137,12 @@ final class TrackpadSurface: UIView, UIKeyInput {
                 haptics.impactOccurred()
             case .endDrag: desktop?.endDrag(session: session)
             case .click(let button):
+                resetTyping()
+                defer { prefersProse = !RemoteWindowView.isCodeApp(focusedWindow) }
                 desktop?.click(button: button, session: session, open: open)
                 haptics.impactOccurred()
             case .doubleClick:
+                resetTyping()
                 // The second press and release reach the app; the desktop then handles its own double-click (title bar zoom).
                 desktop?.beginDrag(session: session)
                 desktop?.endDrag(session: session)
@@ -151,20 +154,15 @@ final class TrackpadSurface: UIView, UIKeyInput {
     // MARK: Keyboard: typed text goes to the focused Linux window.
 
     override var canBecomeFirstResponder: Bool { true }
-    var hasText: Bool { true }
-    var autocorrectionType: UITextAutocorrectionType = .no
-    var autocapitalizationType: UITextAutocapitalizationType = .none
 
     private var focusedWindow: RemoteWindow? {
         guard let session, let desktop else { return nil }
         return desktop.stacking.reversed().compactMap { session.windows[$0] }.first { !$0.isAuxiliary && desktop.isVisible($0.id) }
     }
 
-    func insertText(_ text: String) { session?.type(text, in: focusedWindow) }
+    override func send(_ edits: [TypingBuffer.Edit]) { session?.edit(edits, in: focusedWindow) }
 
-    func deleteBackward() {
-        guard let stroke = Keysyms.special["BackSpace"] else { return }
-        session?.key(stroke, pressed: true, in: focusedWindow)
-        session?.key(stroke, pressed: false, in: focusedWindow)
-    }
+    override var sendsMarkedTextAsPreedit: Bool { session?.composesText ?? false }
+
+    override func sendPreedit(_ text: String, selection: NSRange) { session?.compose(text, selection: selection, in: focusedWindow) }
 }

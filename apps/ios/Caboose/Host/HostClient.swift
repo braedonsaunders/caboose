@@ -4,6 +4,10 @@ import Foundation
 struct HostClient: Sendable {
     struct Session: Decodable, Sendable {
         struct Display: Decodable, Sendable {
+            /// The display protocols the host serves; anything else is treated as Xpra.
+            static let xpra = "xpra-ws"
+            static let cabooseDisplay = "caboose-display"
+
             var path: String
             var token: String
             var `protocol`: String
@@ -166,7 +170,10 @@ struct HostClient: Sendable {
 enum JSONValue: Encodable, Equatable, Sendable, ExpressibleByStringLiteral {
     case string(String)
     case int(Int)
+    case double(Double)
     case bool(Bool)
+    case array([JSONValue])
+    case object([String: JSONValue])
 
     init(stringLiteral value: String) { self = .string(value) }
 
@@ -175,7 +182,10 @@ enum JSONValue: Encodable, Equatable, Sendable, ExpressibleByStringLiteral {
         switch self {
         case .string(let value): try container.encode(value)
         case .int(let value): try container.encode(value)
+        case .double(let value): try container.encode(value)
         case .bool(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
         }
     }
 }

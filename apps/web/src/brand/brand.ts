@@ -2,8 +2,8 @@
  * The Caboose brand, drawn from one set of numbers.
  *
  * "On the rails": a monoline wordmark standing on a rail whose two o's are wheels —
- * a spoke and an amber hub each, so at rest they double as power buttons — and the
- * app's car, a cupola caboose in the same stroke riding on those wheels.
+ * a spoke and an amber hub each, so at rest they double as power buttons. One of
+ * those wheels, alone on navy, is the app icon.
  *
  * Every rendering is built here: the README lockups and app icon in `.github/assets`,
  * the console's favicon, and the console's own logo components. `brand.test.ts` holds
@@ -70,8 +70,6 @@ export const LETTER_X: readonly number[] = WORD.reduce<number[]>((xs, _letter, i
 
 /** Wordmark view box: x, y, width, height. */
 export const WORDMARK_VIEWBOX = [-22, -50, 836, 185] as const
-/** Car (mark) view box. */
-export const CAR_VIEWBOX = [-34, -204, 406, 340] as const
 
 /** Intro timeline (seconds). The iOS port mirrors these. */
 export const TIMING = {
@@ -127,12 +125,16 @@ function styles(scope: string, motion: Motion): string {
 
 const delay = (seconds: number) => ` style="--d:${round(seconds)}s"`
 
-/** One o-wheel with its left edge at `x`: rim, spoke and amber hub. */
-function wheel(x: number, amber: string, start: number): string {
+/**
+ * One o-wheel with its left edge at `x`: rim, spoke and hub. A lit hub is amber; an
+ * unlit one (a parked computer) is the ink, faint.
+ */
+function wheel(x: number, hub: string, start: number, lit = true): string {
+  const fill = lit ? `fill="${hub}"` : `fill="${hub}" opacity=".22"`
   return `<g transform="translate(${x} 0)">` +
     `<g class="wheel"${delay(start)}>${ring(50)}` +
     `<path class="spoke" d="M50 50V22" stroke-width="12" stroke-linecap="round"/></g>` +
-    `<circle class="pop"${delay(start + TIMING.hubAfter)} cx="50" cy="50" r="10" fill="${amber}" stroke="none"/></g>`
+    `<circle class="pop"${delay(start + TIMING.hubAfter)} cx="50" cy="50" r="10" ${fill} stroke="none"/></g>`
 }
 
 /** Ties under the rail, one every TIE, sliding left as the train rolls right. */
@@ -151,12 +153,12 @@ function open(box: readonly number[], id: string, height: number | undefined, ex
 }
 
 /** The wordmark: "caboose" on the rail, its o's for wheels. */
-export function wordmarkSvg(options: BrandOptions): string {
-  const { ink, amber = AMBER, motion = 'intro', id = 'caboose', height } = options
+export function wordmarkSvg(options: BrandOptions & { lit?: boolean }): string {
+  const { ink, amber = AMBER, motion = 'intro', id = 'caboose', height, lit = true } = options
   const letters = WORD.map((letter, index) => {
     const x = LETTER_X[index]!
     const start = TIMING.letter(index)
-    if (letter === 'o') return wheel(x, amber, start)
+    if (letter === 'o') return lit ? wheel(x, amber, start) : wheel(x, ink, start, false)
     return `<g transform="translate(${x} 0)"${delay(start)}>${GLYPHS[letter].strokes.join('')}</g>`
   }).join('')
   return open(WORDMARK_VIEWBOX, id, height) +
@@ -168,84 +170,52 @@ export function wordmarkSvg(options: BrandOptions): string {
     `</svg>`
 }
 
-interface CarParts {
-  ink: string
-  amber: string
-  /** Window colour; a parked car shows its windows dark. */
-  lights: boolean
-  stove: boolean
-  rail: [number, number]
-  clip: [number, number]
-  tieOpacity: number
+/** One o-wheel, as a mark: rim, spoke and amber hub, outer edge 0..100. Reads as ⏻. */
+function powerWheel(steel: string, hub: string): string {
+  return `<circle cx="50" cy="50" r="40" fill="none" stroke="${steel}" stroke-width="20"/>` +
+    // At icon size a round cap leaves a visible notch against the rim; a square end
+    // run into the rim merges cleanly.
+    `<path d="M50 50V15" stroke="${steel}" stroke-width="12"/>` +
+    `<circle cx="50" cy="50" r="10" fill="${hub}"/>`
+}
+
+function navyField(id: string): string {
+  return `<defs><linearGradient id="${id}-field" x1="0" y1="0" x2="1" y2="1">` +
+    `<stop offset="0" stop-color="${ICON_NAVY_TOP}"/><stop offset="1" stop-color="${ICON_NAVY_BOTTOM}"/></linearGradient></defs>`
 }
 
 /**
- * The car: a cupola caboose in the wordmark's 20-unit stroke on two o-wheels.
- * Body spans x 0..334, roof at y −120, cupola roof at −186; wheels centre on x 70
- * and 264; the rail runs at y 106 like the wordmark's.
- */
-function carBody({ ink, amber, lights, stove, rail, clip, tieOpacity }: CarParts, id: string): string {
-  const windows = lights ? amber : ink
-  const windowOpacity = lights ? '' : ' opacity=".22"'
-  return `<defs><clipPath id="${id}-track"><rect x="${clip[0]}" y="100" width="${clip[1] - clip[0]}" height="40"/></clipPath></defs>` +
-    `<g clip-path="url(#${id}-track)">${ties(clip[0] - ROLL, clip[1], ink, tieOpacity)}</g>` +
-    `<path class="rail" pathLength="1" d="M${rail[0]} 106H${rail[1]}" fill="none" stroke="${ink}" stroke-width="12" stroke-linecap="round"/>` +
-    `<g fill="none" stroke="${ink}" stroke-width="20" stroke-linecap="round" stroke-linejoin="round">` +
-    `<path class="st"${delay(0.1)} pathLength="1" d="M-16 -16H350"/>` +
-    `<path class="st"${delay(0.2)} pathLength="1" d="M20 -16V-120M0 -120H334M314 -120V-16"/>` +
-    `<path class="st"${delay(0.35)} pathLength="1" d="M122 -120V-186M106 -186H228M212 -186V-120"/>` +
-    `<path class="st"${delay(0.45)} pathLength="1" d="M20 -70H-16V-16M314 -70H350V-16"/>` +
-    (stove ? `<path class="st"${delay(0.5)} pathLength="1" stroke-width="16" d="M272 -120V-160M260 -160H284"/>` : '') +
-    wheel(20, amber, 0.55) + wheel(214, amber, 0.62) +
-    `</g>` +
-    `<g fill="${windows}"${windowOpacity}>` +
-    `<rect class="pop"${delay(1.0)} x="54" y="-90" width="56" height="44" rx="9"/>` +
-    `<rect class="pop"${delay(1.1)} x="139" y="-90" width="56" height="44" rx="9"/>` +
-    `<rect class="pop"${delay(1.2)} x="224" y="-90" width="56" height="44" rx="9"/>` +
-    `<rect class="pop"${delay(1.32)} x="143" y="-168" width="48" height="26" rx="6"/>` +
-    `</g>`
-}
-
-/** The car on a short rail: the console's mark. */
-export function carSvg(options: BrandOptions & { lights?: boolean; stove?: boolean }): string {
-  const { ink, amber = AMBER, motion = 'none', id = 'caboose-car', height, lights = true, stove = true } = options
-  return open(CAR_VIEWBOX, id, height) +
-    `<style>${styles(id, motion)}</style>` +
-    carBody({ ink, amber, lights, stove, rail: [-24, 358], clip: [-30, 368], tieOpacity: 0.32 }, id) +
-    `</svg>`
-}
-
-/**
- * The app icon, 1024 square: the car on a navy field, its rail running off both
- * edges. Static — iOS icons do not move, and the PNG is rendered from this file.
+ * The app icon, 1024 square: one wheel of the wordmark, large, on a navy field. It
+ * reads as a power button, which is what opening Caboose does. Static: iOS icons do
+ * not move, and the PNG is rendered from this file.
  */
 export function appIconSvg(): string {
   const id = 'caboose-icon'
-  return `<svg xmlns="http://www.w3.org/2000/svg" id="${id}" viewBox="0 0 1024 1024" width="1024" height="1024">` +
-    `<defs><linearGradient id="${id}-field" x1="0" y1="0" x2="1" y2="1">` +
-    `<stop offset="0" stop-color="${ICON_NAVY_TOP}"/><stop offset="1" stop-color="${ICON_NAVY_BOTTOM}"/></linearGradient></defs>` +
-    `<style>${styles(id, 'none')}</style>` +
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">` +
+    navyField(id) +
     `<rect width="1024" height="1024" fill="url(#${id}-field)"/>` +
-    `<g transform="translate(153 586) scale(2.15)">` +
-    carBody({ ink: ICON_STEEL, amber: AMBER, lights: true, stove: true, rail: [-400, 740], clip: [-400, 740], tieOpacity: 0.3 }, id) +
-    `</g></svg>`
-}
-
-/** Browser tab icon: the car pared down for 16–32 px, following the system theme. */
-export function faviconSvg(): string {
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20 -214 374 374">` +
-    `<style>.i { stroke: ${INK_LIGHT}; } @media (prefers-color-scheme: dark) { .i { stroke: ${INK_DARK}; } }</style>` +
-    `<g class="i" fill="none" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">` +
-    `<path d="M0 -16H334M20 -16V-120M0 -120H334M314 -120V-16M110 -120V-190H224V-120"/>` +
-    `<circle cx="70" cy="52" r="42"/><circle cx="264" cy="52" r="42"/></g>` +
-    `<rect x="50" y="-92" width="234" height="48" rx="10" fill="${AMBER}"/>` +
+    `<g transform="translate(192 192) scale(6.4)">${powerWheel(ICON_STEEL, AMBER)}</g>` +
     `</svg>`
 }
 
-/** README lockup, light or dark (GitHub picks with `<picture>`), annotated for readers of the file. */
+/** Browser tab icon: the app icon as a rounded tile, legible on light and dark tab bars. */
+export function faviconSvg(): string {
+  const id = 'caboose-tab'
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
+    navyField(id) +
+    `<rect width="64" height="64" rx="14" fill="url(#${id}-field)"/>` +
+    `<g transform="translate(10 10) scale(.44)">${powerWheel(ICON_STEEL, AMBER)}</g>` +
+    `</svg>`
+}
+
+/**
+ * README lockup, light or dark (GitHub picks with `<picture>`), annotated for readers of the file.
+ * The note is an XML comment, so it must never contain a double hyphen: GitHub loads the file
+ * as an image, which parses strictly, and one `--` leaves the README with a broken image.
+ */
 export function readmeWordmarkSvg(scheme: 'light' | 'dark'): string {
   const note = `<!-- Caboose wordmark (${scheme}). Generated by apps/web/src/brand/brand.ts; do not edit by hand —\n` +
-    `     change brand.ts and run \`pnpm --filter caboose-web test -u\`. The rail draws, "caboose" writes\n` +
+    `     change brand.ts and run \`pnpm -F caboose-web test -u\`. The rail draws, "caboose" writes\n` +
     `     itself in, the amber hubs pop, and the train rolls one wheel-turn (six ties slide by), then again\n` +
     `     every 12 s. Resting styles are the finished logo, so still renderers show it complete. -->\n`
   return note + wordmarkSvg({ ink: scheme === 'light' ? INK_LIGHT : INK_DARK, motion: 'intro', height: 120 }) + '\n'

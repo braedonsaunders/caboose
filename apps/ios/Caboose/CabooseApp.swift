@@ -60,8 +60,19 @@ struct RootView: View {
             }
         }
         .animation(.smooth(duration: 0.35), value: model.phase)
+        .overlay(alignment: .top) {
+            if model.phase == .ready, !model.externalDisplayActive { ApprovalBanner() }
+        }
+        .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
         .sheet(isPresented: Bindable(model).settingsPresented) {
             ComputerSettingsView().environment(model)
+        }
+        .sheet(isPresented: Bindable(model).showAgentSettings) {
+            NavigationStack {
+                AgentsView()
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { model.showAgentSettings = false } } }
+            }
+            .environment(model)
         }
     }
 }
@@ -88,9 +99,8 @@ struct WakeView: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            Image(systemName: "train.side.rear.car")
-                .font(.system(size: 64, weight: .light))
-                .symbolEffect(.pulse, options: .repeating, isActive: true)
+            CabooseWordmark(motion: .rolling)
+                .frame(height: 58)
                 .foregroundStyle(.white.opacity(0.9))
             VStack(spacing: 6) {
                 Text(connecting ? "Opening your display" : "Waking your computer")
@@ -132,8 +142,9 @@ struct ParkedView: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            Image(systemName: "moon.zzz")
-                .font(.system(size: 56, weight: .light))
+            // Parked: the wordmark at rest with its hubs unlit.
+            CabooseWordmark(lit: false)
+                .frame(height: 58)
                 .foregroundStyle(.white.opacity(0.9))
             VStack(spacing: 6) {
                 Text("Your computer is parked")
@@ -193,10 +204,11 @@ struct SetupView: View {
         VStack(alignment: .leading, spacing: 28) {
             Spacer()
             VStack(alignment: .leading, spacing: 10) {
-                Image(systemName: "train.side.rear.car")
-                    .font(.system(size: 44, weight: .light))
-                Text("Caboose")
-                    .font(.system(size: 44, weight: .bold, design: .rounded))
+                CabooseWordmark(motion: .intro)
+                    .frame(height: 64)
+                    .padding(.leading, -7) // the rail's overhang sits left of the c
+                    .padding(.bottom, 6)
+                    .accessibilityAddTraits(.isHeader)
                 Text("Your phone's computer. A real Linux machine that wakes when you open it and keeps every app exactly where you left it.")
                     .font(.body)
                     .foregroundStyle(.secondary)

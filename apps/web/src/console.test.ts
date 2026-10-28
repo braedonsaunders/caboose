@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildIosPairingUrl, computeSettingsPatch, readSessionToken,
+  CabooseApiError, CabooseClient, DEFAULT_LIMITS, agentLabel, alwaysAllowOption, buildIosPairingUrl, canReply, computeSettingsPatch, hasUpdate,
+  orderAgents, readSessionToken, type AgentListing,
   validateSettingsInput, willRequireColdRestart, writeSessionToken, type ComputerSettings,
 } from './api.js'
 import { normalizePathname } from './navigation.js'
@@ -24,6 +25,9 @@ describe('settings', () => {
   it('sends only what changed', () => {
     expect(computeSettingsPatch(settings, { ...settings, name: ' Studio ', vcpus: 4 })).toEqual({ vcpus: 4 })
     expect(computeSettingsPatch(settings, settings)).toEqual({})
+    expect(computeSettingsPatch(settings, { ...settings, defaultAgent: 'goose' })).toEqual({ defaultAgent: 'goose' })
+    expect(computeSettingsPatch({ ...settings, defaultAgent: 'goose' }, { ...settings, defaultAgent: null })).toEqual({ defaultAgent: null })
+    expect(computeSettingsPatch({ ...settings, defaultAgent: 'goose' }, { ...settings, defaultAgent: 'goose' })).toEqual({})
   })
 
   it('knows when new resources need a cold restart', () => {
@@ -128,6 +132,78 @@ describe('client', () => {
   })
 })
 
+describe('agent tasks', () => {
+  function recording() {
+    const seen: Array<{ url: string; method?: string; body: unknown }> = []
+    const client = new CabooseClient(() => 't', '', async (url, init) => {
+      seen.push({ url: String(url), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      return new Response('{"task":{},"resolved":true,"id":"x"}', { status: 200 })
+    })
+    return { client, seen }
+  }
+
+  it('replies to a finished task', async () => {
+    const { client, seen } = recording()
+    await client.replyToAgentTask('11111111-1111-4111-8111-111111111111', 'and now the tests')
+    expect(seen[0]).toEqual({ url: '/v1/agent/tasks/11111111-1111-4111-8111-111111111111/reply', method: 'POST', body: { prompt: 'and now the tests' } })
+    expect(canReply({ status: 'succeeded' })).toBe(true)
+    expect(canReply({ status: 'cancelled' })).toBe(true)
+    expect(canReply({ status: 'running' })).toBe(false)
+    expect(canReply({ status: 'paused' })).toBe(false)
+  })
+
+  it('answers an approval request, with a reason or a chosen option only when given', async () => {
+    const { client, seen } = recording()
+    await client.resolveAgentApproval('task', 'req', true)
+    await client.resolveAgentApproval('task', 'req', false, { message: '  not that file  ' })
+    await client.resolveAgentApproval('task', 'req', true, { optionId: 'always' })
+    expect(seen.map(entry => [entry.url, entry.body])).toEqual([
+      ['/v1/agent/tasks/task/approvals/req', { allow: true }],
+      ['/v1/agent/tasks/task/approvals/req', { allow: false, message: 'not that file' }],
+      ['/v1/agent/tasks/task/approvals/req', { allow: true, optionId: 'always' }],
+    ])
+    expect(alwaysAllowOption({ id: 'r', tool: 't', summary: 's', options: [{ id: 'once', name: 'Allow', kind: 'allow_once' }, { id: 'always', name: 'Always', kind: 'allow_always' }] }))
+      .toEqual({ id: 'always', name: 'Always', kind: 'allow_always' })
+    expect(alwaysAllowOption({ id: 'r', tool: 't', summary: 's' })).toBeUndefined()
+  })
+
+  it('asks before acting for any agent, and leaves the agent to the host when none is chosen', async () => {
+    const { client, seen } = recording()
+    await client.startAgentTask({ prompt: 'p', agent: 'goose', approvals: 'ask' })
+    await client.startAgentTask({ prompt: 'p', approvals: 'auto', attachments: [{ name: 'a.png', type: 'image/png', data: 'aGk=' }] })
+    expect(seen.map(entry => entry.body)).toEqual([
+      { prompt: 'p', agent: 'goose', approvals: 'ask' },
+      { prompt: 'p', attachments: [{ name: 'a.png', type: 'image/png', data: 'aGk=' }] },
+    ])
+  })
+
+  it('lists, installs and signs in to registry agents', async () => {
+    const { client, seen } = recording()
+    await client.agents()
+    await client.installAgent('codex-acp')
+    await client.signInAgent('codex-acp', 'chat-gpt')
+    expect(seen.map(entry => [entry.method, entry.url, entry.body])).toEqual([
+      ['GET', '/v1/agents', undefined],
+      ['POST', '/v1/agents/codex-acp/install', undefined],
+      ['POST', '/v1/agents/codex-acp/sign-in', { methodId: 'chat-gpt' }],
+    ])
+  })
+
+  it('orders agents installed first and names them', () => {
+    const agent = (id: string, installed: string | null, version = '1.0.0'): AgentListing => ({
+      id, name: id.toUpperCase(), version, description: '', icon: null, website: null, repository: null, license: null, distribution: 'npx',
+      installed: installed ? { version: installed } : null,
+    })
+    const agents = [agent('a', null), agent('b', '1.0.0'), agent('c', null), agent('d', '0.9.0')]
+    expect(orderAgents(agents, 'c').map(item => item.id)).toEqual(['c', 'b', 'd', 'a'])
+    expect(orderAgents(agents, null).map(item => item.id)).toEqual(['b', 'd', 'a', 'c'])
+    expect(agents.filter(hasUpdate).map(item => item.id)).toEqual(['d'])
+    expect(agentLabel({ agent: 'b', agentName: 'Bee' })).toBe('Bee')
+    expect(agentLabel({ agent: 'b' }, agents)).toBe('B')
+    expect(agentLabel({ agent: 'claude' })).toBe('claude')
+  })
+})
+
 describe('navigation and actions', () => {
   it('maps any path onto a page, so SPA fallbacks land somewhere real', () => {
     expect(normalizePathname('/settings/')).toBe('/settings')
@@ -141,5 +217,17 @@ describe('navigation and actions', () => {
     expect(availableActions({ state: 'running', capabilities })).toEqual({ wake: false, park: true, restart: true })
     expect(availableActions({ state: 'restarting', capabilities })).toEqual({ wake: false, park: false, restart: false })
     expect(availableActions({ state: 'error', capabilities: { restart: false } })).toEqual({ wake: true, park: false, restart: false })
+  })
+})
+
+describe('agent environment', () => {
+  it('accepts shell-style names and one-line values', async () => {
+    const { envProblem } = await import('./api.js')
+    expect(envProblem('OPENROUTER_API_KEY', 'sk-or-1')).toBeUndefined()
+    expect(envProblem('  OPENAI_BASE_URL ', 'https://openrouter.ai/api/v1')).toBeUndefined()
+    expect(envProblem('NOT A NAME', 'x')).toMatch(/variable name/)
+    expect(envProblem('1KEY', 'x')).toMatch(/variable name/)
+    expect(envProblem('KEY', '')).toBe('Enter a value.')
+    expect(envProblem('KEY', 'two\nlines')).toMatch(/one line/)
   })
 })

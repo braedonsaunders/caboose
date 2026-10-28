@@ -1,0 +1,15 @@
+[package]
+name = "caboose-display-probe"
+description = "Headless Caboose Display client: decodes every window and reports fps, latency and server CPU"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+caboose-display-protocol = { path = "../protocol" }
+ffmpeg-next = { version = "7.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+libc = "0.2"
+png = "0.17"
+tungstenite = { version = "0.27", default-features = false, features = ["handshake"] }

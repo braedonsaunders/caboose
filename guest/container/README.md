@@ -20,10 +20,30 @@ mounts a persistent home, and runs `caboose-session` to start Xpra. The owner
 seat is `:100` on WebSocket port 14500; the agent seat starts lazily on `:101`
 and port 14501. Both use `/run/caboose/xpra-token`. `caboose-session ready`
 waits for Xpra to answer, and `start` and `start-agent` are safe to repeat.
+Like the microVM's units, `caboose-session` starts Xpra with the apps' accessibility
+switched back on (`--env=NO_AT_BRIDGE=0 --start-env=GTK_A11Y=atspi`, and
+`ACCESSIBILITY_ENABLED`, `GNOME_ACCESSIBILITY` and `QT_LINUX_ACCESSIBILITY_ALWAYS_ON`, also
+in the image's environment) and starts each display's own accessibility bus before any app
+(`a11y.py bus`), so the desktop tools and `/v1/screen` read each display separately even
+though both share the container's session bus. See `guest/desktop-mcp/README.md`; its
+`check-a11y.sh` exercises this under Docker without a GPU.
+
+The image also carries [Caboose Display](../display/README.md), built in the
+Dockerfile's first stage. `caboose-session start-display` starts it (WebSocket `14600`,
+Wayland `wayland-caboose-0`, Xwayland `:110`; with `CABOOSE_GPU=wsl` it can use NVENC
+through `/usr/lib/wsl/lib`), and `caboose-session ready-display` waits until it answers
+a hello made with the per-wake token. Launchers read the application environment from
+`/run/caboose/display.env` (sh syntax). Under Caboose Display Chromium runs as a native
+Wayland client; on WSL with software raster, because its Wayland GPU path needs a DRM
+render node WSL does not have. Xpra remains the default display.
 
 With the host session running, run `docker exec -u root caboose-owner bash -s <
 guest/container/check.sh` to check the live Xpra encoder and MP3 dependencies.
 Use `apps/host/scripts/e2e.sh` to check the host/display protocol and parking.
+The image also installs the agent runner (`guest/agentd/install.sh`), which runs any
+Agent Client Protocol agent for the host's tasks; `apps/host/scripts/check-agent-shell.sh`
+checks it in a Debian container. It installs media handoff (`guest/media-handoff/install.sh`); check it with
+`docker exec -u root caboose-owner bash -s < guest/media-handoff/check.sh`.
 Docker pause retains RAM only while Docker and WSL remain running; after a
 restart, home files persist but the process tree does not.
 

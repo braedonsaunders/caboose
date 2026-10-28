@@ -14,7 +14,7 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'caboose-management-'))
   cleanup.push(() => rm(root, { recursive: true, force: true }))
-  const defaults = { name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600000 }
+  const defaults = { name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600000, defaultAgent: null }
   const settings = await openSettings(join(root, 'caboose.json'), defaults)
   let active: { memoryMb: number; vcpus: number } | null = null
   const session = (): Session => ({ state: 'running', display: { path: '/v1/display', token: 'display-secret', protocol: 'xpra-ws' },
@@ -73,7 +73,7 @@ it('persists settings, reports pending resources, and applies them only on confi
   expect(controller.restart).not.toHaveBeenCalled()
   const result = await request('/v1/computer/restart', 'POST', { confirm: true })
   expect(await result.json()).toMatchObject({ state: 'running', restartRequired: false, activeResources: { memoryMb: 4096, vcpus: 4 } })
-  const reopened = await openSettings(join(root, 'caboose.json'), { name: 'env', memoryMb: 512, vcpus: 1, idleMs: 60000 })
+  const reopened = await openSettings(join(root, 'caboose.json'), { name: 'env', memoryMb: 512, vcpus: 1, idleMs: 60000, defaultAgent: null })
   expect(reopened.get()).toEqual(settings.get())
 })
 

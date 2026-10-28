@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+import { REGISTRY_URL } from './registry.js'
 
 export interface Config {
   token: string
@@ -19,7 +20,16 @@ export interface Config {
   containerArgs: string[]
   /** Which GPU the container gets: detected from the host's devices unless set. */
   gpu: GpuKind | 'auto'
+  /** The owner's display server: Xpra (the default) or Caboose Display, the GPU-native one. */
+  display: DisplayProtocol
+  /** The ACP agent registry (registry.json); a mirror can stand in for the public one. */
+  agentRegistryUrl: string
+  /** How long a task's agent stays running after a turn, waiting for a reply. */
+  agentIdleMs: number
 }
+
+/** What `/v1/session` tells the app to speak on `/v1/display` (docs/architecture.md, docs/display.md). */
+export type DisplayProtocol = 'xpra-ws' | 'caboose-display'
 
 /**
  * The ways a host can hand a GPU to a container. `wsl`: WSL2's paravirtual /dev/dxg (any
@@ -49,7 +59,24 @@ export function config(env: NodeJS.ProcessEnv): Config {
     containerHome: env.CABOOSE_CONTAINER_HOME ?? 'caboose-home',
     containerArgs: (env.CABOOSE_CONTAINER_ARGS ?? '').split(/\s+/).filter(Boolean),
     gpu: gpu(env.CABOOSE_GPU),
+    display: display(env.CABOOSE_DISPLAY),
+    agentRegistryUrl: registryUrl(env.CABOOSE_AGENT_REGISTRY_URL),
+    agentIdleMs: integer(env.CABOOSE_AGENT_IDLE_MS, 600_000, 'CABOOSE_AGENT_IDLE_MS', 86_400_000),
   }
+}
+
+function display(value: string | undefined): DisplayProtocol {
+  if (value === undefined || value === 'xpra') return 'xpra-ws'
+  if (value === 'caboose') return 'caboose-display'
+  throw new Error('CABOOSE_DISPLAY must be "xpra" or "caboose"')
+}
+
+function registryUrl(value: string | undefined): string {
+  if (!value) return REGISTRY_URL
+  let url: URL
+  try { url = new URL(value) } catch { throw new Error('CABOOSE_AGENT_REGISTRY_URL must be an http(s) URL') }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('CABOOSE_AGENT_REGISTRY_URL must be an http(s) URL')
+  return url.href
 }
 
 function runtime(value: string | undefined): 'microvm' | 'container' {

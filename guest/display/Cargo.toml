@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["protocol", "compositor", "probe"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+repository = "https://github.com/braedonsaunders/caboose"
+rust-version = "1.85"
+
+# Optimised even in dev builds: the checks measure frame rates and CPU per frame.
+[profile.dev]
+debug = "line-tables-only"
+opt-level = 2
+
+[profile.release]
+strip = "debuginfo"

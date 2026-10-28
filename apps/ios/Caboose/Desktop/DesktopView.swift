@@ -103,6 +103,7 @@ struct TrafficLight: View {
 
 /// A display-only window surface; the desktop routes all input itself.
 struct RemoteWindowSurface: UIViewRepresentable {
+    @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
 
@@ -110,10 +111,12 @@ struct RemoteWindowSurface: UIViewRepresentable {
         let view = RemoteWindowView(session: nil, window: window)
         view.isInteractive = false
         view.pixelsPerPoint = pixelsPerPoint
+        view.pacer = model.session
         return view
     }
 
     func updateUIView(_ view: RemoteWindowView, context: Context) {
+        view.pacer = model.session
         if view.remoteWindow?.id != window.id { view.attach(window) }
     }
 }

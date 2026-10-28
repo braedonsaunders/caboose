@@ -11,7 +11,7 @@ apt-get install -y --no-upgrade --no-install-recommends \
   chromium firefox-esr xfce4-terminal thunar mousepad libreoffice \
   evince eog gimp inkscape vlc audacity keepassxc gnome-calculator file-roller \
   git ripgrep fd-find bat eza fzf zoxide btop lazygit neovim tmux gh git-delta \
-  jq curl wget unzip zip tree ncdu htop fastfetch ffmpeg imagemagick docker.io docker-cli docker-compose mpv yt-dlp tealdeer \
+  jq curl wget unzip zip bzip2 tree ncdu htop fastfetch ffmpeg imagemagick docker.io docker-cli docker-compose mpv yt-dlp tealdeer \
   fonts-inter fonts-jetbrains-mono fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji
 if ! command -v npm >/dev/null; then apt-get install -y nodejs npm; fi
 # Pin the upstream tarball integrity as well as the package version. npm checks
@@ -50,6 +50,12 @@ install_archive() {
 }
 install_archive opencode 1.19.4 'https://github.com/anomalyco/opencode/releases/download/v1.19.4/opencode-linux-x64-baseline.tar.gz' '1697ef40558d378bd2f72efa8fafe1bed1f0e664f09247b9357556b95dbc7cbc' opencode
 install_archive lazydocker 0.25.2 'https://github.com/jesseduffield/lazydocker/releases/download/v0.25.2/lazydocker_0.25.2_Linux_x86_64.tar.gz' '0d9dbfc26068b218e7ed84b104748cadc6e3cf733c0afd35465306fb39b9523c' lazydocker
+# uv runs the Python agents in the ACP registry (uvx); both binaries come from one archive.
+if [[ $(uv --version 2>/dev/null) != 'uv 0.13.6'* ]]; then
+  fetch 'https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-gnu.tar.gz' 'f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645' "$work/uv.tar.gz"
+  tar -xzf "$work/uv.tar.gz" -C "$work"
+  install -m755 "$work/uv-x86_64-unknown-linux-gnu/uv" "$work/uv-x86_64-unknown-linux-gnu/uvx" /usr/local/bin/
+fi
 install_archive mise 2026.10.21 'https://github.com/jdx/mise/releases/download/v2026.10.21/mise-v2026.10.21-linux-x64.tar.gz' 'f56cc56b462eaae60aa7a33dffd24f641847b52e098b69e4a5064c4b8bbe03cb' mise/bin/mise
 # Obsidian is upstream's proprietary .deb; pin and verify the exact release.
 if [[ $(dpkg-query -W -f='${Version}' obsidian 2>/dev/null || true) != 1.14.5 ]]; then
@@ -97,3 +103,12 @@ if id caboose >/dev/null 2>&1; then usermod -aG docker caboose; fi
 systemctl enable docker.service
 if [[ -d /run/systemd/system ]]; then systemctl start docker.service; fi
 command -v update-desktop-database >/dev/null && update-desktop-database /usr/local/share/applications || true
+# Media handoff: the Chromium extension and native host that offer a playing video to the
+# phone. It lives beside this script in the repository; an image build that copies this
+# script on its own (guest/container/Dockerfile) runs that installer itself.
+media_handoff="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../media-handoff/install.sh"
+if [[ -f $media_handoff ]]; then
+  sh "$media_handoff"
+else
+  echo "Media handoff not installed: run guest/media-handoff/install.sh as root" >&2
+fi

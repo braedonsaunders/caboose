@@ -132,7 +132,7 @@ final class DesktopTouchSurface: UIView, UIKeyInput {
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    private var session: XpraSession? { model?.session }
+    private var session: (any DisplaySession)? { model?.session }
 
     private func live(_ event: UIEvent?) -> [UITouch] {
         event?.touches(for: self)?.filter { $0.phase != .ended && $0.phase != .cancelled } ?? []

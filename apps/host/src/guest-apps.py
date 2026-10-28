@@ -39,7 +39,7 @@ def read(path):
 
 def xpra_pulse_server():
     """Xpra runs a PulseAudio server per display and forwards it to the phone; apps must be
-    pointed at it, or their sound plays to nothing."""
+    pointed at it, or their sound plays to nothing. Under caboose-display there is none."""
     display = os.environ.get('DISPLAY', ':100').lstrip(':').split('.')[0]
     for root in (f'/run/user/{os.getuid()}/xpra', '/tmp/xpra'):
         socket = pathlib.Path(root, display, 'pulse', 'native')
@@ -82,7 +82,7 @@ else:
     import base64
     theme = Gtk.IconTheme.get_default()
     if theme is None:
-        raise SystemExit('No GTK icon theme available on display :100')
+        raise SystemExit(f"No GTK icon theme available on display {os.environ.get('WAYLAND_DISPLAY') or os.environ.get('DISPLAY', ':100')}")
     apps = []
     start = int(sys.argv[2])
     for ident, path in entries().items():

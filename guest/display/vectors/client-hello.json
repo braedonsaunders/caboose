@@ -1,0 +1,8 @@
+{
+  "name": "client-hello",
+  "description": "A phone with a TV attached.",
+  "messages": [
+    {"direction": "client", "type": "hello", "type_id": 129, "fields": {"token": "f3a9c1d27e8b4a6f", "version": 0, "decoders": ["hevc", "av1", "h264"], "displays": [{"id": 1, "hdr": true, "scale": {"$float": 3.0}, "width": 1179, "height": 2556, "refresh_hz": {"$float": 120.0}}, {"id": 2, "hdr": false, "scale": {"$float": 2.0}, "width": 3840, "height": 2160, "refresh_hz": {"$float": 59.94}}]}}
+  ],
+  "hex": "81c3000000a465746f6b656e70663361396331643237653862346136666776657273696f6e00686465636f6465727383646865766363617631646832363468646973706c61797382a66269640163686472f5657363616c65fb400800000000000065776964746819049b666865696768741909fc6a726566726573685f687afb405e000000000000a66269640263686472f4657363616c65fb4000000000000000657769647468190f00666865696768741908706a726566726573685f687afb404df851eb851eb8"
+}
