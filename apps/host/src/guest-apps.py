@@ -4,7 +4,6 @@ import json
 import os
 import pathlib
 import shutil
-import subprocess
 import sys
 
 ROOTS = [pathlib.Path.home() / '.local/share/applications', pathlib.Path('/usr/local/share/applications'), pathlib.Path('/usr/share/applications')]
@@ -42,8 +41,14 @@ if sys.argv[1] == 'launch':
     entry = entries().get(sys.argv[2])
     if not entry or read(entry) is None:
         raise SystemExit('Application not found')
-    # gio handles desktop field codes and does not interpret the Exec as shell.
-    subprocess.run(['gio', 'launch', str(entry)], check=True)
+    # GLib handles desktop field codes and does not interpret the Exec as shell; this is
+    # what `gio launch` does, without needing the CLI (libglib2.0-bin) in the image.
+    import gi
+    gi.require_version('Gio', '2.0')
+    from gi.repository import Gio
+    info = Gio.DesktopAppInfo.new_from_filename(str(entry))
+    if info is None or not info.launch([], None):
+        raise SystemExit('Application could not be started')
 else:
     import gi
     gi.require_version('Gtk', '3.0')

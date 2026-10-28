@@ -42,6 +42,13 @@ struct HomeView: View {
                 AskBar().padding(.horizontal, 16).padding(.bottom, 6)
             }
         }
+        .alert("Couldn't Open App", isPresented: Binding(
+            get: { model.launchFailure != nil },
+            set: { if !$0 { model.launchFailure = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(model.launchFailure ?? "")
+        }
         .fullScreenCover(isPresented: Binding(
             get: { model.presentedAgentWindowID != nil },
             set: { if !$0 { model.presentedAgentWindowID = nil } })) {

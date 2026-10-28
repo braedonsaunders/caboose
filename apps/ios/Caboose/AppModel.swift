@@ -30,6 +30,8 @@ final class AppModel {
     var presentedWindowID: Int?
     var keyboardVisible = false
     private(set) var launching: HostClient.App?
+    /// An app that would not start. The computer is fine, so Home stays and says which app.
+    var launchFailure: String?
 
     /// Linux pixels per iOS point. 2 gives crisp text with the guest running at 192 dpi.
     let pixelsPerPoint: CGFloat = 2
@@ -298,7 +300,8 @@ final class AppModel {
                 try await host.launch(app)
             } catch {
                 launching = nil
-                phase = .failed(error.localizedDescription)
+                launchFailure = "\(app.name) didn't open. \(error.localizedDescription)"
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
         }
     }
