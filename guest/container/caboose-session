@@ -106,6 +106,13 @@ case ${1:-} in
   start) start_printing || echo "Printing unavailable" >&2; start_display :100 14500 on ;;
   start-printing) start_printing ;;
   start-files)
+    # A container cold restart can retain an obsolete pid file in its writable layer.
+    if [ -s /run/caboose/files.pid ]; then
+      file_pid=$(cat /run/caboose/files.pid)
+      if ! [[ "$file_pid" =~ ^[0-9]+$ ]] || [ ! -r "/proc/$file_pid/cmdline" ] || ! tr '\0' '\n' < "/proc/$file_pid/cmdline" | grep -Fxq /opt/caboose/files/caboose-files.py; then
+        rm -f /run/caboose/files.pid
+      fi
+    fi
     start-stop-daemon --start --oknodo --background --make-pidfile --pidfile /run/caboose/files.pid \
       --chuid caboose:caboose --exec /usr/bin/python3 -- /opt/caboose/files/caboose-files.py
     for _ in $(seq 1 60); do ss -lnt | grep -Eq ':14700[[:space:]]' && exit 0; sleep 1; done

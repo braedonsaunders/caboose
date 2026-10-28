@@ -176,7 +176,6 @@ export function createContainerController(config: Config, dependencies: { docker
           await exec('root', '/bin/sh', ['-c', 'install -d -m 0755 /run/caboose; printf %s "$1" > /run/caboose/xpra-token; chown caboose:caboose /run/caboose/xpra-token; chmod 0600 /run/caboose/xpra-token', 'sh', displayToken])
         }
         await prepareContainerSession({ run: (cmd, args, timeout) => exec('root', cmd, args, timeout) }).catch(error => console.error('Container session update unavailable:', error))
-        await exec('root', '/bin/sh', ['-c', '[ ! -f /opt/caboose/files/caboose-files.py ] || exec /usr/local/bin/caboose-session start-files'], 70_000).catch(error => console.error('File service unavailable:', error))
         if (config.display === 'caboose-display') {
           await exec('root', '/usr/local/bin/caboose-session', ['start-display'], 240_000)
           await exec('root', '/usr/local/bin/caboose-session', ['ready-display'], 240_000)

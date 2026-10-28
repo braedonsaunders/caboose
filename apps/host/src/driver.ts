@@ -114,7 +114,6 @@ export function createController(config: Config, dependencies: { backend?: DeskB
         displayToken = randomBytes(32).toString('hex')
         // A password file is read by Xpra on connection; never put a newline in it.
         await command('/bin/sh', ['-c', `install -d -m 0755 /run/caboose; printf %s "$1" > /run/caboose/xpra-token; chown caboose:caboose /run/caboose/xpra-token; chmod 0600 /run/caboose/xpra-token`, 'sh', displayToken])
-        await command('/bin/sh', ['-c', '[ -f /opt/caboose/files/caboose-files.py ] || exit 0; systemctl start caboose-files.service || exit 1; for i in $(seq 1 60); do systemctl is-active --quiet caboose-files.service && ss -lnt | grep -Eq ":14700[[:space:]]" && exit 0; sleep 1; done; echo file-service-not-ready >&2; exit 1'], 70_000).catch(error => console.error('File service unavailable:', error))
         if (config.display === 'caboose-display') await startCabooseDisplay()
         else await startDisplay('caboose-xpra.service', 14500)
         clearHeartbeat()

@@ -39,7 +39,8 @@ describe('guest components', () => {
     expect(calls.at(-1)?.command).toBe('/bin/rm')
     calls.length = 0
     await upgradeComponents(runner, 'vm', () => {}, bundle)
-    expect(calls).toHaveLength(1)
+    expect(calls).toHaveLength(2)
+    expect(calls[1]?.args[1]).toContain("systemctl start caboose-files.service")
   })
   it('reports failure, cleans staging and retries on the next attempt', async () => {
     const { runner, calls } = guest('', true)

@@ -61,6 +61,10 @@ export async function upgradeComponents(guest: AgentGuest, mode: ComponentsMode,
       } finally {
         await guest.run('/bin/rm', ['-rf', '--', dir], 15_000).catch(() => {})
       }
+    } else if (mode === 'container') {
+      await guest.run('/usr/local/bin/caboose-session', ['start-files'], 70_000)
+    } else {
+      await guest.run('/bin/sh', ['-c', 'systemctl start caboose-files.service; for i in $(seq 1 60); do systemctl is-active --quiet caboose-files.service && ss -lnt | grep -Eq ":14700[[:space:]]" && exit 0; sleep 1; done; echo file-service-not-ready >&2; exit 1'], 70_000)
     }
     onStatus({ state: 'succeeded', version: payload.version })
   } catch (error) {
