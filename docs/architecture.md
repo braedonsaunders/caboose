@@ -26,6 +26,10 @@ The WidgetKit extension reads shared Keychain credentials to fetch computer stat
 the running agent count without waking the computer. Its Home and Lock Screen widget
 refreshes on WidgetKit's schedule; the Control Center power toggle wakes or parks the
 computer. A signed device is needed to verify shared Keychain access and control behavior.
+Craft CLI actions and their host job endpoint, favourite-app and Ask Agent controls,
+and favourite-app launch from the widget are not implemented. The file index currently
+tracks only files used by these shortcuts and is invalidated on any `fs.changed` event.
+
 
 ## Notifications
 

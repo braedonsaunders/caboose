@@ -303,3 +303,6 @@ the widget and control, compare the displayed state with Computer settings, and 
 the computer in both directions. WidgetKit schedules refreshes and may delay updates.
 File suggestions currently show files in the home root; Spotlight file entries are
 cleared on a file-change notification.
+
+Craft actions, widget favourite-app launch, and favourite-app and Ask Agent controls
+are not implemented. File suggestions currently cover the home root only.
