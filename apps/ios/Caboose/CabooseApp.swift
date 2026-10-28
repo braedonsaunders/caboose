@@ -60,6 +60,10 @@ struct RootView: View {
             }
         }
         .animation(.smooth(duration: 0.35), value: model.phase)
+        .overlay(alignment: .top) {
+            if model.phase == .ready, !model.externalDisplayActive { ApprovalBanner() }
+        }
+        .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
         .sheet(isPresented: Bindable(model).settingsPresented) {
             ComputerSettingsView().environment(model)
         }
