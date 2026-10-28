@@ -7,39 +7,45 @@ import UniformTypeIdentifiers
 /// A long press on the background, between and around the cards, chooses the wallpaper.
 struct HomeScreen: View {
     @Environment(AppModel.self) private var model
-    @State private var viewport: CGFloat = 0
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                GlassEffectContainer(spacing: 18) {
-                    VStack(alignment: .leading, spacing: 26) {
-                        ComputerCard()
-                        AirPlayCard()
-                        QuickActions()
-                        WorkingAgents()
-                        if model.phase == .ready, !model.appWindows.isEmpty { OpenWindows() }
-                        AppRow(title: "Pinned", apps: model.pinnedApps)
-                        AppRow(title: "Recent", apps: model.recentApps(limit: 8))
-                        RecentFilesSection()
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
-                    .padding(.bottom, 32)
-                    .frame(maxWidth: 720)
-                    .frame(maxWidth: .infinity, minHeight: viewport, alignment: .top)
-                    .background {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onLongPressGesture(minimumDuration: 0.5) {
-                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                model.wallpaperPickerPresented = true
-                            }
-                            .accessibilityAction(named: "Choose Wallpaper") { model.wallpaperPickerPresented = true }
+            GeometryReader { viewport in
+                ScrollView {
+                    GlassEffectContainer(spacing: 18) {
+                        VStack(alignment: .leading, spacing: 26) {
+                            ComputerCard()
+                            AirPlayCard()
+                            QuickActions()
+                            WorkingAgents()
+                            if model.phase == .ready, !model.appWindows.isEmpty { OpenWindows() }
+                            AppRow(title: "Pinned", apps: model.pinnedApps)
+                            AppRow(title: "Recent", apps: model.recentApps(limit: 8))
+                            RecentFilesSection()
+                        }
+                        .environment(\.homeColumnWidth, max(0, min(720, viewport.size.width) - 40))
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                        .padding(.bottom, 32)
+                        // Measure outside the scroll content, whose intrinsic row widths can
+                        // exceed the column. Every row now receives this finite proposal.
+                        .frame(width: min(720, viewport.size.width))
+                        .frame(width: viewport.size.width)
+                        .frame(minHeight: viewport.size.height, alignment: .top)
+                        .background {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onLongPressGesture(minimumDuration: 0.5) {
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                    model.wallpaperPickerPresented = true
+                                }
+                                .accessibilityAction(named: "Choose Wallpaper") { model.wallpaperPickerPresented = true }
+                        }
                     }
                 }
+                .frame(width: viewport.size.width, height: viewport.size.height)
+                .clipped()
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewport = $0 }
             .scrollIndicators(.hidden)
             .background { ShellBackground() }
             .refreshable {
@@ -374,12 +380,36 @@ extension View {
     /// row for what the cards draw outside their frames, such as a pressed tile's glass, and
     /// takes no more room in the column than the row itself.
     func homeColumnRow(cornerRadius: CGFloat, top: CGFloat = 0, bottom: CGFloat = 0) -> some View {
-        scrollIndicators(.hidden)
+        modifier(HomeColumnRow(cornerRadius: cornerRadius, top: top, bottom: bottom))
+    }
+}
+
+private struct HomeColumnRow: ViewModifier {
+    @Environment(\.homeColumnWidth) private var width
+    let cornerRadius: CGFloat
+    let top: CGFloat
+    let bottom: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .scrollIndicators(.hidden)
             .contentMargins(.top, top, for: .scrollContent)
             .contentMargins(.bottom, bottom, for: .scrollContent)
             .padding(.top, -top)
             .padding(.bottom, -bottom)
+            .frame(width: width)
             .clipShape(.rect(cornerRadius: cornerRadius, style: .continuous))
+    }
+}
+
+private struct HomeColumnWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
+private extension EnvironmentValues {
+    var homeColumnWidth: CGFloat? {
+        get { self[HomeColumnWidthKey.self] }
+        set { self[HomeColumnWidthKey.self] = newValue }
     }
 }
 
@@ -437,10 +467,14 @@ private struct FileRow: View {
                 Text(name).font(.subheadline.weight(.medium)).lineLimit(1)
                 Text(folder.isEmpty ? "Home" : folder).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .truncationMode(.middle)
             Spacer(minLength: 8)
             Text(Date(timeIntervalSince1970: file.mtime / 1000), format: .relative(presentation: .named))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .frame(maxWidth: 90, alignment: .trailing)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

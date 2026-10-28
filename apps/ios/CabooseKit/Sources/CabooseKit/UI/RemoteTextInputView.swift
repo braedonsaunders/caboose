@@ -58,7 +58,10 @@ open class RemoteTextInputView: UIView, UITextInput {
 
     /// Always true: the remote field has text from before the buffer, and delete must reach it.
     public var hasText: Bool { true }
-    open func insertText(_ text: String) { perform { $0.insert(text) } }
+    open func insertText(_ text: String) {
+        if text == "\n" || text == "\r" || text == "\r\n" { unmarkText() }
+        perform { $0.insert(text) }
+    }
     open func deleteBackward() { perform { $0.deleteBackward() } }
 
     // MARK: UITextInputTraits

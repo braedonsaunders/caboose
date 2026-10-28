@@ -475,8 +475,7 @@ public final class CabooseDisplaySession: DisplaySession {
     public func type(_ text: String, in window: RemoteWindow?) {
         guard !text.isEmpty else { return }
         prepareText(for: window)
-        preedit = nil
-        send(.text(commit: text))
+        sendCommittedText(text)
     }
 
     public func edit(_ edits: [TypingBuffer.Edit], in window: RemoteWindow?) {
@@ -494,9 +493,43 @@ public final class CabooseDisplaySession: DisplaySession {
         }
         guard deleteBefore > 0 || !commit.isEmpty else { return }
         prepareText(for: window)
-        if !commit.isEmpty { preedit = nil } // a commit ends the composition
-        send(.text(commit: commit.isEmpty ? nil : commit, preedit: preedit?.text, cursor: preedit?.cursor,
-                   deleteBefore: deleteBefore > 0 ? deleteBefore : nil))
+        sendCommittedText(commit, deleteBefore: deleteBefore)
+    }
+
+    /// A newline is a Return key, not an IME commit: single-line fields such as
+    /// Chromium's address bar ignore committed newlines instead of submitting.
+    private func sendCommittedText(_ text: String, deleteBefore: Int = 0) {
+        guard text.contains(where: \.isNewline) else {
+            if !text.isEmpty { preedit = nil }
+            send(.text(commit: text.isEmpty ? nil : text, preedit: preedit?.text, cursor: preedit?.cursor,
+                       deleteBefore: deleteBefore > 0 ? deleteBefore : nil))
+            return
+        }
+        var pending = ""
+        var deletions = deleteBefore
+        func flush() {
+            guard !pending.isEmpty || deletions > 0 else { return }
+            send(.text(commit: pending.isEmpty ? nil : pending,
+                       deleteBefore: deletions > 0 ? deletions : nil))
+            if !pending.isEmpty { preedit = nil }
+            pending = ""
+            deletions = 0
+        }
+        for character in text {
+            if character.isNewline {
+                flush()
+                if preedit != nil {
+                    preedit = nil
+                    send(.text(commit: nil, preedit: ""))
+                }
+                // CRLF is one Character, so pasted Windows lines submit once too.
+                send(.key(keysym: 0xFF0D, pressed: true, modifiers: []))
+                send(.key(keysym: 0xFF0D, pressed: false, modifiers: []))
+            } else {
+                pending.append(character)
+            }
+        }
+        flush()
     }
 
     /// Compose on the server only where the focused app has text-input-v3 enabled; anywhere

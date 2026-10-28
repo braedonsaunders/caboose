@@ -66,7 +66,8 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
 const existing = []
 for (const record of computers.list().filter(c => c.id !== OWNER_COMPUTER)) existing.push({ record, pieces: await open(record) })
-const registry = new AgentRegistry({ url: deployment.agentRegistryUrl, cachePath: join(deployment.imageRoot, 'agent-registry.json') })
+const guestArchitecture = process.arch === 'arm64' ? 'arm64' : 'amd64'
+const registry = new AgentRegistry({ platform: guestArchitecture === 'arm64' ? 'linux-aarch64' : 'linux-x86_64', url: deployment.agentRegistryUrl, cachePath: join(deployment.imageRoot, 'agent-registry.json') })
 const webRoot = process.env.CABOOSE_WEB_ROOT ? resolve(process.env.CABOOSE_WEB_ROOT) : fileURLToPath(new URL('../../web/dist', import.meta.url))
 const reach = new ReachService({
   bind: deployment.host, port: deployment.port, publicUrl: deployment.publicUrl, mdns: deployment.mdns,
@@ -79,7 +80,7 @@ const reach = new ReachService({
 })
 const host = describeHost(deployment, process.env, { push: !!sender, liveActivities: !!(apns && sender) })
 const app = createCabooseServer({
-  token: owner.token, ...ownerComputer, registry, host, agentIdleMs: deployment.agentIdleMs, webRoot,
+  token: owner.token, ...ownerComputer, registry, guestArchitecture, host, agentIdleMs: deployment.agentIdleMs, webRoot,
   machine: () => machineResources(deployment.imageRoot), reach,
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null, diskBytes },
   identity,

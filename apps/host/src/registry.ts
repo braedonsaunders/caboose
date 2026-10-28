@@ -2,7 +2,7 @@ import { readJsonFile, writePrivateJson } from './settings.js'
 
 /**
  * The Agent Client Protocol registry: which agents exist and how to start each one. Caboose
- * runs agents inside a Debian amd64 computer, so each entry is resolved for linux-x86_64.
+ * runs agents inside Debian computers; entries are resolved for the guest architecture.
  * The registry is fetched, cached with its ETag (in memory and on disk), and when a fetch
  * fails the last good copy is served with the error. There is no built-in list.
  * See https://github.com/agentclientprotocol/registry (FORMAT.md).
@@ -141,6 +141,7 @@ export function parseRegistry(value: unknown, platform = PLATFORM): RegistryAgen
 interface CacheFile { etag: string | null; fetchedAt: string; registry: unknown }
 
 export interface RegistryOptions {
+  platform?: string
   url?: string
   ttlMs?: number
   /** Where the last good copy is kept across host restarts. */
@@ -188,7 +189,7 @@ export class AgentRegistry {
     try {
       const cached = await readJsonFile(this.options.cachePath) as CacheFile | undefined
       if (!cached) return
-      this.agents = parseRegistry(cached.registry)
+      this.agents = parseRegistry(cached.registry, this.options.platform)
       this.etag = typeof cached.etag === 'string' ? cached.etag : null
       this.fetchedAt = typeof cached.fetchedAt === 'string' ? cached.fetchedAt : null
     } catch (error) {
@@ -212,7 +213,7 @@ export class AgentRegistry {
       } else {
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const body = await response.json() as unknown
-        this.agents = parseRegistry(body)
+        this.agents = parseRegistry(body, this.options.platform)
         this.etag = response.headers.get('etag')
         this.fetchedAt = at
         if (this.options.cachePath) await writePrivateJson(this.options.cachePath, { etag: this.etag, fetchedAt: at, registry: body } satisfies CacheFile).catch(error => console.error('Could not cache the agent registry:', error))

@@ -10,6 +10,7 @@ import { authenticate } from './auth.js'
 import { NOT_FOUND, json, readJson } from './http.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
+import { loadCatalog } from './app-catalog-data.js'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWNLOADS } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
@@ -93,7 +94,7 @@ function withAdmission(controller: Controller, admit: () => Promise<void>): Cont
   return gated
 }
 
-function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; admit?: Admission }) {
+function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; admit?: Admission; guestArchitecture?: 'amd64' | 'arm64' }) {
   const { settings, push, activities } = pieces
   const admit = shared.admit
   const controller = admit ? withAdmission(pieces.controller, () => admit(id)) : pieces.controller
@@ -122,7 +123,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   }
   const home = new HomeOwnership()
   const catalog = new AgentCatalog(shared.registry, () => controller.guest(), settings, home)
-  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire())
+  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire(), loadCatalog(shared.guestArchitecture))
   const agents = new AgentTasks(() => controller.guest(), event => {
     broadcast(event)
     if (push) void push.event(event as AgentEvent, foregroundClients.size > 0).catch(error => console.error('Push event failed:', error))
@@ -679,6 +680,7 @@ export function createCabooseServer(options: ComputerPieces & {
   token: string; webRoot?: string
   /** The ACP agent registry; defaults to the public registry, cached in memory only. */
   registry?: AgentRegistry
+  guestArchitecture?: 'amd64' | 'arm64'
   /** How long a task's runner keeps its agent after a turn, waiting for a reply. */
   agentIdleMs?: number
   /** How this host was started, for `GET /v1/host`. */
@@ -696,6 +698,7 @@ export function createCabooseServer(options: ComputerPieces & {
   const throttle = new SignInThrottle()
   const shared = {
     registry: options.registry ?? new AgentRegistry(),
+    guestArchitecture: options.guestArchitecture,
     ...(options.agentIdleMs !== undefined ? { agentIdleMs: options.agentIdleMs } : {}),
     ...(identity ? { admit: (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'>) => admit(id, next, !next) } : {}),
   }

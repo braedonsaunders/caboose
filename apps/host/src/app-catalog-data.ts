@@ -24,6 +24,10 @@ export function parseCatalog(value: unknown): CatalogData {
   }
   return data
 }
-export function loadCatalog(): CatalogData {
-  return parseCatalog(JSON.parse(readFileSync(new URL('../../../guest/catalog/catalog.json', import.meta.url), 'utf8')))
+export function loadCatalog(architecture: 'amd64' | 'arm64' = 'amd64'): CatalogData {
+  const data = parseCatalog(JSON.parse(readFileSync(new URL('../../../guest/catalog/catalog.json', import.meta.url), 'utf8')))
+  // Pinned Craft packages are x86_64; never offer an incompatible binary to an ARM guest.
+  const apps = architecture === 'arm64' ? data.apps.filter(app => app.source.kind === 'apt') : data.apps
+  const used = new Set(apps.flatMap(app => app.packs))
+  return { apps, packs: data.packs.filter(pack => used.has(pack.id)) }
 }
