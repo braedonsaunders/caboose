@@ -59,6 +59,7 @@ final class AirPlayCenter {
     }
 
     func refresh() {
+        let wasOnAirPlay = current != nil
         let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map {
             AirPlayRoute.Output(type: $0.portType.rawValue, uid: $0.uid, name: $0.portName)
         }
@@ -68,8 +69,11 @@ final class AirPlayCenter {
             last = remembered
             if let data = try? JSONEncoder().encode(remembered) { UserDefaults.standard.set(data, forKey: Self.lastKey) }
         }
-        // Back on the phone: the computer's sound mixes with other apps again.
-        if current == nil, AVAudioSession.sharedInstance().routeSharingPolicy == .longFormVideo { Self.configureDefault() }
+        // Restore mixing after leaving an established AirPlay route. A route notification
+        // can arrive before a selected device appears in currentRoute.
+        if !connecting, wasOnAirPlay, current == nil, AVAudioSession.sharedInstance().routeSharingPolicy == .longFormVideo {
+            Self.configureDefault()
+        }
     }
 
     /// The computer's sound plays like a video app's, follows the system's route, and mixes
@@ -84,19 +88,21 @@ final class AirPlayCenter {
         guard !connecting else { return }
         notice = nil
         let session = AVAudioSession.sharedInstance()
+        connecting = true
         do {
             try session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo, options: [])
             try session.setActive(true)
         } catch {
+            connecting = false
             notice = error.localizedDescription
+            Self.configureDefault()
             return
         }
-        connecting = true
         session.prepareRouteSelectionForPlayback { [weak self] _, selection in
             Task { @MainActor in
                 guard let self else { return }
-                self.connecting = false
                 self.refresh()
+                self.connecting = false
                 if selection != .external, self.current == nil {
                     self.notice = "Not connected"
                     Self.configureDefault()
