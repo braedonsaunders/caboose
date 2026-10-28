@@ -180,6 +180,7 @@ pub struct State {
     pub session: Option<Session>,
     pub done_tx: Sender<Done>,
     pub input: InputState,
+    pub videos: crate::video::server::Videos,
     /// Bumped per client session; stale encoder results are discarded.
     pub generation: u64,
     pub stats: Stats,
@@ -247,6 +248,7 @@ impl State {
             stream: Stream::default(),
             fullscreen: false,
             maximized: false,
+            lineage: None,
         });
         self.assign_output(id);
         id
@@ -267,6 +269,7 @@ impl State {
     fn forget_window(&mut self, id: u64) {
         let Some(w) = self.windows.remove(id) else { return };
         self.input.forget_window(id);
+        self.video_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
                 let conn = s.conn;

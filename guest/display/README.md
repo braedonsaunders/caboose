@@ -56,11 +56,23 @@ This directory is a Cargo workspace:
 - **Sessions.** One client at a time; a new authenticated client replaces the previous
   one. Window ids survive reconnects and every window restarts with a keyframe.
 
+- **Video passthrough** ([docs/codec-passthrough.md](../../docs/codec-passthrough.md)). The
+  compositor listens on the video socket (`$XDG_RUNTIME_DIR/caboose-video.sock`) for the
+  Caboose VA-API driver (guest/vaapi), which hands it each player's bitstream instead of
+  decoding it. It accepts streams the client can play (`hello.video_decoders`), marks each
+  with a tag, finds the driver's marker in the windows of the player's process family
+  (half resolution, refined at full resolution, only while a stream is open), and sends
+  `video.create`/`video.update` for where the video is and `video.frame` for every access
+  unit, replaying from the last keyframe when a client connects or its decoder fails, and
+  `video.present` when the application shows each frame. A client that keeps failing to
+  decode a stream gets it decoded on the server. Launched applications get
+  `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
+
 Not yet here, and absent from `hello.features` until they are: clipboard, Pencil
 (tablet-v2), cursor images (named cursors are sent), notifications, audio, lossless
-tiles, `video.*` streams, a GPU renderer with the zero-copy encoders (dmabuf → NVENC or
-VA-API), typing characters that are not on the keymap into X11 applications, and an
-agent seat on `14601`.
+tiles, video layers 2 and 3, a GPU renderer with the zero-copy encoders (dmabuf → NVENC or
+VA-API) and the exact passthrough binding it enables, typing characters that are not on the
+keymap into X11 applications, and an agent seat on `14601`.
 
 ## Build and test
 
@@ -73,6 +85,14 @@ guest/display/scripts/dev.sh cargo test
 guest/display/scripts/dev.sh cargo clippy --all-targets -- -D warnings
 guest/display/scripts/dev.sh python3 scripts/check.py
 ```
+
+For the `passthrough` check's cross-check against the driver's reference detector, mount
+the driver's source: `CABOOSE_DISPLAY_DOCKER_ARGS="-v $PWD/guest/vaapi:/vaapi:ro"` and build
+`cbva-detect` first (`make -C /vaapi BUILD=/tmp/vaapi`). The real driver against the real
+socket: build it the same way and run a VA player with `LIBVA_DRIVERS_PATH=/tmp/vaapi
+LIBVA_DRIVER_NAME=caboose` under the compositor (with `CABOOSE_DISPLAY_DRI=1` and
+`/dev/udmabuf`; on this project's development machine FFmpeg's H.264 and HEVC streams pass
+through, and a readback closes the stream as the contract says).
 
 `dev.sh` runs as the calling user, keeps the cargo registry in `~/.cache/caboose-display`,
 and caps the container at 6 CPUs and 6 GiB (`CABOOSE_DISPLAY_CPUS`, `CABOOSE_DISPLAY_MEMORY`).
@@ -104,6 +124,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `text-input-on-connect` | a client that connects after a field was focused is still told text input is enabled |
 | `autocorrect` | `text` with `delete_before` (autocorrect, the delete key) edits a Chromium field exactly, one grapheme cluster per deletion |
 | `direct-matches-compose` | a window streamed straight from its shm buffer is the picture composition makes, byte for byte |
+| `passthrough` | a stand-in VA-API driver (`scripts/fake-video-driver.py`, the real socket protocol, real H.264) streams while Chromium shows its marker: the stream is bound to the right window and rectangle, every frame decodes on the client, presents name frames the client has, and the driver's own detector agrees on the rectangle |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 ### Measured

@@ -23,15 +23,38 @@ pub struct Session {
     pub ready: bool,
     pub backend: Backend,
     pub last_vsync: HashMap<u32, Instant>,
+    /// What the client plays as `video.*` streams.
+    pub video_decoders: Vec<Codec>,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
-pub fn features(xwayland: bool) -> Vec<String> {
+pub fn features(xwayland: bool, video: bool) -> Vec<String> {
     let mut f = vec!["vsync", "ack", "touch", "text-input-v3", "cursor-named"];
     if xwayland {
         f.push("xwayland");
     }
+    if video {
+        f.push("video");
+    }
     f.into_iter().map(String::from).collect()
+}
+
+/// The process that owns a window and its ancestors: the Wayland client's pid, or an X11
+/// window's _NET_WM_PID.
+fn window_lineage(
+    dh: &smithay::reexports::wayland_server::DisplayHandle,
+    surface: &crate::windows::Surface,
+) -> Vec<u32> {
+    use smithay::reexports::wayland_server::Resource;
+    let pid = match surface {
+        crate::windows::Surface::X11(x) => x.pid(),
+        s => s
+            .wl_surface()
+            .and_then(|w| dh.get_client(w.id()).ok())
+            .and_then(|c| c.get_credentials(dh).ok())
+            .map(|c| c.pid as u32),
+    };
+    pid.map(crate::video::lineage).unwrap_or_default()
 }
 
 /// Constant-time comparison, so the token cannot be guessed byte by byte.
@@ -80,6 +103,7 @@ impl State {
     }
 
     fn end_session(&mut self) {
+        self.video_session_ended();
         self.session = None;
         self.generation += 1;
         self.release_input();
@@ -139,6 +163,8 @@ impl State {
             Message::Pointer(p) => self.pointer(&p),
             Message::Key(k) => self.key(&k),
             Message::Text(t) => self.text(&t),
+            Message::VideoKeyframe { id } => self.video_keyframe(id),
+            Message::VideoAck { id, seq } => tracing::trace!("video {id}: frame {seq} queued for display"),
             Message::Pencil(_) | Message::ClientClipboard(_) => {
                 // Not implemented yet; the features are absent from hello.
             }
@@ -182,11 +208,15 @@ impl State {
                 version: proto::VERSION,
                 displays: self.displays.ids(),
                 encoders,
-                features: features(self.xwm.is_some() || self.config.x_display.is_some()),
+                features: features(
+                    self.xwm.is_some() || self.config.x_display.is_some(),
+                    self.videos.socket.is_some() && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()),
+                ),
             }),
         );
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
-        self.session = Some(Session { conn, ready: true, backend, last_vsync: HashMap::new() });
+        let video_decoders = hello.video_decoders.clone().unwrap_or_default();
+        self.session = Some(Session { conn, ready: true, backend, last_vsync: HashMap::new(), video_decoders });
         for w in self.windows.iter_mut() {
             w.announced = None;
             w.stream.reset_for_client();
@@ -195,6 +225,7 @@ impl State {
         if let Some(cursor) = self.cursor.clone() {
             self.net.send(conn, &cursor);
         }
+        self.video_session_started();
         // Text input enabled before this client connected still needs the keyboard; the
         // toggle itself went to no one (or to the previous client).
         if let Some(surface) = self.keyboard_focus_surface() {
@@ -377,12 +408,18 @@ impl State {
                         .map(|d| d.iter().map(|r| r.w.max(0) as u64 * r.h.max(0) as u64).sum::<u64>().min(picture))
                         .unwrap_or(picture);
                     let pts_us = w.stream.next_pts();
+                    let detect = !self.videos.streams.by_id.is_empty()
+                        && self
+                            .videos
+                            .streams
+                            .wants_detection(w.lineage.get_or_insert_with(|| window_lineage(&self.dh, &w.surface)));
                     let job = Job {
                         window: id,
                         generation,
                         pts_us,
                         image,
                         shm,
+                        detect,
                         keyframe: w.stream.need_keyframe,
                         damage,
                         rect,
@@ -442,6 +479,9 @@ impl State {
                     data: encoded.data,
                 });
                 self.net.send(conn, &message);
+                if let Some(hits) = &done.hits {
+                    self.on_video_hits(done.window, hits, done.rect, done.crop, done.pts_us);
+                }
             }
             Err(e) => {
                 tracing::warn!("window {}: encode failed: {e}", done.window);
@@ -510,7 +550,8 @@ mod tests {
 
     #[test]
     fn features_name_xwayland_only_when_running() {
-        assert!(!features(false).contains(&"xwayland".to_string()));
-        assert!(features(true).contains(&"xwayland".to_string()));
+        assert!(!features(false, false).contains(&"xwayland".to_string()));
+        assert!(features(true, false).contains(&"xwayland".to_string()));
+        assert!(features(false, true).contains(&"video".to_string()));
     }
 }

@@ -11,6 +11,7 @@ mod session;
 mod state;
 mod stream;
 mod text_input;
+mod video;
 mod windows;
 mod xauth;
 mod xwm;
@@ -84,7 +85,18 @@ fn main() {
 /// (Mesa's D3D12 driver on WSL, a VA-API driver choice).
 const PASSED_ENV: &[&str] = &["GALLIUM_DRIVER", "MESA_D3D12_DEFAULT_ADAPTER_NAME", "LIBVA_DRIVER_NAME"];
 
-fn launch_env(config: &Config, x_display: Option<u32>, xauthority: Option<&std::path::Path>) -> Vec<(String, String)> {
+/// Whether the Caboose VA-API driver is installed where libva looks.
+fn passthrough_driver_installed() -> bool {
+    let dirs = std::env::var("LIBVA_DRIVERS_PATH").unwrap_or_else(|_| "/usr/lib/x86_64-linux-gnu/dri".into());
+    dirs.split(':').any(|d| std::path::Path::new(d).join("caboose_drv_video.so").is_file())
+}
+
+fn launch_env(
+    config: &Config,
+    x_display: Option<u32>,
+    xauthority: Option<&std::path::Path>,
+    video_socket: Option<&std::path::Path>,
+) -> Vec<(String, String)> {
     let mut env = vec![("WAYLAND_DISPLAY".to_owned(), config.socket.clone())];
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
         env.push(("XDG_RUNTIME_DIR".into(), dir));
@@ -96,14 +108,28 @@ fn launch_env(config: &Config, x_display: Option<u32>, xauthority: Option<&std::
         }
     }
     env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
-    env.extend(PASSED_ENV.iter().filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v))));
+    // Video passthrough: players decode through the Caboose VA-API driver, which hands the
+    // bitstream to this compositor. Only here: without the compositor's socket the driver
+    // does not initialise, so the variable must not leak into other sessions.
+    let passthrough = video_socket.filter(|_| passthrough_driver_installed());
+    if let Some(socket) = passthrough {
+        env.push(("LIBVA_DRIVER_NAME".into(), "caboose".into()));
+        env.push(("GST_VA_ALL_DRIVERS".into(), "1".into()));
+        env.push(("CABOOSE_VIDEO_SOCKET".into(), socket.display().to_string()));
+    }
+    env.extend(
+        PASSED_ENV
+            .iter()
+            .filter(|k| !(passthrough.is_some() && **k == "LIBVA_DRIVER_NAME"))
+            .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v))),
+    );
     env
 }
 
 /// Once the compositor (and Xwayland) are up: the env file for launchers, and the
 /// command to run, if any.
 fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::path::Path>) {
-    let env = launch_env(&state.config, x_display, xauthority);
+    let env = launch_env(&state.config, x_display, xauthority, state.videos.socket.as_deref());
     if let Some(path) = &state.config.env_file {
         // KEY=VALUE lines, values single-quoted for sh. Written in place: the file may
         // be pre-created by root in a directory the compositor cannot write, and
@@ -317,11 +343,22 @@ fn run(config: Config) -> Result<(), String> {
         session: None,
         done_tx,
         input,
+        videos: Default::default(),
         generation: 0,
         stats: Default::default(),
         cursor: None,
     };
 
+    match video::server::socket_path() {
+        Some(path) => match video::server::Videos::listen(&path, &handle) {
+            Ok(v) => {
+                tracing::info!("video socket: {}", path.display());
+                state.videos = v;
+            }
+            Err(e) => tracing::warn!("no video passthrough: cannot listen on {}: {e}", path.display()),
+        },
+        None => tracing::info!("no video passthrough: XDG_RUNTIME_DIR is not set"),
+    }
     let spawned = x_display.and_then(|number| {
         // Xwayland's socket directory; systemd-tmpfiles makes it on a booted system.
         let dir = std::path::Path::new("/tmp/.X11-unix");

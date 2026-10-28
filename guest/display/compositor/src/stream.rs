@@ -27,6 +27,8 @@ pub struct Job {
     pub image: CpuImage,
     /// Read the picture from this client buffer instead of `image`.
     pub shm: Option<ShmPicture>,
+    /// Look for passthrough video markers in the picture.
+    pub detect: bool,
     pub keyframe: bool,
     /// What changed since the previous picture; `None` for everything.
     pub damage: Option<Vec<Rect>>,
@@ -38,6 +40,8 @@ pub struct Job {
 
 /// The worker's answer: the encoded picture (or why not) and the image back for reuse.
 pub struct Done {
+    /// Markers found in the picture (when the job asked), picture pixels.
+    pub hits: Option<Vec<crate::video::marker::Hit>>,
     pub window: u64,
     pub generation: u64,
     pub pts_us: u64,
@@ -45,6 +49,26 @@ pub struct Done {
     pub result: Result<Encoded, String>,
     pub rect: Rect,
     pub crop: Rect,
+}
+
+/// Markers in a job's picture, wherever its pixels are.
+fn detect(job: &Job) -> Vec<crate::video::marker::Hit> {
+    use crate::video::marker::detect_bgrx;
+    let (w, h) = (job.crop.w.max(0) as usize, job.crop.h.max(0) as usize);
+    match &job.shm {
+        None => detect_bgrx(&job.image.data, job.image.stride, w, h, 8),
+        Some(shm) => smithay::wayland::shm::with_buffer_contents(&shm.buffer, |ptr, len, data| {
+            let stride = data.stride as usize;
+            let start = data.offset as usize + shm.y as usize * stride + shm.x as usize * 4;
+            if start + (h.saturating_sub(1)) * stride + w * 4 > len {
+                return Vec::new();
+            }
+            // SAFETY: with_buffer_contents maps `len` bytes of the pool for this closure.
+            let pool = unsafe { std::slice::from_raw_parts(ptr, len) };
+            detect_bgrx(&pool[start..], stride, w, h, 8)
+        })
+        .unwrap_or_default(),
+    }
 }
 
 pub struct Encoded {
@@ -86,6 +110,7 @@ impl Worker {
                             Ok(e) => Some((job.backend.clone(), e)),
                             Err(e) => {
                                 let _ = done.send(Done {
+                                    hits: None,
                                     window: job.window,
                                     generation: job.generation,
                                     pts_us: job.pts_us,
@@ -101,6 +126,7 @@ impl Worker {
                     }
                     let (_, enc) = encoder.as_mut().unwrap();
                     let damage = if fresh { None } else { job.damage.as_deref() };
+                    let hits = job.detect.then(|| detect(&job));
                     let input = match &job.shm {
                         Some(shm) => Input::Shm(shm),
                         None => Input::Cpu(&job.image),
@@ -119,6 +145,7 @@ impl Worker {
                         encoder = None; // start clean (and with a keyframe) next time
                     }
                     let sent = done.send(Done {
+                        hits,
                         window: job.window,
                         generation: job.generation,
                         pts_us: job.pts_us,
