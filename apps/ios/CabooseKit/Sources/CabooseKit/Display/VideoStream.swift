@@ -2,15 +2,18 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import QuartzCore
+import VideoToolbox
 
-/// One video playing inside a Linux window (docs/display.md "Video, for every app"): the
-/// app's own compressed stream, or a video surface the compositor encodes, shown by an
-/// `AVSampleBufferDisplayLayer` layered into the window at `rect`, cut to `clip`, ordered
-/// by `z`. Hardware decode, HDR and frame timing are the layer's.
+/// One video playing inside a Linux window (docs/display.md "Video streams"): the app's own
+/// compressed stream, or a video surface the compositor encodes, shown by an
+/// `AVSampleBufferDisplayLayer` layered into the window at `rect`, cut to `clip`, ordered by
+/// `z`.
 ///
-/// An app's own stream plays on its own timeline through an `AVSampleBufferRenderSynchronizer`
-/// (the clock the stream's sound will share once Caboose Display carries audio); a live
-/// stream is shown the moment each picture decodes.
+/// Frames arrive in decode order and are decoded in hardware as they come, in the decoder's
+/// own format so HDR survives. A live stream (`surface`, `motion`) shows each picture as it
+/// decodes. An app's own stream (`passthrough`) carries no timestamps: its pictures are kept by
+/// `seq` until `video.present` says the app is showing one, and it is shown then, already in
+/// step with the app's own sound.
 public final class RemoteVideo: @unchecked Sendable {
     public let id: Int
     public let window: Int
@@ -27,12 +30,16 @@ public final class RemoteVideo: @unchecked Sendable {
     public internal(set) var clip: CGRect?
     public internal(set) var z: Int
 
+    /// Decoded pictures an app's stream may present, most recent last; older ones are dropped.
+    static let keptPictures = 32
+
     private let queue: DispatchQueue
     private let send: @Sendable (ClientMessage) -> Void
-    private let synchronizer: AVSampleBufferRenderSynchronizer?
     // On `queue`:
     private let bitstream: BitstreamFormatter
-    private var timeline = VideoTimeline()
+    private var session: VTDecompressionSession?
+    private var kept: [(seq: Int, picture: CVPixelBuffer)] = []
+    private var pictureFormat: CMVideoFormatDescription?
     private var awaitingKeyframe = false
     private var lastKeyframeRequest: UInt64 = 0
 
@@ -55,17 +62,89 @@ public final class RemoteVideo: @unchecked Sendable {
         container = CALayer()
         container.masksToBounds = true
         container.addSublayer(layer)
-        if source.isLive {
-            synchronizer = nil
-        } else {
-            let synchronizer = AVSampleBufferRenderSynchronizer()
-            synchronizer.addRenderer(layer.sampleBufferRenderer)
-            self.synchronizer = synchronizer
-        }
         self.rect = rect
         clip = fields.clip
         z = fields.z ?? 0
         if color?.isHDR == true { showHDR() }
+    }
+
+    /// Stops playback; the window view drops the layer.
+    func close() {
+        queue.async { [self] in
+            if let session { VTDecompressionSessionInvalidate(session) }
+            session = nil
+            kept.removeAll()
+            layer.sampleBufferRenderer.flush()
+        }
+    }
+
+    /// Waits for everything queued so far; for tests.
+    func flush() { queue.sync {} }
+
+    func frame(_ frame: VideoFrame) {
+        queue.async { [self] in
+            guard frame.keyframe || !awaitingKeyframe else { return requestKeyframe() }
+            do {
+                guard let picture = try decode(frame.data) else { return }
+                awaitingKeyframe = false
+                if source.isLive {
+                    show(picture)
+                } else {
+                    kept.append((frame.seq, picture))
+                    if kept.count > Self.keptPictures { kept.removeFirst(kept.count - Self.keptPictures) }
+                }
+                send(.videoAck(video: id, seq: frame.seq))
+            } catch {
+                awaitingKeyframe = true
+                kept.removeAll()
+                requestKeyframe()
+            }
+        }
+    }
+
+    /// The app is showing frame `seq` now; earlier pictures it skipped are dropped.
+    func present(seq: Int) {
+        queue.async { [self] in
+            guard let index = kept.firstIndex(where: { $0.seq == seq }) else { return }
+            let picture = kept[index].picture
+            kept.removeFirst(index + 1)
+            show(picture)
+        }
+    }
+
+    private func decode(_ accessUnit: Data) throws -> CVPixelBuffer? {
+        let (bytes, changed) = try bitstream.sample(from: accessUnit)
+        guard let format = bitstream.format else { throw H264DecoderError.noParameterSets }
+        if changed || session == nil {
+            if let session { VTDecompressionSessionInvalidate(session) }
+            session = try VideoToolboxSession.make(format, pixelFormat: nil)
+            if color == nil, Self.isHDR(format) { showHDR() }
+        }
+        guard let bytes, let session else { return nil }
+        let sample = try VideoToolboxSession.sampleBuffer(bytes, format: format)
+        return try VideoToolboxSession.decode(sample, in: session) { [self] in
+            VTDecompressionSessionInvalidate(session)
+            self.session = nil
+        }
+    }
+
+    /// Hands a decoded picture to the layer, to be shown at once.
+    private func show(_ picture: CVPixelBuffer) {
+        let renderer = layer.sampleBufferRenderer
+        if renderer.status == .failed || renderer.requiresFlushToResumeDecoding { renderer.flush() }
+        if pictureFormat.map({ !CMVideoFormatDescriptionMatchesImageBuffer($0, imageBuffer: picture) }) ?? true {
+            pictureFormat = nil
+            CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: picture, formatDescriptionOut: &pictureFormat)
+        }
+        guard let pictureFormat else { return }
+        var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
+                                        decodeTimeStamp: .invalid)
+        var sample: CMSampleBuffer?
+        CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: picture, formatDescription: pictureFormat,
+                                                 sampleTiming: &timing, sampleBufferOut: &sample)
+        guard let sample else { return }
+        Self.attach(kCMSampleAttachmentKey_DisplayImmediately, to: sample)
+        renderer.enqueue(sample)
     }
 
     /// PQ or HLG tagged in the stream itself.
@@ -84,64 +163,6 @@ public final class RemoteVideo: @unchecked Sendable {
         }
     }
 
-    /// Stops playback; the window view drops the layer.
-    func close() {
-        queue.async { [self] in
-            synchronizer?.setRate(0, time: .invalid)
-            layer.sampleBufferRenderer.flush()
-        }
-    }
-
-    /// Runs `body` after everything queued so far; for tests.
-    func flush() { queue.sync {} }
-
-    func frame(_ frame: VideoFrame) {
-        queue.async { [self] in
-            let renderer = layer.sampleBufferRenderer
-            if renderer.status == .failed || renderer.requiresFlushToResumeDecoding {
-                renderer.flush()
-                timeline = VideoTimeline()
-                awaitingKeyframe = true
-            }
-            guard frame.keyframe || !awaitingKeyframe else { return requestKeyframe() }
-            do {
-                let (bytes, formatChanged) = try bitstream.sample(from: frame.data)
-                guard let bytes, let format = bitstream.format else { return }
-                if formatChanged, color == nil, Self.isHDR(format) { showHDR() }
-                let timing = CMSampleTimingInfo(
-                    duration: .invalid, presentationTimeStamp: CMTime(value: Int64(frame.ptsMicros), timescale: 1_000_000),
-                    decodeTimeStamp: frame.dtsMicros.map { CMTime(value: Int64($0), timescale: 1_000_000) } ?? .invalid)
-                let sample = try VideoToolboxSession.sampleBuffer(bytes, format: format, timing: timing)
-                schedule(sample, pts: Int64(frame.ptsMicros))
-                renderer.enqueue(sample)
-                awaitingKeyframe = false
-                send(.videoAck(video: id, ptsMicros: frame.ptsMicros))
-            } catch {
-                awaitingKeyframe = true
-                requestKeyframe()
-            }
-        }
-    }
-
-    /// Keeps the clock running with the app's timestamps; a live sample is shown as soon as
-    /// it decodes instead.
-    private func schedule(_ sample: CMSampleBuffer, pts: Int64) {
-        guard let synchronizer else {
-            Self.attach(kCMSampleAttachmentKey_DisplayImmediately, to: sample)
-            return
-        }
-        let now = synchronizer.rate == 0 ? nil : CMTimeConvertScale(synchronizer.currentTime(), timescale: 1_000_000, method: .default).value
-        switch timeline.place(pts: pts, now: now) {
-        case .play:
-            break
-        case .anchor(let start):
-            synchronizer.setRate(1, time: CMTime(value: start, timescale: 1_000_000))
-        case .restart(let start):
-            layer.sampleBufferRenderer.flush()
-            synchronizer.setRate(1, time: CMTime(value: start, timescale: 1_000_000))
-        }
-    }
-
     private static func attach(_ key: CFString, to sample: CMSampleBuffer) {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true),
               CFArrayGetCount(attachments) > 0 else { return }
@@ -155,36 +176,6 @@ public final class RemoteVideo: @unchecked Sendable {
         guard now &- lastKeyframeRequest > 500_000_000 else { return }
         lastKeyframeRequest = now
         send(.videoKeyframe(video: id))
-    }
-}
-
-/// Where an app's own stream sits on the playback clock. The first picture starts the clock a
-/// little behind it, so network jitter does not stall playback; a jump of more than a second
-/// (a seek, a new item) restarts it there; pictures that keep arriving late move it back.
-struct VideoTimeline: Equatable {
-    /// How far behind the first picture the clock starts, in microseconds.
-    static let preroll: Int64 = 80_000
-    static let jump: Int64 = 1_000_000
-
-    enum Placement: Equatable {
-        case play
-        /// Start (or move) the clock to this time, keeping what is queued.
-        case anchor(Int64)
-        /// Drop what is queued and start the clock here.
-        case restart(Int64)
-    }
-
-    private(set) var anchored = false
-
-    /// `now` is the clock's current time, nil while it is stopped.
-    mutating func place(pts: Int64, now: Int64?) -> Placement {
-        guard anchored, let now else {
-            anchored = true
-            return .anchor(pts - Self.preroll)
-        }
-        if abs(pts - now) > Self.jump { return .restart(pts - Self.preroll) }
-        if now - pts > Self.preroll { return .anchor(pts - Self.preroll) } // late: fall back behind it
-        return .play
     }
 }
 

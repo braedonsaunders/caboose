@@ -159,14 +159,13 @@ Protocol instead of Xpra; the screens are the same. What changes:
 - **Video in windows.** A video an app plays (its own bitstream through the computer's
   VA-API driver, or a Wayland video surface) arrives as a stream of its own and is layered
   into its window: an `AVSampleBufferDisplayLayer` per stream at the stream's `rect`, cut
-  to its `clip`, in `z` order over the window's picture, decoded in hardware. An app's own
-  stream plays on its own timestamps through an `AVSampleBufferRenderSynchronizer` (80 ms
-  behind the first picture; a seek restarts it), while live surfaces are shown as they
-  decode. HDR streams (PQ, HLG) are shown with the screen's extended dynamic range. Home's
-  thumbnails leave video to the window's own screen. The `video.*` messages follow the
-  proposal in the compositor thread and are provisional until docs/display.md and the
-  golden vectors carry them.
+  to its `clip`, in `z` order over the window's picture. Frames come in decode order and
+  are decoded in hardware as they arrive, in the decoder's own format. A live surface is
+  shown as each picture decodes; an app's own stream keeps its pictures by `seq` and shows
+  each when `video.present` says the app is showing it, so it stays in step with the app's
+  own sound. HDR streams (PQ, HLG) are shown with the screen's extended dynamic range.
+  Home's thumbnails leave video to the window's own screen.
 - **Not yet.** No sound (the protocol's Opus `audio` is a later milestone of the
-  compositor; a video's sound will join its synchronizer), and window pictures are SDR:
+  compositor), and window pictures are SDR:
   the hello reports `hdr: false` until the window surfaces render EDR.
 

@@ -91,12 +91,13 @@ public final class H264Decoder: PictureDecoder {
 /// The parts of a VideoToolbox decoder every codec shares: a real-time hardware session
 /// whose output Metal samples without a copy, and samples wrapped for it.
 enum VideoToolboxSession {
-    static func make(_ description: CMVideoFormatDescription) throws -> VTDecompressionSession {
-        let attributes: [CFString: Any] = [
-            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+    /// `pixelFormat` nil keeps the decoder's own (YUV, 10-bit for HDR), for a video layer.
+    static func make(_ description: CMVideoFormatDescription, pixelFormat: OSType? = kCVPixelFormatType_32BGRA) throws -> VTDecompressionSession {
+        var attributes: [CFString: Any] = [
             kCVPixelBufferMetalCompatibilityKey: true,
             kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
         ]
+        if let pixelFormat { attributes[kCVPixelBufferPixelFormatTypeKey] = pixelFormat }
         let specification: [CFString: Any] = [
             kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: true,
         ]

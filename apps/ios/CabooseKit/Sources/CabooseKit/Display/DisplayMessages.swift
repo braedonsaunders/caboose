@@ -14,11 +14,12 @@ public enum DisplayProtocol {
         case windowDestroy = 0x04
         case frame = 0x10
         case tile = 0x11
-        // Video streams (docs/display.md "Video, for every app"; provisional until the compositor's vectors).
+        // Video streams (docs/display.md "Video streams").
         case videoCreate = 0x12
         case videoFrame = 0x13
         case videoUpdate = 0x14
         case videoDestroy = 0x15
+        case videoPresent = 0x16
         case cursor = 0x20
         case cursorNamed = 0x21
         case textInput = 0x22
@@ -186,7 +187,7 @@ public struct LosslessTile: Sendable {
 public enum VideoSource: String, Sendable {
     case passthrough, surface, motion
 
-    /// Passthrough plays on the app's own timeline; the others are live and shown on arrival.
+    /// Live streams are shown as they decode; an app's own stream when the app presents a frame.
     public var isLive: Bool { self != .passthrough }
 }
 
@@ -235,26 +236,27 @@ public struct VideoStreamFields: Sendable {
     }
 }
 
-/// One compressed picture of a video stream, in the same in-band format as `frame.data`.
+/// One access unit of a video stream, in decode order (`seq` from 0), in the same in-band
+/// format as `frame.data`. Live streams carry `pts_us`; an app's own stream does not, and is
+/// shown frame by frame as `video.present` says.
 public struct VideoFrame: Sendable {
     public var video: Int
-    public var ptsMicros: UInt64
-    /// The decode time, where pictures are reordered (B-frames in an app's own stream).
-    public var dtsMicros: UInt64?
+    public var seq: Int
     public var keyframe: Bool
+    public var ptsMicros: UInt64?
     public var data: Data
 
-    public init(video: Int, ptsMicros: UInt64, dtsMicros: UInt64? = nil, keyframe: Bool, data: Data) {
+    public init(video: Int, seq: Int, keyframe: Bool, ptsMicros: UInt64? = nil, data: Data) {
         self.video = video
-        self.ptsMicros = ptsMicros
-        self.dtsMicros = dtsMicros
+        self.seq = seq
         self.keyframe = keyframe
+        self.ptsMicros = ptsMicros
         self.data = data
     }
 
     init?(_ body: CBOR) {
-        guard let video = body["id"]?.int, let pts = body["pts_us"]?.uint64, let data = body["data"]?.data else { return nil }
-        self.init(video: video, ptsMicros: pts, dtsMicros: body["dts_us"]?.uint64, keyframe: body["keyframe"]?.bool ?? false, data: data)
+        guard let video = body["id"]?.int, let seq = body["seq"]?.int, let data = body["data"]?.data else { return nil }
+        self.init(video: video, seq: seq, keyframe: body["keyframe"]?.bool ?? false, ptsMicros: body["pts_us"]?.uint64, data: data)
     }
 }
 
@@ -292,6 +294,8 @@ public enum ServerMessage: Sendable {
     case videoFrame(VideoFrame)
     case videoUpdate(VideoStreamFields)
     case videoDestroy(id: Int)
+    /// The app is showing passthrough frame `seq` now.
+    case videoPresent(id: Int, seq: Int, ptsMicros: UInt64)
     case unknown(type: UInt8)
     /// A known type whose fields are missing or of the wrong kind.
     case malformed(type: UInt8)
@@ -336,6 +340,12 @@ public enum ServerMessage: Sendable {
         case .videoFrame: parsed = VideoFrame(body).map(ServerMessage.videoFrame)
         case .videoUpdate: parsed = VideoStreamFields(body).map(ServerMessage.videoUpdate)
         case .videoDestroy: parsed = body["id"]?.int.map { .videoDestroy(id: $0) }
+        case .videoPresent:
+            if let id = body["id"]?.int, let seq = body["seq"]?.int, let pts = body["pts_us"]?.uint64 {
+                parsed = .videoPresent(id: id, seq: seq, ptsMicros: pts)
+            } else {
+                parsed = nil
+            }
         }
         self = parsed ?? .malformed(type: frame.type)
     }
@@ -444,8 +454,8 @@ public enum ClientMessage: Sendable {
     case text(commit: String?, preedit: String? = nil, cursor: (Int, Int)? = nil, deleteBefore: Int? = nil, deleteAfter: Int? = nil)
     case clipboard(mime: String, data: Data)
     case ping(micros: UInt64)
-    /// A video frame is enqueued for display.
-    case videoAck(video: Int, ptsMicros: UInt64)
+    /// A video frame is decoded and queued for display.
+    case videoAck(video: Int, seq: Int)
     /// The client could not decode a video stream; it drops frames until the next keyframe.
     case videoKeyframe(video: Int)
 
@@ -464,8 +474,8 @@ public enum ClientMessage: Sendable {
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
                 ("video_decoders", videoDecoders.map { .array($0.map { CBOR($0.rawValue) }) }),
             ]))
-        case .videoAck(let video, let pts):
-            return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("pts_us", CBOR(pts))]))
+        case .videoAck(let video, let seq):
+            return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))
         case .videoKeyframe(let video):
             return DisplayFrame(type: T.videoKeyframe.rawValue, body: map([("id", CBOR(video))]))
         case .vsync(let display, let micros):

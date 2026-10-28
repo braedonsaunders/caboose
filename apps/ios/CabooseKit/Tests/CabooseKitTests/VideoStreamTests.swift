@@ -4,38 +4,15 @@ import Foundation
 import Testing
 @testable import CabooseKit
 
-/// Video streams inside windows (docs/display.md "Video, for every app"): the timeline an
-/// app's own stream plays on, the messages, real pictures through AVSampleBufferDisplayLayer,
-/// and the session keeping each window's streams.
-@Suite struct VideoTimelineTests {
-    @Test func theFirstPictureStartsTheClockJustBehindIt() {
-        var timeline = VideoTimeline()
-        #expect(timeline.place(pts: 5_000_000, now: nil) == .anchor(5_000_000 - VideoTimeline.preroll))
-        #expect(timeline.place(pts: 5_033_000, now: 4_950_000) == .play)
-    }
-
-    @Test func aSeekRestartsAndLatePicturesMoveTheClockBack() {
-        var timeline = VideoTimeline()
-        _ = timeline.place(pts: 0, now: nil)
-        #expect(timeline.place(pts: 60_000_000, now: 100_000) == .restart(60_000_000 - VideoTimeline.preroll)) // forward seek
-        #expect(timeline.place(pts: 1_000, now: 60_000_000) == .restart(1_000 - VideoTimeline.preroll)) // back to the start
-        #expect(timeline.place(pts: 2_000_000, now: 2_200_000) == .anchor(2_000_000 - VideoTimeline.preroll)) // 200 ms late
-        #expect(timeline.place(pts: 2_000_000, now: 2_050_000) == .play) // a little late is still fine
-    }
-
-    @Test func aStoppedClockIsStartedAgain() {
-        var timeline = VideoTimeline()
-        _ = timeline.place(pts: 0, now: nil)
-        #expect(timeline.place(pts: 40_000, now: nil) == .anchor(40_000 - VideoTimeline.preroll))
-    }
-}
-
+/// Video streams inside windows (docs/display.md "Video streams"): the messages, real pictures
+/// decoded and shown through AVSampleBufferDisplayLayer, and the session keeping each window's
+/// streams.
 @Suite struct VideoMessageTests {
     static func server(_ type: DisplayProtocol.ServerType, _ body: CBOR) -> ServerMessage {
         ServerMessage(DisplayFrame(type: type.rawValue, body: body))
     }
 
-    @Test func createUpdateFrameDestroy() {
+    @Test func createUpdateFramePresentDestroy() {
         guard case .videoCreate(let create) = Self.server(.videoCreate, [
             "id": 3, "window": 7, "rect": [10, 20, 1280, 720], "clip": [10, 20, 1280, 600], "z": 1, "codec": "hevc",
             "source": "passthrough", "color": ["primaries": 9, "transfer": 16, "matrix": 9, "full_range": false],
@@ -52,18 +29,23 @@ import Testing
         }
         guard case .videoUpdate(let update) = Self.server(.videoUpdate, ["id": 3, "z": -1]) else { Issue.record("update"); return }
         #expect(update.z == -1 && update.rect == nil)
-        guard case .videoFrame(let frame) = Self.server(.videoFrame, ["id": 3, "pts_us": 40000, "dts_us": 0, "keyframe": true, "data": .bytes(Data([1]))]) else {
+        guard case .videoFrame(let live) = Self.server(.videoFrame, ["id": 2, "seq": 41, "pts_us": 40000, "keyframe": false, "data": .bytes(Data([1]))]) else {
             Issue.record("frame"); return
         }
-        #expect(frame.video == 3 && frame.ptsMicros == 40000 && frame.dtsMicros == 0 && frame.keyframe)
+        #expect(live.video == 2 && live.seq == 41 && live.ptsMicros == 40000 && !live.keyframe)
+        guard case .videoFrame(let app) = Self.server(.videoFrame, ["id": 1, "seq": 0, "keyframe": true, "data": .bytes(Data([1]))]) else {
+            Issue.record("passthrough frame"); return
+        }
+        #expect(app.ptsMicros == nil && app.seq == 0)
+        guard case .videoPresent(1, 17, 1_234_633_333) = Self.server(.videoPresent, ["id": 1, "seq": 17, "pts_us": 1_234_633_333]) else {
+            Issue.record("present"); return
+        }
         guard case .videoDestroy(3) = Self.server(.videoDestroy, ["id": 3]) else { Issue.record("destroy"); return }
     }
 
     @Test func clientMessages() {
-        #expect(ClientMessage.videoAck(video: 3, ptsMicros: 40000).frame == DisplayFrame(type: 0x88, body: ["id": 3, "pts_us": 40000]))
+        #expect(ClientMessage.videoAck(video: 2, seq: 41).frame == DisplayFrame(type: 0x88, body: ["id": 2, "seq": 41]))
         #expect(ClientMessage.videoKeyframe(video: 3).frame == DisplayFrame(type: 0x89, body: ["id": 3]))
-        let hello = ClientMessage.hello(token: "t", decoders: [.hevc], displays: [], videoDecoders: [.hevc, .h264]).frame
-        #expect(hello.body["video_decoders"] == ["hevc", "h264"])
         #expect(ClientMessage.hello(token: "t", decoders: [.hevc], displays: []).frame.body["video_decoders"] == nil)
     }
 }
@@ -73,7 +55,7 @@ import Testing
         private let lock = NSLock()
         private var messages: [ClientMessage] = []
         func append(_ message: ClientMessage) { lock.lock(); messages.append(message); lock.unlock() }
-        var acks: [UInt64] { lock.lock(); defer { lock.unlock() }; return messages.compactMap { if case .videoAck(_, let pts) = $0 { pts } else { nil } } }
+        var acks: [Int] { lock.lock(); defer { lock.unlock() }; return messages.compactMap { if case .videoAck(_, let seq) = $0 { seq } else { nil } } }
         var keyframeRequests: Int {
             lock.lock(); defer { lock.unlock() }
             return messages.filter { if case .videoKeyframe = $0 { true } else { false } }.count
@@ -100,25 +82,26 @@ import Testing
         try await Task.sleep(for: .milliseconds(150))
     }
 
-    @Test func anAppsStreamPlaysOnItsOwnTimeline() async throws {
+    @Test func anAppsFrameIsDecodedAtOnceAndShownWhenTheAppPresentsIt() async throws {
         let sent = Sent()
         let video = try video(source: "passthrough", sent: sent)
-        let data = try keyframe()
-        video.frame(VideoFrame(video: 3, ptsMicros: 10_000_000, keyframe: true, data: data))
+        video.frame(VideoFrame(video: 3, seq: 0, keyframe: true, data: try keyframe()))
         try await settle(video)
-        #expect(sent.acks == [10_000_000])
-        // The picture decoded in hardware and is on the layer.
+        #expect(sent.acks == [0]) // decoded and queued
+        #expect(!video.layer.isReadyForDisplay) // not shown before the app shows it
+        video.present(seq: 0)
+        try await settle(video)
         #expect(video.layer.sampleBufferRenderer.status == .rendering, "\(String(describing: video.layer.sampleBufferRenderer.error))")
         #expect(video.layer.isReadyForDisplay)
         video.close()
     }
 
-    @Test func aLiveStreamIsShownOnArrival() async throws {
+    @Test func aLiveFrameIsShownOnArrival() async throws {
         let sent = Sent()
         let video = try video(source: "surface", sent: sent)
-        video.frame(VideoFrame(video: 3, ptsMicros: 1, keyframe: true, data: try keyframe()))
+        video.frame(VideoFrame(video: 3, seq: 41, keyframe: true, ptsMicros: 1, data: try keyframe()))
         try await settle(video)
-        #expect(sent.acks == [1])
+        #expect(sent.acks == [41])
         #expect(video.layer.sampleBufferRenderer.status == .rendering)
         #expect(video.layer.isReadyForDisplay)
     }
@@ -126,11 +109,19 @@ import Testing
     @Test func anUndecodableStreamAsksForAKeyframeAndWaitsForIt() async throws {
         let sent = Sent()
         let video = try video(source: "passthrough", codec: "av1", sent: sent)
-        video.frame(VideoFrame(video: 3, ptsMicros: 1, keyframe: true, data: Data([0xFF, 0xFF]))) // not OBUs
-        video.frame(VideoFrame(video: 3, ptsMicros: 2, keyframe: false, data: Data([0x12, 0x00])))
+        video.frame(VideoFrame(video: 3, seq: 0, keyframe: true, data: Data([0xFF, 0xFF]))) // not OBUs
+        video.frame(VideoFrame(video: 3, seq: 1, keyframe: false, data: Data([0x12, 0x00])))
         try await settle(video)
         #expect(sent.acks.isEmpty)
         #expect(sent.keyframeRequests == 1)
+    }
+
+    @Test func presentingAFrameNobodyKeptShowsNothing() async throws {
+        let sent = Sent()
+        let video = try video(source: "passthrough", sent: sent)
+        video.present(seq: 5)
+        try await settle(video)
+        #expect(!video.layer.isReadyForDisplay)
     }
 }
 
@@ -145,7 +136,7 @@ import Testing
         base.stream.server([
             (.videoCreate, ["id": 1, "window": 7, "rect": [0, 0, 1920, 1080], "codec": "hevc", "source": "passthrough", "z": 2]),
             (.videoCreate, ["id": 2, "window": 7, "rect": [100, 100, 320, 180], "codec": "h264", "source": "surface", "z": 1]),
-            (.videoCreate, ["id": 9, "window": 99, "rect": [0, 0, 1, 1], "codec": "h264"]), // no such window
+            (.videoCreate, ["id": 9, "window": 99, "rect": [0, 0, 1, 1], "codec": "h264", "source": "surface"]), // no such window
         ])
         try await base.until("videos") { window.videos.count == 2 }
         #expect(window.videos.map(\.id) == [2, 1])

@@ -198,7 +198,7 @@ public final class CabooseDisplaySession: DisplaySession {
             case .videoCreate(let fields): addVideo(fields.id)
             case .videoUpdate(let fields): updateVideo(fields)
             case .videoDestroy(let id): removeVideo(id)
-            case .frame, .tile, .videoFrame, .audio, .unknown, .malformed:
+            case .frame, .tile, .videoFrame, .videoPresent, .audio, .unknown, .malformed:
                 continue // pictures were routed on the socket's queue; sound and unknown types are not used yet
             }
         }
@@ -566,6 +566,8 @@ private final class Incoming: @unchecked Sendable {
                 pipelines[tile.window]?.tile(tile)
             case .videoFrame(let frame):
                 videos[frame.video]?.frame(frame)
+            case .videoPresent(let id, let seq, _):
+                videos[id]?.present(seq: seq)
             case .videoCreate(let fields):
                 // Made here, like a window's pipeline, because its first picture follows at once.
                 if videos[fields.id] == nil, let video = RemoteVideo(fields, send: send) { videos[fields.id] = video }
