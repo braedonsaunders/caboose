@@ -1,0 +1,56 @@
+# A Caboose server on its own domain: caboose-host behind Caddy, which gets and renews the
+# HTTPS certificate itself. deploy/server/install.sh sets it up; deploy/server/README.md
+# explains every setting. Only Caddy publishes ports; the host is on the internal network.
+name: caboose
+
+services:
+  caboose-host:
+    image: ${CABOOSE_HOST_IMAGE:-ghcr.io/braedonsaunders/caboose-host:${CABOOSE_VERSION:-latest}}
+    # KVM, loop-mounted disks and TAP networking for the computers' microVMs.
+    privileged: true
+    restart: unless-stopped
+    # Stopping parks every computer with its memory first.
+    stop_grace_period: 2m
+    environment:
+      # Optional: without it the host generates one in /data/caboose/disks/owner-token.
+      CABOOSE_OWNER_TOKEN: ${CABOOSE_OWNER_TOKEN:-}
+      # Pairing links and the console name this address first.
+      CABOOSE_PUBLIC_URL: https://${CABOOSE_DOMAIN:?Set CABOOSE_DOMAIN in .env}
+      # A server is not on a home network: no LAN advertisement.
+      CABOOSE_MDNS: "off"
+      CABOOSE_MEMORY_MB: ${CABOOSE_MEMORY_MB:-6144}
+      CABOOSE_VCPUS: ${CABOOSE_VCPUS:-4}
+      CABOOSE_MAX_RUNNING: ${CABOOSE_MAX_RUNNING:-4}
+      CABOOSE_DISK_SIZE: ${CABOOSE_DISK_SIZE:-400G}
+      CABOOSE_GUEST_LAN: deny
+    volumes:
+      - ${CABOOSE_STATE_DIR:-/data/caboose}:/data/caboose
+    expose:
+      - "7310"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7310/v1/health',{headers:{authorization:'Bearer '+(process.env.CABOOSE_OWNER_TOKEN||require('fs').readFileSync(process.env.CABOOSE_IMAGE_ROOT+'/owner-token','utf8').trim())}}).then(r=>{if(!r.ok) process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  caddy:
+    image: caddy:2.11
+    restart: unless-stopped
+    ports:
+      - "${CABOOSE_HTTP_PORT:-80}:80"
+      - "${CABOOSE_HTTPS_PORT:-443}:443"
+      - "${CABOOSE_HTTPS_PORT:-443}:443/udp"
+    environment:
+      CABOOSE_DOMAIN: ${CABOOSE_DOMAIN:?Set CABOOSE_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-options:/etc/caddy/options:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - caboose-host
+
+volumes:
+  caddy-data:
+  caddy-config:
