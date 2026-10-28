@@ -1,5 +1,8 @@
 import AudioToolbox
 import Foundation
+#if os(iOS)
+import AVFAudio
+#endif
 
 /// Plays the computer's sound: Xpra's `audio-data` packets carry an MP3 stream, cut at
 /// arbitrary points. AudioFileStream finds the frames and AudioQueue decodes and plays
@@ -22,6 +25,19 @@ public final class AudioStream: @unchecked Sendable {
     private static let maximumQueued = 8
     private static let prerollBuffers = 2
 
+    /// Running counts, for the diagnostics line.
+    public struct Stats: Sendable, CustomStringConvertible {
+        public var chunks = 0, bytes = 0, packets = 0, enqueued = 0, dropped = 0
+        public var format = "none", openStatus: OSStatus = 0, outputStatus: OSStatus = 0, startStatus: OSStatus = 0, parseStatus: OSStatus = 0
+        public var started = false
+        public var description: String {
+            "chunks=\(chunks) bytes=\(bytes) packets=\(packets) enqueued=\(enqueued) dropped=\(dropped) format=\(format) " +
+                "open=\(openStatus) output=\(outputStatus) parse=\(parseStatus) start=\(startStatus) started=\(started)"
+        }
+    }
+    private var counters = Stats()
+    public var stats: Stats { queue.sync { counters } }
+
     public init() {}
 
     deinit {
@@ -33,10 +49,12 @@ public final class AudioStream: @unchecked Sendable {
     public func append(_ data: Data) {
         guard !data.isEmpty else { return }
         queue.async { [self] in
+            counters.chunks += 1
+            counters.bytes += data.count
             if stream == nil { open() }
-            guard let stream, queued <= Self.maximumQueued else { return }
+            guard let stream, queued <= Self.maximumQueued else { counters.dropped += 1; return }
             data.withUnsafeBytes { bytes in
-                _ = AudioFileStreamParseBytes(stream, UInt32(bytes.count), bytes.baseAddress, [])
+                counters.parseStatus = AudioFileStreamParseBytes(stream, UInt32(bytes.count), bytes.baseAddress, [])
             }
         }
     }
@@ -56,7 +74,7 @@ public final class AudioStream: @unchecked Sendable {
 
     private func open() {
         let context = Unmanaged.passUnretained(self).toOpaque()
-        AudioFileStreamOpen(context, { context, stream, property, _ in
+        counters.openStatus = AudioFileStreamOpen(context, { context, stream, property, _ in
             let player = Unmanaged<AudioStream>.fromOpaque(context).takeUnretainedValue()
             if property == kAudioFileStreamProperty_ReadyToProducePackets { player.makeOutput(stream) }
         }, { context, byteCount, packetCount, bytes, descriptions in
@@ -70,12 +88,14 @@ public final class AudioStream: @unchecked Sendable {
         var format = AudioStreamBasicDescription()
         var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         guard AudioFileStreamGetProperty(stream, kAudioFileStreamProperty_DataFormat, &size, &format) == noErr else { return }
+        counters.format = "\(Int(format.mSampleRate))Hz/\(format.mChannelsPerFrame)ch"
         let context = Unmanaged.passUnretained(self).toOpaque()
         var queueRef: AudioQueueRef?
         let status = AudioQueueNewOutput(&format, { context, queueRef, buffer in
             let player = Unmanaged<AudioStream>.fromOpaque(context!).takeUnretainedValue()
             player.queue.async { player.recycle(buffer) }
         }, context, nil, nil, 0, &queueRef)
+        counters.outputStatus = status
         guard status == noErr, let queueRef else { return }
         output = queueRef
     }
@@ -101,11 +121,22 @@ public final class AudioStream: @unchecked Sendable {
             guard count > 0 else { free.append(buffer); return }
             buffer.pointee.mAudioDataByteSize = used
             buffer.pointee.mPacketDescriptionCount = UInt32(count)
-            if AudioQueueEnqueueBuffer(output, buffer, 0, nil) == noErr { queued += 1 } else { free.append(buffer) }
+            counters.packets += count
+            if AudioQueueEnqueueBuffer(output, buffer, 0, nil) == noErr { queued += 1; counters.enqueued += 1 } else { free.append(buffer) }
         }
         if !started, queued >= Self.prerollBuffers {
-            started = AudioQueueStart(output, nil) == noErr
+            Self.activateSession()
+            counters.startStatus = AudioQueueStart(output, nil)
+            started = counters.startStatus == noErr
+            counters.started = started
         }
+    }
+
+    /// AudioQueue will not start in an inactive session on iOS; make sure it is active.
+    private static func activateSession() {
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        #endif
     }
 
     private func takeBuffer(_ output: AudioQueueRef) -> AudioQueueBufferRef? {

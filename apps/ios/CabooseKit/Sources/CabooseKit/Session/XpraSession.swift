@@ -114,6 +114,12 @@ public final class XpraSession {
     /// Whether to ask for sound at all (the agent seat, for one, stays silent).
     public var playsAudio = true
     public private(set) var audioCodecs: [String] = []
+    /// What the sound path has seen: capabilities, the start request, and the player's counts.
+    public var audioDiagnostics: String {
+        "server-encoders=\(audioCodecs) start-sent=\(audioStartSent) other-audio=\(otherAudioPackets.value) \(audio.stats)"
+    }
+    private var audioStartSent = false
+    private let otherAudioPackets = Counter()
     private var buttonsDown = Set<Int>()
     private var lastClipboardSent: String?
     private var pingTimer: Timer?
@@ -136,6 +142,7 @@ public final class XpraSession {
         state = .connecting
         let pipelines = self.pipelines
         let audio = self.audio
+        let otherAudio = self.otherAudioPackets
         let transport = XpraTransport(url: url, token: token) { [weak self] event in
             switch event {
             case .opened:
@@ -147,7 +154,9 @@ public final class XpraSession {
                     let packet = PacketNames.normalized(packet)
                     if packet.type == "window-draw", let wid = packet[0]?.int, let pipeline = pipelines[wid] {
                         pipeline.draw(packet)
-                    } else if packet.type == "audio-data", packet[0]?.string == AudioStream.codec {
+                    } else if packet.type == "audio-data", packet[0]?.string != AudioStream.codec {
+                        otherAudio.increment()
+                    } else if packet.type == "audio-data" {
                         // audio-data: codec, data, metadata{sequence, start-of-stream, end-of-stream}
                         if packet[2]?["end-of-stream"]?.bool == true { audio.stop() } else if let data = packet[1]?.data { audio.append(data) }
                     } else {
@@ -179,6 +188,7 @@ public final class XpraSession {
         audioCodecs = caps["encoders"]?.list?.compactMap(\.string) ?? []
         guard playsAudio, caps["send"]?.bool ?? true, audioCodecs.contains(AudioStream.codec) else { return }
         send("audio-control", ["start", RValue(AudioStream.codec)])
+        audioStartSent = true
     }
 
     public func disconnect() {
@@ -603,4 +613,12 @@ final class PipelineRegistry: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return pipelines.removeValue(forKey: wid)
     }
+}
+
+/// A thread-safe count, for packets seen off the main actor.
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }
