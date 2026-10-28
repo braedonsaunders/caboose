@@ -9,10 +9,9 @@ license = "AGPL-3.0-only"
 repository = "https://github.com/braedonsaunders/caboose"
 rust-version = "1.85"
 
+# Optimised even in dev builds: the checks measure frame rates and CPU per frame.
 [profile.dev]
 debug = "line-tables-only"
-
-[profile.dev.package."*"]
 opt-level = 2
 
 [profile.release]

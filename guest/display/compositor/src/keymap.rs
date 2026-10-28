@@ -33,21 +33,20 @@ pub mod sym {
 }
 
 impl Keysyms {
-    /// Builds the table from `(keycode, level, keysym)` triples. The first position
-    /// found for a keysym wins, and level 0 is preferred over level 1, so `1` maps to
-    /// the main row rather than the keypad and `a` needs no Shift.
+    /// Builds the table from `(keycode, level, keysym)` triples. Among the positions
+    /// of a keysym the best is a keycode X11 can carry (≤ 255; Xwayland drops the
+    /// rest, such as KEY_DOLLAR's 442), then the unshifted level, then the lowest
+    /// keycode, so `$` is Shift+4, `1` is on the main row and `a` needs no Shift.
     pub fn from_entries(entries: impl IntoIterator<Item = (u32, u32, u32)>) -> Self {
+        let rank = |p: &KeyPosition| (p.keycode > 255, p.shift, p.keycode);
         let mut map: HashMap<u32, KeyPosition> = HashMap::new();
         for (keycode, level, keysym) in entries {
             if level > 1 || keysym == 0 {
                 continue;
             }
             let pos = KeyPosition { keycode, shift: level == 1 };
-            match map.get(&keysym) {
-                Some(existing) if !existing.shift || pos.shift => {}
-                _ => {
-                    map.insert(keysym, pos);
-                }
+            if map.get(&keysym).is_none_or(|existing| rank(&pos) < rank(existing)) {
+                map.insert(keysym, pos);
             }
         }
         Self { map }
@@ -122,6 +121,14 @@ mod tests {
         // '1' is on the main row (level 0) and on KP_1 only through NumLock.
         let k = us();
         assert_eq!(k.lookup('1' as u32).map(|p| p.keycode), Some(10));
+    }
+
+    #[test]
+    fn x11_keycodes_beat_unshifted_ones_above_255() {
+        let k = us();
+        assert_eq!(k.lookup('$' as u32), Some(KeyPosition { keycode: 13, shift: true }));
+        let k = Keysyms::from_entries([(442, 0, 0x24), (13, 1, 0x24)]);
+        assert_eq!(k.lookup(0x24), Some(KeyPosition { keycode: 13, shift: true }));
     }
 
     #[test]

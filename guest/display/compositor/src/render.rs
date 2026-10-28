@@ -33,8 +33,8 @@ impl Renderer {
 pub enum Rendered {
     /// Nothing changed since the last picture.
     Unchanged,
-    /// A new picture in the stream's image.
-    Picture,
+    /// A new picture in the stream's image; these rectangles (picture pixels) changed.
+    Picture(Vec<caboose_display_protocol::Rect>),
 }
 
 /// Per-window rendering state: the damage tracker for the current size and scale.
@@ -103,10 +103,13 @@ impl Canvas {
                     .damage
                     .render_output(r, &mut framebuffer, self.age, &elements, Color32F::BLACK)
                     .map_err(|e| format!("{e:?}"))?;
-                let changed = result.damage.is_some_and(|d| !d.is_empty());
+                let damage: Vec<_> = result
+                    .damage
+                    .map(|d| d.iter().map(|r| caboose_display_protocol::Rect::new(r.loc.x, r.loc.y, r.size.w, r.size.h)).collect())
+                    .unwrap_or_default();
                 drop(framebuffer);
                 self.age = 1;
-                Ok(if changed { Rendered::Picture } else { Rendered::Unchanged })
+                Ok(if damage.is_empty() { Rendered::Unchanged } else { Rendered::Picture(damage) })
             }
         }
     }

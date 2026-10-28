@@ -256,6 +256,7 @@ fn run(args: Args) -> Result<bool, String> {
     )?;
 
     let start = Instant::now();
+    let connected_us = monotonic_us();
     let cpu0 = args.server_pid.and_then(process_cpu_ms);
     let mut decoder_stream = StreamDecoder::new();
     let mut windows: BTreeMap<u64, WindowStats> = BTreeMap::new();
@@ -338,7 +339,11 @@ fn run(args: Args) -> Result<bool, String> {
                     s.codec = Some(f.codec);
                     s.first.get_or_insert_with(Instant::now);
                     s.last = Some(Instant::now());
-                    s.latency_us.push(received.saturating_sub(f.pts_us));
+                    // Pictures of content committed before this client connected say
+                    // nothing about latency.
+                    if f.pts_us >= connected_us {
+                        s.latency_us.push(received.saturating_sub(f.pts_us));
+                    }
                     if !decoders.get(&f.id).is_some_and(|d| d.codec == f.codec) {
                         let decoder = open_decoder(f.codec).map_err(|e| format!("decoder for {}: {e}", f.codec.as_str()))?;
                         let stream = match &args.save {

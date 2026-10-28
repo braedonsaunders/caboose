@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- A page that repaints a moving block and a frame counter on every animation frame,
+     for measuring stream fps. -->
+<meta charset="utf-8">
+<title>Caboose motion</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101418; color: #e8eef4; font: 32px system-ui, sans-serif; overflow: hidden; }
+  #box { position: absolute; top: 40%; width: 120px; height: 120px; background: #3b82f6; border-radius: 16px; }
+  #count { position: absolute; top: 24px; left: 24px; }
+</style>
+<div id="count">0</div>
+<div id="box"></div>
+<script>
+  const box = document.getElementById('box');
+  const count = document.getElementById('count');
+  let n = 0;
+  function frame(t) {
+    n++;
+    box.style.left = (Math.sin(t / 600) * 0.4 + 0.45) * innerWidth + 'px';
+    count.textContent = 'frame ' + n;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
