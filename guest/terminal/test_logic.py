@@ -18,6 +18,19 @@ class Logic(unittest.TestCase):
             with self.assertRaises(terminal.BadRequest, msg=target):
                 terminal.parse_attach(target)
 
+    def test_start(self):
+        import base64
+        import json
+        encode = lambda value: base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip('=')
+        argv = ['/bin/sh', '/home/caboose/sign-in.sh', 'claude', '/login']
+        self.assertEqual(terminal.parse_start(f'/start?cols=80&rows=24&argv={encode(argv)}'), (80, 24, argv))
+        for value in ([], ['sh'], ['/bin/sh', 3], ['/bin/sh', 'a\0b'], ['/bin/sh'] * 65, {'argv': ['/bin/sh']}, ['/bin/sh', 'x' * 4097]):
+            with self.assertRaises(terminal.BadRequest, msg=value):
+                terminal.parse_start(f'/start?cols=80&rows=24&argv={encode(value)}')
+        for target in ('/start?cols=80&rows=24', '/start?cols=80&rows=24&argv=%%%', f'/start?cols=0&rows=24&argv={encode(argv)}'):
+            with self.assertRaises(terminal.BadRequest, msg=target):
+                terminal.parse_start(target)
+
     def test_control(self):
         self.assertEqual(terminal.parse_control('{"type":"resize","cols":120,"rows":40}'), ('resize', 120, 40))
         self.assertEqual(terminal.parse_control('{"type":"hangup"}'), ('hangup',))

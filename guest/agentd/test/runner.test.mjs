@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
-import { chooseOption, describeToolCall, Draft, launchCommand, Normaliser, publicAuthMethods, readSpec, recapFrom } from '../caboose-agentd.mjs'
+import { chooseOption, describeToolCall, Draft, latestPage, launchCommand, loopbackURL, Normaliser, publicAuthMethods, readSpec, recapFrom } from '../caboose-agentd.mjs'
 
 const RUNNER = new URL('../caboose-agentd.mjs', import.meta.url).pathname
 const STAND_IN = new URL('./stand-in-agent.mjs', import.meta.url).pathname
@@ -403,6 +403,125 @@ describe('sign-in', () => {
     await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-terminal', env: { WAYLAND_DISPLAY: 'wayland-caboose-0', DISPLAY: ':110', 'bad name': 'x' } })
     expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-terminal', status: 'succeeded' })
     expect((await readFile(join(box.root, 'terminal.log'), 'utf8')).trim()).toBe(':110 wayland-caboose-0 1')
+  })
+})
+
+describe('sign-in on the phone', () => {
+  const encode = value => Buffer.from(JSON.stringify(value)).toString('base64')
+  const runner = (box, ...args) => promisify(execFile)(process.execPath, [RUNNER, ...args], { env: box.env })
+  const signInState = box => readFile(join(box.home, '.local/share/caboose/agents/stand-in/sign-in.json'), 'utf8').then(JSON.parse, () => undefined)
+  const until = async (what, check) => {
+    for (let i = 0; i < 300; i++) {
+      const found = await check()
+      if (found) return found
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error(`Timed out waiting for ${what}`)
+  }
+
+  /** A runner signing in, started as the host starts it: in its own process group. */
+  function signingIn(box, value) {
+    const child = spawn(process.execPath, [RUNNER, 'sign-in', encode(value)], { env: box.env, detached: true, stdio: 'ignore' })
+    const exited = new Promise(resolve => child.on('exit', (code, signal) => resolve(signal ?? code)))
+    cleanup.push(async () => { if (child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, 'SIGKILL') } catch {} await exited } })
+    return exited
+  }
+
+  /** The computer's terminal service as the runner uses it: start a program, list and hang up sessions. */
+  async function terminalService(box) {
+    const token = join(box.root, 'terminal-token')
+    await writeFile(token, 'terminal-secret')
+    const sessions = new Map()
+    const server = createServer((request, response) => {
+      const url = new URL(request.url, 'http://127.0.0.1')
+      if (request.headers.authorization !== 'Bearer terminal-secret') { response.writeHead(401).end('{"error":"unauthorized"}'); return }
+      if (url.pathname === '/start') {
+        const argv = JSON.parse(Buffer.from(url.searchParams.get('argv'), 'base64url').toString())
+        const id = createHash('sha256').update(String(Math.random())).digest('hex').slice(0, 32)
+        // A session has the service's own environment and the owner display's, never the runner's.
+        const child = spawn(argv[0], argv.slice(1), { env: { ...process.env, HOME: box.home, DISPLAY: ':101', STAND_IN_STATE: box.state }, stdio: 'ignore' })
+        sessions.set(id, child)
+        child.on('exit', () => sessions.delete(id))
+        response.end(JSON.stringify({ session: id }))
+      } else if (url.pathname === '/sessions') {
+        response.end(JSON.stringify({ sessions: [...sessions.keys()].map(id => ({ id })) }))
+      } else if (url.pathname === '/hangup') {
+        sessions.get(url.searchParams.get('session'))?.kill('SIGHUP')
+        response.end('{"hungUp":true}')
+      } else {
+        response.writeHead(404).end('{}')
+      }
+    })
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    cleanup.push(() => new Promise(resolve => { for (const child of sessions.values()) child.kill('SIGKILL'); server.close(resolve) }))
+    Object.assign(box.env, { CABOOSE_TERMINAL_PORT: String(server.address().port), CABOOSE_TERMINAL_TOKEN_FILE: token })
+  }
+
+  it('takes the latest web page, and delivers only to the computer\'s loopback', () => {
+    expect(latestPage('https://a.example/1\nnot a page\nfile:///etc/passwd\nhttps://b.example/2\n\n')).toBe('https://b.example/2')
+    expect(latestPage('')).toBeUndefined()
+    expect(loopbackURL('http://localhost:1455/auth/callback?code=x').port).toBe('1455')
+    expect(loopbackURL('http://127.0.0.1:8080/').hostname).toBe('127.0.0.1')
+    expect(loopbackURL('http://[::1]:8080/').hostname).toBe('[::1]')
+    for (const value of ['https://localhost:1455/', 'http://localhost/', 'http://example.com:1455/', 'http://user:pw@localhost:1455/', 'nope', 'http://localhost.example.com:80/']) {
+      expect(() => loopbackURL(value), value).toThrow()
+    }
+  })
+
+  it('hands the sign-in page to the phone and delivers where it sends the browser back', async () => {
+    const box = await sandbox({ auth: true })
+    box.env.STAND_IN_CALLBACK = '1'
+    const exited = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', env: { DISPLAY: ':100' }, on: 'phone' })
+    const waiting = await until('the sign-in page', async () => { const state = await signInState(box); return state?.url && state })
+    expect(waiting).toMatchObject({ methodId: 'stand-in-login', status: 'running', on: 'phone', url: expect.stringMatching(/^https:\/\/example\.com\/authorize\?/) })
+    // Nothing points the agent at the desktop, so no browser opens there.
+    expect(await readFile(join(box.state, 'sign-in-env'), 'utf8')).toBe('none none')
+    const back = new URL(waiting.url).searchParams.get('redirect_uri')
+    await expect(runner(box, 'sign-in-callback', 'stand-in', 'https://example.com/callback?code=1')).rejects.toThrow(/localhost/)
+    await expect(runner(box, 'sign-in-callback', 'stand-in', `http://localhost/callback?code=1`)).rejects.toThrow(/localhost:<port>/)
+    const { stdout } = await runner(box, 'sign-in-callback', 'stand-in', `${back}?code=abc`)
+    expect(JSON.parse(stdout).status).toBeLessThan(400)
+    expect(await exited).toBe(0)
+    expect(await signInState(box)).toMatchObject({ status: 'succeeded', on: 'phone' })
+    expect(await readFile(join(box.state, 'signed-in'), 'utf8')).toBe('agent')
+    await expect(runner(box, 'sign-in-callback', 'stand-in', `${back}?code=abc`)).rejects.toThrow(/No sign-in is waiting/)
+  })
+
+  it('runs a terminal method in a terminal session for the phone, without the desktop', async () => {
+    const box = await sandbox({ auth: true })
+    await terminalService(box)
+    expect(await signingIn(box, { agent: AGENT, methodId: 'stand-in-terminal', env: { DISPLAY: ':110' }, on: 'phone' })).toBe(0)
+    expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-terminal', status: 'succeeded', on: 'phone', terminal: expect.stringMatching(/^[0-9a-f]{32}$/) })
+    expect(await readFile(join(box.state, 'signed-in'), 'utf8')).toBe('terminal')
+    expect(await readFile(join(box.state, 'sign-in-env'), 'utf8')).toBe('none 1')
+    // The environment file the session read is gone.
+    expect((await readdir(join(box.home, '.local/share/caboose/agents/stand-in'))).filter(name => name.endsWith('.env'))).toEqual([])
+  })
+
+  it('reports a computer whose terminal service cannot be reached', async () => {
+    const box = await sandbox({ auth: true })
+    await writeFile(join(box.root, 'terminal-token'), 'terminal-secret')
+    Object.assign(box.env, { CABOOSE_TERMINAL_PORT: '9', CABOOSE_TERMINAL_TOKEN_FILE: join(box.root, 'terminal-token') })
+    expect(await signingIn(box, { agent: AGENT, methodId: 'stand-in-terminal', on: 'phone' })).toBe(1)
+    expect(await signInState(box)).toMatchObject({ status: 'failed', message: expect.stringContaining('terminal service did not answer') })
+  })
+
+  it('cancels a waiting sign-in, and a new one replaces a running one', async () => {
+    const box = await sandbox({ auth: true })
+    box.env.STAND_IN_CALLBACK = '1'
+    const first = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone' })
+    const firstState = await until('the first page', async () => { const state = await signInState(box); return state?.url && state })
+    const second = signingIn(box, { agent: AGENT, methodId: 'stand-in-login', on: 'phone' })
+    expect(await first).toBe('SIGTERM')
+    const secondState = await until('the second page', async () => { const state = await signInState(box); return state?.url && state.pid !== firstState.pid && state })
+    expect(secondState).toMatchObject({ status: 'running' })
+    const { stdout } = await runner(box, 'sign-in-cancel', 'stand-in')
+    expect(JSON.parse(stdout)).toEqual({ cancelled: true })
+    expect(await second).toBe('SIGTERM')
+    const cancelled = await signInState(box)
+    expect(cancelled).toMatchObject({ status: 'failed', message: 'Sign-in cancelled.' })
+    expect(cancelled).not.toHaveProperty('pid')
+    expect(JSON.parse((await runner(box, 'sign-in-cancel', 'stand-in')).stdout)).toEqual({ cancelled: false })
   })
 })
 
