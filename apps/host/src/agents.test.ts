@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  AgentConflictError, AgentInputError, AgentNotFoundError, AgentTasks, describeRequest, interpretLine, parsePoll, parseRequest,
+  AgentConflictError, AgentInputError, AgentNotFoundError, AgentTasks, LEGACY_SUMMARY, describeRequest, interpretLine, parsePoll, parseRequest,
   readAttachments, type AgentEvent, type AgentGuest, type AgentResolver,
 } from './agents.js'
 import type { AgentLaunch } from './registry.js'
@@ -421,12 +421,14 @@ describe('AgentTasks', () => {
     const orphan = '33333333-3333-4333-8333-333333333333'
     const waiting = '44444444-4444-4444-8444-444444444444'
     const legacy = '55555555-5555-4555-8555-555555555555'
+    const legacyFailed = '66666666-6666-4666-8666-666666666666'
     const listing = [
       [running, 'goose', '1790000500', '', '1', '512', b64('keep going'), b64(line(end(1, 'earlier turn'))), 'auto', '2', '1', '', b64('goose')],
       [done, 'stand-in', '1790000400', '0', '0', '900', b64('run tests'), b64(line(end(3, 'All green.'))), 'ask', '3', '1', b64('shot.png\n'), b64('Stand-in')],
       [orphan, 'stand-in', '1790000300', '', '0', '10', b64('lost'), '', 'auto', '1', '1', '', b64('Stand-in')],
       [waiting, 'stand-in', '1790000200', '', '1', '40', b64('signed out'), b64(line({ type: 'auth_required', turn: 1, authMethods: [{ id: 'a', name: 'A', type: 'agent' }] })), 'auto', '1', '1', '', b64('Stand-in')],
       [legacy, 'claude', '1790000100', '0', '0', '10', b64('old'), '', 'auto', '1', '0', '', ''],
+      [legacyFailed, 'codex', '1790000050', '1', '0', '10', b64('older'), '', 'auto', '1', '0', '', ''],
     ].map(fields => fields.join('\t')).join('\n')
     const { fake, events, acquire, tasks } = setup()
     fake.setListing(listing)
@@ -434,7 +436,10 @@ describe('AgentTasks', () => {
     await tasks.restore()
     expect(tasks.list().map(task => [task.id, task.status, task.agent])).toEqual([
       [running, 'running', 'goose'], [done, 'succeeded', 'stand-in'], [orphan, 'failed', 'stand-in'], [waiting, 'failed', 'stand-in'], [legacy, 'succeeded', 'claude-acp'],
+      [legacyFailed, 'failed', 'codex-acp'],
     ])
+    // A task from before the runner says where its transcript is, not that a runner failed.
+    expect(tasks.list()[5]!.summary).toBe(`${LEGACY_SUMMARY} /home/caboose/Agents/${legacyFailed}/transcript.jsonl.`)
     expect(tasks.list()[0]).toMatchObject({ prompt: 'keep going', turns: 2, agentName: 'goose' })
     expect(tasks.list()[1]).toMatchObject({ summary: 'All green.', turns: 3, approvals: 'ask', attachments: [`/home/caboose/Agents/${done}/attachments/shot.png`] })
     expect(tasks.list()[3]).toMatchObject({ summary: 'Sign in to Stand-in first.', signIn: [{ id: 'a', name: 'A', type: 'agent' }] })

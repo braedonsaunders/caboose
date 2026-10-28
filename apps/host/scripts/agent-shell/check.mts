@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import { AgentCatalog } from '../../src/agent-catalog.js'
 import { AgentTasks, type AgentEvent, type AgentGuest, type AgentResolver, type AgentTask } from '../../src/agents.js'
 import { openUrl, saveDownload } from '../../src/files.js'
+import { HomeOwnership } from '../../src/home.js'
 import { AgentRegistry } from '../../src/registry.js'
 import { SettingsStore, settingsLimits } from '../../src/settings.js'
 
@@ -36,9 +37,11 @@ const registryJson = { version: '1.0.0', agents: [
 ] }
 const registry = new AgentRegistry({ fetch: (async () => new Response(JSON.stringify(registryJson))) as unknown as typeof fetch })
 const settings = new SettingsStore({ name: 'Check', memoryMb: 2048, vcpus: 2, idleMs: 600_000, defaultAgent: 'stand-in' }, settingsLimits(), { load: async () => undefined, save: async () => {} })
-const catalog = new AgentCatalog(registry, () => guest, settings)
+// Checked on every operation here (interval 0), as the host does once per five minutes.
+const home = new HomeOwnership(0)
+const catalog = new AgentCatalog(registry, () => guest, settings, home)
 const events: AgentEvent[] = []
-const host = (idleMs = 600_000, resolver: AgentResolver = catalog) => new AgentTasks(() => guest, event => events.push(event), () => () => {}, { resolver, pollMs: 300, ensureSeat: async () => {}, idleMs })
+const host = (idleMs = 600_000, resolver: AgentResolver = catalog) => new AgentTasks(() => guest, event => events.push(event), () => () => {}, { resolver, home, pollMs: 300, ensureSeat: async () => {}, idleMs })
 const find = (list: AgentTasks, id: string): AgentTask => list.list().find(task => task.id === id)!
 async function until(what: string, done: () => boolean | Promise<boolean>, seconds = 30): Promise<void> {
   for (let i = 0; i < seconds * 10; i++) {
@@ -50,6 +53,11 @@ async function until(what: string, done: () => boolean | Promise<boolean>, secon
 const outputs = (id: string) => events.filter(event => event.type === 'agent.task.output' && event.id === id).map(event => (event as { text: string }).text)
 const transcript = async (id: string) => (await sh(`cat /home/caboose/Agents/${id}/transcript.jsonl`)).split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
 const finished = (list: AgentTasks, id: string) => until(`task ${id} to finish`, () => find(list, id).status !== 'running')
+
+// Something ran as root with HOME=/home/caboose and left root-owned caches; the next task
+// gives them back to caboose before npm (npx) runs as caboose.
+await sh('install -d /home/caboose/.npm/_cacache /home/caboose/.cache/stray && touch /home/caboose/.npm/_cacache/root-file && chown -R root:root /home/caboose/.npm /home/caboose/.cache/stray')
+assert.notEqual(await sh('find /home/caboose -xdev ! -user caboose | wc -l'), '0')
 
 // The default agent, with attachments: one over a megabyte, a picture, and two that collide by name.
 const tasks = host()
@@ -68,6 +76,8 @@ assert.equal(find(tasks, task.id).status, 'succeeded', find(tasks, task.id).summ
 assert.equal(find(tasks, task.id).summary, 'done: First prompt')
 assert.equal(find(tasks, task.id).agentName, 'Stand-in')
 assert.ok(outputs(task.id).includes('turns in session: 1; mcp: caboose-desktop; blocks: text,link:evil name.bin,link:evil name (2).bin,image:image/png; recap: no; display: :101'), outputs(task.id).join('\n'))
+assert.equal(await sh('find /home/caboose -xdev \\( ! -user caboose -o ! -group caboose \\) | wc -l'), '0')
+console.log('Root-owned leftovers in the home given back to caboose.')
 console.log('Start, attachments as ACP content, the desktop MCP server and streaming passed.')
 
 // Reply at once: the runner is still waiting, so the same session continues.

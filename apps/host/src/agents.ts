@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { HomeOwnership } from './home.js'
 import { decodeBase64, sanitizeFileName, uniqueName, writeGuestFile } from './files.js'
 import type { AgentLaunch } from './registry.js'
 
@@ -78,6 +79,8 @@ export interface AgentTaskOptions {
   ensureSeat?: () => Promise<void>
   /** How long a runner keeps an agent and its session after a turn, waiting for a reply. */
   idleMs?: number
+  /** Gives root-owned leftovers in the home back to caboose before a runner starts. */
+  home?: HomeOwnership
 }
 
 const HOME = '/home/caboose'
@@ -86,6 +89,8 @@ export const AGENTD = '/opt/caboose/agentd/caboose-agentd.mjs'
 /** What the guest scripts print when the computer's image has no runner. */
 export const RUNNER_MISSING = 'caboose-agentd is not installed in this computer'
 const TASK_ID = /^[0-9a-f-]{36}$/
+/** The summary of a task that ran before caboose-agentd (no task.json). */
+export const LEGACY_SUMMARY = 'Ran before Caboose\'s agent runner, so it cannot be continued. Its transcript is in'
 const AGENT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/
 /** Approval request ids are UUIDs minted by caboose-agentd. */
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -253,6 +258,7 @@ export class AgentTasks {
   private readonly pollMs: number
   private readonly ensureSeat?: () => Promise<void>
   private readonly idleMs: number
+  private readonly home?: HomeOwnership
 
   constructor(
     private readonly guest: () => AgentGuest | undefined,
@@ -264,6 +270,7 @@ export class AgentTasks {
     this.pollMs = options.pollMs ?? 1000
     this.ensureSeat = options.ensureSeat
     this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS
+    this.home = options.home
   }
 
   list(): AgentTask[] {
@@ -272,6 +279,7 @@ export class AgentTasks {
 
   /** A cold restart cannot leave leases held by processes that no longer exist. */
   computerRestarted(): void {
+    this.home?.reset()
     this.pause()
     for (const entry of this.tracked.values()) {
       if (isLive(entry.task.status)) this.finish(entry, 'failed', 'Stopped when the computer restarted.')
@@ -428,6 +436,7 @@ export class AgentTasks {
   }
 
   private async prepareSeat(guest: AgentGuest): Promise<void> {
+    await this.home?.ensure(guest)
     if (this.ensureSeat) await this.ensureSeat().catch(error => console.error('Agent seat did not start:', error))
     else await guest.run('/bin/sh', ['-c', 'systemctl start caboose-xpra-agent.service || true'], 30_000)
   }
@@ -463,8 +472,10 @@ export class AgentTasks {
         this.releases.set(id, this.acquire())
       } else if (exitCode === '') {
         this.finish(entry, 'failed', 'Stopped when the computer restarted.', false)
-      } else if (!entry.resumable && exitCode === '0') {
-        this.finish(entry, 'succeeded', 'Done.', false)
+      } else if (!entry.resumable) {
+        // Ran before caboose-agentd, by an agent's own CLI: its transcript is in that CLI's
+        // format, which the host no longer reads, so point the owner at it instead.
+        this.finish(entry, exitCode === '0' ? 'succeeded' : 'failed', `${LEGACY_SUMMARY} ${HOME}/Agents/${id}/transcript.jsonl.`, false)
       } else {
         this.finish(entry, 'failed', `The agent runner exited with code ${exitCode} before the turn ended.`, false)
       }

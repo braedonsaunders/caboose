@@ -2,6 +2,7 @@ import { once } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { HOME_REPAIR_SCRIPT, type HomeOwnership } from './home.js'
 import { AgentCatalog, parseGuestState, publicSignIn } from './agent-catalog.js'
 import { AGENTD, AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, type AgentGuest } from './agents.js'
 import { AgentRegistry, type AgentLaunch } from './registry.js'
@@ -25,6 +26,7 @@ function fakeGuest(options: { missing?: boolean; failInstall?: string } = {}) {
   const methods: Record<string, unknown[]> = { 'claude-acp': CLAUDE_METHODS, 'codex-acp': [{ id: 'chat-gpt', name: 'ChatGPT', description: 'Use ChatGPT to authenticate' }] }
   const guest: AgentGuest = {
     async run(command, args) {
+      if (command === '/bin/sh' && args[1] === HOME_REPAIR_SCRIPT) return '0'
       expect(command).toBe('/usr/sbin/runuser')
       expect(args.slice(0, 6)).toEqual(['-u', 'caboose', '--', '/usr/bin/env', 'HOME=/home/caboose', 'PATH=/home/caboose/.local/bin:/usr/local/bin:/usr/bin:/bin'])
       if (options.missing) throw new Error('Guest command failed: caboose-agentd is not installed in this computer')
@@ -100,6 +102,18 @@ describe('AgentCatalog', () => {
     expect(settings.get().defaultAgent).toBe('claude-acp')
     expect(fake.calls.find(call => call.mode === 'install' && (call.argument as AgentLaunch).id === 'goose')?.argument).toMatchObject({ distribution: 'binary', sha256: expect.stringMatching(/^[0-9a-f]{64}$/) })
     await expect(catalog.install('not-an-agent')).rejects.toBeInstanceOf(AgentNotFoundError)
+  })
+
+  it('gives the home back to caboose before an install or a sign-in runs npm, uv or the agent', async () => {
+    const fake = fakeGuest()
+    const ensure = vi.fn(async () => { fake.calls.push({ mode: 'repair' }); return 0 })
+    const catalog = new AgentCatalog(registry(), () => fake.guest, settingsStore(), { ensure, reset: () => {} } as unknown as HomeOwnership)
+    await catalog.install('claude-acp')
+    await catalog.signIn('codex-acp', { methodId: 'chat-gpt' })
+    expect(ensure).toHaveBeenCalledTimes(2)
+    const modes = fake.calls.map(call => call.mode)
+    expect(modes.indexOf('repair')).toBeLessThan(modes.indexOf('install'))
+    expect(modes.lastIndexOf('repair')).toBeLessThan(modes.indexOf('probe'))
   })
 
   it('runs the installed version of an agent, and the registry\'s when none is installed', async () => {

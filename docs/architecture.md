@@ -346,6 +346,13 @@ installing again moves to the registry's current one. An agent that is not insta
 runs the registry's current version, fetched on first use. An installed agent that leaves
 the registry stays listed and runnable.
 
+Everything under `/home/caboose` belongs to `caboose`. Installs, sign-ins, tasks and
+replies all run as `caboose`, and root's own commands in the guest keep root's home. A
+root-owned leftover, such as a cache written by a hand-run command, would still break the
+next npm, uv or agent run. So before an install, a sign-in or a runner start, the host
+gives anything in the home that is not `caboose`'s back to it: one `find -xdev` pass as
+root, at most once every five minutes and again after a restart.
+
 The owner can give an agent extra environment, such as an API key, in
 `/home/caboose/.config/caboose/agents/<registry id>.env`: `KEY=VALUE` lines, `#` comments
 and blank lines, no shell expansion, one pair of matching quotes around a value removed.
