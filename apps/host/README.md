@@ -292,3 +292,25 @@ To verify launching a specific application with a real file, set `CABOOSE_URL`,
 `CABOOSE_CHECK_APP` (an installed desktop entry ID), then run
 `apps/host/scripts/check-open-app.sh`. Check the owner display for the document; the
 script leaves its test copy in a uniquely named folder in the computer's home.
+
+## Craft jobs
+
+The host runs a fixed list of installed catalog CLI operations against files staged in
+`~/.caboose-jobs/<job>` through `/v1/fs`. The HTTP contract, accepted formats, progress
+events, Live Activities, warnings and retention are in `docs/architecture.md` under
+Shortcuts and Spotlight. The guest executes the CLI as `caboose`, not root.
+
+On a paired real host with the requested app installed and Node 22+, run:
+
+```sh
+export CABOOSE_URL=https://computer.example.com
+# Set CABOOSE_OWNER_TOKEN in the private environment.
+node apps/host/scripts/check-craft.mjs photocraft /path/to/example.jpg
+node apps/host/scripts/check-craft.mjs pdfcraft /path/to/one.pdf /path/to/two.pdf
+node apps/host/scripts/check-craft.mjs lightcraft /path/to/example.jpg
+node apps/host/scripts/check-craft.mjs filmcraft /path/to/project.fcproj
+```
+
+Each check wakes the computer, uploads its fixtures, validates the output signature
+and moves the staged job directory to Trash. FilmCraft media must already be present
+at the paths in the project on the computer. Failed jobs remain for inspection.

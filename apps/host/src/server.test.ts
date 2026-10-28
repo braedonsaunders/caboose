@@ -213,3 +213,40 @@ it('relays phone events only to authenticated phone controls and serves staged f
   phone.close(); control.close()
   await Promise.all([once(phone, 'close'), once(control, 'close')])
 })
+
+it('runs only a whitelisted installed Craft app and publishes job progress', async () => {
+  const job = '0123456789abcdef0123456789abcdef'
+  let finish!: () => void
+  const gate = new Promise<void>(resolve => { finish = resolve })
+  const guest = { run: vi.fn(async (_command: string, args: string[]) => {
+    if (args[2] === 'list') return JSON.stringify({ photocraft: { installedVersion: '0.16.0', canRollback: false, lastError: null, interrupted: false } })
+    if (args[0] === '-c' && args[1]?.includes('Run one host-whitelisted')) { await gate; return JSON.stringify({ outputs: [`.caboose-jobs/${job}/output-0.png`] }) }
+    return ''
+  }) }
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => guest }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const post = (path: string, body: unknown, auth = true) => fetch(base + path, { method: 'POST', headers: auth ? { authorization: 'Bearer owner' } : {}, body: JSON.stringify(body) })
+  const input = { job, inputs: ['input-0.jpg'], format: 'png' }
+  expect((await post('/v1/catalog/photocraft/run', input, false)).status).toBe(401)
+  expect((await post('/v1/catalog/photocraft/run', { ...input, inputs: ['../../etc'] })).status).toBe(400)
+  await post('/v1/session', {})
+  const socket = new WebSocket(base.replace('http:', 'ws:') + '/v1/control', { headers: { authorization: 'Bearer owner' } })
+  await once(socket, 'open')
+  const events: Array<{ type?: string; job?: { status?: string } }> = []
+  socket.on('message', raw => { try { events.push(JSON.parse(raw.toString())) } catch {} })
+  const pending = post('/v1/catalog/photocraft/run', input)
+  await vi.waitFor(() => expect(events.some(e => e.type === 'job.progress' && e.job?.status === 'running')).toBe(true))
+  expect((await post('/v1/session/park', {})).status).toBe(409)
+  expect((await post('/v1/catalog/photocraft/run', input)).status).toBe(409)
+  expect((await fetch(base + '/v1/apps', { headers: { authorization: 'Bearer owner' } })).status).toBe(200)
+  finish()
+  const response = await pending
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({ job, outputs: [`.caboose-jobs/${job}/output-0.png`], warnings: [] })
+  await vi.waitFor(() => expect(events.filter(e => e.type === 'job.progress').map(e => e.job?.status)).toEqual(['running', 'succeeded']))
+  socket.close(); await once(socket, 'close')
+})

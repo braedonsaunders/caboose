@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreSpotlight
 
 @main
 struct CabooseApp: App {
@@ -14,6 +15,13 @@ struct CabooseApp: App {
                 .onOpenURL { url in
                     if let credentials = Credentials(link: url) { model.connect(with: credentials) }
                     else if url.scheme == "caboose", url.host == "task", let id = url.pathComponents.dropFirst().first { model.notificationTaskID = id }
+                }
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String else { return }
+                    Task {
+                        do { try await ComputerSearch.open(id) }
+                        catch { model.launchFailure = error.localizedDescription }
+                    }
                 }
                 .externalDesktopAccessory(model)
         }
