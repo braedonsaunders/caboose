@@ -33,7 +33,7 @@ struct AgentSignInView: View {
     /// Pages whose answer has gone to the agent; the sign-in is finishing on the computer.
     @State private var answered: Set<String> = []
     @State private var delivering = false
-    @State private var attempt = 0
+    @State private var retryGeneration = 0
 
     private var name: String { model.agents.listing(agentID)?.name ?? agentID }
     private var page: URL? {
@@ -51,7 +51,7 @@ struct AgentSignInView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { toolbar }
         }
-        .task(id: attempt) { await run() }
+        .task(id: retryGeneration) { await run() }
         .onDisappear {
             terminal?.hide()
             // Leaving before it finished stops it, so nothing waits on the computer. Only this
@@ -82,7 +82,7 @@ struct AgentSignInView: View {
             } description: {
                 Text(message)
             } actions: {
-                Button("Try Again") { attempt += 1 }.buttonStyle(.glassProminent)
+                Button("Try Again") { retryGeneration += 1 }.buttonStyle(.glassProminent)
                 Button("Sign In on Computer's Screen") { Task { await signInOnScreen() } }.buttonStyle(.glass)
             }
         case .onScreen:
