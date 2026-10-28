@@ -19,7 +19,7 @@ struct ShelfTile: View {
             VStack(spacing: 8) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 18).fill(.white.opacity(0.08))
-                    if let icon = app.icon { Image(uiImage: icon).resizable().scaledToFit().padding(8).opacity(0.58) }
+                    if let icon = app.icon { Image(uiImage: icon).resizable().scaledToFit().padding(8).opacity(app.installedVersion == nil ? 0.58 : 1) }
                     else { Image(systemName: symbol(app.category)).font(.title).foregroundStyle(.secondary) }
                     if app.busy {
                         RoundedRectangle(cornerRadius: 18).fill(.black.opacity(0.45))
@@ -32,7 +32,7 @@ struct ShelfTile: View {
                 .frame(width: 68, height: 68)
                 .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
                 Text(app.name).font(.caption).lineLimit(1)
-                Text(app.busy ? "Installing" : (app.size.map { "Get · \($0)" } ?? "Get")).font(.caption2).foregroundStyle(.secondary)
+                Text(app.busy ? "Installing" : app.installedVersion != nil ? "Open" : (app.size.map { "Get · \($0)" } ?? "Get")).font(.caption2).foregroundStyle(.secondary)
             }
         }.buttonStyle(.plain).disabled(app.busy)
     }

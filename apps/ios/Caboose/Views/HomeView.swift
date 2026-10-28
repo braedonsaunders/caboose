@@ -115,11 +115,15 @@ struct HomeView: View {
                 Spacer()
                 Button("Library") { showLibrary = true }.font(.subheadline.weight(.semibold))
             }
-            let available = model.catalog.apps.filter { $0.installedVersion == nil }
+            let recent = model.catalog.apps.filter { model.catalog.recentInstalls.contains($0.id) }
+            let available = recent + model.catalog.apps.filter { $0.installedVersion == nil && !model.catalog.recentInstalls.contains($0.id) }
             if !available.isEmpty {
                 LazyVGrid(columns: columns, spacing: 22) {
                     ForEach(Array(available.prefix(12))) { app in
-                        ShelfTile(app: app) { Task { await model.catalog.perform(app.id, action: "install") } }
+                        ShelfTile(app: app) {
+                            if app.installedVersion != nil, let installed = model.apps.first(where: { $0.id == app.desktopId }) { model.open(installed) }
+                            else if app.installedVersion == nil { Task { await model.catalog.perform(app.id, action: "install") } }
+                        }
                     }
                 }
             }

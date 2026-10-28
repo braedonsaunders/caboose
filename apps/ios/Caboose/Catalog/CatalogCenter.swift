@@ -34,12 +34,13 @@ struct CatalogResponse: Decodable { let packs: [CatalogPack]; let apps: [Catalog
 final class CatalogCenter {
     private(set) var apps: [CatalogApp] = []
     private(set) var packs: [CatalogPack] = []
+    private(set) var recentInstalls: Set<String> = []
     var error: String?
     private var host: HostClient?
     var onChange: (() async -> Void)?
 
     func attach(_ host: HostClient) { self.host = host; Task { await refresh() } }
-    func reset() { host = nil; apps = []; packs = []; error = nil }
+    func reset() { host = nil; apps = []; packs = []; recentInstalls = []; error = nil }
     func refresh() async {
         guard let host else { return }
         do {
@@ -62,6 +63,7 @@ final class CatalogCenter {
            let operation = event["operation"] as? String, let phase = event["phase"] as? String,
            let index = apps.firstIndex(where: { $0.id == id }) {
             apps[index].progress = CatalogProgress(id: id, operation: operation, phase: phase, message: event["message"] as? String, stage: event["stage"] as? String, value: event["value"] as? Double)
+            if phase == "finished" && operation == "install" { recentInstalls.insert(id) }
             if phase == "failed" { error = event["message"] as? String ?? "The application could not be installed." }
         }
         if type == "catalog.changed" { Task { await refresh(); await onChange?() } }
