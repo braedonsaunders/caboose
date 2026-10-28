@@ -128,15 +128,18 @@ export async function tenancyRoute(context: TenancyContext, request: IncomingMes
   if (personPath) {
     const person = await identity.person(personPath[1]!)
     if (!administers(principal, person.tenantId)) return json(response, 404, { error: 'person not found' })
-    const work = async () => {
-      if (method === 'PATCH') return json(response, 200, await identity.updatePerson(person.id, await readJson(request)))
-      if (method === 'DELETE') {
-        await identity.deletePerson(person.id)
-        return json(response, 200, { deleted: true })
-      }
-      return json(response, 404, { error: 'not found' })
+    if (method === 'PATCH') {
+      const input = await readJson(request)
+      const work = () => identity.updatePerson(person.id, input)
+      const updated = await (context.synchronize ? context.synchronize(work) : work())
+      return json(response, 200, updated)
     }
-    return context.synchronize ? context.synchronize(work) : work()
+    if (method === 'DELETE') {
+      const work = () => identity.deletePerson(person.id)
+      await (context.synchronize ? context.synchronize(work) : work())
+      return json(response, 200, { deleted: true })
+    }
+    return json(response, 404, { error: 'not found' })
   }
   const scoped = /^\/v1\/tenants\/([0-9a-f-]{36})(\/administrators|\/invites|\/people)?(?:\/([^/]+))?$/.exec(path)
   if (!scoped?.[1]) return json(response, 404, { error: 'not found' })

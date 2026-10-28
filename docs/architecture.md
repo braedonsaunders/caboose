@@ -441,7 +441,6 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
 
 - `owner-token` and `auth-secret` when generated, `setup-code` until the host is set up,
   `identity/` (the embedded accounts database, mode 0700),
-  `caboose_computers` and `caboose_people` in the identity database (computer slots and ownership),
   `phones.json` (phone sign-ins, by SHA-256 of their tokens) and `agent-registry.json`.
 - The owner's computer's `caboose.json` (settings), `push-devices.json` and
   `activities.json` at the root, where a host from before several computers kept them.
@@ -449,6 +448,8 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
   in `computers/<id>/`.
 - For microVMs, `overlays/<id>.raw` (the disk), `overlays/<id>.snapshot` (parked memory)
   and `overlays/<id>.resources.json` (the resources it was booted with).
+
+Computer slots and ownership live in `caboose_computers` and `caboose_people` in the identity database.
 
 ### Computers
 
