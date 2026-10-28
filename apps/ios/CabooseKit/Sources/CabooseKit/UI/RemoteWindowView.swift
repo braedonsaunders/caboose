@@ -9,7 +9,7 @@ import UIKit
 /// size divided by `pixelsPerPoint`, so pixels land 1:1 on a scale that matches it.
 /// Presentation copies the window texture into the drawable only when a draw changed it.
 @MainActor
-public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGestureRecognizerDelegate {
+public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDelegate {
     public override static var layerClass: AnyClass { CAMetalLayer.self }
 
     public weak var session: XpraSession?
@@ -61,7 +61,9 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     public func attach(_ window: RemoteWindow?) {
+        if window !== remoteWindow { resetTyping() }
         remoteWindow = window
+        prefersProse = autocorrectChoice ?? !Self.isCodeApp(window)
         presentedGeneration = .max
         metalLayer.isOpaque = !(window?.hasAlpha ?? false)
     }
@@ -117,6 +119,9 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
 
     private func click(at point: CGPoint, button: Int = 1) {
         guard let window = remoteWindow, let session else { return }
+        // A click can move focus or the caret, so iOS must not edit text from before it.
+        resetTyping()
+        caretAnchor = point
         move(to: point)
         session.focus(window)
         session.pointerButton(in: window, button: button, pressed: true, at: lastPointer)
@@ -197,6 +202,7 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
     }
 
     private func tapped() {
+        prefersProse = autocorrectChoice ?? !Self.isCodeApp(remoteWindow)
         guard onKeyboardWanted != nil, let session else {
             if !isFirstResponder { becomeFirstResponder() }
             return
@@ -330,27 +336,42 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
         momentum = .zero
     }
 
-    // MARK: Keyboard — software keyboard through UIKeyInput, hardware keys through presses.
+    // MARK: Keyboard — the software keyboard through UITextInput, hardware keys through presses.
 
     public override var canBecomeFirstResponder: Bool { isInteractive }
-    public var hasText: Bool { true }
-    public var autocorrectionType: UITextAutocorrectionType = .no
-    public var autocapitalizationType: UITextAutocapitalizationType = .none
-    public var spellCheckingType: UITextSpellCheckingType = .no
-    public var smartQuotesType: UITextSmartQuotesType = .no
-    public var smartDashesType: UITextSmartDashesType = .no
-    public var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
-    public var keyboardType: UIKeyboardType = .asciiCapable
-    public var keyboardAppearance: UIKeyboardAppearance = .dark
-    public var returnKeyType: UIReturnKeyType = .default
-
     public override var inputAccessoryView: UIView? { isInteractive ? keyBar : nil }
 
-    public func insertText(_ text: String) {
-        guard !stickyModifiers.isEmpty else {
-            session?.type(text, in: remoteWindow)
-            return
+    public override var prefersProse: Bool {
+        didSet { keyBar.show(autocorrect: prefersProse) }
+    }
+
+    /// The owner's autocorrect choice from the key bar; nil follows the app (off for code).
+    private var autocorrectChoice: Bool?
+
+    /// Terminals and code editors, where autocorrect and automatic capitals get in the way.
+    public static func isCodeApp(_ window: RemoteWindow?) -> Bool {
+        guard let app = window?.appClass else { return false }
+        let name = "\(app.instance) \(app.name)".lowercased()
+        return ["term", "xterm", "kitty", "alacritty", "konsole", "foot", "tilix", "wezterm", "ghostty",
+                "code", "codium", "cursor", "zed", "vim", "emacs", "mousepad", "gedit", "kate", "sublime"]
+            .contains { name.contains($0) }
+    }
+
+    public override func send(_ edits: [TypingBuffer.Edit]) {
+        for edit in edits {
+            switch edit {
+            case .backspace(let count):
+                guard let stroke = Keysyms.special["BackSpace"] else { continue }
+                for _ in 0 ..< count { pressAndRelease(stroke, modifiers: []) }
+            case .type(let text):
+                session?.type(text, in: remoteWindow)
+            }
         }
+    }
+
+    public override func insertText(_ text: String) {
+        guard !stickyModifiers.isEmpty else { return super.insertText(text) }
+        resetTyping()
         for character in text {
             guard let stroke = Keysyms.stroke(for: Character(character.lowercased())) else { continue }
             pressAndRelease(stroke, modifiers: Array(stickyModifiers))
@@ -363,8 +384,12 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
         case .modifier(let name):
             if stickyModifiers.contains(name) { stickyModifiers.remove(name) } else { stickyModifiers.insert(name) }
             keyBar.show(activeModifiers: stickyModifiers)
+        case .autocorrect:
+            autocorrectChoice = !prefersProse
+            prefersProse = !prefersProse
         case .key(let name):
             guard let stroke = Keysyms.special[name] else { return }
+            resetTyping()
             pressAndRelease(stroke, modifiers: Array(stickyModifiers))
             releaseSticky()
         case .text(let text):
@@ -383,13 +408,16 @@ public final class RemoteWindowView: UIView, UIKeyInput, UITextInputTraits, UIGe
         keyBar.show(activeModifiers: stickyModifiers)
     }
 
-    public func deleteBackward() {
+    public override func deleteBackward() {
+        guard !stickyModifiers.isEmpty else { return super.deleteBackward() }
+        resetTyping()
         guard let stroke = Keysyms.special["BackSpace"] else { return }
         pressAndRelease(stroke, modifiers: Array(stickyModifiers))
         releaseSticky()
     }
 
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        resetTyping()
         var unhandled = Set<UIPress>()
         for press in presses {
             if let (stroke, modifiers) = Self.stroke(for: press) {

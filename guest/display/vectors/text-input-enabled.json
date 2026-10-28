@@ -1,0 +1,8 @@
+{
+  "name": "text-input-enabled",
+  "description": "text-input-v3 enabled on window 7 with the terminal purpose.",
+  "messages": [
+    {"direction": "server", "type": "text_input", "type_id": 34, "fields": {"id": 7, "enabled": true, "purpose": "terminal"}}
+  ],
+  "hex": "221f000000a36269640767656e61626c6564f567707572706f7365687465726d696e616c"
+}

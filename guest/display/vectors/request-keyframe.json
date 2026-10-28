@@ -1,0 +1,8 @@
+{
+  "name": "request-keyframe",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "request_keyframe", "type_id": 134, "fields": {"id": 7}}
+  ],
+  "hex": "8605000000a162696407"
+}

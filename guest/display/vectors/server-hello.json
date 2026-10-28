@@ -1,0 +1,8 @@
+{
+  "name": "server-hello",
+  "description": "The server's answer to a valid client hello.",
+  "messages": [
+    {"direction": "server", "type": "hello", "type_id": 1, "fields": {"version": 0, "displays": [1, 2], "encoders": ["hevc", "h264"], "features": ["vsync", "ack", "touch", "text-input-v3", "cursor-named", "xwayland"]}}
+  ],
+  "hex": "0168000000a46776657273696f6e0068646973706c61797382010268656e636f64657273826468657663646832363468666561747572657386657673796e636361636b65746f7563686d746578742d696e7075742d76336c637572736f722d6e616d656468787761796c616e64"
+}

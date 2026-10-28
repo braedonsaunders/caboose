@@ -26,6 +26,11 @@ struct TrackpadScreen: View {
                 }
                 .glassEffect(.regular.interactive(), in: .circle)
                 .accessibilityLabel("Larger")
+                Button { model.toggleDesktopFull4K() } label: {
+                    Text(model.desktopFull4K ? "4K" : "HD").font(.caption.weight(.bold)).frame(width: 40, height: 40)
+                }
+                .glassEffect(model.desktopFull4K ? .regular.tint(.blue).interactive() : .regular.interactive(), in: .circle)
+                .accessibilityLabel(model.desktopFull4K ? "Render the desktop at 2560 by 1440" : "Render the desktop at full 4K")
                 Button { WallpaperStore.shared.next() } label: {
                     Image(systemName: "photo.on.rectangle.angled").frame(width: 40, height: 40)
                 }
@@ -73,7 +78,7 @@ struct Trackpad: UIViewRepresentable {
 }
 
 /// Raw multi-touch tracking; gesture recognizers add too much latency for a cursor.
-final class TrackpadSurface: UIView, UIKeyInput {
+final class TrackpadSurface: RemoteTextInputView {
     weak var desktop: DesktopModel?
     weak var model: AppModel?
 
@@ -132,9 +137,12 @@ final class TrackpadSurface: UIView, UIKeyInput {
                 haptics.impactOccurred()
             case .endDrag: desktop?.endDrag(session: session)
             case .click(let button):
+                resetTyping()
+                defer { prefersProse = !RemoteWindowView.isCodeApp(focusedWindow) }
                 desktop?.click(button: button, session: session, open: open)
                 haptics.impactOccurred()
             case .doubleClick:
+                resetTyping()
                 // The second press and release reach the app; the desktop then handles its own double-click (title bar zoom).
                 desktop?.beginDrag(session: session)
                 desktop?.endDrag(session: session)
@@ -146,20 +154,25 @@ final class TrackpadSurface: UIView, UIKeyInput {
     // MARK: Keyboard: typed text goes to the focused Linux window.
 
     override var canBecomeFirstResponder: Bool { true }
-    var hasText: Bool { true }
-    var autocorrectionType: UITextAutocorrectionType = .no
-    var autocapitalizationType: UITextAutocapitalizationType = .none
 
     private var focusedWindow: RemoteWindow? {
         guard let session, let desktop else { return nil }
         return desktop.stacking.reversed().compactMap { session.windows[$0] }.first { !$0.isAuxiliary && desktop.isVisible($0.id) }
     }
 
-    func insertText(_ text: String) { session?.type(text, in: focusedWindow) }
-
-    func deleteBackward() {
-        guard let stroke = Keysyms.special["BackSpace"] else { return }
-        session?.key(stroke, pressed: true, in: focusedWindow)
-        session?.key(stroke, pressed: false, in: focusedWindow)
+    override func send(_ edits: [TypingBuffer.Edit]) {
+        let window = focusedWindow
+        for edit in edits {
+            switch edit {
+            case .backspace(let count):
+                guard let stroke = Keysyms.special["BackSpace"] else { continue }
+                for _ in 0 ..< count {
+                    session?.key(stroke, pressed: true, in: window)
+                    session?.key(stroke, pressed: false, in: window)
+                }
+            case .type(let text):
+                session?.type(text, in: window)
+            }
+        }
     }
 }

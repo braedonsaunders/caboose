@@ -1,0 +1,8 @@
+{
+  "name": "configure",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "configure", "type_id": 132, "fields": {"id": 7, "display": 1, "geometry": [0, 0, 2556, 1179], "activated": true, "maximized": true}}
+  ],
+  "hex": "8436000000a56269640767646973706c6179016867656f6d657472798400001909fc19049b69616374697661746564f5696d6178696d697a6564f5"
+}

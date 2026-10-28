@@ -1,0 +1,8 @@
+{
+  "name": "text-preedit",
+  "description": "Marked text (CJK input) with the caret after the first character (3 UTF-8 bytes).",
+  "messages": [
+    {"direction": "client", "type": "text", "type_id": 148, "fields": {"cursor": [3, 3], "preedit": "にほん"}}
+  ],
+  "hex": "941d000000a266637572736f72820303677072656564697469e381abe381bbe38293"
+}

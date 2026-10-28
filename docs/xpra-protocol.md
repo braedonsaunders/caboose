@@ -1,10 +1,10 @@
 # Xpra seamless protocol research
 
 This document is under verification against Xpra 6.5.5; it is not yet a complete
-client contract. Source references below are pinned to the 6.5.5 release. The guest image was verified to install `xpra 6.5.5-r0-1` from the stable
-repository without a version pin. Its updated source service sets
-`XPRA_BACKWARDS_COMPATIBLE=0`; the existing image must be rebuilt to include it.
-The service uses Xpra’s file authenticator.
+client contract. Source references below are pinned to the 6.5.5 release. The guest image builder
+pins `xpra 6.5.5-r0-1` and configures `XPRA_BACKWARDS_COMPATIBLE=0` with Xpra’s
+file authenticator. The real-host end-to-end checks are documented in
+`guest/image/README.md` and `apps/host/README.md`.
 
 ## Transport and framing
 
@@ -83,7 +83,7 @@ verified, so do not use this as a complete hello template.
 
 The guest-image work configures the file authenticator on the WebSocket listener,
 with the per-boot token in `/run/caboose/xpra-token` owned by `caboose` and mode
-`0600`. This separate work is not present in this checkout. The file authenticator reads the entire UTF-8 file, including any newline.
+`0600`. The file authenticator reads the entire UTF-8 file, including any newline.
 The initial hello must include a username matching the server user (the test
 server rejected missing and mismatched usernames). For the Xpra 6.5.5 HMAC
 password authenticator, the reference client advertises `digest` and `salt-digest`, sends an initial hello containing

@@ -1,0 +1,8 @@
+{
+  "name": "window-update-geometry",
+  "description": "A resize and a move to the TV display.",
+  "messages": [
+    {"direction": "server", "type": "window.update", "type_id": 3, "fields": {"id": 7, "display": 2, "geometry": [100, 80, 1600, 900], "fullscreen": false}}
+  ],
+  "hex": "032e000000a46269640767646973706c6179026867656f6d6574727984186418501906401903846a66756c6c73637265656ef4"
+}
