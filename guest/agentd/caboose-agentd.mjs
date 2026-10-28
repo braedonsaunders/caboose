@@ -686,6 +686,41 @@ export function recapFrom(lines, beforeTurn) {
   return `This task continues an earlier conversation that could not be reloaded. A recap of it:\n\n${parts.join('\n\n')}\n\nThe new request follows.\n\n`
 }
 
+/** Model ids and labels come exclusively from ACP session state. */
+export function sessionModels(response) {
+  const option = response?.configOptions?.find(item => item.category === 'model' && item.type === 'select')
+  if (option) {
+    const values = (option.options ?? []).flatMap(item => Array.isArray(item.options) ? item.options : [item])
+    return { configId: option.id, currentModelId: option.currentValue,
+      availableModels: values.map(item => ({ id: item.value, name: item.name, ...(item.description ? { description: item.description } : {}) })) }
+  }
+  return response?.models ? { ...response.models } : undefined
+}
+
+async function selectModel(agent, sessionId, state, requested) {
+  if (!requested) return state
+  if (!state?.availableModels?.some(item => item.id === requested)) throw new Error('The requested model is not advertised by this agent session: ' + requested)
+  if (state.currentModelId === requested) return state
+  const request = (method, params) => Promise.race([agent.connection.agent.request(method, params), agent.died])
+  if (state.configId) {
+    state = sessionModels(await request('session/set_config_option', { sessionId, configId: state.configId, value: requested }))
+    if (state?.currentModelId !== requested) throw new Error('The agent did not confirm the requested model')
+    return state
+  }
+  await request('session/set_model', { sessionId, modelId: requested })
+  return { ...state, currentModelId: requested }
+}
+
+async function discoverModels(spec) {
+  const agent = await startAgent(spec, { cwd: HOME })
+  try {
+    const response = await Promise.race([agent.connection.agent.request('session/new', { cwd: HOME, mcpServers: [] }), agent.died,
+      sleep(60_000, undefined, { ref: false }).then(() => { throw new Error('Agent model discovery timed out') })])
+    const models = sessionModels(response)
+    return models ? { models } : {}
+  } finally { await agent.close() }
+}
+
 export class Task {
   constructor(dir) {
     this.dir = dir
@@ -705,6 +740,7 @@ export class Task {
   async load() {
     const config = JSON.parse(await readFile(join(this.dir, 'task.json'), 'utf8'))
     this.spec = readSpec(config.agent)
+    this.requestedModel = config.model
     this.cwd = typeof config.cwd === 'string' && isAbsolute(config.cwd) ? config.cwd : this.dir
     this.agentTools = config.agentTools === true && typeof config.profileId === 'string' && existsSync(AGENT_TOOLS)
     this.profileInstructions = ''
@@ -811,7 +847,7 @@ export class Task {
 
   /** Starts the agent if it is not running, then opens or reopens the task's session. */
   async ensureSession() {
-    if (this.agent && this.sessionId) return
+    if (this.agent && this.sessionId) { await this.applyModel(); return }
     if (!this.agent) {
       const agent = await startAgent(this.spec, {
         cwd: this.cwd, log: this.log,
@@ -861,6 +897,8 @@ export class Task {
       this.recap = Boolean(previous)
       await writeFile(join(this.dir, 'session'), this.sessionId)
     }
+    this.models = sessionModels(response)
+    await this.applyModel()
     this.transcript.write({
       type: 'session', sessionId: this.sessionId, continuity,
       agent: agent.init.agentInfo ?? null,
@@ -869,8 +907,25 @@ export class Task {
     })
   }
 
+  async applyModel() {
+    const requested = await readFile(join(this.dir, 'requested-model.json'), 'utf8').then(JSON.parse).catch(error => { if (error.code === 'ENOENT') return this.requestedModel; throw error })
+    this.requestedModel = requested
+    this.models = await selectModel(this.agent, this.sessionId, this.models, requested)
+    await this.recordModels()
+  }
+
+  async recordModels() {
+    const state = { ...(this.requestedModel ? { requestedModel: this.requestedModel } : {}), ...(this.models ? { models: this.models } : {}) }
+    await writeJson(join(this.dir, 'models.json'), state)
+    await this.transcript.write({ type: 'models', ...state })
+  }
+
   onUpdate(params) {
     if (params?.sessionId !== this.sessionId) return
+    if (params.update?.sessionUpdate === 'config_option_update') {
+      this.models = sessionModels(params.update)
+      void this.recordModels().catch(error => console.error(errorMessage(error)))
+    }
     this.normaliser.update(params.update)
   }
 
@@ -1631,6 +1686,7 @@ async function main(argv) {
     return
   }
   if (mode === 'install') return print(await install(readSpec(decodeSpec(argument))))
+  if (mode === 'models') return print(await discoverModels(readSpec(decodeSpec(argument))))
   if (mode === 'probe') {
     const init = await probe(readSpec(decodeSpec(argument)))
     return print({ signIn: publicAuthMethods(init.authMethods), agentInfo: init.agentInfo ?? null })

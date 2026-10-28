@@ -513,6 +513,13 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       if (agentAction[2] === 'sign-in/cancel') return json(response, 200, await leased(() => catalog.cancelSignIn(id, input)))
       return json(response, 200, await leased(() => catalog.signIn(id, input)))
     }
+    const agentModels = /^\/v1\/agents\/([^/]+)\/models$/.exec(path)
+    if (request.method === 'POST' && agentModels?.[1]) return json(response, 200, await leased(() => catalog.models(decodeURIComponent(agentModels[1]!))))
+    const taskModels = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/models$/.exec(path)
+    if (taskModels?.[1] && (request.method === 'GET' || request.method === 'PUT')) {
+      const input = request.method === 'PUT' ? await readJson(request) : undefined
+      return json(response, 200, await computer.run(() => agents.models(taskModels[1]!, input)))
+    }
     const agentEnv = /^\/v1\/agents\/([^/]+)\/env$/.exec(path)
     if (request.method === 'PUT' && agentEnv?.[1]) {
       const input = await readJson(request)

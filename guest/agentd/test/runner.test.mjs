@@ -46,7 +46,7 @@ async function task(options = {}) {
   const box = await sandbox(options)
   const dir = join(box.home, 'Agents', 'task-1')
   await mkdir(join(dir, 'inbox'), { recursive: true })
-  await writeFile(join(dir, 'task.json'), JSON.stringify({ agent: options.agent ?? AGENT, cwd: dir, approvals: options.approvals ?? 'auto', idleMs: options.idleMs ?? 20_000, craftServers: options.craftServers }))
+  await writeFile(join(dir, 'task.json'), JSON.stringify({ agent: options.agent ?? AGENT, cwd: dir, approvals: options.approvals ?? 'auto', idleMs: options.idleMs ?? 20_000, model: options.model, craftServers: options.craftServers }))
   let runner
   const t = {
     ...box, dir,
@@ -104,6 +104,30 @@ async function pendingApproval(dir) {
   }
   throw new Error('no approval request')
 }
+
+describe('advertised models', () => {
+  for (const caps of ['models', 'legacy-models']) it(`negotiates ${caps} before prompting and restores selection`, async () => {
+    const t = await task({ caps: caps + ',resume', model: 'beta' })
+    await t.prompt(1, 'model'); const first = t.start(); await t.turnEnd(1)
+    expect(await t.texts(1)).toContain('model: beta')
+    const state = JSON.parse(await readFile(join(t.dir, 'models.json'), 'utf8'))
+    expect(state.requestedModel).toBe('beta'); expect(state.models.currentModelId).toBe('beta')
+    first.child.kill('SIGTERM'); await first.exited
+    await writeFile(join(t.dir, 'requested-model.json'), JSON.stringify('alpha'))
+    await t.prompt(2, 'model'); t.start(); await t.turnEnd(2)
+    expect(await t.texts(2)).toContain('model: alpha')
+  })
+  it('fails an unadvertised selection before the agent receives a prompt', async () => {
+    const t = await task({ caps: 'models', model: 'invented' })
+    await t.prompt(1, 'hello'); t.start()
+    expect((await t.turnEnd(1)).message).toContain('not advertised')
+    expect((await t.events()).some(e => e.type === 'text')).toBe(false)
+  })
+  it('omits the capability for a provider without model advertisement', async () => {
+    const t = await task(); await t.prompt(1, 'hello'); t.start(); await t.turnEnd(1)
+    expect(JSON.parse(await readFile(join(t.dir, 'models.json'), 'utf8'))).toEqual({})
+  })
+})
 
 describe('a turn', () => {
   it('offers profile tools only when the host enables them on a profile task', async () => {

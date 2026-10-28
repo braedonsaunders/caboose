@@ -1,3 +1,4 @@
+import { modelId, publicModels, type AgentModels } from './agent-models.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { CONFIRM_JOURNAL, emptyJournal, JOURNAL_LIMIT, MAX_OPERATIONS, operationId, PUBLISH_PROMPT, READ_DELIVERY, readJournal, readPublishedPrompt, UUID, WRITE_JOURNAL, type DeliveryJournal, type QueuedReply, type StoredAttachment } from './agent-delivery.js'
 import type { HomeOwnership } from './home.js'
@@ -39,6 +40,8 @@ export interface AgentProfileSnapshot { id: string; instructions: string; worksp
 export interface AgentStartOptions { id?: string; profile?: AgentProfileSnapshot }
 
 export interface AgentTask {
+  requestedModel?: string
+  models?: AgentModels
   /** Persistent identity; conversations still have their own ids and transcripts. */
   profileId?: string
   id: string
@@ -131,6 +134,11 @@ export interface AgentTaskOptions {
   /** Gives root-owned leftovers in the home back to caboose before a runner starts. */
   home?: HomeOwnership
 }
+
+const READ_MODEL_STATE = `const fs=require('fs'),p=require('path'),d=process.argv[1];
+function read(n){try{const f=p.join(d,n);if(fs.statSync(f).size>262144)return {};return JSON.parse(fs.readFileSync(f,'utf8'))}catch{return {}}}
+const state=read('models.json'),config=read('task.json'),requested=read('requested-model.json');
+console.log(JSON.stringify({...state,requestedModel:typeof requested==='string'?requested:state.requestedModel??config.model}));`
 
 const HOME = '/home/caboose'
 const RUNUSER = '/usr/sbin/runuser'
@@ -434,6 +442,7 @@ export class AgentTasks {
       throw new AgentInputError('Invalid persistent agent snapshot')
     }
     if (input.profileId !== undefined && input.profileId !== profile?.id) throw new AgentInputError('Resolve the agent profile before starting a task')
+    const requestedModel = modelId(input.model)
     const prompt = readPrompt(input.prompt)
     const approvals = input.approvals === 'ask' ? 'ask' : input.approvals === 'auto' || input.approvals === undefined ? 'auto' : undefined
     if (!approvals) throw new AgentInputError('approvals must be "ask" or "auto"')
@@ -475,7 +484,7 @@ export class AgentTasks {
         await writeGuestFile(guest, `${staging}/profile-id`, Buffer.from(profile.id))
         await writeGuestFile(guest, `${staging}/profile-instructions.txt`, Buffer.from(profile.instructions))
       }
-      const config = JSON.stringify({ agent: launch, cwd: profile?.workspace ?? dir, approvals, idleMs: this.idleMs, craftServers,
+      const config = JSON.stringify({ agent: launch, model: requestedModel, cwd: profile?.workspace ?? dir, approvals, idleMs: this.idleMs, craftServers,
         ...(profile ? { profileId: profile.id } : {}), ...(toolJournal ? { agentTools: true } : {}) })
       const message = JSON.stringify({ type: 'prompt', turn: 1, deliveryId: journal.intent!.id, text: prompt,
         ...(files.length ? { attachments: files.map((file, index) => ({ path: attachments[index], name: file.name, ...(file.type ? { mimeType: file.type } : {}) })) } : {}) })
@@ -486,7 +495,7 @@ export class AgentTasks {
       throw error
     }
     const task: AgentTask = {
-      id, ...(profile ? { profileId: profile.id } : {}), agent: agentId, agentName: launch.name, prompt, status: 'running', startedAt: new Date().toISOString(), turns: 1, approvals,
+      id, ...(requestedModel ? { requestedModel } : {}), ...(profile ? { profileId: profile.id } : {}), agent: agentId, agentName: launch.name, prompt, status: 'running', startedAt: new Date().toISOString(), turns: 1, approvals,
       ...(attachments.length ? { attachments } : {}),
     }
     this.tracked.set(id, { task, offset: 0, carry: Buffer.alloc(0), turn: 0, resumable: true, pending: [], queue: [], journal })
@@ -515,6 +524,30 @@ export class AgentTasks {
    * the agent is working the reply waits in the task's queue; when the turn ends, everything
    * waiting goes to the agent together as its next turn.
    */
+  async models(id: string, input?: Record<string, unknown>): Promise<{ requestedModel?: string; models?: AgentModels }> {
+    await this.restoring
+    const entry = TASK_ID.test(id) ? this.tracked.get(id) : undefined
+    if (!entry) throw new AgentNotFoundError()
+    return this.serial(entry, async () => {
+      const guest = this.guest()
+      if (!guest) throw new AgentUnavailableError()
+      const dir = `${HOME}/Agents/${id}`
+      const raw = await asCaboose(guest, 'exec node -e "$2" "$1"', [dir, READ_MODEL_STATE])
+      let state: any = {}; try { state = JSON.parse(raw) } catch {}
+      const models = publicModels(state.models)
+      if (models) entry.task.models = models
+      if (typeof state.requestedModel === 'string') entry.task.requestedModel = modelId(state.requestedModel)
+      if (input) {
+        if (isLive(entry.task.status) || entry.queue.length) throw new AgentConflictError('Wait for the agent and its queued messages before changing models')
+        const requested = modelId(input.model)
+        if (!requested || !models?.availableModels.some(m => m.id === requested)) throw new AgentInputError('Choose a model advertised by this session')
+        await asCaboose(guest, 'printf %s "$2" > "$1/requested-model.json.part" && sync -f "$1/requested-model.json.part" && mv "$1/requested-model.json.part" "$1/requested-model.json" && sync -f "$1"', [dir, JSON.stringify(requested)])
+        entry.task.requestedModel = requested
+      }
+      return { ...(entry.task.requestedModel ? { requestedModel: entry.task.requestedModel } : {}), ...(models ? { models } : {}) }
+    })
+  }
+
   async reply(id: string, input: Record<string, unknown>): Promise<AgentTask> {
     await this.restoring
     await this.recovering
@@ -924,6 +957,12 @@ export class AgentTasks {
       } catch (error) {
         entry.journalError = error instanceof Error ? error.message : 'Cannot read durable replies'
       }
+      try {
+        const raw = await asCaboose(guest, 'exec node -e "$2" "$1"', [`${HOME}/Agents/${id}`, READ_MODEL_STATE])
+        const state = JSON.parse(raw)
+        task.models = publicModels(state.models)
+        task.requestedModel = modelId(state.requestedModel)
+      } catch {}
       const result = interpretLine(decode(last)).result
       if (entry.journal.cancelled === turns) {
         this.finish(entry, 'cancelled', 'Cancelled.', false)
@@ -1058,6 +1097,13 @@ export class AgentTasks {
     for (let end = buffer.indexOf(10); end >= 0; start = end + 1, end = buffer.indexOf(10, start)) {
       const line = buffer.subarray(start, end).toString('utf8')
       if (!line.trim()) continue
+      try {
+        const state = JSON.parse(line)
+        if (state.type === 'models') {
+          entry.task.models = publicModels(state.models)
+          entry.task.requestedModel = typeof state.requestedModel === 'string' ? modelId(state.requestedModel) : undefined
+        }
+      } catch {}
       const interpreted = interpretLine(line)
       if (interpreted.turn !== undefined) {
         entry.turn = interpreted.turn
@@ -1338,7 +1384,7 @@ export class AgentNotFoundError extends Error {
 /** Fixed field order; compare original request fields and file contents, never mutable launch defaults. */
 function fingerprint(input: Record<string, unknown>, files: ReturnType<typeof readAttachments>, start = false, profile?: AgentProfileSnapshot): string {
   return createHash('sha256').update(JSON.stringify({ prompt: input.prompt,
-    ...(start ? { agent: input.agent ?? null, approvals: input.approvals ?? null, craftMcp: input.craftMcp ?? null } : {}),
+    ...(start ? { agent: input.agent ?? null, approvals: input.approvals ?? null, craftMcp: input.craftMcp ?? null, ...(input.model !== undefined ? { model: modelId(input.model) } : {}) } : {}),
     ...(profile ? { profile } : {}),
     attachments: files.map((file, index) => ({ name: (input.attachments as any[])[index].name,
       type: (input.attachments as any[])[index].type ?? null, sha256: createHash('sha256').update(file.data).digest('hex') })) })).digest('hex')

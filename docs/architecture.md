@@ -1924,3 +1924,22 @@ app group and a Keychain access group.
   so bulk file transfer uses a token-authenticated streaming service that the host relays
   without buffering.
 - **AGPL-3.0-or-later.** Caboose is self-hostable and open source.
+
+### Agent model selection
+
+`POST /v1/agents/:id/models` opens a bounded ACP discovery session in the computer,
+without a prompt or MCP servers, and returns `{ models? }`. The optional capability is
+`{ currentModelId, availableModels: [{ id, name, description? }] }`. Model configuration
+options advertised by ACP take precedence over legacy session model state. Providers
+that advertise neither omit the capability. Discovery can require signing in.
+
+Task creation accepts an optional `model` id, included in the durable admission
+fingerprint and task configuration. The runner validates it against the session's actual
+advertisement and negotiates it after new/load/resume, before sending any prompt.
+An unavailable requested model fails explicitly. Tasks expose `requestedModel` separately
+from the agent-confirmed `models.currentModelId`; both survive runner/host restart.
+`GET /v1/agent/tasks/:id/models` reads the durable state. `PUT` with `{ model }` selects
+an advertised model for the next message when the chat and its queue are idle (409
+otherwise). Model selection does not change profile identity, routines, MCP scope, or
+sign-in attempts. The phone's Agents toolbar offers the provider's advertised models
+for new chats and the current chat.
