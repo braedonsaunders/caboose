@@ -3,6 +3,7 @@
 mod audio;
 mod clipboard;
 mod config;
+mod control;
 mod displays;
 mod encode;
 mod input;
@@ -58,15 +59,6 @@ const TOOLKIT_ENV: &[(&str, &str)] = &[
     ("ELECTRON_OZONE_PLATFORM_HINT", "auto"),
 ];
 
-/// The same, for an instance that points applications at Xwayland alone (`--x11-only`).
-const X11_TOOLKIT_ENV: &[(&str, &str)] = &[
-    ("GDK_BACKEND", "x11"),
-    ("QT_QPA_PLATFORM", "xcb"),
-    ("MOZ_ENABLE_WAYLAND", "0"),
-    ("SDL_VIDEODRIVER", "x11"),
-    ("ELECTRON_OZONE_PLATFORM_HINT", "x11"),
-];
-
 fn main() {
     xauth::shim_if_invoked();
     tracing_subscriber::fmt()
@@ -109,11 +101,7 @@ fn launch_env(
     xauthority: Option<&std::path::Path>,
     video_socket: Option<&std::path::Path>,
 ) -> Vec<(String, String)> {
-    let x11_only = config.x11_only && x_display.is_some();
-    let mut env = Vec::new();
-    if !x11_only {
-        env.push(("WAYLAND_DISPLAY".to_owned(), config.socket.clone()));
-    }
+    let mut env = vec![("WAYLAND_DISPLAY".to_owned(), config.socket.clone())];
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
         env.push(("XDG_RUNTIME_DIR".into(), dir));
     }
@@ -123,8 +111,7 @@ fn launch_env(
             env.push(("XAUTHORITY".into(), a.display().to_string()));
         }
     }
-    let toolkits = if x11_only { X11_TOOLKIT_ENV } else { TOOLKIT_ENV };
-    env.extend(toolkits.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     // Video passthrough: players decode through the Caboose VA-API driver, which hands the
     // bitstream to this compositor. Only here: without the compositor's socket the driver
     // does not initialise, so the variable must not leak into other sessions.
@@ -150,6 +137,10 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     if let Some(audio) = &state.audio {
         // Applications play into the compositor's PulseAudio, whose sound goes to the phone.
         env.push(("PULSE_SERVER".into(), audio.server_address()));
+    }
+    if let Some(socket) = &state.control.socket {
+        // The seat for local tools: windows, input and pictures (control.rs).
+        env.push(("CABOOSE_DISPLAY_CONTROL".into(), socket.display().to_string()));
     }
     if let Some(path) = &state.config.env_file {
         // KEY=VALUE lines, values single-quoted for sh. Written in place: the file may
@@ -382,6 +373,7 @@ fn run(config: Config) -> Result<(), String> {
         input,
         focus_history: Vec::new(),
         videos: Default::default(),
+        control: Default::default(),
         clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
         audio: None,
         audio_tx,
@@ -406,6 +398,22 @@ fn run(config: Config) -> Result<(), String> {
         None => tracing::info!("no video passthrough: XDG_RUNTIME_DIR is not set"),
     }
     let instance_dir = std::env::var_os("XDG_RUNTIME_DIR").map(|d| state.config.instance_dir(std::path::Path::new(&d)));
+    if let Some(dir) = &instance_dir {
+        let path = dir.join("control.sock");
+        let ready = std::fs::create_dir_all(dir)
+            .and_then(|_| {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            })
+            .and_then(|_| control::Control::listen(&path, &handle));
+        match ready {
+            Ok(c) => {
+                tracing::info!("control socket: {}", path.display());
+                state.control = c;
+            }
+            Err(e) => tracing::warn!("no control socket: cannot listen on {}: {e}", path.display()),
+        }
+    }
     let spawned = x_display.and_then(|number| {
         // Xwayland's socket directory; systemd-tmpfiles makes it on a booted system.
         let dir = std::path::Path::new("/tmp/.X11-unix");
@@ -497,20 +505,16 @@ mod tests {
     }
 
     #[test]
-    fn an_x11_only_seat_names_no_wayland_socket() {
+    fn each_instance_names_its_own_sockets() {
         let auth = std::path::Path::new("/run/user/1000/caboose-display/wayland-caboose-agent/Xauthority");
-        let env = launch_env(&config(&["--x11-only", "--x-display", "101"]), Some(101), Some(auth), None);
-        assert_eq!(get(&env, "WAYLAND_DISPLAY"), None);
+        let env = launch_env(
+            &config(&["--socket", "wayland-caboose-agent", "--x-display", "101"]),
+            Some(101),
+            Some(auth),
+            None,
+        );
+        assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-agent"));
         assert_eq!(get(&env, "DISPLAY"), Some(":101"));
         assert_eq!(get(&env, "XAUTHORITY"), auth.to_str());
-        assert_eq!(get(&env, "GDK_BACKEND"), Some("x11"));
-        assert_eq!(get(&env, "QT_QPA_PLATFORM"), Some("xcb"));
-        assert_eq!(get(&env, "ELECTRON_OZONE_PLATFORM_HINT"), Some("x11"));
-    }
-
-    #[test]
-    fn x11_only_without_xwayland_keeps_wayland() {
-        let env = launch_env(&config(&["--x11-only", "--no-xwayland"]), None, None, None);
-        assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-0"));
     }
 }

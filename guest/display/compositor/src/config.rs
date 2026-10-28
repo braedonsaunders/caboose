@@ -17,9 +17,6 @@ OPTIONS:
     --socket NAME          Wayland socket name in $XDG_RUNTIME_DIR [default: wayland-caboose-0]
     --x-display N          Xwayland display number [default: 110]
     --no-xwayland          do not start Xwayland
-    --x11-only             point applications at Xwayland alone: the env file names DISPLAY
-                           and X11 toolkit backends, not WAYLAND_DISPLAY (for a seat driven
-                           by X11 tools, such as the agent seat)
     --no-audio             do not run PulseAudio or send sound
     --audio-bitrate BPS    Opus bitrate [default: 128000]
     --env-file PATH        write WAYLAND_DISPLAY/DISPLAY for launchers here once ready
@@ -84,8 +81,6 @@ pub struct Config {
     pub token_file: Option<PathBuf>,
     pub socket: String,
     pub x_display: Option<u32>,
-    /// Applications are pointed at Xwayland alone.
-    pub x11_only: bool,
     pub audio: bool,
     pub audio_bitrate: u32,
     pub env_file: Option<PathBuf>,
@@ -109,7 +104,6 @@ impl Default for Config {
             token_file: Some("/run/caboose/display-token".into()),
             socket: "wayland-caboose-0".into(),
             x_display: Some(110),
-            x11_only: false,
             audio: true,
             audio_bitrate: 128_000,
             env_file: None,
@@ -160,7 +154,6 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             "--socket" => config.socket = value(&mut args, &arg)?,
             "--x-display" => config.x_display = Some(number(value(&mut args, &arg)?, &arg)?),
             "--no-xwayland" => config.x_display = None,
-            "--x11-only" => config.x11_only = true,
             "--no-audio" => config.audio = false,
             "--audio-bitrate" => config.audio_bitrate = number(value(&mut args, &arg)?, &arg)?,
             "--env-file" => config.env_file = Some(value(&mut args, &arg)?.into()),
@@ -239,8 +232,7 @@ mod tests {
     fn instances_are_kept_apart_by_socket() {
         let runtime = std::path::Path::new("/run/user/1000");
         let owner = run(&[]);
-        let agent = run(&["--socket", "wayland-caboose-agent", "--x-display", "101", "--x11-only"]);
-        assert!(!owner.x11_only && agent.x11_only);
+        let agent = run(&["--socket", "wayland-caboose-agent", "--x-display", "101"]);
         assert_eq!(owner.instance_dir(runtime), runtime.join("caboose-display/wayland-caboose-0"));
         assert_ne!(owner.instance_dir(runtime), agent.instance_dir(runtime));
     }
