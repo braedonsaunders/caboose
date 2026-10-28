@@ -329,7 +329,14 @@ final class DesktopTouchSurface: UIView, UIKeyInput {
         return desktop.stacking.reversed().compactMap { session.windows[$0] }.first { !$0.isAuxiliary && desktop.isVisible($0.id) }
     }
 
-    func insertText(_ text: String) { session?.type(text, in: focusedWindow) }
+    func insertText(_ text: String) {
+        let target = focusedWindow
+        session?.type(text, in: target)
+        if (text == "\n" || text == "\r"), !RemoteWindowView.isCodeApp(target) {
+            model?.keyboardVisible = false
+            resignFirstResponder()
+        }
+    }
 
     func deleteBackward() {
         guard let stroke = Keysyms.special["BackSpace"] else { return }
