@@ -84,8 +84,11 @@ header and a plain link cannot carry it.
 `src/brand/brand.ts` draws every Caboose logo from one set of numbers: the README
 wordmarks and app icon in `.github/assets`, `public/favicon.svg`, and the console's
 `<Wordmark>` component (`src/brand/Logo.tsx`), which renders the same SVG in the current
-text colour. The sign-in page draws the wordmark in. The wordmark in the sidebar has its
-hubs lit while the computer is up and unlit while it is parked. Loading states roll it.
+text colour. At rest the wordmark rides just clear of its rail, with no ties; the ties show
+only while the train rolls three wheel-turns, which it does every 24 s. The sign-in page draws the
+wordmark in and rolls it. The wordmark in the sidebar has its hubs lit while a computer is
+up, and then rolls now and then; while every computer is parked its hubs are unlit and it
+stays still. Loading states keep it rolling. Under reduced motion it is always still.
 The app icon and favicon are one of its wheels on navy. `brand.test.ts` holds the checked-in
 files to the generator's output; after changing `brand.ts`, regenerate them with
 `pnpm --filter caboose-web test -u`, then render the iOS icon with

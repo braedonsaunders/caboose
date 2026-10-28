@@ -14,7 +14,7 @@ Caboose has three components:
 
 | Component | Path | What it is |
 | --- | --- | --- |
-| The computer | `guest/` | A Debian 13 (amd64) machine, booted as a Cloud Hypervisor microVM or run as a container. It runs Caboose Display, the file service, the agent runner and the integration services. |
+| The computer | `guest/` | A Debian 13 (amd64 or arm64) machine, booted as a Cloud Hypervisor microVM or run as a container. It runs Caboose Display, the file service, the agent runner and the integration services. |
 | The host | `apps/host/` | `caboose-host`, TypeScript on Node 22. It owns the computer's lifecycle, authenticates clients, relays display streams, and serves the HTTP and WebSocket API and the web console (`apps/web/`). |
 | The app | `apps/ios/` | Caboose for iOS and iPadOS (Swift, iOS 26+). It renders each Linux window natively and integrates the computer with Files, Shortcuts, Spotlight, widgets, Live Activities and notifications. |
 
@@ -63,7 +63,7 @@ Conventions used throughout:
 
 ### Guest image
 
-The microVM boots a Debian 13 (trixie, amd64) golden image built by `guest/image/`. Each
+The microVM boots a Debian 13 (trixie, amd64 or arm64) golden image built by `guest/image/`. Each
 computer's disk is a reflink copy-on-write clone of the base: it costs no space up front,
 and the owner's installs and home persist. A clone is independent of the base once made,
 so a new base image reaches new computers only.
@@ -98,7 +98,11 @@ A `v*` tag publishes the computer to GHCR in two forms (`.github/workflows/relea
 `caboose-computer`, the container image, and `caboose-base`, an OCI artifact whose three
 layers are titled `base.raw.zst` (the zstd-compressed disk), `vmlinux` and `initrd`. The
 release's `caboose-host` image sets `CABOOSE_BASE_IMAGE` and `CABOOSE_CONTAINER_IMAGE` to
-both, pinned by digest.
+both, pinned by digest for its own architecture. Images build on native amd64 and arm64
+runners. Host and container tags select the matching architecture; base artifacts use
+`<version>-amd64` and `<version>-arm64` tags (`<version>` remains the amd64 alias).
+Native host bundles carry the corresponding image pins and are checked on native runners.
+Prereleases do not replace `latest`.
 
 On start, a microVM host whose disk root lacks any of the three files fetches them from
 `CABOOSE_BASE_IMAGE` with an anonymous registry pull. Every blob, and a manifest that is
@@ -333,7 +337,8 @@ messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 ### Catalog
 
 `guest/catalog/catalog.json` is the source of optional applications, packs and release
-pins. Debian applications install from Debian 13's signed repositories. Craft releases have
+pins. Debian applications install from Debian 13's signed repositories. On arm64, the catalog
+omits the pinned Craft `.deb` packages, which are x86_64-only, and packs with no compatible entries. Craft releases have
 fixed URLs, byte counts and SHA-256 hashes. No pin changes automatically; a changed pin
 makes an update available for the owner to choose.
 
@@ -700,7 +705,11 @@ container arguments or URL credentials. The values are fixed until the host rest
 ### Files
 
 The `/v1/fs` routes relay to the guest file service without buffering a whole file. Each
-**wakes** the computer and holds a lease until its response completes. The host forwards
+**wakes** the computer and holds a lease until its response completes. Disconnecting a client
+cancels its relay, including when it disconnects while waiting for the computer. A relay
+with no transfer progress for 60 seconds is cancelled: the host returns 504 if the response
+has not started, or closes an incomplete response. Active transfers have no total duration
+limit. The host forwards
 the `Content-Type`, `Content-Length`, `Range`, `If-Match` and `If-None-Match` request
 headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Ranges` and
 `ETag` response headers.
@@ -1040,7 +1049,8 @@ memory and in `agent-registry.json`; when a fetch fails it is served with
 `registry.error`, and the fetch is retried after a minute. Before any successful fetch the
 list is empty and says why.
 
-Each agent is resolved for `linux-x86_64`, preferring a binary the registry pins by
+Each agent is resolved for the native guest architecture (`linux-x86_64` on amd64,
+`linux-aarch64` on arm64), preferring a binary the registry pins by
 SHA-256, then `npx`, then `uvx`, then a binary without a checksum:
 
 | Distribution | Started as |

@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0
 COPY display /src
-RUN cd /src && cargo build --release --locked -p caboose-display -p caboose-display-probe
+ARG CARGO_BUILD_JOBS=2
+RUN cd /src && cargo build --release --locked --jobs "$CARGO_BUILD_JOBS" -p caboose-display -p caboose-display-probe
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
 

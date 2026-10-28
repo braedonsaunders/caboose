@@ -34,7 +34,7 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 ## Requirements
 
 - Node 22 and pnpm.
-- For the microVM runtime (the default): amd64 Linux with `/dev/kvm`, a Cloud Hypervisor
+- For the microVM runtime (the default): amd64 or arm64 Linux with `/dev/kvm`, a Cloud Hypervisor
   binary, and a guest image (`base.raw`, `vmlinux`, `initrd`), either built by
   [`guest/image`](../../guest/image/README.md) or fetched on first run from
   `CABOOSE_BASE_IMAGE` (see [Images](#images)). The disk root should be on XFS with reflink or
@@ -108,7 +108,7 @@ console, a generated owner token, and an API that refuses requests without it.
 
 ### Self-host with Docker
 
-`deploy/compose.yaml` runs `apps/host/Dockerfile` with the microVM runtime. Use an amd64
+`deploy/compose.yaml` runs `apps/host/Dockerfile` with the microVM runtime. Use an amd64 or arm64
 Linux machine with Docker and Compose, hardware virtualisation and `/dev/kvm`; Docker must
 be able to run privileged containers. Build and start it from the checkout:
 
@@ -118,7 +118,7 @@ docker compose -f deploy/compose.yaml exec caboose-host cat /data/caboose/disks/
 ```
 
 The image builds `caboose-host` and `caboose-web` from the workspace lockfile, serves the
-console at `/` on the same port as the API, and pins Cloud Hypervisor to the amd64 v54.0
+console at `/` on the same port as the API, and pins Cloud Hypervisor to the matching architecture’s v54.0
 static release (checked by SHA-256). Open `http://localhost:7310` on the server, or your
 HTTPS proxy, and enter the owner token; the console keeps it in the tab's session storage.
 To choose the token yourself, put `CABOOSE_OWNER_TOKEN` in `deploy/.env` (mode 0600); it is
@@ -335,6 +335,9 @@ The list is captured when the task is created.
 `/v1/fs` and shared files go through the guest's file service
 ([`guest/files`](../../guest/files/README.md), port 14700, authenticated with the per-wake
 token). Streaming requests wake the computer and hold a lease until the transfer finishes.
+Client disconnects cancel the relay; 60 seconds without transfer progress ends it with 504
+before response headers, or closes an incomplete response. Active transfers have no total
+duration limit.
 The route, precondition, Trash and change-feed contract is in `docs/architecture.md` § Files.
 
 `/v1/terminal` ([`src/terminal.ts`](src/terminal.ts), `docs/architecture.md` § Terminal) is a

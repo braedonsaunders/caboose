@@ -27,6 +27,9 @@ tasks use. An app's `source` is either:
 
 The host validates identifiers, pack membership and every package source when it loads the
 catalog and rejects anything else, including a Craft URL that does not follow that pattern.
+ARM64 hosts offer Debian applications only; the pinned x86_64 Craft releases and empty packs
+are omitted from their catalog.
+
 Debian package names and desktop ids are checked against the Debian 13 amd64 and all-arch
 package indexes; Craft desktop ids and file associations against each pinned release's
 desktop file. An empty file-type list means no association is recorded, not that the app

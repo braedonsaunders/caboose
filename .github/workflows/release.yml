@@ -1,8 +1,4 @@
-# Publishes a release's images to GHCR when a v* tag is pushed:
-#   caboose-computer  the computer as a container (guest/container)
-#   caboose-base      the microVM image as an OCI artifact: base.raw.zst, vmlinux, initrd
-#   caboose-host      caboose-host, with both of the above pinned by digest as its defaults
-# A new host fetches whichever image its runtime needs on first run (docs/architecture.md, "Images").
+# Native guests, hosts and bundles, each pinned to images of its own architecture.
 name: Release images
 
 on:
@@ -24,9 +20,13 @@ env:
 
 jobs:
   computer:
-    runs-on: ubuntu-24.04
-    outputs:
-      digest: ${{ steps.push.outputs.digest }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -38,37 +38,66 @@ jobs:
           context: guest
           file: guest/container/Dockerfile
           push: true
-          tags: ${{ env.REGISTRY }}/caboose-computer:${{ env.TAG }}
+          platforms: linux/${{ matrix.arch }}
+          tags: ${{ env.REGISTRY }}/caboose-computer:${{ env.TAG }}-${{ matrix.arch }}
+      - name: Record the image pin
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: echo "CABOOSE_CONTAINER_IMAGE=$REGISTRY/caboose-computer:$TAG-${{ matrix.arch }}@$DIGEST" > computer.env
+      - uses: actions/upload-artifact@v4
+        with: { name: 'computer-pin-${{ matrix.arch }}', path: computer.env }
 
   base:
-    runs-on: ubuntu-24.04
-    outputs:
-      digest: ${{ steps.push.outputs.digest }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Make room for a 16 GiB disk
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
-      - name: Build the image
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Build the native image
         run: OUT_DIR="$RUNNER_TEMP/disks" ./guest/image/build.sh
       - name: Compress the disk
         working-directory: ${{ runner.temp }}/disks
-        run: zstd -T0 -10 --long=27 --rm base.raw -o base.raw.zst && ls -l
+        run: zstd -T2 -10 --long=27 --rm base.raw -o base.raw.zst
       - uses: oras-project/setup-oras@v1
-      - name: Push the artifact
-        id: push
+      - name: Push the artifact and record its pin
         working-directory: ${{ runner.temp }}/disks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo '${{ secrets.GITHUB_TOKEN }}' | oras login ghcr.io -u '${{ github.actor }}' --password-stdin
-          ref="$REGISTRY/caboose-base:$TAG"
+          echo "$GH_TOKEN" | oras login ghcr.io -u '${{ github.actor }}' --password-stdin
+          ref="$REGISTRY/caboose-base:$TAG-${{ matrix.arch }}"
           oras push "$ref" --artifact-type application/vnd.caboose.microvm.v1 \
+            --annotation org.opencontainers.image.architecture=${{ matrix.arch }} \
             base.raw.zst:application/zstd vmlinux:application/octet-stream initrd:application/octet-stream
-          echo "digest=$(oras resolve "$ref")" >> "$GITHUB_OUTPUT"
+          digest=$(oras resolve "$ref")
+          echo "CABOOSE_BASE_IMAGE=$ref@$digest" > "$GITHUB_WORKSPACE/base.env"
+          # Keep the original amd64 reference compatible with existing deployments.
+          if [[ '${{ matrix.arch }}' == amd64 ]]; then oras tag "$ref" "$TAG"; fi
+      - uses: actions/upload-artifact@v4
+        with: { name: 'base-pin-${{ matrix.arch }}', path: base.env }
 
   host:
     needs: [computer, base]
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: 'computer-pin-${{ matrix.arch }}', path: pins }
+      - uses: actions/download-artifact@v4
+        with: { name: 'base-pin-${{ matrix.arch }}', path: pins }
+      - run: cat pins/*.env >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with: { registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' }
@@ -76,56 +105,98 @@ jobs:
         with:
           context: .
           file: apps/host/Dockerfile
+          platforms: linux/${{ matrix.arch }}
           push: true
           build-args: |
-            CABOOSE_BASE_IMAGE=${{ env.REGISTRY }}/caboose-base:${{ env.TAG }}@${{ needs.base.outputs.digest }}
-            CABOOSE_CONTAINER_IMAGE=${{ env.REGISTRY }}/caboose-computer:${{ env.TAG }}@${{ needs.computer.outputs.digest }}
-          tags: |
-            ${{ env.REGISTRY }}/caboose-host:${{ env.TAG }}
-            ${{ env.REGISTRY }}/caboose-host:latest
+            CABOOSE_BASE_IMAGE=${{ env.CABOOSE_BASE_IMAGE }}
+            CABOOSE_CONTAINER_IMAGE=${{ env.CABOOSE_CONTAINER_IMAGE }}
+          tags: ${{ env.REGISTRY }}/caboose-host:${{ env.TAG }}-${{ matrix.arch }}
 
-  # Native installs (deploy/linux, the macOS app, the Windows distro) start from these.
+  image-indexes:
+    needs: [computer, host]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' }
+      - name: Publish architecture-selecting tags
+        run: |
+          for name in caboose-computer caboose-host; do
+            docker buildx imagetools create -t "$REGISTRY/$name:$TAG" \
+              "$REGISTRY/$name:$TAG-amd64" "$REGISTRY/$name:$TAG-arm64"
+            if [[ $TAG != *-* ]]; then
+              docker buildx imagetools create -t "$REGISTRY/$name:latest" "$REGISTRY/$name:$TAG"
+            fi
+          done
+
   bundles:
     needs: [computer, base]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: amd64, runner: ubuntu-24.04 }
+          - { os: linux, arch: arm64, runner: ubuntu-24.04-arm }
+          - { os: darwin, arch: arm64, runner: macos-14 }
+    runs-on: ${{ matrix.runner }}
     env:
       CABOOSE_VERSION: ${{ inputs.tag || github.ref_name }}
-      CABOOSE_BASE_IMAGE: ghcr.io/${{ github.repository_owner }}/caboose-base:${{ inputs.tag || github.ref_name }}@${{ needs.base.outputs.digest }}
-      CABOOSE_CONTAINER_IMAGE: ghcr.io/${{ github.repository_owner }}/caboose-computer:${{ inputs.tag || github.ref_name }}@${{ needs.computer.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
+      - uses: actions/download-artifact@v4
+        with: { name: 'computer-pin-${{ matrix.arch }}', path: pins }
+      - uses: actions/download-artifact@v4
+        with: { name: 'base-pin-${{ matrix.arch }}', path: pins }
+      - run: cat pins/*.env >> "$GITHUB_ENV"
+      - if: matrix.os == 'darwin'
+        run: brew install zstd xz
       - run: pnpm install --frozen-lockfile
-      - name: Build the bundles
-        run: |
-          for target in 'linux amd64' 'linux arm64' 'darwin arm64'; do
-            # shellcheck disable=SC2086
-            bash apps/host/scripts/bundle.sh $target dist/release
-          done
-      - name: Check the Linux bundle
-        run: bash apps/host/scripts/check-bundle.sh dist/release/caboose-host-linux-amd64.tar.zst
+      - name: Build the native bundle
+        run: bash apps/host/scripts/bundle.sh '${{ matrix.os }}' '${{ matrix.arch }}' dist/release
+      - name: Check the native bundle
+        run: bash apps/host/scripts/check-bundle.sh 'dist/release/caboose-host-${{ matrix.os }}-${{ matrix.arch }}.tar.zst'
       - name: Build and check the Windows distribution
+        if: matrix.os == 'linux' && matrix.arch == 'amd64'
         run: |
           bash deploy/windows/distro/build.sh dist/release/caboose-host-linux-amd64.tar.zst dist/release
           bash deploy/windows/distro/check.sh --rootfs dist/release/caboose-wsl-amd64.tar.gz
-      - name: Attach them to the release
+          cat dist/release/caboose-wsl-amd64.tar.gz.sha256 >> dist/release/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with: { name: 'bundle-${{ matrix.os }}-${{ matrix.arch }}', path: dist/release/ }
+
+  publish-bundles:
+    needs: [bundles, image-indexes]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'bundle-*', path: bundles }
+      - name: Combine checksums and attach release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          mkdir release
+          for bundle in bundles/*; do
+            for archive in "$bundle"/*.tar.zst "$bundle"/*.tar.gz "$bundle"/*.sha256; do
+              [[ ! -f $archive ]] || cp "$archive" release/
+            done
+            cat "$bundle/SHA256SUMS" >> release/SHA256SUMS
+          done
+          (cd release && sha256sum -c SHA256SUMS)
           prerelease=()
           [[ $TAG == *-* ]] && prerelease=(--prerelease)
-          # Other release workflows attach to the same release, so creating it may race.
           gh release view "$TAG" >/dev/null 2>&1 ||
             gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes "${prerelease[@]}" ||
             gh release view "$TAG" >/dev/null
-          gh release upload "$TAG" dist/release/* --clobber
+          gh release upload "$TAG" release/* --clobber
 
   windows-setup:
-    needs: [bundles]
+    needs: [publish-bundles]
     runs-on: windows-2022
     permissions:
       contents: write

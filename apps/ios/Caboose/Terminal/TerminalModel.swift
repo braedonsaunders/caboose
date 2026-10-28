@@ -68,6 +68,8 @@ final class TerminalModel {
         }
         visible = true
         guard host != nil else { status = .failed(String(localized: "Pair with your computer to open a terminal.")); return }
+        // Coming back to the screen is a fresh attempt after a failure.
+        if case .failed = status { status = .starting; attempt = 0 }
         if connection == nil, retry == nil, canReconnectOnItsOwn { connect(wake: true) }
     }
 

@@ -443,11 +443,22 @@ class Service:
                 return
             session.resize(cols, rows)
         previous = session.client
+        if previous is not None:
+            # Detach the other client first, so nothing new is queued for it meanwhile.
+            session.client = None
+            session.outbox.clear()
+            session.resume_reading()
+            await previous.close(CLOSE_REPLACED, 'attached elsewhere')
+            if session.exit is not None or session.client is not None:
+                # The shell ended, or a third client attached, while the other one closed.
+                await connection.close(4404 if session.exit is not None else CLOSE_REPLACED,
+                                       'session ended' if session.exit is not None else 'attached elsewhere')
+                return
+        # Attaching and taking the replay happen together: output from here on is queued for
+        # this client and sent after the replay, and none of it is in both.
         session.client = connection
         session.outbox.clear()
         session.resume_reading()
-        if previous is not None:
-            await previous.close(CLOSE_REPLACED, 'attached elsewhere')
         start, data, reset = session.replay.since(offset)
         hello = {'type': 'hello', 'session': session.id, 'offset': start, 'reset': reset}
         if reset:

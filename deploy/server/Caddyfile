@@ -1,0 +1,19 @@
+# Caboose behind automatic HTTPS (deploy/server/README.md). Caddy gets the certificate for
+# CABOOSE_DOMAIN from Let's Encrypt and renews it. Global options, such as the ACME email
+# install.sh --email writes, live in caddy-options/*.caddy.
+import /etc/caddy/options/*.caddy
+
+{$CABOOSE_DOMAIN} {
+	reverse_proxy caboose-host:7310 {
+		# Display streams, the control socket and file downloads are long-lived: pass bytes on
+		# as they arrive, never buffer them.
+		flush_interval -1
+		stream_close_delay 5m
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+}
