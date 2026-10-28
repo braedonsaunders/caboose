@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+arch=$(dpkg --print-architecture)
+case $arch in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; esac
 work=$(mktemp -d /output/.build.XXXXXX)
 loop=
 cleanup() {
@@ -36,11 +38,11 @@ mount "$loop" "$work/root"
 mkdir -p "$work/root/etc/dpkg/dpkg.cfg.d"
 printf 'force-unsafe-io\n' > "$work/root/etc/dpkg/dpkg.cfg.d/99-caboose-build"
 mkdir -p "$work/root/usr/local/lib"
-cp /usr/lib/x86_64-linux-gnu/libeatmydata.so.1 "$work/root/usr/local/lib/libeatmydata.so.1"
+cp /usr/lib/$triplet/libeatmydata.so.1 "$work/root/usr/local/lib/libeatmydata.so.1"
 # The same path exists inside and outside the chroot for inherited LD_PRELOAD.
 mkdir -p /usr/local/lib
-cp /usr/lib/x86_64-linux-gnu/libeatmydata.so.1 /usr/local/lib/libeatmydata.so.1
-LD_PRELOAD=/usr/local/lib/libeatmydata.so.1 debootstrap --variant=minbase --arch=amd64 trixie "$work/root" https://deb.debian.org/debian
+cp /usr/lib/$triplet/libeatmydata.so.1 /usr/local/lib/libeatmydata.so.1
+LD_PRELOAD=/usr/local/lib/libeatmydata.so.1 debootstrap --variant=minbase --arch="$arch" trixie "$work/root" https://deb.debian.org/debian
 for p in proc sys dev; do mount --rbind "/$p" "$work/root/$p"; mount --make-rslave "$work/root/$p"; done
 cp /builder/configure-guest.sh /builder/apps.sh "$work/root/tmp/"
 cp -r /builder/components "$work/root/tmp/components"
@@ -53,8 +55,11 @@ cp -r /builder/notifications "$work/root/tmp/notifications"
 cp -r /builder/phone "$work/root/tmp/phone"
 cp /etc/resolv.conf "$work/root/etc/resolv.conf"
 chroot "$work/root" /usr/bin/env LD_PRELOAD=/usr/local/lib/libeatmydata.so.1 /bin/bash /tmp/configure-guest.sh
-cp "$(ls "$work/root"/boot/vmlinuz-* | sort -V | tail -1)" "$work/vmlinux"
-cp "$(ls "$work/root"/boot/initrd.img-* | sort -V | tail -1)" "$work/initrd"
+kernel=$(printf '%s\n' "$work/root"/boot/vmlinuz-* | sort -V | tail -1)
+# Virtualization.framework takes the uncompressed ARM64 Image; Debian may gzip it.
+if [[ $arch == arm64 ]] && gzip -t "$kernel" 2>/dev/null; then gzip -dc "$kernel" > "$work/vmlinux"
+else cp "$kernel" "$work/vmlinux"; fi
+cp "$(printf '%s\n' "$work/root"/boot/initrd.img-* | sort -V | tail -1)" "$work/initrd"
 rm -f "$work/root/usr/local/lib/libeatmydata.so.1" "$work/root/etc/dpkg/dpkg.cfg.d/99-caboose-build" "$work/root/etc/dpkg/dpkg.cfg.d/99-build-speed"
 rm -rf "$work/root/tmp/components" "$work/root/tmp/notifications" "$work/root/tmp/desktop-mcp" "$work/root/tmp/caboose-display" "$work/root/tmp/agentd" "$work/root/tmp/files" "$work/root/tmp/terminal" "$work/root/tmp/phone"
 rm "$work/root/tmp/configure-guest.sh" "$work/root/tmp/apps.sh"

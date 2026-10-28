@@ -84,6 +84,21 @@ describe('AgentRegistry', () => {
   }
   const ok = (body: unknown, etag = '"v1"') => () => new Response(JSON.stringify(body), { status: 200, headers: { etag, 'content-type': 'application/json' } })
 
+  it('selects ARM64 binaries from the network and persisted registry cache', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'caboose-registry-')); roots.push(root)
+    const cachePath = join(root, 'registry.json')
+    const net = server()
+    const agent = { id: 'test-agent', name: 'Test', version: '1.0.0', distribution: { binary: {
+      'linux-x86_64': { archive: 'https://example.com/x64.tgz', cmd: './agent', sha256: 'a'.repeat(64) },
+      'linux-aarch64': { archive: 'https://example.com/arm64.tgz', cmd: './agent', sha256: 'b'.repeat(64) },
+    } } }
+    net.responses.push(ok({ agents: [agent] }))
+    const registry = new AgentRegistry({ fetch: net.fetch, platform: 'linux-aarch64', cachePath })
+    expect((await registry.get('test-agent'))?.launch?.archive).toBe('https://example.com/arm64.tgz')
+    const offline = new AgentRegistry({ fetch: server().fetch, platform: 'linux-aarch64', cachePath })
+    expect((await offline.get('test-agent'))?.launch?.archive).toBe('https://example.com/arm64.tgz')
+  })
+
   it('fetches once per TTL, revalidates with the ETag, and keeps the last good copy on failure', async () => {
     const root = await mkdtemp(join(tmpdir(), 'caboose-registry-')); roots.push(root)
     const cachePath = join(root, 'agent-registry.json')

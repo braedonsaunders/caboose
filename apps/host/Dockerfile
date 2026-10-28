@@ -27,8 +27,13 @@ RUN pnpm --filter caboose-host... install --prod --frozen-lockfile
 
 FROM debian:bookworm-slim AS vmm
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL -o /cloud-hypervisor https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v54.0/cloud-hypervisor-static && \
-    echo '4f4f98a3d661a40f3e5272627cc895a1b2e525f2f6bedf5f895f9cd21ba5c65b  /cloud-hypervisor' | sha256sum -c - && chmod 0755 /cloud-hypervisor
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+      amd64) asset=cloud-hypervisor-static; digest=4f4f98a3d661a40f3e5272627cc895a1b2e525f2f6bedf5f895f9cd21ba5c65b ;; \
+      arm64) asset=cloud-hypervisor-static-aarch64; digest=e8a6d9786ea678e739f1a386682846e93742dcb9c7b6e3e0c62e3bda6cff0ef3 ;; \
+      *) exit 1 ;; esac && \
+    curl -fsSL -o /cloud-hypervisor "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v54.0/$asset" && \
+    echo "$digest  /cloud-hypervisor" | sha256sum -c - && chmod 0755 /cloud-hypervisor
 
 FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends iproute2 iptables procps qemu-utils xfsprogs util-linux && rm -rf /var/lib/apt/lists/*
