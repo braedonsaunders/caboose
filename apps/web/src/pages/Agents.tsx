@@ -293,7 +293,6 @@ function AgentDetails({ agent, isDefault, running, installing, onInstall, onSign
   return (
     <div className="space-y-2 rounded-md border p-3 text-sm">
       <div className="flex flex-wrap items-center gap-2">
-        {agent.icon ? <img src={agent.icon} alt="" className="size-4 dark:invert" /> : null}
         <span className="font-medium">{agent.name}</span>
         <span className="text-xs text-muted-foreground">{agent.version}</span>
         {isDefault ? <Badge variant="secondary">default</Badge> : null}
