@@ -7,38 +7,81 @@ runtime=/run/user/$uid
 install -d -o caboose -g caboose -m 0700 "$runtime"
 runuser -u caboose -- mkdir -p /home/caboose/.cache
 install -d -m 0755 /run/caboose
-# A service of the owner's, kept in a pid file; `restart` replaces a running one.
-# Readiness is its port listening (state 0A), read from /proc: the image has no iproute2 for ss.
+# Inspect owner processes as that owner: container root may lack ptrace permission and
+# see an empty cmdline for another uid. Discovering the exact script also repairs stale
+# pid files left by an earlier failed restart. Never adopt a different program on the port.
+owner_service_pid() {
+  runuser -u caboose -- /usr/bin/python3 - "$1" <<'PYTHON'
+import os, pathlib, sys
+matches = []
+for proc in pathlib.Path('/proc').iterdir():
+    if not proc.name.isdigit(): continue
+    try:
+        if proc.stat().st_uid != os.getuid(): continue
+        args = (proc / 'cmdline').read_bytes().split(b'\0')
+        if len(args) > 1 and args[1] == os.fsencode(sys.argv[1]) and pathlib.Path(os.fsdecode(args[0])).name.startswith('python'):
+            matches.append(proc.name)
+    except (OSError, ValueError): pass
+if len(matches) > 1:
+    sys.exit('Multiple processes run the same Caboose service; refusing to replace them.')
+print(matches[0] if matches else '')
+PYTHON
+}
+
+owner_service_ready() {
+  runuser -u caboose -- /usr/bin/python3 - "$1" "$2" <<'PYTHON'
+import os, pathlib, sys
+pid, port = sys.argv[1], int(sys.argv[2])
+inodes = set()
+for table in ('/proc/net/tcp', '/proc/net/tcp6'):
+    for line in pathlib.Path(table).read_text().splitlines()[1:]:
+        fields = line.split()
+        if int(fields[1].split(':')[1], 16) == port and fields[3] == '0A':
+            inodes.add('socket:[' + fields[9] + ']')
+try:
+    ready = any(os.readlink(fd) in inodes for fd in pathlib.Path('/proc', pid, 'fd').iterdir())
+except OSError:
+    ready = False
+sys.exit(0 if ready else 1)
+PYTHON
+}
+
 owner_service() {
-  local name=$1 script=$2 port=$3 label=$4 pidfile=/run/caboose/$1.pid pid
-  if [ -s "$pidfile" ]; then
-    pid=$(cat "$pidfile")
-    if [[ "$pid" =~ ^[0-9]+$ ]] && [ -r "/proc/$pid/cmdline" ] && tr '\0' '\n' < "/proc/$pid/cmdline" | grep -Fxq "$script"; then
-      if [ "${MODE:-}" = restart ]; then
-        start-stop-daemon --stop --signal TERM --pidfile "$pidfile"
-        for _ in $(seq 1 10); do
-          [ ! -r "/proc/$pid/stat" ] && break
-          [ "$(awk '{print $3}' "/proc/$pid/stat")" = Z ] && break
-          sleep 1
-        done
-        if [ -r "/proc/$pid/stat" ] && [ "$(awk '{print $3}' "/proc/$pid/stat")" != Z ]; then
-          echo "The previous $label did not stop." >&2; exit 1
-        fi
-        rm -f "$pidfile"
+  local script=$2 port=$3 label=$4 pidfile=/run/caboose/$1.pid pid
+  pid=$(owner_service_pid "$script")
+  if [ -n "$pid" ]; then
+    printf '%s\n' "$pid" > "$pidfile"
+    if [ "${MODE:-}" = restart ]; then
+      start-stop-daemon --stop --signal TERM --pidfile "$pidfile"
+      for _ in $(seq 1 10); do
+        [ ! -r "/proc/$pid/stat" ] && break
+        [ "$(awk '{print $3}' "/proc/$pid/stat")" = Z ] && break
+        sleep 1
+      done
+      if [ -r "/proc/$pid/stat" ] && [ "$(awk '{print $3}' "/proc/$pid/stat")" != Z ]; then
+        echo "The previous $label did not stop." >&2; return 1
       fi
-    else
-      rm -f "$pidfile"
+      pid=
     fi
   fi
-  start-stop-daemon --start --oknodo --background --make-pidfile --pidfile "$pidfile" \
-    --chuid caboose:caboose --exec /usr/bin/python3 -- "$script"
-  local hex
-  hex=$(printf '%04X' "$port")
+  if [ -z "$pid" ]; then
+    rm -f "$pidfile"
+    start-stop-daemon --start --background --make-pidfile --pidfile "$pidfile" \
+      --chuid caboose:caboose --exec /usr/bin/python3 -- "$script"
+    for _ in $(seq 1 20); do
+      [ -s "$pidfile" ] && break
+      sleep 0.1
+    done
+    pid=$(cat "$pidfile")
+  fi
   for _ in $(seq 1 60); do
-    grep -Eq "^ *[0-9]+: [0-9A-F]+:$hex [0-9A-F]+:[0-9A-F]+ 0A " /proc/net/tcp /proc/net/tcp6 2>/dev/null && return 0
+    if [ ! -r "/proc/$pid/stat" ] || [ "$(awk '{print $3}' "/proc/$pid/stat")" = Z ]; then
+      echo "$label exited before becoming ready" >&2; return 1
+    fi
+    owner_service_ready "$pid" "$port" && return 0
     sleep 1
   done
-  echo "$label did not become ready" >&2; exit 1
+  echo "$label did not become ready" >&2; return 1
 }
 MODE=${1:-}
 owner_service files /opt/caboose/files/caboose-files.py 14700 'Caboose file service'
@@ -47,7 +90,7 @@ monitor_pid="$runtime/caboose-notifications.pid"
 monitor_running=false
 if [ -s "$monitor_pid" ]; then
   pid=$(cat "$monitor_pid")
-  if [[ "$pid" =~ ^[0-9]+$ ]] && [ -r "/proc/$pid/cmdline" ] && [ "$(stat -c %u "/proc/$pid")" = "$uid" ] && tr '\0' '\n' < "/proc/$pid/cmdline" | grep -Fxq /opt/caboose/notifications/monitor.py; then monitor_running=true; fi
+  if [[ "$pid" =~ ^[0-9]+$ ]] && [ -r "/proc/$pid/cmdline" ] && [ "$(stat -c %u "/proc/$pid")" = "$uid" ] && runuser -u caboose -- grep -zFxq /opt/caboose/notifications/monitor.py "/proc/$pid/cmdline"; then monitor_running=true; fi
 fi
 if $monitor_running && [ "${1:-}" = restart ]; then
   runuser -u caboose -- kill -TERM "$pid"
