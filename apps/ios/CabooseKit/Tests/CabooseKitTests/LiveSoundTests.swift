@@ -34,6 +34,7 @@ struct LiveSoundTests {
         let recorder = Recorder()
         let clock = MediaClock()
         let player = SoundPlayer(clock: clock)
+        player.renderer.isMuted = true // timing is measured on the renderer, not by ear
         let stream = WebSocketStream(url: url, token: "")
         var parser = DisplayFrameParser()
         stream.open { event in
