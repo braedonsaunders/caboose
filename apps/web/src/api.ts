@@ -47,6 +47,43 @@ export interface ComputerStatus {
   lastError: string | null
 }
 
+/** A computer as the host lists it (`GET /v1/computers`): its id and when it was made, with its status. */
+export interface ComputerSummary extends ComputerStatus {
+  id: string
+  /** Null for an owner's computer made before the host recorded it. */
+  createdAt: string | null
+}
+
+export interface ComputersResponse {
+  computers: ComputerSummary[]
+  /** False for a host that serves only the owner's computer. */
+  canCreate: boolean
+  limits: { computers: number; running: number | null }
+}
+
+/** The owner's computer: the one the owner token's own routes serve, and the one that cannot be deleted. */
+export const OWNER_COMPUTER = 'owner'
+
+export interface NewComputer {
+  name: string
+  memoryMb: number
+  vcpus: number
+  idleMs: number
+}
+
+/** A phone signed in to a computer with its own token. The host never shows the token again. */
+export interface PhoneSignIn {
+  id: string
+  name: string
+  createdAt: string
+  lastUsedAt: string | null
+}
+
+export interface PairingCode {
+  code: string
+  expiresAt: string
+}
+
 export type PushKind = 'approval' | 'task' | 'desktop'
 
 /** A phone registered for push notifications; `id` is a fingerprint of its token, never the token. */
@@ -195,12 +232,21 @@ export function formatIdleDuration(idleMs: number): string {
   return minutes === 0 ? `${hours} hr` : `${hours} hr ${minutes} min`
 }
 
-export function buildIosPairingUrl(hostOrigin: string, token: string): string {
+/**
+ * The link Caboose on an iPhone opens to sign in: the host's address and a pairing code it
+ * trades through `POST /v1/pair` for its own token. It never carries a token.
+ */
+export function buildPairingLink(hostOrigin: string, code: string): string {
   const params = new URLSearchParams({
     host: hostOrigin.replace(/\/+$/, ''),
-    token: token.trim(),
+    code: code.trim(),
   })
   return `caboose://connect?${params.toString()}`
+}
+
+/** A code as people read it aloud: two groups of four. */
+export function formatPairingCode(code: string): string {
+  return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code
 }
 
 export class CabooseApiError extends Error {
@@ -222,13 +268,30 @@ export class CabooseApiError extends Error {
   }
 }
 
+/** Routes about the host and its computers, never scoped to one computer. */
+function isHostPath(path: string): boolean {
+  return path === '/v1/health' || path === '/v1/host' || path === '/v1/computers' || path.startsWith('/v1/computers/')
+}
+
 export class CabooseClient {
   constructor(
     private readonly getToken: () => string,
     private readonly baseUrl = '',
     // Browsers reject a native fetch called with any receiver but the window, so never call it as a method.
     private readonly fetchImpl: typeof fetch = (input, init) => globalThis.fetch(input, init),
+    /** The computer this client's computer routes go to; the owner token's own computer when absent. */
+    readonly computerId?: string,
   ) {}
+
+  /** The same client, with its computer routes sent to `/v1/computers/<id>/…`. */
+  forComputer(id: string): CabooseClient {
+    return new CabooseClient(this.getToken, this.baseUrl, this.fetchImpl, id)
+  }
+
+  private route(path: string): string {
+    if (!this.computerId || isHostPath(path) || !path.startsWith('/v1/')) return path
+    return `/v1/computers/${encodeURIComponent(this.computerId)}${path.slice(3)}`
+  }
 
   /** Sends a request and returns the successful response; failures become CabooseApiError. */
   private async send(
@@ -251,7 +314,7 @@ export class CabooseClient {
       }
 
       const fetchImpl = this.fetchImpl
-      const response = await fetchImpl(`${this.baseUrl}${path}`, {
+      const response = await fetchImpl(`${this.baseUrl}${this.route(path)}`, {
         method,
         headers,
         body: options.body,
@@ -310,6 +373,32 @@ export class CabooseClient {
     } catch {
       return undefined as T
     }
+  }
+
+  computers(): Promise<ComputersResponse> {
+    return this.request<ComputersResponse>('GET', '/v1/computers', { timeoutMs: 20_000 })
+  }
+
+  createComputer(input: NewComputer): Promise<ComputerSummary> {
+    return this.request<ComputerSummary>('POST', '/v1/computers', { body: input, timeoutMs: 60_000 })
+  }
+
+  /** Deletes a computer with its disk; the host waits for work already running on it. */
+  deleteComputer(id: string): Promise<{ deleted: true }> {
+    return this.request<{ deleted: true }>('DELETE', `/v1/computers/${encodeURIComponent(id)}`, { body: { confirm: true }, timeoutMs: 300_000 })
+  }
+
+  phones(id: string): Promise<{ phones: PhoneSignIn[] }> {
+    return this.request<{ phones: PhoneSignIn[] }>('GET', `/v1/computers/${encodeURIComponent(id)}/phones`, { timeoutMs: 15_000 })
+  }
+
+  /** A single-use code that signs one phone in to the computer, valid for ten minutes. */
+  startPairing(id: string): Promise<PairingCode> {
+    return this.request<PairingCode>('POST', `/v1/computers/${encodeURIComponent(id)}/pairing`, { timeoutMs: 15_000 })
+  }
+
+  removePhone(id: string, phoneId: string): Promise<{ revoked: true }> {
+    return this.request<{ revoked: true }>('DELETE', `/v1/computers/${encodeURIComponent(id)}/phones/${encodeURIComponent(phoneId)}`, { timeoutMs: 15_000 })
   }
 
   computer(): Promise<ComputerStatus> {

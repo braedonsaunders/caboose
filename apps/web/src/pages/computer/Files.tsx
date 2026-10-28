@@ -5,21 +5,19 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, confirmDialog, promptDialog, toast,
 } from '@braedonsaunders/appkit-ui'
 import { ArrowUp, ChevronRight, Download, File, Folder, FolderPlus, Pencil, RefreshCw, Trash2, Upload } from 'lucide-react'
-import { CabooseApiError, type CabooseClient } from '../../api.js'
+import { CabooseApiError, OWNER_COMPUTER, type CabooseClient } from '../../api.js'
 import {
   breadcrumbs, formatBytes, joinPath, nameProblem, normalizeFsPath, parentPath, visibleItems,
   type FileItem, type FileSortKey,
 } from '../../files.js'
 import { TabIntro, errorMessage } from '../../components/common.js'
-import { navigate, useSearchParam } from '../../navigation.js'
+import { navigate, routeHref, useSearchParam } from '../../navigation.js'
 import { isTransitioning } from '../../state.js'
 import type { ComputerHandle } from '../../useComputer.js'
 
-function filesHref(path: string): string {
-  return path ? `/computer/files?path=${encodeURIComponent(path)}` : '/computer/files'
-}
-
 export function Files({ client, computer, onUnauthorized }: { client: CabooseClient; computer: ComputerHandle; onUnauthorized: () => void }) {
+  const base = routeHref({ page: 'computer', id: client.computerId ?? OWNER_COMPUTER, tab: 'files' })
+  const filesHref = (target: string) => target ? `${base}?path=${encodeURIComponent(target)}` : base
   const path = normalizeFsPath(useSearchParam('path'))
   const state = computer.status?.state
   // Every /v1/fs request wakes a parked computer, so a parked one is only woken when asked.

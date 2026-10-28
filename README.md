@@ -149,7 +149,9 @@ Then:
    writes `base.raw`, `vmlinux` and `initrd` to `/data/caboose/disks`, the host's disk root
    ([guest/image](guest/image/README.md), [apps/host › Images](apps/host/README.md#images)).
 2. **Open the console** at `http://localhost:7310` (or behind your HTTPS proxy), sign in
-   with the owner token, and use **Computer › Phones › Connect a phone** to sign the app in.
+   with the owner token, open your computer under **Computers**, and on **Phones** use
+   **Sign in a phone**: scan the QR code with the iPhone. **New computer** adds more
+   computers, each with its own disk and phones.
 3. **Build the iOS app** with XcodeGen ([apps/ios](apps/ios/README.md)).
 
 The host listens on loopback by default and speaks plain HTTP. Put HTTPS in front of it

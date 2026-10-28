@@ -1,6 +1,6 @@
 import * as React from 'react'
 import {
-  Alert, AlertDescription, AlertTitle, Button, Input, Select, SettingsRow, SettingsSection, toast,
+  Alert, AlertDescription, AlertTitle, Button, Input, Select, SettingsRow, SettingsSection, promptDialog, toast,
 } from '@braedonsaunders/appkit-ui'
 import {
   computeSettingsPatch, effectiveLimits, formatIdleDuration, formatMemoryMb, validateSettingsInput,
@@ -15,11 +15,13 @@ function same(a: ComputerSettings | null, b: ComputerSettings | null): boolean {
   return Boolean(a && b) && a!.name === b!.name && a!.memoryMb === b!.memoryMb && a!.vcpus === b!.vcpus && a!.idleMs === b!.idleMs
 }
 
-export function Settings({ client, computer }: { client: CabooseClient; computer: ComputerHandle }) {
+/** `onDelete` is absent for the owner's computer, which cannot be deleted. */
+export function Settings({ client, computer, onDelete }: { client: CabooseClient; computer: ComputerHandle; onDelete?: () => Promise<void> }) {
   const { status } = computer
   const actions = useComputerActions(client, computer)
   const [draft, setDraft] = React.useState<ComputerSettings | null>(status?.settings ?? null)
   const [saving, setSaving] = React.useState(false)
+  const [deleting, setDeleting] = React.useState(false)
   const baseline = React.useRef<ComputerSettings | null>(status?.settings ?? null)
 
   // Follow changes made elsewhere (the iPhone, another tab) unless there are edits in progress here.
@@ -57,7 +59,29 @@ export function Settings({ client, computer }: { client: CabooseClient; computer
     }
   }
 
-  const busy = saving || actions.busy !== null || isTransitioning(status.state)
+  async function remove() {
+    const name = status!.settings.name
+    const typed = await promptDialog({
+      title: `Delete ${name}?`,
+      label: `Its disk and everything on it are deleted. Type the computer's name, ${name}, to confirm.`,
+      confirmLabel: 'Delete computer',
+    })
+    if (typed === null) return
+    if (typed !== name) {
+      toast.error('The name did not match, so nothing was deleted.')
+      return
+    }
+    setDeleting(true)
+    try {
+      await onDelete!()
+      toast.success(`${name} was deleted.`)
+    } catch (failure) {
+      toast.error(failure instanceof Error ? failure.message : String(failure))
+      setDeleting(false)
+    }
+  }
+
+  const busy = saving || deleting || actions.busy !== null || isTransitioning(status.state)
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -167,6 +191,23 @@ export function Settings({ client, computer }: { client: CabooseClient; computer
                 onClick={() => void actions.restart(dirty ? save : undefined)}
               >
                 {actions.busy === 'restart' ? 'Restarting…' : dirty ? 'Save and restart' : 'Restart'}
+              </Button>
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      {onDelete ? (
+        <SettingsSection
+          title="Delete"
+          description="Deletes the computer for good: its disk with every file and app on it, its phones' sign-ins and its notifications. Nothing can be recovered."
+        >
+          <SettingsRow
+            title="Delete this computer"
+            description={deleting ? 'Waiting for work running on it, then deleting…' : undefined}
+            control={
+              <Button variant="destructive" disabled={deleting} onClick={() => void remove()}>
+                {deleting ? 'Deleting…' : 'Delete computer'}
               </Button>
             }
           />

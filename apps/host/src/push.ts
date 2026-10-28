@@ -5,13 +5,19 @@ import { APNsSender, type APNsEnvironment, type APNsMessage, type APNsResult } f
 import { readJsonFile, SettingsInputError, writePrivateJson } from './settings.js'
 
 type Kind = 'approval' | 'task' | 'desktop'
-export interface PushDevice { token: string; environment: APNsEnvironment; kinds: Kind[] }
+/** `phone`: the phone sign-in that registered it, so signing that phone out stops its notifications. */
+export interface PushDevice { token: string; environment: APNsEnvironment; kinds: Kind[]; phone?: string }
 const TOKEN = /^(?:[0-9a-f]{2}){1,256}$/
 export function parseDevice(input: unknown): PushDevice {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new SettingsInputError('device must be an object')
   const value = input as Record<string, unknown>
   if (Object.keys(value).some(key => !['token', 'environment', 'kinds'].includes(key)) || typeof value.token !== 'string' || !TOKEN.test(value.token) || (value.environment !== 'sandbox' && value.environment !== 'production') || !Array.isArray(value.kinds) || value.kinds.some(kind => kind !== 'approval' && kind !== 'task' && kind !== 'desktop') || new Set(value.kinds).size !== value.kinds.length) throw new SettingsInputError('invalid push device')
   return { token: value.token, environment: value.environment, kinds: value.kinds as Kind[] }
+}
+function stored(value: unknown): PushDevice {
+  const { phone, ...device } = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
+  if (phone !== undefined && (typeof phone !== 'string' || !/^p-[0-9a-f]{12}$/.test(phone))) throw new Error('Invalid push device phone')
+  return { ...parseDevice(device), ...(phone ? { phone } : {}) }
 }
 /** What a client may see of a registration: never the APNs token itself. */
 export interface PushDeviceSummary { id: string; environment: APNsEnvironment; kinds: Kind[] }
@@ -25,7 +31,7 @@ export class PushDevices {
   static async open(path: string): Promise<PushDevices> {
     const value = await readJsonFile(path)
     if (value !== undefined && !Array.isArray(value)) throw new Error('Invalid push device store')
-    const devices = (value ?? []).map(parseDevice)
+    const devices = (value ?? []).map(stored)
     if (new Set(devices.map(d => d.token)).size !== devices.length) throw new Error('Duplicate push device')
     return new PushDevices(path, devices)
   }
@@ -39,8 +45,8 @@ export class PushDevices {
     this.pending = work.catch(() => {})
     return work
   }
-  register(input: unknown): Promise<void> {
-    const device = parseDevice(input)
+  register(input: unknown, phone?: string): Promise<void> {
+    const device: PushDevice = { ...parseDevice(input), ...(phone ? { phone } : {}) }
     return this.mutate(devices => {
       this.revisions.set(device.token, (this.revisions.get(device.token) ?? 0) + 1)
       return [...devices.filter(d => d.token !== device.token), device]
@@ -58,6 +64,7 @@ export class PushDevices {
     })
     return removed
   }
+  removeByPhone(phone: string): Promise<void> { return this.mutate(devices => devices.filter(d => d.phone !== phone)) }
   version(token: string): number { return this.revisions.get(token) ?? 0 }
   remove(token: unknown, environment?: APNsEnvironment, expectedRevision?: number): Promise<void> {
     if (typeof token !== 'string' || !TOKEN.test(token)) throw new SettingsInputError('invalid push token')

@@ -114,3 +114,12 @@ export function sharePercent(assigned: number, total: number): number {
   if (!(total > 0)) return 0
   return Math.round((assigned / total) * 100)
 }
+
+/** What the host's computers are given between them, and how many are running now. */
+export function fleetTotals(computers: Array<{ state: string; settings: { memoryMb: number; vcpus: number } }>): { running: number; memoryMb: number; vcpus: number } {
+  return computers.reduce((totals, computer) => ({
+    running: totals.running + (computer.state === 'running' ? 1 : 0),
+    memoryMb: totals.memoryMb + computer.settings.memoryMb,
+    vcpus: totals.vcpus + computer.settings.vcpus,
+  }), { running: 0, memoryMb: 0, vcpus: 0 })
+}

@@ -179,26 +179,33 @@ survives host restarts.
 
 ### Network fencing
 
-A microVM's network is a persistent TAP device, `caboose0`. The host is `192.0.2.1/30`
-and the guest `192.0.2.2/30`, with NAT to the host's other interfaces and DNS `1.1.1.1`. At
-each wake the host also sets the guest's clock over the guest agent.
+Each microVM computer has its own persistent TAP device and /30 in `192.0.2.0/24`: the
+computer on slot *n* (see Computers) uses `caboose<n>`, with the host at `192.0.2.(4n+1)`
+and the guest at `192.0.2.(4n+2)`. The owner's computer is slot 0: `caboose0`,
+`192.0.2.1/30` and `192.0.2.2/30`. Each guest gets NAT to the host's other interfaces and
+DNS `1.1.1.1`. At each wake the host also sets the guest's clock over the guest agent.
 
 The guest is fenced in chains the host owns, each jumped to first from its built-in chain:
 
 | Chain | Hook | Rules |
 | --- | --- | --- |
-| `CABOOSE-IN` | `INPUT -i caboose0` | Established and related traffic returns; everything else is dropped. The guest can open nothing on the host. |
-| `CABOOSE-FWD` | `FORWARD -i caboose0` | Established and related traffic returns; new connections to private and reserved ranges are rejected; the rest returns to normal forwarding. |
+| `CABOOSE-IN` | `INPUT -i caboose<n>` | Established and related traffic returns; everything else is dropped. The guest can open nothing on the host. |
+| `CABOOSE-FWD` | `FORWARD -i caboose<n>` | Established and related traffic returns; new connections to `192.0.2.0/24` (every computer) and to private and reserved ranges are rejected; the rest returns to normal forwarding. |
+
+Both chains are shared by every computer and refilled only when their rules differ, so
+waking one computer never leaves another unfenced.
 
 The rejected ranges are `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
 `169.254.0.0/16` (link-local and cloud metadata), `100.64.0.0/10` (CGNAT and Tailscale),
 `127.0.0.0/8`, `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`, `224.0.0.0/4` and
 `240.0.0.0/4`. `CABOOSE_GUEST_LAN=allow` removes them, so the guest can reach the local
-network. The host opens the relay connections to the guest itself.
+network; it never removes `192.0.2.0/24`, so one computer can never reach another. The host
+opens the relay connections to the guest itself.
 
-A container computer gets the same fence on its own Docker bridge network, `caboose`
-(interface `caboose-br0`): `CABOOSE-CIN` from `INPUT` and `CABOOSE-CFWD` from
-`DOCKER-USER`, which Docker never rewrites.
+A container computer gets the same fence on its own Docker bridge network: `caboose`
+(interface `caboose-br0`) for the owner's computer, `caboose-<n>` (`caboose-br<n>`) for
+the others, which Docker isolates from each other. `CABOOSE-CIN` hooks `INPUT` and
+`CABOOSE-CFWD` hooks `DOCKER-USER`, which Docker never rewrites.
 
 ### Displays
 
@@ -337,28 +344,70 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_OWNER_TOKEN` | generated | The owner's bearer token; unset, the host generates one into `${CABOOSE_IMAGE_ROOT}/owner-token` (mode 0600) on first start and reuses it |
 | `CABOOSE_BIND` | `127.0.0.1` | Listen address |
 | `CABOOSE_PORT` | `7310` | Listen port |
-| `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Golden image, overlays, snapshot and host state |
-| `CABOOSE_MEMORY_MB` | `6144` | Initial memory setting |
-| `CABOOSE_VCPUS` | `4` | Initial vCPU setting |
-| `CABOOSE_IDLE_MS` | `600000` | Initial idle time before parking |
+| `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Golden image, overlays, snapshots and host state |
+| `CABOOSE_MEMORY_MB` | `6144` | Initial memory setting of the owner's computer and of new computers |
+| `CABOOSE_VCPUS` | `4` | Initial vCPU setting, likewise |
+| `CABOOSE_IDLE_MS` | `600000` | Initial idle time before parking, likewise |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor binary |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container` |
 | `CABOOSE_GPU` | `auto` | Container GPU: `auto`, `wsl`, `nvidia`, `dri` or `none` |
 | `CABOOSE_BASE_IMAGE` | unset (release: pinned) | OCI reference of the microVM image, fetched when the disk root lacks it ([Published images](#published-images)) |
-| `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` (release: pinned) | Container image; pulled when missing if it names a registry |
-| `CABOOSE_CONTAINER_NAME` | `caboose-owner` | Container name |
-| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume or absolute host path for `/home/caboose` |
+| `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` (release: pinned) | Container image for every computer; pulled when missing if it names a registry |
+| `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The owner's computer's container name; others are `caboose-<id>` |
+| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume or absolute host path for `/home/caboose`; other computers use it with `-<id>` appended |
 | `CABOOSE_CONTAINER_ARGS` | empty | Extra `docker run` arguments, whitespace-separated |
 | `CABOOSE_GUEST_LAN` | `deny` | `allow` lets the guest reach private ranges |
 | `CABOOSE_AGENT_REGISTRY_URL` | the public ACP registry | `http(s)` URL of `registry.json` |
 | `CABOOSE_AGENT_IDLE_MS` | `600000` | How long a runner keeps its agent after a turn |
+| `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park |
 | `CABOOSE_WEB_ROOT` | `apps/web/dist` | The built web console |
 | `CABOOSE_APNS_KEY_PATH`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC` | unset | APNs provider; all four or none |
 
-Host state lives in `CABOOSE_IMAGE_ROOT`: `owner-token` when generated, `caboose.json` (computer settings),
-`push-devices.json`, `activities.json` and `agent-registry.json`, each replaced atomically
-with mode 0600, and `overlays/owner.resources.json`, the resources the microVM was booted
-with.
+Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mode 0600:
+
+- `owner-token` when generated, `computers.json` (the computers other than the owner's,
+  with their slots),
+  `phones.json` (phone sign-ins, by SHA-256 of their tokens) and `agent-registry.json`.
+- The owner's computer's `caboose.json` (settings), `push-devices.json` and
+  `activities.json` at the root, where a host from before several computers kept them.
+- Every other computer's own `caboose.json`, `push-devices.json` and `activities.json`
+  in `computers/<id>/`.
+- For microVMs, `overlays/<id>.raw` (the disk), `overlays/<id>.snapshot` (parked memory)
+  and `overlays/<id>.resources.json` (the resources it was booted with).
+
+### Computers
+
+A host runs several computers. The owner's computer always exists, with id `owner` and
+slot 0, and cannot be deleted. Every other computer has an id `c-` followed by 10 hex
+digits, and the lowest free slot from 1 to 63. The slot names its network (see Network
+fencing) and, for a container, its loopback ports: 20000 + 10 × slot for the owner's
+display, plus 1 for the agent seat and plus 2 for the file service. Each computer has its
+own disk, settings, lifecycle, leases, agents, catalog, notifications and phones; nothing
+of one is reachable from another. microVM computers share one appkit-desk host, so at most
+`CABOOSE_MAX_RUNNING` run at once and further wakes queue.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/computers` | `{ computers: [{ id, createdAt, …management status }], canCreate, limits: { computers, running } }`. `createdAt` is null for an owner's computer made before the host recorded it; `running` is null for the container runtime |
+| `POST` | `/v1/computers` | `{ name, memoryMb?, vcpus?, idleMs? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. 409 when all 63 slots are taken |
+| `GET` | `/v1/computers/:id` | One computer, as listed |
+| `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer or while a catalog operation, Craft job or component update runs on it |
+| any | `/v1/computers/:id/<route>` | Any computer route (§ Session and display through § Live Activities, and the agent routes of § 5), served by that computer (`/v1/computers/:id/session`, `/v1/computers/:id/fs/list`, `/v1/computers/:id/display`, …) |
+| `POST` | `/v1/computers/:id/pairing` | → 201 `{ code, expiresAt }`: a pairing code for one phone (below) |
+| `GET` | `/v1/computers/:id/phones` | `{ phones: [{ id, name, createdAt, lastUsedAt }] }`: the phones signed in to the computer. `lastUsedAt` is written at most once a minute |
+| `DELETE` | `/v1/computers/:id/phones/:phone` | → `{ revoked: true }`. Signs the phone out: its token stops working, its open sockets close, and its push and Live Activity registrations are removed |
+| `POST` | `/v1/pair` | **No token.** `{ code, deviceName }` → 201 `{ token, computer: { id, name } }`. Trades a pairing code for the phone's own token. `deviceName` is 1–60 characters without control characters. 404 for an unknown, used or expired code; 429 for 60 s after 20 wrong codes |
+
+The routes without a computer in the path serve the caller's own computer: the owner's
+computer for the owner token, and the phone's computer for a phone token.
+
+**Pairing.** The console asks for a code and shows it as a QR code and as
+`caboose://connect?host=<origin>&code=<code>`. A code is 8 characters from
+`ABCDEFGHJKMNPQRSTVWXYZ23456789`, works once, expires after 10 minutes and lives only in the
+host's memory. The app trades it through `POST /v1/pair` at the first of the link's
+addresses that answers, then keeps the token like any other. Phone tokens are `cbp_`
+followed by 43 base64url characters, shown only in the `/v1/pair` response; the host keeps
+their SHA-256.
 
 ### Lifecycle
 
@@ -386,9 +435,12 @@ While running, the microVM's appkit-desk lease is renewed every 20 s.
 
 ### Authentication
 
-Every `/v1` route and WebSocket upgrade requires `Authorization: Bearer <owner token>`; the
-host compares SHA-256 digests of the candidate and the token in constant time. Requests
-without it get 401. Every route is scoped to the authenticated principal's computer.
+Every `/v1` route except `POST /v1/pair`, and every WebSocket upgrade, requires
+`Authorization: Bearer <token>`. The token is either the owner token, compared as SHA-256
+digests in constant time, or a phone token. The owner token reaches every route and every
+computer. A phone token reaches only its own computer's routes, without a computer in the
+path; `/v1/health`, `/v1/host` and `/v1/computers…` answer it 403. Requests with neither
+token get 401.
 
 The built web console is served from `CABOOSE_WEB_ROOT` with an SPA fallback for non-API
 `GET`s. Static files are public. The console keeps the owner token in session storage and
@@ -402,9 +454,11 @@ most 64 KiB (15 MiB for `POST /v1/agent/tasks`). Errors are `{ error: string }`:
 | Status | Meaning |
 | --- | --- |
 | 400 | Invalid input, including unknown fields where a route rejects them |
-| 401 | Missing or wrong owner token |
+| 401 | Missing or unknown token |
+| 403 | A phone token on a route for the owner alone |
 | 404 | Unknown route, task, agent, element or device |
-| 409 | The computer is not running (or is restarting), its display is not ready, or a conflicting operation is in progress |
+| 409 | The computer is not running (or is restarting, or being deleted), its display is not ready, or a conflicting operation is in progress |
+| 429 | Too many wrong pairing codes |
 | 502 | The guest or the agent registry failed an operation; the message says why |
 | 503 | Push or Live Activities are not configured |
 
@@ -630,7 +684,7 @@ second while the computer is running and at least one control socket opened with
   Print content is `application/pdf`.
 
 Delivery is at most once: events drained while no phone socket can receive them are not
-replayed. The owner token scopes the connection to the owner's computer.
+replayed. The token scopes the connection to its computer.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -1246,9 +1300,18 @@ app group and a Keychain access group.
 ## 7. Security model
 
 - **Owner token.** One bearer token (`CABOOSE_OWNER_TOKEN`, or generated into the state
-  directory with mode 0600) authorizes every `/v1` route and WebSocket. The host speaks plain HTTP on loopback by default; HTTPS and WSS belong in
-  front of it before traffic crosses a network. The app and its extensions keep the pairing
-  in a shared Keychain access group; the web console keeps it in session storage.
+  directory with mode 0600) authorizes every `/v1` route, every computer and every
+  WebSocket. The web console keeps it in session storage. The host
+  speaks plain HTTP on loopback by default; HTTPS and WSS belong in front of it before
+  traffic crosses a network.
+- **Phone tokens.** A phone signs in to one computer with its own token, obtained once for a
+  single-use, ten-minute pairing code, so no token is ever shown in a link, a QR code or the
+  console. The host stores only SHA-256 digests; signing a phone out closes its sockets and
+  removes its notifications. The app and its extensions keep the token in a shared Keychain
+  access group.
+- **Computers.** Each computer is fenced from every other (`192.0.2.0/24` is always
+  rejected; containers sit on separate bridge networks) and has its own disk and data
+  directory.
 - **Display token.** A random per-wake token in `/run/caboose/display-token` (mode 0600,
   owned by `caboose`) authorizes the guest's display and file services. It reaches a
   client only inside an authenticated `/v1/session` response.

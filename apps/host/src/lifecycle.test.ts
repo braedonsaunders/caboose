@@ -126,6 +126,28 @@ describe('computer lifecycle', () => {
   })
 })
 
+describe('retiring a computer', () => {
+  it('waits for queued work, then refuses everything new', async () => {
+    let finish!: () => void
+    const driver = { wake: vi.fn(async () => 'desk'), park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 1000)
+    const running = computer.wakeAndRun(() => new Promise<void>(resolve => { finish = resolve }))
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    const destroyed = vi.fn(async () => {})
+    const retiring = computer.retire(destroyed)
+    await expect(computer.wake()).rejects.toThrow('being deleted')
+    await expect(computer.run(async () => {})).rejects.toThrow('being deleted')
+    await expect(computer.wakeAndRun(async () => {})).rejects.toThrow('being deleted')
+    expect(destroyed).not.toHaveBeenCalled()
+    finish()
+    await running
+    await retiring
+    expect(destroyed).toHaveBeenCalledOnce()
+    expect(driver.park).not.toHaveBeenCalled()
+    expect(computer.state).toBe('parked')
+  })
+})
+
 describe('bearer authentication', () => {
   it('accepts only the owner bearer token', () => {
     expect(authenticate('Bearer secret', 'secret')).toBe(true)
