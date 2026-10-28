@@ -1,9 +1,10 @@
+import { proxyFiles, type FileService } from './fs-proxy.js'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
-import { openUrl, saveDownload } from './files.js'
+import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWNLOADS } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
 import { HomeOwnership } from './home.js'
 import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
@@ -27,6 +28,7 @@ export interface Controller extends ComputerDriver<Session> {
   ensureAgentSeat(): Promise<void>
   /** Root command runner in the running computer, or undefined while parked. */
   guest(): AgentGuest | undefined
+  fileService?(): FileService
   activeResources(): ComputerResources | null
   hasSavedState(): boolean
   lastError?(): string | null
@@ -34,7 +36,6 @@ export interface Controller extends ComputerDriver<Session> {
 
 /** Body limits: base64 inflates by a third, plus room for the JSON around it. */
 const TASK_BODY_LIMIT = 15 * 1024 * 1024
-const FILE_BODY_LIMIT = 70 * 1024 * 1024
 
 async function readJson(request: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
@@ -74,6 +75,37 @@ export function createCabooseServer(options: {
     resolver: catalog, home, pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(options.agentIdleMs !== undefined ? { idleMs: options.agentIdleMs } : {}),
   })
   const media = new MediaHandoff(() => controller.guest(), broadcast)
+  let fileAnchor: string | undefined
+  let filePoll: ReturnType<typeof setInterval> | undefined
+  let pollingFiles = false
+  function syncFiles(): void {
+    const active = computer.state === 'running' && controls.size > 0 && controller.fileService
+    if (!active) {
+      if (filePoll) clearInterval(filePoll)
+      filePoll = undefined
+      fileAnchor = undefined
+      return
+    }
+    if (filePoll) return
+    const poll = async () => {
+      if (pollingFiles || !controller.fileService || computer.state !== 'running') return
+      pollingFiles = true
+      try {
+        const service = controller.fileService()
+        const url = new URL('/changes', service.url)
+        if (fileAnchor) url.searchParams.set('anchor', fileAnchor)
+        const response = await fetch(url, { headers: { authorization: `Bearer ${service.token}` }, signal: AbortSignal.timeout(5000) })
+        if (!response.ok) throw new Error('File change feed unavailable')
+        const change = await response.json() as { anchor: string; changed: boolean }
+        if (fileAnchor && change.changed) broadcast({ type: 'fs.changed', anchor: change.anchor })
+        fileAnchor = change.anchor
+      } catch { /* Retry with the previous anchor so missed changes trigger a rescan. */ }
+      finally { pollingFiles = false }
+    }
+    void poll()
+    filePoll = setInterval(() => { void poll() }, 1000)
+    filePoll.unref()
+  }
   /** Media is polled only while the computer is already running and someone is watching it. */
   function syncMedia(): void { media.setActive(computer.state === 'running' && sockets.size - controls.size > 0) }
   function managementStatus() {
@@ -105,6 +137,7 @@ export function createCabooseServer(options: {
     if (state === 'running') agents.resume()
     else { agents.pause(); media.computerStopped() }
     syncMedia()
+    syncFiles()
     broadcastSettings()
   })
   function json(response: ServerResponse, status: number, body: unknown): void {
@@ -120,6 +153,28 @@ export function createCabooseServer(options: {
         return json(response, 404, { error: 'not found' })
       }
       if (!authorized(request)) return json(response, 401, { error: 'unauthorized' })
+      if (request.method === 'POST' && path === '/v1/fs/open') {
+        const input = await readJson(request)
+        const relative = input.path
+        if (typeof relative !== 'string' || !relative || relative.startsWith('/') || relative.split('/').some(part => !part || part === '.' || part === '..' || part.includes('\0'))) {
+          throw new AgentInputError('invalid file path')
+        }
+        return computer.wakeAndRun(async () => {
+          if (!controller.fileService || !controller.guest()) throw new AgentUnavailableError()
+          const service = controller.fileService(), url = new URL('/stat', service.url)
+          url.searchParams.set('path', relative)
+          const checked = await fetch(url, { headers: { authorization: `Bearer ${service.token}` } })
+          if (!checked.ok) return json(response, checked.status, { error: 'file unavailable' })
+          await openOnDisplay(controller.guest()!, `/home/caboose/${relative}`)
+          return json(response, 200, { opened: true })
+        })
+      }
+      if (path.startsWith('/v1/fs/')) {
+        return computer.wakeAndRun(async () => {
+          if (!controller.fileService) throw new AgentUnavailableError()
+          await proxyFiles(controller.fileService(), request, response)
+        })
+      }
       if (request.method === 'GET' && path === '/v1/health') return json(response, 200, controller.stats())
       if (request.method === 'GET' && path === '/v1/computer') return json(response, 200, managementStatus())
       if (request.method === 'PATCH' && path === '/v1/computer/settings') {
@@ -216,8 +271,29 @@ export function createCabooseServer(options: {
         return json(response, 200, await computer.run(() => screen(controller.guest(), input)))
       }
       if (request.method === 'POST' && path === '/v1/files') {
-        const input = await readJson(request, FILE_BODY_LIMIT)
-        return json(response, 200, await computer.wakeAndRun(() => saveDownload(controller.guest(), input)))
+        const input = await readJson(request, Number.MAX_SAFE_INTEGER)
+        if (typeof input.name !== 'string' || !input.name.trim()) throw new AgentInputError('name is required')
+        if (input.open !== undefined && typeof input.open !== 'boolean') throw new AgentInputError('open must be a boolean')
+        const data = decodeBase64(input.data, 'data')
+        return json(response, 200, await computer.wakeAndRun(async () => {
+          if (!controller.fileService || !controller.guest()) throw new AgentUnavailableError()
+          const service = controller.fileService()
+          const headers = { authorization: `Bearer ${service.token}` }
+          const mkdir = await fetch(`${service.url}/mkdir?path=Downloads`, { method: 'POST', headers })
+          if (!mkdir.ok && mkdir.status !== 409) throw new Error('Could not create Downloads')
+          const name = sanitizeFileName(input.name), { stem, ext } = splitName(name)
+          for (let n = 1; ; n++) {
+            const target = n === 1 ? name : `${stem} (${n})${ext}`
+            const url = new URL('/content', service.url)
+            url.searchParams.set('path', `Downloads/${target}`)
+            const saved = await fetch(url, { method: 'PUT', headers: { ...headers, 'if-none-match': '*', 'content-length': String(data.length) }, body: new Uint8Array(data) })
+            if (saved.status === 412) continue
+            if (!saved.ok) throw new Error('Could not save file in Downloads')
+            const path = `${DOWNLOADS}/${target}`
+            if (input.open === true) await openOnDisplay(controller.guest()!, path)
+            return { path }
+          }
+        }))
       }
       if (request.method === 'POST' && path === '/v1/open') {
         const input = await readJson(request)
@@ -271,8 +347,9 @@ export function createCabooseServer(options: {
         sockets.add(client)
         if (path === '/v1/control') controls.add(client)
         syncMedia()
+        syncFiles()
         client.on('error', () => client.terminate())
-        client.once('close', () => { sockets.delete(client); controls.delete(client); release(); syncMedia() })
+        client.once('close', () => { sockets.delete(client); controls.delete(client); release(); syncMedia(); syncFiles() })
         if (path === '/v1/control') {
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))

@@ -1,14 +1,11 @@
-import { randomUUID } from 'node:crypto'
 import { AgentInputError, AgentUnavailableError, type AgentGuest } from './agents.js'
 
 /**
- * Files into the owner's computer and links onto its display. The guest channel carries
- * arguments, not stdin, so file contents travel as base64 in argument-sized chunks and are
- * decoded in the guest, as user `caboose`. See docs/architecture.md § Files.
+ * Agent attachments and links onto the owner's display. Agent attachments use the
+ * argument-only guest channel; shared files use the separate streaming service.
  */
 export const HOME = '/home/caboose'
 export const DOWNLOADS = `${HOME}/Downloads`
-export const MAX_FILE_BYTES = 50 * 1024 * 1024
 /** One argument stays well under Linux's 128 KiB per-argument limit; a multiple of 4 keeps chunks whole base64. */
 const CHUNK_CHARS = 96 * 1024
 /** Arguments per guest command, well under the 2 MiB total argument limit. */
@@ -80,33 +77,8 @@ const OPEN_SCRIPT = [
   'setsid $opener "$1" > /dev/null 2>&1 < /dev/null &',
 ].join('\n')
 
-async function openOnDisplay(guest: AgentGuest, target: string): Promise<void> {
+export async function openOnDisplay(guest: AgentGuest, target: string): Promise<void> {
   await guest.run(RUNUSER, ['-u', 'caboose', '--', '/bin/sh', '-c', OPEN_SCRIPT, 'sh', target], 15_000)
-}
-
-/** Picks a free name in Downloads and renames the upload into it; prints the final path. */
-const PLACE_SCRIPT = [
-  'cd "$1" || exit 1',
-  'target="$3"; n=1',
-  'while [ -e "$target" ]; do n=$((n + 1)); target="$4 ($n)$5"; done',
-  'mv -n -- "$2" "$target" && [ ! -e "$2" ] && printf %s "$1/$target"',
-].join('\n')
-
-/** `POST /v1/files`: `{ name, data (base64), open? }` → `{ path }` in ~/Downloads. */
-export async function saveDownload(guest: AgentGuest | undefined, input: Record<string, unknown>): Promise<{ path: string }> {
-  const name = sanitizeFileName(input.name)
-  if (typeof input.name !== 'string' || !input.name.trim()) throw new AgentInputError('name is required')
-  const data = decodeBase64(input.data, 'data')
-  if (data.length > MAX_FILE_BYTES) throw new AgentInputError('files are limited to 50 MB')
-  if (input.open !== undefined && typeof input.open !== 'boolean') throw new AgentInputError('open must be a boolean')
-  if (!guest) throw new AgentUnavailableError()
-  const part = `${DOWNLOADS}/.caboose-upload-${randomUUID()}.part`
-  await writeGuestFile(guest, part, data)
-  const { stem, ext } = splitName(name)
-  const path = await guest.run(RUNUSER, ['-u', 'caboose', '--', '/bin/sh', '-c', PLACE_SCRIPT, 'sh', DOWNLOADS, part, name, stem, ext], 15_000)
-  if (!path.startsWith(`${DOWNLOADS}/`)) throw new Error('the upload could not be placed in Downloads')
-  if (input.open === true) await openOnDisplay(guest, path)
-  return { path }
 }
 
 /** `POST /v1/open`: `{ url }` → opens an http(s) URL in the default browser on the owner's display. */

@@ -15,8 +15,7 @@ struct ShareView: View {
                     ProgressView()
                 } else if model.items.isEmpty {
                     ContentUnavailableView("Nothing to Send", systemImage: "tray",
-                                           description: Text(model.skipped.isEmpty ? "Caboose can take pages, text, photos and files."
-                                                             : "Files over 20 MB are too large to share from here."))
+                                           description: Text("Caboose can take pages, text, photos and files."))
                 } else {
                     form
                 }
@@ -37,10 +36,6 @@ struct ShareView: View {
         Form {
             Section {
                 ForEach(model.items) { item in row(item) }
-                if !model.skipped.isEmpty {
-                    Label("Too large to share from here: \(model.skipped.joined(separator: ", "))", systemImage: "exclamationmark.triangle")
-                        .font(.footnote).foregroundStyle(.orange)
-                }
             }
 
             Section {
@@ -97,19 +92,15 @@ struct ShareView: View {
             } icon: { Image(systemName: "globe") }
         case .text(let text):
             Label { Text(text).lineLimit(3).font(.subheadline) } icon: { Image(systemName: "text.alignleft") }
-        case .file(let name, let type, let data):
+        case .file(let name, let type, let url):
             Label {
                 VStack(alignment: .leading) {
                     Text(name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))
+                    Text(ByteCountFormatter.string(fromByteCount: Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0), countStyle: .file))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } icon: {
-                if type.conforms(to: .image), let image = UIImage(data: data) {
-                    Image(uiImage: image).resizable().scaledToFill().frame(width: 28, height: 28).clipShape(.rect(cornerRadius: 5))
-                } else {
-                    Image(systemName: type.conforms(to: .movie) ? "film" : "doc")
-                }
+                Image(systemName: type.conforms(to: .image) ? "photo" : type.conforms(to: .movie) ? "film" : "doc")
             }
         }
     }

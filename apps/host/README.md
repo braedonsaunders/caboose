@@ -77,11 +77,24 @@ approvals, attachments, `POST /v1/files` and `POST /v1/open` are specified in
 (`src/registry.ts`; `CABOOSE_AGENT_REGISTRY_URL` selects a mirror), cached in
 `${CABOOSE_IMAGE_ROOT}/agent-registry.json`, and run in the computer by `caboose-agentd`
 (`guest/agentd`); the host has no code for any particular agent. `CABOOSE_AGENT_IDLE_MS`
-sets how long an agent stays running after a turn, waiting for a reply. The host talks to
-the guest only through the driver's `guest().run(command, args)`; file contents are sent
-as base64 argument chunks and decoded in the guest, so both the microVM and container
-drivers support them without a stdin channel.
-Saving a file wakes a parked computer and keeps it awake until the save completes.
+sets how long an agent stays running after a turn, waiting for a reply. Agent attachment contents use base64 argument chunks on the guest command channel.
+Shared files and `/v1/fs` use the guest's authenticated TCP file service, installed in both
+images; streaming requests wake the computer and hold a lease until the transfer finishes.
+The full route, precondition, Trash and change-feed contract is in `../../docs/architecture.md` § Files.
+Existing computer disks need the service installed in the guest; rebuilding the golden image
+updates newly created computers only.
+
+With Node 22 and a real computer, the file check creates a temporary directory, uploads,
+lists, downloads a byte range, moves and trashes its files and the directory:
+
+```sh
+export CABOOSE_URL=https://computer.example.com
+# Supply CABOOSE_OWNER_TOKEN through your private environment.
+node apps/host/scripts/check-fs.mjs
+```
+
+The guest-service check runs its Linux inotify and filesystem operations in an ephemeral
+Python container: `docker run --rm -v "$PWD/guest/files:/checks:ro" python:3.13-slim python3 /checks/check-service.py`.
 
 The owner-screen routes (`/v1/screen/*`, § Screen) are in `src/screen.ts`: they run the
 guest's accessibility helper `/opt/caboose/a11y.py` (see `guest/desktop-mcp`) and `xdotool`

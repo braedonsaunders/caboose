@@ -56,3 +56,10 @@ profile is based on the [Moby seccomp v0.2.1 default](https://github.com/moby/pr
 (Apache-2.0), with clone/unshare allowed for user, PID and network namespaces;
 mount, UTS, IPC and cgroup namespace creation remains blocked. It must be
 reviewed against the Docker version and local security requirements.
+
+## File service
+
+The image installs `guest/files/caboose-files.py`. `caboose-session start-files` starts it
+as `caboose` after the host writes the wake token; the host publishes port 14700 on loopback
+only. See `docs/architecture.md` § Files and `apps/host/README.md` for the API and checks.
+Recreate a container from the updated image to install the service; its home volume remains.

@@ -105,7 +105,7 @@ export function createContainerController(config: Config, dependencies: { docker
       '--restart', 'no',
       '--label', `caboose.memory-mb=${size.memoryMb}`, '--label', `caboose.vcpus=${size.vcpus}`,
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
-      '-p', '127.0.0.1:14500:14500', '-p', '127.0.0.1:14501:14501', '-p', '127.0.0.1:14600:14600',
+      '-p', '127.0.0.1:14700:14700', '-p', '127.0.0.1:14500:14500', '-p', '127.0.0.1:14501:14501', '-p', '127.0.0.1:14600:14600',
       '-v', `${config.containerHome}:/home/caboose`,
       ...gpuArgs(gpu, dependencies.exists),
       ...config.containerArgs,
@@ -137,6 +137,7 @@ export function createContainerController(config: Config, dependencies: { docker
   const controller: Controller = {
     displayUrl: `ws://127.0.0.1:${owner.port}/`,
     agentDisplayUrl: 'ws://127.0.0.1:14501/',
+    fileService: () => ({ url: 'http://127.0.0.1:14700', token: displayToken }),
     async ensureAgentSeat() {
       await exec('root', '/usr/local/bin/caboose-session', ['start-agent'], 120_000)
     },
@@ -167,6 +168,7 @@ export function createContainerController(config: Config, dependencies: { docker
           // Xpra reads the password file on each connection; never put a newline in it.
           await exec('root', '/bin/sh', ['-c', 'install -d -m 0755 /run/caboose; printf %s "$1" > /run/caboose/xpra-token; chown caboose:caboose /run/caboose/xpra-token; chmod 0600 /run/caboose/xpra-token', 'sh', displayToken])
         }
+        await exec('root', '/bin/sh', ['-c', '[ ! -f /opt/caboose/files/caboose-files.py ] || exec /usr/local/bin/caboose-session start-files'], 70_000).catch(error => console.error('File service unavailable:', error))
         if (config.display === 'caboose-display') {
           await exec('root', '/usr/local/bin/caboose-session', ['start-display'], 240_000)
           await exec('root', '/usr/local/bin/caboose-session', ['ready-display'], 240_000)

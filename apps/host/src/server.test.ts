@@ -1,5 +1,6 @@
 import { once } from 'node:events'
 import { readFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -41,6 +42,13 @@ it('authenticates routes and relays binary websocket messages while holding a le
 })
 
 it('routes agent replies, approvals, files and links with the right status codes', async () => {
+  const fileServer = createServer((req, res) => {
+    req.resume()
+    req.on('end', () => { res.writeHead(201, { 'content-type': 'application/json' }); res.end('{}') })
+  })
+  fileServer.listen(0, '127.0.0.1')
+  await once(fileServer, 'listening')
+  close.push(() => new Promise(resolve => fileServer.close(() => resolve())))
   const runs: string[][] = []
   const guest = { run: async (command: string, args: string[]) => {
     runs.push([command, ...args])
@@ -48,7 +56,8 @@ it('routes agent replies, approvals, files and links with the right status codes
   } }
   const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
     park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {},
-    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
+    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest,
+    fileService: () => ({ url: `http://127.0.0.1:${(fileServer.address() as AddressInfo).port}`, token: 'test' }) }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: 'claude-acp' }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const registry = new AgentRegistry({ fetch: (async () => new Response(await readFile(new URL('./fixtures/acp-registry.json', import.meta.url)))) as unknown as typeof fetch })
   const app = createCabooseServer({ token: 'owner', settings, controller, registry })

@@ -65,8 +65,14 @@ final class AppModel {
         let saved = Credentials.load()
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
-        agents.onComputer = { [weak self] status in self?.computerStatus = status }
-        agents.onEvent = { [weak self] type, event in self?.media.handle(type, event) }
+        agents.onComputer = { [weak self] status in
+            self?.computerStatus = status
+            if let credentials = self?.credentials { FileDomains.register(credentials, name: status.settings.name) }
+        }
+        agents.onEvent = { [weak self] type, event in
+            self?.media.handle(type, event)
+            if type == "fs.changed", let credentials = self?.credentials { FileDomains.signal(credentials) }
+        }
         media.attach(host: { [weak self] in self?.host })
     }
 
@@ -92,6 +98,7 @@ final class AppModel {
     // MARK: Setup
 
     func connect(with credentials: Credentials) {
+        if let old = self.credentials, old.fileDomainIdentifier != credentials.fileDomainIdentifier { FileDomains.remove(old) }
         credentials.save()
         self.credentials = credentials
         activeHostURL = nil
@@ -105,6 +112,7 @@ final class AppModel {
         media.reset()
         computerStatus = nil
         settingsPresented = false
+        if let credentials { FileDomains.remove(credentials) }
         Credentials.clear()
         credentials = nil
         activeHostURL = nil
@@ -126,6 +134,10 @@ final class AppModel {
         do {
             let wake = try await host.wake()
             computer = wake.computer
+            if let credentials {
+                FileDomains.register(credentials, name: wake.computer.name)
+                FileDomains.signal(credentials)
+            }
             if !quiet { phase = .connecting }
             startSession(host: host, display: wake.display)
             agents.detach()

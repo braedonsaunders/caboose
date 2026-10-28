@@ -29,6 +29,7 @@ targets:
     dependencies:
       - package: CabooseKit
       - target: CabooseShare
+      - target: CabooseFiles
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.braedonsaunders.caboose
@@ -47,3 +48,17 @@ targets:
         PRODUCT_NAME: CabooseShare
         INFOPLIST_FILE: Share/Info.plist
         CODE_SIGN_ENTITLEMENTS: Share/Share.entitlements
+  CabooseFiles:
+    type: app-extension
+    platform: iOS
+    dependencies:
+      - package: CabooseKit
+    sources:
+      - path: Files
+      - path: Caboose/Host/Credentials.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.braedonsaunders.caboose.files
+        PRODUCT_NAME: CabooseFiles
+        INFOPLIST_FILE: Files/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Files/Files.entitlements

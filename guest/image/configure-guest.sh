@@ -28,6 +28,8 @@ printf 'caboose ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/caboose
 chmod 0440 /etc/sudoers.d/caboose
 /tmp/desktop-mcp/install.sh
 /tmp/agentd/install.sh
+install -D -m 0755 /tmp/files/caboose-files.py /opt/caboose/files/caboose-files.py
+install -m 0644 /tmp/files/caboose-files.service /etc/systemd/system/
 mkdir -p /opt/desk-agent/appkit-desk
 for file in desk-guest-agent.mjs atspi-dump.py package.json desk-guest-agent.service desk-vsock-bridge.service; do
  curl -fsSL "https://raw.githubusercontent.com/braedonsaunders/bunkhouse/307f2eee512f27459843a588b38200f57abb6bcf/deploy/desk-image/agent/$file" -o "/tmp/$file"
