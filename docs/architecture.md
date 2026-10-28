@@ -254,7 +254,7 @@ owner's pointer or types into the owner's windows.
 - **Tasks.** The host starts a task detached (`setsid`), as user `caboose`, in
   `/home/caboose/Agents/<task-id>/`, with `DISPLAY=:101` and `CABOOSE_TASK_DIR` set to that
   directory: `claude -p <prompt> --output-format stream-json --verbose` or
-  `codex exec --json --skip-git-repo-check -c sandbox_mode=workspace-write <prompt>`.
+  `codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox <prompt>`.
   Without approvals Claude runs with `--permission-mode acceptEdits` and the shell, file,
   web and desktop tools pre-allowed; Codex always runs in its workspace-write sandbox.
   Output is parsed into events; the raw JSONL transcript is kept in the task directory.
@@ -262,7 +262,7 @@ owner's pointer or types into the owner's windows.
   prompt. The host records the conversation id from the transcript — Claude's
   `system`/`init` `session_id`, Codex's `thread.started` `thread_id` — in the task's
   `session` file and runs `claude -p <prompt> --resume <session_id> …` or
-  `codex exec resume --json --skip-git-repo-check -c sandbox_mode=workspace-write <thread_id> <prompt>`.
+  `codex exec resume --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox <thread_id> <prompt>`.
   Each turn appends to the same `transcript.jsonl`; the task keeps its id, `prompt` (the
   first one) and `startedAt`, goes back to `running`, and `turns` counts the turns. A task
   that never reported a conversation id (for example, cancelled before the CLI started)

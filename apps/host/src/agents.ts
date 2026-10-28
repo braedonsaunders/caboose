@@ -82,9 +82,9 @@ export function launchScript(agent: AgentKind, options: { approvals?: ApprovalMo
           // its own seat needs: the shell, files, the web, and the desktop tools for GUI apps.
           : '--permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch,mcp__caboose-desktop',
       ].join(' ')
-    // `codex exec` cannot ask, so it runs in the workspace-write sandbox. `codex exec resume`
-    // takes no --sandbox flag; the config override works for both.
-    : `codex exec ${resume ? 'resume ' : ''}--json --skip-git-repo-check -c sandbox_mode=workspace-write ${resume ? '"$(cat session)" ' : ''}"$(cat turn.txt)"`
+    // `codex exec` cannot ask. The computer is the sandbox, as it is for Claude: Codex's own
+    // workspace-write sandbox would confine it to the task directory and cut off the network.
+    : `codex exec ${resume ? 'resume ' : ''}--json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox ${resume ? '"$(cat session)" ' : ''}"$(cat turn.txt)"`
   return [
     'set -e',
     'cd "$1"',

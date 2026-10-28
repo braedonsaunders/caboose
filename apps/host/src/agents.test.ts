@@ -54,7 +54,7 @@ describe('launchScript', () => {
     expect(claude).toContain('mcp__caboose-desktop')
     expect(claude).toContain('>> transcript.jsonl')
     expect(claude).not.toContain('--resume')
-    expect(launchScript('codex')).toContain('codex exec --json --skip-git-repo-check -c sandbox_mode=workspace-write "$(cat turn.txt)"')
+    expect(launchScript('codex')).toContain('codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$(cat turn.txt)"')
   })
 
   it('asks through the approve tool instead of pre-approving tools', () => {
@@ -67,7 +67,7 @@ describe('launchScript', () => {
   it('resumes the recorded conversation', () => {
     expect(launchScript('claude', { resume: true })).toContain('claude -p "$(cat turn.txt)" --resume "$(cat session)"')
     expect(launchScript('codex', { resume: true }))
-      .toContain('codex exec resume --json --skip-git-repo-check -c sandbox_mode=workspace-write "$(cat session)" "$(cat turn.txt)"')
+      .toContain('codex exec resume --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$(cat session)" "$(cat turn.txt)"')
   })
 })
 
