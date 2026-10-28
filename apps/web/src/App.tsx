@@ -116,8 +116,9 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
       navigationMode="sidebar"
       linkRender={linkRender}
       brand={
-        // The hubs are lit while any computer is up and unlit while every one is parked.
-        <Wordmark height={30} lit={awake} className="text-fg" />
+        // The hubs are lit while any computer is up and unlit while every one is parked;
+        // a lit train rolls now and then, a parked one stays still.
+        <Wordmark height={30} lit={awake} motion={awake ? 'idle' : 'none'} className="text-fg" />
       }
       header={
         <AccountMenu

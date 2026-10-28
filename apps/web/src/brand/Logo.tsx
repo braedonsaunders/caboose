@@ -4,8 +4,9 @@ import { wordmarkSvg, type Motion } from './brand.js'
 // The console's brand: the wordmark from brand.ts, the same markup as the README
 // files, drawn in the current text colour so it follows the light and dark theme.
 //
-//   <Wordmark motion="intro" />    draws itself in and rolls (sign-in)
-//   <Wordmark />                   the still logo (sidebar)
+//   <Wordmark motion="intro" />    draws itself in and rolls, then rolls now and then (sign-in)
+//   <Wordmark motion="idle" />     the still logo, rolling now and then (sidebar)
+//   <Wordmark />                   the still logo
 //   <Wordmark lit={false} />       hubs unlit: the computer is parked
 //   <Wordmark motion="rolling" />  wheels turning (loading)
 
