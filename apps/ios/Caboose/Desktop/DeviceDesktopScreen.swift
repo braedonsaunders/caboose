@@ -16,6 +16,7 @@ struct DesktopScreen: View {
     @Environment(AppModel.self) private var model
     @State private var showAirPlay = false
     @State private var fullScreen = false
+    @State private var showingFullScreenActions = false
 
     var body: some View {
         NavigationStack {
@@ -46,6 +47,14 @@ struct DesktopScreen: View {
             .overlay(alignment: .top) { if fullScreen && model.yard.coverWindow == nil { exitFullScreenHandle } }
             .animation(.snappy, value: immersive)
             .onChange(of: model.phase) { _, phase in if phase != .ready { fullScreen = false } }
+            .confirmationDialog("Full Screen", isPresented: $showingFullScreenActions, titleVisibility: .visible) {
+                if model.yardActive, let window = model.window(model.yard.layout.focused) {
+                    Button("Open App Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") {
+                        model.show(windowID: window.id)
+                    }
+                }
+                Button("Hide Desktop Bars", systemImage: "rectangle.expand.vertical") { fullScreen = true }
+            }
             .sheet(isPresented: $showAirPlay) {
                 AirPlaySheet().environment(model)
                     .presentationDetents([.medium])
@@ -100,7 +109,8 @@ struct DesktopScreen: View {
 
     private var fullScreenItem: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { fullScreen = true }
+            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { showingFullScreenActions = true }
+                .labelStyle(.iconOnly)
         }
     }
 

@@ -1374,7 +1374,13 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
 - **Windows.** A Linux window opened from Home or Apps is an app card: full screen, sized
   to the phone, and a swipe in from either side edge goes to the next or previous open app
-  in the order they opened. An external display shows the windows floating, resizing and
+  in the order they opened. Back, the app switcher, Keyboard and Window Options use the
+  system toolbar: on a vertical-bar device they sit on the side and the app uses the full
+  height beside it; elsewhere they occupy a compact horizontal toolbar within the safe
+  area. The window title is in the switcher; Options includes Ask Agent, redraw and close.
+  The switcher and options open system action dialogs outside the toolbar's overflow group.
+  Full Screen hides the controls; its accessible top handle brings them back.
+  An external display shows the windows floating, resizing and
   stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
   The green title-bar button maximizes above the dock: its title bar meets the desktop's
   top edge, and its content ends eight UI-scaled points above the dock. Rotation and UI
@@ -1395,8 +1401,9 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   most about eight times a second. The gaps resize (snapping to the presets, with haptic
   detents). The grabber at a tile's top carries it to a new column, into a stack or onto
   another tile; a tap gives the tile the keyboard, and a double tap opens the same
-  full-screen app card as Apps. The visible Full Screen button, the grabber's menu and
-  accessibility action, and ⌘⌥F also open that card. The card keeps Desktop selected
+  full-screen app card as Apps. The Desktop toolbar's trailing Full Screen control opens
+  the focused app as that card; the grabber's menu and accessibility action, and ⌘⌥F
+  also open it. The card keeps Desktop selected
   underneath; dismissing it restores the tile layout. Only the presented card sends window
   geometry while it is up. Its measured content area, including changes to its controls,
   rotation and folding, replaces the guest display size; the complete picture fits while
@@ -1453,8 +1460,9 @@ Pinned and recent apps are kept on the phone per computer.
   and clipped to its measured content viewport; folding, rotation and tab changes report
   that viewport again. Home's Open, Pinned and Recent rows receive the measured column
   width and clip within it; recent file names and paths truncate within the same column.
-  Full Screen hides the bars and gives the desktop the whole display; a handle at the
-  top brings them back. No screen disables the vertical bar.
+  The Desktop toolbar's Full Screen action dialog also offers Hide Desktop Bars, giving the
+  desktop the whole display; a handle at the top brings the bars back. No screen disables
+  the vertical bar.
 - **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. Home's
   AirPlay control remembers the AirPlay output the computer's sound last played on (from the
   audio session's route) and, on a tap, switches the session to long-form video routing and
