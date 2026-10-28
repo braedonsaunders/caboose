@@ -80,6 +80,81 @@ import Testing
         session.disconnect()
     }
 
+    /// Touch, text, composition and keys against the compositor's test windows: a Chromium
+    /// page whose title reports `<pointerType>|<field value>`, and xterm. Direct mode only.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CABOOSE_DISPLAY_URL"] != nil))
+    func drivesTouchTextAndKeys() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let capabilities = ClientCapabilities(desktopWidth: 2560, desktopHeight: 1600, dpi: 192, refreshRate: 120)
+        let session = CabooseDisplaySession(displayURL: URL(string: environment["CABOOSE_DISPLAY_URL"]!)!, token: "",
+                                            password: environment["CABOOSE_DISPLAY_TOKEN"] ?? "", capabilities: capabilities)
+        session.connect()
+        try await until("hello", timeout: 20) { session.state == .ready }
+        let ticker = Task { @MainActor in
+            while !Task.isCancelled {
+                session.displayWillRefresh(0, targetTimestamp: CACurrentMediaTime() + 1.0 / 120)
+                try? await Task.sleep(for: .milliseconds(8))
+            }
+        }
+        defer { ticker.cancel(); session.disconnect() }
+        try await until("windows", timeout: 20) { session.windows.count >= 2 }
+        let page = try #require(session.windows.values.first { $0.appClass?.instance.contains("chrome") == true })
+        print("page \(page.frame) title \"\(page.title)\" touch=\(page.acceptsTouch)")
+
+        // A tap in the middle of the page: Chromium sees a touch pointer and focuses the field.
+        let centre = CGPoint(x: page.frame.width / 2, y: page.frame.height / 2)
+        session.touch([TouchPoint(slot: 0, phase: .down, x: centre.x, y: centre.y)], in: page)
+        try await Task.sleep(for: .milliseconds(60))
+        session.touch([TouchPoint(slot: 0, phase: .up, x: centre.x, y: centre.y)], in: page)
+        try await until("a touch pointer", timeout: 5) { page.title.hasPrefix("touch|") }
+
+        // The page refocuses its field after every pointerdown; Chromium then enables text-input-v3.
+        try await until("text input enabled", timeout: 3) { session.textInput?.enabled == true }
+        #expect(session.composesText)
+        // Clear what an earlier run left, a BackSpace per character.
+        let backspace = try #require(Keysyms.special["BackSpace"])
+        for _ in 0 ..< page.title.drop(while: { $0 != "|" }).dropFirst().count {
+            session.key(backspace, pressed: true, in: page)
+            session.key(backspace, pressed: false, in: page)
+        }
+        try await until("an empty field", timeout: 3) { page.title == "touch|" }
+        let x = try #require(Keysyms.stroke(for: "x"))
+        session.key(x, pressed: true, in: page)
+        session.key(x, pressed: false, in: page)
+        try await until("a key", timeout: 3) { page.title == "touch|x" }
+        session.key(backspace, pressed: true, in: page)
+        session.key(backspace, pressed: false, in: page)
+        try await until("BackSpace", timeout: 3) { page.title == "touch|" }
+        session.edit([.type("caboose ")], in: page)
+        try await until("committed text", timeout: 5) { page.title.hasSuffix("|caboose ") }
+        session.edit([.backspace(1)], in: page)
+        try await until("a deletion", timeout: 5) { page.title.hasSuffix("|caboose") }
+        if session.composesText {
+            session.compose("にほ", selection: NSRange(location: 2, length: 0), in: page)
+            try await Task.sleep(for: .milliseconds(300))
+            print("during preedit: \"\(page.title)\"")
+            session.edit([.type("日本")], in: page)
+            try await until("the composition committed", timeout: 5) { page.title.hasSuffix("|caboose日本") }
+        }
+        print("text: \"\(page.title)\"")
+
+        // Keys into xterm, through Xwayland, and how fast its picture answers.
+        if let xterm = session.windows.values.first(where: { $0.appClass?.instance == "XTerm" || $0.title == "xterm" }) {
+            let before = xterm.surface.generation
+            for character in "echo caboose\r" {
+                for stroke in Keysyms.strokes(for: character) {
+                    session.key(stroke, pressed: true, in: xterm)
+                    session.key(stroke, pressed: false, in: xterm)
+                }
+                try await Task.sleep(for: .milliseconds(120))
+            }
+            try await Task.sleep(for: .milliseconds(500))
+            print("xterm pictures \(xterm.surface.generation - before), typing echo \(session.typingEchoMs.map { "\($0) ms" } ?? "?")")
+            #expect(xterm.surface.generation > before)
+        }
+        #expect(DrawStatistics.shared.snapshot.failed.isEmpty, "\(DrawStatistics.shared.snapshot.failed)")
+    }
+
     private func until(_ what: String, timeout: TimeInterval, _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() {
