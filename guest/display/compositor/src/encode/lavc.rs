@@ -1,15 +1,16 @@
 //! Encoders through libavcodec that take pixels in system memory (wl_shm buffers, or GPU
 //! buffers read back):
 //!
-//! - software: libx264 (H.264) and libx265 (HEVC), after a BGRX → I420 conversion with
-//!   BGRX → I420 conversion of only the damaged rectangles ([`super::convert`]), and
-//!   for H.264 a hint to libx264 that the rest of the picture is unchanged;
+//! - software: libx264 (H.264) and libx265 (HEVC), after a BGRX → I420 conversion of
+//!   only the damaged rectangles ([`super::convert`]); for H.264 also a hint to libx264
+//!   that the rest of the picture is unchanged, and the sharpening of what has gone
+//!   quiet ([`super::refine`]);
 //! - NVENC: h264_nvenc, hevc_nvenc and av1_nvenc. NVENC takes BGRX as is and converts on
 //!   the GPU, so the CPU only copies the picture into NVENC's input buffer. This is the
 //!   path on WSL2, where clients hand over wl_shm buffers and CUDA reaches the GPU
 //!   through /dev/dxg.
 
-use super::{convert, CpuImage, EncodeError, Encoder, Input, Picture, Pixels, Settings};
+use super::{convert, refine, CpuImage, EncodeError, Encoder, Input, Picture, Pixels, Settings};
 use caboose_display_protocol::Codec;
 use caboose_display_protocol::Rect;
 use ff::format::Pixel;
@@ -64,6 +65,10 @@ pub struct LavcEncoder {
     width: u32,
     height: u32,
     pts: i64,
+    /// libx264 with refinement: what to sharpen, and the QP offset that sharpens it.
+    quiet: Option<refine::Quiet>,
+    refine_offset: i32,
+    clock: std::time::Instant,
 }
 
 // SAFETY: the libavcodec and libswscale contexts are owned exclusively by this value
@@ -122,15 +127,22 @@ impl LavcEncoder {
             (Family::Nvenc, _) => {}
             (Family::Software, Codec::H264) => {
                 options.set("tune", "zerolatency");
-                // Constant QP rather than CRF: x264 skips a macroblock hinted constant only
-                // when its reference was coded at no higher a QP, which a floating
-                // per-frame QP keeps breaking.
-                options.set("qp", &settings.crf.to_string());
+                // CRF with qcomp=1 codes every P picture at the CRF's QP: x264 skips a
+                // macroblock hinted constant only when its reference was coded at no
+                // higher a QP, which a floating per-frame QP keeps breaking. (Constant QP
+                // would too, but it turns AQ off, which the refinement's per-macroblock QP
+                // offsets need, and it skips the lowres pass whose motion vectors find a
+                // scroll: 10× fewer bits for one at 1080p.) AQ at 1/100 of its usual
+                // strength moves no macroblock's QP; it only lets the offsets through.
+                options.set("crf", &settings.crf.to_string());
                 options.set("preset", &settings.preset);
                 options.set("profile", "high");
                 options.set("threads", &settings.threads_for(width, height).to_string());
                 // Keyframes only on request: a new client, request_keyframe, a resize.
-                options.set("x264-params", "keyint=infinite:scenecut=0:repeat-headers=1:aud=0");
+                options.set(
+                    "x264-params",
+                    "keyint=infinite:scenecut=0:repeat-headers=1:aud=0:qcomp=1:aq-mode=1:aq-strength=0.01",
+                );
                 // Unchanged macroblocks are skipped from the damage hint (hint_changes).
                 options.set("mb_info", "1");
             }
@@ -153,7 +165,23 @@ impl LavcEncoder {
         }
         let encoder = video.open_with(options)?;
         let picture = ff::frame::Video::new(format, width, height);
-        Ok(Self { family, codec, encoder, picture, shadow: Vec::new(), width, height, pts: 0 })
+        let refines = family == Family::Software
+            && codec == Codec::H264
+            && settings.refine_qp > 0
+            && settings.refine_qp < settings.crf;
+        Ok(Self {
+            family,
+            codec,
+            encoder,
+            picture,
+            shadow: Vec::new(),
+            width,
+            height,
+            pts: 0,
+            quiet: refines.then(|| refine::Quiet::new(width, height, settings.refine_after_ms as u64)),
+            refine_offset: settings.refine_qp as i32 - settings.crf as i32,
+            clock: std::time::Instant::now(),
+        })
     }
 
     /// Brings the encoder's picture up to date with `src`: only the damaged rectangles,
@@ -265,6 +293,80 @@ impl LavcEncoder {
             }
         }
     }
+
+    /// Codes `regions` at the refinement QP (libx264 turns the offset into per-macroblock
+    /// quant offsets).
+    fn sharpen(&mut self, regions: &[Rect]) {
+        if regions.is_empty() {
+            return;
+        }
+        let size = std::mem::size_of::<ff::ffi::AVRegionOfInterest>();
+        // SAFETY: the side data is allocated with room for `regions.len()` entries, and
+        // the frame owns (and frees) it.
+        unsafe {
+            let sd = ff::ffi::av_frame_new_side_data(
+                self.picture.as_mut_ptr(),
+                ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_REGIONS_OF_INTEREST,
+                size * regions.len(),
+            );
+            if sd.is_null() {
+                return;
+            }
+            let rois = (*sd).data as *mut ff::ffi::AVRegionOfInterest;
+            for (i, r) in regions.iter().enumerate() {
+                *rois.add(i) = ff::ffi::AVRegionOfInterest {
+                    self_size: size as u32,
+                    top: r.y,
+                    bottom: r.y + r.h,
+                    left: r.x,
+                    right: r.x + r.w,
+                    // In units of the QP range, which libx264 takes as 0..51 at 8 bits.
+                    qoffset: ff::ffi::AVRational { num: self.refine_offset, den: 51 },
+                };
+            }
+        }
+    }
+
+    fn clear_side_data(&mut self) {
+        use ff::ffi::AVFrameSideDataType::{AV_FRAME_DATA_REGIONS_OF_INTEREST, AV_FRAME_DATA_VIDEO_HINT};
+        // SAFETY: removing side data the frame may or may not carry.
+        unsafe {
+            ff::ffi::av_frame_remove_side_data(self.picture.as_mut_ptr(), AV_FRAME_DATA_VIDEO_HINT);
+            ff::ffi::av_frame_remove_side_data(self.picture.as_mut_ptr(), AV_FRAME_DATA_REGIONS_OF_INTEREST);
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.clock.elapsed().as_millis() as u64
+    }
+
+    /// Sends the picture as it stands (with whatever side data it carries) and collects
+    /// the encoded picture.
+    fn send(&mut self, keyframe: bool) -> Result<Picture, EncodeError> {
+        self.picture.set_pts(Some(self.pts));
+        self.pts += 1;
+        self.picture.set_kind(if keyframe { ff::picture::Type::I } else { ff::picture::Type::None });
+        self.encoder.send_frame(&self.picture)?;
+        self.clear_side_data();
+        let mut data = Vec::new();
+        let mut key = false;
+        let mut packet = ff::Packet::empty();
+        loop {
+            match self.encoder.receive_packet(&mut packet) {
+                Ok(()) => {
+                    key |= packet.is_key();
+                    data.extend_from_slice(packet.data().unwrap_or_default());
+                }
+                Err(ff::Error::Other { errno: libc::EAGAIN }) => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if data.is_empty() {
+            return Err(EncodeError(format!("{} produced no picture", self.name())));
+        }
+        let now = self.now_ms();
+        Ok(Picture { data, keyframe: key, refine_in_ms: self.quiet.as_ref().and_then(|q| q.next_due_ms(now)) })
+    }
 }
 
 impl Encoder for LavcEncoder {
@@ -312,43 +414,49 @@ impl Encoder for LavcEncoder {
             }
         };
         let convert_us = t0.elapsed().as_micros();
-        unsafe {
-            ff::ffi::av_frame_remove_side_data(
-                self.picture.as_mut_ptr(),
-                ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_VIDEO_HINT,
-            )
+        self.clear_side_data();
+        // Areas quiet for long enough are sharpened in this picture, which goes out anyway.
+        let now = self.now_ms();
+        let due = match (self.quiet.as_mut(), &changed) {
+            (None, _) => Vec::new(),
+            (Some(q), Some(changed)) if !keyframe => {
+                q.changed(changed, now);
+                q.take_due(now)
+            }
+            (Some(q), _) => {
+                q.all_changed(now);
+                Vec::new()
+            }
         };
         if let (Some(changed), Codec::H264) = (&changed, self.codec) {
             tracing::trace!(
-                "{} of {} macroblock rows-runs changed, {} px",
+                "{} of {} macroblock rows-runs changed, {} px; sharpening {} px",
                 changed.len(),
                 self.height.div_ceil(16),
-                changed.iter().map(|r| (r.w * r.h) as u64).sum::<u64>()
+                changed.iter().map(|r| (r.w * r.h) as u64).sum::<u64>(),
+                due.iter().map(|r| (r.w * r.h) as u64).sum::<u64>()
             );
-            self.hint_changes(changed);
+            let hinted: Vec<Rect> = changed.iter().chain(&due).copied().collect();
+            self.hint_changes(&hinted);
         }
-        self.picture.set_pts(Some(self.pts));
-        self.pts += 1;
-        self.picture.set_kind(if keyframe { ff::picture::Type::I } else { ff::picture::Type::None });
-        self.encoder.send_frame(&self.picture)?;
-        let mut data = Vec::new();
-        let mut key = false;
-        let mut packet = ff::Packet::empty();
-        loop {
-            match self.encoder.receive_packet(&mut packet) {
-                Ok(()) => {
-                    key |= packet.is_key();
-                    data.extend_from_slice(packet.data().unwrap_or_default());
-                }
-                Err(ff::Error::Other { errno: libc::EAGAIN }) => break,
-                Err(e) => return Err(e.into()),
-            }
-        }
-        if data.is_empty() {
-            return Err(EncodeError(format!("{} produced no picture", self.name())));
-        }
+        self.sharpen(&due);
+        let picture = self.send(keyframe)?;
         tracing::trace!("convert {convert_us} µs, encode {} µs", t0.elapsed().as_micros() - convert_us);
-        Ok(Picture { data, keyframe: key })
+        Ok(picture)
+    }
+
+    fn refine(&mut self) -> Result<Picture, EncodeError> {
+        let now = self.now_ms();
+        let Some(quiet) = self.quiet.as_mut() else {
+            return Err(EncodeError(format!("{} does not refine", self.name())));
+        };
+        let due = quiet.take_due(now);
+        tracing::trace!("sharpening {} px", due.iter().map(|r| (r.w * r.h) as u64).sum::<u64>());
+        self.clear_side_data();
+        // Everything else is hinted constant: skipped, at no cost.
+        self.hint_changes(&due);
+        self.sharpen(&due);
+        self.send(false)
     }
 }
 
@@ -419,6 +527,86 @@ mod tests {
     fn odd_sizes_are_rejected() {
         assert!(LavcEncoder::new(Family::Software, Codec::H264, 99, 64, &Settings::default()).is_err());
     }
+
+    /// Dark strokes on white, like text.
+    fn text(width: u32, height: u32) -> CpuImage {
+        let mut image = CpuImage::new(width, height);
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let ink = (x % 9 < 2 && y % 18 < 12) || (y % 18 == 5 && x % 9 < 6) || (x * 7 + y * 13) % 97 < 3;
+                let v = if ink { 0x20 } else { 0xf4 };
+                image.data[y * image.stride + x * 4..][..4].copy_from_slice(&[v, v, v, 0]);
+            }
+        }
+        image
+    }
+
+    /// Decodes pictures in order and measures them against the encoder's input.
+    struct Decoder(ff::decoder::Video);
+
+    impl Decoder {
+        fn new() -> Self {
+            let codec = ff::decoder::find(ff::codec::Id::H264).unwrap();
+            Self(ff::codec::context::Context::new_with_codec(codec).decoder().video().unwrap())
+        }
+
+        /// Luma PSNR of `picture`, decoded, against what `enc` was given.
+        fn psnr(&mut self, picture: &Picture, enc: &LavcEncoder) -> f64 {
+            self.0.send_packet(&ff::Packet::copy(&picture.data)).unwrap();
+            let mut out = ff::frame::Video::empty();
+            self.0.receive_frame(&mut out).unwrap();
+            let src = &enc.picture;
+            let (w, h) = (enc.width as usize, enc.height as usize);
+            let mut se = 0.0;
+            for y in 0..h {
+                let a = &src.data(0)[y * src.stride(0)..][..w];
+                let b = &out.data(0)[y * out.stride(0)..][..w];
+                se += a.iter().zip(b).map(|(&a, &b)| (a as f64 - b as f64).powi(2)).sum::<f64>();
+            }
+            10.0 * (255.0f64.powi(2) / (se / (w * h) as f64).max(1e-9)).log10()
+        }
+    }
+
+    #[test]
+    fn quiet_pictures_are_sharpened_once_and_stay_sharp() {
+        ff::init().unwrap();
+        let settings = Settings { threads: 1, refine_after_ms: 0, ..Settings::default() };
+        let mut enc = LavcEncoder::new(Family::Software, Codec::H264, 256, 128, &settings).unwrap();
+        let mut dec = Decoder::new();
+        let mut image = text(256, 128);
+        let key = enc.encode(Input::Cpu(&image), true, None).unwrap();
+        assert_eq!(key.refine_in_ms, Some(0));
+        let soft = dec.psnr(&key, &enc);
+        let sharp = enc.refine().unwrap();
+        assert!(!sharp.keyframe && sharp.refine_in_ms.is_none());
+        let refined = dec.psnr(&sharp, &enc);
+        assert!(refined > soft + 4.0, "refinement took {soft:.1} dB to {refined:.1} dB");
+        // An update elsewhere keeps the sharpened pixels.
+        for y in 40..56 {
+            image.data[y * image.stride + 64 * 4..][..64].fill(0x80);
+        }
+        let update = enc.encode(Input::Cpu(&image), false, Some(&[Rect::new(64, 40, 16, 16)])).unwrap();
+        assert!(dec.psnr(&update, &enc) > refined - 1.0);
+        // Nothing changed and nothing left to sharpen: an empty picture.
+        let idle = enc.encode(Input::Cpu(&image), false, Some(&[])).unwrap();
+        assert!(idle.data.len() < 64 && idle.refine_in_ms.is_none());
+    }
+
+    #[test]
+    fn refinement_waits_for_quiet_and_can_be_turned_off() {
+        ff::init().unwrap();
+        let image = text(64, 64);
+        let settings = Settings { threads: 1, refine_after_ms: 300, ..Settings::default() };
+        let mut enc = LavcEncoder::new(Family::Software, Codec::H264, 64, 64, &settings).unwrap();
+        let key = enc.encode(Input::Cpu(&image), true, None).unwrap();
+        assert!(key.refine_in_ms.is_some_and(|ms| ms > 200 && ms <= 300));
+        let off = Settings { threads: 1, refine_qp: 0, ..Settings::default() };
+        let mut enc = LavcEncoder::new(Family::Software, Codec::H264, 64, 64, &off).unwrap();
+        assert!(enc.encode(Input::Cpu(&image), true, None).unwrap().refine_in_ms.is_none());
+        assert!(enc.refine().is_err());
+        let mut hevc = LavcEncoder::new(Family::Software, Codec::Hevc, 64, 64, &settings).unwrap();
+        assert!(hevc.encode(Input::Cpu(&image), true, None).unwrap().refine_in_ms.is_none());
+    }
 }
 
 #[cfg(test)]
@@ -460,6 +648,57 @@ mod bench {
                 "720p moving block, {label}: {:.2} ms/frame, {} bytes/frame",
                 total.as_secs_f64() * 1000.0 / frames as f64,
                 bytes / frames
+            );
+        }
+    }
+
+    /// Typing one glyph, then scrolling by a line, on a picture of synthetic text, without
+    /// sharpening (which would fold the keyframe's into one of the typed pictures).
+    /// `cargo test -p caboose-display bench_ -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_text_typing_and_scrolling() {
+        ff::init().unwrap();
+        for (w, h) in [(1920u32, 1080u32), (1280, 720)] {
+            let settings = Settings { threads: 1, refine_qp: 0, ..Settings::default() };
+            let mut enc = LavcEncoder::new(Family::Software, Codec::H264, w, h, &settings).unwrap();
+            let mut image = CpuImage::new(w, h);
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    let ink = (x % 9 < 2 && y % 18 < 12) || (y % 18 == 5 && x % 9 < 6) || (x * 7 + y * 13) % 97 < 3;
+                    let v = if ink { 0x20 } else { 0xf4 };
+                    image.data[y * image.stride + x * 4..][..4].copy_from_slice(&[v, v, v, 0]);
+                }
+            }
+            enc.encode(Input::Cpu(&image), true, None).unwrap();
+            let (mut typing, mut typed) = (std::time::Duration::ZERO, 0);
+            for i in 0..100 {
+                let (x0, y0) = (64 + i * 16, 200);
+                for y in y0..y0 + 16 {
+                    image.data[y * image.stride + x0 * 4..][..40].fill(0x30);
+                }
+                let t = std::time::Instant::now();
+                typed += enc
+                    .encode(Input::Cpu(&image), false, Some(&[Rect::new(x0 as i32, y0 as i32, 16, 16)]))
+                    .unwrap()
+                    .data
+                    .len();
+                typing += t.elapsed();
+            }
+            let (mut scrolling, mut scrolled) = (std::time::Duration::ZERO, 0);
+            let all = [Rect::new(0, 0, w as i32, h as i32)];
+            for _ in 0..20 {
+                image.data.rotate_left(image.stride * 18);
+                let t = std::time::Instant::now();
+                scrolled += enc.encode(Input::Cpu(&image), false, Some(&all)).unwrap().data.len();
+                scrolling += t.elapsed();
+            }
+            println!(
+                "{w}x{h} text: typing {:.2} ms, {} B per glyph; scrolling a line {:.2} ms, {} kB per picture",
+                typing.as_secs_f64() * 10.0,
+                typed / 100,
+                scrolling.as_secs_f64() * 50.0,
+                scrolled / 20 / 1000
             );
         }
     }

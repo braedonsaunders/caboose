@@ -8,6 +8,7 @@ use crate::state::State;
 use crate::stream::{Done, Job};
 use caboose_display_protocol::{self as proto, ByeReason, Codec, Message, Rect};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -337,8 +338,31 @@ impl State {
         let backend = session.backend.clone();
         let generation = self.generation;
         let align = backend.alignment();
+        let now_us = self.now_us();
         for id in self.windows.ids() {
             let Some(w) = self.windows.get(id) else { continue };
+            if let Some(a) = w.announced.as_ref().filter(|_| w.stream.refine_due(now_us) && !w.stream.need_keyframe) {
+                let rect = Rect::new(0, 0, a.geometry.w, a.geometry.h);
+                let w = self.windows.get_mut(id).unwrap();
+                let image = w.stream.image.take().unwrap();
+                let job = Job {
+                    window: id,
+                    generation,
+                    pts_us: w.stream.refine_pts(now_us),
+                    image,
+                    shm: None,
+                    detect: false,
+                    keyframe: false,
+                    refine: true,
+                    damage: None,
+                    rect,
+                    crop: w.stream.crop,
+                    backend: backend.clone(),
+                    settings: self.encoders.settings.clone(),
+                };
+                w.stream.submit(job, &self.done_tx);
+                continue;
+            }
             if w.announced.is_none() || !w.stream.dirty || !w.stream.can_send() {
                 continue;
             }
@@ -446,6 +470,7 @@ impl State {
                         shm,
                         detect,
                         keyframe: w.stream.need_keyframe,
+                        refine: false,
                         damage,
                         rect,
                         crop: Rect::new(0, 0, pic_w, pic_h),
@@ -455,6 +480,30 @@ impl State {
                     w.stream.submit(job, &self.done_tx);
                 }
             }
+        }
+        // Wake up for the next window that will have something to sharpen.
+        if let Some(next) = self.windows.iter().filter_map(|w| w.stream.refine_at_us).filter(|t| *t > now_us).min() {
+            self.arm_refine_timer(next);
+        }
+    }
+
+    /// Makes sure the loop wakes up by `at_us` (monotonic), when a window's quiet areas
+    /// are due; render_streams then sends them.
+    fn arm_refine_timer(&mut self, at_us: u64) {
+        if self.refine_timer.is_some_and(|(t, _)| t <= at_us) {
+            return;
+        }
+        if let Some((_, token)) = self.refine_timer.take() {
+            self.handle.remove(token);
+        }
+        let delay = Duration::from_micros(at_us.saturating_sub(self.now_us()));
+        let timer = Timer::from_duration(delay);
+        match self.handle.insert_source(timer, |_, _, state: &mut State| {
+            state.refine_timer = None;
+            TimeoutAction::Drop
+        }) {
+            Ok(token) => self.refine_timer = Some((at_us, token)),
+            Err(e) => tracing::warn!("refinement timer: {e}"),
         }
     }
 
@@ -472,6 +521,7 @@ impl State {
 
     /// An encoder finished a picture.
     pub fn on_encoded(&mut self, done: Done) {
+        let now_us = self.now_us();
         let Some(w) = self.windows.get_mut(done.window) else { return };
         if done.generation != self.generation {
             // For a client that has gone. The stream has moved on (and may have a new
@@ -495,14 +545,22 @@ impl State {
             }
             Ok(encoded) => {
                 w.stream.in_flight.push_back(done.pts_us);
+                w.stream.refine_at_us = encoded.refine_in_ms.map(|ms| now_us + ms * 1000);
                 self.stats.frames += 1;
+                self.stats.refines += encoded.refined as u64;
                 self.stats.bytes += encoded.data.len() as u64;
                 self.stats.encode_cpu_us += encoded.cpu_us;
                 tracing::trace!(
                     "window {}: {} bytes {} in {} µs ({} µs CPU)",
                     done.window,
                     encoded.data.len(),
-                    if encoded.keyframe { "key" } else { "delta" },
+                    if encoded.keyframe {
+                        "key"
+                    } else if encoded.refined {
+                        "sharpening"
+                    } else {
+                        "delta"
+                    },
                     encoded.encode_us,
                     encoded.cpu_us
                 );

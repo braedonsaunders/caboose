@@ -11,6 +11,7 @@
 
 pub mod convert;
 pub mod lavc;
+pub mod refine;
 
 use caboose_display_protocol::{Codec, Rect};
 use std::fmt;
@@ -57,6 +58,9 @@ pub struct Pixels<'a> {
 pub struct Picture {
     pub data: Vec<u8>,
     pub keyframe: bool,
+    /// Milliseconds until [`Encoder::refine`] has something to sharpen if nothing
+    /// changes meanwhile; `None` when everything is as sharp as it gets.
+    pub refine_in_ms: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -87,6 +91,12 @@ pub trait Encoder: Send {
     /// lists what changed since the previous picture (in picture pixels); `None`
     /// means everything.
     fn encode(&mut self, input: Input<'_>, keyframe: bool, damage: Option<&[Rect]>) -> Result<Picture, EncodeError>;
+    /// Encodes the previous picture again, sharpening what has been quiet long enough
+    /// (see [`refine`]). Called when a picture said so in `refine_in_ms` and nothing
+    /// changed since; `encode` sharpens along the way when there is a change.
+    fn refine(&mut self) -> Result<Picture, EncodeError> {
+        Err(EncodeError(format!("{} does not refine", self.name())))
+    }
 }
 
 /// Encoder settings shared by every stream.
@@ -100,11 +110,15 @@ pub struct Settings {
     pub threads: u32,
     /// x264 preset. `ultrafast` keeps the CPU cost per update lowest.
     pub preset: String,
+    /// QP that areas quiet for `refine_after_ms` are coded at once more (libx264);
+    /// 0, or not below `crf`, turns refinement off.
+    pub refine_qp: u32,
+    pub refine_after_ms: u32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { crf: 23, threads: 0, preset: "ultrafast".into() }
+        Self { crf: 23, threads: 0, preset: "ultrafast".into(), refine_qp: 12, refine_after_ms: 300 }
     }
 }
 

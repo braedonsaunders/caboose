@@ -145,6 +145,10 @@ server implements it.
   callbacks of a window are released on a vsync of its display, and only while fewer than
   2 of its frames are unacknowledged (`ack` matches by `pts_us`). A window whose display
   sends no vsync is throttled like a minimised one: it gets frame callbacks once a second.
+- A frame can change no content and only sharpen it: once part of a window has been
+  unchanged for a while, the server codes it once more at a lower QP (progressive
+  refinement). It is an ordinary non-key `frame` under the same flow control. Its `pts_us`
+  is when it was made, which is later than the commit of the content it shows.
 - `ack.decoded_us` is the decode duration, or `-1` if decoding failed, after which the
   client also sends `request_keyframe`. The next frame after `request_keyframe`, a
   reconnect, or a size change is a keyframe with parameter sets.
@@ -266,7 +270,8 @@ measurements and the scripted checks.
   linear dmabufs; one stream per toplevel, dialog, popup and X11 window; single-buffer
   windows read in place without composition, the rest damage-tracked; changed-block
   detection and libx264 macroblock hints, so the server's CPU follows what changes on
-  screen; libx264, libx265 and NVENC (from system memory, the WSL2
+  screen; progressive refinement, where areas quiet for 300 ms are coded once more at
+  QP 12 (libx264), so text sharpens and then costs nothing; libx264, libx265 and NVENC (from system memory, the WSL2
   path) behind one `Encoder` trait; pacing on vsync with acknowledgement-based flow
   control; pointer, multitouch, keys and text-input-v3 input; the text clipboard between
   the phone, Wayland and X11 applications; the computer's sound as Opus; reconnect and replacement;
