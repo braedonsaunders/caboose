@@ -1,53 +1,36 @@
 import * as React from 'react'
 import type { SidebarNavGroup } from '@braedonsaunders/appkit-ui'
+import { Bell, Folder, LayoutGrid, Server } from 'lucide-react'
 
-export type RoutePath = '/' | '/settings' | '/agents'
+export type RoutePath = '/' | '/apps' | '/files' | '/agents' | '/devices' | '/system' | '/settings'
+
+const ROUTES: RoutePath[] = ['/apps', '/files', '/agents', '/devices', '/system', '/settings']
 
 export const NAVIGATION_GROUPS: SidebarNavGroup[] = [
   {
-    id: 'overview',
-    label: 'Overview',
+    id: 'computer',
+    label: 'Computer',
     items: [
-      {
-        href: '/',
-        label: 'Overview',
-        iconKey: 'gauge',
-        exact: true,
-        mobile: true,
-      },
+      { href: '/', label: 'Overview', iconKey: 'gauge', exact: true, mobile: true },
+      { href: '/apps', label: 'Apps', icon: React.createElement(LayoutGrid, { className: 'size-4', 'aria-hidden': true }), mobile: true },
+      { href: '/files', label: 'Files', icon: React.createElement(Folder, { className: 'size-4', 'aria-hidden': true }), mobile: true },
+      { href: '/agents', label: 'Agents', iconKey: 'sparkles', mobile: true },
     ],
   },
   {
-    id: 'settings',
-    label: 'Settings',
+    id: 'host',
+    label: 'Host',
     items: [
-      {
-        href: '/settings',
-        label: 'Settings',
-        iconKey: 'settings',
-        mobile: true,
-      },
-    ],
-  },
-  {
-    id: 'agents',
-    label: 'Agents',
-    items: [
-      {
-        href: '/agents',
-        label: 'Agents',
-        iconKey: 'sparkles',
-        mobile: true,
-      },
+      { href: '/devices', label: 'Devices', icon: React.createElement(Bell, { className: 'size-4', 'aria-hidden': true }) },
+      { href: '/system', label: 'System', icon: React.createElement(Server, { className: 'size-4', 'aria-hidden': true }) },
+      { href: '/settings', label: 'Settings', iconKey: 'settings', mobile: true },
     ],
   },
 ]
 
 export function normalizePathname(raw: string): RoutePath {
   const clean = raw.split('?')[0]?.replace(/\/+$/, '') || '/'
-  if (clean === '/settings' || clean.startsWith('/settings/')) return '/settings'
-  if (clean === '/agents' || clean.startsWith('/agents/')) return '/agents'
-  return '/'
+  return ROUTES.find(route => clean === route || clean.startsWith(`${route}/`)) ?? '/'
 }
 
 export function navigate(href: string): void {
@@ -70,4 +53,18 @@ export function usePathname(): RoutePath {
   }, [])
 
   return pathname
+}
+
+/** A query parameter of the current URL, following back and forward. */
+export function useSearchParam(name: string): string | null {
+  const read = () => typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get(name) : null
+  const [value, setValue] = React.useState<string | null>(read)
+
+  React.useEffect(() => {
+    const onPopState = () => setValue(new URLSearchParams(window.location.search).get(name))
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [name])
+
+  return value
 }

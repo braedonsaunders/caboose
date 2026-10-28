@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { AppShell, Button, ConfirmRoot, Toaster, type LinkRender } from '@braedonsaunders/appkit-ui'
+import { AppShell, Button, ConfirmRoot, PromptRoot, Toaster, type LinkRender } from '@braedonsaunders/appkit-ui'
 import { LogOut } from 'lucide-react'
 import { CabooseClient, readSessionToken, writeSessionToken } from './api.js'
 import { NAVIGATION_GROUPS, navigate, usePathname } from './navigation.js'
@@ -9,6 +9,10 @@ import { SignIn } from './pages/SignIn.js'
 import { Overview } from './pages/Overview.js'
 import { Settings } from './pages/Settings.js'
 import { Agents } from './pages/Agents.js'
+import { Apps } from './pages/Apps.js'
+import { Files } from './pages/Files.js'
+import { Devices } from './pages/Devices.js'
+import { System } from './pages/System.js'
 
 /** Every navigation entry routes client-side, so the shell never reloads the page. */
 const linkRender: LinkRender = ({ href, children, className, title, ariaCurrent, role }) => (
@@ -43,6 +47,7 @@ export function App() {
     <>
       {token ? <Console token={token} onSignOut={signOut} /> : <SignIn onSignIn={signIn} />}
       <ConfirmRoot />
+      <PromptRoot />
       <Toaster richColors />
     </>
   )
@@ -75,6 +80,10 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
     >
       {pathname === '/settings' ? <Settings client={client} computer={computer} /> : null}
       {pathname === '/agents' ? <Agents client={client} computer={computer} onUnauthorized={onSignOut} /> : null}
+      {pathname === '/apps' ? <Apps client={client} computer={computer} onUnauthorized={onSignOut} /> : null}
+      {pathname === '/files' ? <Files client={client} computer={computer} onUnauthorized={onSignOut} /> : null}
+      {pathname === '/devices' ? <Devices client={client} computer={computer} onUnauthorized={onSignOut} /> : null}
+      {pathname === '/system' ? <System client={client} computer={computer} onUnauthorized={onSignOut} /> : null}
       {pathname === '/' ? <Overview client={client} computer={computer} token={token} /> : null}
     </AppShell>
   )
