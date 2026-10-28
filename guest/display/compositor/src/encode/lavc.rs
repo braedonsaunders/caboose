@@ -365,7 +365,12 @@ impl LavcEncoder {
             return Err(EncodeError(format!("{} produced no picture", self.name())));
         }
         let now = self.now_ms();
-        Ok(Picture { data, keyframe: key, refine_in_ms: self.quiet.as_ref().and_then(|q| q.next_due_ms(now)) })
+        Ok(Picture {
+            data,
+            keyframe: key,
+            refine_in_ms: self.quiet.as_ref().and_then(|q| q.next_due_ms(now)),
+            changed: None,
+        })
     }
 }
 
@@ -394,6 +399,16 @@ impl Encoder for LavcEncoder {
                     )));
                 }
                 self.convert(&Pixels { data: &image.data, stride: image.stride }, damage)?
+            }
+            Input::CpuAt(image, x, y) => {
+                if x + self.width > image.width || y + self.height > image.height {
+                    return Err(EncodeError(format!(
+                        "{}x{} at ({x}, {y}) is outside the {}x{} input",
+                        self.width, self.height, image.width, image.height
+                    )));
+                }
+                let start = y as usize * image.stride + x as usize * 4;
+                self.convert(&Pixels { data: &image.data[start..], stride: image.stride }, damage)?
             }
             Input::Shm(p) => {
                 let read = smithay::wayland::shm::with_buffer_contents(&p.buffer, |ptr, len, data| {
@@ -440,8 +455,9 @@ impl Encoder for LavcEncoder {
             self.hint_changes(&hinted);
         }
         self.sharpen(&due);
-        let picture = self.send(keyframe)?;
+        let mut picture = self.send(keyframe)?;
         tracing::trace!("convert {convert_us} µs, encode {} µs", t0.elapsed().as_micros() - convert_us);
+        picture.changed = changed;
         Ok(picture)
     }
 

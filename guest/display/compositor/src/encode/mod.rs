@@ -36,6 +36,8 @@ impl CpuImage {
 /// What an encoder consumes.
 pub enum Input<'a> {
     Cpu(&'a CpuImage),
+    /// The coded size at (`x`, `y`) of a larger image (a window's motion region).
+    CpuAt(&'a CpuImage, u32, u32),
     /// A client's wl_shm buffer, read in place: the picture is the coded size at
     /// (`x`, `y`) of the buffer. The buffer is not released to the client until the
     /// encoder is done with it.
@@ -61,6 +63,9 @@ pub struct Picture {
     /// Milliseconds until [`Encoder::refine`] has something to sharpen if nothing
     /// changes meanwhile; `None` when everything is as sharp as it gets.
     pub refine_in_ms: Option<u64>,
+    /// What really changed in the picture, when the encoder knows (picture pixels):
+    /// the damaged blocks whose pixels differ.
+    pub changed: Option<Vec<Rect>>,
 }
 
 #[derive(Debug)]

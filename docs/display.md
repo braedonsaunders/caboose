@@ -245,6 +245,17 @@ window. Video ids are their own namespace, unique for the server's lifetime.
   H.264 and HEVC, a temporal unit of OBUs with the sequence header on keyframes for AV1,
   and a frame or superframe for VP9. `extradata` is only for a codec whose parameters
   cannot travel in band.
+- **`motion` streams** (layer 3) are regions of a window that the server finds updating
+  at video rates. A region qualifies once it has been a dense rectangle of at least
+  192×112 picture pixels for a second, with most of its macroblocks changing in most
+  pictures at 15 or more pictures a second. It is sent in the window stream's codec at the
+  window picture's pixel scale, and only to a client that lists that codec in
+  `video_decoders`; a window with a passthrough stream bound gets none. While the stream
+  exists, the window's `frame`s leave the region out; the client shows the stream over
+  it. Once the region has stopped looking like that for a second (the video paused,
+  moved, or closed), the server sends a window `frame` that repaints the region and then
+  `video.destroy`. The client keeps showing the stream until it has shown that frame. A
+  resize ends the stream with the keyframe that follows it.
 - **`surface` and `motion` streams** carry `pts_us` (server `CLOCK_MONOTONIC` at the
   commit, like `frame`), have no reordering, and are shown as soon as they are decoded.
 - **`passthrough` streams** carry no `pts_us`: the application's decoder is the server's
@@ -271,8 +282,9 @@ measurements and the scripted checks.
   windows read in place without composition, the rest damage-tracked; changed-block
   detection and libx264 macroblock hints, so the server's CPU follows what changes on
   screen; progressive refinement, where areas quiet for 300 ms are coded once more at
-  QP 12 (libx264), so text sharpens and then costs nothing; libx264, libx265 and NVENC (from system memory, the WSL2
-  path) behind one `Encoder` trait; pacing on vsync with acknowledgement-based flow
+  QP 12 (libx264), so text sharpens and then costs nothing; video layer 3, where regions
+  that update at video rates become `motion` streams; libx264, libx265 and NVENC (from
+  system memory, the WSL2 path) behind one `Encoder` trait; pacing on vsync with acknowledgement-based flow
   control; pointer, multitouch, keys and text-input-v3 input; the text clipboard between
   the phone, Wayland and X11 applications; the computer's sound as Opus; reconnect and replacement;
   video layer 1, codec passthrough ([codec-passthrough.md](codec-passthrough.md)): the
@@ -281,8 +293,8 @@ measurements and the scripted checks.
   microVM integration, with the driver (installed, not the default).
 - **Next:** a GPU renderer that composes into dmabufs, and the zero-copy encoders on it
   (dmabuf → NVENC through CUDA external memory, dmabuf → VA-API), which also enables the
-  exact passthrough binding; video layers 2 (YUV subsurfaces) and 3 (detected motion);
-  lossless tiles; cursor images and Pencil.
+  exact passthrough binding; video layer 2 (YUV subsurfaces); lossless tiles; cursor
+  images and Pencil.
 - **Passthrough reach:** Chromium and Firefox decode through VA only with a working GPU
   process, which needs a DRM render node; on WSL2 and hosts without a GPU their video stays
   in the window picture (layers 2 and 3 are for that). Players that decode on the CPU

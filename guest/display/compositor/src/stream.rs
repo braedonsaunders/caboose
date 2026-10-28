@@ -13,7 +13,8 @@
 //!   window that has not changed by then gets one more picture of the same content,
 //!   sharper, under the same limits (a change first sharpens along the way).
 
-use crate::encode::{Backend, CpuImage, EncodeError, Encoder, Input, Settings, ShmPicture};
+use crate::encode::{Backend, CpuImage, Encoder, Input, Settings, ShmPicture};
+use crate::motion;
 use crate::render::Canvas;
 use caboose_display_protocol::{Codec, Rect};
 use smithay::reexports::calloop::channel::Sender;
@@ -42,9 +43,22 @@ pub struct Job {
     pub crop: Rect,
     pub backend: Backend,
     pub settings: Settings,
+    /// The window's motion region, encoded as its own stream and left out of the window
+    /// picture.
+    pub motion: Option<MotionJob>,
+    /// This picture puts the region of the motion stream with this id back into the
+    /// window picture (its damage covers the region); the stream ends with it.
+    pub ends_motion: Option<u64>,
 }
 
-/// The worker's answer: the encoded picture (or why not) and the image back for reuse.
+pub struct MotionJob {
+    pub id: u64,
+    /// Picture pixels, even.
+    pub rect: Rect,
+    pub keyframe: bool,
+}
+
+/// The worker's answer: the encoded pictures (or why not) and the image back for reuse.
 pub struct Done {
     /// Markers found in the picture (when the job asked), picture pixels.
     pub hits: Option<Vec<crate::video::marker::Hit>>,
@@ -52,9 +66,15 @@ pub struct Done {
     pub generation: u64,
     pub pts_us: u64,
     pub image: CpuImage,
-    pub result: Result<Encoded, String>,
+    /// The window picture; `None` when nothing changed outside the motion region.
+    pub result: Option<Result<Encoded, String>>,
     pub rect: Rect,
     pub crop: Rect,
+    /// What really changed, window and motion region together (picture pixels).
+    pub changed: Vec<Rect>,
+    /// The motion region's picture, when it changed.
+    pub motion: Option<(u64, Result<Encoded, String>)>,
+    pub ends_motion: Option<u64>,
 }
 
 /// Markers in a job's picture, wherever its pixels are.
@@ -102,87 +122,168 @@ fn thread_cpu_us() -> u64 {
     ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1000
 }
 
+/// What a worker keeps between jobs.
+#[derive(Default)]
+struct Encoders {
+    window: Option<(Backend, Box<dyn Encoder>)>,
+    /// For the motion stream with this id, at this rectangle.
+    motion: Option<(u64, Rect, Box<dyn Encoder>)>,
+}
+
+/// Encodes with `enc`, timing it.
+fn encode_with(
+    enc: &mut dyn Encoder,
+    input: Input<'_>,
+    keyframe: bool,
+    damage: Option<&[Rect]>,
+    refine: bool,
+) -> (Result<Encoded, String>, Option<Vec<Rect>>) {
+    let cpu0 = thread_cpu_us();
+    let start = Instant::now();
+    let result = if refine { enc.refine() } else { enc.encode(input, keyframe, damage) };
+    match result {
+        Ok(p) => (
+            Ok(Encoded {
+                codec: enc.codec(),
+                keyframe: p.keyframe,
+                data: p.data,
+                encode_us: start.elapsed().as_micros() as u64,
+                cpu_us: thread_cpu_us().saturating_sub(cpu0),
+                refine_in_ms: p.refine_in_ms,
+                refined: refine,
+            }),
+            p.changed,
+        ),
+        Err(e) => (Err(e.to_string()), None),
+    }
+}
+
+fn work(job: Job, encoders: &mut Encoders) -> Done {
+    let size = (job.image.width, job.image.height);
+    let reuse = encoders.window.as_ref().is_some_and(|(b, e)| *b == job.backend && e.coded_size() == size);
+    let mut done = Done {
+        hits: None,
+        window: job.window,
+        generation: job.generation,
+        pts_us: job.pts_us,
+        image: CpuImage::new(0, 0),
+        result: None,
+        rect: job.rect,
+        crop: job.crop,
+        changed: Vec::new(),
+        motion: None,
+        ends_motion: job.ends_motion,
+    };
+    if job.refine && !reuse {
+        // The encoder whose picture this sharpens is gone; the window starts over with
+        // a keyframe.
+        done.result = Some(Err("no picture to refine".into()));
+        done.image = job.image;
+        return done;
+    }
+    let mut fresh = false;
+    if !reuse {
+        match job.backend.create(size.0, size.1, &job.settings) {
+            Ok(e) => encoders.window = Some((job.backend.clone(), e)),
+            Err(e) => {
+                encoders.window = None;
+                done.result = Some(Err(format!("cannot open {}: {e}", job.backend.describe())));
+                done.image = job.image;
+                return done;
+            }
+        }
+        fresh = true;
+    }
+    done.hits = job.detect.then(|| detect(&job));
+    let keyframe = job.keyframe || fresh;
+    let damage = if fresh { None } else { job.damage.clone() };
+    let full = Rect::new(0, 0, size.0 as i32, size.1 as i32);
+    // With a motion region, the window picture leaves it out, and the region is its own
+    // picture (in its own coordinates).
+    let (window_damage, motion_damage) = match &job.motion {
+        None => (damage, None),
+        Some(m) => {
+            let all = damage.unwrap_or_else(|| vec![full]);
+            let window = all.iter().flat_map(|r| motion::subtract(*r, m.rect)).collect();
+            let region = all
+                .iter()
+                .filter_map(|r| motion::intersect(*r, m.rect))
+                .map(|r| Rect::new(r.x - m.rect.x, r.y - m.rect.y, r.w, r.h))
+                .collect::<Vec<_>>();
+            (Some(window), Some(region))
+        }
+    };
+    let window_needed = job.refine || keyframe || window_damage.as_ref().is_none_or(|d| !d.is_empty());
+    if window_needed {
+        let (_, enc) = encoders.window.as_mut().unwrap();
+        let input = match &job.shm {
+            Some(shm) => Input::Shm(shm),
+            None => Input::Cpu(&job.image),
+        };
+        let (result, changed) = encode_with(enc.as_mut(), input, keyframe, window_damage.as_deref(), job.refine);
+        if result.is_err() {
+            encoders.window = None; // start clean (and with a keyframe) next time
+        } else if !job.refine {
+            done.changed = changed.or(window_damage).unwrap_or_else(|| vec![full]);
+        }
+        done.result = Some(result);
+    }
+    match &job.motion {
+        None => encoders.motion = None,
+        Some(m) => {
+            let matches = encoders.motion.as_ref().is_some_and(|(id, r, _)| *id == m.id && *r == m.rect);
+            let mut motion_fresh = false;
+            if !matches {
+                // Sharpening is for still pictures; video is never still long enough.
+                let settings = Settings { refine_qp: 0, ..job.settings.clone() };
+                encoders.motion = match job.backend.create(m.rect.w as u32, m.rect.h as u32, &settings) {
+                    Ok(e) => Some((m.id, m.rect, e)),
+                    Err(e) => {
+                        done.motion = Some((m.id, Err(format!("cannot open {}: {e}", job.backend.describe()))));
+                        None
+                    }
+                };
+                motion_fresh = true;
+            }
+            let motion_key = m.keyframe || motion_fresh;
+            let region_damage = motion_damage.unwrap_or_default();
+            if let Some((_, _, enc)) = encoders.motion.as_mut().filter(|_| motion_key || !region_damage.is_empty()) {
+                let shm = job.shm.as_ref().map(|s| ShmPicture {
+                    buffer: s.buffer.clone(),
+                    x: s.x + m.rect.x,
+                    y: s.y + m.rect.y,
+                });
+                let input = match &shm {
+                    Some(shm) => Input::Shm(shm),
+                    None => Input::CpuAt(&job.image, m.rect.x as u32, m.rect.y as u32),
+                };
+                let damage = (!motion_key).then_some(region_damage.as_slice());
+                let (result, changed) = encode_with(enc.as_mut(), input, motion_key, damage, false);
+                if result.is_err() {
+                    encoders.motion = None;
+                } else {
+                    let changed = changed.unwrap_or_else(|| {
+                        damage.map_or_else(|| vec![Rect::new(0, 0, m.rect.w, m.rect.h)], <[Rect]>::to_vec)
+                    });
+                    done.changed.extend(changed.iter().map(|r| Rect::new(r.x + m.rect.x, r.y + m.rect.y, r.w, r.h)));
+                }
+                done.motion = Some((m.id, result));
+            }
+        }
+    }
+    done.image = job.image;
+    done
+}
+
 impl Worker {
     fn spawn(window: u64, done: Sender<Done>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<Job>();
         std::thread::Builder::new()
             .name(format!("encode-{window}"))
             .spawn(move || {
-                let mut encoder: Option<(Backend, Box<dyn Encoder>)> = None;
+                let mut encoders = Encoders::default();
                 while let Ok(job) = rx.recv() {
-                    let cpu0 = thread_cpu_us();
-                    let start = Instant::now();
-                    let size = (job.image.width, job.image.height);
-                    let reuse = encoder.as_ref().is_some_and(|(b, e)| *b == job.backend && e.coded_size() == size);
-                    let mut fresh = false;
-                    if job.refine && !reuse {
-                        // The encoder whose picture this sharpens is gone; the window
-                        // starts over with a keyframe.
-                        let _ = done.send(Done {
-                            hits: None,
-                            window: job.window,
-                            generation: job.generation,
-                            pts_us: job.pts_us,
-                            image: job.image,
-                            result: Err("no picture to refine".into()),
-                            rect: job.rect,
-                            crop: job.crop,
-                        });
-                        continue;
-                    }
-                    if !reuse {
-                        encoder = match job.backend.create(size.0, size.1, &job.settings) {
-                            Ok(e) => Some((job.backend.clone(), e)),
-                            Err(e) => {
-                                let _ = done.send(Done {
-                                    hits: None,
-                                    window: job.window,
-                                    generation: job.generation,
-                                    pts_us: job.pts_us,
-                                    image: job.image,
-                                    result: Err(format!("cannot open {}: {e}", job.backend.describe())),
-                                    rect: job.rect,
-                                    crop: job.crop,
-                                });
-                                continue;
-                            }
-                        };
-                        fresh = true;
-                    }
-                    let (_, enc) = encoder.as_mut().unwrap();
-                    let damage = if fresh { None } else { job.damage.as_deref() };
-                    let hits = job.detect.then(|| detect(&job));
-                    let input = match &job.shm {
-                        Some(shm) => Input::Shm(shm),
-                        None => Input::Cpu(&job.image),
-                    };
-                    let result: Result<_, EncodeError> =
-                        if job.refine { enc.refine() } else { enc.encode(input, job.keyframe || fresh, damage) };
-                    let result = result
-                        .map(|p| Encoded {
-                            codec: enc.codec(),
-                            keyframe: p.keyframe,
-                            data: p.data,
-                            encode_us: start.elapsed().as_micros() as u64,
-                            cpu_us: thread_cpu_us().saturating_sub(cpu0),
-                            refine_in_ms: p.refine_in_ms,
-                            refined: job.refine,
-                        })
-                        .map_err(|e| e.to_string());
-                    if result.is_err() {
-                        encoder = None; // start clean (and with a keyframe) next time
-                    }
-                    let sent = done.send(Done {
-                        hits,
-                        window: job.window,
-                        generation: job.generation,
-                        pts_us: job.pts_us,
-                        image: job.image,
-                        result,
-                        rect: job.rect,
-                        crop: job.crop,
-                    });
-                    if sent.is_err() {
+                    if done.send(work(job, &mut encoders)).is_err() {
                         break;
                     }
                 }
@@ -218,6 +319,23 @@ pub struct Stream {
     pub refine_at_us: Option<u64>,
     /// The visible part of the last picture submitted.
     pub crop: Rect,
+    /// The window's motion region and its stream, while it has one.
+    pub motion: Option<MotionStream>,
+    /// Watches for a motion region, at the picture size it was made for.
+    pub tracker: Option<motion::Tracker>,
+}
+
+/// A `motion` video stream: a region of the window sent as its own video.
+pub struct MotionStream {
+    pub id: u64,
+    /// Picture pixels.
+    pub rect: Rect,
+    pub next_seq: u64,
+    /// seq of frames sent and not yet acknowledged (`video.ack`).
+    pub in_flight: VecDeque<u64>,
+    pub need_keyframe: bool,
+    /// The next picture puts the region back into the window picture.
+    pub ending: bool,
 }
 
 impl Stream {
@@ -248,14 +366,31 @@ impl Stream {
         pts
     }
 
-    /// Room for another picture under the flow-control limit.
+    /// Room for another picture under the flow-control limit (of the window stream and
+    /// of its motion stream).
     pub fn can_send(&self) -> bool {
-        !self.encoding && self.in_flight.len() < MAX_UNACKED
+        !self.encoding && self.in_flight.len() < MAX_UNACKED && self.motion_in_flight() < MAX_UNACKED
     }
 
     /// Whether frame callbacks may be released now.
     pub fn can_release_callbacks(&self) -> bool {
-        self.in_flight.len() + (self.encoding as usize) < MAX_UNACKED
+        self.in_flight.len().max(self.motion_in_flight()) + (self.encoding as usize) < MAX_UNACKED
+    }
+
+    fn motion_in_flight(&self) -> usize {
+        self.motion.as_ref().map_or(0, |m| m.in_flight.len())
+    }
+
+    /// A `video.ack` for the motion stream `id`.
+    pub fn ack_motion(&mut self, id: u64, seq: u64) -> bool {
+        let Some(m) = self.motion.as_mut().filter(|m| m.id == id) else { return false };
+        match m.in_flight.iter().position(|s| *s == seq) {
+            Some(i) => {
+                m.in_flight.drain(..=i);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn ack(&mut self, pts_us: u64) -> bool {
@@ -278,6 +413,9 @@ impl Stream {
         self.encoding = false;
         self.worker = None;
         self.refine_at_us = None;
+        // That client's motion stream is gone with it; the next one finds its own.
+        self.motion = None;
+        self.tracker = None;
     }
 
     /// Takes (or makes) a picture buffer of the coded size. A new buffer has no history,
@@ -303,6 +441,12 @@ impl Stream {
         if !job.refine {
             self.dirty = false;
             self.need_keyframe = false;
+        }
+        if let Some(m) = self.motion.as_mut().filter(|_| job.motion.is_some()) {
+            m.need_keyframe = false;
+        }
+        if job.ends_motion.is_some() {
+            self.motion = None;
         }
         // The answer says when to sharpen next.
         self.refine_at_us = None;
@@ -353,6 +497,27 @@ mod tests {
         s.in_flight.clear();
         s.reset_for_client();
         assert!(!s.refine_due(2000));
+    }
+
+    #[test]
+    fn a_motion_stream_shares_the_flow_control() {
+        let mut s = Stream {
+            motion: Some(MotionStream {
+                id: 7,
+                rect: Rect::new(0, 0, 16, 16),
+                next_seq: 2,
+                in_flight: [0, 1].into(),
+                need_keyframe: false,
+                ending: false,
+            }),
+            ..Default::default()
+        };
+        assert!(!s.can_send() && !s.can_release_callbacks());
+        assert!(!s.ack_motion(8, 1), "another stream's ack");
+        assert!(s.ack_motion(7, 0));
+        assert!(s.can_send() && s.can_release_callbacks());
+        s.reset_for_client();
+        assert!(s.motion.is_none());
     }
 
     #[test]

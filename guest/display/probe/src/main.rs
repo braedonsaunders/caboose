@@ -259,7 +259,12 @@ struct VideoStats {
     rect: proto::Rect,
     clip: Option<proto::Rect>,
     codec: Codec,
+    source: proto::VideoSource,
     frames: u64,
+    bytes: u64,
+    /// Frames that carried a pts.
+    timed: u64,
+    keyframe_first: Option<bool>,
     keyframes: u64,
     decoded: u64,
     decode_errors: u64,
@@ -634,7 +639,11 @@ fn run(args: Args) -> Result<bool, String> {
                             rect: c.rect,
                             clip: c.clip,
                             codec: c.codec,
+                            source: c.source,
                             frames: 0,
+                            bytes: 0,
+                            timed: 0,
+                            keyframe_first: None,
                             keyframes: 0,
                             decoded: 0,
                             decode_errors: 0,
@@ -666,6 +675,9 @@ fn run(args: Args) -> Result<bool, String> {
                     let Some(v) = videos.get_mut(&f.id) else { continue };
                     v.frames += 1;
                     v.keyframes += f.keyframe as u64;
+                    v.bytes += f.data.len() as u64;
+                    v.timed += f.pts_us.is_some() as u64;
+                    v.keyframe_first.get_or_insert(f.keyframe);
                     v.seqs.insert(f.seq);
                     if let Some(d) = v.decoder.as_mut() {
                         let ok = d.send_packet(&ff::Packet::copy(&f.data)).is_ok();
@@ -763,15 +775,19 @@ fn run(args: Args) -> Result<bool, String> {
             videos
                 .iter()
                 .map(|(id, v)| format!(
-                    "{{\"id\":{id},\"window\":{},\"codec\":{:?},\"rect\":[{},{},{},{}],\"clip\":{},\"frames\":{},\"keyframes\":{},\"decoded\":{},\"decode_errors\":{},\"presents\":{},\"unknown_presents\":{},\"last_present\":{},\"destroyed\":{}}}",
+                    "{{\"id\":{id},\"window\":{},\"codec\":{:?},\"source\":{:?},\"rect\":[{},{},{},{}],\"clip\":{},\"frames\":{},\"bytes\":{},\"timed\":{},\"keyframe_first\":{},\"keyframes\":{},\"decoded\":{},\"decode_errors\":{},\"presents\":{},\"unknown_presents\":{},\"last_present\":{},\"destroyed\":{}}}",
                     v.window,
                     v.codec.as_str(),
+                    v.source.as_str(),
                     v.rect.x,
                     v.rect.y,
                     v.rect.w,
                     v.rect.h,
                     v.clip.map(|c| format!("[{},{},{},{}]", c.x, c.y, c.w, c.h)).unwrap_or("null".into()),
                     v.frames,
+                    v.bytes,
+                    v.timed,
+                    v.keyframe_first.map(|k| k.to_string()).unwrap_or("null".into()),
                     v.keyframes,
                     v.decoded,
                     v.decode_errors,

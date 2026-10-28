@@ -7,6 +7,7 @@ mod displays;
 mod encode;
 mod input;
 mod keymap;
+mod motion;
 mod net;
 mod render;
 mod session;

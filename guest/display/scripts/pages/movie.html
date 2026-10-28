@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- Text around a 480×270 "video": a canvas where every pixel changes on every frame,
+     30 frames a second, for the number of frames in the URL fragment (default 300), then
+     still. The last frame is always the same, so pictures of it can be compared. -->
+<meta charset="utf-8">
+<title>Caboose movie</title>
+<style>
+  html, body { margin: 0; background: #fafafa; color: #222; font: 15px/1.5 serif; overflow: hidden; }
+  p { margin: 12px 24px; width: 1000px; }
+  canvas { position: absolute; left: 160px; top: 128px; }
+</style>
+<p id="text"></p>
+<canvas id="movie" width="480" height="270"></canvas>
+<script>
+  const words = 'the quick brown fox jumps over a lazy dog while the compositor watches every pixel'.split(' ');
+  let text = '';
+  for (let i = 0; i < 260; i++) text += words[(i * 7) % words.length] + ' ';
+  document.getElementById('text').textContent = text;
+  const total = parseInt(location.hash.slice(1)) || 300;
+  const ctx = document.getElementById('movie').getContext('2d');
+  const image = ctx.createImageData(480, 270);
+  let n = 0;
+  function frame() {
+    const d = image.data;
+    for (let y = 0; y < 270; y++) {
+      for (let x = 0; x < 480; x++) {
+        const i = (y * 480 + x) * 4;
+        d[i] = (x + n * 3) & 255;
+        d[i + 1] = (y * 2 + n * 5) & 255;
+        d[i + 2] = ((x ^ y) + n * 7) & 255;
+        d[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+    if (++n < total) setTimeout(frame, 33);
+  }
+  frame();
+</script>
