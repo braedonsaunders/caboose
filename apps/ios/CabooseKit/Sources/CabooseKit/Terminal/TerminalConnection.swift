@@ -43,6 +43,9 @@ public final class TerminalConnection: @unchecked Sendable {
     private var inFlight = 0
     private var pendingResize: (Int, Int)?
     private let inputWindow = 256 * 1024
+    /// Set the moment `close()` is called, so no event is delivered after it returns.
+    private let closing = NSLock()
+    private var closedByClient = false
 
     public init(transport: TerminalTransport) {
         self.transport = transport
@@ -86,8 +89,10 @@ public final class TerminalConnection: @unchecked Sendable {
         }
     }
 
-    /// Closes without ending the session, which stays on the computer to reattach to.
+    /// Closes without ending the session, which stays on the computer to reattach to. No
+    /// event is delivered once this returns, even one already on its way.
     public func close() {
+        closing.withLock { closedByClient = true }
         queue.async { [self] in
             guard !ended else { return }
             transport.close()
@@ -121,7 +126,7 @@ public final class TerminalConnection: @unchecked Sendable {
     }
 
     private func handle(_ event: TerminalTransportEvent) {
-        guard !ended else { return }
+        guard !ended, !closing.withLock({ closedByClient }) else { return }
         switch event {
         case .message(.text(let text)):
             switch TerminalServerMessage(json: text) {

@@ -10,6 +10,6 @@ can override it. See `docs/architecture.md` § Guest for the API and older-conta
 
 From the repository root, `pnpm install` then `guest/components/check-container.sh` starts
 a disposable Debian guest without components, upgrades it over the same exec transport,
-checks services and a preserved user file, and repeats the version check. It needs Docker
+checks services (the terminal service on 14701 runs as the owner and refuses a missing token) and a preserved user file, and repeats the version check. It needs Docker
 and network access. For a real microVM or container use `apps/host/scripts/check-upgrade.mjs`
 as documented in the host README. A real microVM check requires KVM.
