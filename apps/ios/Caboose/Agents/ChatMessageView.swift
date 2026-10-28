@@ -4,6 +4,11 @@ import SwiftUI
 /// Readable native blocks with selectable text and independently scrollable code.
 struct ChatMessageView: View {
     let text: String
+    @Environment(AppModel.self) private var model
+    @State private var artifact: ChatArtifactFile?
+    @State private var artifactError: String?
+    @State private var downloading = false
+    @State private var downloadTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -17,6 +22,10 @@ struct ChatMessageView: View {
                         .accessibilityAddTraits(.isHeader).textSelection(.enabled)
                 case .code(let language, let code):
                     CodeMessage(language: language, code: code)
+                case .html(let html):
+                    ChatHTMLArtifact(html: html)
+                case .image(let alt, let destination):
+                    ChatArtifactImage(alt: alt, destination: destination)
                 case .quote(let text):
                     HStack(spacing: 12) {
                         RoundedRectangle(cornerRadius: 2).fill(Brand.amber.opacity(0.7)).frame(width: 3)
@@ -35,6 +44,37 @@ struct ChatMessageView: View {
         .font(.body)
         .frame(maxWidth: .infinity, alignment: .leading)
         .tint(Brand.amber)
+        .environment(\.openURL, OpenURLAction { url in
+            if ChatArtifactPolicy.guestPath(url.absoluteString) != nil {
+                openArtifact(url.absoluteString)
+                return .handled
+            }
+            if ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") { return .systemAction }
+            artifactError = "This link is not a supported web address or a file inside your computer home."
+            return .handled
+        })
+        .overlay(alignment: .bottomTrailing) {
+            if downloading { ProgressView("Downloading file…").font(.caption).padding(12).background(.regularMaterial, in: .capsule).accessibilityAddTraits(.updatesFrequently) }
+        }
+        .sheet(item: $artifact) { ChatFilePreview(file: $0) }
+        .alert("Could not open file", isPresented: Binding(get: { artifactError != nil }, set: { if !$0 { artifactError = nil } })) {
+            Button("OK", role: .cancel) { artifactError = nil }
+        } message: { Text(artifactError ?? "") }
+        .onDisappear { downloadTask?.cancel(); downloadTask = nil }
+    }
+    private func openArtifact(_ destination: String) {
+        guard !downloading else { return }
+        downloading = true
+        downloadTask = Task { @MainActor in
+            defer { downloading = false }
+            do {
+                guard let host = model.host else { throw HostClient.Failure.unauthorized }
+                let file = try await host.chatArtifact(destination)
+                try Task.checkCancellation()
+                artifact = file
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { artifactError = error.localizedDescription } }
+        }
     }
 }
 

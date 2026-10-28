@@ -374,3 +374,26 @@ agent confirms the requested selection. Model discovery may require agent sign-i
 Each desktop tile has a visible Close Window button. Hold a dock icon for Open, Pin/Unpin
 and Close actions. Chat turns stay mounted while sending and changing keyboard height;
 stale transcript reads retain completed answers already shown.
+
+
+## Checking chat artifacts on a device
+
+Pure parser/path/sandbox policy checks run with `swift test --filter 'ChatArtifactTests|ChatMarkdownTests'`
+in `CabooseKit`. In an agent chat, generate a PDF and PNG beneath `/home/caboose/Agents/<task>/artifacts`
+and return Markdown links plus standalone image Markdown. Tap the PDF and image: both show
+Quick Look and Share; save a copy to Files. A missing file shows an error; a file above 25 MiB
+fails without finishing its download. Guest `file://` links use the computer's file service.
+Traversal and files outside the computer home never open on the phone.
+
+Return a complete fenced `inline-html` block with an inline SVG chart, a button that changes
+it, a growing/shrinking section and a CSS animation. Check touch, VoiceOver labels, rotation,
+Expand/Collapse, source and HTML export. Append prose after the fence while streaming: the
+widget retains its interactive state. An incomplete fence stays code. External script/image,
+fetch, WebSocket, navigation, popup and `file://` attempts must fail; self-contained data images
+and inline scripts/styles work. A widget button calling `window.Caboose.compose("Explain this chart")`
+shows a native proposed-message sheet; Cancel changes nothing, and Use in Composer fills the
+draft without sending. Calls without user activation or above 32,000 characters do nothing.
+The bridge requires a recent touch; keyboard-only activation is not supported.
+
+Quick Look, WebKit isolation, actual file download/share, touch and VoiceOver require the app
+on a device; unit tests cover the pure policy and fence parsing.

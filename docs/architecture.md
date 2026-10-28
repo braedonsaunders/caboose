@@ -1738,7 +1738,22 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   collapsible thoughts, tool calls grouped and updated in place, the plan as a checklist,
   permissions with their answers, and context use. Messages render native headings, lists,
   quotes, inline styles and links, plus selectable fenced code with Copy. The chat list is
-  searchable by title and agent. A running chat shows a live preview when the shared agent
+  searchable by title and agent. Generated-file links beneath `/home/caboose` (including
+  guest `file://` links), `~/` paths and home-relative paths download through the authenticated
+  `/v1/fs/content` service, never the phone's filesystem. Downloads reject redirects and stop
+  at 25 MiB. Standalone image Markdown shows a downsampled inline preview; tapping opens
+  Quick Look with Share. Unsupported preview formats offer sharing. Download failures are
+  visible in the chat.
+  Complete `html` and `inline-html` fences up to 512 KiB render self-contained interactive
+  HTML/CSS/JavaScript/SVG; incomplete or oversized fences remain selectable code. Each widget
+  uses an ephemeral WKWebView and an opaque-origin sandbox frame, with CSP and content rules
+  blocking network and file access, navigation, external dependencies, frames and popups.
+  Widgets resize with their content, expand in place without losing JavaScript state, and
+  offer source and HTML export. No bearer token enters the web view. The sole native bridge,
+  `window.Caboose.compose(message)`, accepts at most 32,000 characters after a widget touch
+  and active JavaScript user activation, then shows a native proposed-message review sheet.
+  Use in Composer prefills the chat draft; it never sends a message or executes tools.
+  A running chat shows a live preview when the shared agent
   seat has an application window; Watch opens that real surface. A working agent can be stopped. Pending approvals show in the chat, on Home and as a banner over every screen, with the agent's always-allow option when it
   has one. A task whose agent was signed out offers Sign In and Ask Another (another agent
   the same thing in a new chat, or Connect a Model). Sign In, there and in Settings › Agents,
