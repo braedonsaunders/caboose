@@ -42,7 +42,6 @@ COPY guest/components ./guest/components
 COPY guest/files ./guest/files
 COPY guest/phone ./guest/phone
 COPY guest/notifications ./guest/notifications
-COPY guest/container/caboose-session ./guest/container/caboose-session
 COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
 COPY guest/catalog/icons ./guest/catalog/icons
 COPY --from=web-build /src/apps/web/dist ./apps/web/dist

@@ -26,7 +26,7 @@ sh "$root/notifications/install.sh"
 bash "$root/phone/install.sh"
 install -d -m 0755 /usr/local/share/caboose
 if [[ "$mode" = *container ]]; then
-  install -Dm755 "$root/container/caboose-session" /usr/local/bin/caboose-session
+  install -Dm755 "$root/components/container-services.sh" /usr/local/libexec/caboose-components-services
 else
   mkdir -p /var/lib/systemd/linger
   touch /var/lib/systemd/linger/caboose
@@ -39,24 +39,7 @@ if [[ "$mode" = vm ]]; then
   systemctl start cups.service
   systemctl restart caboose-phone-printer.service
 elif [[ "$mode" = container ]]; then
-  if [ -s /run/caboose/files.pid ]; then
-    pid=$(cat /run/caboose/files.pid)
-    if [[ "$pid" =~ ^[0-9]+$ ]] && [ -r "/proc/$pid/cmdline" ] && tr '\0' '\n' < "/proc/$pid/cmdline" | grep -Fxq /opt/caboose/files/caboose-files.py; then
-      start-stop-daemon --stop --signal TERM --pidfile /run/caboose/files.pid
-      for _ in $(seq 1 10); do
-        [ ! -r "/proc/$pid/stat" ] && break
-        [ "$(awk '{print $3}' "/proc/$pid/stat")" = Z ] && break
-        sleep 1
-      done
-      if [ -r "/proc/$pid/stat" ] && [ "$(awk '{print $3}' "/proc/$pid/stat")" != Z ]; then
-        echo 'The previous Caboose file service did not stop.' >&2
-        exit 1
-      fi
-    fi
-    rm -f /run/caboose/files.pid
-  fi
-  /usr/local/bin/caboose-session start-files
-  /usr/local/bin/caboose-session start-printing
+  /usr/local/libexec/caboose-components-services restart
 fi
 version=$(python3 "$root/components/version.py" "$root")
 printf '%s\n' "$version" > /usr/local/share/caboose/components.version.tmp

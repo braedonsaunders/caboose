@@ -284,21 +284,13 @@ and `../../guest/phone/README.md` for the guest-side CUPS and command check.
 
 ## Guest components
 
-The host bundles the files listed in `guest/components/manifest.json` and compares their
-content hash with the running guest on each wake. Updating happens after display readiness
-and reports `computer.upgrade` and `GET /v1/computer`'s `upgrade` status. It retries on the
-next wake after a failure. Park and restart are unavailable while packages are being installed.
-A container without its original loopback mapping for port 14700 reports that it must be
-recreated to enable Files. Preserve its home and back up anything needed from its writable
-layer first; recreating it discards installed packages in that layer.
-
-Run `guest/components/check-container.sh` from the repository root after `pnpm install`
-to test a component-free disposable Debian guest, install twice and check services and
-a preserved file. It needs Docker and network access. On a real host, set `CABOOSE_URL`
-and `CABOOSE_OWNER_TOKEN`, then run `node apps/host/scripts/check-upgrade.mjs`; it wakes
-the computer, waits for the upgrade, and runs the Files check. To exercise the installation
-rather than the up-to-date path, use an existing guest with an older marker. This check
-needs a real guest; the microVM path additionally needs KVM.
+Existing computers receive component updates after wake; status and failures appear in
+`GET /v1/computer` and `computer.upgrade` events. Old containers without port 14700
+mapped must be recreated for Files; preserve the home and back up the writable layer.
+Run `guest/components/check-container.sh` for the disposable guest check. With
+`CABOOSE_URL` and `CABOOSE_OWNER_TOKEN` set, run `node apps/host/scripts/check-upgrade.mjs`
+for the real-host check; it wakes the computer and exercises Files. See
+`guest/components/README.md` for prerequisites and retry behavior.
 
 ## Catalog tools for agents
 

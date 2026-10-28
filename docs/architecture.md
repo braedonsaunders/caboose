@@ -189,25 +189,15 @@ A Debian 13 (trixie, amd64) golden image booted by Cloud Hypervisor. Each comput
 disk is a reflink copy-on-write clone of the base, exactly the appkit-desk model: it
 costs no space up front and each user's installs and home persist. A clone is
 independent of the base once made, so a new base image reaches new computers only.
-On each wake the host compares a SHA-256 hash of its bundled guest components with
-`/usr/local/share/caboose/components.version`. A mismatch starts an asynchronous,
-root guest-exec upgrade after the display is ready: the host stages bounded base64
-argument chunks, installs missing Debian packages, the file service, phone integration,
-notification monitor and Mesa software drivers, starts their services and CUPS queue,
-and atomically writes the marker only after success. It never replaces the disk or edits
-user files. The same installer is used by both image builders. A failed upgrade is retried
-on the next wake; a running upgrade holds a lease and rejects park or restart requests.
-The system Thunar action is a default; existing user-defined actions take precedence.
-
-`GET /v1/computer` reports `upgrade: null | { state, version?, message? }`, and
-`/v1/control` broadcasts `computer.upgrade { upgrade }` plus updated management status.
-States are `checking`, `updating`, `succeeded`, and `failed`. A failure does not prevent
-the display opening. Before starting an existing container display, the host installs the guarded session bootstrap
-from the same bundle on a best-effort basis; missing printing helpers do not prevent display
-startup. Old containers retain their writable layer and use the same guest upgrade, but Docker cannot add a port mapping to an existing container: if its port 14700
-mapping is absent the success message says to recreate the container to enable Files.
-Back up its writable layer and home before replacing it; installed packages in that layer
-are otherwise lost. The Computer sheet shows progress, failures and this warning.
+On wake the host compares its bundled guest-component hash with the guest marker and,
+when needed, installs the shared components asynchronously through root guest exec.
+The marker is written only after success; a failure is retried on the next wake and does
+not block the display. The same installer serves both image builders and both runtimes.
+A running upgrade holds a lease and rejects park or restart. `GET /v1/computer` includes
+`upgrade: null | { state, version?, message? }` and `/v1/control` sends `computer.upgrade`
+with states `checking`, `updating`, `succeeded`, or `failed`. An older container without
+port 14700 mapped must be recreated for Files; preserve its home and back up its writable
+layer first. The Thunar action is a system default; user custom actions take precedence.
 
 - **Display server: Xpra in seamless mode** on display `:100`, listening for
   WebSocket on `0.0.0.0:14500` inside the guest (reachable only from the host over
@@ -302,7 +292,7 @@ HTTP API (JSON except streamed file contents, all behind `Authorization: Bearer 
 | `GET` | `/v1/apps` | launchable apps from the guest's `.desktop` files: `{ id, name, icon (PNG data URL), categories, exec }` |
 | `POST` | `/v1/apps/:id/launch` | start an app on the owner's display: Xpra's `:100`, or under Caboose Display with the launch environment it writes to `/run/caboose/display.env` |
 | `POST` | `/v1/session/park` | park now (snapshot with memory); otherwise parked on idle |
-| `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `notification`, `agent.*`, `media.*`, `fs.changed` |
+| `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `computer.upgrade`, `notification`, `agent.*`, `media.*`, `fs.changed` |
 | `GET` | `/v1/computer` | management status and persisted computer settings; does not wake or lease the computer |
 | `PATCH` | `/v1/computer/settings` | update any of `name`, `memoryMb`, `vcpus`, `idleMs`, `defaultAgent`; returns management status |
 | `POST` | `/v1/computer/restart` | requires `{ "confirm": true }`; cold restart, preserving the disk and discarding memory; returns management status |

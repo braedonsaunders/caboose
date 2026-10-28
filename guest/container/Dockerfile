@@ -53,7 +53,6 @@ COPY components /tmp/bundle/components
 COPY files /tmp/bundle/files
 COPY notifications /tmp/bundle/notifications
 COPY phone /tmp/bundle/phone
-COPY container/caboose-session /tmp/bundle/container/caboose-session
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff

@@ -1,5 +1,6 @@
 [
   "components/install.sh",
+  "components/container-services.sh",
   "components/version.py",
   "files/caboose-files.py",
   "files/caboose-files.service",
@@ -16,6 +17,5 @@
   "phone/uca.xml",
   "phone/cups-backend",
   "phone/printer-setup",
-  "phone/caboose-phone-printer.service",
-  "container/caboose-session"
+  "phone/caboose-phone-printer.service"
 ]
