@@ -131,7 +131,7 @@ final class NativeEditor: UITextView {
     let keyBar = KeyBar()
     let placeholder = UILabel()
     var wantsFocus = false
-    private var modifiers: Set<String> = []
+    private var modifiers = NativeKeyModifiers()
 
     init() {
         super.init(frame: .zero, textContainer: nil)
@@ -151,12 +151,28 @@ final class NativeEditor: UITextView {
     override func didMoveToWindow() { super.didMoveToWindow(); requestFocus() }
     func requestFocus() { if wantsFocus, window != nil, isEditable { becomeFirstResponder() } }
 
+    override func insertText(_ text: String) {
+        let action = modifiers.text(text, composing: markedTextRange != nil, secure: isSecureTextEntry)
+        keyBar.show(activeModifiers: modifiers.active)
+        switch action {
+        case .insert(let text): super.insertText(text)
+        case .selectAll: selectAll(nil)
+        case .copy: if !isSecureTextEntry { copy(nil) }
+        case .cut: if !isSecureTextEntry { cut(nil) }
+        case .paste: paste(nil)
+        case .undo: undoManager?.undo()
+        case .redo: undoManager?.redo()
+        case .unsupported:
+            UIAccessibility.post(notification: .announcement, argument: String(localized: "This keyboard shortcut is unavailable in this field."))
+        }
+    }
+
     private func perform(_ action: KeyBar.Action) {
         switch action {
         case .dismissKeyboard:
             wantsFocus = false
-            modifiers = []
-            keyBar.show(activeModifiers: modifiers)
+            modifiers.consume()
+            keyBar.show(activeModifiers: modifiers.active)
             resignFirstResponder()
         case .autocorrect:
             guard !isSecureTextEntry else { return }
@@ -164,11 +180,13 @@ final class NativeEditor: UITextView {
             keyBar.show(autocorrect: autocorrectionType != .no)
             reloadInputViews()
         case .modifier(let name):
-            if !modifiers.insert(name).inserted { modifiers.remove(name) }
-            keyBar.show(activeModifiers: modifiers)
+            modifiers.toggle(name)
+            keyBar.show(activeModifiers: modifiers.active)
         case .text(let text):
             insertText(text)
         case .key(let name):
+            let active = modifiers.consume()
+            keyBar.show(activeModifiers: modifiers.active)
             guard let selection = selectedTextRange else { return }
             if name == "Escape" { unmarkText(); return }
             if name == "Tab" { insertText("\t"); return }
@@ -178,11 +196,11 @@ final class NativeEditor: UITextView {
             let direction = UITextDirection(rawValue: storage.rawValue)
             let destination: UITextPosition?
             if name == "Home" || name == "End" {
-                destination = modifiers.contains("control") ? (backward ? beginningOfDocument : endOfDocument)
+                destination = active.contains("control") ? (backward ? beginningOfDocument : endOfDocument)
                     : tokenizer.position(from: origin, toBoundary: .line, inDirection: direction)
             } else if name == "Page_Up" || name == "Page_Down" {
                 destination = backward ? beginningOfDocument : endOfDocument
-            } else if modifiers.contains("mod1") || modifiers.contains("control") {
+            } else if active.contains("mod1") || active.contains("control") {
                 destination = tokenizer.position(from: origin, toBoundary: .word, inDirection: direction)
             } else {
                 let layout: UITextLayoutDirection = name == "Left" ? .left : name == "Right" ? .right : name == "Up" ? .up : .down

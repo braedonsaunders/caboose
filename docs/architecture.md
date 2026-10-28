@@ -1659,7 +1659,9 @@ Pinned and recent apps are kept on the phone per computer.
   Remote inputs share the same text/composition and modifier handling, with an Aa control
   for autocorrect; Terminal keeps its own terminal-byte semantics without prose correction.
   Native fields use UIKit text editing, selection and IME; navigation moves native text
-  positions and never inserts terminal escape sequences. Send and Hide clear composer
+  positions and never inserts terminal escape sequences. Ctrl/Alt apply to the next key;
+  Ctrl+A/C/X/V/Z/Y use native editing commands, with Copy/Cut blocked in secure fields.
+  Unsupported chords announce their unavailability without inserting text. Send and Hide clear composer
   focus; updates and send completion leave it hidden until a tap or explicit focus request.
 - **Pencil.** The client defines `pencil` samples (pressure, tilt, azimuth, hover), but the
   compositor does not advertise the `pencil` feature, so Apple Pencil acts as touch and

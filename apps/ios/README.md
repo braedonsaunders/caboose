@@ -350,8 +350,9 @@ memory feature is implied by the composer; conversation continuity belongs to th
 App cards, Desktop, the display trackpad, Terminal, Agents and app-owned native
 form fields use CabooseKit's `KeyBar`. `Caboose/NativeTextInput.swift` bridges UIKit
 text editing into SwiftUI, retaining marked text, selection, paste, secure entry and
-Dynamic Type. Its multiline fields grow to their line cap, then scroll. Native Ctrl/Alt
-modify accessory navigation; they do not produce terminal control bytes. Composer Send
+Dynamic Type. Its multiline fields grow to their line cap, then scroll. Native Ctrl/Alt apply to the next key, including word navigation. Ctrl+A/C/X/V/Z/Y
+use native Select All, Copy, Cut, Paste, Undo and Redo; secure fields block Copy/Cut.
+Unsupported chords announce their unavailability without inserting text or control bytes. Composer Send
 and Hide clear focus; rendering and send completion do not reopen the keyboard. A tap,
 suggestion or Ask shortcut explicitly requests it again. The agent sign-in sheet uses
 translucent material over the presenting screen.
