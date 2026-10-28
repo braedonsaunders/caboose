@@ -4,7 +4,7 @@ import SwiftUI
 // wheels. Same geometry and timing as apps/web/src/brand/brand.ts, which renders the
 // README, favicon and app icon; change the two together.
 //
-//   CabooseWordmark(motion: .intro)     draws in, rolls one wheel-turn, again every 12 s
+//   CabooseWordmark(motion: .intro)     draws in, rolls three wheel-turns, again every 12 s
 //   CabooseWordmark(motion: .rolling)   wheels turning (waking)
 //   CabooseWordmark(lit: false)         hubs unlit: the computer is parked
 //   CabooseWheel()                      one wheel, a power button
@@ -92,7 +92,7 @@ struct BrandFrame {
     }
 
     /// How far the train still has to roll, in wheel revolutions: 1 is a full turn
-    /// behind its resting place, 0 is at rest. Ties sit `roll × ROLL` to the right and
+    /// behind its resting place (the intro starts `Brand.Timing.rollTurns` behind), 0 is at rest. Ties sit `roll × ROLL` to the right and
     /// wheels `roll × 360°` anticlockwise of rest.
     var roll: Double {
         switch motion {
@@ -103,11 +103,12 @@ struct BrandFrame {
             return 1 - time.truncatingRemainder(dividingBy: period) / period
         case .intro:
             let (delay, duration, cycle) = (Brand.Timing.rollDelay, Brand.Timing.rollDuration, Brand.Timing.cycle)
-            if time < delay { return 1 }
-            if time < delay + duration { return 1 - Brand.Easing.roll((time - delay) / duration) }
+            let turns = Brand.Timing.rollTurns
+            if time < delay { return turns }
+            if time < delay + duration { return turns * (1 - Brand.Easing.roll((time - delay) / duration)) }
             guard time >= delay + cycle else { return 0 }
             let phase = (time - delay - cycle).truncatingRemainder(dividingBy: cycle)
-            return phase < duration ? 1 - Brand.Easing.cycle(phase / duration) : 0
+            return phase < duration ? turns * (1 - Brand.Easing.cycle(phase / duration)) : 0
         }
     }
 
@@ -132,7 +133,9 @@ enum Brand {
         static let pop = 0.45
         static let hubAfter = 0.5
         static let rollDelay = 0.7
-        static let rollDuration = 2.2
+        static let rollDuration = 3.2
+        /// Wheel revolutions in the intro and in each 12 s cycle.
+        static let rollTurns = 3.0
         static let cycle = 12.0
         static func letter(_ index: Int) -> Double { 0.25 + Double(index) * 0.07 }
     }
@@ -210,7 +213,7 @@ enum Brand {
         ties.clip(to: Path(CGRect(x: clip.0, y: 100, width: clip.1 - clip.0, height: 40)))
         ties.opacity = 0.32
         let shift = frame.roll * rollDistance
-        var k = Int(((Double(clip.0) - rollDistance) / tie).rounded(.down))
+        var k = Int(((Double(clip.0) - rollDistance * Brand.Timing.rollTurns) / tie).rounded(.down))
         while Double(k) * tie < Double(clip.1) {
             let x = Double(k) * tie + shift
             ties.fill(Path(roundedRect: CGRect(x: x, y: 116, width: 14, height: 11), cornerRadius: 2), with: .foreground)
