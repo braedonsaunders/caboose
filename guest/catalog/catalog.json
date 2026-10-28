@@ -511,7 +511,7 @@
       "packs": [
         "create"
       ],
-      "icon": "org.kde.krita",
+      "icon": "krita",
       "desktopId": "org.kde.krita.desktop",
       "fileTypes": {
         "extensions": [
@@ -543,7 +543,7 @@
       "packs": [
         "create"
       ],
-      "icon": "org.darktable.darktable",
+      "icon": "darktable",
       "desktopId": "org.darktable.darktable.desktop",
       "fileTypes": {
         "extensions": [
@@ -641,7 +641,7 @@
       "packs": [
         "video-audio"
       ],
-      "icon": "org.kde.kdenlive",
+      "icon": "kdenlive",
       "desktopId": "org.kde.kdenlive.desktop",
       "fileTypes": {
         "extensions": [
@@ -806,7 +806,7 @@
       "packs": [
         "make"
       ],
-      "icon": "org.kicad.kicad",
+      "icon": "kicad",
       "desktopId": "org.kicad.kicad.desktop",
       "fileTypes": {
         "extensions": [
