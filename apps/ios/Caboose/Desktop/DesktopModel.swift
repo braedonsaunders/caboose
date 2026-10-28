@@ -316,7 +316,9 @@ final class DesktopModel {
         let width = min(window.frame.width / pixelsPerPoint, usable.width * 0.8)
         let height = min(window.frame.height / pixelsPerPoint, usable.height * 0.85)
         let offset = CGFloat(index % 6) * 28 * ui
-        let origin = CGPoint(x: (size.width - width) / 2 - 84 * ui + offset, y: titleBarHeight + 40 * ui + offset)
+        var origin = CGPoint(x: (size.width - width) / 2 - 84 * ui + offset, y: titleBarHeight + 40 * ui + offset)
+        // A narrow desktop (a phone held upright beside its bar) keeps the window on screen.
+        origin.x = min(max(0, origin.x), max(0, size.width - width))
         return CGRect(x: origin.x * pixelsPerPoint, y: origin.y * pixelsPerPoint,
                       width: width * pixelsPerPoint, height: height * pixelsPerPoint).integral
     }

@@ -73,44 +73,6 @@ struct AskBar: View {
     }
 }
 
-/// Tasks and the agent seat's windows, on Home.
-struct AgentSection: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        let agents = model.agents
-        if !agents.tasks.isEmpty || !agents.localRuns.isEmpty || !(agents.seat?.windows.isEmpty ?? true) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Agents").font(.headline).foregroundStyle(.secondary)
-                if let seat = agents.seat, !seat.windows.isEmpty {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 14) {
-                            ForEach(seat.windows.values.filter { !$0.isAuxiliary }.sorted { $0.id < $1.id }) { window in
-                                Button { model.presentAgentWindow(window.id) } label: {
-                                    WindowCard(window: window, icon: model.icon(for: window))
-                                        .overlay(alignment: .topTrailing) {
-                                            Label("Agent", systemImage: "sparkle").font(.caption2.weight(.semibold))
-                                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                                .glassEffect(.regular, in: .capsule).padding(8)
-                                        }
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                    .scrollIndicators(.hidden)
-                }
-                ForEach(agents.localRuns.prefix(3)) { run in
-                    OnDeviceCard(run: run)
-                }
-                ForEach(agents.tasks.prefix(6)) { task in
-                    TaskCard(task: task, lines: agents.output[task.id] ?? [])
-                }
-            }
-        }
-    }
-}
-
 struct TaskCard: View {
     @Environment(AppModel.self) private var model
     let task: AgentCenter.Task
@@ -195,7 +157,7 @@ struct TaskCard: View {
         case "cancelled": Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
         case "paused": Image(systemName: "pause.circle.fill").foregroundStyle(.yellow)
         case _ where task.pendingApproval != nil: Image(systemName: "hand.raised.circle.fill").foregroundStyle(.yellow)
-        default: ProgressView().controlSize(.small)
+        default: CabooseWheel(motion: .rolling).frame(width: 20, height: 20)
         }
     }
 }

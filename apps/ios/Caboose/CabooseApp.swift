@@ -1,5 +1,6 @@
-import SwiftUI
+import CabooseKit
 import CoreSpotlight
+import SwiftUI
 
 @main
 struct CabooseApp: App {
@@ -16,7 +17,7 @@ struct CabooseApp: App {
                     if url.isFileURL { model.documents.receive(url) }
                     else if let pairing = PairingLink(link: url) { model.pair(with: pairing) }
                     else if let credentials = Credentials(link: url) { model.connect(with: credentials) }
-                    else if url.scheme == "caboose", url.host == "task", let id = url.pathComponents.dropFirst().first { model.notificationTaskID = id }
+                    else if let link = ShellLink(url) { model.follow(link) }
                 }
                 .onContinueUserActivity(CSSearchableItemActionType) { activity in
                     guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String else { return }
@@ -43,37 +44,16 @@ struct RootView: View {
     var body: some View {
         ZStack {
             Backdrop()
-            switch model.phase {
-            case .needsSetup:
+            if model.phase == .needsSetup {
                 SetupView()
-            case .waking, .connecting:
-                WakeView(connecting: model.phase == .connecting)
-            case .restarting:
-                RestartingView()
-            case .parked:
-                ParkedView()
-            case .failed(let message):
-                FailureView(message: message)
-            case .displayElsewhere:
-                ElsewhereView()
-            case .ready where model.externalDisplayActive:
-                TrackpadScreen(desktop: model.desktop)
-            case .ready where model.deviceDesktopActive:
-                DeviceDesktopScreen()
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
-            case .ready:
-                HomeView()
-                    .fullScreenCover(isPresented: Binding(
-                        get: { model.presentedWindowID != nil },
-                        set: { if !$0 { model.presentedWindowID = nil } })) {
-                        WindowScreen()
-                            .environment(model)
-                    }
+            } else {
+                MainTabs()
             }
         }
-        .animation(.smooth(duration: 0.35), value: model.phase)
+        .animation(.smooth(duration: 0.35), value: model.phase == .needsSetup)
         .overlay(alignment: .top) {
-            if model.phase == .ready, !model.externalDisplayActive { ApprovalBanner() }
+            // Home and Agents answer approvals in place; the other tabs get the banner.
+            if model.phase == .ready, !model.externalDisplayActive, [.desktop, .apps].contains(model.selectedTab) { ApprovalBanner() }
         }
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
         .sheet(item: Binding(get: { model.phase == .ready ? model.documents.pending : nil }, set: { _ in })) { item in
@@ -94,6 +74,17 @@ struct RootView: View {
         .alert("Couldn't sign in", isPresented: Binding(get: { model.pairingFailure != nil }, set: { if !$0 { model.pairingFailure = nil } })) {
             Button("OK", role: .cancel) { model.pairingFailure = nil }
         } message: { Text(model.pairingFailure ?? "") }
+        .sheet(isPresented: Bindable(model).wallpaperPickerPresented) {
+            NavigationStack {
+                BackgroundPicker()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done", systemImage: "checkmark") { model.wallpaperPickerPresented = false }
+                        }
+                    }
+            }
+            .environment(model)
+        }
         .sheet(isPresented: Bindable(model).settingsPresented) {
             ComputerSettingsView().environment(model)
         }
@@ -145,13 +136,8 @@ struct WakeView: View {
             CabooseWordmark(motion: .rolling)
                 .frame(height: 58)
                 .foregroundStyle(.white.opacity(0.9))
-            VStack(spacing: 6) {
-                Text(connecting ? "Opening your display" : "Waking your computer")
-                    .font(.title3.weight(.semibold))
-                Text(connecting ? "Your apps are right where you left them." : "Every app comes back exactly as it was.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            Text(connecting ? "Connecting" : "Waking")
+                .font(.title3.weight(.semibold))
             ProgressView().tint(.white)
         }
         .multilineTextAlignment(.center)
@@ -166,13 +152,8 @@ struct RestartingView: View {
                 .font(.system(size: 56, weight: .light))
                 .symbolEffect(.rotate, options: .repeating, isActive: true)
                 .foregroundStyle(.white.opacity(0.9))
-            VStack(spacing: 6) {
-                Text("Restarting your computer")
-                    .font(.title3.weight(.semibold))
-                Text("It starts fresh from its disk. Your files and apps are all still there.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Restarting")
+                .font(.title3.weight(.semibold))
             ProgressView().tint(.white)
         }
         .multilineTextAlignment(.center)
@@ -189,19 +170,10 @@ struct ParkedView: View {
             CabooseWordmark(lit: false)
                 .frame(height: 58)
                 .foregroundStyle(.white.opacity(0.9))
-            VStack(spacing: 6) {
-                Text("Your computer is parked")
-                    .font(.title3.weight(.semibold))
-                Text("Every app is saved exactly as you left it.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 12) {
-                Button("Wake") { Task { await model.wake() } }
-                    .buttonStyle(.glassProminent)
-                Button("Settings", systemImage: "gearshape") { model.settingsPresented = true }
-                    .buttonStyle(.glass)
-            }
+            Text("Parked")
+                .font(.title3.weight(.semibold))
+            Button("Turn On", systemImage: "power") { Task { await model.wake() } }
+                .buttonStyle(.glassProminent)
         }
         .multilineTextAlignment(.center)
         .padding(32)
@@ -217,21 +189,20 @@ struct FailureView: View {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 44, weight: .light))
                 .foregroundStyle(.orange)
-            Text("Your computer is out of reach")
+            Text("Out of Reach")
                 .font(.title3.weight(.semibold))
-            Text(message)
+            Text(HostMessage.clipped(message, maxLines: 3, maxCharacters: 200))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .lineLimit(4)
+            // A computer that will not wake can often be fixed from its settings: less memory, or a restart.
             HStack(spacing: 12) {
                 Button("Try Again") { Task { await model.wake() } }
                     .buttonStyle(.glassProminent)
                 Button("Change Computer") { model.signOut() }
                     .buttonStyle(.glass)
             }
-            // A computer that will not wake can often be fixed from its settings: less memory, or a restart.
-            Button("Computer Settings", systemImage: "gearshape") { model.settingsPresented = true }
-                .buttonStyle(.glass)
         }
         .padding(32)
     }
@@ -247,12 +218,8 @@ struct ElsewhereView: View {
             Image(systemName: "rectangle.on.rectangle")
                 .font(.system(size: 44, weight: .light))
                 .foregroundStyle(.secondary)
-            Text("Showing on another device")
+            Text("On Another Device")
                 .font(.title3.weight(.semibold))
-            Text("Another device is showing this computer's display. Your apps keep running there.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
             Button("Show Here") { Task { await model.wake() } }
                 .buttonStyle(.glassProminent)
         }

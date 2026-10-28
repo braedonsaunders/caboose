@@ -28,3 +28,13 @@ public enum RecentFiles {
         return files.sorted { $0.mtime == $1.mtime ? $0.path < $1.path : $0.mtime > $1.mtime }
     }
 }
+
+extension RecentFiles {
+    /// The files worth showing a person: nothing inside a hidden directory or hidden itself
+    /// (settings, caches, browser profiles), newest first as scanned, at most `limit`.
+    public static func visible(_ files: [RecentFile], limit: Int) -> [RecentFile] {
+        Array(files.lazy.filter { file in
+            !file.path.split(separator: "/").contains { $0.hasPrefix(".") }
+        }.prefix(limit))
+    }
+}
