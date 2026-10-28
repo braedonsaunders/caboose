@@ -1,0 +1,1357 @@
+FreeCAD icon: /usr/share/icons/hicolor/scalable/apps/org.freecad.FreeCAD.svg from the Debian 13 package freecad-common 1.0.0+dfsg-8+deb13u3, rendered at 128×128.
+Copyright and licence follow, from /usr/share/doc/freecad-common/copyright in freecad-common 1.0.0+dfsg-8+deb13u3.
+
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: FreeCAD
+Upstream-Contact: Werner Mayer <wmayer@users.sourceforge.net>
+Source: https://github.com/freecad/freecad
+Files-Excluded:
+  src/MacAppBundle
+  src/Tools/_TEMPLATE_
+  src/3rdParty/libkdtree
+  .github
+  conda
+  contrib/.vscode
+  src/3rdParty/3Dconnexion
+  src/Mod/Robot/Lib/Kuka/*
+  tools/build/WindowsInstaller
+  src/zipios++
+  src/Mod/TechDraw/Gui/Resources/fonts/Y14.5*.ttf
+  src/3rdParty/json
+  src/3rdParty/OpenGL
+  src/Gui/3Dconnexion/I3dMouseParams.h
+  src/Gui/3Dconnexion/MouseParameters.cpp
+  src/Gui/3Dconnexion/MouseParameters.h
+  src/Mod/TechDraw/Templates/locale/es-AR
+Comment: Notes for the Files-Exluded section:
+ .github/ -> Space reduction, not needed for build. (a few MB)
+ conda /-> package manager to install freecad, we have apt.
+ contrib/.vscode -> project file for vscode.
+ src/3rdParty/3Dconnexion/* -> Windows dll for certain hardware.
+ src/Mod/Robot/Lib/Kuka/ - very likely non-free data, possilby not even distributeable
+ src/Mod/TechDraw/Gui/Resources/fonts/Y14.5-*.ttf - non-free, lacks modification rights.
+ src/3rdParty/json/ -> using packaged version (nlohmann-json3-dev)
+ src/3rdParty/OpenGL/api/GL/glext.h  -> using package.libgl-dev
+ src/Mod/TechDraw/Templates/locale/es-AR -> CC-BY-NC
+ TODO: embedded code library 3rdParty/libE57Format is very outdated. maybe package it.
+ TODO: embedded code library src/3rdParty/libE57Format/extern/CRCpp -- version 0.2.0.6 - check for updates, whether to package.
+ TODO: check src/Base/stackwalker. -- newer upstream available. is it packaged? https://github.com/JochenKalmbach/StackWalker
+
+Files: *
+Copyright: 2000      Thomas Søndergaard
+           2000      Kevin Shea
+           2001-2022 Jürgen Riegel <juergen.riegel@web.de>,
+           2003-2024 Werner Mayer <wmayer@users.sourceforge.net>
+           2004-2012 Imetric 3D GmbH
+           2005      Berthold Grupp
+           2006      Laboratoire J.-L. Lions UPMC Paris
+           2007-2013 Joachim Zettler <Joachim.Zettler@gmx.de>
+           2009-2024 Yorik van Havre <yorik@uncreated.net>
+           2009-2015 Dan Heeks
+           2009-2010 Ken Cline <cline@frii.com>
+           2010      Heiko Jakob <heiko.jakob@gediegos.de>
+           2010-2015 Thomas Anderson <blobfish[at]gmx.com>
+           2011-2014 Luke Parry <l.parry@warwick.ac.uk>
+           2011-2014 Joe Dowsett <j-dowsett[at]users.sourceforge.net>
+           2011-2021 Jose Luis Cercos Pita <jlcercos@gmail.com>
+           2011-2012 Konstantinos Poulios <logari81@gmail.com>
+           2012-2014 Sebastian Hoogen <github@sebastianhoogen.de>
+           2012-2013 Jan Rheinländer <jrheinlaender@users.sourceforge.net>
+           2012      I-maginer
+           2012      Keith Sloan <keith@sloan-home.co.uk>
+           2012      Milos Koutny <milos.koutny@gmail.com>
+           2012      Petar Perisin <petar.perisin@gmail.com>
+           2013-2017 Eivind Kvedalen <eivind@kvedalen.name>
+           2013-2024 Wandererfan <wandererfan@gmail.com>
+           2014-2023 3Dconnexion
+           2014-2023 Abdullah Tahiri <abdullah.tahiri.yo@gmail.com>
+           2014-2023 sliptonic <shopinthewoods@gmail.com>
+           2014-2022 Matteo Grellier <matteogrellier@gmail.com>
+           2014-2020 Victor Titov (DeepSOIC) <vv.titov@gmail.com>
+           2014-2018 Stefan Tröger <stefantroeger@gmx.net>
+           2014-2015 Balázs Bámer
+           2014-2015 Dan Falck <ddfalck@gmail.com>
+           2014-2015 Nathan Miller <Nathan.A.Mill[at]gmail.com>
+           2014      David Douard <david.douard@gmail.com>
+           2014      Jonathan Wiedemann <wood.galaxy@gmail.com> (cutplan)
+           2014      Johan Kristensen
+           2015-2023 FreeCAD Developers
+           2015-2021 Bernd Hahnebach <bernd@bimstatik.org>
+           2015-2018 Przemo Firszt <przemo@firszt.eu>
+           2015-2017 Ian Rees <ian.rees@gmail.com>
+           2015-2017 Qingfeng Xia <FreeCAD@iesensor.com>
+           2015-2016 Eivind Kvedalen <eivind@kvedalen.name>
+           2015      Alexander Golubev (Fat-Zer) <fatzer2@gmail.com> 
+           2015      Jon Nordby <jononor@gmail.com>
+           2015      Kirill Gavrilov <kirill.gavrilov@opencascade.com>
+           2015      Pavel Strakhov <ri@idzaaus.org>
+           2015      Przemo Fiszt <przemo@firszt.eu> 
+           2016-2020 Markus Hovorka <m.hovorka@live.de>
+           2016-2019 Viktor Titov (DeepSOIC) <vv.titov@gmail.com>
+           2016      Christoph Blaue <blaue@fh-westkueste.de>
+           2016      Frantisek Loeffelmann <LoffF@email.cz>
+           2016      Lorenz Hüdepohl <dev@stellardeath.org>
+           2016      Ofentse Kgoa <kgoaot@eskom.co.za>
+           2016      York van Havre <yorik@uncreated.net>
+           2016      Ulrich Brammerf <ulrich1a@users.sourceforge.net>
+           2017-2023 Johannes Hartung <j.hartung@gmx.net>
+           2017-2022 Zheng Lei (realthunder.dev@gmail.com)
+           2017      Christophe Grellier <cg[at]grellier.fr>
+           2017      Kustaa Nyholm <kustaa.nyholm@sparetimelabs.com>
+           2017      Kurt Kremitzki <kkremitzki@gmail.com>
+           2017      imarin
+           2017      Joseph Coffland <joseph@cauldrondevelopment.com>
+           2017      Lorenz Lechner
+           2017      LTS <SammelLothar@gmx.de>
+           2017      Pekka Roivainen <pekkaroi@gmail.com>
+           2017      Peter Lama <peterldev94@gmail.com>
+           2017      Shai Seger <shaise at gmail>
+           2018-2019 Gauthier Briere 
+           2018      Benjamin Alterauge (ageeye)
+           2018      George Shuklin (amarao)
+           2018      looooo <sppedflyer@gmail.com>
+           2018      Maurice <easyw@katamail.com>
+           2018      Kresimir Tusek
+           2018      Torsten Sadowski <tsadowski[at]gmx.net>
+           2019-2021 Russell Johnson (russ4262) <russ4262@gmail.com>
+           2019-2020 Carlo Pavan <carlopav@gmail.com>
+           2019-2020 Eliud Cabrera Castillo <e.cabrera-castillo@tum.de>
+           2019      Dion Moult <dion@thinkmoult.com>
+           2019      furti <daniel.furtlehner@gmx.net>
+           2019      Franck Jullien <franck.jullien@gmail.com>
+           2019      Jean-Marie Verdun jmverdun3@gmail.com
+           2019      Jerome Laverroux <jerome.laverroux@free.fr> (cutline)
+           2019      Manuel Apeltauer, direkt cnc-systeme GmbH
+           2019      M G Berberich (berberic2, rynn) 
+           2020-2023 Peter McB
+           2020-2021 Schildkroet
+           2020      Adam Spontarelli <adam@vector-space.org>
+           2020      Antoine Lafr
+           2020      Gary L Hasson
+           2020      Graeme van der Vlugt
+           2020      Rene Bartsch, B.Sc. Informatics <rene@bartschnet.de>
+           2020      Sudhanshu Dubey <sudhanshu.thethunder@gmail.com
+           2020      Tomas Akenine-Möller
+           2020      Travis Apple <travisapple@gmail.com>
+           2020      Wilfried Hortschitz <w.hortschitz@gmail.com>
+           2021-2024 Benjamin Nauck <benjamin@nauck.se>
+           2021-2024 The FreeCAD Project Association, The FreeCAD Project Association AISB
+           2021-2023 edi <edi271@a1.net>
+           2021-2023 Jonas Bähr <jonas.baehr@web.de>
+           2021-2022 Chris Hennes <chennes@pioneerlibrarysystem.org>
+           2021      Emmanuel O'Brien
+           2021      Mark Ganson <TheMarkster>
+           2021      shadowbane1000 <tyler@colberts.us>
+           2021      Tobias Vaara <t@vaara.se>
+           2022-2024 Mario Passaglia <mpassaglia[at]cbc.uba.ar>
+           2022-2024 Pierre-Louis Boyer <development@ondsel.com>
+           2022-2023 Larry Woestman <LarryWoestman2@gmail.com>
+           2022      Ajinkya Dahale <dahale.a.p@gmail.com>
+           2022      Benjamin Bræstrup Sayoc <benj5378@outlook.com>
+           2022      Harald Hartmann 
+           2022      luvtofish <luvtofish@gmail.com> 
+           2022      Paul Lee <paullee0@gmail.com>
+           2023-2024 David Carter <dcarter@david.carter.ca>
+           2023-2024 David Friedli <david@friedli-be.ch>
+           2023-2024 Florian Foinant-Willig <ffw@2f2v.fr>
+           2023-2024 Ondsel <development@ondsel.com>
+           2023      Adrian Popescu
+           2023      Robert Schöftner <rs@unfoo.net>
+           2024      Furgo
+           2024      Kacper Donat <kacper@kadet.net>
+           2024      Ladislav Michl <ladis@linux-mips.org>
+           2023-2024 Syres
+                     Kongsberg Oil & Gas Technologies AS
+License: LGPL-2+
+
+Files: src/Mod/PartDesign/fcsprocket/* src/Mod/PartDesign/fcgear/*
+    src/Mod/Mesh/BuildRegularGeoms.py
+    src/Gui/QSint/actionpanel/actionbox.cpp
+    src/Gui/QSint/actionpanel/actionbox.h
+    src/Gui/QSint/actionpanel/actiongroup.cpp
+    src/Gui/QSint/actionpanel/actiongroup.h
+    src/Gui/QSint/actionpanel/actionlabel.cpp
+    src/Gui/QSint/actionpanel/actionlabel.h
+    src/Gui/QSint/actionpanel/actionpanel.cpp
+    src/Gui/QSint/actionpanel/actionpanel.h
+    src/Gui/QSint/actionpanel/actionpanelscheme.cpp
+    src/Gui/QSint/actionpanel/actionpanelscheme.h
+    src/Gui/QSint/actionpanel/androidpanelscheme.cpp
+    src/Gui/QSint/actionpanel/androidpanelscheme.h
+    src/Gui/QSint/actionpanel/macpanelscheme.cpp
+    src/Gui/QSint/actionpanel/macpanelscheme.h
+    src/Gui/QSint/actionpanel/qsint_global.h
+    src/Gui/QSint/actionpanel/taskgroup_p.cpp
+    src/Gui/QSint/actionpanel/taskgroup_p.h
+    src/Gui/QSint/actionpanel/taskheader_p.cpp
+    src/Gui/QSint/actionpanel/taskheader_p.h
+    src/Gui/QSint/actionpanel/winvistapanelscheme.cpp
+    src/Gui/QSint/actionpanel/winvistapanelscheme.h
+    src/Gui/QSint/actionpanel/winxppanelscheme.cpp
+    src/Gui/QSint/actionpanel/winxppanelscheme.h
+    src/Tools/MakeApp.py src/Tools/MemoryLeaks.py
+    src/Tools/PythonToCPP.py src/Tools/SubWCRev.py src/Tools/WinVersion.py
+    src/Tools/catfiles.py src/Tools/doctools.py src/Tools/fcbt.py
+    src/Tools/make_snapshot.py src/Tools/makedist.py src/Tools/pythondoc.py
+    src/Tools/updateppa.py src/Ext/freecad/UiTools.py
+    src/Ext/freecad/freecad_doc.py src/Ext/freecad/project_utility.py
+    src/Mod/Cloud/Init.py src/Mod/Cloud/InitGui.py src/Mod/Mesh/Init.py
+    src/Mod/Part/MakeBottle.py src/Mod/Surface/Init.py
+    src/Mod/TemplatePyMod/Automation.py src/Mod/TemplatePyMod/Commands.py
+    src/Mod/TemplatePyMod/DocumentObject.py src/Mod/TemplatePyMod/FeaturePython.py
+    src/Mod/TemplatePyMod/Init.py src/Mod/TemplatePyMod/InitGui.py
+    src/Mod/TemplatePyMod/MengerSponge.py src/Mod/TemplatePyMod/Mesh2Shape.py
+    src/Mod/TemplatePyMod/PythonQt.py src/Mod/TemplatePyMod/SplineSurface.py
+    src/Mod/TemplatePyMod/TaskPanel.py src/Mod/TemplatePyMod/Tests.py
+    src/Mod/TemplatePyMod/Texture.py src/Tools/_TEMPLATEPY_/Init.py
+    src/Tools/_TEMPLATEPY_/InitGui.py src/Tools/_TEMPLATEPY_/_TEMPLATEPY_Gui.py
+    src/Tools/generateBase/generateTools.py src/Tools/generateTemplates/template.py
+    src/Tools/generateTemplates/templateClassPyExport.py
+    src/Tools/generateTemplates/templateModule.py
+    src/Tools/generateTemplates/templateModuleApp.py
+    src/Tools/generateTemplates/templateModuleAppFeature.py
+    src/Mod/PartDesign/Scripts/DistanceBolt.py
+    src/Mod/PartDesign/Scripts/Epitrochoid.py
+    src/Mod/PartDesign/Scripts/FilletArc.py src/Mod/PartDesign/Scripts/Gear.py
+    src/Mod/PartDesign/Scripts/Parallelepiped.py
+    src/Mod/PartDesign/Scripts/RadialCopy.py src/Mod/PartDesign/Scripts/Spring.py
+Copyright: 2003-2024 Werner Mayer
+           2001-2007 Juergen Riegel
+           2005      Berthold Grupp
+           2011-2012 Sintegrial Technologies
+           2012      Juergen Riegel
+           2014      David Douard <david.douard@gmail.com>
+           2019      Jean-Marie Verdun
+           2020      Adam Spontarelli <adam@vector-space.org>
+Comment: QSInt: https://sourceforge.net/projects/qsint/
+License: LGPL
+
+Files: src/Mod/TechDraw/Gui/mrichtextedit.cpp
+     src/Mod/TechDraw/Gui/mrichtextedit.h src/Mod/TechDraw/Gui/mtextedit.cpp
+     src/Mod/TechDraw/Gui/mtextedit.h src/Mod/TechDraw/App/DimensionAutoCorrect.cpp
+     src/Mod/TechDraw/App/DimensionAutoCorrect.h src/3rdParty/salomesmesh/*
+Copyright: 2013 Jiří Procházka (Hobrasoft)
+           2023 WandererFan <wandererfan@gmail.com>
+	   2003-2007 OPEN CASCADE, EADS/CCR, LIP6, CEA/DEN, CEDRAT,
+	             EDF R&D, LEG, PRINCIPIA R&D, BUREAU VERITAS
+	   2007-2008 CEA/DEN, EDF R&D, OPEN CASCADE
+License:  LGPL-2.1
+
+Files: src/Mod/Robot/App/kdl_cp/* cMake/FindMEDFile.cmake src/QtCore.h.cmake
+    src/App/CleanupProcess.cpp src/App/CleanupProcess.h src/App/ComplexGeoData.cpp
+    src/App/ComplexGeoData.h src/App/ElementMap.h src/App/IndexedName.cpp
+    src/App/IndexedName.h src/App/MappedElement.cpp src/App/MappedElement.h
+    src/App/MappedName.h src/App/MeasureManager.cpp src/App/MeasureManager.h
+    src/App/MeasureManagerPyImp.cpp src/App/Metadata.cpp src/App/Metadata.h
+    src/App/MetadataPyImp.cpp src/App/ProjectFile.cpp src/App/ProjectFile.h
+    src/App/StringHasher.cpp src/App/StringHasher.h src/Base/Base64Filter.h
+    src/Base/PyWrapParseTupleAndKeywords.h src/Base/PythonTypeExt.cpp
+    src/Base/PythonTypeExt.h src/Gui/Camera.cpp src/Gui/Camera.h
+    src/Gui/CommandActionPy.cpp src/Gui/CommandActionPy.h src/Gui/CommandStd.cpp
+    src/Gui/DlgPreferencesImp.cpp src/Gui/DlgPreferencesImp.h
+    src/Gui/EditableDatumLabel.cpp src/Gui/EditableDatumLabel.h
+    src/Gui/FileHandler.cpp src/Gui/FileHandler.h src/Gui/ImageView.cpp
+    src/Gui/ImageView.h src/Gui/ListWidgetDragBugFix.cpp
+    src/Gui/ListWidgetDragBugFix.h src/Gui/ModuleIO.cpp src/Gui/ModuleIO.h
+    src/Gui/Multisample.cpp src/Gui/Multisample.h src/Gui/NavigationAnimation.cpp
+    src/Gui/NavigationAnimation.h src/Gui/NavigationAnimator.cpp
+    src/Gui/NavigationAnimator.h src/Gui/ParamHandler.cpp src/Gui/ParamHandler.h
+    src/Gui/PropertyPage.cpp src/Gui/PropertyPage.h src/Gui/PythonTracing.cpp
+    src/Gui/PythonTracing.h src/Gui/SoFCColorBarNotifier.cpp
+    src/Gui/SoFCColorBarNotifier.h src/Gui/StartupProcess.cpp
+    src/Gui/StartupProcess.h src/Gui/ToolBarAreaWidget.cpp
+    src/Gui/ToolBarAreaWidget.h src/Gui/ViewProviderGeometryObjectPyImp.cpp
+    src/Gui/ViewProviderTextureExtension.cpp src/Gui/ViewProviderTextureExtension.h
+    src/Gui/WorkbenchManipulator.cpp src/Gui/WorkbenchManipulator.h
+    src/Gui/WorkbenchManipulatorPython.cpp src/Gui/WorkbenchManipulatorPython.h
+    src/Gui/WorkbenchSelector.cpp src/Gui/WorkbenchSelector.h
+    src/Tools/updatecrowdin.py src/Ext/freecad/utils.py
+    src/Gui/PreferencePages/DlgSettingsGeneral.cpp
+    src/Gui/PreferencePages/DlgSettingsGeneral.h
+    src/Gui/PreferencePages/DlgSettingsLightSources.cpp
+    src/Gui/PreferencePages/DlgSettingsLightSources.h
+    src/Gui/PreferencePages/DlgSettingsWorkbenchesImp.cpp
+    src/Gui/PreferencePages/DlgSettingsWorkbenchesImp.h
+    src/Gui/TaskView/TaskImage.cpp src/Gui/TaskView/TaskImage.h
+    src/Gui/TaskView/TaskOrientation.cpp src/Gui/TaskView/TaskOrientation.h
+    src/Mod/AddonManager/Addon.py src/Mod/AddonManager/AddonManager.py
+    src/Mod/AddonManager/AddonManagerOptions.py src/Mod/AddonManager/AddonStats.py
+    src/Mod/AddonManager/NetworkManager.py
+    src/Mod/AddonManager/TestAddonManagerApp.py
+    src/Mod/AddonManager/TestAddonManagerGui.py
+    src/Mod/AddonManager/addonmanager_cache.py
+    src/Mod/AddonManager/addonmanager_connection_checker.py
+    src/Mod/AddonManager/addonmanager_dependency_installer.py
+    src/Mod/AddonManager/addonmanager_devmode.py
+    src/Mod/AddonManager/addonmanager_devmode_add_content.py
+    src/Mod/AddonManager/addonmanager_devmode_license_selector.py
+    src/Mod/AddonManager/addonmanager_devmode_licenses_table.py
+    src/Mod/AddonManager/addonmanager_devmode_metadata_checker.py
+    src/Mod/AddonManager/addonmanager_devmode_people_table.py
+    src/Mod/AddonManager/addonmanager_devmode_person_editor.py
+    src/Mod/AddonManager/addonmanager_devmode_predictor.py
+    src/Mod/AddonManager/addonmanager_devmode_validators.py
+    src/Mod/AddonManager/addonmanager_firstrun.py
+    src/Mod/AddonManager/addonmanager_freecad_interface.py
+    src/Mod/AddonManager/addonmanager_git.py
+    src/Mod/AddonManager/addonmanager_installer.py
+    src/Mod/AddonManager/addonmanager_installer_gui.py
+    src/Mod/AddonManager/addonmanager_licenses.py
+    src/Mod/AddonManager/addonmanager_macro.py
+    src/Mod/AddonManager/addonmanager_macro_parser.py
+    src/Mod/AddonManager/addonmanager_metadata.py
+    src/Mod/AddonManager/addonmanager_package_details_controller.py
+    src/Mod/AddonManager/addonmanager_pyside_interface.py
+    src/Mod/AddonManager/addonmanager_readme_controller.py
+    src/Mod/AddonManager/addonmanager_uninstaller.py
+    src/Mod/AddonManager/addonmanager_uninstaller_gui.py
+    src/Mod/AddonManager/addonmanager_update_all_gui.py
+    src/Mod/AddonManager/addonmanager_utilities.py
+    src/Mod/AddonManager/addonmanager_workers_installation.py
+    src/Mod/AddonManager/addonmanager_workers_startup.py
+    src/Mod/AddonManager/addonmanager_workers_utility.py
+    src/Mod/AddonManager/change_branch.py src/Mod/AddonManager/composite_view.py
+    src/Mod/AddonManager/install_to_toolbar.py
+    src/Mod/AddonManager/manage_python_dependencies.py
+    src/Mod/AddonManager/package_list.py src/Mod/Assembly/AssemblyGlobal.h
+    src/Mod/Assembly/AssemblyImport.py src/Mod/Assembly/CommandCreateAssembly.py
+    src/Mod/Assembly/CommandCreateBom.py src/Mod/Assembly/CommandCreateJoint.py
+    src/Mod/Assembly/CommandCreateView.py src/Mod/Assembly/CommandExportASMT.py
+    src/Mod/Assembly/CommandInsertLink.py src/Mod/Assembly/CommandSolveAssembly.py
+    src/Mod/Assembly/Init.py src/Mod/Assembly/InitGui.py
+    src/Mod/Assembly/JointObject.py src/Mod/Assembly/Preferences.py
+    src/Mod/Assembly/SoSwitchMarker.py src/Mod/Assembly/TestAssemblyWorkbench.py
+    src/Mod/Assembly/UtilsAssembly.py src/Mod/Import/TestImportGui.py
+    src/Mod/Material/MaterialGlobal.h src/Mod/Measure/InitGui.py
+    src/Mod/Measure/MeasureCOM.py src/Mod/Measure/UtilsMeasure.py
+    src/Mod/Start/CMakeLists.txt src/Mod/Start/Init.py src/Mod/Start/InitGui.py
+    src/Mod/Start/StartGlobal.h src/Mod/Start/StartMigrator.py
+    src/Mod/Test/GuiDocument.py src/Mod/Test/Metadata.py
+    src/Mod/Test/StringHasher.py src/Mod/Test/TestPerf.py src/Mod/Tux/InitGui.py
+    src/Mod/Tux/NavigationIndicatorGui.py src/Mod/Tux/PersistentToolbars.py
+    src/Mod/Tux/PersistentToolbarsGui.py src/Tools/xmlformat/main.cpp
+    tests/src/App/Metadata.cpp tests/src/App/VRMLObject.cpp
+    src/Mod/AddonManager/Widgets/addonmanager_colors.py
+    src/Mod/AddonManager/Widgets/addonmanager_widget_addon_buttons.py
+    src/Mod/AddonManager/Widgets/addonmanager_widget_filter_selector.py
+    src/Mod/AddonManager/Widgets/addonmanager_widget_global_buttons.py
+    src/Mod/AddonManager/Widgets/addonmanager_widget_package_details_view.py
+    src/Mod/AddonManager/Widgets/addonmanager_widget_progress_bar.py
+    src/Mod/AddonManager/Widgets/addonmanager_widget_readme_browser.py
+    src/Mod/AddonManager/Widgets/addonmanager_widget_search.py
+    src/Mod/AddonManager/Widgets/addonmanager_widget_view_control_bar.py
+    src/Mod/AddonManager/Widgets/addonmanager_widget_view_selector.py
+    src/Mod/Assembly/App/AppAssembly.cpp src/Mod/Assembly/App/AppAssemblyPy.cpp
+    src/Mod/Assembly/App/AssemblyLink.cpp src/Mod/Assembly/App/AssemblyLink.h
+    src/Mod/Assembly/App/AssemblyLinkPyImp.cpp
+    src/Mod/Assembly/App/AssemblyObject.cpp src/Mod/Assembly/App/AssemblyObject.h
+    src/Mod/Assembly/App/AssemblyObjectPyImp.cpp
+    src/Mod/Assembly/App/AssemblyUtils.cpp src/Mod/Assembly/App/AssemblyUtils.h
+    src/Mod/Assembly/App/BomGroup.cpp src/Mod/Assembly/App/BomGroup.h
+    src/Mod/Assembly/App/BomObject.cpp src/Mod/Assembly/App/BomObject.h
+    src/Mod/Assembly/App/JointGroup.cpp src/Mod/Assembly/App/JointGroup.h
+    src/Mod/Assembly/App/PreCompiled.cpp src/Mod/Assembly/App/PreCompiled.h
+    src/Mod/Assembly/App/ViewGroup.cpp src/Mod/Assembly/App/ViewGroup.h
+    src/Mod/Assembly/AssemblyTests/TestCore.py
+    src/Mod/Assembly/AssemblyTests/TestTEMPLATE.py
+    src/Mod/Assembly/Gui/AppAssemblyGui.cpp
+    src/Mod/Assembly/Gui/AppAssemblyGuiPy.cpp src/Mod/Assembly/Gui/PreCompiled.cpp
+    src/Mod/Assembly/Gui/PreCompiled.h
+    src/Mod/Assembly/Gui/ViewProviderAssembly.cpp
+    src/Mod/Assembly/Gui/ViewProviderAssembly.h
+    src/Mod/Assembly/Gui/ViewProviderAssemblyLink.cpp
+    src/Mod/Assembly/Gui/ViewProviderAssemblyLink.h
+    src/Mod/Assembly/Gui/ViewProviderBom.cpp src/Mod/Assembly/Gui/ViewProviderBom.h
+    src/Mod/Assembly/Gui/ViewProviderBomGroup.cpp
+    src/Mod/Assembly/Gui/ViewProviderBomGroup.h
+    src/Mod/Assembly/Gui/ViewProviderJointGroup.cpp
+    src/Mod/Assembly/Gui/ViewProviderJointGroup.h
+    src/Mod/Assembly/Gui/ViewProviderViewGroup.cpp
+    src/Mod/Assembly/Gui/ViewProviderViewGroup.h
+    src/Mod/Draft/drafttests/test_array.py src/Mod/Draft/draftutils/params.py
+    src/Mod/Fem/App/FemPostObjectPyImp.cpp
+    src/Mod/Fem/App/FemSetElementNodesObject.cpp
+    src/Mod/Fem/App/FemSetElementNodesObject.h
+    src/Mod/Fem/Gui/TaskCreateElementSet.cpp src/Mod/Fem/Gui/TaskCreateElementSet.h
+    src/Mod/Fem/Gui/TaskDlgCreateElementSet.cpp
+    src/Mod/Fem/Gui/TaskDlgCreateElementSet.h
+    src/Mod/Fem/Gui/ViewProviderFemConstraintPyImp.cpp
+    src/Mod/Fem/Gui/ViewProviderSetElementNodes.cpp
+    src/Mod/Fem/Gui/ViewProviderSetElementNodes.h
+    src/Mod/Fem/femmesh/netgentools.py src/Mod/Fem/femobjects/base_femelement.py
+    src/Mod/Fem/femobjects/base_femmeshelement.py
+    src/Mod/Fem/femobjects/mesh_netgen.py
+    src/Mod/Fem/femtaskpanels/base_femmeshtaskpanel.py
+    src/Mod/Fem/femtaskpanels/base_femtaskpanel.py
+    src/Mod/Fem/femtaskpanels/task_mesh_netgen.py
+    src/Mod/Fem/femviewprovider/view_base_femelement.py
+    src/Mod/Fem/femviewprovider/view_base_femmaterial.py
+    src/Mod/Fem/femviewprovider/view_base_femmeshelement.py
+    src/Mod/Fem/femviewprovider/view_mesh_netgen.py
+    src/Mod/Import/App/ReaderGltf.cpp src/Mod/Import/App/ReaderGltf.h
+    src/Mod/Import/App/ReaderIges.cpp src/Mod/Import/App/ReaderIges.h
+    src/Mod/Import/App/ReaderStep.cpp src/Mod/Import/App/ReaderStep.h
+    src/Mod/Import/App/WriterGltf.cpp src/Mod/Import/App/WriterGltf.h
+    src/Mod/Import/App/WriterIges.cpp src/Mod/Import/App/WriterIges.h
+    src/Mod/Import/App/WriterStep.cpp src/Mod/Import/App/WriterStep.h
+    src/Mod/Import/Gui/ExportOCAFGui.cpp src/Mod/Import/Gui/ExportOCAFGui.h
+    src/Mod/Import/Gui/ImportOCAFGui.cpp src/Mod/Import/Gui/ImportOCAFGui.h
+    src/Mod/Import/Gui/OCAFBrowser.cpp src/Mod/Import/Gui/OCAFBrowser.h
+    src/Mod/Material/App/* src/Mod/Material/Gui/AppMatGui.cpp
+    src/Mod/Material/Gui/AppearancePreview.cpp
+    src/Mod/Material/Gui/AppearancePreview.h src/Mod/Material/Gui/Array2D.cpp
+    src/Mod/Material/Gui/Array2D.h src/Mod/Material/Gui/Array3D.cpp
+    src/Mod/Material/Gui/Array3D.h src/Mod/Material/Gui/ArrayDelegate.cpp
+    src/Mod/Material/Gui/ArrayDelegate.h src/Mod/Material/Gui/ArrayModel.cpp
+    src/Mod/Material/Gui/ArrayModel.h src/Mod/Material/Gui/BaseDelegate.cpp
+    src/Mod/Material/Gui/BaseDelegate.h src/Mod/Material/Gui/Command.cpp
+    src/Mod/Material/Gui/DlgInspectAppearance.cpp
+    src/Mod/Material/Gui/DlgInspectAppearance.h
+    src/Mod/Material/Gui/DlgInspectMaterial.cpp
+    src/Mod/Material/Gui/DlgInspectMaterial.h
+    src/Mod/Material/Gui/DlgSettingsDefaultMaterial.cpp
+    src/Mod/Material/Gui/DlgSettingsDefaultMaterial.h
+    src/Mod/Material/Gui/DlgSettingsMaterial.cpp
+    src/Mod/Material/Gui/DlgSettingsMaterial.h src/Mod/Material/Gui/ImageEdit.cpp
+    src/Mod/Material/Gui/ImageEdit.h src/Mod/Material/Gui/ListDelegate.cpp
+    src/Mod/Material/Gui/ListDelegate.h src/Mod/Material/Gui/ListEdit.cpp
+    src/Mod/Material/Gui/ListEdit.h src/Mod/Material/Gui/ListModel.cpp
+    src/Mod/Material/Gui/ListModel.h src/Mod/Material/Gui/MaterialDelegate.cpp
+    src/Mod/Material/Gui/MaterialDelegate.h src/Mod/Material/Gui/MaterialSave.cpp
+    src/Mod/Material/Gui/MaterialSave.h src/Mod/Material/Gui/MaterialTreeWidget.cpp
+    src/Mod/Material/Gui/MaterialTreeWidget.h
+    src/Mod/Material/Gui/MaterialTreeWidgetPyImp.cpp
+    src/Mod/Material/Gui/MaterialsEditor.cpp src/Mod/Material/Gui/MaterialsEditor.h
+    src/Mod/Material/Gui/ModelSelect.cpp src/Mod/Material/Gui/ModelSelect.h
+    src/Mod/Material/Gui/PreCompiled.cpp src/Mod/Material/Gui/PreCompiled.h
+    src/Mod/Material/Gui/TextEdit.cpp src/Mod/Material/Gui/TextEdit.h
+    src/Mod/Material/Gui/Workbench.cpp src/Mod/Material/Gui/Workbench.h
+    src/Mod/Material/Gui/WorkbenchManipulator.cpp
+    src/Mod/Material/Gui/WorkbenchManipulator.h
+    src/Mod/Material/materialtests/TestMaterialDocument.py
+    src/Mod/Material/materialtools/MaterialModels.py
+    src/Mod/Measure/App/MeasureAngle.cpp src/Mod/Measure/App/MeasureAngle.h
+    src/Mod/Measure/App/MeasureArea.cpp src/Mod/Measure/App/MeasureArea.h
+    src/Mod/Measure/App/MeasureBase.cpp src/Mod/Measure/App/MeasureBase.h
+    src/Mod/Measure/App/MeasureDistance.cpp src/Mod/Measure/App/MeasureDistance.h
+    src/Mod/Measure/App/MeasureLength.cpp src/Mod/Measure/App/MeasureLength.h
+    src/Mod/Measure/App/MeasurePosition.cpp src/Mod/Measure/App/MeasurePosition.h
+    src/Mod/Measure/App/MeasureRadius.cpp src/Mod/Measure/App/MeasureRadius.h
+    src/Mod/Measure/App/Preferences.cpp src/Mod/Measure/App/Preferences.h
+    src/Mod/Measure/Gui/AppMeasureGui.cpp src/Mod/Measure/Gui/Command.cpp
+    src/Mod/Measure/Gui/DlgPrefsMeasureAppearanceImp.cpp
+    src/Mod/Measure/Gui/DlgPrefsMeasureAppearanceImp.h
+    src/Mod/Measure/Gui/PreCompiled.cpp src/Mod/Measure/Gui/PreCompiled.h
+    src/Mod/Measure/Gui/TaskMeasure.cpp src/Mod/Measure/Gui/TaskMeasure.h
+    src/Mod/Measure/Gui/ViewProviderMeasureAngle.cpp
+    src/Mod/Measure/Gui/ViewProviderMeasureAngle.h
+    src/Mod/Measure/Gui/ViewProviderMeasureBase.cpp
+    src/Mod/Measure/Gui/ViewProviderMeasureBase.h
+    src/Mod/Measure/Gui/ViewProviderMeasureDistance.cpp
+    src/Mod/Measure/Gui/ViewProviderMeasureDistance.h
+    src/Mod/Measure/Gui/WorkbenchManipulator.cpp
+    src/Mod/Measure/Gui/WorkbenchManipulator.h src/Mod/Part/App/BRepMesh.cpp
+    src/Mod/Part/App/BRepMesh.h src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.cpp
+    src/Mod/Part/App/FCBRepAlgoAPI_BooleanOperation.h
+    src/Mod/Part/App/FCBRepAlgoAPI_Common.cpp
+    src/Mod/Part/App/FCBRepAlgoAPI_Common.h src/Mod/Part/App/FCBRepAlgoAPI_Cut.cpp
+    src/Mod/Part/App/FCBRepAlgoAPI_Cut.h src/Mod/Part/App/FCBRepAlgoAPI_Fuse.cpp
+    src/Mod/Part/App/FCBRepAlgoAPI_Fuse.h
+    src/Mod/Part/App/FCBRepAlgoAPI_Section.cpp
+    src/Mod/Part/App/FCBRepAlgoAPI_Section.h
+    src/Mod/Part/App/FeatureProjectOnSurface.cpp
+    src/Mod/Part/App/FeatureProjectOnSurface.h src/Mod/Part/App/FuzzyHelper.cpp
+    src/Mod/Part/App/FuzzyHelper.h src/Mod/Part/App/MeasureClient.cpp
+    src/Mod/Part/App/MeasureClient.h src/Mod/Part/App/ShapeMapHasher.h
+    src/Mod/Part/App/TopoShapeCache.cpp src/Mod/Part/App/TopoShapeCache.h
+    src/Mod/Part/App/TopoShapeExpansion.cpp src/Mod/Part/App/TopoShapeMapper.cpp
+    src/Mod/Part/App/TopoShapeMapper.h src/Mod/Part/BOPTools/BOPFeatures.py
+    src/Mod/Part/Gui/ViewProviderPartExtPyImp.cpp
+    src/Mod/Part/Gui/ViewProviderProjectOnSurface.cpp
+    src/Mod/Part/Gui/ViewProviderProjectOnSurface.h
+    src/Mod/Part/Gui/WorkbenchManipulator.cpp
+    src/Mod/Part/Gui/WorkbenchManipulator.h src/Mod/PartDesign/App/Measure.cpp
+    src/Mod/PartDesign/App/Measure.h
+    src/Mod/PartDesign/PartDesignTests/TestHelix.py
+    src/Mod/PartDesign/PartDesignTests/TestSketch.py
+    src/Mod/PartDesign/PartDesignTests/TestTopologicalNamingProblem.py
+    src/Mod/Points/App/Tools.h src/Mod/ReverseEngineering/Gui/FitBSplineCurve.cpp
+    src/Mod/ReverseEngineering/Gui/FitBSplineCurve.h
+    src/Mod/Sketcher/App/Measure.cpp src/Mod/Sketcher/App/Measure.h
+    src/Mod/Sketcher/App/SketchObject.cpp
+    src/Mod/Sketcher/SketcherTests/TestSketchValidateCoincidents.py
+    src/Mod/Spreadsheet/Gui/SpreadsheetDelegate.cpp
+    src/Mod/Spreadsheet/Gui/SpreadsheetDelegate.h src/Mod/Start/App/AppStart.cpp
+    src/Mod/Start/App/CMakeLists.txt src/Mod/Start/App/DisplayedFilesModel.cpp
+    src/Mod/Start/App/DisplayedFilesModel.h src/Mod/Start/App/ExamplesModel.cpp
+    src/Mod/Start/App/ExamplesModel.h src/Mod/Start/App/PreCompiled.cpp
+    src/Mod/Start/App/PreCompiled.h src/Mod/Start/App/RecentFilesModel.cpp
+    src/Mod/Start/App/RecentFilesModel.h src/Mod/Start/Gui/AppStartGui.cpp
+    src/Mod/Start/Gui/CMakeLists.txt src/Mod/Start/Gui/FileCardDelegate.cpp
+    src/Mod/Start/Gui/FileCardDelegate.h src/Mod/Start/Gui/FileCardView.cpp
+    src/Mod/Start/Gui/FileCardView.h src/Mod/Start/Gui/FirstStartWidget.cpp
+    src/Mod/Start/Gui/FirstStartWidget.h src/Mod/Start/Gui/FlowLayout.cpp
+    src/Mod/Start/Gui/FlowLayout.h src/Mod/Start/Gui/GeneralSettingsWidget.cpp
+    src/Mod/Start/Gui/GeneralSettingsWidget.h src/Mod/Start/Gui/Manipulator.cpp
+    src/Mod/Start/Gui/Manipulator.h src/Mod/Start/Gui/PreCompiled.cpp
+    src/Mod/Start/Gui/PreCompiled.h src/Mod/Start/Gui/StartView.cpp
+    src/Mod/Start/Gui/StartView.h src/Mod/Start/Gui/ThemeSelectorWidget.cpp
+    src/Mod/Start/Gui/ThemeSelectorWidget.h src/Mod/TechDraw/App/XMLQuery.cpp
+    src/Mod/TechDraw/App/XMLQuery.h src/Mod/AddonManager/Init.py
+    src/Mod/AddonManager/InitGui.py
+    src/Mod/AddonManager/AddonManagerTest/app/mocks.py
+    src/Mod/AddonManager/AddonManagerTest/app/test_addon.py
+    src/Mod/AddonManager/AddonManagerTest/app/test_cache.py
+    src/Mod/AddonManager/AddonManagerTest/app/test_dependency_installer.py
+    src/Mod/AddonManager/AddonManagerTest/app/test_freecad_interface.py
+    src/Mod/AddonManager/AddonManagerTest/app/test_git.py
+    src/Mod/AddonManager/AddonManagerTest/app/test_installer.py
+    src/Mod/AddonManager/AddonManagerTest/app/test_macro.py
+    src/Mod/AddonManager/AddonManagerTest/app/test_macro_parser.py
+    src/Mod/AddonManager/AddonManagerTest/app/test_metadata.py
+    src/Mod/AddonManager/AddonManagerTest/app/test_uninstaller.py
+    src/Mod/AddonManager/AddonManagerTest/app/test_utilities.py
+    src/Mod/AddonManager/AddonManagerTest/gui/gui_mocks.py
+    src/Mod/AddonManager/AddonManagerTest/gui/test_gui.py
+    src/Mod/AddonManager/AddonManagerTest/gui/test_installer_gui.py
+    src/Mod/AddonManager/AddonManagerTest/gui/test_uninstaller_gui.py
+    src/Mod/AddonManager/AddonManagerTest/gui/test_update_all_gui.py
+    src/Mod/AddonManager/AddonManagerTest/gui/test_workers_startup.py
+    src/Mod/AddonManager/AddonManagerTest/gui/test_workers_utility.py
+    src/Mod/Fem/femsolver/calculix/write_constraint_bodyheatsource.py
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprCylinderFit3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprCylinderFit3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprLineFit3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprLineFit3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprPlaneFit3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprPlaneFit3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprPolyFit3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprPolyFit3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprQuadraticFit3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprQuadraticFit3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprSphereFit3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprSphereFit3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4BandedMatrix.h
+    src/Mod/Mesh/App/WildMagic4/Wm4BandedMatrix.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Box3.h src/Mod/Mesh/App/WildMagic4/Wm4Box3.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4DelPolygonEdge.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4DelPolygonEdge.h
+    src/Mod/Mesh/App/WildMagic4/Wm4DelPolyhedronFace.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4DelPolyhedronFace.h
+    src/Mod/Mesh/App/WildMagic4/Wm4DelTetrahedron.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4DelTetrahedron.h
+    src/Mod/Mesh/App/WildMagic4/Wm4DelTriangle.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4DelTriangle.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Delaunay.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Delaunay.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Delaunay1.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Delaunay1.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Delaunay2.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Delaunay2.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Delaunay3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Delaunay3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4DistLine3Segment3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4DistLine3Segment3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4DistLine3Triangle3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4DistLine3Triangle3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4DistSegment3Segment3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4DistSegment3Segment3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4DistSegment3Triangle3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4DistSegment3Triangle3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4DistVector3Plane3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4DistVector3Plane3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4DistVector3Segment3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4DistVector3Segment3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4DistVector3Triangle3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4DistVector3Triangle3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Distance.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Distance.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ETManifoldMesh.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4ETManifoldMesh.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ETManifoldMesh.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4EdgeKey.h
+    src/Mod/Mesh/App/WildMagic4/Wm4EdgeKey.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Eigen.cpp src/Mod/Mesh/App/WildMagic4/Wm4Eigen.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Foundation.h
+    src/Mod/Mesh/App/WildMagic4/Wm4FoundationLIB.h
+    src/Mod/Mesh/App/WildMagic4/Wm4FoundationPCH.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4FoundationPCH.h
+    src/Mod/Mesh/App/WildMagic4/Wm4GMatrix.h
+    src/Mod/Mesh/App/WildMagic4/Wm4GMatrix.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4GVector.h
+    src/Mod/Mesh/App/WildMagic4/Wm4GVector.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4ImplicitSurface.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4ImplicitSurface.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Intersector.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Intersector.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Intersector1.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Intersector1.h
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrLine3Box3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrLine3Box3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrLine3Plane3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrLine3Plane3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrSegment3Box3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrSegment3Box3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrSegment3Plane3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrSegment3Plane3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrTriangle2Triangle2.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrTriangle2Triangle2.h
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrTriangle3Triangle3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4IntrTriangle3Triangle3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4LinComp.h
+    src/Mod/Mesh/App/WildMagic4/Wm4LinComp.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Line3.h src/Mod/Mesh/App/WildMagic4/Wm4Line3.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4LinearSystem.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4LinearSystem.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Mapper2.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Mapper2.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Mapper3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Mapper3.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Math.cpp src/Mod/Mesh/App/WildMagic4/Wm4Math.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Math.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4MathMCR.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Matrix2.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Matrix2.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Matrix2.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Matrix3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Matrix3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Matrix3.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Matrix4.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Matrix4.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Matrix4.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Memory.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Memory.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Memory.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4MeshCurvature.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4MeshCurvature.h
+    src/Mod/Mesh/App/WildMagic4/Wm4MeshSmoother.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4MeshSmoother.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ParametricSurface.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4ParametricSurface.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Plane3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Plane3.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Platforms.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Polynomial1.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Polynomial1.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4PolynomialRoots.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4PolynomialRoots.h
+    src/Mod/Mesh/App/WildMagic4/Wm4QuadricSurface.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4QuadricSurface.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Query.h src/Mod/Mesh/App/WildMagic4/Wm4Query.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Query2.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Query2.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Query2Filtered.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Query2Filtered.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Query2Int64.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Query2Int64.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Query2TInteger.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Query2TInteger.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Query2TRational.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Query2TRational.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Query3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Query3.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Query3Filtered.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Query3Filtered.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Query3Int64.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Query3Int64.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Query3TInteger.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Query3TInteger.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Query3TRational.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Query3TRational.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4RVector2.h
+    src/Mod/Mesh/App/WildMagic4/Wm4RVector2.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4RVector3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4RVector3.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Segment3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Segment3.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Sphere3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Sphere3.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Surface.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Surface.h
+    src/Mod/Mesh/App/WildMagic4/Wm4System.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4System.h
+    src/Mod/Mesh/App/WildMagic4/Wm4System.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4THashSet.h
+    src/Mod/Mesh/App/WildMagic4/Wm4THashSet.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4THashTable.h
+    src/Mod/Mesh/App/WildMagic4/Wm4THashTable.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4TInteger.h
+    src/Mod/Mesh/App/WildMagic4/Wm4TInteger.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4TMinHeap.h
+    src/Mod/Mesh/App/WildMagic4/Wm4TMinHeap.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4TRVector.h
+    src/Mod/Mesh/App/WildMagic4/Wm4TRVector.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4TRational.h
+    src/Mod/Mesh/App/WildMagic4/Wm4TRational.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4TSmallUnorderedSet.h
+    src/Mod/Mesh/App/WildMagic4/Wm4TSmallUnorderedSet.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4TStringHashTable.h
+    src/Mod/Mesh/App/WildMagic4/Wm4TStringHashTable.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4TTuple.h
+    src/Mod/Mesh/App/WildMagic4/Wm4TTuple.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Triangle2.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Triangle2.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Triangle3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Triangle3.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4TriangleKey.h
+    src/Mod/Mesh/App/WildMagic4/Wm4TriangleKey.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4TriangulateEC.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4TriangulateEC.h
+    src/Mod/Mesh/App/WildMagic4/Wm4UniqueVerticesTriangles.h
+    src/Mod/Mesh/App/WildMagic4/Wm4UniqueVerticesTriangles.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4VEManifoldMesh.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4VEManifoldMesh.h
+    src/Mod/Mesh/App/WildMagic4/Wm4VEManifoldMesh.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Vector2.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Vector2.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Vector2.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Vector3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Vector3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Vector3.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4Vector4.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4Vector4.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Vector4.inl
+    tests/src/Mod/Material/App/TestMaterialCards.cpp
+    tests/src/Mod/Material/App/TestMaterialFilter.cpp
+    tests/src/Mod/Material/App/TestMaterialProperties.cpp
+    tests/src/Mod/Material/App/TestMaterialValue.cpp
+    tests/src/Mod/Material/App/TestMaterials.cpp
+    tests/src/Mod/Material/App/TestModel.cpp
+    tests/src/Mod/Material/App/TestModelProperties.cpp
+    src/Mod/CAM/Path/Post/scripts/heidenhain_post.py
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintContact.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintDisplacement.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintFixed.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintForce.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintHeatFlux.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintPlaneRotation.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintPressure.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintRigidBody.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintSectionPrint.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintSpring.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintTemperature.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintTie.iv
+    src/Mod/Fem/Gui/Resources/symbols/ConstraintTransform.iv
+    src/Mod/Part/App/MeasureInfo.h src/Mod/Robot/KukaExporter.py
+Copyright: 1998-2007 David Eberly
+           2002-2013 Jürgen Riegel <juergen.riegel@web.de>
+           2004-2024 Werner Mayer <wmayer[at]users.sourceforge.net>
+           2007-2014 Ruben Smits <ruben dot smits at mech dot kuleuven dot be>
+           2007-2015 CEA/DEN, EDF R&D, OPEN CASCADE
+           2007      Francois Cauwe <francois at cauwe dot org>
+           2008      Julia Jesse
+           2008      Mikael Mayer
+           2009-2011 Azamat Shakhimardanov
+           2009-2011 Herman Bruyninckx
+           2009      Dominick Vanthienen <dominick dot vanthienen at mech dot kuleuven dot be>
+           2011      Erwin Aertbelien  <Erwin dot Aertbelien at mech dot kuleuven dot be>
+           2011      PAL Robotics S.L.  All rights reserved.
+           2013      Stephen Roderick <kiwi dot net at mac dot com>
+           2014 Stefan Tröger <stefantroeger@gmx.net>
+           2015-2019 Yorik van Havre <yorik@uncreated.net>
+           2015 Eivind Kvedalen (eivind@kvedalen.name)
+           2016-2018 triplus @ FreeCAD
+           2018 Gaël Écorchard <galou_breizh@yahoo.fr>
+           2018-2023 Zheng Lei <realthunder.dev@gmail.com>
+           2020 Chris Hennes (chennes@pioneerlibrarysystem.org)
+           2020 Stefano Chiaro <stefano.chiaro@yahoo.com>
+           2021-2023 FreeCAD Project Association
+           2021 Mattias Pierre <github@mattiaspierre.com>
+           2021 Benjamin Nauck <benjamin@nauck.se>
+           2023-2024 David Carter <dcarter@david.carter.ca>
+           2023-2024 David Friedli <david@friedli-be.ch>
+           2023-2024 Ondsel <development@ondsel.com>
+           2023-2024 Mario Passaglia <mpassaglia[at]cbc.uba.ar>
+           2023 Peter McB 
+           2023 Bas Ruigrok (Rexbas) <Rexbas@proton.me>
+           2023 Pierre-louis Boyer <pierrelouis.boyer@gmail.com>
+           2023 Wandererfan <wandererfan@gmail.com>
+           2024 bgbsww@gmail.com
+           2024 Eric Price (CorvusCorax)
+           2024 Kacper Donat <kacper@kadet.net>
+           2024 Syres
+License: LGPL-2.1+
+
+Files: src/Base/StackWalker.* src/Gui/CoinRiftWidget.*
+    src/Gui/Inventor/SmSwitchboard.cpp src/Gui/Inventor/SmSwitchboard.h
+    src/Gui/Quarter/* src/Mod/CAM/libarea/AreaOrderer.cpp
+    src/Mod/CAM/libarea/AreaOrderer.h src/Mod/CAM/libarea/Box2D.h
+    src/Mod/CAM/libarea/Circle.cpp src/Mod/CAM/libarea/Circle.h
+    src/Mod/CAM/libarea/Curve.h src/Mod/CAM/libarea/Point.h
+    src/Mod/CAM/libarea/Arc.cpp src/Mod/CAM/libarea/Arc.h
+    src/Mod/CAM/libarea/Area.cpp src/Mod/CAM/libarea/Area.h
+    src/Mod/CAM/libarea/AreaDxf.cpp src/Mod/CAM/libarea/AreaDxf.h
+    src/Mod/CAM/libarea/AreaPocket.cpp src/Mod/CAM/libarea/Curve.cpp
+    src/Mod/CAM/libarea/PythonStuff.cpp src/Mod/CAM/libarea/PythonStuff.h
+    src/Mod/CAM/libarea/pyarea.cpp src/Mod/Import/App/SCL/*
+    src/Mod/Import/App/dxf/dxf.h
+    cMake/FindEigen3.cmake
+Copyright: 2005-2013 Jochen Kalmbach
+           2006-2007 Montel Laurent, <montel@kde.org>
+           2008-2009 Gael Guennebaud, <g.gael@free.fr>
+           2009-2015 Dan Heeks
+           2009      Benoit Jacob <jacob.benoit.1@gmail.com>
+           2011-2012 Thomas Paviot (tpaviot@gmail.com)
+           2014      Bastiaan Veelo <Bastiaan a_t Veelo d_o_t net>
+           2014      Jürgen Riegel <FreeCAD@juergen-riegel.net>
+           2018 Wandererfan <wandererfan@gmail.com>
+                     Kongsberg Oil & Gas Technologies AS
+License: BSD-2-clause
+
+Files: src/Gui/Quarter/SoQTQuarterAdaptor.*
+Copyright: 2014  Stefan Tröger <stefantroeger@gmx.net>
+Comment: This Files: section undos some wild-cards from src/Gui/Quarter/* section above, it must be below that section.
+License: LGPL-2.1+
+
+
+Files: src/Tools/dir2qrc.py src/Tools/generate.py
+Copyright: 2007 Juergen Riegel
+License: GPL
+
+
+Files: src/Mod/Spreadsheet/InitGui.py src/Mod/Spreadsheet/TestSpreadsheet.py
+    src/Mod/Spreadsheet/TestSpreadsheetGui.py src/Mod/Spreadsheet/importXLSX.py
+Copyright: 2002-2003 Juergen Riegel <juergen.riegel@web.de>
+           2013-2016 Eivind Kvedalen <eivind@kvedalen.name>
+           2016       Ulrich Brammer <ulrich1a@users.sourceforge.net>
+           2016       Werner Mayer <wmayer[at]users.sourceforge.net>          
+           2021       Chris Hennes <chennes@pioneerlibrarysystem.org>
+License: GPL-2+
+
+
+Files: src/App/ExpressionParser.tab.c src/App/ExpressionParser.tab.h
+    src/Base/QuantityParser.c src/Base/QuantityParser.h
+    src/Gui/SelectionFilter.tab.c
+Copyright: 1984-2015 Free Software Foundation, Inc.
+License: GPL-3+-with-Bison-exception
+
+
+Files: src/Mod/BIM/ifc_objects.py src/Mod/BIM/ifc_viewproviders.py
+    src/Mod/BIM/nativeifc/ifc_commands.py src/Mod/BIM/nativeifc/ifc_diff.py
+    src/Mod/BIM/nativeifc/ifc_generator.py src/Mod/BIM/nativeifc/ifc_geometry.py
+    src/Mod/BIM/nativeifc/ifc_import.py src/Mod/BIM/nativeifc/ifc_layers.py
+    src/Mod/BIM/nativeifc/ifc_materials.py src/Mod/BIM/nativeifc/ifc_objects.py
+    src/Mod/BIM/nativeifc/ifc_observer.py
+    src/Mod/BIM/nativeifc/ifc_performance_test.py
+    src/Mod/BIM/nativeifc/ifc_psets.py src/Mod/BIM/nativeifc/ifc_selftest.py
+    src/Mod/BIM/nativeifc/ifc_status.py src/Mod/BIM/nativeifc/ifc_tools.py
+    src/Mod/BIM/nativeifc/ifc_tree.py src/Mod/BIM/nativeifc/ifc_viewproviders.py
+Copyright: 2022-2024 Yorik van Havre <yorik@uncreated.net>
+License: GPL-3+
+
+
+Files: src/Mod/TechDraw/Gui/Resources/fonts/osifont-italic.ttf
+Copyright: Zefram Cochrane <hikikomori82@gmail.com>
+License: GPL-3-only+FE
+ This program is free software: you can redistribute it and/or modify it under
+ the terms of the GNU General Public License as published by the Free Software
+ Foundation, either version 3 of the License.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT ANY
+ WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+ PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License along with
+ this program. If not, see <https://www.gnu.org/licenses/>.
+ .
+ As a special exception, if you create a document which uses this font, and
+ embed this font or unaltered portions of this font into the document, this
+ font does not by itself cause the resulting document to be covered by the
+ GNU General Public License. This exception does not however invalidate any
+ other reasons why the document might be covered by the GNU General Public
+ License. If you modify this font, you may extend this exception to your
+ version of the font, but you are not obligated to do so. If you do not wish
+ to do so, delete this exception statement from your version.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 3 can be found in `/usr/share/common-licenses/GPL-3'.
+
+Files: src/Mod/TechDraw/Gui/Resources/fonts/osifont-lgpl3fe.ttf
+Copyright: Zefram Cochrane <hikikomori82@gmail.com>
+License: LGPL-3-only+FE
+ This program is free software: you can redistribute it and/or modify it under
+ the terms of the GNU Lesser General Public License as published by the Free 
+ Software Foundation, either version 3 of the License.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT ANY
+ WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+ PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License along with
+ this program. If not, see <https://www.gnu.org/licenses/>.
+ .
+ As a special exception, if you create a document which uses this font, and
+ embed this font or unaltered portions of this font into the document, this
+ font does not by itself cause the resulting document to be covered by the
+ GNU General Public License. This exception does not however invalidate any
+ other reasons why the document might be covered by the GNU General Public
+ License. If you modify this font, you may extend this exception to your
+ version of the font, but you are not obligated to do so. If you do not wish
+ to do so, delete this exception statement from your version.
+ .
+ On Debian systems, the complete text of the GNU Lesser General Public
+ License version 3 can be found in `/usr/share/common-licenses/LGPL-3'.
+
+
+Files: src/Mod/Spreadsheet/Gui/qtcolorpicker.h
+    src/Mod/Spreadsheet/Gui/qtcolorpicker.cpp
+Copyright: 2009 Nokia Corporation and/or its subsidiary(-ies).
+License: Commercial-or-LGPL2.1-or-GPL3
+
+
+Files: src/Gui/DlgCheckableMessageBox.h
+    src/Gui/DlgCheckableMessageBox.cpp
+Copyright: 2009 Nokia Corporation and/or its subsidiary(-ies).
+License: Commercial-or-LGPL2.1
+
+
+Files: src/Mod/Mesh/App/WildMagic4/Wm4ApprGaussPointsFit2.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprGaussPointsFit2.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprGaussPointsFit3.cpp
+    src/Mod/Mesh/App/WildMagic4/Wm4ApprGaussPointsFit3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Box2.h src/Mod/Mesh/App/WildMagic4/Wm4Box2.inl
+    src/Mod/Mesh/App/WildMagic4/Wm4ContBox2.cpp src/Mod/Mesh/App/WildMagic4/Wm4ContBox2.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ContBox3.cpp src/Mod/Mesh/App/WildMagic4/Wm4ContBox3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ConvexHull.cpp src/Mod/Mesh/App/WildMagic4/Wm4ConvexHull.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ConvexHull1.cpp src/Mod/Mesh/App/WildMagic4/Wm4ConvexHull1.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ConvexHull2.cpp src/Mod/Mesh/App/WildMagic4/Wm4ConvexHull2.h
+    src/Mod/Mesh/App/WildMagic4/Wm4ConvexHull3.cpp src/Mod/Mesh/App/WildMagic4/Wm4ConvexHull3.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Quaternion.cpp src/Mod/Mesh/App/WildMagic4/Wm4Quaternion.h
+    src/Mod/Mesh/App/WildMagic4/Wm4Quaternion.inl src/Mod/CAM/libarea/clipper.cpp
+    src/Mod/CAM/libarea/clipper.hpp
+    src/3rdParty/libE57Format/*
+Copyright: Geometric Tools, LLC
+           2009-2010 Kevin Ackley (kackley@gwi.net)
+           2010-2014 Angus Johnson
+           2010      Stan Coleby (scoleby@intelisum.com)
+           2018-2020 Andy Maloney <asmaloney@gmail.com>
+           2020      PTC Inc
+License: BSL-1.0
+
+
+Files: cMake/FreeCAD_Helpers/ChooseQtVersion.cmake
+Copyright: 1993-2015 Ken Martin, Will Schroeder, Bill Lorensen
+License: BSD-3-vtkQt.cmake
+
+
+Files: src/3rdParty/libE57Format/extern/CRCpp/*
+Copyright: 2016, Daniel Bahr
+License: BSD-3-CRC++
+
+
+Files: src/Tools/generateBase/generateDS.py src/Mod/AddonManager/loading.html
+    src/Mod/Mesh/App/Core/tritritest.h
+Copyright: 2020 Tomas Akenine-Möller
+           2021 MattIn4D
+           2003 Dave Kuhlman
+License: Expat
+
+Files: src/3rdParty/libE57Format/src/CMakeLists.txt
+    src/3rdParty/libE57Format/include/CMakeLists.txt
+    src/3rdParty/libE57Format/cmake/Modules/* 
+Copyright: 2013-2023 Niels Lohmann <https://nlohmann.me>
+           2016-2021 Evan Nemerson <evan@nemerson.com>
+           2008-2009 Björn Hoehrmann <bjoern@hoehrmann.de>
+           2009      Florian Loitsch <https://florian.loitsch.com/>
+           2018      The Abseil Authors
+	   2020 Andy Maloney <asmaloney@gmail.com>
+License: MIT
+
+
+Files: src/Mod/Idf/Idflibs/*
+Copyright: 2010 Milos Koutny (milos.koutny@gmail.com)
+License: CC-BY-SA
+
+Files: src/3rdParty/lazy_loader/*
+Copyright: 2015 The TensorFlow Authors
+License: Apache-2.0
+
+
+Files: src/Base/Base64.*
+Copyright: 2004-2008 Rene Nyffenegger <rene.nyffenegger@adp-gmbh.ch>
+License: other-base64
+
+
+Files: src/Base/PyTools.*
+Copyright: 1996-2000 Mark Lutz, and O'Reilly and Associates.
+License: other-lutz
+
+
+Files: src/Mod/Test/unittestgui.py
+Copyright: 1999-2001 Steve Purcell
+License: PSF
+
+Files: src/CXX/*
+Copyright: 1998-2007 The Regents of the University of California
+           2008      Barry A. Scott
+License: BSD-3-with-notice
+
+License: LGPL-2.1+
+  On Debian systems, the complete text of the GNU Lesser General Public
+  License version 2.1 can be found in `/usr/share/common-licenses/LGPL-2.1'.
+
+License: LGPL-2.1
+  On Debian systems, the complete text of the GNU Lesser General Public
+  License version 2.1 can be found in `/usr/share/common-licenses/LGPL-2.1'.
+
+License: LGPL
+  On Debian systems, the complete text of the GNU Lesser General Public
+  License version 2 can be found in `/usr/share/common-licenses/LGPL-2'.
+
+License: LGPL-2+
+  On Debian systems, the complete text of the GNU Lesser General Public
+  License version 2 can be found in `/usr/share/common-licenses/LGPL-2'.
+
+License: GPL-3+
+  On Debian systems, the complete text of the GNU General Public License
+  version 3 can be found in `/usr/share/common-licenses/GPL-3'.
+
+License: GPL
+  On Debian systems, the complete text of the GNU General Public License
+  can be found in `/usr/share/common-licenses/GPL'.
+
+License: Apache-2.0
+ On Debian systems, the Apache-2.0 license text can be found in
+ /usr/share/common-licenses/Apache-2.0
+
+License: Expat
+ Permission is hereby granted, free of charge, to any person obtaining
+ a copy of this software and associated documentation files (the
+ "Software"), to deal in the Software without restriction, including
+ without limitation the rights to use, copy, modify, merge, publish,
+ distribute, sublicense, and/or sell copies of the Software, and to
+ permit persons to whom the Software is furnished to do so, subject to
+ the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included
+ in all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License: GPL-3+-with-Bison-exception
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ .
+ As a special exception, you may create a larger work that contains
+ part or all of the Bison parser skeleton and distribute that work
+ under terms of your choice, so long as that work isn't itself a
+ parser generator using the skeleton or a modified version thereof
+ as a parser skeleton.  Alternatively, if you modify or redistribute
+ the parser skeleton itself, you may (at your option) remove this
+ special exception, which will cause the skeleton and the resulting
+ Bison output files to be licensed under the GNU General Public
+ License without this special exception.
+ .
+ This special exception was added by the Free Software Foundation in
+ version 2.2 of Bison.
+ .
+ C LALR(1) parser skeleton written by Richard Stallman, by
+ simplifying the original so-called "semantic" parser.
+ .
+ All symbols defined below should begin with yy or YY, to avoid
+ infringing on user name space.  This should be done even for local
+ variables, as they might otherwise be expanded by user macros.
+ There are some unavoidable exceptions within include files to
+ define necessary library symbols; they are noted "INFRINGES ON
+ USER NAME SPACE" below.
+
+
+License: BSD-2-clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are met:
+ .
+ 1. Redistributions of source code must retain the above copyright notice, this
+ list of conditions and the following disclaimer.
+ .
+ 2. Redistributions in binary form must reproduce the above copyright notice,
+ this list of conditions and the following disclaimer in the documentation
+ and/or other materials provided with the distribution.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS” AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+License: BSD-3-vtkQt.cmake
+ Copyright (c) 1993-2015 Ken Martin, Will Schroeder, Bill Lorensen
+ All rights reserved.
+ .
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are met:
+ .
+  * Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+ .
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+ .
+  * Neither name of Ken Martin, Will Schroeder, or Bill Lorensen nor the names
+    of any contributors may be used to endorse or promote products derived
+    from this software without specific prior written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS ``AS IS''
+ AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHORS OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+License: BSD-3-CRC++
+ All rights reserved.
+ .
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are met:
+ .
+ * Redistributions of source code must retain the above copyright notice, this
+ list of conditions and the following disclaimer.
+ .
+ * Redistributions in binary form must reproduce the above copyright notice,
+ this list of conditions and the following disclaimer in the documentation
+ and/or other materials provided with the distribution.
+ .
+ * Neither the name of CRC++ nor the names of its
+ contributors may be used to endorse or promote products derived from
+ this software without specific prior written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+License: BSD-3-with-notice
+  Redistribution  and  use   in  source  and  binary  forms,   with  or  without
+  modification, are permitted provided that the following conditions are met:
+ .
+  - Redistributions of source code must retain the above copyright notice, this
+    list of conditions and the disclaimer below.
+  - Redistributions in  binary form must reproduce the above  copyright notice,
+    this  list of  conditions  and  the  disclaimer (as  noted  below)  in  the
+    documentation and/or materials provided with the distribution.
+  - Neither the name  of the UC/LLNL nor  the names of its  contributors may be
+    used to  endorse or  promote products  derived from  this software  without
+    specific prior written permission.
+ .
+  THIS SOFTWARE IS  PROVIDED BY THE COPYRIGHT  HOLDERS AND CONTRIBUTORS  "AS IS"
+  AND ANY  EXPRESS OR  IMPLIED WARRANTIES, INCLUDING,  BUT NOT  LIMITED  TO, THE
+  IMPLIED WARRANTIES  OF MERCHANTABILITY AND  FITNESS FOR  A PARTICULAR  PURPOSE
+  ARE DISCLAIMED. IN NO EVENT SHALL THE REGENTS OF THE UNIVERSITY OF CALIFORNIA,
+  THE U.S.  DEPARTMENT  OF  ENERGY  OR CONTRIBUTORS BE  LIABLE  FOR  ANY DIRECT,
+  INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+  BUT NOT LIMITED TO, PROCUREMENT OF  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+  DATA, OR PROFITS; OR  BUSINESS INTERRUPTION) HOWEVER  CAUSED AND ON ANY THEORY
+  OF LIABILITY,  WHETHER  IN  CONTRACT,  STRICT  LIABILITY,  OR  TORT (INCLUDING
+  NEGLIGENCE OR OTHERWISE)  ARISING IN ANY WAY OUT OF THE  USE OF THIS SOFTWARE,
+  EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ .
+  Additional BSD Notice
+ .
+  1. This notice  is required to be  provided under our  contract with  the U.S.
+    Department of Energy  (DOE).  This work was produced  at the  University of
+    California,  Lawrence  Livermore  National Laboratory  under  Contract  No.
+    W-7405-ENG-48 with the DOE.
+ .
+  2. Neither the  United  States  Government nor  the University  of  California
+    nor any  of their  employees,  makes any warranty,  express or  implied, or
+    assumes any  liability or  responsibility for  the accuracy,  completeness,
+    or usefulness of any information, apparatus, product, or process disclosed,
+    or represents that its use would not infringe privately-owned rights.
+ .
+  3. Also, reference  herein to any  specific commercial  products,  process, or
+    services by  trade name,  trademark,  manufacturer  or otherwise  does  not
+    necessarily  constitute  or  imply   its  endorsement,  recommendation,  or
+    favoring by the  United States Government or the  University of California.
+    The views  and opinions  of authors  expressed herein  do  not  necessarily
+    state or reflect  those of the  United States Government  or the University
+    of California, and shall not be used for advertising or product endorsement
+    purposes.
+
+
+License: BSL-1.0
+ Boost Software License - Version 1.0 - August 17th, 2003
+ .
+ Permission is hereby granted, free of charge, to any person or organization
+ obtaining a copy of the software and accompanying documentation covered by
+ this license (the "Software") to use, reproduce, display, distribute,
+ execute, and transmit the Software, and to prepare derivative works of the
+ Software, and to permit third-parties to whom the Software is furnished to
+ do so, all subject to the following:
+ .
+ The copyright notices in the Software and this entire statement, including
+ the above license grant, this restriction and the following disclaimer,
+ must be included in all copies of the Software, in whole or in part, and
+ all derivative works of the Software, unless such copies or derivative
+ works are solely in the form of machine-executable object code generated by
+ a source language processor.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT
+ SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
+ FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
+ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ DEALINGS IN THE SOFTWARE.
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the “Software”), to deal
+ in the Software without restriction, including without  limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following  conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+
+License: Commercial-or-LGPL2.1
+ This file is part of Qt Creator
+ .
+ Copyright (c) 2009 Nokia Corporation and/or its subsidiary(-ies).
+ .
+ Contact: Nokia Corporation (qt-info@nokia.com)
+ .
+ Commercial Usage
+ .
+ Licensees holding valid Qt Commercial licenses may use this file in
+ accordance with the Qt Commercial License Agreement provided with the
+ Software or, alternatively, in accordance with the terms contained in
+ a written agreement between you and Nokia.
+ .
+ GNU Lesser General Public License Usage
+ .
+ Alternatively, this file may be used under the terms of the GNU Lesser
+ General Public License version 2.1 as published by the Free Software
+ Foundation and appearing in the file LICENSE.LGPL included in the
+ packaging of this file.  Please review the following information to
+ ensure the GNU Lesser General Public License version 2.1 requirements
+ will be met: http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html.
+ .
+ If you are unsure which license is appropriate for your use, please
+ contact the sales department at http://qt.nokia.com/contact.
+
+
+License: Commercial-or-LGPL2.1-or-GPL3
+ Commercial Usage
+ Licensees holding valid Qt Commercial licenses may use this file in
+ accordance with the Qt Solutions Commercial License Agreement provided
+ with the Software or, alternatively, in accordance with the terms
+ contained in a written agreement between you and Nokia.
+ .
+ GNU Lesser General Public License Usage
+ Alternatively, this file may be used under the terms of the GNU Lesser
+ General Public License version 2.1 as published by the Free Software
+ Foundation and appearing in the file LICENSE.lgpl included in the
+ packaging of this file.  Please review the following information to
+ ensure the GNU Lesser General Public License version 2.1 requirements
+ will be met: http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html.
+ .
+ In addition, as a special exception, Nokia gives you certain
+ additional rights. These rights are described in the Nokia Qt LGPL
+ Exception version 1.0, included in the file LGPL_EXCEPTION.txt in this
+ package.
+ .
+ GNU General Public License Usage
+ Alternatively, this file may be used under the terms of the GNU
+ General Public License version 3.0 as published by the Free Software
+ Foundation and appearing in the file LICENSE.GPL included in the
+ packaging of this file.  Please review the following information to
+ ensure the GNU General Public License version 3.0 requirements will be
+ met: http://www.gnu.org/copyleft/gpl.html.
+ .
+ Please note Third Party Software included with Qt Solutions may impose
+ additional restrictions and it is the user's responsibility to ensure
+ that they have met the licensing requirements of the GPL, LGPL, or Qt
+ Solutions Commercial license and the relevant license of the Third
+ Party Software they are using.
+
+
+License: GPL-2+
+  On Debian systems, the complete text of the GNU General Public
+  License version 2 can be found in `/usr/share/common-licenses/GPL-2'.
+
+License: other-base64
+  This source code is provided 'as-is', without any express or implied
+  warranty. In no event will the author be held liable for any damages
+  arising from the use of this software.
+ .
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+ .
+  1. The origin of this source code must not be misrepresented; you must not
+    claim that you wrote the original source code. If you use this source code
+    in a product, an acknowledgment in the product documentation would be
+    appreciated but is not required.
+ .
+  2. Altered source versions must be plainly marked as such, and must not be
+    misrepresented as being the original source code.
+ .
+  3. This notice may not be removed or altered from any source distribution.
+
+
+License: other-lutz
+  Permission to use, copy, modify, and distribute this software
+  for any purpose and without fee is hereby granted.  This software
+  is provided on an as is basis, without warranties of any kind.
+
+
+License: PSF
+ This module is free software, and you may redistribute it and/or modify
+ it under the same terms as Python itself, so long as this copyright message
+ and disclaimer are retained in their original form.
+ .
+ IN NO EVENT SHALL THE AUTHOR BE LIABLE TO ANY PARTY FOR DIRECT, INDIRECT,
+ SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OF
+ THIS CODE, EVEN IF THE AUTHOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
+ DAMAGE.
+ .
+ THE AUTHOR SPECIFICALLY DISCLAIMS ANY WARRANTIES, INCLUDING, BUT NOT
+ LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+ PARTICULAR PURPOSE.  THE CODE PROVIDED HEREUNDER IS ON AN "AS IS" BASIS,
+ AND THERE IS NO OBLIGATION WHATSOEVER TO PROVIDE MAINTENANCE,
+ SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.
+
