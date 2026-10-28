@@ -352,7 +352,7 @@ final class YardModel {
 
     private var scrollStart: CGFloat?
 
-    /// Scrubbing the rail or swiping in from an edge: the screen follows, with resistance past
+    /// Sliding along the dock's cars or swiping in from an edge: the screen follows, with resistance past
     /// the ends.
     func scrub(by delta: CGFloat) {
         if scrollStart == nil { scrollStart = scroll }
@@ -384,7 +384,7 @@ final class YardModel {
         return (1 - 1 / (overshoot * 0.55 / dimension + 1)) * dimension
     }
 
-    /// Jumps to a column from the rail or the overview.
+    /// Jumps to a column from the dock or Overview.
     func jump(to window: Int) {
         focus(window)
         overviewOpen = false

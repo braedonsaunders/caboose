@@ -124,7 +124,7 @@ private struct OverviewCard: View {
 }
 
 /// The computer's apps, to open one in the yard: on the empty desktop, or over it from the
-/// rail, Overview or ⌘⌥A.
+/// dock, Overview or ⌘⌥A.
 struct YardLauncher: View {
     @Environment(AppModel.self) private var model
     let yard: YardModel

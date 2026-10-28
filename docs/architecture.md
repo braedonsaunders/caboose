@@ -1233,8 +1233,10 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   most about eight times a second. The gaps resize (snapping to the presets, with haptic
   detents), the grabber at a tile's top carries it to a new column, into a stack or onto
   another tile, and opens its menu (width, full screen card, ask an agent, redraw,
-  close). The side edges and the rail along the bottom move along the track; the rail
-  opens Overview (every window, tap to go, swipe up to close) and the app launcher.
+  close). A window whose own minimum is wider than its tile is shown whole, scaled to fit.
+  The dock stays along the bottom under the tiles: the everyday apps, one car per column
+  (tap to go to it, slide along them to move along the track), Overview (every window, tap
+  to go, swipe up to close) and All Apps. The side edges also move along the track.
   ⌘⌥ with the arrows moves focus, with ⇧ moves the window, and R, F, W, O, A and Return
   cycle the width, toggle full width, close, open Overview, open an app and open a
   terminal; ⌘⌥ reaches Linux as Ctrl+Alt, so plain ⌘ stays the apps' Ctrl. The layout

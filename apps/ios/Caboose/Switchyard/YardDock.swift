@@ -4,7 +4,7 @@ import SwiftUI
 /// The Desktop tab's dock, under the tiles: the everyday apps on the left, then the track in
 /// miniature, one car per column, and Overview and All Apps.
 ///
-/// A tap on an app goes to its window, or opens it. The cars are the rail: slide along them
+/// A tap on an app goes to its window, or opens it. Slide along the cars
 /// to move along the track, tap one to go to that column. A swipe up on the dock opens
 /// Overview.
 struct YardDock: View {

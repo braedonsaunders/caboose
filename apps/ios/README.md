@@ -10,7 +10,7 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 | `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input. |
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
 | `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, SwiftTerm's view in the Caboose look and the key row above the keyboard. |
-| `Caboose/Switchyard/` | The Desktop tab's tiling on the device's own screen: tiles, gaps, grabber, rail, Overview, launcher and ⌘⌥ keys, over the `CabooseKit/Switchyard` layout. |
+| `Caboose/Switchyard/` | The Desktop tab's tiling on the device's own screen: tiles, gaps, grabber, dock, Overview, launcher and ⌘⌥ keys, over the `CabooseKit/Switchyard` layout. |
 | `Caboose/Brand/` | The logo drawn natively in SwiftUI. It shares geometry and timing with `apps/web/src/brand/brand.ts`; change both together. `scripts/render-app-icon.sh` renders the app icon from the same SVG (macOS). |
 | `Share/` | The share extension (target `CabooseShare`). |
 | `Files/` | The File Provider extension that shows the computer in the Files app. |
@@ -83,9 +83,9 @@ its offset, is replaced by a second connection, exits, and checks the closes tha
 The layout is unit-tested (`swift test --filter SwitchyardTests`); the gestures and the
 picture need a device with the computer awake. On the Desktop tab, with three apps open:
 
-1. Upright iPhone: one full-width column; the side edges and the rail swipe between columns,
-   and the rail's dots follow. Drag a grabber to the bottom quarter of another tile: they stack.
-2. Turn it sideways, or open a Duo: two halves. Drag the gap: it ticks at ½ and ⅔ and settles
+1. Upright iPhone: one full-width column; the side edges and the dock's cars move between
+   columns, and the lit car follows. Drag a grabber to the bottom quarter of another tile: they stack.
+2. Open a Duo, or turn a large phone on its side: two halves. Drag the gap: it ticks at ½ and ⅔ and settles
    on release; the apps redraw at the new width without a seam.
 3. iPad: thirds, the Tiled/Free choice in the toolbar, and ⌘⌥←/→, ⌘⌥⇧←/→, ⌘⌥R, ⌘⌥O on a
    hardware keyboard (hold ⌘ to see them listed). Plain ⌘C still copies in the app.

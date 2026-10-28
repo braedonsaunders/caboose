@@ -893,7 +893,11 @@ final class AppModel {
     }
 
     func icon(for window: RemoteWindow) -> UIImage? {
-        if let app = apps.first(where: { matches(window, $0) }), let image = appIcons[app.id] { return image }
+        // An app whose id is the window's class beats one that only shares a prefix with it
+        // (Thunar's window is Thunar, not Thunar's Bulk Rename).
+        let names = [window.appClass?.instance, window.appClass?.name].compactMap { $0?.lowercased() }
+        let exact = apps.first { names.contains($0.id.replacingOccurrences(of: ".desktop", with: "").lowercased()) }
+        if let app = exact ?? apps.first(where: { matches(window, $0) }), let image = appIcons[app.id] { return image }
         return window.icon.map { UIImage(cgImage: $0) }
     }
 
