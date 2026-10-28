@@ -268,3 +268,13 @@ On a signed device with APNs configured, start a task, background the app, verif
 Screen/Dynamic Island updates and ends on completion, then start a task from another client
 and verify push-to-start. Real delivery depends on iOS and APNs and cannot be proved by a
 simulator build.
+
+## Shortcuts and Spotlight
+
+Shortcuts can wake or park the computer, open a Linux app or web URL, start an agent
+task and open, get or save files. File actions require the file service in the guest;
+uploads never overwrite a file. Agent tasks request approval and return a task link.
+Apps and files used through file actions can appear in Spotlight. On a paired device,
+run each action in Shortcuts, verify Siri phrases, open an indexed app and file, and
+check that sign-out removes search entries. These integrations require a real device and
+a computer with the `/v1/fs` service.

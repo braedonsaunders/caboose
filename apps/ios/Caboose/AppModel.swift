@@ -74,6 +74,7 @@ final class AppModel {
             self.media.handle(type, event)
             self.catalog.handle(type, event)
             self.phone.handle(type, event)
+            if type == "fs.changed" { ComputerSearch.invalidateFiles() }
             if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
         }
         catalog.onChange = { [weak self] in await self?.refreshApps() }
@@ -114,6 +115,7 @@ final class AppModel {
     }
 
     func signOut() {
+        ComputerSearch.clear()
         PushCoordinator.shared.unregister(from: host)
         LiveActivityCoordinator.shared.unregister(from: host)
         session?.disconnect()
@@ -526,6 +528,7 @@ final class AppModel {
         for attempt in 0 ..< 10 {
             do {
                 let list = try await host.apps()
+                ComputerSearch.indexApps(list)
                 apps = list.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 for app in list where appIcons[app.id] == nil {
                     if let data = app.iconData, let image = UIImage(data: data) { appIcons[app.id] = image }

@@ -8,6 +8,20 @@ remote desktop: each Linux application arrives as its own native iOS surface.
 This document is the contract every component is built against. Change it in the
 same pull request as the code that changes the contract.
 
+## Shortcuts and Spotlight
+
+Caboose provides App Intents to wake or park the computer, launch an installed Linux
+app, open a web URL, start an approval-gated agent task, and open, download or upload
+computer files. App and file entities use the authenticated host APIs. File paths are
+relative to the computer home; uploads create new files and refuse overwrites. The file
+intents require the `/v1/fs` service in the guest. Agent actions return a task link, not
+an eventual result. App shortcuts offer phrases to Siri and Shortcuts.
+
+The app indexes the current app list with Core Spotlight. Files used through its file
+intents are indexed; an `fs.changed` event invalidates file entries so stale paths are
+not offered. Selecting an indexed entry opens it on the computer. Signing out clears
+Caboose's index.
+
 ## Notifications
 
 The host has an optional APNs provider configured with a private .p8 path, key ID,
