@@ -87,7 +87,7 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
         // Keyed by computer, so nothing one computer's tabs loaded is shown for another.
         <Computer key={route.id} client={client} computers={computers} id={route.id} host={host} tab={route.tab} onUnauthorized={onSignOut} />
       ) : null}
-      {route.page === 'host' ? <Host host={host} /> : null}
+      {route.page === 'host' ? <Host host={host} client={client} onUnauthorized={onSignOut} /> : null}
     </AppShell>
   )
 }
