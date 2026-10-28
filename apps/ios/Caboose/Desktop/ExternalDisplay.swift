@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// Routes an AirPlay or USB-C display to the desktop. SwiftUI's own app delegate answers
-/// scene configuration for a SwiftUI app, so the plist entry alone can leave the TV
+/// Routes an AirPlay or USB-C display to the desktop on iOS 26. SwiftUI's own app delegate
+/// answers scene configuration for a SwiftUI app, so the plist entry alone can leave the TV
 /// mirroring the phone; claiming the external role here makes it the desktop.
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
@@ -41,5 +41,44 @@ final class ExternalSceneDelegate: UIResponder, UIWindowSceneDelegate {
             AppModel.shared.externalDisplayDisconnected()
             window = nil
         }
+    }
+}
+
+extension View {
+    /// The desktop as the content of a connected display. Since iOS 27 an app is offered the
+    /// external-display scene only once it registers a scene accessory; the Info.plist entry
+    /// and `ExternalSceneDelegate` above serve iOS 26.
+    @ViewBuilder
+    func externalDesktopAccessory(_ model: AppModel) -> some View {
+        if #available(iOS 27, *) {
+            sceneAccessory {
+                ExternalNonInteractiveAccessory {
+                    ExternalDesktopContent().environment(model).preferredColorScheme(.dark)
+                }
+            }
+        } else {
+            self
+        }
+    }
+}
+
+/// Reports the connected display's size to the model while it is showing the desktop.
+private struct ExternalDesktopContent: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.displayScale) private var scale
+
+    var body: some View {
+        GeometryReader { proxy in
+            Group {
+                if model.externalDisplayActive {
+                    DesktopView(desktop: model.desktop)
+                } else {
+                    Color.black
+                }
+            }
+            .onAppear { model.externalDisplayConnected(size: proxy.size, scale: scale) }
+            .onDisappear { model.externalDisplayDisconnected() }
+        }
+        .ignoresSafeArea()
     }
 }

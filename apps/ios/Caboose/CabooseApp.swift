@@ -15,6 +15,7 @@ struct CabooseApp: App {
                     if let credentials = Credentials(link: url) { model.connect(with: credentials) }
                 }
                 .onAppear { AppModel.requestNotificationPermission() }
+                .externalDesktopAccessory(model)
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
