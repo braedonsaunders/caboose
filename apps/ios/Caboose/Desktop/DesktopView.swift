@@ -16,9 +16,12 @@ struct DesktopView: View {
                         DesktopWindow(window: window, desktop: desktop, icon: model.icon(for: window))
                     }
                 }
-                Dock(desktop: desktop)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .padding(.bottom, 10 * desktop.ui)
+                if let session = model.session, desktop.fullscreenWindow(in: session.windows) == nil {
+                    Dock(desktop: desktop)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .padding(.bottom, 10 * desktop.ui)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
                 Cursor(hit: desktop.hovered, ui: desktop.ui)
                     .position(desktop.cursor)
                     .allowsHitTesting(false)
@@ -38,6 +41,7 @@ struct DesktopView: View {
 
 /// One Linux window with a macOS-style title bar.
 struct DesktopWindow: View {
+    @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let desktop: DesktopModel
     let icon: UIImage?
@@ -45,7 +49,7 @@ struct DesktopWindow: View {
     var body: some View {
         let chrome = desktop.chromeRect(window)
         VStack(spacing: 0) {
-            if !window.isAuxiliary {
+            if !window.isAuxiliary && !window.isFullscreen {
                 let ui = desktop.ui
                 HStack(spacing: 8 * ui) {
                     TrafficLight(color: .red, symbol: "xmark", hot: desktop.hovered == .close(window.id), ui: ui)
@@ -65,9 +69,13 @@ struct DesktopWindow: View {
             RemoteWindowSurface(window: window, pixelsPerPoint: desktop.pixelsPerPoint)
         }
         .frame(width: chrome.width, height: chrome.height)
-        .clipShape(RoundedRectangle(cornerRadius: (window.isAuxiliary ? 6 : 11) * desktop.ui, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: window.isFullscreen ? 0 : (window.isAuxiliary ? 6 : 11) * desktop.ui, style: .continuous))
         .shadow(color: .black.opacity(window.isAuxiliary ? 0.25 : 0.45), radius: window.isAuxiliary ? 8 : 24, y: window.isAuxiliary ? 3 : 12)
         .position(x: chrome.midX, y: chrome.midY)
+        .onChange(of: window.isFullscreen) { _, _ in
+            withAnimation(.snappy) { desktop.applyFullscreen(window, session: model.session) }
+        }
+        .onAppear { if window.isFullscreen { desktop.applyFullscreen(window, session: model.session) } }
     }
 }
 

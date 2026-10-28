@@ -124,6 +124,7 @@ final class AgentCenter {
         var url = URLComponents(url: host.socketURL("/v1/display"), resolvingAgainstBaseURL: false)!
         url.queryItems = [URLQueryItem(name: "seat", value: "agent")]
         let session = XpraSession(displayURL: url.url!, token: host.token, password: displayToken, capabilities: capabilities)
+        session.playsAudio = false // one stream of sound: the owner's display
         seat = session
         session.connect()
     }

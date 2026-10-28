@@ -27,6 +27,9 @@ struct WindowScreen: View {
                                 .onAppear { fitDialog(popup, over: window, in: proxy.size) }
                         }
                     }
+                    .onChange(of: window.isFullscreen) { _, fullscreen in
+                        withAnimation(.snappy) { chromeVisible = !fullscreen }
+                    }
                     .onAppear { fit(window, to: proxy.size) }
                     .onChange(of: proxy.size) { _, size in fit(window, to: size) }
                     .onChange(of: window.id) { _, _ in fit(window, to: proxy.size) }

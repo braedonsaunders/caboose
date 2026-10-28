@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 import UIKit
 
@@ -5,6 +6,14 @@ import UIKit
 /// answers scene configuration for a SwiftUI app, so the plist entry alone can leave the TV
 /// mirroring the phone; claiming the external role here makes it the desktop.
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // The computer's sound plays like a media app's (and so follows AirPlay to the TV), mixed
+        // with whatever else is playing rather than stopping it.
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        return true
+    }
+
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         if session.role == .windowExternalDisplayNonInteractive {

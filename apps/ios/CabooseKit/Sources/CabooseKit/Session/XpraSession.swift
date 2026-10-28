@@ -14,6 +14,8 @@ public final class RemoteWindow: Identifiable {
     public internal(set) var transientFor: Int?
     public internal(set) var windowTypes: [String] = []
     public internal(set) var isModal = false
+    /// The app asked to cover the whole screen (a video player, a game, a slideshow).
+    public internal(set) var isFullscreen = false
     public internal(set) var hasAlpha = false
     /// Position and size in the server's pixel space.
     public internal(set) var frame: CGRect
@@ -48,6 +50,7 @@ public final class RemoteWindow: Identifiable {
         if let value = meta["transient-for"]?.int { transientFor = value > 0 ? value : nil }
         if let types = meta["window-type"]?.list { windowTypes = types.compactMap(\.string) }
         if let value = meta["modal"]?.bool { isModal = value }
+        if let value = meta["fullscreen"]?.bool { isFullscreen = value }
         if let value = meta["has-alpha"]?.bool { hasAlpha = value }
         if let value = meta["override-redirect"]?.bool { isOverrideRedirect = value }
         if let value = meta["pid"]?.int { pid = value }
@@ -106,6 +109,11 @@ public final class XpraSession {
     private var capabilities: ClientCapabilities
     private var transport: XpraTransport?
     private let pipelines = PipelineRegistry()
+    /// The computer's sound. Starts when the server offers a codec it plays.
+    private let audio = AudioStream()
+    /// Whether to ask for sound at all (the agent seat, for one, stays silent).
+    public var playsAudio = true
+    public private(set) var audioCodecs: [String] = []
     private var buttonsDown = Set<Int>()
     private var lastClipboardSent: String?
     private var pingTimer: Timer?
@@ -127,6 +135,7 @@ public final class XpraSession {
         guard state == .idle || isClosed else { return }
         state = .connecting
         let pipelines = self.pipelines
+        let audio = self.audio
         let transport = XpraTransport(url: url, token: token) { [weak self] event in
             switch event {
             case .opened:
@@ -138,6 +147,9 @@ public final class XpraSession {
                     let packet = PacketNames.normalized(packet)
                     if packet.type == "window-draw", let wid = packet[0]?.int, let pipeline = pipelines[wid] {
                         pipeline.draw(packet)
+                    } else if packet.type == "audio-data", packet[0]?.string == AudioStream.codec {
+                        // audio-data: codec, data, metadata{sequence, start-of-stream, end-of-stream}
+                        if packet[2]?["end-of-stream"]?.bool == true { audio.stop() } else if let data = packet[1]?.data { audio.append(data) }
                     } else {
                         others.append(packet)
                     }
@@ -151,7 +163,26 @@ public final class XpraSession {
         transport.open()
     }
 
+    /// Xpra asks for sound capabilities after hello ("async"); answer with the one decoder
+    /// we have, then start the stream if the server can encode it.
+    private func offerAudio(_ caps: RValue) {
+        guard playsAudio, caps["audio"]?["async"]?.bool == true else { return }
+        send("audio-capabilities", [[
+            "decoders": [RValue(AudioStream.codec)],
+            "encoders": [],
+            "receive": true,
+            "send": false,
+        ]])
+    }
+
+    private func serverAudio(_ caps: RValue) {
+        audioCodecs = caps["encoders"]?.list?.compactMap(\.string) ?? []
+        guard playsAudio, caps["send"]?.bool ?? true, audioCodecs.contains(AudioStream.codec) else { return }
+        send("audio-control", ["start", RValue(AudioStream.codec)])
+    }
+
     public func disconnect() {
+        audio.stop()
         transport?.send(XpraPacket("connection-close", ["client disconnected"]))
         transport?.close()
         transport = nil
@@ -193,6 +224,7 @@ public final class XpraSession {
             case "window-destroy":
                 if let wid = packet[0]?.int { destroyWindow(wid) }
             case "window-icon": setIcon(packet)
+            case "audio-capabilities": serverAudio(packet[0] ?? .dict([]))
             case "cursor-data": setCursor(packet)
             case "window-move-resize":
                 if let wid = packet[0]?.int { moveResize(wid, x: packet[1]?.int, y: packet[2]?.int, width: packet[3]?.int, height: packet[4]?.int) }
@@ -225,6 +257,7 @@ public final class XpraSession {
     private func didReceiveHello(_ packet: XpraPacket) {
         let caps = packet[0] ?? .dict([])
         serverVersion = caps["version"]?.string
+        offerAudio(caps)
         preciseWheel = caps["wheel.precise"]?.bool ?? caps["wheel"]?["precise"]?.bool ?? false
         // The server defers its keymap until the client describes its keyboard. Without it,
         // modifiers in key events are ignored (no Shift, so "(" types "9"). The layout equals

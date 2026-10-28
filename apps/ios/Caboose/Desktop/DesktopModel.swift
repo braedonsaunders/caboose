@@ -65,17 +65,26 @@ final class DesktopModel {
 
     /// The window's content rect in desktop points.
     func contentRect(_ window: RemoteWindow) -> CGRect {
-        CGRect(x: window.frame.minX / pixelsPerPoint, y: window.frame.minY / pixelsPerPoint + (window.isAuxiliary ? 0 : titleBarHeight),
+        if window.isFullscreen { return CGRect(origin: .zero, size: size) }
+        return CGRect(x: window.frame.minX / pixelsPerPoint, y: window.frame.minY / pixelsPerPoint + (window.isAuxiliary ? 0 : titleBarHeight),
                width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
     }
 
     func chromeRect(_ window: RemoteWindow) -> CGRect {
         let content = contentRect(window)
-        return window.isAuxiliary ? content : content.inset(by: UIEdgeInsets(top: -titleBarHeight, left: 0, bottom: 0, right: 0))
+        return window.isAuxiliary || window.isFullscreen ? content : content.inset(by: UIEdgeInsets(top: -titleBarHeight, left: 0, bottom: 0, right: 0))
+    }
+
+    /// The frontmost window that covers the whole screen, if any: it hides the dock.
+    func fullscreenWindow(in windows: [Int: RemoteWindow]) -> RemoteWindow? {
+        stacking.reversed().lazy.filter { self.isVisible($0) }.compactMap { windows[$0] }.first { !$0.isAuxiliary }
+            .flatMap { $0.isFullscreen ? $0 : nil }
     }
 
     func hitTest(_ point: CGPoint, windows: [Int: RemoteWindow]) -> Hit {
-        for (id, frame) in dockFrames where frame.contains(point) { return .dock(id) }
+        if fullscreenWindow(in: windows) == nil {
+            for (id, frame) in dockFrames where frame.contains(point) { return .dock(id) }
+        }
         for id in stacking.reversed() where isVisible(id) {
             guard let window = windows[id] else { continue }
             let chrome = chromeRect(window)
@@ -204,6 +213,23 @@ final class DesktopModel {
         case .titleBar(let id): toggleZoom(id, session)
         case .content: break
         default: click(session: session, open: open)
+        }
+    }
+
+    /// Frames windows had before they went full screen, to restore them.
+    private var windowedFrames: [Int: CGRect] = [:]
+
+    /// Follows the app's own full-screen request: the window takes the whole display (in
+    /// Linux pixels) and gets its old frame back when it leaves.
+    func applyFullscreen(_ window: RemoteWindow, session: XpraSession?) {
+        guard let session else { return }
+        if window.isFullscreen {
+            if windowedFrames[window.id] == nil { windowedFrames[window.id] = window.frame }
+            let full = CGRect(x: 0, y: 0, width: size.width * pixelsPerPoint, height: size.height * pixelsPerPoint).integral
+            raise(window.id)
+            if window.frame != full { session.configure(window, frame: full) }
+        } else if let previous = windowedFrames.removeValue(forKey: window.id) {
+            session.configure(window, frame: previous)
         }
     }
 
