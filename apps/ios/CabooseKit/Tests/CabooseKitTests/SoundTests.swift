@@ -76,7 +76,7 @@ enum Tone {
 @Suite struct OpusDecoderTests {
     @Test func theServersSilencePacketDecodesToSilence() throws {
         var parser = DisplayFrameParser()
-        guard case .audio(let packet) = try parser.append(try DisplayVectorTests.vector("audio-opus").wire).first.map(ServerMessage.init) else {
+        guard case .audio(let packet)? = try parser.append(try DisplayVectorTests.vector("audio-opus").wire).first.map(ServerMessage.init) else {
             Issue.record("no audio packet"); return
         }
         let decoder = try OpusDecoder(channels: 1) // the vector's packet is mono
@@ -90,7 +90,7 @@ enum Tone {
     @Test(.enabled(if: DisplayVectorTests.names.contains("audio-opus-stereo")))
     func theServersStereoPacketDecodes() throws {
         var parser = DisplayFrameParser()
-        guard case .audio(let packet) = try parser.append(try DisplayVectorTests.vector("audio-opus-stereo").wire).first.map(ServerMessage.init) else {
+        guard case .audio(let packet)? = try parser.append(try DisplayVectorTests.vector("audio-opus-stereo").wire).first.map(ServerMessage.init) else {
             Issue.record("no audio packet"); return
         }
         #expect(packet.channels == 2)
@@ -174,7 +174,7 @@ enum Tone {
         ]) else { Issue.record("create"); return }
         let video = try #require(RemoteVideo(fields, clock: clock, send: { _ in }))
         var parser = DisplayFrameParser()
-        guard case .frame(let keyframe) = try parser.append(try DisplayVectorTests.vector("frame-h264-keyframe").wire).first.map(ServerMessage.init) else {
+        guard case .frame(let keyframe)? = try parser.append(try DisplayVectorTests.vector("frame-h264-keyframe").wire).first.map(ServerMessage.init) else {
             Issue.record("keyframe"); return
         }
         let pts = UInt64((clock.now ?? 0) + 60_000)
