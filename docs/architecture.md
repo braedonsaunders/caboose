@@ -36,9 +36,12 @@ same pull request as the code that changes the contract.
 
 ### 1. Guest: the computer (`guest/`)
 
-A Debian 13 (trixie, amd64) golden image booted by Cloud Hypervisor with a
-per-user copy-on-write overlay, exactly the appkit-desk model: patching the base
-patches every computer on its next boot; each user's installs and home persist.
+A Debian 13 (trixie, amd64) golden image booted by Cloud Hypervisor. Each computer's
+disk is a reflink copy-on-write clone of the base, exactly the appkit-desk model: it
+costs no space up front and each user's installs and home persist. A clone is
+independent of the base once made, so a new base image reaches new computers only;
+updating existing ones is a guest-side upgrade (apt and the Caboose units), not a
+base swap.
 
 - **Display server: Xpra in seamless mode** on display `:100`, listening for
   WebSocket on `0.0.0.0:14500` inside the guest (reachable only from the host over
@@ -78,6 +81,10 @@ HTTP API (all JSON, all behind `Authorization: Bearer <device token>`):
 | `POST` | `/v1/apps/:id/launch` | start an app on display `:100` |
 | `POST` | `/v1/session/park` | park now (snapshot with memory); otherwise parked on idle |
 | `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `notification`, `agent.*` |
+
+Network: the guest's TAP is fenced in host-owned chains (`CABOOSE-IN`, `CABOOSE-FWD`).
+The guest can open nothing on the host and reaches only the public internet unless
+`CABOOSE_GUEST_LAN=allow`. The display relay is opened by the host.
 
 Lifecycle: the host keeps a lease while any display or control socket is open
 and lets appkit-desk park the computer after `CABOOSE_IDLE_MS` with no client.

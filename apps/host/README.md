@@ -24,6 +24,10 @@ needs a running user systemd manager, KVM group access, and non-interactive
 privileges for the network setup. `CABOOSE_BIND=0.0.0.0` listens on every IPv4
 interface; the service does not terminate TLS.
 
+The guest is fenced: it can open no connection to the host, and it reaches only the
+public internet, not private, link-local (cloud metadata), CGNAT or Tailscale
+addresses. Set `CABOOSE_GUEST_LAN=allow` to let a self-hosted computer reach your LAN.
+
 `CABOOSE_OWNER_TOKEN=... apps/host/scripts/e2e.sh` uses the local Xpra client
 to authenticate an Xpra hello over the relay, parks, resumes, and repeats.
 Set `CABOOSE_URL` when testing a different host. This check is not yet validated
