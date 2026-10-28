@@ -1364,6 +1364,7 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   system toolbar: on a vertical-bar device they sit on the side and the app uses the full
   height beside it; elsewhere they occupy a compact horizontal toolbar within the safe
   area. The window title is in the switcher; Options includes Ask Agent, redraw and close.
+  The switcher and options open system action dialogs outside the toolbar's overflow group.
   Full Screen hides the controls; its accessible top handle brings them back.
   An external display shows the windows floating, resizing and
   stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
@@ -1386,7 +1387,7 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   most about eight times a second. The gaps resize (snapping to the presets, with haptic
   detents). The grabber at a tile's top carries it to a new column, into a stack or onto
   another tile; a tap gives the tile the keyboard, and a double tap opens the same
-  full-screen app card as Apps. The Desktop toolbar's trailing Full Screen menu opens
+  full-screen app card as Apps. The Desktop toolbar's trailing Full Screen control opens
   the focused app as that card; the grabber's menu and accessibility action, and ⌘⌥F
   also open it. The card keeps Desktop selected
   underneath; dismissing it restores the tile layout. Only the presented card sends window
@@ -1445,8 +1446,9 @@ Pinned and recent apps are kept on the phone per computer.
   and clipped to its measured content viewport; folding, rotation and tab changes report
   that viewport again. Home's Open, Pinned and Recent rows receive the measured column
   width and clip within it; recent file names and paths truncate within the same column.
-  The Desktop toolbar's Full Screen menu also offers Hide Desktop Bars, giving the
-  desktop the whole display; a handle at the top brings the bars back. No screen disables the vertical bar.
+  The Desktop toolbar's Full Screen action dialog also offers Hide Desktop Bars, giving the
+  desktop the whole display; a handle at the top brings the bars back. No screen disables
+  the vertical bar.
 - **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. Home's
   AirPlay control remembers the AirPlay output the computer's sound last played on (from the
   audio session's route) and, on a tap, switches the session to long-form video routing and

@@ -8,6 +8,8 @@ struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @State private var chromeVisible = true
     @State private var askingAbout: RemoteWindow?
+    @State private var showingApps = false
+    @State private var showingOptions = false
     /// How far the card has been swiped sideways, and the picture of the app it reveals.
     @State private var swipe: CGFloat = 0
     @State private var neighbour: (id: Int, picture: CGImage?)?
@@ -38,6 +40,21 @@ struct WindowScreen: View {
             .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
         }
         .tint(Brand.amber)
+        .confirmationDialog("Switch App", isPresented: $showingApps, titleVisibility: .visible) {
+            ForEach(cardOrder) { other in
+                Button { model.presentedWindowID = other.id } label: {
+                    Label(other.title.isEmpty ? "Window" : other.title,
+                          systemImage: other.id == model.presentedWindowID ? "checkmark" : "macwindow")
+                }
+            }
+        } message: {
+            Text(model.window(model.presentedWindowID)?.title ?? "Window")
+        }
+        .confirmationDialog("Window Options", isPresented: $showingOptions, titleVisibility: .visible) {
+            if let window = model.window(model.presentedWindowID) { windowActions(for: window) }
+        } message: {
+            Text(model.connectionSummary)
+        }
         .fullScreenCover(item: Binding(
             get: { model.media.handedOff },
             set: { if $0 == nil, model.media.handedOff != nil { Task { await model.media.finished(at: nil) } } })) { media in
@@ -179,20 +196,9 @@ struct WindowScreen: View {
             .labelStyle(.iconOnly)
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
-            Menu {
-                Section(window.title.isEmpty ? "Window" : window.title) {
-                    ForEach(cardOrder) { other in
-                        Button { model.presentedWindowID = other.id } label: {
-                            Label(other.title.isEmpty ? "Window" : other.title,
-                                  systemImage: other.id == window.id ? "checkmark" : "macwindow")
-                        }
-                    }
-                }
-            } label: {
-                Label("Switch App", systemImage: "macwindow.on.rectangle")
-            }
-            .labelStyle(.iconOnly)
-            .accessibilityValue(window.title.isEmpty ? "Window" : window.title)
+            Button("Switch App", systemImage: "macwindow.on.rectangle") { showingApps = true }
+                .labelStyle(.iconOnly)
+                .accessibilityValue(window.title.isEmpty ? "Window" : window.title)
 
             Button(model.keyboardVisible ? "Hide Keyboard" : "Keyboard",
                    systemImage: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard") {
@@ -200,22 +206,22 @@ struct WindowScreen: View {
             }
             .labelStyle(.iconOnly)
 
-            Menu {
-                Section(model.connectionSummary) {}
-                Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
-                if model.agents.available {
-                    Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
-                }
-                if let video = model.media.available, window.appClass?.name.lowercased().contains("chromium") == true {
-                    Button("Play on iPhone or Apple TV", systemImage: "play.tv") { Task { await model.media.playHere(video) } }
-                }
-                Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
-                Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
-            } label: {
-                Label("Window Options", systemImage: "ellipsis")
-            }
-            .labelStyle(.iconOnly)
+            Button("Window Options", systemImage: "ellipsis") { showingOptions = true }
+                .labelStyle(.iconOnly)
         }
+    }
+
+    /// Present actions outside the toolbar so a vertical overflow group cannot clip them.
+    @ViewBuilder private func windowActions(for window: RemoteWindow) -> some View {
+        Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
+        if model.agents.available {
+            Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
+        }
+        if let video = model.media.available, window.appClass?.name.lowercased().contains("chromium") == true {
+            Button("Play on iPhone or Apple TV", systemImage: "play.tv") { Task { await model.media.playHere(video) } }
+        }
+        Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
+        Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
     }
 
     /// Fill the shown area with the window, in Linux pixels.

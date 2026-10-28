@@ -93,8 +93,9 @@ and picture need a device with the computer awake. On the Desktop tab, with thre
    hardware keyboard (hold ⌘ to see them listed). Plain ⌘C still copies in the app.
 4. Open a menu and a dialog in a tile: both appear over that tile. Park and wake: the same
    columns come back.
-5. Tap a tile to focus it, then use the trailing toolbar's Full Screen menu and Open App
-   Full Screen; double-tap the grabber, use its menu, or press ⌘⌥F: the same app card as Apps opens. Close the card: Desktop and its tile layout return. Rotate/fold while
+5. Tap a tile to focus it, then use the trailing toolbar's Full Screen control and Open App
+   Full Screen; double-tap the grabber, use its menu, or press ⌘⌥F: the same app card as
+   Apps opens. Close the card: Desktop and its tile layout return. Rotate/fold while
    the card is up, hide/show its controls, then dismiss: both card and desktop fit their
    available viewport. Browser content keeps its own double taps. Two fingers tapped on a
    window right-click, with a ring where they landed.
