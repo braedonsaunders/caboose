@@ -27,6 +27,13 @@ struct TerminalScreen: View {
         Group {
             if computerAvailable {
                 TerminalSurface(view: terminal.view)
+                    .padding(10)
+                    .background {
+                        // Fill only the inset: SwiftTerm already draws the translucent center.
+                        Rectangle().strokeBorder(
+                            Color(uiColor: TerminalTheme.background).opacity(TerminalTheme.backgroundOpacity),
+                            lineWidth: 10)
+                    }
                     .ignoresSafeArea(.container, edges: terminalEdges)
                     .overlay(alignment: .bottom) { TerminalStatusBar(terminal: terminal) }
                     .onAppear { onScreen = true; attach() }

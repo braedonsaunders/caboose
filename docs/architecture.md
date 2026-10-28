@@ -1478,8 +1478,9 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   wallpaper, cream text, an amber cursor and selection, and a sixteen-colour palette from
   which the 256-colour cube derives. Pinch, or Larger and Smaller Text in the session menu,
   sets the size from 8 to 28 points; it is kept on the phone. Like Desktop, the terminal
-  fills the screen beside a vertical sidebar without a title strip or outer margins;
-  the keyboard still reduces the grid's height.
+  fills the screen beside a vertical sidebar without a title strip or outer margins.
+  The grid has a ten-point inset inside its navy background to keep text and the cursor
+  clear of the edges; the keyboard still reduces the grid's height.
 - **Input.** A key row above the keyboard has Esc, Tab, sticky Ctrl and Alt (for the row's
   keys and the keyboard's next one), arrows that repeat while held, `` | ~ / - _ ` \ : * $ ``,
   Home, End, Page Up and Page Down, and Hide Keyboard. Unmodified arrows follow the
