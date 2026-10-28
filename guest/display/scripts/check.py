@@ -396,7 +396,7 @@ def check_refine():
     # A quiet terminal full of text: the keyframe is coded at the normal QP, then once,
     # 300 ms later, the same picture sharpened, then nothing. Measured against a
     # near-lossless reference, the sharpened picture must be clearly closer than the
-    # unrefined one.
+    # unrefined one. A blinking caret must not cost a sharpening picture per blink.
     text = ["xterm", "-geometry", "100x40", "-e", "sh", "-c", "ls -l /usr/bin | head -38; exec sleep 600"]
     def picture(extra):
         out = tempfile.mkdtemp(prefix="refine-")
@@ -413,7 +413,16 @@ def check_refine():
     if after < before + 3:
         raise Failed(f"refinement took the picture from {before:.1f} dB to {after:.1f} dB")
     sharpening = (on["bytes"] - off["bytes"]) / 1000
-    return f"one sharpening picture ({sharpening:.0f} kB) takes a quiet terminal from {before:.1f} to {after:.1f} dB PSNR"
+    def blinking(extra):
+        def run(proc, token):
+            time.sleep(3)
+            return probe(["--token-file", token, "--duration", "6", "--windows", "1"])["windows"][0]["frames"]
+        return with_server(CHROMIUM + ["--window-size=900,400", f"--app={PAGES}/input.html"], run, extra=extra)
+    plain, sharpened = blinking(("--refine-qp", "0")), blinking(())
+    if sharpened > plain + 4:
+        raise Failed(f"a blinking caret took {sharpened} pictures in 6 s with sharpening, {plain} without")
+    return (f"one sharpening picture ({sharpening:.0f} kB) takes a quiet terminal from {before:.1f} to {after:.1f} dB "
+            f"PSNR; a blinking caret: {sharpened} pictures in 6 s, {plain} without sharpening")
 
 
 def check_idle():

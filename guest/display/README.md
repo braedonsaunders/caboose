@@ -51,7 +51,9 @@ This directory is a Cargo workspace:
   is coded once more at `--refine-qp` (12): it rides along in the next picture the window
   sends anyway (a caret blink, the next keystroke), or, if the window has gone quiet, in
   one extra picture of the same content. libx264 then skips those macroblocks, so they
-  stay sharp until they change again. libx264 only; `--refine-qp 0` turns it off.
+  stay sharp until they change again. An area that changes again soon after it was
+  sharpened (a blinking caret) waits twice as long each time, up to 16×, so blinking
+  costs no extra pictures. libx264 only; `--refine-qp 0` turns it off.
 - **Input.** Pointer (buttons as a pressed set, precise and wheel scrolling), multitouch
   (`wl_touch`, one frame per message), keys by keysym (mapped to the keymap, with the
   modifiers a level needs), and text: commits and pre-edit text go to the focused surface
@@ -146,7 +148,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `clipboard-x11` | an X11 copy (xclip) reaches the phone on connect, and the phone's copy reaches X11 |
 | `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
 | `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
-| `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer (measured: 42.4 → 50.3 dB, one 34 kB picture) |
+| `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer (measured: 42.4 → 50.3 dB, one 34 kB picture); a blinking caret costs at most 4 extra pictures in 6 s, not one per blink (measured: 16 against 13) |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 ### Measured
