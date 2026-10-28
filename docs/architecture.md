@@ -81,6 +81,49 @@ HTTP API (all JSON, all behind `Authorization: Bearer <device token>`):
 | `POST` | `/v1/apps/:id/launch` | start an app on display `:100` |
 | `POST` | `/v1/session/park` | park now (snapshot with memory); otherwise parked on idle |
 | `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `notification`, `agent.*` |
+| `GET` | `/v1/computer` | management status and persisted computer settings; does not wake or lease the computer |
+| `PATCH` | `/v1/computer/settings` | update any of `name`, `memoryMb`, `vcpus`, `idleMs`; returns management status |
+| `POST` | `/v1/computer/restart` | requires `{ "confirm": true }`; cold restart, preserving the disk and discarding memory; returns management status |
+
+Management status has this shape (resources are MiB and idle time is milliseconds):
+
+```ts
+{
+  state: "parked" | "waking" | "running" | "parking" | "restarting" | "error",
+  settings: { name: string, memoryMb: number, vcpus: number, idleMs: number },
+  activeResources: { memoryMb: number, vcpus: number } | null,
+  restartRequired: boolean,
+  clients: { display: number, control: number },
+  tasks: { running: number, paused: number },
+  capabilities: { restart: boolean },
+  lastError: string | null
+}
+```
+
+The name is 1–80 characters without control characters, trimmed on save. Memory is
+512–65536 MiB, vCPUs 1–32, and idle time 60000–86400000 ms; numeric values are integers.
+Unknown fields and invalid JSON return 400 without applying any changes. Settings
+are stored atomically in `${CABOOSE_IMAGE_ROOT}/caboose.json` with mode 0600; environment
+values are initial defaults. Name and idle changes apply immediately. CPU and memory
+changes apply on the next cold boot, not a memory-snapshot resume. `activeResources`
+describes the current running or parked machine, or is null before its configuration
+is known. A legacy snapshot with unknown resources requires a restart to establish
+them. `restartRequired` distinguishes desired settings from those applied.
+
+Restart closes client sockets, ends running/paused agent tasks, and discards unsaved
+application state; it never deletes the computer disk. Restart and park are serialized
+with wake and cannot race a new application/task launch. Clients must confirm restart
+with the user before sending `confirm: true`. Concurrent restart requests are rejected
+with 409 rather than scheduling repeated destructive reboots. Lifecycle failures are
+reported in `lastError`. The control socket broadcasts
+`{ type: "computer.settings", computer: <management status> }` when settings or their
+applied state change. An HTTP management poll does not prevent idle parking.
+
+The host serves the built AppKit web management app from `CABOOSE_WEB_ROOT` (defaults
+to `apps/web/dist` relative to the host package), with SPA fallback for non-API GETs.
+Static files are public; all `/v1` routes remain bearer-authenticated. The web client
+keeps the owner token in session storage and sends it only as an Authorization header.
+It uses HTTP status polling so leaving the console open does not keep a computer awake.
 
 Network: the guest's TAP is fenced in host-owned chains (`CABOOSE-IN`, `CABOOSE-FWD`).
 The guest can open nothing on the host and reaches only the public internet unless
