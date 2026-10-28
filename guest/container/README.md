@@ -153,3 +153,8 @@ Other checks for this image:
   session buses in a disposable container.
 - `guest/desktop-mcp/check-a11y.sh` runs both Caboose Display instances and the
   accessibility helper in Docker.
+
+## Architecture
+
+The image builds natively on amd64 and arm64. Its app downloads and VA-API driver path
+match that architecture. The release tag selects the matching image automatically.

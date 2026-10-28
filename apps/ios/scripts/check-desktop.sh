@@ -9,15 +9,22 @@ Switchyard (Desktop tab, no external display):
    rotate a large phone: two columns fit; an iPad offers thirds. Drag a gap and
    stack two tiles. The complete Chrome tab strip, address bar and refresh button
    remain visible during resizing and after it settles. Thunar fits its tile.
-2. Double-tap the grabber: the window fills the display without bars or dock.
-   Pull the top tab down a little and release: it springs back. Pull farther:
-   it returns to its tile. Tap the tab to exit too. Repeat using Command-Option-F.
+2. Double-tap the grabber: the same full-screen app card as Apps opens, with its
+   window menu, keyboard and close controls. Repeat with the visible Full Screen
+   button, grabber menu, VoiceOver Full Screen action and Command-Option-F.
+   Double-tap browser content: the browser receives it. Drag the grabber and long
+   press it: carrying and its menu still work. Close the card: Desktop remains
+   selected and its tile layout returns, without an amber border around Chrome.
+   Fold/unfold the Duo and rotate an ordinary phone both in the card and after
+   dismissing it. Hide/show card controls and desktop bars. In each state Chrome
+   uses the available viewport, keeps its tab strip/address bar/refresh button,
+   and never runs beneath the sidebar. Switch tabs and move the sidebar too.
 3. In both tiled and full-screen views, open a browser menu, context menu and
    file chooser. Each appears above its parent and accepts input. Close the
-   full-screen window and check that the bars/dock return and another tile works.
+   app card and check that the bars/dock return and another tile works.
    Fit a minimum-width window into a narrow tile, then open a menu and submenu:
    they stay attached to their controls. Leave a dialog open, switch to another
-   column, and zoom that column: the previous column's dialog does not follow.
+   column, and open that column as a card: the previous column's dialog does not follow.
 4. Two-finger tap in Chromium (native Wayland) and Thunar (Xwayland): one context
    menu opens at the touch with a ring and haptic. A two-finger pinch or moving
    fingers must not open a menu. Long-press in Thunar also right-clicks.
@@ -25,6 +32,9 @@ Switchyard (Desktop tab, no external display):
    on exit. After pulling back to a tile, another app can enter full screen.
 6. Switch Desktop -> Home -> Desktop. Columns retain their positions. Open an app
    from Apps: it opens as a card and edge-swiping moves to the next app.
+   On Home, scroll Open, Pinned and Recent all the way right in every folded and
+   rotated/sidebar state: live previews and icons stay inside the content column.
+   Long Recent Files names/paths truncate inside the same column.
 
 External display, then iPad Desktop set to Free:
 7. Use the green title-bar button to maximize Chromium. The title bar meets the

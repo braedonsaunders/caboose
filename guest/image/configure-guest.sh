@@ -1,15 +1,17 @@
 #!/bin/bash
 set -euxo pipefail
 export DEBIAN_FRONTEND=noninteractive USER=root HOME=/root TERM=xterm
+arch=$(dpkg --print-architecture)
+case $arch in amd64) triplet=x86_64-linux-gnu; kernel=linux-image-cloud-amd64 ;; arm64) triplet=aarch64-linux-gnu; kernel=linux-image-arm64 ;; *) exit 1 ;; esac
 printf 'deb https://deb.debian.org/debian trixie main contrib non-free-firmware\ndeb https://security.debian.org/debian-security trixie-security main contrib non-free-firmware\n' > /etc/apt/sources.list
 apt-get -o APT::Acquire::Queue-Mode=access update
 apt-get install -y --no-install-recommends ca-certificates curl gnupg
 curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg
-printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/code stable main\n' > /etc/apt/sources.list.d/vscode.list
+printf 'deb [arch=%s signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/code stable main\n' "$arch" > /etc/apt/sources.list.d/vscode.list
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
 printf 'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\n' > /etc/apt/sources.list.d/nodesource.list
 apt-get -o APT::Acquire::Queue-Mode=access update
-apt-get install -y --no-install-recommends linux-image-cloud-amd64 systemd-sysv dbus dbus-user-session initramfs-tools e2fsprogs sudo iproute2 socat python3 python3-gi gir1.2-gtk-3.0 python3-pyatspi dbus-x11 libnotify-bin xauth xvfb x11-utils xdotool wmctrl xclip imagemagick ffmpeg x11vnc at-spi2-core gsettings-desktop-schemas xfce4-settings chromium firefox-esr code xfce4-terminal thunar mousepad libreoffice git ripgrep nodejs sassc libxml2-utils libglib2.0-bin libglib2.0-dev-bin fonts-inter fonts-jetbrains-mono fonts-noto-cjk fonts-noto-color-emoji qt5-gtk-platformtheme qt6-gtk-platformtheme python3-websockets
+apt-get install -y --no-install-recommends "$kernel" systemd-sysv dbus dbus-user-session initramfs-tools e2fsprogs sudo iproute2 socat python3 python3-gi gir1.2-gtk-3.0 python3-pyatspi dbus-x11 libnotify-bin xauth xvfb x11-utils xdotool wmctrl xclip imagemagick ffmpeg x11vnc at-spi2-core gsettings-desktop-schemas xfce4-settings chromium firefox-esr code xfce4-terminal thunar mousepad libreoffice git ripgrep nodejs sassc libxml2-utils libglib2.0-bin libglib2.0-dev-bin fonts-inter fonts-jetbrains-mono fonts-noto-cjk fonts-noto-color-emoji qt5-gtk-platformtheme qt6-gtk-platformtheme python3-websockets
 apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools
 for executable in gio xdotool wmctrl import; do
   command -v "$executable" >/dev/null || { echo "Missing required guest executable: $executable" >&2; exit 1; }
@@ -41,7 +43,7 @@ apt-get install -y --no-install-recommends xwayland libegl1 libgl1-mesa-dri libp
 install -m 0755 /tmp/caboose-display/caboose-display /tmp/caboose-display/caboose-display-probe /tmp/caboose-display/caboose-display-ready /usr/local/bin/
 install -m 0644 /tmp/caboose-display/caboose-display.service /tmp/caboose-display/caboose-display-agent.service /etc/systemd/system/
 # Codec passthrough (guest/vaapi): the driver, and /dev/udmabuf for its decode surfaces.
-install -D -m 0644 /tmp/caboose-display/caboose_drv_video.so /usr/lib/x86_64-linux-gnu/dri/caboose_drv_video.so
+install -D -m 0644 /tmp/caboose-display/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so"
 printf 'udmabuf\n' > /etc/modules-load.d/caboose-udmabuf.conf
 printf 'KERNEL=="udmabuf", GROUP="caboose", MODE="0660"\n' > /etc/udev/rules.d/70-caboose-udmabuf.rules
 systemctl enable desk-guest-agent.service desk-vsock-bridge.service

@@ -14,7 +14,7 @@ Caboose has three components:
 
 | Component | Path | What it is |
 | --- | --- | --- |
-| The computer | `guest/` | A Debian 13 (amd64) machine, booted as a Cloud Hypervisor microVM or run as a container. It runs Caboose Display, the file service, the agent runner and the integration services. |
+| The computer | `guest/` | A Debian 13 (amd64 or arm64) machine, booted as a Cloud Hypervisor microVM or run as a container. It runs Caboose Display, the file service, the agent runner and the integration services. |
 | The host | `apps/host/` | `caboose-host`, TypeScript on Node 22. It owns the computer's lifecycle, authenticates clients, relays display streams, and serves the HTTP and WebSocket API and the web console (`apps/web/`). |
 | The app | `apps/ios/` | Caboose for iOS and iPadOS (Swift, iOS 26+). It renders each Linux window natively and integrates the computer with Files, Shortcuts, Spotlight, widgets, Live Activities and notifications. |
 
@@ -63,7 +63,7 @@ Conventions used throughout:
 
 ### Guest image
 
-The microVM boots a Debian 13 (trixie, amd64) golden image built by `guest/image/`. Each
+The microVM boots a Debian 13 (trixie, amd64 or arm64) golden image built by `guest/image/`. Each
 computer's disk is a reflink copy-on-write clone of the base: it costs no space up front,
 and the owner's installs and home persist. A clone is independent of the base once made,
 so a new base image reaches new computers only.
@@ -98,7 +98,11 @@ A `v*` tag publishes the computer to GHCR in two forms (`.github/workflows/relea
 `caboose-computer`, the container image, and `caboose-base`, an OCI artifact whose three
 layers are titled `base.raw.zst` (the zstd-compressed disk), `vmlinux` and `initrd`. The
 release's `caboose-host` image sets `CABOOSE_BASE_IMAGE` and `CABOOSE_CONTAINER_IMAGE` to
-both, pinned by digest.
+both, pinned by digest for its own architecture. Images build on native amd64 and arm64
+runners. Host and container tags select the matching architecture; base artifacts use
+`<version>-amd64` and `<version>-arm64` tags (`<version>` remains the amd64 alias).
+Native host bundles carry the corresponding image pins and are checked on native runners.
+Prereleases do not replace `latest`.
 
 On start, a microVM host whose disk root lacks any of the three files fetches them from
 `CABOOSE_BASE_IMAGE` with an anonymous registry pull. Every blob, and a manifest that is
@@ -333,7 +337,8 @@ messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 ### Catalog
 
 `guest/catalog/catalog.json` is the source of optional applications, packs and release
-pins. Debian applications install from Debian 13's signed repositories. Craft releases have
+pins. Debian applications install from Debian 13's signed repositories. On arm64, the catalog
+omits the pinned Craft `.deb` packages, which are x86_64-only, and packs with no compatible entries. Craft releases have
 fixed URLs, byte counts and SHA-256 hashes. No pin changes automatically; a changed pin
 makes an update available for the owner to choose.
 
@@ -1044,7 +1049,8 @@ memory and in `agent-registry.json`; when a fetch fails it is served with
 `registry.error`, and the fetch is retried after a minute. Before any successful fetch the
 list is empty and says why.
 
-Each agent is resolved for `linux-x86_64`, preferring a binary the registry pins by
+Each agent is resolved for the native guest architecture (`linux-x86_64` on amd64,
+`linux-aarch64` on arm64), preferring a binary the registry pins by
 SHA-256, then `npx`, then `uvx`, then a binary without a checksum:
 
 | Distribution | Started as |
@@ -1374,12 +1380,17 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   resize stretches the entire last picture without cropping until the new one arrives, and drags send geometry at
   most about eight times a second. The gaps resize (snapping to the presets, with haptic
   detents). The grabber at a tile's top carries it to a new column, into a stack or onto
-  another tile; a tap gives the tile the keyboard, two taps zoom it to full screen, and a
-  long press opens its menu (full screen, width, open as a card, ask an agent, redraw,
-  close). Full screen is edge to edge: the bars, the dock, the status bar and the home
-  indicator step aside, the window is configured to the whole display, and a pull down
-  from the small tab at its top edge shrinks it back into its tile under the finger. An
-  app asking for full screen gets the same, and is told when it is pulled back. Menus and
+  another tile; a tap gives the tile the keyboard, and a double tap opens the same
+  full-screen app card as Apps. The visible Full Screen button, the grabber's menu and
+  accessibility action, and ⌘⌥F also open that card. The card keeps Desktop selected
+  underneath; dismissing it restores the tile layout. Only the presented card sends window
+  geometry while it is up. Its measured content area, including changes to its controls,
+  rotation and folding, replaces the guest display size; the complete picture fits while
+  the app redraws. A long press or the options button opens the tile's menu (full screen,
+  width, ask an agent, redraw, close). An app asking for full screen covers the desktop
+  edge to edge: the bars, dock, status bar and home indicator step aside, and a pull down
+  from the small tab at its top edge shrinks it back into its tile. The app is told when
+  it is pulled back. Menus and
   dialogs appear above the covering window and fit within the display. Auxiliary windows
   follow their parent's displayed scale and position, including nested menus; trees whose
   owner is offscreen, or is not the covering window, are hidden. A window
@@ -1424,7 +1435,11 @@ Pinned and recent apps are kept on the phone per computer.
   (`toolbarVerticalCompressionBehavior(.prefersTabBar)`), gives Full Screen the lowest
   visibility priority and the Computer pair the highest, and reads
   `toolbarVerticalEdge` to extend the desktop under the top and bottom insets beside the
-  bar. Full Screen hides the bars and gives the desktop the whole display; a handle at the
+  bar. Both horizontal safe edges stay protected as the bar moves. The desktop is bounded
+  and clipped to its measured content viewport; folding, rotation and tab changes report
+  that viewport again. Home's Open, Pinned and Recent rows receive the measured column
+  width and clip within it; recent file names and paths truncate within the same column.
+  Full Screen hides the bars and gives the desktop the whole display; a handle at the
   top brings them back. No screen disables the vertical bar.
 - **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. Home's
   AirPlay control remembers the AirPlay output the computer's sound last played on (from the

@@ -4,7 +4,9 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 [[ $(id -u) == 0 ]] || { echo 'Run as root' >&2; exit 1; }
 . /etc/os-release
-[[ ${ID:-} == debian && ${VERSION_ID:-} == 13 && $(dpkg --print-architecture) == amd64 ]] || { echo 'Requires Debian 13 amd64' >&2; exit 1; }
+[[ ${ID:-} == debian && ${VERSION_ID:-} == 13 ]] || { echo 'Requires Debian 13' >&2; exit 1; }
+arch=$(dpkg --print-architecture)
+case $arch in amd64|arm64) ;; *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; esac
 apt-get update
 apt-get install -y --no-upgrade --no-install-recommends \
   ca-certificates curl xz-utils python3-gi gir1.2-gtk-3.0 adwaita-icon-theme \
@@ -49,19 +51,49 @@ install_archive() {
   install -d /usr/local/share/caboose-apps
   printf '%s\n' "$version" > "$marker"
 }
-install_archive opencode 1.19.4 'https://github.com/anomalyco/opencode/releases/download/v1.19.4/opencode-linux-x64-baseline.tar.gz' '1697ef40558d378bd2f72efa8fafe1bed1f0e664f09247b9357556b95dbc7cbc' opencode
-install_archive lazydocker 0.25.2 'https://github.com/jesseduffield/lazydocker/releases/download/v0.25.2/lazydocker_0.25.2_Linux_x86_64.tar.gz' '0d9dbfc26068b218e7ed84b104748cadc6e3cf733c0afd35465306fb39b9523c' lazydocker
-# uv runs the Python agents in the ACP registry (uvx); both binaries come from one archive.
-if [[ $(uv --version 2>/dev/null) != 'uv 0.13.6'* ]]; then
-  fetch 'https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-gnu.tar.gz' 'f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645' "$work/uv.tar.gz"
-  tar -xzf "$work/uv.tar.gz" -C "$work"
-  install -m755 "$work/uv-x86_64-unknown-linux-gnu/uv" "$work/uv-x86_64-unknown-linux-gnu/uvx" /usr/local/bin/
+# Architecture-specific upstream pins from each release's SHA-256 metadata.
+if [[ $arch == amd64 ]]; then
+  opencode_target=x64-baseline; opencode_sha=1697ef40558d378bd2f72efa8fafe1bed1f0e664f09247b9357556b95dbc7cbc
+  lazydocker_target=x86_64; lazydocker_sha=0d9dbfc26068b218e7ed84b104748cadc6e3cf733c0afd35465306fb39b9523c
+  uv_target=x86_64; uv_sha=f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645
+  mise_target=x64; mise_sha=f56cc56b462eaae60aa7a33dffd24f641847b52e098b69e4a5064c4b8bbe03cb
+else
+  opencode_target=arm64; opencode_sha=8568230ccd847dc93e95b9f6894379077d3e014a16b48040743573e77c23e85f
+  lazydocker_target=arm64; lazydocker_sha=005c38b685aaa557e7d646d83a3dadb5024340eeed8c6a2e1949eee6f530de23
+  uv_target=aarch64; uv_sha=229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d
+  mise_target=arm64; mise_sha=1c05e4d4baaf1b4a9bf929e9c39b3512deb937c8d4c1bd52927499624018834f
 fi
-install_archive mise 2026.10.21 'https://github.com/jdx/mise/releases/download/v2026.10.21/mise-v2026.10.21-linux-x64.tar.gz' 'f56cc56b462eaae60aa7a33dffd24f641847b52e098b69e4a5064c4b8bbe03cb' mise/bin/mise
-# Obsidian is upstream's proprietary .deb; pin and verify the exact release.
-if [[ $(dpkg-query -W -f='${Version}' obsidian 2>/dev/null || true) != 1.14.5 ]]; then
-  fetch 'https://github.com/obsidianmd/obsidian-releases/releases/download/v1.14.5/obsidian_1.14.5_amd64.deb' 'c37fb46a966f604823337fb36ab23bd1baf8ce912ec35af59d62358a93357bee' "$work/obsidian.deb"
-  apt-get install -y "$work/obsidian.deb"
+install_archive opencode 1.19.4 "https://github.com/anomalyco/opencode/releases/download/v1.19.4/opencode-linux-$opencode_target.tar.gz" "$opencode_sha" opencode
+install_archive lazydocker 0.25.2 "https://github.com/jesseduffield/lazydocker/releases/download/v0.25.2/lazydocker_0.25.2_Linux_$lazydocker_target.tar.gz" "$lazydocker_sha" lazydocker
+if [[ $(uv --version 2>/dev/null) != 'uv 0.13.6'* ]]; then
+  fetch "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-$uv_target-unknown-linux-gnu.tar.gz" "$uv_sha" "$work/uv.tar.gz"
+  tar -xzf "$work/uv.tar.gz" -C "$work"
+  install -m755 "$work/uv-$uv_target-unknown-linux-gnu/uv" "$work/uv-$uv_target-unknown-linux-gnu/uvx" /usr/local/bin/
+fi
+install_archive mise 2026.10.21 "https://github.com/jdx/mise/releases/download/v2026.10.21/mise-v2026.10.21-linux-$mise_target.tar.gz" "$mise_sha" mise/bin/mise
+# Obsidian ships a .deb for amd64 and a self-contained Electron archive for arm64.
+if [[ $arch == amd64 ]]; then
+  if [[ $(dpkg-query -W -f='${Version}' obsidian 2>/dev/null || true) != 1.14.5 ]]; then
+    fetch 'https://github.com/obsidianmd/obsidian-releases/releases/download/v1.14.5/obsidian_1.14.5_amd64.deb' 'c37fb46a966f604823337fb36ab23bd1baf8ce912ec35af59d62358a93357bee' "$work/obsidian.deb"
+    apt-get install -y "$work/obsidian.deb"
+  fi
+elif [[ ! -x /opt/obsidian-1.14.5-arm64/obsidian ]]; then
+  fetch 'https://github.com/obsidianmd/obsidian-releases/releases/download/v1.14.5/obsidian-1.14.5-arm64.tar.gz' 'ba1d2e7070acffb39a795e81c48c3a2119c44be526337dd8ff58963f3ab2052a' "$work/obsidian.tar.gz"
+  tar -xzf "$work/obsidian.tar.gz" -C /opt
+  chown root:root /opt/obsidian-1.14.5-arm64/chrome-sandbox
+  chmod 4755 /opt/obsidian-1.14.5-arm64/chrome-sandbox
+  ln -sfn /opt/obsidian-1.14.5-arm64/obsidian /usr/local/bin/obsidian
+  install -d /usr/local/share/applications
+  cat > /usr/local/share/applications/obsidian.desktop <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Obsidian
+Exec=/usr/local/bin/obsidian %U
+Icon=/opt/obsidian-1.14.5-arm64/resources/icon.png
+Categories=Office;
+MimeType=x-scheme-handler/obsidian;
+Terminal=false
+DESKTOP
 fi
 # Application marks: pinned, checksum-verified Simple Icons (CC0) and OpenCode.
 icon_dir=/usr/local/share/icons/hicolor/scalable/apps
