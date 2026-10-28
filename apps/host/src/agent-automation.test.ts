@@ -95,3 +95,29 @@ it('merges omitted memory fields after pending owner edits and rejects mutation 
     expect(profiles.get(mine.id).memories[0]!.content).toBe('Agent content')
   } finally { resume.release(); await routines.close() }
 })
+
+it.each(['routine_update', 'routine_pause', 'routine_delete', 'routine_run', 'routine_create'])('rejects queued %s after its profile is archived', async tool => {
+  const profiles = new AgentProfiles({ version: 1, profiles: [] }, { save: async () => {} })
+  const mine = await profiles.create({ name: 'Mine', agent: 'claude-acp' })
+  const entered = barrier(), resume = barrier()
+  let hold = false
+  const routines = await AgentRoutines.create({ load: async () => undefined, save: async () => { if (hold) { entered.release(); await resume.wait } } }, {
+    runtime: { snapshot: async id => profiles.get(id).archived ? null : ({ revision: id, input: {} }), acquire: async () => () => {}, lookup: async () => null, start: async () => ({ status: 'succeeded' }) },
+  })
+  try {
+    const definition = { name: 'Original', prompt: 'Report', schedule: { kind: 'daily', timeZone: 'UTC', time: '09:00' } }
+    const routine = await routines.create({ ...definition, profileId: mine.id })
+    hold = true
+    const pending = routines.update(routine.id, { name: 'Owner edit' })
+    await entered.wait
+    const dispatch = agentAutomation(profiles, async () => routines, () => {})
+    const operation = dispatch({ taskId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', profileId: mine.id, turn: 1 }, tool,
+      tool === 'routine_create' ? definition : { id: routine.id, ...(tool === 'routine_update' ? { patch: { name: 'Forbidden' } } : tool === 'routine_pause' ? { paused: true } : {}) })
+    const rejection = expect(operation).rejects.toThrow('archived')
+    await profiles.update(mine.id, { archived: true })
+    resume.release(); await pending; await rejection
+    expect(routines.list()).toHaveLength(1)
+    expect(routines.get(routine.id)).toMatchObject({ name: 'Owner edit', paused: false })
+    expect(routines.history()).toEqual([])
+  } finally { resume.release(); await routines.close() }
+})

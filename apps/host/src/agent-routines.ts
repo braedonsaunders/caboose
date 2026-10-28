@@ -165,12 +165,17 @@ export class AgentRoutines {
       if (expectedProfileId !== undefined && input.profileId !== expectedProfileId) throw new AgentInputError('Routine does not belong to this profile')
       const next = structuredClone(this.state), r = next.routines.find(r => r.id === id)!
       const snapshot = await this.options.runtime.snapshot(input.profileId, input.prompt)
+      if (expectedProfileId !== undefined && !snapshot) throw new AgentInputError('Profile missing or archived')
       Object.assign(r, input, { profileRevision: snapshot?.revision ?? null, revision: r.revision + 1, updatedAt: now, nextAt: nextOccurrence(input.schedule, now) })
       await this.commit(next); return structuredClone(r)
     })
   }
   delete(id: string, expectedProfileId?: string): Promise<void> {
-    return this.serial(async () => { this.get(id, expectedProfileId); const next = structuredClone(this.state); next.routines = next.routines.filter(r => r.id !== id); await this.commit(next) })
+    return this.serial(async () => {
+      const routine = this.get(id, expectedProfileId)
+      if (expectedProfileId !== undefined && !await this.options.runtime.snapshot(routine.profileId, routine.prompt)) throw new AgentInputError('Profile missing or archived')
+      const next = structuredClone(this.state); next.routines = next.routines.filter(r => r.id !== id); await this.commit(next)
+    })
   }
   /** Await after every profile mutation, including archive/restore, before acknowledging it. */
   profileChanged(profileId: string): Promise<void> {
