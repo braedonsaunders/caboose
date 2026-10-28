@@ -189,21 +189,43 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | WebSocket | `0.0.0.0:14600` | `0.0.0.0:14601` |
 | Wayland socket | `wayland-caboose-0` | `wayland-caboose-agent` |
 | Xwayland | `:110` | `:101` |
-| Applications | Wayland first, X11 through Xwayland as a fallback | Xwayland only (`--x11-only`), so the agents' X11 tools can drive them |
+| Applications | Wayland first, X11 through Xwayland as a fallback | The same |
 | Sound | Its own PulseAudio, sent as Opus | None (`--no-audio`) |
 | Session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus` |
 | Notification endpoint | `caboose-notification-daemon.service` | `caboose-agent-notification-daemon.service` |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Started | At every wake | On demand: by an agent task, or by a client opening `/v1/display?seat=agent` |
 
-Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY` (owner's
-display only), `DISPLAY`, `XAUTHORITY` and toolkit backends (`GDK_BACKEND`,
-`QT_QPA_PLATFORM`, `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`,
-`ELECTRON_OZONE_PLATFORM_HINT`), plus `LIBVA_DRIVER_NAME=caboose` when the passthrough
-driver is installed. Each keeps its X authority, Xwayland shim and PulseAudio socket under
-`$XDG_RUNTIME_DIR/caboose-display/<wayland socket name>/`. The units set
-`ACCESSIBILITY_ENABLED=1`, `GNOME_ACCESSIBILITY=1` and `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`,
-and start the display's AT-SPI bus (`a11y.py bus`) before any application.
+Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
+`DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
+`MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`),
+`CABOOSE_DISPLAY_CONTROL` (its control socket, below), plus `LIBVA_DRIVER_NAME=caboose` when
+the passthrough driver is installed. Each keeps its X authority, Xwayland shim, PulseAudio
+socket and control socket under `$XDG_RUNTIME_DIR/caboose-display/<wayland socket name>/`.
+The units set `ACCESSIBILITY_ENABLED=1`, `GNOME_ACCESSIBILITY=1` and
+`QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`, and start the seat's AT-SPI bus (`a11y.py bus`) before
+any application: the accessibility bus of the seat's session bus, with its socket named
+after the seat's X display and published as `AT_SPI_BUS` on its Xwayland, so Wayland and
+X11 applications on a seat share one bus and the two seats never share one.
+
+**Control socket.** Each instance serves `control.sock` (mode 0600, only to processes of
+its own user) for the computer's own tools: the screen routes and the agents' desktop tools
+see and drive a seat through it, Wayland and X11 windows alike. One request per line, one
+JSON answer per line; positions are in the compositor's logical space, which X11 clients
+also see as their root window's.
+
+| Request | Answer |
+| --- | --- |
+| `windows` | `{ windows: [{ id, parent, kind, title, app_id, pid, x11, rect: [x, y, w, h], surface: [x, y, w, h], display, scale, focused }], focused, bounds }`, bottom to top. `x11` is the X window of an Xwayland window, else null; `surface` is the root surface, client-side shadows included |
+| `focus ID` | Gives the window the keyboard |
+| `click X Y [BUTTON [COUNT]]`, `press X Y [BUTTON]`, `release X Y [BUTTON]`, `move X Y` | The seat's pointer, delivered to the topmost window at that position |
+| `scroll X Y DX DY` | Wheel clicks at that position |
+| `key COMBO…` | Key combinations to the keyboard's window (`ctrl+s`, `alt+F4`, `Return`) |
+| `type TEXT` | Text to the keyboard's window, through text-input-v3 where the application has it, else as key presses; `\n`, `\t` and `\\` are escapes |
+| `settle` | Releases pending frame callbacks, so applications on a seat nobody watches draw now |
+| `screenshot [ID]` | `{ png: N, rect }` followed by N bytes: one window, or every window composed over the displays |
+
+`guest/desktop-mcp/seat.py` is its client, as a library and a command.
 
 Each instance serves one client at a time; a new authenticated client replaces the
 previous one. Its readiness probe is:
@@ -560,15 +582,15 @@ without pixels:
 | `GET` | `/v1/screen/elements` | `{ window: { title, app }, elements: [{ id, role, name, states, bounds: { x, y, width, height } }], note? }`: the focused window's visible controls, at most 200; `note` says why the list is empty |
 | `POST` | `/v1/screen/act` | `{ element, action: "press" \| "focus" \| "set-text", text? }` → `{ ok: true }`; 404 when the element is gone. `text` is at most 10000 characters |
 | `POST` | `/v1/screen/type` | `{ text }` (1–10000 characters) → `{ ok: true }`: type into the focused window |
-| `POST` | `/v1/screen/keys` | `{ keys }` → `{ ok: true }`: up to 10 space-separated combinations such as `ctrl+s` or `ctrl+shift+t Return`; common names (`enter`, `esc`, `cmd`, `pageup`, …) map to X keysyms |
+| `POST` | `/v1/screen/keys` | `{ keys }` → `{ ok: true }`: up to 10 space-separated combinations such as `ctrl+s` or `ctrl+shift+t Return`; common names (`enter`, `esc`, `cmd`, `pageup`, …) map to keysym names |
 
-Element ids are opaque and valid until the window changes. The routes run
-`/opt/caboose/a11y.py` and `xdotool` as `caboose` with the owner display's launch
-environment on its Xwayland display. The helper reads only an application whose windows
-are all on the requested display, so the agent seat never reads or presses the owner's
-windows, and the reverse. The routes reach X11 windows on Xwayland; native Wayland windows
-on the owner's display are not exposed to them, and `elements` answers with the note
-"No window is open on this display." while one is focused.
+Element ids are opaque and valid until the window changes. Bounds are in the seat's logical
+coordinates. The routes run `/opt/caboose/a11y.py` and `/opt/caboose/seat.py` as `caboose`
+with the owner display's launch environment. They take the windows, the focused one and
+each window's process from the seat's [control socket](#displays), read Wayland and X11
+applications alike through AT-SPI, and type and press keys with the seat's own keyboard.
+The helper reads only an application whose windows are all on the requested seat, so the
+agent seat never reads or presses the owner's windows, and the reverse.
 
 ### Phone handoff
 
@@ -972,9 +994,10 @@ owner and an agent never type into the same application at once.
 ### Desktop tools
 
 `caboose-desktop-mcp` is a stdio MCP server. The runner passes it to every agent as
-`caboose-desktop` in ACP `session/new`, with the seat's X11 environment:
-`CABOOSE_AGENT_DISPLAY` (the seat's `DISPLAY`), `XAUTHORITY`, `XDG_RUNTIME_DIR`,
-`DBUS_SESSION_BUS_ADDRESS` and the toolkit backends.
+`caboose-desktop` in ACP `session/new`, with the seat's launch environment:
+`CABOOSE_AGENT_DISPLAY` (the seat's `DISPLAY`), `WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`,
+`XAUTHORITY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, the toolkit backends and the
+video passthrough variables.
 
 | Tool | Does |
 | --- | --- |
@@ -983,16 +1006,16 @@ owner and an agent never type into the same application at once.
 | `click_element`, `set_text` | Press an element, or replace an editable element's text, by id |
 | `read_text` | The focused window's readable text, page text included |
 | `screenshot` | PNG of the seat or one window |
-| `list_windows`, `focus` | Windows with geometry; raise one |
+| `list_windows`, `focus` | Windows with kind, title, application, geometry and focus; give one the keyboard |
 | `click`, `drag`, `type`, `key`, `scroll` | Pointer and keyboard by coordinates |
 | `launch` | Start an application on the seat with accessibility enabled |
 
 The accessibility tools come first in the list because they need no screenshot and no
 model round trip. They use `a11y.py`, which reads only applications whose windows are all on
-the seat, so an agent cannot list, read or press the owner's windows. Xwayland is rootless,
-so `screenshot` without a window captures each viewable window and composites them in screen
-coordinates. The tools reach X11 windows; the seat runs every application on Xwayland so
-that all of them are reachable.
+the seat, so an agent cannot list, read or press the owner's windows. The coordinate tools
+and `screenshot` use the seat's control socket through `seat.py`, so they reach Wayland and
+X11 applications alike and work while nobody watches the seat; coordinates are the seat's
+logical pixels, the same as the screenshot's and the elements' bounds.
 
 At task creation the host also snapshots installed catalog entries that declare an `mcp`
 command and offers each as a `caboose-<catalog id>` stdio server in ACP new, load and
@@ -1207,6 +1230,9 @@ app group and a Keychain access group.
 - **Display token.** A random per-wake token in `/run/caboose/display-token` (mode 0600,
   owned by `caboose`) authorizes the guest's display and file services. It reaches a
   client only inside an authenticated `/v1/session` response.
+- **Control sockets.** Each seat's control socket is a Unix socket in a directory only
+  `caboose` can open, and the compositor serves only peers of its own user. It is never
+  exposed outside the computer.
 - **Fencing.** The guest cannot open connections to the host, and by default cannot reach
   private, link-local, CGNAT or reserved ranges. Display and file ports are reachable only
   from the host: over the TAP device for a microVM, on `127.0.0.1` for a container.

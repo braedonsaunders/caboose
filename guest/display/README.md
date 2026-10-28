@@ -142,9 +142,9 @@ Unit tests cover the protocol (canonical encoding, the stream decoder on split a
 malformed input, and the committed vectors against the encoder), the pixel conversion
 (reference colours, damage-only and threaded conversion, changed-block detection), the
 encoders (parameter sets on keyframes), keysym mapping on the real `us` keymap, grapheme
-→ byte conversion for deletions, flow control, the launch environment (including
-`--x11-only`), configuration and per-instance state directories, and the Xauthority
-format.
+→ byte conversion for deletions, flow control, the launch environment, configuration and
+per-instance state directories, the Xauthority format, and the control socket's key
+combinations and text escapes.
 
 `scripts/check.py` starts the compositor with real applications and drives it with the
 probe. Every check asserts on what arrived, not on a picture:
@@ -219,9 +219,9 @@ caboose-display --help
 
 It needs `XDG_RUNTIME_DIR`. It creates the Wayland socket (`--socket`), starts Xwayland
 (`--x-display`), and once both are ready writes the application environment to
-`--env-file` in sh syntax: `WAYLAND_DISPLAY` (unless `--x11-only`), `DISPLAY`,
-`XAUTHORITY`, `XDG_RUNTIME_DIR`, toolkit backends (Wayland first, or X11 only with
-`--x11-only`), `PULSE_SERVER` when it plays sound, `LIBVA_DRIVER_NAME=caboose`,
+`--env-file` in sh syntax: `WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
+toolkit backends (Wayland first), `CABOOSE_DISPLAY_CONTROL` (its control socket),
+`PULSE_SERVER` when it plays sound, `LIBVA_DRIVER_NAME=caboose`,
 `GST_VA_ALL_DRIVERS=1` and `CABOOSE_VIDEO_SOCKET` when the passthrough driver is
 installed, and the GPU variables it was started with (`GALLIUM_DRIVER`,
 `MESA_D3D12_DEFAULT_ADAPTER_NAME`, `LIBVA_DRIVER_NAME`). It then runs `COMMAND` with that
@@ -238,7 +238,6 @@ summary.
 | `--socket NAME` | `wayland-caboose-0` | Wayland socket name in `$XDG_RUNTIME_DIR`; also names the instance's state directory |
 | `--x-display N` | `110` | Xwayland display number |
 | `--no-xwayland` | | Do not start Xwayland |
-| `--x11-only` | | Point applications at Xwayland alone: the env file names `DISPLAY` and X11 toolkit backends, not `WAYLAND_DISPLAY` |
 | `--no-audio` | | Do not run PulseAudio or send sound |
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |
@@ -283,6 +282,28 @@ clicks (`--window` picks the window); `--decoders`, `--video-decoders` and `--au
 what the probe announces; `--json` prints a machine-readable report; `--check` exits 0 as
 soon as the server answers a hello. `caboose-display-probe --help` lists every option.
 
+## Control socket
+
+Each instance listens on `control.sock` in its private directory
+(`$XDG_RUNTIME_DIR/caboose-display/<Wayland socket name>/`, mode 0600) and serves only
+processes of its own user. It is how the computer's own tools see and drive a seat, Wayland
+and X11 windows alike: `windows` (each window's id, kind, title, app id, process, X window
+for Xwayland, geometry, root surface and focus, bottom to top), `focus`, `click`, `press`,
+`release`, `move`, `scroll`, `key`, `type`, `settle` and `screenshot`. Requests are single
+lines and answers single JSON lines (a screenshot's is followed by the PNG); the full list is
+in [docs/architecture.md § Displays](../../docs/architecture.md#displays) and the code in
+`compositor/src/control.rs`. Its path is in the launch environment as
+`CABOOSE_DISPLAY_CONTROL`, and [`guest/desktop-mcp/seat.py`](../desktop-mcp/seat.py) is its
+client:
+
+```sh
+set -a; . /run/caboose/display.env; set +a
+python3 /opt/caboose/seat.py windows
+python3 /opt/caboose/seat.py click 640 360
+python3 /opt/caboose/seat.py key ctrl+s
+python3 /opt/caboose/seat.py screenshot --out /tmp/seat.png
+```
+
 ## In the guest
 
 Both guest images build the binaries in a first Docker stage and install them with the
@@ -291,12 +312,12 @@ passthrough driver. Neither enables a unit at boot; the host starts the displays
 - **microVM** (`guest/image`): `caboose-display.service` is the owner's display, started
   by the host at each wake; `caboose-display-agent.service` is the agent seat, started
   when an agent task or the app's Agent space needs it. The agent seat runs
-  `--listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --x11-only
-  --no-audio --env-file /run/caboose/agent-display.env` on its own D-Bus session bus
+  `--listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio
+  --env-file /run/caboose/agent-display.env` on its own D-Bus session bus
   (`/run/user/1000/agent-bus`, from `caboose-agent-bus.service`) with its own
   notification endpoint, so the agents' notifications never reach the owner. Both units
-  turn applications' accessibility on and start the display's accessibility bus once it
-  is ready, so the desktop tools can read each display separately.
+  turn applications' accessibility on and start the seat's accessibility bus once it is
+  ready, so the screen and desktop tools can read each seat separately.
 - **Container** (`guest/container`): `caboose-session start` starts the owner's display
   and `caboose-session start-agent` the agent seat, with the same arguments, as
   `caboose`; `caboose-session ready` waits for the owner's display.

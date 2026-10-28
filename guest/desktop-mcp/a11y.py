@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Read and act on one X display's focused window through its accessibility tree.
+"""Read and act on a seat's focused window through its accessibility tree.
 
-Caboose's computer has two displays, each a Caboose Display instance with its own
-Xwayland: the owner's (:110) and the agent seat (:101). This helper gives an agent, or the owner's phone, the focused window's controls as JSON, with
-no screenshot, and acts on them by id. It always prints one JSON object.
+Caboose's computer has two seats, each a Caboose Display instance with its own Xwayland:
+the owner's display (:110) and the agent seat (:101). This helper gives an agent, or the
+owner's phone, the focused window's controls as JSON, with no screenshot, and acts on them
+by id. Wayland and X11 applications are read alike. It always prints one JSON object.
 
     a11y.py elements --display :101
         {"window": {"title", "app"}, "elements": [{"id", "role", "name", "states",
          "bounds": {"x", "y", "width", "height"}}]}
         The focused window's visible controls and headings (and any menu it has open),
-        at most 200, in tree (reading) order. Bounds are screen pixels on that display.
+        at most 200, in tree (reading) order. Bounds are in the seat's logical pixels.
     a11y.py find --display :101 --query save [--role button]
         Elements of the focused window whose name contains the query (case-insensitive),
         optionally of one role ("button" matches "push button" and "toggle button").
@@ -22,24 +23,23 @@ no screenshot, and acts on them by id. It always prints one JSON object.
         {"window": {...}, "text": "..."}: the focused window's readable text, page text
         included, at most 20000 characters ("truncated": true when cut).
     a11y.py bus --display :101 [--wait SECONDS]
-        {"address", "source"}: the accessibility bus used for that display, starting it
-        if need be. Run when a display comes up so every app on it shares that bus.
+        {"address", "source"}: the accessibility bus used for that seat, starting it if
+        need be. Run when a seat comes up so every app on it shares that bus.
 
 When the list is empty for a reason (no window, an application without an accessibility
 tree), "note" says why. Other failures exit 1 with {"error": ...} ({"ok": false, ...} for
 act); bad arguments exit 2.
 
-It runs as the desktop user with the display's launch environment (DISPLAY, XAUTHORITY), so
-it finds the display's accessibility bus itself: the AT_SPI_BUS property at-spi-bus-launcher
-puts on the display's root window, else the a11y bus of a session bus started for the
-display (one that records DBUS_SESSION_BUS_ADDRESS on the root window, or D-Bus's X11
-autolaunch bus), of $DBUS_SESSION_BUS_ADDRESS, or of /run/user/<uid>/bus. Displays may share a bus and a registry, so it keeps strictly to the
-applications on the requested display: an application qualifies only if its process owns
-a window on that display (the window's _NET_WM_PID) and none on any other display.
+It runs as the desktop user with the seat's launch environment. On a Caboose Display seat
+(CABOOSE_DISPLAY_CONTROL set) the windows, the focused one, each window's process and
+geometry, and the pointer and keyboard come from the seat's control socket (seat.py); on a
+plain X display, from X. Seats may share an accessibility registry, so it keeps strictly to
+the applications on the requested seat: an application qualifies only if its process owns
+a window on that seat and none on any other.
 
-Element ids are "<window>-<pid>-<child path>-<fingerprint>": the X window they were listed
+Element ids are "<window>-<pid>-<child path>-<fingerprint>": the window they were listed
 from, the application's pid, the child-index path from the application, and a hash of the
-element's role and name. An id resolves only while that window is still on the display and
+element's role and name. An id resolves only while that window is still on the seat and
 the element at that path still has that role and name.
 """
 
