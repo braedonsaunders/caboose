@@ -141,8 +141,14 @@ private struct DesktopStage: View {
                     }
                 }
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
             .onAppear { model.desktopStageResized(to: proxy.size) }
             .onChange(of: proxy.size) { _, size in model.desktopStageResized(to: size) }
+            .onChange(of: barEdge) { _, _ in model.desktopStageResized(to: proxy.size) }
+            .onChange(of: model.selectedTab) { _, tab in
+                if tab == .desktop { model.desktopStageResized(to: proxy.size) }
+            }
         }
         .ignoresSafeArea(edges: ignoredEdges)
     }
@@ -150,8 +156,8 @@ private struct DesktopStage: View {
     private var ignoredEdges: Edge.Set {
         if fullScreen { return .all }
         switch barEdge {
-        case .trailing: return [.top, .bottom, .leading]
-        case .leading: return [.top, .bottom, .trailing]
+        case .trailing: return [.top, .bottom]
+        case .leading: return [.top, .bottom]
         case nil: return []
         }
     }
@@ -183,8 +189,8 @@ struct DesktopTouchArea: UIViewRepresentable {
     func updateUIView(_ view: DesktopTouchSurface, context: Context) {
         view.desktop = desktop
         view.model = model
-        if keyboardVisible, !view.isFirstResponder { DispatchQueue.main.async { view.becomeFirstResponder() } }
-        if !keyboardVisible, view.isFirstResponder { DispatchQueue.main.async { view.resignFirstResponder() } }
+        if keyboardVisible && !model.windowCardOwnsGeometry, !view.isFirstResponder { DispatchQueue.main.async { view.becomeFirstResponder() } }
+        if (!keyboardVisible || model.windowCardOwnsGeometry), view.isFirstResponder { DispatchQueue.main.async { view.resignFirstResponder() } }
     }
 }
 

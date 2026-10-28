@@ -93,9 +93,11 @@ awake. On the Desktop tab, with three apps open:
    hardware keyboard (hold ⌘ to see them listed). Plain ⌘C still copies in the app.
 4. Open a menu and a dialog in a tile: both appear over that tile. Park and wake: the same
    columns come back.
-5. Tap a grabber twice: the window zooms to the whole screen with no bars. Pull the tab at the
-   top edge down: it shrinks back into its tile. Two fingers tapped on a window right-click,
-   with a ring where they landed.
+5. Tap a grabber twice, use its Full Screen button or menu, or press ⌘⌥F: the same app
+   card as Apps opens. Close the card: Desktop and its tile layout return. Rotate/fold while
+   the card is up, hide/show its controls, then dismiss: both card and desktop fit their
+   available viewport. Browser content keeps its own double taps. Two fingers tapped on a
+   window right-click, with a ring where they landed.
 
 ## How it renders
 

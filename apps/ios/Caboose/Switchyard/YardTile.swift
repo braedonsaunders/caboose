@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 /// One window's tile: the live Linux window, cut to a small continuous corner with a fine
-/// bevel, the focus ring when it has the keyboard, and the grabber that moves it.
+/// bevel and the grabber that moves it. Focus brightens the grabber without outlining the app.
 struct YardTile: View {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
@@ -12,8 +12,6 @@ struct YardTile: View {
     let focused: Bool
     let keyboard: Bool
     let onAsk: (RemoteWindow) -> Void
-
-    @State private var ringIn = false
 
     var body: some View {
         let radius = yard.metrics.cornerRadius
@@ -36,15 +34,7 @@ struct YardTile: View {
                                               startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
                 .allowsHitTesting(false)
         }
-        .overlay {
-            shape.strokeBorder(YardStyle.ring, lineWidth: ringIn ? 1.75 : 5)
-                .opacity(focused && ringIn ? 1 : 0)
-                .allowsHitTesting(false)
-        }
         .shadow(color: .black.opacity(0.32), radius: 10, y: 4)
-        .onChange(of: focused, initial: true) { _, now in
-            if now { ringIn = false; withAnimation(.smooth(duration: 0.35)) { ringIn = true } }
-        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(window.title.isEmpty ? "Window" : window.title)
     }
@@ -66,38 +56,51 @@ struct YardGrabber: View {
     let yard: YardModel
     let focused: Bool
     let onAsk: (RemoteWindow) -> Void
-    @State private var lastTap = Date.distantPast
 
     var body: some View {
-        Menu {
-            menuContent
-        } label: {
+        HStack(spacing: 0) {
             Capsule()
                 .fill(.white.opacity(focused ? 0.9 : 0.55))
                 .frame(width: 30, height: 4)
                 .shadow(color: .black.opacity(0.45), radius: 2, y: 0.5)
-                .frame(width: 84, height: 20)
+                .frame(width: 84, height: 28)
                 .contentShape(Rectangle())
-        } primaryAction: {
-            // Two taps, as on a Mac's title bar, zoom; one gives the tile the keyboard.
-            if Date().timeIntervalSince(lastTap) < 0.35 {
-                lastTap = .distantPast
-                yard.zoom(window.id)
-            } else {
-                lastTap = Date()
-                yard.focus(window.id)
+                .gesture(
+                    TapGesture(count: 2).onEnded { openCard() }
+                        .exclusively(before: TapGesture().onEnded { yard.focus(window.id) })
+                )
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 8, coordinateSpace: .named(SwitchyardView.space))
+                        .onChanged { value in yard.carry(window.id, by: value.translation) }
+                        .onEnded { _ in yard.drop() }
+                )
+                .contextMenu { menuContent }
+                .accessibilityLabel("Move \(window.title.isEmpty ? "Window" : window.title)")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { yard.focus(window.id) }
+                .accessibilityAction(named: "Full Screen") { openCard() }
+
+            Button(action: openCard) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .frame(width: 32, height: 28)
+                    .contentShape(Rectangle())
             }
+            .accessibilityLabel("Full Screen")
+            .accessibilityHint("Opens this window as an app card")
+
+            Menu { menuContent } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 32, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("\(window.title.isEmpty ? "Window" : window.title) options")
         }
-        .menuStyle(.button)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.white.opacity(focused ? 0.9 : 0.65))
         .buttonStyle(.plain)
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 6, coordinateSpace: .named(SwitchyardView.space))
-                .onChanged { value in yard.carry(window.id, by: value.translation) }
-                .onEnded { _ in yard.drop() }
-        )
-        .accessibilityLabel("\(window.title.isEmpty ? "Window" : window.title) options")
-        .accessibilityAction(named: "Full Screen") { yard.zoom(window.id) }
     }
+
+    private func openCard() { model.show(windowID: window.id) }
 
     @ViewBuilder private var menuContent: some View {
         Section(window.title.isEmpty ? "Window" : window.title) {
@@ -115,10 +118,7 @@ struct YardGrabber: View {
                     }
                 }
             }
-            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { yard.zoom(window.id) }
-            Button("Open as Card", systemImage: "rectangle.portrait.on.rectangle.portrait") {
-                model.show(windowID: window.id)
-            }
+            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right", action: openCard)
             if model.agents.available {
                 Button("Ask Agent About This Window", systemImage: "sparkle") { onAsk(window) }
             }
@@ -149,7 +149,7 @@ struct YardSurface: UIViewRepresentable {
     let onTouch: () -> Void
 
     func makeUIView(context: Context) -> YardSurfaceView {
-        let view = YardSurfaceView(content: RemoteWindowView(session: model.session, window: window))
+        let view = YardSurfaceView(content: RemoteWindowView(session: model.yardActive ? model.session : nil, window: window))
         view.content.pixelsPerPoint = pixelsPerPoint
         let model = model
         view.content.onKeyboardWanted = { wanted in
@@ -159,15 +159,15 @@ struct YardSurface: UIViewRepresentable {
     }
 
     func updateUIView(_ view: YardSurfaceView, context: Context) {
-        view.content.session = model.session
+        view.content.session = model.yardActive ? model.session : nil
         view.content.pixelsPerPoint = pixelsPerPoint
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.onTouch = onTouch
         view.stretch = stretch
         view.natural = CGSize(width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
-        if keyboard, !view.content.isFirstResponder {
+        if keyboard && model.yardActive, !view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.becomeFirstResponder() }
-        } else if !keyboard, view.content.isFirstResponder {
+        } else if (!keyboard || !model.yardActive), view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.resignFirstResponder() }
         }
     }

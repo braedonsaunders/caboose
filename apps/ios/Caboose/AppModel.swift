@@ -43,7 +43,15 @@ final class AppModel {
     private(set) var apps: [HostClient.App] = []
     private(set) var appIcons: [String: UIImage] = [:]
     /// The window shown full screen, if any.
-    var presentedWindowID: Int?
+    var presentedWindowID: Int? {
+        didSet {
+            guard presentedWindowID != nil, deviceViewport.owner != .card else { return }
+            deviceViewport.presentCard()
+            // The underlying stage remains measurable, but cannot configure this window.
+            yard.session = nil
+            leaveDeviceDesktop()
+        }
+    }
     var keyboardVisible = false
     private(set) var launching: HostClient.App?
     /// An app that would not start. The computer is fine, so Home stays and says which app.
@@ -117,8 +125,17 @@ final class AppModel {
 
     /// Menus, popups and dialogs belonging to a window (or floating while it is shown).
     func auxiliaryWindows(for parent: RemoteWindow) -> [RemoteWindow] {
-        (session?.windows.values.filter { $0.isAuxiliary && ($0.transientFor == parent.id || $0.transientFor == nil) } ?? [])
-            .sorted { $0.id < $1.id }
+        guard let windows = session?.windows else { return [] }
+        func belongs(_ window: RemoteWindow) -> Bool {
+            var id = window.transientFor
+            var seen: Set<Int> = [window.id]
+            while let ancestor = id, seen.insert(ancestor).inserted {
+                if ancestor == parent.id { return true }
+                id = windows[ancestor]?.transientFor
+            }
+            return window.transientFor == nil
+        }
+        return windows.values.filter { $0.isAuxiliary && belongs($0) }.sorted { $0.id < $1.id }
     }
 
     func window(_ id: Int?) -> RemoteWindow? { id.flatMap { session?.windows[$0] } }
@@ -172,7 +189,7 @@ final class AppModel {
         recentFiles = []
         selectedTab = .home
         deviceDesktopActive = false
-        desktopStageSize = .zero
+        deviceViewport = DeviceViewport()
         if let credentials { FileDomains.remove(credentials) }
         Credentials.clear()
         credentials = nil
@@ -284,6 +301,11 @@ final class AppModel {
     /// The screen the computer lays windows out for: the big screen at its own pixels when
     /// one is connected, else the phone.
     private func displayCapabilities() -> ClientCapabilities {
+        if deviceViewport.owner == .card, deviceViewport.cardSize != .zero {
+            let frame = DeviceViewport.guestFrame(size: deviceViewport.cardSize, pixelsPerPoint: pixelsPerPoint)
+            return ClientCapabilities(desktopWidth: Int(frame.width), desktopHeight: Int(frame.height),
+                                      dpi: Int(96 * pixelsPerPoint), refreshRate: UIScreen.main.maximumFramesPerSecond)
+        }
         if desktopActive {
             // The big screen at its own pixels: a real desktop, not a scaled phone.
             let scale = desktop.pixelsPerPoint
@@ -339,9 +361,9 @@ final class AppModel {
         let current = Set(session.windows.keys)
         let added = current.subtracting(knownWindowIDs)
         knownWindowIDs = current
-        if yardActive {
+        if yardActive, deviceViewport.owner != .card {
             yard.sync(session.windows) { $0.appClass?.name }
-        } else if desktopActive {
+        } else if desktopActive, deviceViewport.owner != .card {
             desktop.sync(with: Array(session.windows.values))
             for (index, window) in appWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
                 placedWindowIDs.insert(window.id)
@@ -421,23 +443,24 @@ final class AppModel {
         (deviceDesktopActive ? DesktopModel.deviceUI(forWidth: width) : DesktopModel.automaticUI(forWidth: width)) * desktopZoom
     }
 
-    /// The space the Desktop tab gives the desktop, once it has been laid out.
-    private var desktopStageSize: CGSize = .zero
+    /// The space each presentation receives after layout, with one geometry owner at a time.
+    private var deviceViewport = DeviceViewport()
+    var windowCardOwnsGeometry: Bool { deviceViewport.owner == .card }
 
     /// The Desktop tab reports the space it has for the desktop.
     func desktopStageResized(to size: CGSize) {
         guard size.width > 0, size.height > 0 else { return }
-        desktopStageSize = size
+        deviceViewport.updateDesktop(size)
         updateDeviceDesktop()
     }
 
-    /// The phone's own desktop comes up when the Desktop tab is selected and stays up as the
-    /// owner moves between tabs, so coming back shows it exactly as it was: no relayout, no
-    /// reconfigure. It goes down only for a full-screen card (`leaveDeviceDesktop`) or a TV.
+    /// The desktop keeps its layout across tabs. While a card is presented, only the card
+    /// owns guest geometry; stage measurements are saved for its eventual dismissal.
     func updateDeviceDesktop() {
-        guard selectedTab == .desktop, !externalDisplayActive, desktopStageSize != .zero else { return }
-        if !deviceDesktopActive { openDeviceDesktop(size: desktopStageSize) }
-        else { deviceDesktopResized(to: desktopStageSize) }
+        guard phase == .ready, selectedTab == .desktop, !externalDisplayActive, deviceViewport.owner == .desktop,
+              deviceViewport.desktopSize != .zero else { return }
+        if !deviceDesktopActive { openDeviceDesktop(size: deviceViewport.desktopSize) }
+        else { deviceDesktopResized(to: deviceViewport.desktopSize) }
     }
 
     /// Takes the phone's desktop down so a window can be a full-screen card, keeping each
@@ -449,7 +472,7 @@ final class AppModel {
     }
 
     func openDeviceDesktop(size: CGSize) {
-        guard !externalDisplayActive, size.width > 0, size.height > 0 else { return }
+        guard deviceViewport.owner == .desktop, !externalDisplayActive, size.width > 0, size.height > 0 else { return }
         deviceDesktopActive = true
         externalSize = size
         // The phone's own desktop renders at 2x like the rest of the app, not the screen's 3x:
@@ -470,7 +493,7 @@ final class AppModel {
 
     /// Rotation, Stage Manager or Split View changed the desktop's size.
     func deviceDesktopResized(to size: CGSize) {
-        guard deviceDesktopActive, size.width > 0, size.height > 0, size != externalSize else { return }
+        guard deviceViewport.owner == .desktop, deviceDesktopActive, size.width > 0, size.height > 0, size != externalSize else { return }
         externalSize = size
         desktop.size = size
         desktop.ui = desktopUI(forWidth: size.width)
@@ -496,6 +519,7 @@ final class AppModel {
         desktop.size = size
         desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
         presentedWindowID = nil
+        deviceViewport.dismissCard()
         reconnectForDisplayChange()
     }
 
@@ -846,9 +870,23 @@ final class AppModel {
 
     /// Shows a window as a full-screen card, leaving the phone's desktop first if it is up.
     func show(windowID: Int) {
-        if selectedTab == .desktop { selectedTab = .home }
-        leaveDeviceDesktop()
         presentedWindowID = windowID
+    }
+
+    /// Called after the cover finishes dismissing, so its disappearing view cannot fight
+    /// the restored tiles for geometry. The layout itself stays in YardMemory throughout.
+    func windowCardDismissed() {
+        guard presentedWindowID == nil else { return }
+        deviceViewport.dismissCard()
+        yard.invalidate()
+        if externalDisplayActive { reconnectForDisplayChange() }
+        else { updateDeviceDesktop() }
+    }
+
+    /// The card's actual content viewport changes with folding, rotation and its controls.
+    func windowCardResized(to size: CGSize) {
+        guard deviceViewport.updateCard(size), !externalDisplayActive else { return }
+        session?.reconfigure(displayCapabilities())
     }
 
     /// Follows a `caboose://` shell link.

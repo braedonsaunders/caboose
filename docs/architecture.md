@@ -1374,12 +1374,17 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   resize stretches the entire last picture without cropping until the new one arrives, and drags send geometry at
   most about eight times a second. The gaps resize (snapping to the presets, with haptic
   detents). The grabber at a tile's top carries it to a new column, into a stack or onto
-  another tile; a tap gives the tile the keyboard, two taps zoom it to full screen, and a
-  long press opens its menu (full screen, width, open as a card, ask an agent, redraw,
-  close). Full screen is edge to edge: the bars, the dock, the status bar and the home
-  indicator step aside, the window is configured to the whole display, and a pull down
-  from the small tab at its top edge shrinks it back into its tile under the finger. An
-  app asking for full screen gets the same, and is told when it is pulled back. Menus and
+  another tile; a tap gives the tile the keyboard, and a double tap opens the same
+  full-screen app card as Apps. The visible Full Screen button, the grabber's menu and
+  accessibility action, and ⌘⌥F also open that card. The card keeps Desktop selected
+  underneath; dismissing it restores the tile layout. Only the presented card sends window
+  geometry while it is up. Its measured content area, including changes to its controls,
+  rotation and folding, replaces the guest display size; the complete picture fits while
+  the app redraws. A long press or the options button opens the tile's menu (full screen,
+  width, ask an agent, redraw, close). An app asking for full screen covers the desktop
+  edge to edge: the bars, dock, status bar and home indicator step aside, and a pull down
+  from the small tab at its top edge shrinks it back into its tile. The app is told when
+  it is pulled back. Menus and
   dialogs appear above the covering window and fit within the display. Auxiliary windows
   follow their parent's displayed scale and position, including nested menus; trees whose
   owner is offscreen, or is not the covering window, are hidden. A window
@@ -1424,7 +1429,11 @@ Pinned and recent apps are kept on the phone per computer.
   (`toolbarVerticalCompressionBehavior(.prefersTabBar)`), gives Full Screen the lowest
   visibility priority and the Computer pair the highest, and reads
   `toolbarVerticalEdge` to extend the desktop under the top and bottom insets beside the
-  bar. Full Screen hides the bars and gives the desktop the whole display; a handle at the
+  bar. Both horizontal safe edges stay protected as the bar moves. The desktop is bounded
+  and clipped to its measured content viewport; folding, rotation and tab changes report
+  that viewport again. Home's Open, Pinned and Recent rows receive the measured column
+  width and clip within it; recent file names and paths truncate within the same column.
+  Full Screen hides the bars and gives the desktop the whole display; a handle at the
   top brings them back. No screen disables the vertical bar.
 - **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. Home's
   AirPlay control remembers the AirPlay output the computer's sound last played on (from the
