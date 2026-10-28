@@ -181,6 +181,10 @@ caboose-session start-files  # the file service on 14700
 The microVM is the default because it isolates the computer as a VM and its parked state
 survives host restarts.
 
+### Windows host
+
+Windows setup imports a dedicated `Caboose` WSL 2 distribution containing systemd, Docker Engine and the host bundle. A scheduled task runs the Windows keepalive as the installing user. With WSL NAT it maintains a Windows port proxy to the distribution; with mirrored networking the host listens directly on Windows interfaces. Setup can offer mirrored networking, which changes the user's WSL configuration and restarts all running distributions. The Windows tray reads the setup code from the host state and opens `/setup?code=...` until the host is claimed; it does not put the owner token in a link. See [apps/windows/README.md](../apps/windows/README.md) for installation and checks.
+
 ### Network fencing
 
 Each microVM computer has its own persistent TAP device and /30 in `192.0.2.0/24`: the

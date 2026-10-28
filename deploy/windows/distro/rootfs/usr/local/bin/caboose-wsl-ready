@@ -4,12 +4,13 @@
 #   {"healthy":true,"service":"active","url":"http://127.0.0.1:7310","port":7310,
 #    "tokenPath":"/var/lib/caboose/owner-token","setupCodePath":null,"version":"v0.3.0"}
 #
-# healthy      GET /v1/health answered 200 with the owner token
+# healthy      GET /v1/health answered 200 with the owner token, or, while there is no
+#              owner token file, the unauthenticated GET /v1/setup answered 200
 # service      `systemctl is-active caboose-host`
 # url          the host's address from this machine; Windows reaches the same port on
 #              127.0.0.1 through WSL's localhost forwarding or mirrored networking
-# tokenPath    the owner token the host generated, or null (none yet, or CABOOSE_OWNER_TOKEN set)
-# setupCodePath the first-run setup code, or null when there is none
+# tokenPath    the owner token the host keeps, or null (none yet, or CABOOSE_OWNER_TOKEN set)
+# setupCodePath the one-time code the host keeps while nobody has claimed it, or null
 # version      the installed caboose-host bundle
 #
 # It always exits 0 once it has printed; the JSON says what is wrong.
@@ -44,6 +45,9 @@ if [ -r "$root/owner-token" ]; then
     curl -fsS -o /dev/null -m 5 -H @- "http://127.0.0.1:$port/v1/health" 2>/dev/null; then
     healthy=true
   fi
+elif curl -fsS -o /dev/null -m 5 "http://127.0.0.1:$port/v1/setup" 2>/dev/null; then
+  # No owner token yet: the host is waiting to be claimed, and answers its setup route.
+  healthy=true
 fi
 
 setup_code_path=null

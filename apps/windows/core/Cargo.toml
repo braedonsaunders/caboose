@@ -1,0 +1,13 @@
+[package]
+name = "caboose-win-core"
+description = "The logic behind Caboose on Windows: WSL settings, port forwarding, releases, health and pairing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

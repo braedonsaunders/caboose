@@ -108,6 +108,10 @@ jobs:
           done
       - name: Check the Linux bundle
         run: bash apps/host/scripts/check-bundle.sh dist/release/caboose-host-linux-amd64.tar.zst
+      - name: Build and check the Windows distribution
+        run: |
+          bash deploy/windows/distro/build.sh dist/release/caboose-host-linux-amd64.tar.zst dist/release
+          bash deploy/windows/distro/check.sh --rootfs dist/release/caboose-wsl-amd64.tar.gz
       - name: Attach them to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -119,3 +123,28 @@ jobs:
             gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes "${prerelease[@]}" ||
             gh release view "$TAG" >/dev/null
           gh release upload "$TAG" dist/release/* --clobber
+
+  windows-setup:
+    needs: [bundles]
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test the Windows logic
+        working-directory: apps/windows
+        run: cargo test --workspace --locked
+      - name: Build the installer
+        working-directory: apps/windows
+        shell: pwsh
+        run: |
+          cargo build --release --locked -p caboose-service -p caboose-tray
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CABOOSE_EMBED_DIR = (Resolve-Path target/release).Path
+          cargo build --release --locked -p caboose-setup
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Attach the installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$env:TAG" apps/windows/target/release/CabooseSetup.exe --clobber
