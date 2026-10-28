@@ -185,8 +185,12 @@ final class DesktopTouchSurface: RemoteTextInputView {
 
     private var began: TimeInterval = 0
     private var travel: CGFloat = 0
+    private var touchOrigin = CGPoint.zero
     private var maxFingers = 0
     private var dragging = false
+    private var contextOpened = false
+    private var press = DirectPointerPress()
+    private var holdTimer: Timer?
     private var lastCentroid: CGPoint?
     private var lastTap: (time: TimeInterval, point: CGPoint)?
     private let haptics = UIImpactFeedbackGenerator(style: .light)
@@ -234,32 +238,62 @@ final class DesktopTouchSurface: RemoteTextInputView {
         }
     }
 
+    private func cancelHold() {
+        holdTimer?.invalidate()
+        holdTimer = nil
+        press.cancel()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { cancelHold() }
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         let fingers = live(event)
         if maxFingers == 0 {
             began = event?.timestamp ?? 0
             travel = 0
             dragging = false
+            contextOpened = false
+            cancelHold()
             if let first = touches.first, touches.first?.type != .indirectPointer { desktop?.pointerHovering = false; point(at: first.location(in: self)) }
             else if let first = touches.first { point(at: first.location(in: self)) }
         }
         maxFingers = max(maxFingers, fingers.count)
         lastCentroid = centroid(fingers)
+        if maxFingers == 1, let point = lastCentroid { touchOrigin = point }
+        if maxFingers == 1, let first = touches.first, first.type == .direct {
+            press.begin(at: first.location(in: self), time: ProcessInfo.processInfo.systemUptime)
+            holdTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+                guard let self, let desktop = self.desktop, !self.dragging,
+                      let point = self.press.context(at: ProcessInfo.processInfo.systemUptime) else { return }
+                self.contextOpened = true
+                self.lastTap = nil
+                self.point(at: point)
+                desktop.click(button: 3, session: self.session, open: self.open)
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            }
+        } else { cancelHold() }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         let fingers = live(event)
+        guard !contextOpened else { return }
         guard let desktop, let now = centroid(fingers), let last = lastCentroid else { return }
         let delta = CGPoint(x: now.x - last.x, y: now.y - last.y)
         lastCentroid = now
-        travel += hypot(delta.x, delta.y)
+        travel = max(travel, hypot(now.x - touchOrigin.x, now.y - touchOrigin.y))
+        press.move(to: now)
         if maxFingers >= 2 {
+            cancelHold()
             // Content follows the fingers, like any iOS scroll view.
             desktop.scroll(by: CGPoint(x: -delta.x, y: -delta.y), session: session)
             return
         }
         if !dragging, travel > 8 {
             dragging = true
+            cancelHold()
             desktop.beginDrag(session: session)
         }
         if dragging, let finger = fingers.first { point(at: finger.location(in: self)) }
@@ -269,7 +303,8 @@ final class DesktopTouchSurface: RemoteTextInputView {
         guard live(event).isEmpty, let desktop else { return }
         let now = event?.timestamp ?? 0
         let duration = now - began
-        defer { maxFingers = 0; lastCentroid = nil }
+        defer { maxFingers = 0; lastCentroid = nil; cancelHold() }
+        if contextOpened { return }
         if dragging {
             desktop.endDrag(session: session)
             dragging = false
@@ -280,11 +315,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
             if duration < 0.4 { desktop.click(button: 3, session: session, open: open); haptics.impactOccurred() }
             return
         }
-        if duration > 0.5 {
-            desktop.click(button: 3, session: session, open: open)
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            return
-        }
+        if duration > 0.5 { return }
         if let lastTap, now - lastTap.time < 0.35, hypot(desktop.cursor.x - lastTap.point.x, desktop.cursor.y - lastTap.point.y) < 24 {
             desktop.doubleClick(session: session, open: open)
             self.lastTap = nil
@@ -298,6 +329,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        cancelHold()
         if dragging { desktop?.endDrag(session: session) }
         dragging = false
         maxFingers = 0

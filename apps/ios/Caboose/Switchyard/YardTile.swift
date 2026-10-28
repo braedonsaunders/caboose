@@ -59,6 +59,7 @@ struct YardGrabber: View {
 
     var body: some View {
         HStack(spacing: 0) {
+            Spacer(minLength: 0)
             Capsule()
                 .fill(.white.opacity(focused ? 0.9 : 0.55))
                 .frame(width: 30, height: 4)
@@ -86,10 +87,24 @@ struct YardGrabber: View {
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("\(window.title.isEmpty ? "Window" : window.title) options")
+            Spacer(minLength: 0)
+            Button(role: .destructive) { yard.close(window.id) } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .frame(width: 28, height: 28)
+                    .background(.regularMaterial, in: Circle())
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Close \(window.title.isEmpty ? "Window" : window.title)")
         }
         .font(.caption.weight(.semibold))
         .foregroundStyle(.white.opacity(focused ? 0.9 : 0.65))
         .buttonStyle(.plain)
+        .background(alignment: .top) {
+            LinearGradient(colors: [.black.opacity(0.35), .clear], startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+        }
     }
 
     private func openCard() { model.show(windowID: window.id) }

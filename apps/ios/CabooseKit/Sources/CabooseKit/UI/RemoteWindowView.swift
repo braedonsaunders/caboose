@@ -42,11 +42,11 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var presentedGeneration: UInt64 = .max
     private var lastPointer = CGPoint.zero
     private var dragging = false
-    private var longPressMoved = false
     private var scrollRemainder = CGPoint.zero
     private var momentum = CGPoint.zero
     private var momentumLink: CADisplayLink?
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
+    private weak var contextTouchGesture: UILongPressGestureRecognizer?
 
     /// Asks the host app to show or hide the software keyboard. Set it and a tap shows the
     /// keyboard only when it lands on editable text (the app switched to a text cursor) and
@@ -249,11 +249,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         secondaryClick.buttonMaskRequired = .secondary
         addGestureRecognizer(secondaryClick)
 
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
-        doubleTap.numberOfTapsRequired = 2
-        addGestureRecognizer(doubleTap)
-        tap.require(toFail: doubleTap)
-
+        // Every tap sends its own click immediately. Waiting for a double-tap recognizer
+        // used to deliver both clicks together, losing the user's timing.
         // Two fingers tapped together right-click, as on a Mac trackpad. A single tap
         // waits for it to fail, which it does the moment one finger lifts alone.
         let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleSecondaryClick(_:)))
@@ -264,10 +261,22 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         tap.require(toFail: twoFingerTap)
 
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
-        longPress.minimumPressDuration = 0.35
-        longPress.allowableMovement = .greatestFiniteMagnitude
+        contextTouchGesture = longPress
+        longPress.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber]
+        longPress.minimumPressDuration = 0.5
+        longPress.allowableMovement = 10
         longPress.delegate = self
         addGestureRecognizer(longPress)
+
+        // Tap, then hold and move for a primary-button drag. An ordinary hold is reserved
+        // for the context menu, so normal finger jitter cannot accidentally start a drag.
+        let touchDrag = UILongPressGestureRecognizer(target: self, action: #selector(handleTouchDrag(_:)))
+        touchDrag.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+        touchDrag.numberOfTapsRequired = 1
+        touchDrag.minimumPressDuration = 0.15
+        touchDrag.allowableMovement = 10
+        touchDrag.delegate = self
+        addGestureRecognizer(touchDrag)
 
         let pointerDrag = UIPanGestureRecognizer(target: self, action: #selector(handlePointerDrag(_:)))
         pointerDrag.allowedTouchTypes = [UITouch.TouchType.indirectPointer.rawValue as NSNumber]
@@ -286,7 +295,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
         // Native touch stays with the app, except the two-finger secondary tap. Its
         // recognition cancels the native sequence; movement fails it, preserving pinches.
-        for recognizer in [tap, pointerClick, secondaryClick, doubleTap, twoFingerTap, pointerDrag] { recognizer.delegate = self }
+        for recognizer in [tap, pointerClick, secondaryClick, twoFingerTap, pointerDrag] { recognizer.delegate = self }
     }
 
     public func gestureRecognizer(_ gesture: UIGestureRecognizer,
@@ -295,7 +304,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        gesture === secondaryTouchGesture || !routesNatively(touch)
+        gesture === secondaryTouchGesture || gesture === contextTouchGesture || !routesNatively(touch)
     }
 
     public override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
@@ -344,44 +353,35 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         click(at: gesture.location(in: self), button: 3)
     }
 
-    @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
-        let point = gesture.location(in: self)
-        click(at: point)
-        click(at: point)
-        tapped()
-    }
-
     public override func resignFirstResponder() -> Bool {
         focusCheck = nil
         return super.resignFirstResponder()
     }
 
-    /// Long press opens a context menu; long press then move drags with the primary button.
+    /// Open at recognition, at the held point; lifting or cancelling cannot issue another click.
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        cancelTouches()
+        stopMomentum()
+        click(at: gesture.location(in: self), button: 3)
+    }
+
+    @objc private func handleTouchDrag(_ gesture: UILongPressGestureRecognizer) {
         guard let window = remoteWindow, let session else { return }
         let point = gesture.location(in: self)
         switch gesture.state {
         case .began:
-            longPressMoved = false
+            stopMomentum()
+            dragging = true
             move(to: point)
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        case .changed:
-            if !longPressMoved {
-                longPressMoved = true
-                dragging = true
-                session.focus(window)
-                session.pointerButton(in: window, button: 1, pressed: true, at: lastPointer)
-            }
-            move(to: point)
-        case .ended, .cancelled:
-            if longPressMoved {
-                session.pointerButton(in: window, button: 1, pressed: false, at: pixelPoint(point))
-            } else {
-                click(at: point, button: 3)
-            }
+            session.focus(window)
+            session.pointerButton(in: window, button: 1, pressed: true, at: lastPointer)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        case .changed: move(to: point)
+        case .ended, .cancelled, .failed:
+            if dragging { session.pointerButton(in: window, button: 1, pressed: false, at: pixelPoint(point)) }
             dragging = false
-        default:
-            break
+        default: break
         }
     }
 
