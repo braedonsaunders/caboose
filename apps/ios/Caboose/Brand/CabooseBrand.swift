@@ -1,6 +1,6 @@
 import SwiftUI
 
-// The Caboose brand, drawn natively: "caboose" standing on a rail with its o's for
+// The Caboose brand, drawn natively: "caboose" riding just above a rail, its o's for
 // wheels. Same geometry and timing as apps/web/src/brand/brand.ts, which renders the
 // README, favicon and app icon; change the two together.
 //
@@ -180,7 +180,7 @@ enum Brand {
     static let tie = 2 * Double.pi * 40 / 6
     static let rollDistance = tie * 6
 
-    static let wordmarkBox = CGRect(x: -4, y: -42, width: 784, height: 172)
+    static let wordmarkBox = CGRect(x: -4, y: -42, width: 784, height: 180)
     /// One wheel with a little room for its stroke's anti-aliasing.
     static let wheelBox = CGRect(x: -2, y: -2, width: 104, height: 104)
 
@@ -216,6 +216,8 @@ enum Brand {
     private static let letterX: [CGFloat] = [0, 99, 223, 347, 461, 568, 676]
     /// The rail's ends; its round caps reach flush with the c and the e.
     private static let rail: (CGFloat, CGFloat) = (6, 770)
+    /// The rail's centre line, leaving 8 clear between the baseline and the rail's top.
+    private static let railY: CGFloat = 114
 
     private static func ring(_ cx: CGFloat) -> Path {
         var path = Path()
@@ -275,17 +277,17 @@ enum Brand {
                                   rail: (CGFloat, CGFloat), railDrawn: Double) {
         if frame.ties > 0 {
             var ties = context
-            ties.clip(to: Path(CGRect(x: rail.0, y: 100, width: rail.1 - rail.0, height: 40)))
+            ties.clip(to: Path(CGRect(x: rail.0, y: railY - 6, width: rail.1 - rail.0, height: 40)))
             ties.opacity = 0.32 * frame.ties
             let shift = frame.roll * rollDistance
             var k = Int(((Double(rail.0) - rollDistance * Brand.Timing.rollTurns) / tie).rounded(.down))
             while Double(k) * tie < Double(rail.1) {
                 let x = Double(k) * tie + shift
-                ties.fill(Path(roundedRect: CGRect(x: x, y: 116, width: 14, height: 11), cornerRadius: 2), with: .foreground)
+                ties.fill(Path(roundedRect: CGRect(x: x, y: railY + 10, width: 14, height: 11), cornerRadius: 2), with: .foreground)
                 k += 1
             }
         }
-        let railPath = line([CGPoint(x: rail.0, y: 106), CGPoint(x: rail.1, y: 106)])
+        let railPath = line([CGPoint(x: rail.0, y: railY), CGPoint(x: rail.1, y: railY)])
         context.stroke(railPath.trimmedPath(from: 0, to: railDrawn), with: .foreground,
                        style: StrokeStyle(lineWidth: 12, lineCap: .round))
     }

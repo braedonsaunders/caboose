@@ -1,7 +1,7 @@
 /**
  * The Caboose brand, drawn from one set of numbers.
  *
- * "On the rails": a monoline wordmark standing on a rail whose two o's are wheels —
+ * "On the rails": a monoline wordmark riding just above a rail, whose two o's are wheels —
  * a spoke and an amber hub each, so at rest they double as power buttons. One of
  * those wheels, alone on navy, is the app icon.
  *
@@ -12,7 +12,7 @@
  * (`apps/ios/Caboose/Brand/CabooseBrand.swift`); change both together.
  *
  * Units: the wordmark's x-height circles are r40 on a 100-unit body, stroked at 20
- * with butt caps. Baseline sits at y=100, on top of a 12-unit rail centred at y=106.
+ * with butt caps. Baseline sits at y=100, a little clear of a 12-unit rail centred at RAIL.y.
  */
 
 export const INK_LIGHT = '#1B2B4A'
@@ -86,18 +86,23 @@ export const LETTER_X: readonly number[] = WORD.reduce<number[]>((xs, letter, in
 /** The word's right edge: where the e's ink ends, and where the rail ends with it. */
 const WORD_END = LETTER_X[WORD.length - 1]! + GLYPHS.e.ink[1]
 
+/** Clear space between the baseline and the top of the rail: the letters ride above it. */
+const RAIL_GAP = 8
+
 /**
  * The rail spans the word exactly: its round caps (radius 6) end flush with the c's left
- * edge and the e's right edge. The ties show on the stretch inside the caps.
+ * edge and the e's right edge. `y` is its centre line. The ties show on the stretch inside
+ * the caps, hanging just under it.
  */
-export const RAIL = { from: 6, to: WORD_END - 6 } as const
+export const RAIL = { from: 6, to: WORD_END - 6, y: 100 + RAIL_GAP + 6 } as const
+const TIE_Y = RAIL.y + 10
 const TRACK = { from: RAIL.from, to: RAIL.to } as const
 
 /**
  * Wordmark view box: x, y, width, height. It holds the rail's caps and the b's ascender
  * with a little room, and the ties under the rail while they show.
  */
-export const WORDMARK_VIEWBOX = [-4, -42, WORD_END + 8, 172] as const
+export const WORDMARK_VIEWBOX = [-4, -42, WORD_END + 8, TIE_Y + 11 + 3 + 42] as const
 
 /** Motion timeline (seconds). The iOS port mirrors these. */
 export const TIMING = {
@@ -194,7 +199,7 @@ function wheel(x: number, hub: string, start: number, lit = true): string {
 function ties(from: number, to: number, ink: string, opacity: number): string {
   let rects = ''
   for (let k = Math.floor(from / TIE); k * TIE < to; k++) {
-    rects += `<rect x="${round(k * TIE)}" y="116" width="14" height="11" rx="2"/>`
+    rects += `<rect x="${round(k * TIE)}" y="${TIE_Y}" width="14" height="11" rx="2"/>`
   }
   return `<g class="ties" fill="${ink}" opacity="${opacity}">${rects}</g>`
 }
@@ -216,12 +221,12 @@ export function wordmarkSvg(options: BrandOptions & { lit?: boolean }): string {
   }).join('')
   // The ties show only while the train rolls, so a still logo has none to hide.
   const track = motion === 'none' ? '' :
-    `<defs><clipPath id="${id}-track"><rect x="${TRACK.from}" y="100" width="${TRACK.to - TRACK.from}" height="40"/></clipPath></defs>` +
+    `<defs><clipPath id="${id}-track"><rect x="${TRACK.from}" y="${RAIL.y - 6}" width="${TRACK.to - TRACK.from}" height="40"/></clipPath></defs>` +
     `<g class="track" clip-path="url(#${id}-track)">${ties(TRACK.from - ROLL * TIMING.roll.turns, TRACK.to, ink, 0.32)}</g>`
   return open(WORDMARK_VIEWBOX, id, height) +
     `<style>${styles(id, motion)}</style>` +
     track +
-    `<path class="rail" pathLength="1" d="M${RAIL.from} 106H${RAIL.to}" fill="none" stroke="${ink}" stroke-width="12" stroke-linecap="round"/>` +
+    `<path class="rail" pathLength="1" d="M${RAIL.from} ${RAIL.y}H${RAIL.to}" fill="none" stroke="${ink}" stroke-width="12" stroke-linecap="round"/>` +
     `<g fill="none" stroke="${ink}" stroke-width="20" stroke-linejoin="round">${letters}</g>` +
     `</svg>`
 }

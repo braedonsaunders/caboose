@@ -37,8 +37,9 @@ describe('geometry', () => {
     expect(LETTER_X[4]! - LETTER_X[3]! - 100).toBe(14)
   })
 
-  it('ends the rail flush with the c and the e, inside the view box', () => {
+  it('ends the rail flush with the c and the e, clear of the baseline, inside the view box', () => {
     const [x, , width] = WORDMARK_VIEWBOX
+    expect(RAIL.y - 6).toBeGreaterThan(100)
     expect(RAIL.from - 6).toBe(0)
     expect(RAIL.to + 6).toBe(LETTER_X[6]! + 100)
     expect(x).toBeLessThan(RAIL.from - 6)
@@ -100,7 +101,7 @@ describe('rendering', () => {
   })
 
   it('sizes from height when given, from CSS when not', () => {
-    expect(wordmarkSvg({ ink: '#000', height: 43 })).toContain('width="196" height="43"')
+    expect(wordmarkSvg({ ink: '#000', height: 45 })).toContain('width="196" height="45"')
     expect(wordmarkSvg({ ink: '#000' })).not.toMatch(/<svg[^>]* height=/)
   })
 })
