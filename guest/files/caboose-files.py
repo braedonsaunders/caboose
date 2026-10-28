@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlsplit
 
 ROOT = os.environ.get('CABOOSE_FILES_ROOT', '/home/caboose')
-TOKEN = os.environ.get('CABOOSE_FILES_TOKEN_FILE', '/run/caboose/xpra-token')
+TOKEN = os.environ.get('CABOOSE_FILES_TOKEN_FILE', '/run/caboose/display-token')
 PORT = int(os.environ.get('CABOOSE_FILES_PORT', '14700'))
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 rootfd = os.open(ROOT, DIR)

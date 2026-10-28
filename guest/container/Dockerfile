@@ -1,5 +1,4 @@
-# Caboose Display (guest/display): built here so the image carries it; Xpra stays
-# the default display until the host selects caboose-display.
+# Caboose Display (guest/display): the owner's display and the agent seat.
 FROM debian:trixie-slim AS display
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -11,7 +10,7 @@ ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0
 COPY display /src
 RUN cd /src && cargo build --release --locked -p caboose-display -p caboose-display-probe
-# The codec passthrough VA-API driver (guest/vaapi): only used in Caboose Display sessions.
+# The codec passthrough VA-API driver (guest/vaapi).
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
 
@@ -23,8 +22,6 @@ RUN echo force-unsafe-io > /etc/dpkg/dpkg.cfg.d/02unsafe-io && \
     apt-get update && apt-get install -y --no-install-recommends eatmydata ca-certificates curl gnupg
 ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libeatmydata.so.1
 RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-free-firmware\ndeb https://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware\n' > /etc/apt/sources.list && \
-    curl -fsSL https://xpra.org/xpra.asc -o /usr/share/keyrings/xpra.asc && \
-    curl -fsSL https://raw.githubusercontent.com/Xpra-org/xpra/v6.5.5/packaging/repos/trixie/xpra.sources -o /etc/apt/sources.list.d/xpra.sources && \
     curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg && \
     printf 'deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/code stable main\n' > /etc/apt/sources.list.d/vscode.list && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg && \
@@ -34,13 +31,8 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
       python3 python3-gi gir1.2-gtk-3.0 python3-pyatspi python3-websockets \
       libglib2.0-bin libglib2.0-dev-bin imagemagick ffmpeg at-spi2-core gsettings-desktop-schemas xfce4-settings \
       code nodejs sassc libxml2-utils qt5-gtk-platformtheme qt6-gtk-platformtheme \
-      libgl1-mesa-dri mesa-va-drivers mesa-utils vainfo libx264-164 \
-      pulseaudio pulseaudio-utils gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools \
-      python3-numpy python3-pytools python3-mako python3-decorator python3-platformdirs \
-      libboost-python1.83.0 libboost-thread1.83.0 libcurand10 \
-      xpra=6.5.5-r0-1 xpra-server=6.5.5-r0-1 xpra-x11=6.5.5-r0-1 xpra-common=6.5.5-r0-1 \
-      xpra-codecs=6.5.5-r0-1 xpra-codecs-extras=6.5.5-r0-1 xpra-codecs-nvidia=6.5.5-r0-1 xpra-audio=6.5.5-r0-1 && \
-    cd /tmp && apt-get download python3-pycuda && dpkg-deb -x python3-pycuda_*.deb / && rm python3-pycuda_*.deb && \
+      libgl1-mesa-dri mesa-va-drivers mesa-utils vainfo libpixman-1-0 libxkbcommon0 \
+      pulseaudio pulseaudio-utils gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools && \
     useradd -m -u 1000 -s /bin/bash caboose && usermod -aG sudo caboose && \
     printf 'caboose ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/caboose && chmod 0440 /etc/sudoers.d/caboose
 COPY image/apps.sh /tmp/caboose-apps.sh
@@ -73,9 +65,7 @@ COPY --from=display /src/target/release/caboose-display /src/target/release/cabo
 COPY --from=display /out/vaapi/caboose_drv_video.so /usr/lib/x86_64-linux-gnu/dri/caboose_drv_video.so
 COPY display/caboose-display-ready /usr/local/bin/caboose-display-ready
 COPY container/caboose-session /usr/local/bin/caboose-session
-COPY container/caboose-audio.sh /etc/profile.d/caboose-audio.sh
-RUN chmod 0755 /usr/local/bin/caboose-session && \
-    printf '\n[ -r /etc/profile.d/caboose-audio.sh ] && . /etc/profile.d/caboose-audio.sh\n' >> /etc/bash.bashrc
-ENV LD_PRELOAD= CABOOSE_GPU=none DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus XPRA_BACKWARDS_COMPATIBLE=0 GDK_SCALE=1 QT_QPA_PLATFORMTHEME=gtk3 \
+RUN chmod 0755 /usr/local/bin/caboose-session
+ENV LD_PRELOAD= CABOOSE_GPU=none DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus GDK_SCALE=1 QT_QPA_PLATFORMTHEME=gtk3 \
     ACCESSIBILITY_ENABLED=1 GNOME_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 CMD ["sleep", "infinity"]

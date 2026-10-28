@@ -248,6 +248,16 @@ function displayEnv(vars) {
   return env
 }
 
+/** The agent seat's X11 environment the runner was started with, as the desktop tools need it. */
+const SEAT_ENV = ['XAUTHORITY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'GDK_BACKEND', 'QT_QPA_PLATFORM', 'MOZ_ENABLE_WAYLAND', 'SDL_VIDEODRIVER', 'ELECTRON_OZONE_PLATFORM_HINT']
+
+function seatEnv() {
+  return [
+    { name: 'CABOOSE_AGENT_DISPLAY', value: process.env.DISPLAY || ':101' },
+    ...SEAT_ENV.filter(name => process.env[name]).map(name => ({ name, value: process.env[name] })),
+  ]
+}
+
 const CLIENT_CAPABILITIES = {
   // File reads and writes go through Caboose, limited to the home directory.
   fs: { readTextFile: true, writeTextFile: true },
@@ -686,7 +696,7 @@ class Task {
     const agent = this.agent
     const caps = agent.init.agentCapabilities ?? {}
     const mcpServers = existsSync(DESKTOP_MCP)
-      ? [{ name: 'caboose-desktop', command: process.execPath, args: [DESKTOP_MCP], env: [{ name: 'CABOOSE_AGENT_DISPLAY', value: process.env.DISPLAY || ':101' }] }]
+      ? [{ name: 'caboose-desktop', command: process.execPath, args: [DESKTOP_MCP], env: seatEnv() }]
       : []
     mcpServers.push(...this.craftServers)
     const previous = (await readFile(join(this.dir, 'session'), 'utf8').catch(() => '')).trim()
@@ -941,7 +951,7 @@ async function install(spec) {
  * the agent's own program with the method's arguments and environment. Progress goes to
  * agents/<id>/sign-in.json.
  */
-async function signIn({ agent, methodId, env: ownerEnv = { DISPLAY: ':100' } }) {
+async function signIn({ agent, methodId, env: ownerEnv = {} }) {
   const spec = readSpec(agent)
   if (typeof methodId !== 'string' || !methodId) throw new Error('methodId is required')
   const dir = join(AGENTS_DIR, spec.id)
