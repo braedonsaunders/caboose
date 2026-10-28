@@ -5,24 +5,33 @@ import SwiftUI
 struct AskBar: View {
     @Environment(AppModel.self) private var model
     @State private var prompt = ""
-    @AppStorage("caboose.agent") private var agent = "claude"
+    /// A registry id, "" for the owner's default agent, or `onDevice`.
+    @AppStorage("caboose.agent.choice") private var agent = ""
     @AppStorage("caboose.agent.askFirst") private var askFirst = false
+    @AppStorage("caboose.agent.delegate") private var delegate = ""
     @FocusState private var focused: Bool
 
+    /// The bar's choice for the phone's own model, beside the computer's agents.
+    static let onDevice = "iphone"
+
     var body: some View {
+        let agents = model.agents
         HStack(spacing: 10) {
             Menu {
                 Picker("Agent", selection: $agent) {
-                    Label("Claude Code", systemImage: "sparkle").tag("claude")
-                    Label("Codex", systemImage: "chevron.left.forwardslash.chevron.right").tag("codex")
-                }
-                if agent == "claude" {
-                    Toggle(isOn: $askFirst) {
-                        Label("Ask Before Acting", systemImage: "hand.raised")
+                    if OnDeviceAgent.isAvailable { Label("On iPhone", systemImage: "iphone").tag(Self.onDevice) }
+                    Label(agents.defaultAgent.flatMap { agents.listing($0)?.name }.map { "Default (\($0))" } ?? "Default Agent",
+                          systemImage: "sparkles").tag("")
+                    ForEach(agents.installedAgents.filter { $0.id != agents.defaultAgent }) { agent in
+                        Text(agent.name).tag(agent.id)
                     }
                 }
+                if agent != Self.onDevice {
+                    Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
+                }
+                Button { model.showAgentSettings = true } label: { Label("Agents…", systemImage: "slider.horizontal.3") }
             } label: {
-                Image(systemName: agent == "claude" ? "sparkle" : "chevron.left.forwardslash.chevron.right")
+                Image(systemName: agent == Self.onDevice ? "iphone" : "sparkles")
                     .frame(width: 36, height: 36)
             }
             TextField("Ask your computer to do something…", text: $prompt, axis: .vertical)
@@ -47,7 +56,14 @@ struct AskBar: View {
         let text = prompt
         prompt = ""
         focused = false
-        Task { await model.agents.ask(text, agent: agent, askFirst: askFirst) }
+        let agents = model.agents
+        if agent == Self.onDevice, OnDeviceAgent.isAvailable {
+            Task { await agents.askOnDevice(text, delegatingTo: delegate.isEmpty ? nil : delegate) }
+        } else {
+            // An agent uninstalled elsewhere falls back to the default.
+            let chosen = agents.listing(agent)?.isInstalled == true ? agent : nil
+            Task { await agents.ask(text, agent: chosen, askFirst: askFirst) }
+        }
     }
 }
 
@@ -57,7 +73,7 @@ struct AgentSection: View {
 
     var body: some View {
         let agents = model.agents
-        if !agents.tasks.isEmpty || !(agents.seat?.windows.isEmpty ?? true) {
+        if !agents.tasks.isEmpty || !agents.localRuns.isEmpty || !(agents.seat?.windows.isEmpty ?? true) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Agents").font(.headline).foregroundStyle(.secondary)
                 if let seat = agents.seat, !seat.windows.isEmpty {
@@ -77,6 +93,9 @@ struct AgentSection: View {
                         }
                     }
                     .scrollIndicators(.hidden)
+                }
+                ForEach(agents.localRuns.prefix(3)) { run in
+                    OnDeviceCard(run: run)
                 }
                 ForEach(agents.tasks.prefix(6)) { task in
                     TaskCard(task: task, lines: agents.output[task.id] ?? [])
@@ -103,6 +122,7 @@ struct TaskCard: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(expanded ? nil : 2)
+                    Text(model.agents.name(of: task)).font(.caption2).foregroundStyle(.tertiary)
                 }
                 Spacer(minLength: 0)
                 if task.isRunning {
@@ -114,6 +134,10 @@ struct TaskCard: View {
             }
             if let approval = task.pendingApproval {
                 ApprovalRow(task: task, approval: approval)
+            }
+            // A signed-out agent: sign in on the computer's screen, then reply to retry.
+            if let methods = task.signIn, !methods.isEmpty, !task.isRunning {
+                SignInRow(agentID: task.agent, methods: methods)
             }
             if expanded, !lines.isEmpty {
                 ScrollView {
@@ -243,6 +267,35 @@ struct AgentSeatCanvas: UIViewRepresentable {
     }
 }
 
+/// Sign-in methods for a task whose agent was signed out.
+struct SignInRow: View {
+    @Environment(AppModel.self) private var model
+    let agentID: String
+    let methods: [SignInMethod]
+    @State private var started: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(methods) { method in
+                Button {
+                    Task {
+                        do {
+                            try await model.agents.signIn(agentID, with: method)
+                            started = "Finish signing in on your computer's screen, then reply to try again."
+                        } catch {
+                            started = error.localizedDescription
+                        }
+                    }
+                } label: {
+                    Label("Sign In: \(method.name)", systemImage: method.type == "terminal" ? "terminal" : "person.badge.key")
+                }
+                .buttonStyle(.glass)
+            }
+            if let started { Text(started).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+}
+
 /// What an agent wants to do next, with Allow and Deny.
 struct ApprovalRow: View {
     @Environment(AppModel.self) private var model
@@ -253,7 +306,7 @@ struct ApprovalRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label {
-                Text("\(task.agent == "codex" ? "Codex" : "Claude") wants to use **\(approval.tool)**")
+                Text("\(model.agents.name(of: task)) wants to use **\(approval.tool)**")
             } icon: {
                 Image(systemName: "hand.raised.fill").foregroundStyle(.yellow)
             }
@@ -270,6 +323,11 @@ struct ApprovalRow: View {
                 Button("Deny", role: .destructive) { decide(false) }
                     .buttonStyle(.glass)
                 Spacer()
+                // The agent's standing permission, when it offers one: allow this kind every time.
+                if let always = approval.options?.first(where: { $0.kind == "allow_always" }) {
+                    Button(always.name) { decide(true, option: always) }
+                        .buttonStyle(.glass)
+                }
                 Button("Allow") { decide(true) }
                     .buttonStyle(.glassProminent)
             }
@@ -277,10 +335,10 @@ struct ApprovalRow: View {
         }
     }
 
-    private func decide(_ allow: Bool) {
+    private func decide(_ allow: Bool, option: AgentCenter.Approval.Option? = nil) {
         deciding = true
         Task {
-            await model.agents.decide(task, allow: allow)
+            await model.agents.decide(task, allow: allow, option: option)
             deciding = false
         }
     }
@@ -314,7 +372,7 @@ struct AskAboutWindowSheet: View {
     @State private var prompt = ""
     @State private var snapshot: UIImage?
     @State private var sending = false
-    @AppStorage("caboose.agent") private var agent = "claude"
+    @AppStorage("caboose.agent.choice") private var agent = ""
     @AppStorage("caboose.agent.askFirst") private var askFirst = false
     @FocusState private var focused: Bool
 
@@ -334,11 +392,13 @@ struct AskAboutWindowSheet: View {
                         .focused($focused)
                 }
                 Section {
+                    // The phone's own model cannot take a screenshot along, so a window goes to a computer agent.
                     Picker("Agent", selection: $agent) {
-                        Text("Claude Code").tag("claude")
-                        Text("Codex").tag("codex")
+                        Text("Default Agent").tag("")
+                        if agent == AskBar.onDevice { Text("On iPhone").tag(AskBar.onDevice) }
+                        ForEach(model.agents.installedAgents) { Text($0.name).tag($0.id) }
                     }
-                    if agent == "claude" { Toggle("Ask Before Acting", isOn: $askFirst) }
+                    Toggle("Ask Before Acting", isOn: $askFirst)
                 }
             }
             .navigationTitle("Ask an Agent")
@@ -367,7 +427,8 @@ struct AskAboutWindowSheet: View {
         """
         let attachments = snapshot?.pngData().map { [AgentCenter.Attachment(name: "window.png", type: "image/png", data: $0)] } ?? []
         Task {
-            let started = await model.agents.ask(text, agent: agent, askFirst: askFirst, attachments: attachments)
+            let chosen = model.agents.listing(agent)?.isInstalled == true ? agent : nil
+            let started = await model.agents.ask(text, agent: chosen, askFirst: askFirst, attachments: attachments)
             sending = false
             if started { dismiss() }
         }

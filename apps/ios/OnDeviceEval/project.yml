@@ -1,0 +1,24 @@
+name: OnDeviceEval
+options:
+  bundleIdPrefix: com.braedonsaunders
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: 9YL3YCJTNT
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+targets:
+  OnDeviceEval:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      # The shipping tools and instructions, so the measurement is of what the app runs.
+      - path: ../Caboose/Agents/OnDeviceTools.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.braedonsaunders.caboose.ondeviceeval
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Caboose Eval

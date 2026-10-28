@@ -59,8 +59,8 @@ struct ShareView: View {
                     .lineLimit(2 ... 6)
                     .focused($promptFocused)
                 Picker("Agent", selection: $model.agent) {
-                    Text("Claude Code").tag("claude")
-                    Text("Codex").tag("codex")
+                    Text("Default Agent").tag("")
+                    ForEach(model.agents) { Text($0.name).tag($0.id) }
                 }
                 Button("Ask Agent", systemImage: "sparkle", action: model.askAgent)
                     .disabled(model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

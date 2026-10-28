@@ -9,10 +9,12 @@ struct AgentAttachment: Sendable {
 
 /// What the app and its share extension send to the computer.
 extension HostClient {
-    func startAgentTask(prompt: String, agent: String, approvals: String = "auto",
+    /// `agent` is a registry id; nil runs the owner's default agent.
+    func startAgentTask(prompt: String, agent: String?, approvals: String = "auto",
                         attachments: [AgentAttachment] = []) async throws -> String {
         struct Started: Decodable { var id: String }
-        var body: [String: JSONValue] = ["prompt": .string(prompt), "agent": .string(agent), "approvals": .string(approvals)]
+        var body: [String: JSONValue] = ["prompt": .string(prompt), "approvals": .string(approvals)]
+        if let agent, !agent.isEmpty { body["agent"] = .string(agent) }
         if !attachments.isEmpty {
             body["attachments"] = .array(attachments.map {
                 .object(["name": .string($0.name), "type": .string($0.type), "data": .string($0.data.base64EncodedString())])

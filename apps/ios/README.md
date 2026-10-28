@@ -17,6 +17,7 @@ Display (docs/display.md) where the host serves it.
 - `Caboose/` — the app: setup, wake, Home (open windows and the computer's apps), and the
   full-screen window screen.
 - `Share/` — the share extension (target `CabooseShare`).
+- `OnDeviceEval/` — a small app that measures the On iPhone agent on a device.
 - `Caboose/Brand/` — the logo drawn natively in SwiftUI: the wordmark draws itself in on
   setup, rolls while the computer wakes and shows its hubs unlit while it is parked, and
   one of its wheels marks the computer menu. It is the same geometry and timing as
@@ -25,10 +26,21 @@ Display (docs/display.md) where the host serves it.
 
 ## Agents
 
-The Ask bar on Home starts a Claude Code or Codex task; its menu has **Ask Before Acting**
-(Claude only), which makes the agent stop before each action until you tap Allow or Deny,
-on the task card or on the banner that shows over any screen. A finished task takes a reply
-that continues the same conversation. A window's `…` menu has **Ask Agent About This
+The Ask bar on Home starts a task with the computer's default agent or any agent installed
+from the Agent Client Protocol registry; its menu has **Ask Before Acting**, which makes the
+agent stop before each action until you tap Allow (or the agent's always-allow option) or
+Deny, on the task card or on the banner that shows over any screen. A finished task takes a
+reply that continues the same conversation; one whose agent was signed out offers Sign In.
+Settings › Agents (from the bar's menu or Computer settings) installs and updates agents,
+signs in to them on the computer's screen, gives one an API key or other environment, and
+sets the default.
+
+Where Apple Intelligence is available the bar also offers **On iPhone**: Apple's on-device
+model, in `Caboose/Agents/OnDevice*.swift`. It opens apps and pages, types, presses
+shortcuts, presses buttons in the focused window by name (through the host's accessibility
+routes), parks the computer, and hands anything bigger to a computer agent. Its requests
+show on Home with each step it took. `OnDeviceEval/` measures it on a device (its own
+README). A window's `…` menu has **Ask Agent About This
 Window**, which sends its screenshot, title and app with your request.
 
 ## Play on iPhone or Apple TV

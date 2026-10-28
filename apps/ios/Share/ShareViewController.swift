@@ -54,7 +54,10 @@ final class ShareModel {
     var items: [SharedItem] = []
     var phase = Phase.loading
     var prompt = ""
-    var agent = "claude"
+    /// A registry id, or "" for the computer's default agent.
+    var agent = ""
+    /// The agents installed in the computer, for the picker.
+    var agents: [AgentListing] = []
     var skipped: [String] = []
     let credentials = Credentials.load()
     var finish: () -> Void = {}
@@ -77,6 +80,9 @@ final class ShareModel {
             }
         }
         phase = .ready
+        if let host = try? await host(), let listed = try? await host.agents() {
+            agents = listed.agents.filter(\.isInstalled)
+        }
     }
 
     private static func item(from provider: NSItemProvider) async -> SharedItem? {
@@ -139,7 +145,7 @@ final class ShareModel {
         for text in texts { request += "\n\nShared text:\n\(text)" }
         let attachments = Self.attachments(for: files)
         run("Handing it to the agent…", done: "The agent is on it. Follow it in Caboose.") { host in
-            _ = try await host.startAgentTask(prompt: request, agent: self.agent, attachments: attachments)
+            _ = try await host.startAgentTask(prompt: request, agent: self.agent.isEmpty ? nil : self.agent, attachments: attachments)
         }
     }
 

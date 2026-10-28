@@ -67,6 +67,13 @@ struct RootView: View {
         .sheet(isPresented: Bindable(model).settingsPresented) {
             ComputerSettingsView().environment(model)
         }
+        .sheet(isPresented: Bindable(model).showAgentSettings) {
+            NavigationStack {
+                AgentsView()
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { model.showAgentSettings = false } } }
+            }
+            .environment(model)
+        }
     }
 }
 
