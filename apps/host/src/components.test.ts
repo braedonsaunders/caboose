@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { needsUpgrade, readBundle, upgradeComponents, type UpgradeStatus } from './components.js'
+import { needsUpgrade, readBundle, upgradeComponents, upgradeFailure, type UpgradeStatus } from './components.js'
 import type { AgentGuest } from './agents.js'
 
 const bundle = { version: 'a'.repeat(64), files: [{ name: 'components/install.sh', data: Buffer.alloc(50000, 42) }] }
@@ -41,6 +41,13 @@ describe('guest components', () => {
     await upgradeComponents(runner, 'vm', () => {}, bundle)
     expect(calls).toHaveLength(2)
     expect(calls[1]?.args[1]).toContain("systemctl start caboose-files.service")
+  })
+  it('reports a short failure: no channel prefix, repeats collapsed, the last lines only', () => {
+    const repeated = Array.from({ length: 60 }, () => '/usr/local/libexec/caboose-components-services: line 34: ss: command not found').join('\n')
+    expect(upgradeFailure(new Error(`docker exec failed: ${repeated}\nFile service did not become ready`)))
+      .toBe('/usr/local/libexec/caboose-components-services: line 34: ss: command not found — File service did not become ready')
+    expect(upgradeFailure(new Error(`Guest command failed: ${'x'.repeat(500)}`))).toHaveLength(300)
+    expect(upgradeFailure(new Error('docker exec failed: '))).toBe('The upgrade failed.')
   })
   it('reports failure, cleans staging and retries on the next attempt', async () => {
     const { runner, calls } = guest('', true)

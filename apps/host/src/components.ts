@@ -82,6 +82,18 @@ export async function upgradeComponents(guest: AgentGuest, mode: ComponentsMode,
     }
     onStatus({ state: 'succeeded', version: payload.version })
   } catch (error) {
-    onStatus({ state: 'failed', message: error instanceof Error ? error.message : String(error) })
+    onStatus({ state: 'failed', message: upgradeFailure(error) })
   }
+}
+
+/**
+ * What a failed upgrade reports: the guest's own last lines, without the command channel's
+ * prefix, with repeats collapsed and at most 300 characters, so a status screen can show it.
+ */
+export function upgradeFailure(error: unknown): string {
+  const text = (error instanceof Error ? error.message : String(error)).replace(/^(Guest command failed|docker exec failed):\s*/, '')
+  const lines: string[] = []
+  for (const line of text.split('\n').map(item => item.trim()).filter(Boolean)) if (lines.at(-1) !== line) lines.push(line)
+  const summary = lines.slice(-2).join(' — ')
+  return summary.length > 300 ? `${summary.slice(0, 299)}…` : summary || 'The upgrade failed.'
 }
