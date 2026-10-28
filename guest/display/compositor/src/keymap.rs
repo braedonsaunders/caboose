@@ -100,8 +100,9 @@ mod tests {
 
     fn us() -> Keysyms {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let keymap = xkb::Keymap::new_from_names(&context, "evdev", "pc105", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
-            .expect("the us keymap compiles");
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "evdev", "pc105", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                .expect("the us keymap compiles");
         Keysyms::from_keymap(&keymap)
     }
 

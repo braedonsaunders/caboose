@@ -18,12 +18,11 @@ OPTIONS:
     --x-display N          Xwayland display number [default: 110]
     --no-xwayland          do not start Xwayland
     --env-file PATH        write WAYLAND_DISPLAY/DISPLAY for launchers here once ready
-    --renderer KIND        auto | pixman | gles [default: auto]
-    --render-node PATH     DRM render node for gles and VA-API [default: first /dev/dri/renderD*]
-    --encoder KIND         auto | software | vaapi | nvenc [default: auto]
+    --renderer KIND        pixman [default: pixman]
+    --encoder KIND         auto | software | nvenc [default: auto]
     --crf N                encoder quality, lower is better [default: 23]
     --preset NAME          x264 preset [default: ultrafast]
-    --encoder-threads N    threads per software encoder [default: 2]
+    --encoder-threads N    threads per software encoder; 0 = 1 up to 1080p, 4 above [default: 0]
     --display WxH@HZxS     the display used before a client connects [default: 1920x1080@60x1]
     --list-encoders        print the usable encoders and exit
     -h, --help             print this help
@@ -32,11 +31,12 @@ A COMMAND after `--` is started once the compositor is ready, with WAYLAND_DISPL
 DISPLAY set, and the compositor exits when it does.
 ";
 
+/// The renderer that composes each window's surface tree. Pixman (CPU) is the one this
+/// version has; a GPU renderer that composes into dmabufs for the zero-copy encoders
+/// is the next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RendererChoice {
-    Auto,
     Pixman,
-    Gles,
 }
 
 #[derive(Debug, Clone)]
@@ -52,7 +52,12 @@ impl DisplaySpec {
         let (size, rest) = s.split_once('@').unwrap_or((s, "60x1"));
         let (w, h) = size.split_once('x')?;
         let (hz, scale) = rest.split_once('x').unwrap_or((rest, "1"));
-        let spec = Self { width: w.parse().ok()?, height: h.parse().ok()?, refresh_hz: hz.parse().ok()?, scale: scale.parse().ok()? };
+        let spec = Self {
+            width: w.parse().ok()?,
+            height: h.parse().ok()?,
+            refresh_hz: hz.parse().ok()?,
+            scale: scale.parse().ok()?,
+        };
         (spec.width > 0 && spec.height > 0 && spec.refresh_hz > 0.0 && spec.scale >= 1.0).then_some(spec)
     }
 }
@@ -65,7 +70,6 @@ pub struct Config {
     pub x_display: Option<u32>,
     pub env_file: Option<PathBuf>,
     pub renderer: RendererChoice,
-    pub render_node: Option<PathBuf>,
     pub encoder: Choice,
     pub settings: Settings,
     pub display: DisplaySpec,
@@ -81,8 +85,7 @@ impl Default for Config {
             socket: "wayland-caboose-0".into(),
             x_display: Some(110),
             env_file: None,
-            renderer: RendererChoice::Auto,
-            render_node: None,
+            renderer: RendererChoice::Pixman,
             encoder: Choice::Auto,
             settings: Settings::default(),
             display: DisplaySpec { width: 1920, height: 1080, refresh_hz: 60.0, scale: 1.0 },
@@ -120,21 +123,16 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             "--env-file" => config.env_file = Some(value(&mut args, &arg)?.into()),
             "--renderer" => {
                 config.renderer = match value(&mut args, &arg)?.as_str() {
-                    "auto" => RendererChoice::Auto,
                     "pixman" => RendererChoice::Pixman,
-                    "gles" => RendererChoice::Gles,
                     other => return Err(format!("--renderer: unknown {other}")),
                 }
             }
-            "--render-node" => config.render_node = Some(value(&mut args, &arg)?.into()),
             "--encoder" => {
                 config.encoder = match value(&mut args, &arg)?.as_str() {
                     "auto" => Choice::Auto,
                     "software" => Choice::Software,
-                    #[cfg(feature = "vaapi")]
-                    "vaapi" => Choice::Vaapi,
                     "nvenc" => Choice::Nvenc,
-                    other => return Err(format!("--encoder: unknown or not built: {other}")),
+                    other => return Err(format!("--encoder: unknown {other}")),
                 }
             }
             "--crf" => config.settings.crf = number(value(&mut args, &arg)?, &arg)?,
@@ -142,7 +140,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             "--encoder-threads" => config.settings.threads = number(value(&mut args, &arg)?, &arg)?,
             "--display" => {
                 let v = value(&mut args, &arg)?;
-                config.display = DisplaySpec::parse(&v).ok_or_else(|| format!("--display: expected WxH@HZxSCALE, got {v}"))?;
+                config.display =
+                    DisplaySpec::parse(&v).ok_or_else(|| format!("--display: expected WxH@HZxSCALE, got {v}"))?;
             }
             "--list-encoders" => config.list_encoders = true,
             "-h" | "--help" => return Ok(Parsed::Help),

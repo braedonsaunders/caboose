@@ -57,10 +57,6 @@ impl Canvas {
         self.size == size && self.scale == scale
     }
 
-    pub fn size(&self) -> Size<i32, Physical> {
-        self.size
-    }
-
     /// Renders `surface`'s tree, with the window geometry origin at `geometry_origin`
     /// (surface-local logical coordinates), into `image`, whose top-left `size` region
     /// receives the picture.
@@ -105,7 +101,11 @@ impl Canvas {
                     .map_err(|e| format!("{e:?}"))?;
                 let damage: Vec<_> = result
                     .damage
-                    .map(|d| d.iter().map(|r| caboose_display_protocol::Rect::new(r.loc.x, r.loc.y, r.size.w, r.size.h)).collect())
+                    .map(|d| {
+                        d.iter()
+                            .map(|r| caboose_display_protocol::Rect::new(r.loc.x, r.loc.y, r.size.w, r.size.h))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 drop(framebuffer);
                 self.age = 1;

@@ -56,7 +56,6 @@ struct Conn {
     socket: Socket,
     decoder: StreamDecoder,
     token: Option<RegistrationToken>,
-    peer: SocketAddr,
     opened: Instant,
     /// Set once the connection was asked to close; a peer that never finishes the
     /// close handshake is dropped by [`Net::stale_closing`].
@@ -120,7 +119,10 @@ impl Net {
         if conn.closing.is_some() {
             return;
         }
-        let result = ws.write(WsMessage::Binary(Bytes::from(bytes))).and_then(|_| ws.flush());
+        let mut result = ws.write(WsMessage::Binary(Bytes::from(bytes)));
+        if result.is_ok() {
+            result = ws.flush();
+        }
         match result {
             Ok(()) => {}
             Err(tungstenite::Error::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -143,10 +145,6 @@ impl Net {
             }
             conn.closing.get_or_insert_with(Instant::now);
         }
-    }
-
-    pub fn peer(&self, id: ConnId) -> Option<SocketAddr> {
-        self.conns.get(&id).map(|c| c.peer)
     }
 
     pub fn age(&self, id: ConnId) -> Option<std::time::Duration> {
@@ -183,7 +181,10 @@ impl Net {
                             match conn.decoder.next_message() {
                                 Ok(Some(Decoded::Message(m))) => {
                                     if proto::Direction::of(m.type_id()) != proto::Direction::ClientToServer {
-                                        events.push(NetEvent::ProtocolError(id, format!("{} sent by a client", m.name())));
+                                        events.push(NetEvent::ProtocolError(
+                                            id,
+                                            format!("{} sent by a client", m.name()),
+                                        ));
                                         conn.closing.get_or_insert_with(Instant::now);
                                         break;
                                     }
@@ -248,17 +249,6 @@ impl Net {
     pub fn drop_conn(&mut self, id: ConnId) -> Option<RegistrationToken> {
         self.conns.remove(&id).and_then(|c| c.token)
     }
-
-    pub fn service_all(&mut self) -> (Vec<NetEvent>, Vec<RegistrationToken>) {
-        let mut events = Vec::new();
-        let mut tokens = Vec::new();
-        for id in self.ids() {
-            let (e, t) = self.service(id);
-            events.extend(e);
-            tokens.extend(t);
-        }
-        (events, tokens)
-    }
 }
 
 fn state_accept<S: HasNet>(state: &mut S, stream: TcpStream, peer: SocketAddr) {
@@ -284,10 +274,8 @@ fn state_accept<S: HasNet>(state: &mut S, stream: TcpStream, peer: SocketAddr) {
             return;
         }
     };
-    net.conns.insert(
-        id,
-        Conn { socket, decoder: StreamDecoder::new(), token: None, peer, opened: Instant::now(), closing: None },
-    );
+    net.conns
+        .insert(id, Conn { socket, decoder: StreamDecoder::new(), token: None, opened: Instant::now(), closing: None });
     tracing::info!("connection {id} from {peer}");
     let token = state.loop_handle().insert_source(
         Generic::new(registration, Interest::BOTH, Mode::Edge),

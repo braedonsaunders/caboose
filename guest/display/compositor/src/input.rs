@@ -3,7 +3,7 @@
 //! into the logical position of the surface under it within that window's tree.
 
 use crate::keymap::{self, Keysyms};
-use crate::state::{KeyboardFocus, State};
+use crate::state::State;
 use crate::windows::Surface;
 use caboose_display_protocol::{self as proto, buttons, TouchPhase};
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
@@ -34,6 +34,9 @@ const BUTTONS: [(u32, u32); 5] = [
 /// Logical pixels per wheel click, as libinput reports for a mouse wheel.
 const WHEEL_STEP: f64 = 15.0;
 
+/// A surface and its origin in the logical space.
+type Focus = (WlSurface, Point<f64, Logical>);
+
 #[derive(Default)]
 pub struct InputState {
     pub keysyms: Keysyms,
@@ -60,7 +63,7 @@ impl InputState {
 impl State {
     /// The logical position of a window-local display-pixel point, and the surface
     /// under it with that surface's origin.
-    fn locate(&self, id: u64, x: f64, y: f64) -> Option<(Point<f64, Logical>, Option<(WlSurface, Point<f64, Logical>)>)> {
+    fn locate(&self, id: u64, x: f64, y: f64) -> Option<(Point<f64, Logical>, Option<Focus>)> {
         let w = self.windows.get(id)?;
         let display = self.displays.resolve(Some(w.display));
         let origin = self.windows.logical_origin(id, &self.displays).to_f64();
@@ -125,7 +128,8 @@ impl State {
         }
         self.input.pointer_buttons = m.buttons;
         if let Some(scroll) = &m.scroll {
-            let display_scale = self.windows.get(m.id).map(|w| self.displays.resolve(Some(w.display)).info.scale).unwrap_or(1.0);
+            let display_scale =
+                self.windows.get(m.id).map(|w| self.displays.resolve(Some(w.display)).info.scale).unwrap_or(1.0);
             let mut frame = AxisFrame::new(time);
             if scroll.precise {
                 frame = frame.source(AxisSource::Finger);
@@ -209,7 +213,9 @@ impl State {
         let Some(pos) = self.input.keysyms.lookup(m.keysym) else {
             // Not on the layout: text-input-v3 can still take it as text.
             if m.pressed {
-                if let Some(c) = char::from_u32(smithay::input::keyboard::xkb::keysym_to_utf32(m.keysym.into())).filter(|c| *c != '\0') {
+                if let Some(c) = char::from_u32(smithay::input::keyboard::xkb::keysym_to_utf32(m.keysym.into()))
+                    .filter(|c| *c != '\0')
+                {
                     self.type_text(&c.to_string());
                 } else {
                     tracing::debug!("keysym 0x{:x} is not on the keymap", m.keysym);
@@ -325,8 +331,16 @@ impl State {
                     if let Some(size) = size {
                         s.size = Some(size);
                     }
-                    if fullscreen { s.states.set(XdgState::Fullscreen) } else { s.states.unset(XdgState::Fullscreen) };
-                    if maximized { s.states.set(XdgState::Maximized) } else { s.states.unset(XdgState::Maximized) };
+                    if fullscreen {
+                        s.states.set(XdgState::Fullscreen)
+                    } else {
+                        s.states.unset(XdgState::Fullscreen)
+                    };
+                    if maximized {
+                        s.states.set(XdgState::Maximized)
+                    } else {
+                        s.states.unset(XdgState::Maximized)
+                    };
                 });
                 if t.is_initial_configure_sent() {
                     t.send_pending_configure();
@@ -389,12 +403,5 @@ impl State {
             }
             self.input.touches.clear();
         }
-    }
-
-    pub fn focus_target(&self, id: u64) -> Option<KeyboardFocus> {
-        Some(match &self.windows.get(id)?.surface {
-            Surface::X11(x) => KeyboardFocus::X11(x.clone()),
-            s => KeyboardFocus::Wayland(s.wl_surface()?),
-        })
     }
 }

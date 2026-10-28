@@ -9,11 +9,11 @@
 //!   path on WSL2, where clients hand over wl_shm buffers and CUDA reaches the GPU
 //!   through /dev/dxg.
 
-use super::{convert, CpuImage, EncodeError, Encoder, Input, InputKind, Picture, Settings};
-use caboose_display_protocol::Rect;
+use super::{convert, CpuImage, EncodeError, Encoder, Input, Picture, Settings};
 use caboose_display_protocol::Codec;
-use ffmpeg_next as ff;
+use caboose_display_protocol::Rect;
 use ff::format::Pixel;
+use ffmpeg_next as ff;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
@@ -70,7 +70,13 @@ pub struct LavcEncoder {
 unsafe impl Send for LavcEncoder {}
 
 impl LavcEncoder {
-    pub fn new(family: Family, codec: Codec, width: u32, height: u32, settings: &Settings) -> Result<Self, EncodeError> {
+    pub fn new(
+        family: Family,
+        codec: Codec,
+        width: u32,
+        height: u32,
+        settings: &Settings,
+    ) -> Result<Self, EncodeError> {
         if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
             return Err(EncodeError(format!("{width}x{height} is not an even, non-empty size")));
         }
@@ -120,7 +126,7 @@ impl LavcEncoder {
                 options.set("qp", &settings.crf.to_string());
                 options.set("preset", &settings.preset);
                 options.set("profile", "high");
-                options.set("threads", &settings.threads.to_string());
+                options.set("threads", &settings.threads_for(width, height).to_string());
                 // Keyframes only on request: a new client, request_keyframe, a resize.
                 options.set("x264-params", "keyint=infinite:scenecut=0:repeat-headers=1:aud=0");
                 // Unchanged macroblocks are skipped from the damage hint (hint_changes).
@@ -130,12 +136,13 @@ impl LavcEncoder {
                 options.set("tune", "zerolatency");
                 options.set("crf", &settings.crf.to_string());
                 options.set("preset", "ultrafast");
+                // x265 pins its thread pool to NUMA nodes, which fails (noisily) inside
+                // containers; one encoder thread needs no pool.
+                let threads = settings.threads_for(width, height);
+                let pools = if threads <= 1 { "none".to_owned() } else { threads.to_string() };
                 options.set(
                     "x265-params",
-                    &format!(
-                        "keyint=-1:scenecut=0:repeat-headers=1:log-level=error:pools={}:frame-threads=1",
-                        settings.threads
-                    ),
+                    &format!("keyint=-1:scenecut=0:repeat-headers=1:log-level=none:pools={pools}:frame-threads=1"),
                 );
             }
             (Family::Software, Codec::Av1) => return Err(EncodeError("AV1 software encoding is not offered".into())),
@@ -196,8 +203,22 @@ impl LavcEncoder {
                 let damage = damage.filter(|_| self.shadow.len() == image.data.len());
                 Ok(match damage {
                     Some(d) => {
-                        let changed = convert::changed_blocks(&image.data, &mut self.shadow, image.stride, self.width, self.height, d);
-                        convert::bgrx_to_i420(&image.data, image.stride, self.width, self.height, Some(&changed), planes);
+                        let changed = convert::changed_blocks(
+                            &image.data,
+                            &mut self.shadow,
+                            image.stride,
+                            self.width,
+                            self.height,
+                            d,
+                        );
+                        convert::bgrx_to_i420(
+                            &image.data,
+                            image.stride,
+                            self.width,
+                            self.height,
+                            Some(&changed),
+                            planes,
+                        );
                         Some(changed)
                     }
                     None => {
@@ -257,23 +278,22 @@ impl Encoder for LavcEncoder {
         encoder_name(self.family, self.codec)
     }
 
-    fn input_kind(&self) -> InputKind {
-        InputKind::Cpu
-    }
-
     fn coded_size(&self) -> (u32, u32) {
         (self.width, self.height)
     }
 
     fn encode(&mut self, input: Input<'_>, keyframe: bool, damage: Option<&[Rect]>) -> Result<Picture, EncodeError> {
-        let Input::Cpu(image) = input else {
-            return Err(EncodeError(format!("{} takes system-memory pixels", self.name())));
-        };
+        let Input::Cpu(image) = input;
         let damage = if keyframe { None } else { damage };
         let t0 = std::time::Instant::now();
         let changed = self.convert(image, damage)?;
         let convert_us = t0.elapsed().as_micros();
-        unsafe { ff::ffi::av_frame_remove_side_data(self.picture.as_mut_ptr(), ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_VIDEO_HINT) };
+        unsafe {
+            ff::ffi::av_frame_remove_side_data(
+                self.picture.as_mut_ptr(),
+                ff::ffi::AVFrameSideDataType::AV_FRAME_DATA_VIDEO_HINT,
+            )
+        };
         if let (Some(changed), Codec::H264) = (&changed, self.codec) {
             tracing::trace!(
                 "{} of {} macroblock rows-runs changed, {} px",

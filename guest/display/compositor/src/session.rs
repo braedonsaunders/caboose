@@ -21,10 +21,8 @@ pub struct Session {
     pub conn: ConnId,
     /// The handshake is complete and windows are announced.
     pub ready: bool,
-    pub codec: Codec,
     pub backend: Backend,
     pub last_vsync: HashMap<u32, Instant>,
-    pub started: Instant,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
@@ -185,8 +183,7 @@ impl State {
             }),
         );
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
-        self.session =
-            Some(Session { conn, ready: true, codec, backend, last_vsync: HashMap::new(), started: Instant::now() });
+        self.session = Some(Session { conn, ready: true, backend, last_vsync: HashMap::new() });
         for w in self.windows.iter_mut() {
             w.announced = None;
             w.stream.reset_for_client();
@@ -351,10 +348,12 @@ impl State {
     /// An encoder finished a picture.
     pub fn on_encoded(&mut self, done: Done) {
         let Some(w) = self.windows.get_mut(done.window) else { return };
-        w.stream.return_image(done.image);
         if done.generation != self.generation {
-            return; // for a client that has gone
+            // For a client that has gone. The stream has moved on (and may have a new
+            // image whose damage history this one would break), so the image is dropped.
+            return;
         }
+        w.stream.return_image(done.image);
         w.stream.encoding = false;
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         match done.result {

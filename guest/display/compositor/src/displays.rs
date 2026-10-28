@@ -60,10 +60,6 @@ fn mode(d: &proto::Display) -> Mode {
 }
 
 impl Displays {
-    pub fn iter(&self) -> impl Iterator<Item = &DisplayOutput> {
-        self.list.iter()
-    }
-
     pub fn get(&self, id: u32) -> Option<&DisplayOutput> {
         self.list.iter().find(|d| d.info.id == id)
     }
@@ -84,11 +80,6 @@ impl Displays {
 
     pub fn ids(&self) -> Vec<u32> {
         self.list.iter().map(|d| d.info.id).collect()
-    }
-
-    /// The display whose output this is.
-    pub fn by_output(&self, output: &Output) -> Option<&DisplayOutput> {
-        self.list.iter().find(|d| &d.output == output)
     }
 
     /// Replaces the set. Unchanged displays keep their output; an empty set is ignored

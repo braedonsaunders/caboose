@@ -7,14 +7,9 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-[features]
-default = []
-# dmabuf → VA-API encode (libavcodec's *_vaapi encoders over DRM PRIME frames).
-vaapi = []
-
 [dependencies]
 caboose-display-protocol = { path = "../protocol" }
-ffmpeg-next = { version = "7.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+ffmpeg-next = { version = "7.1.0", default-features = false, features = ["codec", "format"] }
 libc = "0.2"
 png = "0.17"
 tracing = "0.1"
@@ -25,4 +20,4 @@ unicode-segmentation = "1.12"
 [dependencies.smithay]
 version = "0.7.0"
 default-features = false
-features = ["wayland_frontend", "desktop", "xwayland", "renderer_pixman", "renderer_gl", "backend_egl", "backend_gbm", "backend_drm"]
+features = ["wayland_frontend", "desktop", "xwayland", "renderer_pixman"]

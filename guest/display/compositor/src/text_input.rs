@@ -131,11 +131,6 @@ impl TextInputs {
             .collect()
     }
 
-    /// Whether `surface` has an enabled text input to send text to.
-    pub fn is_enabled(&mut self, surface: &WlSurface) -> bool {
-        !self.enabled_on(surface).is_empty()
-    }
-
     /// Sends one atomic text change to the surface's enabled text inputs. Returns false
     /// if there were none (the caller falls back to key presses).
     pub fn send(
