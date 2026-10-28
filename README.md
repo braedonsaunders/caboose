@@ -148,10 +148,13 @@ Then:
    it; until the first release is published, build it with `guest/image/build.sh`, which
    writes `base.raw`, `vmlinux` and `initrd` to `/data/caboose/disks`, the host's disk root
    ([guest/image](guest/image/README.md), [apps/host › Images](apps/host/README.md#images)).
-2. **Open the console** at `http://localhost:7310` (or behind your HTTPS proxy), sign in
-   with the owner token, open your computer under **Computers**, and on **Phones** use
-   **Sign in a phone**: scan the QR code with the iPhone. **New computer** adds more
-   computers, each with its own disk and phones.
+2. **Set it up** with the link the host prints on first start
+   (`Set up Caboose: http://…/setup?code=…`, also in `setup-code` in its state directory):
+   make your account and your household or team. Then open your computer under
+   **Computers**, and on **Phones** use **Sign in a phone**: scan the QR code with the
+   iPhone. **New computer** adds a computer for someone else, each with its own disk and
+   phones; **People** invites other administrators by link, and **Tenants** adds more
+   households or teams with quotas.
 3. **Build the iOS app** with XcodeGen ([apps/ios](apps/ios/README.md)).
 
 The host listens on loopback by default and speaks plain HTTP. Put HTTPS in front of it

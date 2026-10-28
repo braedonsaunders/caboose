@@ -3,7 +3,8 @@ import {
   Alert, AlertDescription, AlertTitle, Badge, Button, DetailHeader, DetailPageLayout, EmptyState, PageContainer, SubtabNav,
 } from '@braedonsaunders/appkit-ui'
 import { Monitor, Power, RotateCcw, Sunrise } from 'lucide-react'
-import { OWNER_COMPUTER, formatMemoryMb, type CabooseClient } from '../api.js'
+import { OWNER_COMPUTER, formatMemoryMb, type CabooseClient, type Me } from '../api.js'
+import { Assignment } from '../components/Assignment.js'
 import { useComputerActions } from '../actions.js'
 import { COMPUTER_TABS, navigate, routeHref, type ComputerTab } from '../navigation.js'
 import { availableActions, stateLabel, stateTone } from '../state.js'
@@ -17,16 +18,18 @@ import { Phones } from './computer/Phones.js'
 import { Settings } from './computer/Settings.js'
 
 /** One computer: its state and lifecycle actions above, and a tab for each thing an owner manages. */
-export function Computer({ client: hostClient, computers, id, host, tab, onUnauthorized }: {
+export function Computer({ client: hostClient, computers, id, host, me, tab, onUnauthorized }: {
   client: CabooseClient
   computers: ComputersHandle
   id: string
+  me: Me
   host: HostHandle
   tab: ComputerTab
   onUnauthorized: () => void
 }) {
   const client = React.useMemo(() => hostClient.forComputer(id), [hostClient, id])
   const computer = useComputerHandle(computers, id)
+  const summary = computers.list?.computers.find(entry => entry.id === id)
   const { status, error } = computer
   const actions = useComputerActions(client, computer)
 
@@ -135,6 +138,7 @@ export function Computer({ client: hostClient, computers, id, host, tab, onUnaut
         <Settings
           client={client}
           computer={computer}
+          assignment={summary ? <Assignment client={hostClient} computer={summary} me={me} onChanged={computers.refresh} /> : null}
           onDelete={id === OWNER_COMPUTER ? undefined : async () => {
             await hostClient.deleteComputer(id)
             await computers.refresh()

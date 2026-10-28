@@ -1,6 +1,6 @@
 import * as React from 'react'
 import type { SidebarNavGroup } from '@braedonsaunders/appkit-ui'
-import { Gauge, Monitor, Server } from 'lucide-react'
+import { Building2, Gauge, Monitor, Server, Users } from 'lucide-react'
 
 /** The computer's page is split into tabs, each with its own address. */
 export type ComputerTab = 'overview' | 'files' | 'apps' | 'phones' | 'settings'
@@ -9,7 +9,12 @@ export type Route =
   | { page: 'overview' }
   | { page: 'computers' }
   | { page: 'computer'; id: string; tab: ComputerTab }
+  | { page: 'people' }
+  | { page: 'tenants' }
   | { page: 'host' }
+  /** Pages outside the console: setting the host up, and accepting an invitation. */
+  | { page: 'setup' }
+  | { page: 'invite' }
 
 export const COMPUTER_TABS: Array<{ key: ComputerTab; label: string }> = [
   { key: 'overview', label: 'Overview' },
@@ -30,12 +35,22 @@ const LEGACY: Record<string, ComputerTab> = { '/apps': 'apps', '/files': 'files'
 
 const icon = (Icon: typeof Server) => React.createElement(Icon, { className: 'size-4', 'aria-hidden': true })
 
-/** One entry per group, so the sidebar stays a flat list (appkit-ui's isFlatNavigation). */
-export const NAVIGATION_GROUPS: SidebarNavGroup[] = [
-  { href: '/', label: 'Overview', icon: icon(Gauge), exact: true, mobile: true },
-  { href: '/computers', label: 'Computers', icon: icon(Monitor), mobile: true },
-  { href: '/host', label: 'Host', icon: icon(Server), mobile: true },
-].map(item => ({ id: item.href === '/' ? 'overview' : item.href.slice(1), label: item.label, items: [item] }))
+/**
+ * The sidebar, one entry per group so it stays a flat list (appkit-ui's isFlatNavigation).
+ * Tenants and Host are the operator's; a tenant's administrators see their own computers and
+ * people.
+ */
+export function navigationGroups(operator: boolean): SidebarNavGroup[] {
+  return [
+    { href: '/', label: 'Overview', icon: icon(Gauge), exact: true, mobile: true },
+    { href: '/computers', label: 'Computers', icon: icon(Monitor), mobile: true },
+    { href: '/people', label: 'People', icon: icon(Users), mobile: true },
+    ...(operator ? [
+      { href: '/tenants', label: 'Tenants', icon: icon(Building2), mobile: true },
+      { href: '/host', label: 'Host', icon: icon(Server), mobile: true },
+    ] : []),
+  ].map(item => ({ id: item.href === '/' ? 'overview' : item.href.slice(1), label: item.label, items: [item] }))
+}
 
 function tabOf(value: string | undefined): ComputerTab {
   return COMPUTER_TABS.find(entry => entry.key !== 'overview' && entry.key === value)?.key ?? 'overview'
@@ -45,6 +60,10 @@ export function parseRoute(raw: string): Route {
   const clean = raw.split('?')[0]?.replace(/\/+$/, '') || '/'
   if (clean === '/host' || clean === '/system' || clean.startsWith('/system/')) return { page: 'host' }
   if (clean === '/computers') return { page: 'computers' }
+  if (clean === '/people') return { page: 'people' }
+  if (clean === '/tenants') return { page: 'tenants' }
+  if (clean === '/setup') return { page: 'setup' }
+  if (clean === '/invite') return { page: 'invite' }
   const [, section, id, tab] = clean.split('/')
   if (section === 'computers' && id) return COMPUTER_ID.test(id) ? { page: 'computer', id, tab: tabOf(tab) } : { page: 'computers' }
   if (section === 'computer' && clean.split('/').length <= 3) return { page: 'computer', id: OWNER, tab: tabOf(id) }
@@ -57,6 +76,10 @@ export function routeHref(route: Route): string {
     case 'overview': return '/'
     case 'computers': return '/computers'
     case 'host': return '/host'
+    case 'people': return '/people'
+    case 'tenants': return '/tenants'
+    case 'setup': return '/setup'
+    case 'invite': return '/invite'
     case 'computer': {
       const base = `/computers/${encodeURIComponent(route.id)}`
       return route.tab === 'overview' ? base : `${base}/${route.tab}`

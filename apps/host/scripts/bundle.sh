@@ -77,6 +77,7 @@ echo "Collecting production dependencies"
 mkdir -p "$root/app/apps/host" "$root/app/apps/web" "$root/app/guest/catalog" "$root/bin"
 cp -R "$work/host/node_modules" "$work/host/package.json" "$root/app/apps/host/"
 cp -R "$repo/apps/host/dist" "$root/app/apps/host/dist"
+cp -R "$repo/apps/host/migrations" "$root/app/apps/host/migrations"
 cp -R "$repo/apps/web/dist" "$root/app/apps/web/dist"
 # The guest components the host installs: exactly the files their manifest lists.
 ( cd "$repo/guest" && node -e '

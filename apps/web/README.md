@@ -1,20 +1,32 @@
 # Caboose console
 
 The web console for a self-hosted Caboose host. `caboose-host` serves the built console at
-`/` on the same port as its API. Sign in with the owner token.
+`/` on the same port as its API.
 
-The console is for running the server, not for using the computer: that is the iPhone
-app's job. Launching apps, agent tasks and choosing a default agent live in the app, and
-the console does not repeat them.
+The console is for administrators running the server, not for using a computer: that is the
+iPhone app's job, and the people who use the computers need no account. Launching apps, agent
+tasks and choosing a default agent live in the app, and the console does not repeat them.
 
-- **Overview** — the host at a glance: what all the computers are given between them of the
-  machine's memory and CPUs, free disk for their disks and snapshots, the computers with
-  their state, size, connected screens and auto-park, and anything that needs attention (a
-  missing `/dev/kvm`, a desk error, a computer's lifecycle error or failed guest-component
-  update).
-- **Computers** — every computer on the host, and **New computer**: a name, memory, vCPUs
-  and auto-park, validated against the host's limits. A new computer is parked until it is
-  first opened.
+- **Setup** (`/setup`) — on a new host, from the link it prints: your name, email, password
+  and first household or team. That account is the operator's.
+- **Sign in** — email and password. The owner token works too, kept for the tab only.
+- **Invitation** (`/invite?token=…`) — a new administrator chooses a name and password; one
+  with an account confirms it with their password.
+
+- **Overview** — for the operator, the host at a glance: what all the computers are given
+  between them of the machine's memory and CPUs, free disk for their disks and snapshots,
+  the computers, and anything that needs attention (a missing `/dev/kvm`, a desk error, a
+  computer's lifecycle error or failed guest-component update). For another administrator,
+  their computers against their tenant's quotas.
+- **Computers** — the computers the administrator manages, with whose each is and (with more
+  than one) its household or team, and **New computer**: a name, the person who uses it, the
+  household or team, memory, vCPUs and auto-park. A new computer is parked until it is first
+  opened, and must fit its tenant's quotas.
+- **People** — a tenant's administrators, and **Invite administrator**: an email, then a
+  single-use link to copy and send, valid for seven days. Waiting invitations can be
+  withdrawn; a tenant keeps at least one administrator.
+- **Tenants** (the operator's) — every household or team with what its computers are given
+  and use against its memory, vCPU and disk quotas; make, edit and delete them.
 - **A computer** (`/computers/<id>`) — its state, size and Wake, Park now and Restart
   (confirmed first) above a tab for each thing an owner manages. Every request on these
   tabs goes to `/v1/computers/<id>/…`:
@@ -39,10 +51,12 @@ the console does not repeat them.
     APNs key it says how to configure one.
   - **Settings** — name, memory, vCPUs and auto-park, validated against the host's
     `limits`. Edits made from another device are followed unless there are unsaved edits
-    here; "Save and restart" applies new resources in one step. Any computer but the owner's
+    here; "Save and restart" applies new resources in one step. **Who uses it** names the
+    person whose computer it is, and lets the operator move it to another tenant. Any
+    computer but the owner's
     can be deleted here once its name is typed: its disk, files, phones and notifications go
     with it.
-- **Host** — the host version, runtime, GPU, the machine's memory, CPUs and disk, image,
+- **Host** (the operator's) — the host version, runtime, GPU, the machine's memory, CPUs and disk, image,
   health from `/v1/health`, push and Live Activities configuration, and the non-secret
   `CABOOSE_*` variables the host started with (`GET /v1/host`). These are read-only: they
   change by editing the host's environment and restarting it, which the page explains.
@@ -57,9 +71,9 @@ forms, tables, dialogs, progress, confirm and prompt dialogs and toasts, and
 storage and is sent as `Authorization: Bearer`, never in a URL. Status and health are polled
 over HTTP, which holds no lease, so an open console never keeps a computer awake.
 
-Limitations: the console signs in with the owner token, so there are no accounts, people or
-tenants yet; phones signed in with the owner token rather than a pairing code are not
-listed, and only changing the token signs them out; a single large upload shows which file
+Limitations: the host sends no email, so invitations are links to copy; there is no password
+reset yet (the owner token still opens the console); phones signed in with the owner token
+rather than a pairing code are not listed, and only changing the token signs them out; a single large upload shows which file
 is uploading but not its progress (the browser's `fetch` reports none); push registrations
 are listed by fingerprint only; Live Activity registrations are not shown.
 A download is held in the browser's memory before it is saved, because the token goes in a

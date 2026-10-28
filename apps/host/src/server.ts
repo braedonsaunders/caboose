@@ -7,6 +7,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
+import { NOT_FOUND, json, readJson } from './http.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
@@ -18,11 +19,15 @@ import { AgentRegistry } from './registry.js'
 import { PhoneHandoff, readPhoneFile } from './phone.js'
 import { SettingsInputError, settingsLimits, updateSettings, type ComputerSettings, type SettingsStore } from './settings.js'
 import { MAX_SLOTS } from './network.js'
-import { ComputerCapacityError, OWNER_COMPUTER, PairingCodes, PairingRateLimitError, phoneName, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
+import { ComputerCapacityError, OWNER_COMPUTER, PairingCodes, PairingRateLimitError, personName, phoneName, type ComputerAssignment, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
+import { toNodeHandler } from 'better-auth/node'
+import { IdentityConflictError, IdentityInputError, IdentityNotFoundError, type AdminPrincipal, type Identity } from './identity/service.js'
+import { SignInThrottle, administers, isSignInAttempt, tenancyRoute, tenantUsage, webHeaders, type TenancyContext } from './identity/routes.js'
 import type { DisplayProtocol } from './config.js'
 import { DisplayNotReadyError } from './display.js'
 import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
+import { ReachUnavailableError, type ReachService } from './reach.js'
 import { DesktopNotifications } from './desktop-notifications.js'
 import type { PushService } from './push.js'
 import type { HostInfo, MachineResources } from './host-info.js'
@@ -58,42 +63,39 @@ export interface Controller extends ComputerDriver<Session> {
 /** Body limits: base64 inflates by a third, plus room for the JSON around it. */
 const TASK_BODY_LIMIT = 15 * 1024 * 1024
 
-async function readJson(request: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = []
-  let size = 0
-  for await (const chunk of request) {
-    size += chunk.length
-    if (size > limit) throw new AgentInputError('request body too large')
-    chunks.push(chunk as Buffer)
-  }
-  if (!size) return {}
-  try {
-    const value = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-    if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
-  } catch {}
-  throw new AgentInputError('request body must be a JSON object')
-}
 
 /** Who a request is from: the owner (the host's own token), or a phone signed in to one computer. */
-export type Principal = { kind: 'owner'; phoneId?: undefined } | { kind: 'phone'; phoneId: string; computerId: string }
+/** Who a request is from: the owner token, an administrator signed in to the console, or a phone signed in to one computer. */
+export type Principal =
+  | { kind: 'owner'; phoneId?: undefined }
+  | (AdminPrincipal & { phoneId?: undefined })
+  | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
 export interface ComputerPieces { settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService }
 
-/** A computer route that does not exist, as opposed to one that answered. */
-const NOT_FOUND = Symbol('not found')
-
-function json(response: ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-  response.end(JSON.stringify(body))
-}
 
 /**
  * Everything one computer serves: its lifecycle and leases, sockets and display relay, agents,
  * catalog, files, media, and the push and Live Activity registrations of its phones.
  */
-function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number }) {
-  const { controller, settings, push, activities } = pieces
+/** Checks a computer may run, or be given these resources, before it does; throws when not. */
+type Admission = (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'>) => Promise<void>
+
+/** A controller whose wakes are admitted first. */
+function withAdmission(controller: Controller, admit: () => Promise<void>): Controller {
+  const gated = Object.create(controller) as Controller
+  gated.wake = async () => {
+    await admit()
+    return controller.wake()
+  }
+  return gated
+}
+
+function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; admit?: Admission }) {
+  const { settings, push, activities } = pieces
+  const admit = shared.admit
+  const controller = admit ? withAdmission(pieces.controller, () => admit(id)) : pieces.controller
   const computer = new ComputerLifecycle(controller, settings.get().idleMs)
   const sockets = new Set<WebSocket>()
   const controls = new Set<WebSocket>()
@@ -327,6 +329,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (request.method === 'PATCH' && path === '/v1/computer/settings') {
       const input = await readJson(request)
       if ('defaultAgent' in input) await catalog.ensureKnown(input.defaultAgent)
+      if (admit && ('memoryMb' in input || 'vcpus' in input)) await admit(id, updateSettings(settings.get(), input, settings.limits))
       const updated = await settings.update(input)
       computer.setIdleMs(updated.idleMs)
       broadcastSettings()
@@ -525,7 +528,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const refuse = (status: string) => { if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`) }
     let query: TerminalQuery
     try { query = parseTerminalQuery(url.searchParams) } catch { return refuse('400 Bad Request') }
-    const client = principal.phoneId ?? 'owner'
+    const client = principal.phoneId ?? (principal.kind === 'admin' ? principal.userId : 'owner')
     const open = [...terminals.values()].filter(owner => owner === client).length + (pendingTerminals.get(client) ?? 0)
     if (open >= MAX_TERMINALS) return refuse('429 Too Many Requests')
     if (!computer.acceptsConnections && !query.wake) return refuse('409 Conflict')
@@ -638,6 +641,8 @@ export interface Fleet {
   existing?: Array<{ record: ComputerRecord; pieces: ComputerPieces }>
   /** How many may run at once, or null when the runtime sets no limit. */
   maxRunning: number | null
+  /** Bytes a computer's disk uses on the host, or null when the runtime cannot tell. */
+  diskBytes?(record: ComputerRecord): Promise<number | null>
 }
 
 export function createCabooseServer(options: ComputerPieces & {
@@ -650,44 +655,119 @@ export function createCabooseServer(options: ComputerPieces & {
   host?: HostInfo
   /** The machine's memory, CPUs and disk, for `GET /v1/health`. */
   machine?: () => Promise<MachineResources>
+  /** How phones find and reach this host, for `/v1/host/reach`. */
+  reach?: ReachService
   fleet?: Fleet
+  /** Accounts and tenants. Without it the owner token and phones are the only principals. */
+  identity?: Identity
 }) {
-  const shared = { registry: options.registry ?? new AgentRegistry(), ...(options.agentIdleMs !== undefined ? { agentIdleMs: options.agentIdleMs } : {}) }
+  const identity = options.identity
+  const authHandler = identity ? toNodeHandler(identity.auth) : undefined
+  const throttle = new SignInThrottle()
+  const shared = {
+    registry: options.registry ?? new AgentRegistry(),
+    ...(options.agentIdleMs !== undefined ? { agentIdleMs: options.agentIdleMs } : {}),
+    ...(identity ? { admit: (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'>) => admit(id, next, !next) } : {}),
+  }
   const owner = createComputerRuntime(OWNER_COMPUTER, options, shared)
   const runtimes = new Map<string, ComputerRuntime>([[OWNER_COMPUTER, owner]])
   for (const { record, pieces } of options.fleet?.existing ?? []) runtimes.set(record.id, createComputerRuntime(record.id, pieces, shared))
-  const records = () => options.fleet?.computers.list() ?? [{ id: OWNER_COMPUTER, slot: 0, createdAt: null }]
-  const describe = (runtime: ComputerRuntime) => ({ id: runtime.id, createdAt: records().find(c => c.id === runtime.id)?.createdAt ?? null, ...runtime.managementStatus() })
+  const records = (): ComputerRecord[] => options.fleet?.computers.list() ?? [{ id: OWNER_COMPUTER, slot: 0, createdAt: null, tenantId: null, person: null }]
+  const recordOf = (id: string) => records().find(c => c.id === id)
+  const describe = (runtime: ComputerRuntime) => {
+    const record = recordOf(runtime.id)
+    return { id: runtime.id, createdAt: record?.createdAt ?? null, tenantId: record?.tenantId ?? null, person: record?.person ?? null, ...runtime.managementStatus() }
+  }
+  const tenancy: TenancyContext | undefined = identity && {
+    identity,
+    computers: () => records().flatMap(record => {
+      const runtime = runtimes.get(record.id)
+      return runtime && !deleting.has(record.id) ? [{ record, settings: runtime.settings.get() }] : []
+    }),
+    diskBytes: async id => {
+      const record = recordOf(id)
+      return record && options.fleet?.diskBytes ? options.fleet.diskBytes(record) : null
+    },
+    adoptUnassigned: async tenantId => { await options.fleet?.computers.adoptUnassigned(tenantId) },
+  }
+
+  /**
+   * A tenant's computers may not be given more memory or vCPUs between them than its quotas
+   * allow, nor (when one wakes) use more disk. `next` is a computer's proposed size, or a
+   * new computer's when `id` is not yet a computer; `waking` also checks the disk.
+   */
+  async function admit(id: string, next: Pick<ComputerSettings, 'memoryMb' | 'vcpus'> | undefined, waking: boolean, tenantId = recordOf(id)?.tenantId ?? null): Promise<void> {
+    if (!tenancy || !tenantId) return
+    const tenant = await identity!.tenant(tenantId).catch(() => null)
+    if (!tenant) return
+    const { quotas } = tenant
+    const usage = await tenantUsage(tenancy, tenantId)
+    const current = tenancy.computers().find(computer => computer.record.id === id && computer.record.tenantId === tenantId)?.settings
+    const memoryMb = usage.memoryMb - (current?.memoryMb ?? 0) + (next?.memoryMb ?? current?.memoryMb ?? 0)
+    const vcpus = usage.vcpus - (current?.vcpus ?? 0) + (next?.vcpus ?? current?.vcpus ?? 0)
+    if (quotas.memoryMb !== null && memoryMb > quotas.memoryMb) {
+      throw new ComputerConflictError(`${tenant.name}'s computers would be given ${memoryMb} MiB of memory; its quota is ${quotas.memoryMb} MiB`)
+    }
+    if (quotas.vcpus !== null && vcpus > quotas.vcpus) {
+      throw new ComputerConflictError(`${tenant.name}'s computers would be given ${vcpus} vCPUs; its quota is ${quotas.vcpus}`)
+    }
+    if (waking && quotas.diskGb !== null && usage.diskBytes !== null && usage.diskBytes > quotas.diskGb * 1024 ** 3) {
+      throw new ComputerConflictError(`${tenant.name}'s computers use ${(usage.diskBytes / 1024 ** 3).toFixed(1)} GiB of disk; its quota is ${quotas.diskGb} GiB`)
+    }
+  }
   const deleting = new Set<string>()
   const pairing = new PairingCodes()
 
-  function principalOf(request: IncomingMessage): Principal | undefined {
+  async function principalOf(request: IncomingMessage): Promise<Principal | undefined> {
     if (authenticate(request.headers.authorization, options.token)) return { kind: 'owner' }
     const header = request.headers.authorization
-    if (!header?.startsWith('Bearer ') || !options.fleet) return undefined
-    const phone = options.fleet.phones.resolve(header.slice(7))
-    return phone && runtimes.has(phone.computerId) ? { kind: 'phone', ...phone } : undefined
+    if (header?.startsWith('Bearer ') && options.fleet) {
+      const phone = options.fleet.phones.resolve(header.slice(7))
+      return phone && runtimes.has(phone.computerId) ? { kind: 'phone', ...phone } : undefined
+    }
+    return identity && !header ? identity.principal(webHeaders(request)) : undefined
   }
 
-  /** The computer a path names (`/v1/computers/<id>/…`, owner only) or the principal's own, with the path it serves. */
+  /** Whether a principal may manage a computer: the operator any, an administrator their tenants'. */
+  function manages(principal: Principal, id: string): boolean {
+    if (principal.kind === 'phone') return false
+    return administers(principal, recordOf(id)?.tenantId ?? null)
+  }
+
+  /**
+   * The computer a path names (`/v1/computers/<id>/…`, for whoever manages it) or the
+   * principal's own, with the path it serves. The routes without an id serve the owner's
+   * computer to the owner token and the operator, and a phone's computer to that phone.
+   */
   function target(path: string, principal: Principal): { runtime: ComputerRuntime; path: string } | 'forbidden' | undefined {
     const scoped = /^\/v1\/computers\/([^/]+)(\/.+)$/.exec(path)
     if (scoped) {
-      if (principal.kind !== 'owner') return 'forbidden'
+      if (principal.kind === 'phone') return 'forbidden'
       const runtime = runtimes.get(decodeURIComponent(scoped[1]!))
-      return runtime && !deleting.has(runtime.id) ? { runtime, path: `/v1${scoped[2]}` } : undefined
+      return runtime && !deleting.has(runtime.id) && manages(principal, runtime.id) ? { runtime, path: `/v1${scoped[2]}` } : undefined
     }
+    if (principal.kind === 'admin' && !principal.operator) return 'forbidden'
     const runtime = runtimes.get(principal.kind === 'phone' ? principal.computerId : OWNER_COMPUTER)
     return runtime ? { runtime, path } : undefined
   }
 
-  async function createComputer(input: Record<string, unknown>): Promise<ComputerRuntime> {
+  async function createComputer(input: Record<string, unknown>, principal: Principal): Promise<ComputerRuntime> {
     const fleet = options.fleet
     if (!fleet) throw new ComputerConflictError('This host serves one computer')
-    if (!('name' in input)) throw new SettingsInputError('name is required')
-    if ('defaultAgent' in input) throw new SettingsInputError('Unknown setting: defaultAgent')
-    const initial = updateSettings({ name: 'Computer', defaultAgent: null, ...fleet.defaults }, input, settingsLimits())
-    const record = await fleet.computers.create()
+    const { tenantId: requestedTenant, person: requestedPerson, ...settingsInput } = input
+    if (!('name' in settingsInput)) throw new SettingsInputError('name is required')
+    if ('defaultAgent' in settingsInput) throw new SettingsInputError('Unknown setting: defaultAgent')
+    const initial = updateSettings({ name: 'Computer', defaultAgent: null, ...fleet.defaults }, settingsInput, settingsLimits())
+    const person = personName(requestedPerson)
+    let tenantId: string | null = null
+    if (identity) {
+      if (typeof requestedTenant !== 'string') throw new SettingsInputError('tenantId is required')
+      if (principal.kind === 'phone' || !administers(principal, requestedTenant)) throw new SettingsInputError('tenant not found')
+      await identity.tenant(requestedTenant)
+      tenantId = requestedTenant
+      await admit('', initial, false, tenantId)
+    } else if (requestedTenant !== undefined) throw new SettingsInputError('This host has no tenants')
+    const record = await fleet.computers.create({ tenantId, person })
     try {
       const runtime = createComputerRuntime(record.id, await fleet.open(record, initial), shared)
       runtimes.set(record.id, runtime)
@@ -719,9 +799,17 @@ export function createCabooseServer(options: ComputerPieces & {
     void (async () => {
       const path = new URL(request.url ?? '/', 'http://localhost').pathname
       if (path !== '/v1' && !path.startsWith('/v1/')) {
+        // Until the host is claimed, its setup page requires the one-time setup code.
+        if (path === '/setup' && identity) {
+          if (await identity.claimed()) { response.writeHead(302, { location: '/' }); return response.end() }
+          const code = new URL(request.url ?? '/', 'http://localhost').searchParams.get('code')
+          if (!await identity.setupCodeMatches(code)) return json(response, 403, { error: 'Open the setup link the host printed' })
+        }
         if (options.webRoot) return serveWeb(request, response, options.webRoot, path)
         return json(response, 404, { error: 'not found' })
       }
+      if (identity && isSignInAttempt(request.method, path) && !throttle.allow(request)) return json(response, 429, { error: 'Too many sign-in attempts from here; try again in a few minutes' })
+      if (authHandler && path.startsWith('/v1/auth/')) return authHandler(request, response)
       if (request.method === 'POST' && path === '/v1/pair') {
         // The one route without a token: a pairing code is the credential.
         const input = await readJson(request)
@@ -734,27 +822,49 @@ export function createCabooseServer(options: ComputerPieces & {
         const { token } = await fleet.phones.mint(runtime.id, deviceName)
         return json(response, 201, { token, computer: { id: runtime.id, name: runtime.settings.get().name } })
       }
-      const principal = principalOf(request)
+      const principal = await principalOf(request)
+      if (tenancy && await tenancyRoute(tenancy, request, response, path, principal) !== NOT_FOUND) return
       if (!principal) return json(response, 401, { error: 'unauthorized' })
-      const ownerOnly = path === '/v1/health' || path === '/v1/host' || path === '/v1/computers' || /^\/v1\/computers\/[^/]+(?:\/pairing|\/phones(?:\/[^/]+)?)?$/.test(path)
-      if (ownerOnly && principal.kind !== 'owner') return json(response, 403, { error: 'forbidden' })
+      const fleetRoute = path === '/v1/computers' || /^\/v1\/computers\/[^/]+(?:\/pairing|\/phones(?:\/[^/]+)?)?$/.test(path)
+      if (principal.kind === 'phone' && (fleetRoute || path === '/v1/health' || path === '/v1/host' || path.startsWith('/v1/host/'))) return json(response, 403, { error: 'forbidden' })
+      if ((path === '/v1/health' || path === '/v1/host' || path.startsWith('/v1/host/')) && !administers(principal, null)) return json(response, 403, { error: 'Only the operator sees the host' })
       if (request.method === 'GET' && path === '/v1/health') {
         return json(response, 200, { ...(options.controller.stats() as object), ...(options.machine ? { machine: await options.machine() } : {}) })
       }
       if (request.method === 'GET' && path === '/v1/host' && options.host) return json(response, 200, options.host)
+      if (path === '/v1/host/reach' && request.method === 'GET' && options.reach) return json(response, 200, await options.reach.status())
+      if (path === '/v1/host/reach/tailscale' && request.method === 'PUT' && options.reach) {
+        const input = await readJson(request)
+        if (typeof input.enabled !== 'boolean' || Object.keys(input).some(key => key !== 'enabled')) throw new SettingsInputError('Send { "enabled": true } or { "enabled": false }')
+        return json(response, 200, await options.reach.setTailscale(input.enabled))
+      }
       if (path === '/v1/computers' && request.method === 'GET') {
         return json(response, 200, {
-          computers: [...runtimes.values()].filter(r => !deleting.has(r.id)).map(describe),
+          computers: [...runtimes.values()].filter(r => !deleting.has(r.id) && manages(principal, r.id)).map(describe),
           canCreate: !!options.fleet, limits: { computers: options.fleet ? MAX_SLOTS : 1, running: options.fleet?.maxRunning ?? null },
         })
       }
-      if (path === '/v1/computers' && request.method === 'POST') return json(response, 201, describe(await createComputer(await readJson(request))))
+      if (path === '/v1/computers' && request.method === 'POST') return json(response, 201, describe(await createComputer(await readJson(request), principal)))
       const computerPath = /^\/v1\/computers\/([^/]+)(?:\/pairing|\/phones(?:\/([^/]+))?)?$/.exec(path)
       if (computerPath?.[1]) {
         const runtime = runtimes.get(decodeURIComponent(computerPath[1]))
-        if (!runtime || deleting.has(runtime.id)) return json(response, 404, { error: 'computer not found' })
+        if (!runtime || deleting.has(runtime.id) || !manages(principal, runtime.id)) return json(response, 404, { error: 'computer not found' })
         const phones = path.slice(`/v1/computers/${computerPath[1]}`.length)
         if (!phones && request.method === 'GET') return json(response, 200, describe(runtime))
+        if (!phones && request.method === 'PATCH') {
+          // A computer's person, and (for the operator) its tenant.
+          const input = await readJson(request)
+          for (const key of Object.keys(input)) if (key !== 'person' && key !== 'tenantId') throw new SettingsInputError(`Unknown field: ${key}`)
+          if (!options.fleet) throw new ComputerConflictError('This host serves one computer')
+          if ('tenantId' in input) {
+            if (!identity || !administers(principal, null)) throw new SettingsInputError('Only the operator moves computers between tenants')
+            if (typeof input.tenantId !== 'string') throw new SettingsInputError('tenantId must be a tenant id')
+            await identity.tenant(input.tenantId)
+            await admit(runtime.id, runtime.settings.get(), false, input.tenantId)
+          }
+          await options.fleet.computers.assign(runtime.id, input as Partial<ComputerAssignment>)
+          return json(response, 200, describe(runtime))
+        }
         if (!phones && request.method === 'DELETE') {
           if ((await readJson(request)).confirm !== true) throw new SettingsInputError('Deleting a computer deletes its disk and everything on it; confirm must be true')
           await deleteComputer(runtime)
@@ -781,9 +891,9 @@ export function createCabooseServer(options: ComputerPieces & {
       if (!routed) return json(response, 404, { error: 'computer not found' })
       if (await routed.runtime.handle(request, response, routed.path, principal) === NOT_FOUND) return json(response, 404, { error: 'not found' })
     })().catch(error => {
-      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError) return json(response, 400, { error: error.message })
-      if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError) return json(response, 404, { error: error.message })
-      if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError) return json(response, 409, { error: error.message })
+      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
+      if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError || error instanceof IdentityNotFoundError) return json(response, 404, { error: error.message })
+      if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError || error instanceof IdentityConflictError || error instanceof ReachUnavailableError) return json(response, 409, { error: error.message })
       if (error instanceof PairingRateLimitError) return json(response, 429, { error: error.message })
       if (error instanceof AgentOperationError || error instanceof TerminalServiceError) return json(response, 502, { error: error.message })
       console.error('Caboose request failed:', error)
@@ -792,15 +902,15 @@ export function createCabooseServer(options: ComputerPieces & {
     })
   })
 
-  server.on('upgrade', (request, socket, head) => {
+  server.on('upgrade', (request, socket, head) => void (async () => {
     const url = new URL(request.url ?? '/', 'http://localhost')
-    const principal = principalOf(request)
+    const principal = await principalOf(request).catch(() => undefined)
     if (!principal) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
     const routed = target(url.pathname, principal)
     if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
     if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
     routed.runtime.connect(request, socket, head, url, routed.path, principal)
-  })
+  })())
 
   async function shutdown(): Promise<void> {
     await Promise.all([...runtimes.values()].map(runtime => runtime.shutdown().catch(error => console.error(`Computer ${runtime.id} did not park:`, error))))

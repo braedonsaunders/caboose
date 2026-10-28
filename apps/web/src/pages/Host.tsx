@@ -9,12 +9,14 @@ import { formatMemoryMb } from '../api.js'
 import { formatBytes } from '../files.js'
 import { gpuLabel, healthFacts, runtimeLabel } from '../host.js'
 import type { HostHandle } from '../useHost.js'
+import type { CabooseClient } from '../api.js'
+import { RemoteAccess } from './host/RemoteAccess.js'
 
 /** Only the first value of a persisted setting: the computer's Settings override them once saved. */
 const INITIAL_ONLY = new Set(['CABOOSE_MEMORY_MB', 'CABOOSE_VCPUS', 'CABOOSE_IDLE_MS'])
 
 /** The host itself: what it runs on, how it was started and how it is doing. Read-only. */
-export function Host({ host }: { host: HostHandle }) {
+export function Host({ host, client, onUnauthorized }: { host: HostHandle; client: CabooseClient; onUnauthorized: () => void }) {
   const { info: hostInfo, infoError: hostError, health, healthError } = host
   const machine = health?.machine
 
@@ -23,7 +25,7 @@ export function Host({ host }: { host: HostHandle }) {
       <div className="space-y-6">
         <PageHeader
           title="Host"
-          description="The machine this console talks to: what it runs, how it was started and how it is doing. Everything here is read-only."
+          description="The machine this console talks to: what it runs, how it was started, how it is doing, and where phones can reach it."
         />
 
         {hostError ? (
@@ -70,6 +72,8 @@ export function Host({ host }: { host: HostHandle }) {
             )}
           </DashboardPanel>
         </div>
+
+        <RemoteAccess client={client} onUnauthorized={onUnauthorized} />
 
         {hostInfo ? (
           <DashboardPanel title="Notifications" icon={<Bell className="size-4" aria-hidden />}>

@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+import { publicUrl } from './reach.js'
 import { REGISTRY_URL } from './registry.js'
 
 export interface Config {
@@ -16,6 +17,8 @@ export interface Config {
   containerImage: string
   /** An OCI reference for the microVM image, fetched on first run when the disk root lacks it. */
   baseImage: string | null
+  /** Postgres for accounts and tenants; null keeps them in an embedded database in the image root. */
+  databaseUrl: string | null
   containerName: string
   /** A named volume or an absolute host path for /home/caboose. */
   containerHome: string
@@ -29,6 +32,10 @@ export interface Config {
   agentIdleMs: number
   /** How many microVM computers may run at once; waking one more waits for another to park. */
   maxRunning: number
+  /** `CABOOSE_PUBLIC_URL`: where phones reach this host from anywhere, first in every pairing link. */
+  publicUrl: string | null
+  /** `CABOOSE_MDNS`: advertise `_caboose._tcp` on the LAN (default on). */
+  mdns: boolean
 }
 
 /** What `/v1/session` tells the app to speak on `/v1/display` (docs/architecture.md, docs/display.md). */
@@ -58,6 +65,7 @@ export function config(env: NodeJS.ProcessEnv): Config {
     runtime: runtime(env.CABOOSE_RUNTIME),
     containerImage: env.CABOOSE_CONTAINER_IMAGE ?? 'caboose-computer:latest',
     baseImage: env.CABOOSE_BASE_IMAGE || null,
+    databaseUrl: env.CABOOSE_DATABASE_URL || null,
     containerName: env.CABOOSE_CONTAINER_NAME ?? 'caboose-owner',
     containerHome: env.CABOOSE_CONTAINER_HOME ?? 'caboose-home',
     containerArgs: (env.CABOOSE_CONTAINER_ARGS ?? '').split(/\s+/).filter(Boolean),
@@ -65,7 +73,15 @@ export function config(env: NodeJS.ProcessEnv): Config {
     agentRegistryUrl: registryUrl(env.CABOOSE_AGENT_REGISTRY_URL),
     agentIdleMs: integer(env.CABOOSE_AGENT_IDLE_MS, 600_000, 'CABOOSE_AGENT_IDLE_MS', 86_400_000),
     maxRunning: integer(env.CABOOSE_MAX_RUNNING, 4, 'CABOOSE_MAX_RUNNING', 64),
+    publicUrl: publicUrl(env.CABOOSE_PUBLIC_URL),
+    mdns: mdns(env.CABOOSE_MDNS),
   }
+}
+
+function mdns(value: string | undefined): boolean {
+  if (value === undefined || value === 'on') return true
+  if (value === 'off') return false
+  throw new Error('CABOOSE_MDNS must be "on" or "off"')
 }
 
 function registryUrl(value: string | undefined): string {

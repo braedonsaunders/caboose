@@ -186,13 +186,17 @@ the three packages public in its package settings before anonymous pulls work.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CABOOSE_OWNER_TOKEN` | generated | The bearer token for every `/v1` request. Unset: generated once into `${CABOOSE_IMAGE_ROOT}/owner-token`. |
+| `CABOOSE_OWNER_TOKEN` | generated | A bearer token for every `/v1` request, beside accounts (the installers use it). Unset: generated once into `${CABOOSE_IMAGE_ROOT}/owner-token`. |
+| `CABOOSE_DATABASE_URL` | unset | Postgres for accounts and tenants. Unset: an embedded PGlite database in `${CABOOSE_IMAGE_ROOT}/identity`. |
+| `CABOOSE_AUTH_SECRET` | generated | Signs sessions; 32 characters or more. Unset: generated once into `${CABOOSE_IMAGE_ROOT}/auth-secret`. |
 | `CABOOSE_BIND` | `127.0.0.1` | Listen address (`0.0.0.0` for every IPv4 interface). |
 | `CABOOSE_PORT` | `7310` | Listen port. |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Guest image, overlays, snapshots and the host's state files. |
 | `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
+| `CABOOSE_PUBLIC_URL` | unset | Where phones reach this host from anywhere, such as `https://caboose.example.com`; listed first in pairing links and used as the console auth base URL (auth defaults to loopback when unset). |
+| `CABOOSE_MDNS` | `on` | `off` stops advertising `_caboose._tcp` on the LAN. |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor (microVM). |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container`. |
 | `CABOOSE_BASE_IMAGE` | empty (release: pinned) | OCI reference fetched when the disk root lacks the image (microVM). |
@@ -218,6 +222,22 @@ file up with the disks and do not edit it while the host runs. Its push devices
 registry cache (`agent-registry.json`), the other computers (`computers.json`) and phone
 sign-ins (`phones.json`, SHA-256 digests only). Every other computer keeps its own
 `caboose.json`, `push-devices.json` and `activities.json` in `computers/<id>/`.
+
+## Accounts and tenants
+
+Administrators sign in to the console with an email and password; the people whose computers
+they run use only their phones and need no account. A tenant is a household or a team, with
+its computers, its administrators and quotas on memory, vCPUs and disk. The first account is
+the operator's, who sees every tenant and the host itself.
+
+A new host is unclaimed: it writes a one-time code to `${CABOOSE_IMAGE_ROOT}/setup-code` and
+logs `Set up Caboose: http://<address>:<port>/setup?code=<code>`. `/setup` opens with that
+code, including on the host itself: a local proxy may relay outside traffic without
+forwarding headers. It makes the operator's account and the first tenant, gives it the
+host's computers, and deletes the file. Other administrators join by invitation links
+from **People**. Accounts and sessions are AppKit's (`appkit-auth`, `appkit-db`) in the
+embedded database, or Postgres with `CABOOSE_DATABASE_URL`. Back up `identity/` (or the
+Postgres database) with the disks. The owner token keeps working for the whole API.
 
 ## Computers
 
@@ -406,6 +426,7 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft if needed, launches it and requires a new window. Close any PhotoCraft window first. |
 | `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |
 | `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk; the owner's computer is only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
+| `node apps/host/scripts/check-accounts.mjs` | Accounts and tenants: the setup state and the owner token's view, then a throwaway tenant with a memory quota, a computer within it made and one beyond it refused, a resize past it refused, and both deleted. It makes no accounts and verifies that setup requires its code even on loopback. |
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
 | `node apps/host/scripts/check-terminal.mjs` | Opens a terminal through `/v1/terminal` (waking the computer), checks the login shell's environment, resizes, lists the session, detaches, reattaches from its offset and receives what was written meanwhile, then exits the shell with a code. A failed check hangs the session up. |
 | `node apps/host/scripts/check-fs.mjs` | Creates a temporary directory, uploads, lists, downloads a byte range, moves, and trashes its files and the directory. |
