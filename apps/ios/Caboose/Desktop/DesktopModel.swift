@@ -310,6 +310,21 @@ final class DesktopModel {
                       width: width * pixelsPerPoint, height: height * pixelsPerPoint).integral
     }
 
+    /// Each window's place when the desktop last went down, in Linux pixels.
+    private var rememberedFrames: [Int: CGRect] = [:]
+
+    /// Keeps the windows' places for when this desktop comes back.
+    func remember(_ windows: [RemoteWindow]) {
+        rememberedFrames = Dictionary(windows.filter { !$0.isOverrideRedirect }.map { ($0.id, $0.frame) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// A window's remembered place, once, if it still fits on the desktop.
+    func remembered(_ window: RemoteWindow) -> CGRect? {
+        guard let frame = rememberedFrames.removeValue(forKey: window.id) else { return nil }
+        let bounds = CGRect(x: 0, y: 0, width: size.width * pixelsPerPoint, height: size.height * pixelsPerPoint)
+        return bounds.contains(frame) ? frame : nil
+    }
+
     /// A good first place for a new window: centred, cascading, clear of the dock.
     func placement(for window: RemoteWindow, index: Int) -> CGRect {
         let usable = CGSize(width: size.width, height: size.height - dockHeight - titleBarHeight)
