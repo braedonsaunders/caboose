@@ -15,6 +15,8 @@ pub struct Media {
     pub hevc_keyframe: Vec<u8>,
     /// A 16x16 RGBA PNG.
     pub png: Vec<u8>,
+    /// One 20 ms stereo Opus packet (a 440 Hz tone) from libopus.
+    pub opus_stereo: Vec<u8>,
 }
 
 pub enum Entry {
@@ -298,7 +300,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "audio-opus",
             "One 20 ms Opus packet (a valid silence frame).",
-            Message::Audio(Audio { codec: "opus".into(), pts_us: 1_234_580_000, data: vec![0xf8, 0xff, 0xfe] }),
+            Message::Audio(Audio { codec: "opus".into(), pts_us: 1_234_580_000, channels: None, data: vec![0xf8, 0xff, 0xfe] }),
         ),
         one(
             "video-create-passthrough",
@@ -353,6 +355,11 @@ pub fn all(media: &Media) -> Vec<Vector> {
         ),
         one("video-ack", "", Message::VideoAck { id: 2, seq: 41 }),
         one("video-keyframe", "", Message::VideoKeyframe { id: 1 }),
+        one(
+            "audio-opus-stereo",
+            "A decodable 20 ms stereo Opus packet (a 440 Hz tone, libopus), as the server sends: channels 2.",
+            Message::Audio(Audio { codec: "opus".into(), pts_us: 1_234_600_000, channels: Some(2), data: media.opus_stereo.clone() }),
+        ),
         one("pong", "", Message::Pong { t_us: 98_765_432_100 }),
         one("bye-auth", "Sent before closing on a token mismatch.", Message::Bye { reason: ByeReason::Auth }),
         one(
@@ -364,6 +371,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 decoders: vec![Codec::Hevc, Codec::Av1, Codec::H264],
                 displays: vec![phone(), tv()],
                 video_decoders: None,
+                audio_decoders: None,
             }),
         ),
         one(
@@ -375,6 +383,19 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 decoders: vec![Codec::Hevc, Codec::H264],
                 displays: vec![phone()],
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
+                audio_decoders: None,
+            }),
+        ),
+        one(
+            "client-hello-audio",
+            "client-hello-video plus the computer's sound.",
+            Message::ClientHello(ClientHello {
+                version: 0,
+                token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264],
+                displays: vec![phone()],
+                video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
+                audio_decoders: Some(vec!["opus".into()]),
             }),
         ),
         one("vsync", "", Message::Vsync { display: 1, t_us: 5_000_008_333 }),

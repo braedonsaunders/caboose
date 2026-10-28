@@ -1,5 +1,6 @@
 //! caboose-display: Caboose's headless Wayland compositor. See docs/display.md.
 
+mod audio;
 mod clipboard;
 mod config;
 mod displays;
@@ -130,7 +131,11 @@ fn launch_env(
 /// Once the compositor (and Xwayland) are up: the env file for launchers, and the
 /// command to run, if any.
 fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::path::Path>) {
-    let env = launch_env(&state.config, x_display, xauthority, state.videos.socket.as_deref());
+    let mut env = launch_env(&state.config, x_display, xauthority, state.videos.socket.as_deref());
+    if let Some(audio) = &state.audio {
+        // Applications play into the compositor's PulseAudio, whose sound goes to the phone.
+        env.push(("PULSE_SERVER".into(), audio.server_address()));
+    }
     if let Some(path) = &state.config.env_file {
         // KEY=VALUE lines, values single-quoted for sh. Written in place: the file may
         // be pre-created by root in a directory the compositor cannot write, and
@@ -270,6 +275,14 @@ fn run(config: Config) -> Result<(), String> {
     let net = net::Net::listen(config.listen, &handle).map_err(|e| format!("listen on {}: {e}", config.listen))?;
     tracing::info!("listening on ws://{}", net.local);
 
+    let (audio_tx, audio_rx) = channel::<audio::Packet>();
+    handle
+        .insert_source(audio_rx, |event, _, state: &mut State| {
+            if let ChannelEvent::Msg(packet) = event {
+                state.on_audio_packet(packet);
+            }
+        })
+        .map_err(|e| e.to_string())?;
     let (clip_tx, clip_rx) = channel::<Vec<u8>>();
     handle
         .insert_source(clip_rx, |event, _, state: &mut State| {
@@ -355,11 +368,17 @@ fn run(config: Config) -> Result<(), String> {
         focus_history: Vec::new(),
         videos: Default::default(),
         clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
+        audio: None,
+        audio_tx,
         generation: 0,
         stats: Default::default(),
         cursor: None,
     };
 
+    if state.config.audio {
+        let runtime_dir = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
+        state.audio = audio::Audio::start(&runtime_dir);
+    }
     match video::server::socket_path() {
         Some(path) => match video::server::Videos::listen(&path, &handle) {
             Ok(v) => {

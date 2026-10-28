@@ -14,4 +14,26 @@ ffmpeg -loglevel error -y -f lavfi -i "$src" -frames:v 1 -pix_fmt yuv420p \
   -f hevc keyframe-64x64.hevc
 ffmpeg -loglevel error -y -f lavfi -i 'testsrc2=size=16x16,format=rgba' -frames:v 1 \
   -update 1 icon-16x16.png
-ls -l keyframe-64x64.h264 keyframe-64x64.hevc icon-16x16.png
+# One raw 20 ms stereo Opus packet: encoded into Ogg, then the first audio packet (after
+# OpusHead and OpusTags) is taken out of the pages.
+tmp=$(mktemp -d)
+ffmpeg -loglevel error -y -f lavfi -i 'sine=frequency=440:sample_rate=48000' -ac 2 -c:a libopus -b:a 128k \
+  -frame_duration 20 -t 0.1 "$tmp/tone.ogg"
+python3 - "$tmp/tone.ogg" opus-stereo-20ms.opus <<'PY'
+import sys
+data, packets, current, i = open(sys.argv[1], "rb").read(), [], b"", 0
+while i < len(data):
+    assert data[i:i + 4] == b"OggS"
+    lacing = data[i + 27:i + 27 + data[i + 26]]
+    body = i + 27 + len(lacing)
+    for n in lacing:
+        current += data[body:body + n]
+        body += n
+        if n < 255:
+            packets.append(current)
+            current = b""
+    i = body
+open(sys.argv[2], "wb").write(packets[2])
+PY
+rm -rf "$tmp"
+ls -l keyframe-64x64.h264 keyframe-64x64.hevc icon-16x16.png opus-stereo-20ms.opus

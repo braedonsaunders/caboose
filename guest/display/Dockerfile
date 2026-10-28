@@ -24,3 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Clipboard tools for the clipboard check (X11 and Wayland).
 RUN apt-get update && apt-get install -y --no-install-recommends xclip wl-clipboard && \
     rm -rf /var/lib/apt/lists/*
+# PulseAudio for the compositor's audio and its check.
+RUN apt-get update && apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils && \
+    rm -rf /var/lib/apt/lists/*

@@ -28,6 +28,7 @@ OPTIONS:
     --display WxH@HZxS     a display to announce (repeatable) [default: 1920x1080@60x1]
     --decoders LIST        comma-separated codecs [default: hevc,h264]
     --video-decoders LIST  codecs to accept as video.* streams [default: none]
+    --audio                play the computer's sound (decoded and measured, not heard)
     --duration SECS        how long to run [default: 10]
     --windows N            fail unless at least N windows appear
     --min-fps F            fail unless the busiest window reaches F fps
@@ -52,6 +53,7 @@ struct Args {
     displays: Vec<proto::Display>,
     decoders: Vec<Codec>,
     video_decoders: Option<Vec<Codec>>,
+    audio: bool,
     duration: Duration,
     windows: Option<usize>,
     min_fps: Option<f64>,
@@ -87,6 +89,7 @@ fn parse_args() -> Result<Args, String> {
         displays: Vec::new(),
         decoders: vec![Codec::Hevc, Codec::H264],
         video_decoders: None,
+        audio: false,
         duration: Duration::from_secs(10),
         windows: None,
         min_fps: None,
@@ -115,6 +118,7 @@ fn parse_args() -> Result<Args, String> {
                 let id = a.displays.len() as u32 + 1;
                 a.displays.push(parse_display(id, &v).ok_or_else(|| format!("bad --display {v}"))?);
             }
+            "--audio" => a.audio = true,
             "--video-decoders" => {
                 a.video_decoders = Some(
                     value()?
@@ -200,6 +204,53 @@ struct WindowStats {
     size: (u32, u32),
     /// The first frame received was a keyframe.
     first_keyframe: bool,
+}
+
+/// The `audio` stream as received.
+#[derive(Default)]
+struct AudioStats {
+    packets: u64,
+    bytes: u64,
+    decoded: u64,
+    errors: u64,
+    channels: u32,
+    /// Largest absolute sample, 0..1.
+    peak: f32,
+    /// Jumps in pts larger than a packet (silence that was not sent).
+    gaps: u64,
+    last_pts: Option<u64>,
+    decoder: Option<ff::decoder::Audio>,
+}
+
+impl AudioStats {
+    fn packet(&mut self, a: &proto::Audio) {
+        self.packets += 1;
+        self.bytes += a.data.len() as u64;
+        self.channels = a.channels.unwrap_or(2);
+        if self.last_pts.is_some_and(|p| a.pts_us > p + 25_000) {
+            self.gaps += 1;
+        }
+        self.last_pts = Some(a.pts_us);
+        if self.decoder.is_none() {
+            self.decoder = ff::decoder::find(ff::codec::Id::OPUS)
+                .and_then(|c| ff::codec::context::Context::new_with_codec(c).decoder().audio().ok());
+        }
+        let Some(d) = self.decoder.as_mut() else { return };
+        if d.send_packet(&ff::Packet::copy(&a.data)).is_err() {
+            self.errors += 1;
+            return;
+        }
+        let mut frame = ff::frame::Audio::empty();
+        while d.receive_frame(&mut frame).is_ok() {
+            self.decoded += 1;
+            // libavcodec's Opus decoder gives float samples.
+            for plane in 0..frame.planes() {
+                for s in frame.plane::<f32>(plane) {
+                    self.peak = self.peak.max(s.abs());
+                }
+            }
+        }
+    }
 }
 
 /// One `video.*` stream as received.
@@ -374,6 +425,7 @@ fn run(args: Args) -> Result<bool, String> {
             decoders: args.decoders.clone(),
             displays: args.displays.clone(),
             video_decoders: args.video_decoders.clone(),
+            audio_decoders: args.audio.then(|| vec!["opus".to_owned()]),
         }),
     )?;
 
@@ -393,6 +445,7 @@ fn run(args: Args) -> Result<bool, String> {
     let mut text_input_events = 0u32;
     let mut videos: BTreeMap<u64, VideoStats> = BTreeMap::new();
     let mut clipboard: Option<String> = None;
+    let mut sound = AudioStats::default();
     let mut ping_sent: Option<u64> = None;
     let mut rtt_us: Option<u64> = None;
     let mut bye: Option<proto::ByeReason> = None;
@@ -572,6 +625,7 @@ fn run(args: Args) -> Result<bool, String> {
                 }
                 Message::TextInput(_) => text_input_events += 1,
                 Message::ServerClipboard(c) => clipboard = Some(String::from_utf8_lossy(&c.data).into_owned()),
+                Message::Audio(a) => sound.packet(&a),
                 Message::VideoCreate(c) => {
                     videos.insert(
                         c.id,
@@ -669,6 +723,7 @@ fn run(args: Args) -> Result<bool, String> {
     }
     ok &= windows.values().all(|w| w.decode_errors == 0);
     ok &= videos.values().all(|v| v.decode_errors == 0);
+    ok &= sound.errors == 0;
 
     if args.json {
         let per: Vec<String> = windows
@@ -703,7 +758,7 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
             videos
                 .iter()
                 .map(|(id, v)| format!(
@@ -732,6 +787,13 @@ fn run(args: Args) -> Result<bool, String> {
             cpu_ms.filter(|_| total_frames > 0).map(|c| format!("{:.2}", c / total_frames as f64)).unwrap_or("null".into()),
             rtt_us.map(|r| format!("{:.2}", r as f64 / 1000.0)).unwrap_or("null".into()),
             clipboard.as_ref().map(|c| format!("{c:?}")).unwrap_or("null".into()),
+            sound.packets,
+            sound.bytes,
+            sound.decoded,
+            sound.errors,
+            sound.channels,
+            sound.peak,
+            sound.gaps,
             bye.map(|b| format!("\"{}\"", b.as_str())).unwrap_or("null".into()),
         );
     } else {

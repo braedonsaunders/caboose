@@ -22,5 +22,6 @@ fn vectors_media(dir: &Path) -> std::io::Result<vectors::Media> {
         h264_keyframe: std::fs::read(media.join("keyframe-64x64.h264"))?,
         hevc_keyframe: std::fs::read(media.join("keyframe-64x64.hevc"))?,
         png: std::fs::read(media.join("icon-16x16.png"))?,
+        opus_stereo: std::fs::read(media.join("opus-stereo-20ms.opus"))?,
     })
 }

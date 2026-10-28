@@ -58,6 +58,12 @@ This directory is a Cargo workspace:
   current text on connect). Copying between Wayland and X11 applications on the computer
   works through Xwayland's window manager. When a focused window closes, focus returns to
   the window focused before it.
+- **Sound.** The compositor runs its own PulseAudio on a private socket with a null sink
+  as the only, so default, output, and gives launched applications `PULSE_SERVER`. While a
+  client that plays Opus is connected (`hello.audio_decoders`), `parec` records the sink and
+  each 20 ms of 48 kHz stereo goes out as an `audio` message, timestamped on the pictures'
+  clock; silence stops being sent after a second, and nothing records with no listener.
+  `--no-audio` turns it off.
 - **Sessions.** One client at a time; a new authenticated client replaces the previous
   one. Window ids survive reconnects and every window restarts with a keyframe.
 
@@ -74,7 +80,7 @@ This directory is a Cargo workspace:
   `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
 
 Not yet here, and absent from `hello.features` until they are: non-text clipboard types, Pencil
-(tablet-v2), cursor images (named cursors are sent), notifications, audio, lossless
+(tablet-v2), cursor images (named cursors are sent), notifications, the microphone, lossless
 tiles, video layers 2 and 3, a GPU renderer with the zero-copy encoders (dmabuf → NVENC or
 VA-API) and the exact passthrough binding it enables, typing characters that are not on the
 keymap into X11 applications, and an agent seat on `14601`.
@@ -133,6 +139,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `clipboard-wayland` | the phone's text pastes into Chromium (Ctrl+V), and Chromium's copy (Ctrl+A, Ctrl+C) reaches the phone |
 | `clipboard-x11` | an X11 copy (xclip) reaches the phone on connect, and the phone's copy reaches X11 |
 | `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
+| `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 ### Measured
