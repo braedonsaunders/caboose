@@ -277,3 +277,9 @@ The schema comes from the pinned `@agentclientprotocol/sdk` dependency. The upst
 defines grouped select values, the model category, setter responses and update notifications.
 The [Codex ACP implementation](https://github.com/zed-industries/codex-acp/blob/main/src/codex_agent.rs)
 returns this configuration from session creation/resume and implements the config setter.
+
+The runner supplies Caboose presentation guidance with each prompt: downloadable guest-file
+links, image previews, and complete self-contained `inline-html` widgets with responsive,
+accessible controls. Widgets have no network or file access; data comes from the agent’s
+computer tools. `window.Caboose.compose(message)` proposes a native follow-up for the owner
+to review and send, and cannot execute a tool itself.

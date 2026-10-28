@@ -729,6 +729,11 @@ async function discoverModels(spec) {
   }
 }
 
+export const PRESENTATION_GUIDANCE = `Caboose displays your replies in a native iPhone/iPad chat and gives you the computer's tools.
+For an interactive chart, calculator, dashboard or animated widget, return a complete fenced inline-html block containing self-contained HTML with inline CSS, JavaScript and SVG. Use accessible controls and a responsive layout. No external dependencies, network requests, file access, popups or navigation are available inside a widget. Embed required data in the document after obtaining it with your computer tools. Keep each HTML block under 512 KiB. Use text or a downloadable file when a widget does not help.
+Link downloadable computer files with Markdown links to absolute /home/caboose/... paths or home-relative paths. Use image Markdown for PNG/JPEG previews. Caboose authenticates these file previews; never include credentials in an artifact.
+An interactive widget may call window.Caboose.compose(message) to propose a follow-up in the native composer. This does not send it or run tools; the owner reviews and sends it. Describe the proposed action clearly on the control. Use the agent's computer tools for actual work, and report real outcomes.`
+
 export class Task {
   constructor(dir) {
     this.dir = dir
@@ -1018,7 +1023,7 @@ export class Task {
       const lines = (await readFile(join(this.dir, 'transcript.jsonl'), 'utf8').catch(() => '')).split('\n')
       text = recapFrom(lines, message.turn) + text
     }
-    const blocks = [...(this.profileInstructions ? [{ type: 'text', text: this.profileInstructions }] : []), { type: 'text', text }]
+    const blocks = [{ type: 'text', text: PRESENTATION_GUIDANCE }, ...(this.profileInstructions ? [{ type: 'text', text: this.profileInstructions }] : []), { type: 'text', text }]
     for (const file of Array.isArray(message.attachments) ? message.attachments : []) {
       if (typeof file?.path !== 'string' || !isAbsolute(file.path)) continue
       const info = await stat(file.path).catch(() => undefined)
