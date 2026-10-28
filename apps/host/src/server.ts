@@ -50,7 +50,7 @@ export function createCabooseServer(options: { token: string; settings: Settings
     const message = JSON.stringify(event)
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
   }
-  const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire())
+  const agents = new AgentTasks(() => controller.guest(), broadcast, () => computer.acquire(), 1000, () => controller.ensureAgentSeat())
   function managementStatus() {
     const desired = settings.get()
     const active = controller.activeResources()

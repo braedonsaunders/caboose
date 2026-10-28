@@ -48,6 +48,8 @@ def xpra_pulse_server():
     return None
 
 if sys.argv[1] == 'launch':
+    if os.environ.get('CABOOSE_GPU') == 'wsl':
+        os.environ.setdefault('GALLIUM_DRIVER', 'd3d12')
     if 'PULSE_SERVER' not in os.environ and (pulse := xpra_pulse_server()):
         os.environ['PULSE_SERVER'] = pulse
     entry = entries().get(sys.argv[2])

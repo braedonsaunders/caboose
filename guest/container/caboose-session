@@ -1,0 +1,49 @@
+#!/bin/bash
+set -euo pipefail
+export HOME=/home/caboose
+case ${CABOOSE_GPU:-none} in
+  wsl)
+    export GALLIUM_DRIVER=d3d12 XPRA_PYCUDA_WSL=1
+    unset MESA_D3D12_DEFAULT_ADAPTER_NAME
+    if [ -x /usr/lib/wsl/lib/nvidia-smi ] && /usr/lib/wsl/lib/nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
+      export XPRA_NVIDIA_HARDWARE=1 XPRA_NVENC_PRESET=P1 XPRA_NVENC_TUNING=low-latency
+    else
+      unset XPRA_NVIDIA_HARDWARE XPRA_NVENC_PRESET XPRA_NVENC_TUNING
+    fi ;;
+  nvidia)
+    unset GALLIUM_DRIVER MESA_D3D12_DEFAULT_ADAPTER_NAME XPRA_PYCUDA_WSL XPRA_NVIDIA_HARDWARE LIBVA_DRIVER_NAME
+    export XPRA_NVENC_PRESET=P1 XPRA_NVENC_TUNING=low-latency ;;
+  dri|none)
+    unset GALLIUM_DRIVER MESA_D3D12_DEFAULT_ADAPTER_NAME XPRA_PYCUDA_WSL XPRA_NVIDIA_HARDWARE XPRA_NVENC_PRESET XPRA_NVENC_TUNING LIBVA_DRIVER_NAME ;;
+  *) echo "Unsupported CABOOSE_GPU: ${CABOOSE_GPU}" >&2; exit 2 ;;
+esac
+export XDG_RUNTIME_DIR=/run/user/1000
+install -d -o caboose -g caboose -m 0700 "$XDG_RUNTIME_DIR"
+install -d -m 0755 /run/dbus
+if [ ! -S /run/dbus/system_bus_socket ]; then dbus-daemon --system --fork; fi
+if [ ! -S "$XDG_RUNTIME_DIR/bus" ]; then
+  runuser -u caboose -- dbus-daemon --session --address="unix:path=$XDG_RUNTIME_DIR/bus" --fork
+fi
+start_display() {
+  local display=$1 port=$2 speaker=$3
+  if runuser -u caboose -- env DISPLAY="$display" xpra info "$display" >/dev/null 2>&1; then return; fi
+  runuser -u caboose -- env HOME="$HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    xpra seamless "$display" --daemon=yes --bind-ws="0.0.0.0:$port" \
+    --ws-auth=file:filename=/run/caboose/xpra-token --html=off --clipboard=on \
+    --notifications=on --file-transfer=on --mdns=off --printing=off --webcam=off \
+    --speaker="$speaker" --microphone=off
+}
+ready() {
+  local display=$1
+  for _ in $(seq 1 120); do
+    if runuser -u caboose -- env DISPLAY="$display" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" xpra info "$display" >/dev/null 2>&1; then return; fi
+    sleep 1
+  done
+  echo "Xpra $display did not become ready" >&2; return 1
+}
+case ${1:-} in
+  start) start_display :100 14500 on ;;
+  start-agent) start_display :101 14501 off; ready :101 ;;
+  ready) ready "${2:?display required}" ;;
+  *) echo 'Usage: caboose-session start | start-agent | ready DISPLAY' >&2; exit 2 ;;
+esac

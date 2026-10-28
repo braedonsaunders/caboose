@@ -45,12 +45,23 @@ export function fenceRules(guestLan: boolean): { input: string[][]; forward: str
 }
 
 /** Creates (or refills) a chain and makes sure the built-in chain jumps to it first. */
-async function ownChain(chain: string, from: 'INPUT' | 'FORWARD', rules: string[][]): Promise<void> {
+async function ownChain(chain: string, from: 'INPUT' | 'FORWARD' | 'DOCKER-USER', rules: string[][], device = TAP): Promise<void> {
   if (!await exists('iptables', ['-N', chain])) await privileged('iptables', ['-F', chain])
   for (const args of rules) await privileged('iptables', ['-A', chain, ...args])
-  if (!await exists('iptables', ['-C', from, '-i', TAP, '-j', chain])) {
-    await privileged('iptables', ['-I', from, '1', '-i', TAP, '-j', chain])
+  if (!await exists('iptables', ['-C', from, '-i', device, '-j', chain])) {
+    await privileged('iptables', ['-I', from, '1', '-i', device, '-j', chain])
   }
+}
+
+/**
+ * The same fence for a container computer's bridge: nothing new to the host, and only the
+ * public internet beyond it. Docker forwards container traffic through DOCKER-USER, which
+ * it never rewrites, so the forward fence goes there.
+ */
+export async function fenceBridge(device: string): Promise<void> {
+  const fence = fenceRules(process.env.CABOOSE_GUEST_LAN === 'allow')
+  await ownChain('CABOOSE-CIN', 'INPUT', fence.input, device)
+  await ownChain('CABOOSE-CFWD', 'DOCKER-USER', fence.forward, device)
 }
 
 /** Persistent named TAP: it must exist before both boot and snapshot restore. */

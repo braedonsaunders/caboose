@@ -1,4 +1,5 @@
 import { config } from './config.js'
+import { createContainerController } from './container-driver.js'
 import { createController } from './driver.js'
 import { createCabooseServer } from './server.js'
 import { openSettings } from './settings.js'
@@ -11,7 +12,9 @@ const settings = await openSettings(join(deployment.imageRoot, 'caboose.json'), 
 })
 const webRoot = process.env.CABOOSE_WEB_ROOT ? resolve(process.env.CABOOSE_WEB_ROOT) : fileURLToPath(new URL('../../web/dist', import.meta.url))
 const app = createCabooseServer({ token: deployment.token, settings,
-  controller: createController(deployment, { settings: () => settings.get() }), webRoot })
+  controller: deployment.runtime === 'container'
+    ? createContainerController(deployment, { settings: () => settings.get() })
+    : createController(deployment, { settings: () => settings.get() }), webRoot })
 app.server.listen(deployment.port, deployment.host, () => console.log(`caboose-host listening on ${deployment.host}:${deployment.port}`))
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {

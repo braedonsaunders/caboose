@@ -107,6 +107,10 @@ public struct ClientCapabilities: Sendable {
                 // phone frame and no higher than 150 ms, instead of the 500 ms default ceiling.
                 "batch": ["min_delay": .int(Int64(max(4, 1000 / max(30, refreshRate)))), "max_delay": 150, "delay": 16],
                 "full_csc_modes": ["h264": ["YUV420P"], "h265": ["YUV420P"], "jpeg": ["BGRX", "BGRA", "YUV420P"], "webp": ["BGRX", "BGRA"]],
+                // Xpra reads these flat. HEVC first: a GPU encoder streams 4K with it (NVENC's H.264
+                // in Xpra 6.5.5 stops below 4K); on a CPU-only server x264 still wins on cost.
+                "h265.score-delta": 60,
+                "h264.score-delta": 20,
                 "h264": [
                     "score-delta": 80,
                     "fast-decode": false,

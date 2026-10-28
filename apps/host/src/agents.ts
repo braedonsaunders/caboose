@@ -100,6 +100,8 @@ export class AgentTasks {
     private readonly emit: (event: AgentEvent) => void,
     private readonly acquire: () => () => void,
     private readonly pollMs = 1000,
+    /** Starts the agent seat's display; defaults to the microVM's systemd unit. */
+    private readonly ensureSeat?: () => Promise<void>,
   ) {}
 
   list(): AgentTask[] {
@@ -123,7 +125,8 @@ export class AgentTasks {
     if (!guest) throw new AgentUnavailableError()
     const id = randomUUID()
     const dir = `${HOME}/Agents/${id}`
-    await guest.run('/bin/sh', ['-c', 'systemctl start caboose-xpra-agent.service || true'], 30_000)
+    if (this.ensureSeat) await this.ensureSeat().catch(error => console.error('Agent seat did not start:', error))
+    else await guest.run('/bin/sh', ['-c', 'systemctl start caboose-xpra-agent.service || true'], 30_000)
     await guest.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/bin/sh', '-c',
       'mkdir -p "$1" && printf %s "$2" > "$1/prompt.txt" && printf %s "$3" > "$1/agent"', 'sh', dir, prompt, agent], 15_000)
     await guest.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/bin/sh', '-c', launchScript(agent), 'sh', dir], 15_000)

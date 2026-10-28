@@ -36,6 +36,16 @@ same pull request as the code that changes the contract.
 
 ### 1. Guest: the computer (`guest/`)
 
+On a WSL2 host that exposes its GPU through `/dev/dxg`, the host can instead run
+the computer as a Debian container using `CABOOSE_RUNTIME=container`. Mesa's
+D3D12 driver renders on the WSL GPU and Xpra can use NVENC; display ports,
+authentication, application discovery and the two-seat protocol remain the
+same. The home directory is a persistent host bind mount or volume. Parking
+pauses the container in RAM, and waking unpauses it; a Docker or WSL restart
+loses the process tree, but not the home directory. This volatile pause does
+not claim the durable microVM snapshot semantics described below. The runtime
+and its build and checks are documented in `guest/container/README.md`.
+
 A Debian 13 (trixie, amd64) golden image booted by Cloud Hypervisor. Each computer's
 disk is a reflink copy-on-write clone of the base, exactly the appkit-desk model: it
 costs no space up front and each user's installs and home persist. A clone is
@@ -64,6 +74,36 @@ base swap.
 - **Agent seat.** A second Xpra display (`:101`) is reserved for agents so an
   agent never steals the user's pointer; its windows appear in the app's Agent
   space.
+
+### Runtimes
+
+The computer normally runs as a **microVM** (Cloud Hypervisor, below). Where a GPU can
+reach a container but not a VM — WSL2, whose GPU is the paravirtual `/dev/dxg` —
+`CABOOSE_RUNTIME=container` runs it as a Docker container instead:
+
+- the same Debian package set, plus the GPU the host can give a container
+  (`CABOOSE_GPU`, detected by default):
+
+  | `CABOOSE_GPU` | Host | Container gets | Rendering / video encode |
+  | --- | --- | --- | --- |
+  | `wsl` | Windows + WSL2, any vendor | `/dev/dxg`, `/usr/lib/wsl` | Mesa D3D12; NVENC on NVIDIA |
+  | `nvidia` | Linux + NVIDIA container toolkit | `--gpus all` | GL + NVENC |
+  | `dri` | Linux, Intel / AMD | `/dev/dri` render nodes | Mesa + VA-API |
+  | `none` | anything | nothing | CPU (x264) |
+
+  The image reads `CABOOSE_GPU` to pick its GL driver and Xpra's encoder. 4K goes as HEVC
+  where a hardware encoder has it (Xpra 6.5.5's NVENC H.264 is fixed at level 5.0, below 4K
+  frame sizes); the client decodes H.264 and HEVC in hardware and falls back to images;
+- `/home/caboose` on a volume or host path (`CABOOSE_CONTAINER_HOME`);
+- the displays published on loopback only, reached by the same relay;
+- the image's `caboose-session start | start-agent | ready <display>` brings up D-Bus,
+  PulseAudio and the Xpra displays with the per-wake token, as the VM's units do.
+
+Parking a container **freezes** it: memory stays in RAM and waking is instant, but a host
+restart loses it and the next wake boots fresh with the home intact. A microVM's
+park-with-memory survives host restarts. Isolation is a container's, not a VM's, so the
+hosted service keeps microVMs. A bare-metal Linux host with a spare GPU can later give the
+microVM itself the GPU through VFIO passthrough, keeping VM isolation and durable parking.
 
 ### 2. Host: `caboose-host` (`apps/host/`)
 
