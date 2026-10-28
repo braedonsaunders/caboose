@@ -123,6 +123,16 @@ The guest is fenced: it can open no connection to the host, and it reaches only 
 public internet, not private, link-local (cloud metadata), CGNAT or Tailscale
 addresses. Set `CABOOSE_GUEST_LAN=allow` to let a self-hosted computer reach your LAN.
 
+`CABOOSE_DISPLAY` picks the owner's display server. `xpra` (the default) runs Xpra
+on display `:100` and relays guest port 14500. `caboose` runs caboose-display instead
+(docs/display.md): the microVM's `caboose-display.service`, ready once
+`caboose-display-ready 60` has a hello answered, or `caboose-session start-display` and
+`ready-display` in a container. The relay then targets guest port 14600, `/v1/session`
+returns `protocol: "caboose-display"`, and apps launch with the environment
+caboose-display writes to `/run/caboose/display.env` (its Wayland socket, Xwayland's display
+and cookie, toolkit hints), read at every wake. The agent seat stays Xpra `:101` either
+way. The image must include caboose-display.
+
 `CABOOSE_OWNER_TOKEN=... apps/host/scripts/e2e.sh` uses the local Xpra client
 to authenticate an Xpra hello over the relay, parks, resumes, and repeats.
 Set `CABOOSE_URL` when testing a different host. The local Xpra client must

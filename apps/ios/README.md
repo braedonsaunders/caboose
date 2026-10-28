@@ -1,14 +1,19 @@
 # Caboose for iOS
 
-The iPhone and iPad app, and **CabooseKit**, its native Xpra client.
+The iPhone and iPad app, and **CabooseKit**, its native display client: Xpra, and Caboose
+Display (docs/display.md) where the host serves it.
 
 ## Layout
 
-- `CabooseKit/` — Swift package, no app UI. `Protocol/` (rencodeplus codec, Xpra packet
-  framing, WebSocket transport), `Session/` (capabilities and HMAC challenge, the window
-  registry, per-window draw pipelines with flow-control acks, clipboard, notifications,
-  keyboard mapping), `Video/` (VideoToolbox H.264 → IOSurface BGRA, Metal window surfaces),
-  `UI/RemoteWindowView` (presentation and touch/trackpad/keyboard input).
+- `CabooseKit/` — Swift package, no app UI. `Session/DisplaySession` is the window model
+  the app works against; `XpraSession` and `CabooseDisplaySession` implement it.
+  `Protocol/` (rencodeplus codec, Xpra packet framing, the WebSocket byte stream),
+  `Session/` (Xpra capabilities and HMAC challenge, the window registry, per-window draw
+  pipelines with flow-control acks, clipboard, notifications, keyboard mapping),
+  `Display/` (the Caboose Display Protocol: canonical CBOR, framing, messages, the session,
+  per-window frame pipelines), `Video/` (VideoToolbox H.264, HEVC and AV1 → IOSurface BGRA,
+  Metal window surfaces), `Input/` (typing buffer, trackpad gestures, touch slots),
+  `UI/RemoteWindowView` (presentation and touch/Pencil/trackpad/keyboard input).
 - `Caboose/` — the app: setup, wake, Home (open windows and the computer's apps), and the
   full-screen window screen.
 - `Share/` — the share extension (target `CabooseShare`).
@@ -76,6 +81,27 @@ extension's bundle id is the app's plus `.share`, and both sign with the keychai
 cd apps/ios/CabooseKit && swift test
 ```
 
+The Caboose Display tests replay the compositor's golden vectors from
+`guest/display/vectors` (every message decodes, re-encodes byte for byte and parses, and
+every client message the app sends matches its vector), drive `CabooseDisplaySession`
+over a mocked transport (handshake, windows, acks and keyframe recovery, vsync, input,
+text and preedit), and decode the vectors' H.264 and HEVC keyframes and an AV1 stream
+(`Tests/CabooseKitTests/Fixtures`) in hardware; the AV1 test runs where the Mac has an
+AV1 decoder (M3 and later).
+
+Against a real computer, with the host on `CABOOSE_DISPLAY=caboose` and a window open:
+
+```sh
+CABOOSE_HOST_URL=http://host:7310 CABOOSE_HOST_TOKEN=… swift test --filter LiveCabooseDisplay
+```
+
+Or straight to a compositor, such as the dev container in `guest/display`, with
+`CABOOSE_DISPLAY_URL=ws://box:14600/ CABOOSE_DISPLAY_TOKEN=…` instead. It wakes the computer
+(through a host), connects, waits for every window's keyframe,
+ticks vsync at 120 Hz for ten seconds (`CABOOSE_VIDEO_SECONDS`), and prints the server's
+encoders and features, the windows, pictures per second, failed decodes and the round
+trip.
+
 ## How it renders
 
 Each Linux window keeps a BGRA Metal texture. PNG/JPEG/WebP draws are uploaded into it;
@@ -102,3 +128,35 @@ bar that a misspelt word is corrected in place, that a swiped word arrives whole
 Japanese Romaji and Chinese Pinyin keyboards commit their candidates, and that the terminal
 gets no autocorrect until `Aa` on the key bar turns it on. Hardware
 keys are sent as X keys, with ⌘ mapped to Control so ⌘C/⌘V/⌘T do what Mac users expect.
+
+## Caboose Display
+
+When `/v1/session` answers `protocol: "caboose-display"`, the app speaks the Caboose Display
+Protocol instead of Xpra; the screens are the same. What changes:
+
+- **Pictures.** Each window is its own HEVC (or AV1 where the device decodes it in
+  hardware, A17 Pro and M3 or later, or H.264) stream, decoded by VideoToolbox and drawn
+  into the window's texture on the GPU with the encoder's padding cropped off and scaled
+  when the window's pixels differ. Every frame is acknowledged with its decode time; a
+  failed one is acknowledged with −1 and asks for a keyframe, and the frames that depend
+  on it are skipped until it arrives. Lossless PNG/WebP tiles repaint static text.
+- **Pacing.** Every window view on screen, previews and the desktop included, sends
+  `vsync` from its own screen's display link, at 120 Hz on ProMotion
+  (`CADisableMinimumFrameDurationOnPhone`) and at the TV's rate on a TV. The server
+  releases a window's frames on those ticks, so a window nobody sees costs nothing.
+- **Touch.** Native Wayland windows take real multi-touch: every finger is a wl_touch
+  slot, and each UIKit event is one touch frame, so pinch, swipe and long-press are the
+  app's own. Xwayland windows keep the pointer gestures above, since X11 apps turn a
+  touch drag into a selection. The desktop on a TV or on the device's own screen keeps
+  its pointer.
+- **Apple Pencil** is a tablet: pressure, tilt and azimuth on every coalesced sample
+  (240 Hz), and hover on iPads that have it.
+- **Keyboard.** The keyboard follows the app's own text-input state instead of guessing
+  from the cursor shape, and the field's purpose turns autocorrect off in terminals and
+  password fields. Text goes as text-input-v3 commits and deletions; where the app has
+  text-input-v3, marked text (Chinese, Japanese, Korean) is a real preedit instead of
+  typed and retyped.
+- **Not yet.** No sound (the protocol's Opus `audio` is a later milestone of the
+  compositor), and windows are SDR: the hello reports `hdr: false` until the window
+  surfaces render EDR.
+

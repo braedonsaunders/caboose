@@ -24,6 +24,11 @@ public final class RemoteWindow: Identifiable {
     public internal(set) var icon: CGImage?
     public internal(set) var pid: Int?
     public internal(set) var raisedAt = Date()
+    /// The window takes touch itself (a native Wayland app on Caboose Display): fingers go
+    /// to it as touch points instead of being turned into pointer gestures.
+    public internal(set) var acceptsTouch = false
+    /// The window takes Apple Pencil as a tablet, with pressure and tilt.
+    public internal(set) var acceptsPencil = false
     public nonisolated let surface: WindowSurface
     var resizeCounter = 0
 
@@ -74,14 +79,8 @@ public struct RemoteNotification: Sendable, Identifiable {
 
 /// One connection to the Xpra server inside the user's computer.
 @MainActor @Observable
-public final class XpraSession {
-    public enum State: Equatable {
-        case idle
-        case connecting
-        case authenticating
-        case ready
-        case closed(reason: String?)
-    }
+public final class XpraSession: DisplaySession {
+    public typealias State = DisplaySessionState
 
     public private(set) var state: State = .idle
     public private(set) var windows: [Int: RemoteWindow] = [:]

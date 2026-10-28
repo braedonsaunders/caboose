@@ -1,0 +1,142 @@
+import CoreGraphics
+import CoreVideo
+import Foundation
+import ImageIO
+
+/// Decodes and applies one window's Caboose Display pictures, in order, off the main thread.
+///
+/// Every frame is acknowledged with its decode time (`ack`), and the server keeps at most two
+/// frames unacknowledged per window, so acking promptly is what keeps a window moving. A frame
+/// that cannot be decoded is acked with −1 and a keyframe is requested; until it arrives the
+/// pictures that depend on the lost one are acked as failed without being decoded.
+final class FramePipeline: @unchecked Sendable {
+    let windowID: Int
+    let surface = WindowSurface()
+    private let queue: DispatchQueue
+    private let send: @Sendable (ClientMessage) -> Void
+    private let makeDecoder: (DisplayCodec) -> PictureDecoder
+    // On `queue`:
+    private var decoder: (codec: DisplayCodec, decoder: PictureDecoder)?
+    private var awaitingKeyframe = false
+    private var lastKeyframeRequest: UInt64 = 0
+    private var showsLivePicture = false
+
+    init(windowID: Int, width: Int, height: Int,
+         makeDecoder: @escaping (DisplayCodec) -> PictureDecoder = FramePipeline.hardwareDecoder,
+         send: @escaping @Sendable (ClientMessage) -> Void) {
+        self.windowID = windowID
+        self.send = send
+        self.makeDecoder = makeDecoder
+        queue = DispatchQueue(label: "caboose.display.window.\(windowID)", qos: .userInteractive)
+        surface.resize(width: width, height: height)
+    }
+
+    static func hardwareDecoder(_ codec: DisplayCodec) -> PictureDecoder {
+        switch codec {
+        case .h264: H264Decoder(codec: .h264)
+        case .hevc: H264Decoder(codec: .hevc)
+        case .av1: AV1Decoder()
+        }
+    }
+
+    func resize(width: Int, height: Int) {
+        queue.async { [surface] in surface.resize(width: width, height: height) }
+    }
+
+    /// Paints a cached frame, unless a live picture has already landed.
+    func seed(_ image: CGImage) {
+        queue.async { [self] in
+            if !showsLivePicture { surface.upload(image: image, x: 0, y: 0) }
+        }
+    }
+
+    func close() {
+        queue.async { [self] in
+            decoder?.decoder.invalidate()
+            decoder = nil
+        }
+    }
+
+    /// Runs `body` after everything queued so far; for tests.
+    func flush() { queue.sync {} }
+
+    func frame(_ frame: EncodedFrame) {
+        queue.async { [self] in
+            let start = DispatchTime.now().uptimeNanoseconds
+            var decoded = false
+            if frame.keyframe || !awaitingKeyframe {
+                decoded = apply(frame)
+            }
+            if decoded {
+                awaitingKeyframe = false
+            } else {
+                awaitingKeyframe = true
+                requestKeyframe(now: start)
+            }
+            DrawStatistics.shared.record(frame.codec.rawValue, failed: !decoded)
+            let micros = decoded ? Int((DispatchTime.now().uptimeNanoseconds - start) / 1000) : -1
+            send(.ack(window: windowID, ptsMicros: frame.ptsMicros, decodedMicros: micros))
+        }
+    }
+
+    private func apply(_ frame: EncodedFrame) -> Bool {
+        if decoder?.codec != frame.codec {
+            decoder?.decoder.invalidate()
+            decoder = (frame.codec, makeDecoder(frame.codec))
+        }
+        guard let decoder else { return false }
+        do {
+            // A picture the decoder holds back (none here: the server sends no B-frames) is not a failure.
+            guard let picture = try decoder.decoder.decode(frame.data) else { return true }
+            surface.upload(pixelBuffer: picture, crop: frame.crop, into: frame.rect)
+            showsLivePicture = true
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// At most one request every half second while the stream is broken.
+    private func requestKeyframe(now: UInt64) {
+        guard now &- lastKeyframeRequest > 500_000_000 else { return }
+        lastKeyframeRequest = now
+        send(.requestKeyframe(window: windowID))
+    }
+
+    /// A lossless tile: static content repainted exactly once motion stops.
+    func tile(_ tile: LosslessTile) {
+        queue.async { [self] in
+            guard let source = CGImageSourceCreateWithData(tile.data as CFData, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                DrawStatistics.shared.record("tile-\(tile.format)", failed: true)
+                return
+            }
+            surface.upload(image: image, x: Int(tile.rect.minX), y: Int(tile.rect.minY))
+            showsLivePicture = true
+            DrawStatistics.shared.record("tile-\(tile.format)", failed: false)
+        }
+    }
+}
+
+/// Window id → frame pipeline, readable from the socket's queue.
+final class FramePipelineRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pipelines: [Int: FramePipeline] = [:]
+
+    subscript(wid: Int) -> FramePipeline? {
+        get { lock.lock(); defer { lock.unlock() }; return pipelines[wid] }
+        set { lock.lock(); pipelines[wid] = newValue; lock.unlock() }
+    }
+
+    @discardableResult func remove(_ wid: Int) -> FramePipeline? {
+        lock.lock(); defer { lock.unlock() }
+        return pipelines.removeValue(forKey: wid)
+    }
+
+    func removeAll() -> [FramePipeline] {
+        lock.lock(); defer { lock.unlock() }
+        let all = Array(pipelines.values)
+        pipelines.removeAll()
+        return all
+    }
+}

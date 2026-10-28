@@ -129,7 +129,7 @@ final class DesktopModel {
 
     // MARK: Pointer
 
-    func move(by delta: CGPoint, session: XpraSession?) {
+    func move(by delta: CGPoint, session: (any DisplaySession)?) {
         cursor = CGPoint(x: min(max(0, cursor.x + delta.x), size.width), y: min(max(0, cursor.y + delta.y), size.height))
         guard let session else { return }
         if let drag {
@@ -142,7 +142,7 @@ final class DesktopModel {
         }
     }
 
-    func click(button: Int = 1, session: XpraSession?, open: (String) -> Void) {
+    func click(button: Int = 1, session: (any DisplaySession)?, open: (String) -> Void) {
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
         if launchpadOpen, hit != .launchpadButton {
@@ -170,7 +170,7 @@ final class DesktopModel {
         }
     }
 
-    func beginDrag(session: XpraSession?) {
+    func beginDrag(session: (any DisplaySession)?) {
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
         switch hit {
@@ -189,7 +189,7 @@ final class DesktopModel {
         }
     }
 
-    func endDrag(session: XpraSession?) {
+    func endDrag(session: (any DisplaySession)?) {
         defer { drag = nil }
         guard let drag, let session else { return }
         if case .content(let id, _) = drag.hit, let window = session.windows[id] {
@@ -199,13 +199,13 @@ final class DesktopModel {
         }
     }
 
-    func scroll(by delta: CGPoint, session: XpraSession?) {
+    func scroll(by delta: CGPoint, session: (any DisplaySession)?) {
         guard let session, case .content(let id, let local) = hitTest(cursor, windows: session.windows),
               let window = session.windows[id] else { return }
         session.scroll(in: window, dx: delta.x * pixelsPerPoint, dy: delta.y * pixelsPerPoint, at: local)
     }
 
-    private func dragMoved(_ drag: (hit: Hit, start: CGPoint, frame: CGRect), session: XpraSession) {
+    private func dragMoved(_ drag: (hit: Hit, start: CGPoint, frame: CGRect), session: any DisplaySession) {
         let dx = (cursor.x - drag.start.x) * pixelsPerPoint, dy = (cursor.y - drag.start.y) * pixelsPerPoint
         switch drag.hit {
         case .titleBar(let id):
@@ -229,13 +229,13 @@ final class DesktopModel {
         }
     }
 
-    private func focus(_ id: Int, _ session: XpraSession) {
+    private func focus(_ id: Int, _ session: any DisplaySession) {
         session.focus(session.windows[id])
     }
 
     /// The second click of a double-click. In a window it is the app's own double-click (the
     /// first already reached it); on a title bar it zooms, as on a Mac; elsewhere it repeats.
-    func doubleClick(session: XpraSession?, open: (String) -> Void) {
+    func doubleClick(session: (any DisplaySession)?, open: (String) -> Void) {
         guard let session else { return }
         switch hitTest(cursor, windows: session.windows) {
         case .titleBar(let id): toggleZoom(id, session)
@@ -249,7 +249,7 @@ final class DesktopModel {
 
     /// Follows the app's own full-screen request: the window takes the whole display (in
     /// Linux pixels) and gets its old frame back when it leaves.
-    func applyFullscreen(_ window: RemoteWindow, session: XpraSession?) {
+    func applyFullscreen(_ window: RemoteWindow, session: (any DisplaySession)?) {
         guard let session else { return }
         if window.isFullscreen {
             if windowedFrames[window.id] == nil { windowedFrames[window.id] = window.frame }
@@ -265,7 +265,7 @@ final class DesktopModel {
     private var unzoomedFrames: [Int: CGRect] = [:]
 
     /// The green button: fill the desktop above the dock, or go back to where it was.
-    func toggleZoom(_ id: Int, _ session: XpraSession) {
+    func toggleZoom(_ id: Int, _ session: any DisplaySession) {
         guard let window = session.windows[id] else { return }
         raise(id)
         focus(id, session)
@@ -284,7 +284,7 @@ final class DesktopModel {
 
     /// The dock icon of an app with windows: bring back what was minimized, else bring its
     /// latest window forward. Returns false when the app has no windows and should launch.
-    func reveal(_ windowIDs: [Int], session: XpraSession?) -> Bool {
+    func reveal(_ windowIDs: [Int], session: (any DisplaySession)?) -> Bool {
         guard let session, !windowIDs.isEmpty else { return false }
         let hidden = windowIDs.filter { minimized.contains($0) }
         for id in hidden { raise(id) }

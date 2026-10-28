@@ -118,7 +118,8 @@ public final class WindowSurface: @unchecked Sendable {
             kCFAllocatorDefault, renderer.textureCache, pixelBuffer, nil, .bgra8Unorm, sourceWidth, sourceHeight, 0, &cvTexture)
         guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture) else { return }
         if let encodedSize, Int(encodedSize.width) < width || Int(encodedSize.height) < height {
-            scale(source, encoded: encodedSize, into: CGRect(x: x, y: y, width: width, height: height), keeping: cvTexture)
+            scale(source, from: CGRect(origin: .zero, size: encodedSize), into: CGRect(x: x, y: y, width: width, height: height),
+                  keeping: cvTexture)
             return
         }
         guard let region = clamp(x: x, y: y, width: min(width, sourceWidth), height: min(height, sourceHeight), in: texture),
@@ -133,16 +134,45 @@ public final class WindowSurface: @unchecked Sendable {
         bump()
     }
 
-    private func scale(_ source: MTLTexture, encoded: CGSize, into rect: CGRect, keeping cvTexture: CVMetalTexture) {
+    /// Draws the `crop` of a decoded picture — its visible part, without the encoder's padding
+    /// (NVENC codes 2160 lines as 2176) — into `rect` of the window: copied 1:1 when the sizes
+    /// match, scaled on the GPU when they do not.
+    public func upload(pixelBuffer: CVPixelBuffer, crop: CGRect, into rect: CGRect) {
+        guard let texture else { return }
+        let sourceWidth = CVPixelBufferGetWidth(pixelBuffer), sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
+        let crop = crop.integral.intersection(CGRect(x: 0, y: 0, width: sourceWidth, height: sourceHeight))
+        let rect = rect.integral
+        guard !crop.isEmpty, !rect.isEmpty else { return }
+        var cvTexture: CVMetalTexture?
+        CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault, renderer.textureCache, pixelBuffer, nil, .bgra8Unorm, sourceWidth, sourceHeight, 0, &cvTexture)
+        guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture) else { return }
+        guard crop.size == rect.size else {
+            scale(source, from: crop, into: rect, keeping: cvTexture)
+            return
+        }
+        guard let region = clamp(x: Int(rect.minX), y: Int(rect.minY), width: Int(rect.width), height: Int(rect.height), in: texture),
+              let commands = renderer.queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder()
+        else { return }
+        let origin = MTLOrigin(x: Int(crop.minX) + region.origin.x - Int(rect.minX), y: Int(crop.minY) + region.origin.y - Int(rect.minY), z: 0)
+        blit.copy(from: source, sourceSlice: 0, sourceLevel: 0, sourceOrigin: origin, sourceSize: region.size,
+                  to: texture, destinationSlice: 0, destinationLevel: 0, destinationOrigin: region.origin)
+        blit.endEncoding()
+        commands.addCompletedHandler { _ in _ = cvTexture } // keep the CVMetalTexture alive until the copy lands
+        commands.commit()
+        bump()
+    }
+
+    private func scale(_ source: MTLTexture, from crop: CGRect, into rect: CGRect, keeping cvTexture: CVMetalTexture) {
         guard let texture, let commands = renderer.queue.makeCommandBuffer(),
               let region = clamp(x: Int(rect.minX), y: Int(rect.minY), width: Int(rect.width), height: Int(rect.height), in: texture)
         else { return }
         let scaler = MPSImageBilinearScale(device: renderer.device)
-        // Map the encoded picture (top-left `encoded` of the decoded buffer, which may be padded)
-        // onto `rect`, and write only inside it.
-        var transform = MPSScaleTransform(scaleX: Double(rect.width) / Double(encoded.width),
-                                          scaleY: Double(rect.height) / Double(encoded.height),
-                                          translateX: Double(rect.minX), translateY: Double(rect.minY))
+        // Map `crop` of the decoded buffer (which may be padded) onto `rect`, and write only inside it.
+        let scaleX = Double(rect.width) / Double(crop.width), scaleY = Double(rect.height) / Double(crop.height)
+        var transform = MPSScaleTransform(scaleX: scaleX, scaleY: scaleY,
+                                          translateX: Double(rect.minX) - Double(crop.minX) * scaleX,
+                                          translateY: Double(rect.minY) - Double(crop.minY) * scaleY)
         scaler.clipRect = MTLRegion(origin: region.origin, size: region.size)
         withUnsafePointer(to: &transform) { pointer in
             scaler.scaleTransform = pointer

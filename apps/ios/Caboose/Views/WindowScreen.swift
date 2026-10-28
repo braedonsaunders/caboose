@@ -206,10 +206,12 @@ struct RemoteWindowPreview: UIViewRepresentable {
         let view = RemoteWindowView(session: nil, window: window)
         view.isInteractive = false
         view.pixelsPerPoint = max(1, window.frame.width / 150)
+        view.pacer = model.session // a live preview is paced like any window on screen
         return view
     }
 
     func updateUIView(_ view: RemoteWindowView, context: Context) {
+        view.pacer = model.session
         if view.remoteWindow?.id != window.id { view.attach(window) }
         view.pixelsPerPoint = max(1, window.frame.width / 150)
     }

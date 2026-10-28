@@ -6,15 +6,17 @@ import { openUrl, saveDownload } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
 import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
+import type { DisplayProtocol } from './config.js'
 import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
-export interface Session { state: string; display: { path: string; token: string; protocol: 'xpra-ws' }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
+export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
 export interface Controller extends ComputerDriver<Session> {
   stats(): unknown
   apps(): Promise<App[]>
   launch(id: string): Promise<void>
+  /** The owner's display in the guest: Xpra's WebSocket, or caboose-display's. */
   displayUrl: string
   /** The agent seat's Xpra (display :101). */
   agentDisplayUrl: string
