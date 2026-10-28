@@ -1360,8 +1360,11 @@ starting, replacing, cancelling, every record of progress and delivering a callb
 read and act on `sign-in.json` holding the agent's sign-in lock (`sign-in.lock`, created
 exclusively; one whose holder process is gone, that was never written, or that is older than
 two minutes is taken over, through a second lock so only one process takes it). A runner
-records progress only while its attempt is still the agent's; once replaced or cancelled it
-hangs up its terminal session and exits. Stopping an attempt signals the runner's process
+records progress only while its attempt is still the agent's and still running; once
+replaced, cancelled or finished it hangs up its terminal session, removes its own files and
+exits. Each attempt keeps its files (page list, browser commands, scripts) in its own
+directory, `agents/<id>/attempts/<attempt>/`, so no cleanup reaches another attempt's.
+Stopping an attempt signals the runner's process
 group only after reading the runner's command line to confirm it is that attempt's runner,
 with SIGKILL after three seconds, and hangs up its terminal session. Progress is reported as
 `signInStatus` in `GET /v1/agents` (`~/.local/share/caboose/agents/<id>/sign-in.json`).
