@@ -148,7 +148,7 @@ it('lists push devices only when push is configured, and describes the host when
   expect((await get('/v1/devices/push')).status).toBe(503)
   expect((await get('/v1/host', false)).status).toBe(401)
   const described = await (await get('/v1/host')).json()
-  expect(described).toMatchObject({ runtime: 'container', display: 'xpra-ws', gpu: 'none', image: 'caboose-computer:latest', push: false })
+  expect(described).toMatchObject({ runtime: 'container', gpu: 'none', image: 'caboose-computer:latest', push: false })
   expect(JSON.stringify(described)).not.toContain('owner-secret-token')
 })
 

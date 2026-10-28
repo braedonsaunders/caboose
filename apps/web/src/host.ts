@@ -13,7 +13,6 @@ export interface HostInfo {
   version: string
   node: string
   runtime: 'microvm' | 'container'
-  display: 'xpra-ws' | 'caboose-display'
   /** The container's GPU; null for a microVM. */
   gpu: GpuKind | null
   image: string
@@ -49,10 +48,6 @@ export interface ComponentsUpgrade {
 
 export function runtimeLabel(runtime: HostInfo['runtime']): string {
   return runtime === 'container' ? 'Container' : 'microVM'
-}
-
-export function displayLabel(display: HostInfo['display']): string {
-  return display === 'caboose-display' ? 'Caboose Display' : 'Xpra'
 }
 
 export function gpuLabel(gpu: GpuKind | null): string {

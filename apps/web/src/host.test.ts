@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { displayLabel, gpuLabel, healthFacts, runtimeLabel, upgradeLabel } from './host.js'
+import { gpuLabel, healthFacts, runtimeLabel, upgradeLabel } from './host.js'
 
 describe('host', () => {
-  it('names the runtime, display protocol and GPU', () => {
+  it('names the runtime and GPU', () => {
     expect(runtimeLabel('container')).toBe('Container')
     expect(runtimeLabel('microvm')).toBe('microVM')
-    expect(displayLabel('caboose-display')).toBe('Caboose Display')
-    expect(displayLabel('xpra-ws')).toBe('Xpra')
     expect(gpuLabel(null)).toMatch(/microVM/)
     expect(gpuLabel('wsl')).toMatch(/dxg/)
     expect(upgradeLabel({ state: 'failed' })).toMatch(/could not/)
