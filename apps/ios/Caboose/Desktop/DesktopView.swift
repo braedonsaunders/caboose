@@ -26,7 +26,7 @@ struct DesktopView: View {
                 if let session = model.session, desktop.fullscreenWindow(in: session.windows) == nil {
                     Dock(desktop: desktop)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                        .padding(.bottom, 10 * desktop.ui)
+                        .padding(.bottom, desktop.dockBottomInset)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 if desktop.showsCursor {
@@ -44,7 +44,11 @@ struct DesktopView: View {
                 }
             }
             .onDisappear { if fillsScreen { WallpaperStore.shared.stop() } }
-            .onChange(of: proxy.size) { _, size in desktop.size = size }
+            .onChange(of: proxy.size) { _, size in
+                desktop.size = size
+                desktop.resizeMaximizedWindows(session: model.session)
+            }
+            .onChange(of: desktop.ui) { _, _ in desktop.resizeMaximizedWindows(session: model.session) }
         }
         .ignoresSafeArea(edges: fillsScreen ? .all : [])
         .clipped()

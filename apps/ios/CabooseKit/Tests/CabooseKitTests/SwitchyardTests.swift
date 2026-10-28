@@ -29,6 +29,11 @@ struct SwitchyardTests {
         #expect(pad.presets == YardMetrics.fractions)
         #expect(phone.columnsInView == 1 && duo.columnsInView == 2 && pad.columnsInView == 3)
         #expect(phone.gap == 3 && pad.gap == 4)
+        // A Duo opened out on its side, beside its vertical bar: two halves fit.
+        let openDuo = YardMetrics(size: CGSize(width: 610, height: 460))
+        #expect(openDuo.presets == [0.5, twoThirds, 1])
+        // A phone on its side still offers no column too narrow to share the screen.
+        #expect(YardMetrics(size: CGSize(width: 540, height: 400)).presets == [1])
     }
 
     @Test func fractionsTileTheScreenExactly() {

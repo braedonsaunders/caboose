@@ -1335,11 +1335,46 @@ window's texture is a blit on one shared Metal queue, which runs command buffers
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-- **Windows.** On iPhone each Linux window is an app card: full screen, with native
-  app-switcher gestures between cards. On the Desktop tab, iPad and external displays the
-  same windows float, resize and stack, with a dock and Launchpad. Transient windows
-  (menus, dialogs, tooltips) are positioned relative to their parent, never as separate
-  cards.
+- **Windows.** A Linux window opened from Home or Apps is an app card: full screen, sized
+  to the phone, and a swipe in from either side edge goes to the next or previous open app
+  in the order they opened. An external display shows the windows floating, resizing and
+  stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
+  The green title-bar button maximizes above the dock: its title bar meets the desktop's
+  top edge, and its content ends eight UI-scaled points above the dock. Rotation and UI
+  scaling update this area. Maximizing and restoring clear the guest's maximized state
+  so it uses the client-provided size, while an app's own full-screen request is preserved.
+  Transient windows (menus, dialogs, tooltips) are positioned relative to their parent,
+  never as separate cards.
+- **Switchyard.** Without an external display the Desktop tab tiles the windows on the
+  device's own screen (on iPad, a toolbar choice keeps the floating desktop instead).
+  Windows sit in columns on a horizontal track that scrolls; a column holds one window or
+  a stack (two on an upright phone, three elsewhere). Column widths are ⅓, ½, ⅔ or full,
+  offered only where a tile is at least 280 points wide and two halves fit, so an upright
+  iPhone shows one full-width column, a Duo opened out or a large phone on its side two,
+  an iPad three. New windows open beside the focused one and share the screen evenly until
+  it is full, then take columns of their own. Each tile's on-screen rect is that window's Linux geometry
+  (`configure`), so apps lay out at the tile's size and popups land over their tile; a
+  resize stretches the entire last picture without cropping until the new one arrives, and drags send geometry at
+  most about eight times a second. The gaps resize (snapping to the presets, with haptic
+  detents). The grabber at a tile's top carries it to a new column, into a stack or onto
+  another tile; a tap gives the tile the keyboard, two taps zoom it to full screen, and a
+  long press opens its menu (full screen, width, open as a card, ask an agent, redraw,
+  close). Full screen is edge to edge: the bars, the dock, the status bar and the home
+  indicator step aside, the window is configured to the whole display, and a pull down
+  from the small tab at its top edge shrinks it back into its tile under the finger. An
+  app asking for full screen gets the same, and is told when it is pulled back. Menus and
+  dialogs appear above the covering window and fit within the display. Auxiliary windows
+  follow their parent's displayed scale and position, including nested menus; trees whose
+  owner is offscreen, or is not the covering window, are hidden. A window
+  whose own minimum is wider than its tile is shown whole, scaled to fit.
+  The dock stays along the bottom under the tiles: the everyday apps, one car per column
+  (tap to go to it, slide along them to move along the track), Overview (every window, tap
+  to go, swipe up to close) and All Apps. The side edges also move along the track.
+  ⌘⌥ with the arrows moves focus, with ⇧ moves the window, and R, F, ⇧F, W, O, A and
+  Return cycle the width, toggle full screen, toggle full width, close, open Overview, open
+  an app and open a terminal; ⌘⌥ reaches Linux as Ctrl+Alt, so plain ⌘ stays the apps' Ctrl. The layout
+  and each app's hand-chosen width are kept per computer (window ids survive reconnects
+  and parking). The layout engine is `CabooseKit/Switchyard` and is unit-tested.
 - **Lifecycle.** The display socket closes when the app goes to the background; the
   computer parks on idle and resumes on the next foreground. The last frame of every window
   is cached, so reopening is instant while the stream reconnects.
@@ -1393,9 +1428,11 @@ Pinned and recent apps are kept on the phone per computer.
 
 ### Input
 
-- **Touch.** Native Wayland windows take real multi-touch. Xwayland windows get pointer
+- **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap cancels
+  the touch sequence and sends a right-click with a brief amber ring and haptic. Xwayland windows get pointer
   gestures: tap, drag and long press, with a two-finger tap or a long press for a right
-  click and swipes that scroll with momentum. A tap shows the keyboard when the app
+  click (an amber ring blooms where it lands, with a tick) and swipes that scroll with
+  momentum. A tap shows the keyboard when the app
   answers it with a text cursor or text-input-v3 focus, and hides it otherwise. Dialogs are
   fitted and centred on the phone.
 - **Pointer.** A hardware trackpad and mouse work through `UIPointerInteraction` and

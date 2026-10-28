@@ -42,6 +42,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var scrollRemainder = CGPoint.zero
     private var momentum = CGPoint.zero
     private var momentumLink: CADisplayLink?
+    private weak var secondaryTouchGesture: UITapGestureRecognizer?
 
     /// Asks the host app to show or hide the software keyboard. Set it and a tap shows the
     /// keyboard only when it lands on editable text (the app switched to a text cursor) and
@@ -186,6 +187,38 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         session.focus(window)
         session.pointerButton(in: window, button: button, pressed: true, at: lastPointer)
         session.pointerButton(in: window, button: button, pressed: false, at: lastPointer)
+        if button == 3 { showSecondaryClick(at: point) }
+    }
+
+    /// A right-click from a finger (two fingers tapped, or a long press) has no cursor to show
+    /// where it went: a ring blooms there for a moment, with a tick, so the menu that opens is
+    /// plainly the press's.
+    private func showSecondaryClick(at point: CGPoint) {
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.7)
+        guard !UIAccessibility.isReduceMotionEnabled else { return }
+        let ring = CAShapeLayer()
+        let radius: CGFloat = 22
+        ring.path = UIBezierPath(ovalIn: CGRect(x: -radius, y: -radius, width: 2 * radius, height: 2 * radius)).cgPath
+        ring.position = point
+        ring.fillColor = UIColor(red: 0.96, green: 0.65, blue: 0.14, alpha: 0.18).cgColor
+        ring.strokeColor = UIColor(red: 0.96, green: 0.65, blue: 0.14, alpha: 0.9).cgColor
+        ring.lineWidth = 1.5
+        ring.opacity = 0
+        layer.addSublayer(ring)
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.35
+        scale.toValue = 1
+        let fade = CAKeyframeAnimation(keyPath: "opacity")
+        fade.values = [0, 1, 0]
+        fade.keyTimes = [0, 0.25, 1]
+        let group = CAAnimationGroup()
+        group.animations = [scale, fade]
+        group.duration = 0.42
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { ring.removeFromSuperlayer() }
+        ring.add(group, forKey: "bloom")
+        CATransaction.commit()
     }
 
     // MARK: Gestures
@@ -213,6 +246,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         // Two fingers tapped together right-click, as on a Mac trackpad. A single tap
         // waits for it to fail, which it does the moment one finger lifts alone.
         let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleSecondaryClick(_:)))
+        secondaryTouchGesture = twoFingerTap
         twoFingerTap.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
         twoFingerTap.numberOfTouchesRequired = 2
         addGestureRecognizer(twoFingerTap)
@@ -239,8 +273,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(handleHover(_:)))
         addGestureRecognizer(hover)
 
-        // Fingers on a window that takes touch, and a Pencil on one that takes a tablet, go to
-        // the app as they are (touchesBegan and friends); the gestures never see them.
+        // Native touch stays with the app, except the two-finger secondary tap. Its
+        // recognition cancels the native sequence; movement fails it, preserving pinches.
         for recognizer in [tap, pointerClick, secondaryClick, doubleTap, twoFingerTap, pointerDrag] { recognizer.delegate = self }
     }
 
@@ -250,7 +284,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        !routesNatively(touch)
+        gesture === secondaryTouchGesture || !routesNatively(touch)
     }
 
     public override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
@@ -301,6 +335,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     @objc private func handleSecondaryClick(_ gesture: UITapGestureRecognizer) {
+        if gesture === secondaryTouchGesture { cancelTouches() }
         click(at: gesture.location(in: self), button: 3)
     }
 

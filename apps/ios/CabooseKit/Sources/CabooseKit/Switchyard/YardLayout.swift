@@ -226,7 +226,7 @@ public struct YardLayout: Codable, Equatable, Sendable {
     }
 
     /// Where a dragged tile lands.
-    public enum Drop: Equatable, Sendable {
+    public enum Drop: Hashable, Sendable {
         /// A new column of its own, before the column at this index (the count for the end).
         case column(Int)
         /// Into a column's stack, before the window at this position (the count for the bottom).
@@ -410,7 +410,7 @@ public struct YardLayout: Codable, Equatable, Sendable {
 
     /// A gap that can be dragged.
     public struct Handle: Equatable, Sendable {
-        public enum Kind: Equatable, Sendable {
+        public enum Kind: Hashable, Sendable {
             /// The gap right of a column: dragging it sets the column's width.
             case width(column: Int)
             /// The gap under the window at `position` in a column.

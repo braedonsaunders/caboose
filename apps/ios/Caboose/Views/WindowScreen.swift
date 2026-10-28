@@ -2,11 +2,15 @@ import CabooseKit
 import SwiftUI
 
 /// One Linux app, full screen, sized to the phone: the window is configured to exactly
-/// the space it is shown in, so the app lays itself out for this screen.
+/// the space it is shown in, so the app lays itself out for this screen. A swipe in from
+/// either side edge goes to the next or previous open app, in the order they opened.
 struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @State private var chromeVisible = true
     @State private var askingAbout: RemoteWindow?
+    /// How far the card has been swiped sideways, and the picture of the app it reveals.
+    @State private var swipe: CGFloat = 0
+    @State private var neighbour: (id: Int, picture: CGImage?)?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -29,6 +33,9 @@ struct WindowScreen: View {
                                 .onAppear { fitDialog(popup, over: window, in: proxy.size) }
                         }
                     }
+                    .offset(x: swipe)
+                    .background(alignment: .topLeading) { neighbourCard(width: proxy.size.width) }
+                    .overlay { cardEdges(from: window, width: proxy.size.width) }
                     .onChange(of: window.isFullscreen) { _, fullscreen in
                         withAnimation(.snappy) { chromeVisible = !fullscreen }
                     }
@@ -61,6 +68,74 @@ struct WindowScreen: View {
         }
         .statusBarHidden(!chromeVisible)
         .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
+    }
+
+    // MARK: Swiping between apps
+
+    /// The open apps' windows in the order they opened, so swiping is predictable.
+    private var cardOrder: [RemoteWindow] { model.appWindows.sorted { $0.id < $1.id } }
+
+    /// The app the card swipes towards: the next one for a swipe to the left.
+    private func neighbour(of window: RemoteWindow, leftward: Bool) -> RemoteWindow? {
+        let order = cardOrder
+        guard let index = order.firstIndex(where: { $0.id == window.id }) else { return nil }
+        let target = leftward ? index + 1 : index - 1
+        return order.indices.contains(target) ? order[target] : nil
+    }
+
+    /// The next app's last picture, sliding in beside the card.
+    @ViewBuilder private func neighbourCard(width: CGFloat) -> some View {
+        if swipe != 0, let neighbour {
+            Group {
+                if let picture = neighbour.picture {
+                    Image(decorative: picture, scale: model.pixelsPerPoint)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                } else {
+                    Color(white: 0.08)
+                }
+            }
+            .clipped()
+            .offset(x: swipe + (swipe < 0 ? width + 12 : -width - 12))
+        }
+    }
+
+    /// Thin strips along the side edges, clear of the app, that swipe the card.
+    private func cardEdges(from window: RemoteWindow, width: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: 14).contentShape(Rectangle()).gesture(cardSwipe(from: window, width: width))
+            Spacer(minLength: 0).allowsHitTesting(false)
+            Color.clear.frame(width: 14).contentShape(Rectangle()).gesture(cardSwipe(from: window, width: width))
+        }
+    }
+
+    private func cardSwipe(from window: RemoteWindow, width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 10, coordinateSpace: .global)
+            .onChanged { value in
+                let leftward = value.translation.width < 0
+                let target = neighbour(of: window, leftward: leftward)
+                if neighbour?.id != target?.id {
+                    neighbour = target.map { ($0.id, $0.surface.snapshot()) }
+                }
+                // Past the first or last app the card only gives a little.
+                swipe = target == nil ? value.translation.width * 0.2 : value.translation.width
+            }
+            .onEnded { value in
+                let projected = value.translation.width + value.velocity.width * 0.15
+                guard let target = neighbour, abs(projected) > width * 0.35, (projected < 0) == (value.translation.width < 0) else {
+                    withAnimation(.smooth(duration: 0.3, extraBounce: 0.12)) { swipe = 0 }
+                    return
+                }
+                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                withAnimation(.smooth(duration: 0.28), completionCriteria: .logicallyComplete) {
+                    swipe = projected < 0 ? -width - 12 : width + 12
+                } completion: {
+                    model.presentedWindowID = target.id
+                    swipe = 0
+                    neighbour = nil
+                }
+            }
     }
 
     /// In full screen, a pull-down tab at the top edge brings the controls back.
