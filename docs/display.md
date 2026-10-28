@@ -93,7 +93,11 @@ mechanism.
 The server is `caboose-display` in the guest, on WebSocket `0.0.0.0:14600` (any path; it
 accepts the `binary` subprotocol). The host relays it exactly as it relays Xpra; `14601` is
 reserved for an agent seat. One client is served at a time: a new authenticated client
-replaces the previous one, whose socket is closed. The Rust codec is
+replaces the previous one, which gets `bye { reason: "replaced" }` and is closed. A client
+should not reconnect on its own after `replaced`, or two devices would keep taking the
+display from each other. A client that sends nothing for 30 s (no `vsync`, `ack` or `ping`)
+is taken for suspended or gone and is closed. A client without a display to pace pings
+at least every 10 s. The Rust codec is
 `guest/display/protocol`, and `guest/display/vectors/` pins every message byte for byte.
 
 ### Framing and encoding
@@ -184,7 +188,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x40` | `audio` | `codec: "opus"`, `pts_us`, `channels?: uint` (1 or 2, absent = 2), `data: bytes` |
 | `0x7E` | `pong` | `t_us` (echoed from `ping`) |
-| `0x7F` | `bye` | `reason: "auth"\|"version"\|"shutdown"\|"protocol"` |
+| `0x7F` | `bye` | `reason: "auth"\|"version"\|"shutdown"\|"protocol"\|"replaced"` (another client took over the display) |
 
 Client → server (`0x81`–`0xFF`):
 

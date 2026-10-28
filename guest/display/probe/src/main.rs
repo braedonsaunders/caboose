@@ -30,6 +30,8 @@ OPTIONS:
     --video-decoders LIST  codecs to accept as video.* streams [default: none]
     --audio                play the computer's sound (decoded and measured, not heard)
     --duration SECS        how long to run [default: 10]
+    --stall-after SECS     then stop reading and sending, the socket left open (a
+                           suspended client)
     --windows N            fail unless at least N windows appear
     --min-fps F            fail unless the busiest window reaches F fps
     --save DIR             write each window's last picture (PNG) and stream here
@@ -43,7 +45,7 @@ OPTIONS:
                            mod1, mod4), text:STRING, edit:N:STRING (delete N before,
                            then commit), copy:STRING (the phone's clipboard), tap:X,Y,
                            click:X,Y, wait:MS, maximize (fill the display),
-                           scroll:X,Y,DY (precise, DY pixels)
+                           scroll:X,Y,DY (precise, DY pixels), resize:W,H
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -56,6 +58,8 @@ struct Args {
     video_decoders: Option<Vec<Codec>>,
     audio: bool,
     duration: Duration,
+    /// Stop reading and sending after this long, keeping the connection open.
+    stall_after: Option<Duration>,
     windows: Option<usize>,
     min_fps: Option<f64>,
     save: Option<PathBuf>,
@@ -92,6 +96,7 @@ fn parse_args() -> Result<Args, String> {
         video_decoders: None,
         audio: false,
         duration: Duration::from_secs(10),
+        stall_after: None,
         windows: None,
         min_fps: None,
         save: None,
@@ -135,6 +140,9 @@ fn parse_args() -> Result<Args, String> {
                     .collect::<Result<_, _>>()?;
             }
             "--duration" => a.duration = Duration::from_secs_f64(value()?.parse().map_err(|_| "bad --duration")?),
+            "--stall-after" => {
+                a.stall_after = Some(Duration::from_secs_f64(value()?.parse().map_err(|_| "bad --stall-after")?))
+            }
             "--windows" => a.windows = Some(value()?.parse().map_err(|_| "bad --windows")?),
             "--min-fps" => a.min_fps = Some(value()?.parse().map_err(|_| "bad --min-fps")?),
             "--save" => a.save = Some(value()?.into()),
@@ -205,6 +213,11 @@ struct WindowStats {
     size: (u32, u32),
     /// The first frame received was a keyframe.
     first_keyframe: bool,
+    /// Picture sizes seen, and whether each new size began with a keyframe.
+    sizes: u64,
+    resized_without_keyframe: bool,
+    last_crop: Option<(i32, i32)>,
+    destroyed: bool,
 }
 
 /// The `audio` stream as received.
@@ -384,6 +397,16 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
             ..Default::default()
         })],
         // scroll:X,Y,DY scrolls by DY pixels (precise, as a trackpad or a touch drag) at X,Y.
+        // resize:W,H asks for the window at that size (display pixels).
+        "resize" => {
+            let (w, h) = point(arg)?;
+            vec![Message::Configure(proto::Configure {
+                id,
+                geometry: Some(proto::Rect::new(0, 0, w as i32, h as i32)),
+                activated: Some(true),
+                ..Default::default()
+            })]
+        }
         "scroll" => {
             let mut parts = arg.splitn(3, ',');
             let mut next = || parts.next().and_then(|v| v.parse::<f64>().ok()).ok_or(format!("bad scroll {arg}"));
@@ -477,6 +500,11 @@ fn run(args: Args) -> Result<bool, String> {
     let mut bye: Option<proto::ByeReason> = None;
 
     'outer: while start.elapsed() < args.duration {
+        if args.stall_after.is_some_and(|s| start.elapsed() >= s) {
+            // A suspended client: the socket stays open, nothing is read or sent.
+            std::thread::sleep(args.duration.saturating_sub(start.elapsed()));
+            break;
+        }
         let now = Instant::now();
         if let (Some(id), Some(action)) = (target, pending.front().cloned()) {
             if now >= next_action {
@@ -552,6 +580,7 @@ fn run(args: Args) -> Result<bool, String> {
                 }
                 Message::WindowDestroy { id } => {
                     decoders.remove(&id);
+                    windows.entry(id).or_default().destroyed = true;
                 }
                 Message::Frame(f) => {
                     let received = monotonic_us();
@@ -562,6 +591,11 @@ fn run(args: Args) -> Result<bool, String> {
                     s.frames += 1;
                     s.keyframes += f.keyframe as u64;
                     s.bytes += f.data.len() as u64;
+                    if s.last_crop != Some((f.crop.w, f.crop.h)) {
+                        s.sizes += 1;
+                        s.resized_without_keyframe |= !f.keyframe;
+                        s.last_crop = Some((f.crop.w, f.crop.h));
+                    }
                     s.codec = Some(f.codec);
                     s.first.get_or_insert_with(Instant::now);
                     s.last = Some(Instant::now());
@@ -767,7 +801,7 @@ fn run(args: Args) -> Result<bool, String> {
                     _ => 0.0,
                 };
                 format!(
-                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{}}}",
+                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{}}}",
                     w.title,
                     w.kind,
                     w.parent.map(|p| p.to_string()).unwrap_or("null".into()),
@@ -787,7 +821,10 @@ fn run(args: Args) -> Result<bool, String> {
                     percentile(&w.decode_us, 0.5) / 1000.0,
                     percentile(&w.latency_us, 0.5) / 1000.0,
                     percentile(&w.latency_us, 0.95) / 1000.0,
-                    w.decode_errors
+                    w.decode_errors,
+                    w.sizes,
+                    !w.resized_without_keyframe,
+                    w.destroyed
                 )
             })
             .collect();

@@ -146,7 +146,12 @@ probe. Every check asserts on what arrived, not on a picture:
 | `chromium-text-input` | touch reaches the page; text-input-v3 is enabled and its commit arrives exactly |
 | `reconnect` | window ids survive a reconnect and each window restarts with a keyframe |
 | `reconnect-idle` | a window streamed in place from its shm buffer that draws nothing between two clients gives the second client the same picture |
-| `replace` | a second client takes over; the first gets `bye(shutdown)` |
+| `replace` | a second client takes over; the first gets `bye(replaced)` |
+| `storm` | 48 broken connections while a window animates (closed at once, left silent, handshakes cut short, a wrong token, clients killed mid-stream): the next client streams normally, and the server's threads and memory are back where they were |
+| `takeover` | six clients take the display from each other in turn: each starts with a keyframe, each one replaced gets `bye(replaced)` |
+| `resize-streaming` | Chromium animates while the client resizes its window ten times: every size starts with a keyframe, nothing fails to decode, the last size sticks |
+| `app-crash` | two of three applications (one an X11 app) are killed mid-stream: their windows go, the survivor keeps streaming, the next client gets it |
+| `stalled-client` | a client stops reading while sound plays: memory does not grow, the server closes it after `--client-timeout`, the next client is served |
 | `popup` | a `<select>` list is its own popup window with the page as parent |
 | `text-input-on-connect` | a client that connects after a field was focused is still told text input is enabled |
 | `autocorrect` | `text` with `delete_before` (autocorrect, the delete key) edits a Chromium field exactly, one grapheme cluster per deletion |

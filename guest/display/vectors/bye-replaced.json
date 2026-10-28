@@ -1,0 +1,8 @@
+{
+  "name": "bye-replaced",
+  "description": "Sent to a client when another client takes over the display.",
+  "messages": [
+    {"direction": "server", "type": "bye", "type_id": 127, "fields": {"reason": "replaced"}}
+  ],
+  "hex": "7f11000000a166726561736f6e687265706c61636564"
+}
