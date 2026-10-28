@@ -82,15 +82,24 @@ describe('saveDownload', () => {
       expect(write.slice(9).every(chunk => chunk.length <= 96 * 1024)).toBe(true)
       expect(write.slice(9).join('').length).toBeLessThanOrEqual(8 * 96 * 1024)
     }
-    expect(calls.some(call => call[6]?.includes('xdg-open'))).toBe(false)
+    expect(calls.some(call => call.some(arg => arg.includes('xdg-open')))).toBe(false)
   })
 
   it('opens the saved file on the owner display when asked', async () => {
     const { guest, calls } = recordingGuest()
     await saveDownload(guest, { name: 'a.pdf', data: 'aGk=', open: true })
     const open = calls.at(-1)!
-    expect(open[6]).toContain('DISPLAY=:100')
+    expect(open.slice(4, 7)).toEqual(['/usr/bin/env', 'DISPLAY=:100', '/bin/sh'])
+    expect(open[8]).toContain('xdg-open')
     expect(open.at(-1)).toBe('/home/caboose/Downloads/a.pdf')
+  })
+
+  it('opens on Caboose Display with the launch environment the computer reports', async () => {
+    const { guest, calls } = recordingGuest()
+    const env = ['WAYLAND_DISPLAY=wayland-caboose-0', 'XDG_RUNTIME_DIR=/run/user/1000', 'DISPLAY=:110', 'GDK_BACKEND=wayland,x11']
+    await openUrl({ ...guest, ownerEnv: env }, { url: 'https://example.com/' })
+    expect(calls.at(-1)!.slice(4, 10)).toEqual(['/usr/bin/env', ...env, '/bin/sh'])
+    expect(calls.at(-1)!.join(' ')).not.toContain(':100')
   })
 
   it('validates before touching the guest', async () => {

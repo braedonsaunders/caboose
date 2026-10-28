@@ -133,14 +133,14 @@ HTTP API (all JSON, all behind `Authorization: Bearer <device token>`):
 | `POST` | `/v1/session` | wake the user's computer (start or resume), ensure its display server is up, return `{ state, display: { path, token, protocol }, computer: { name, image, memoryMb, vcpus } }`. `protocol` is `"xpra-ws"` (the default) or `"caboose-display"` (`CABOOSE_DISPLAY=caboose`, docs/display.md); clients treat any other value as `"xpra-ws"` |
 | `GET` | `/v1/display` | **WebSocket.** Binary relay to the owner's display in the guest: Xpra's WS on 14500, or caboose-display's on 14600. Subprotocol passthrough (`binary`). One relay per client connection |
 | `GET` | `/v1/apps` | launchable apps from the guest's `.desktop` files: `{ id, name, icon (PNG data URL), categories, exec }` |
-| `POST` | `/v1/apps/:id/launch` | start an app on display `:100` |
+| `POST` | `/v1/apps/:id/launch` | start an app on the owner's display: Xpra's `:100`, or under Caboose Display with the launch environment it writes to `/run/caboose/display.env` |
 | `POST` | `/v1/session/park` | park now (snapshot with memory); otherwise parked on idle |
 | `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `notification`, `agent.*`, `media.*` |
 | `GET` | `/v1/computer` | management status and persisted computer settings; does not wake or lease the computer |
 | `PATCH` | `/v1/computer/settings` | update any of `name`, `memoryMb`, `vcpus`, `idleMs`, `defaultAgent`; returns management status |
 | `POST` | `/v1/computer/restart` | requires `{ "confirm": true }`; cold restart, preserving the disk and discarding memory; returns management status |
 | `POST` | `/v1/files` | `{ name, data (base64), open? }` → `{ path }`: save a file into the computer's `~/Downloads` (see Agents › Files) |
-| `POST` | `/v1/open` | `{ url }` → `{ opened: true }`: open an `http(s)` URL in the default browser on `:100` |
+| `POST` | `/v1/open` | `{ url }` → `{ opened: true }`: open an `http(s)` URL in the default browser on the owner's display |
 
 Management status has this shape (resources are MiB and idle time is milliseconds):
 
@@ -442,11 +442,15 @@ in short:
 Agents announce their sign-in methods in ACP `initialize`, which the runner records when an
 agent is installed, probed or run. Registry agents offer at least one of two kinds:
 
+Sign-in runs on the owner's display, with the same launch environment an app gets there
+(`DISPLAY=:100` under Xpra; `WAYLAND_DISPLAY`, Xwayland's `DISPLAY` and the toolkit hints
+from `/run/caboose/display.env` under Caboose Display), which the host passes to the runner.
+
 - **`agent`:** `POST /v1/agents/:id/sign-in` starts the runner in sign-in mode on the
-  owner's display `:100`, and it calls ACP `authenticate`; the agent opens the computer's
+  owner's display, and it calls ACP `authenticate`; the agent opens the computer's
   browser at its own sign-in page, with its callback on the computer's localhost, and the
   owner completes it on the phone.
-- **`terminal`:** the runner opens a terminal window on `:100` running the agent's own
+- **`terminal`:** the runner opens a terminal window on that display running the agent's own
   program with the method's `args` in place of the registry's, and its `env` over the
   registry's. Exit status 0 is success; the runner then initializes the agent again.
 
@@ -538,10 +542,10 @@ without pixels:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/screen/elements` | `{ window: { title, app }, elements: [{ id, role, name, states, bounds: { x, y, width, height } }], note? }`: the focused window's visible controls on `:100`, at most 200, and `note` when there are none to say why |
+| `GET` | `/v1/screen/elements` | `{ window: { title, app }, elements: [{ id, role, name, states, bounds: { x, y, width, height } }], note? }`: the focused window's visible controls on the owner's display, at most 200, and `note` when there are none to say why |
 | `POST` | `/v1/screen/act` | `{ element: id, action: "press" \| "focus" \| "set-text", text? }` → `{ ok }`; 404 when the element is gone |
-| `POST` | `/v1/screen/type` | `{ text }` (1–10000 characters): type into the focused window on `:100` |
-| `POST` | `/v1/screen/keys` | `{ keys }`: press key combinations such as `ctrl+s` or `ctrl+shift+t Return` on `:100` |
+| `POST` | `/v1/screen/type` | `{ text }` (1–10000 characters): type into the focused window on the owner's display |
+| `POST` | `/v1/screen/keys` | `{ keys }`: press key combinations such as `ctrl+s` or `ctrl+shift+t Return` on the owner's display |
 
 Element ids are opaque strings valid until the window changes. These routes act only on
 the owner's display, on the owner's own command, and answer 409 while the computer is not
@@ -551,13 +555,20 @@ bus itself and reads only an application whose windows are all on the requested 
 so the agent seat never reads or presses the owner's windows. Xpra, Chromium, VS Code and
 Firefox are started with their accessibility trees enabled so web content is included.
 
+They run with the owner display's launch environment on its X display: Xpra's `:100`, or
+Xwayland's under Caboose Display. Both tools find the focused window and send keys through
+X, so under Caboose Display they reach X11 windows only. A native Wayland window, such as
+Chromium, is not read, and `elements` says "No window is open on this display." while one
+is focused. Reading and typing into Wayland windows needs the compositor to report focus
+and inject input, and that is not built yet.
+
 ### Files
 
 `POST /v1/files` saves `{ name, data }` (at most 50 MB decoded) into
 `/home/caboose/Downloads/`, owned by `caboose`. The name is sanitised as for attachments
 and made unique (`report (2).pdf`); the response is the absolute path. `open: true` then
-opens it with the desktop's default application on the owner's display `:100`
-(`xdg-open`, else `gio open`). `POST /v1/open` opens an `http`/`https` URL the same way;
+opens it with the desktop's default application on the owner's display, with that
+display's launch environment (`xdg-open`, else `gio open`). `POST /v1/open` opens an `http`/`https` URL the same way;
 other schemes, control characters and spaces are rejected with 400. Both answer 409 while
 the computer is not running. The guest command channel carries arguments, not stdin, so
 file contents travel base64-encoded in chunks of at most 96 KiB per argument and 768 KiB

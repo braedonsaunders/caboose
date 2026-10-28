@@ -19,11 +19,21 @@ describe('screen', () => {
     const guest = { run: async (command: string, args: string[]) => { runs.push([command, ...args]); return '0\n{"window":{"title":"","app":""},"elements":[],"note":"No window is open on this display."}' } }
     expect(await screenElements(guest)).toEqual({ window: { title: '', app: '' }, elements: [], note: 'No window is open on this display.' })
     expect(runs[0]!.slice(0, 4)).toEqual(['/usr/sbin/runuser', '-u', 'caboose', '--'])
-    expect(runs[0]!.slice(7)).toEqual(['sh', ':100', '/usr/bin/python3', '/opt/caboose/a11y.py', 'elements', '--display', ':100'])
+    expect(runs[0]!.slice(4)).toEqual(['/usr/bin/env', 'DISPLAY=:100', '/bin/sh', '-c', ON_DISPLAY, 'sh', ':100', '/usr/bin/python3', '/opt/caboose/a11y.py', 'elements', '--display', ':100'])
     await screenType(guest, { text: '-rf is just text' })
     expect(runs[1]!.slice(-3)).toEqual(['4', '--', '-rf is just text'])
     await screenKeys(guest, { keys: 'ctrl+shift+T Enter' })
     expect(runs[2]!.slice(-2)).toEqual(['ctrl+shift+t', 'Return'])
+  })
+
+  it('uses the X display and environment Caboose Display reports', async () => {
+    const runs: string[][] = []
+    const env = ['WAYLAND_DISPLAY=wayland-caboose-0', 'DISPLAY=:110', 'XAUTHORITY=/run/user/1000/caboose-display/Xauthority']
+    const guest = { ownerEnv: env, run: async (command: string, args: string[]) => { runs.push([command, ...args]); return '0\n{"ok":true}' } }
+    await screenAct(guest, { element: '0.1', action: 'press' })
+    expect(runs[0]!.slice(4, 8)).toEqual(['/usr/bin/env', ...env])
+    expect(runs[0]!.slice(11, 17)).toEqual(['sh', ':110', '/usr/bin/python3', '/opt/caboose/a11y.py', 'act', '--display'])
+    expect(runs[0]![17]).toBe(':110')
   })
 
   it('validates actions and maps a vanished element to its own error', async () => {

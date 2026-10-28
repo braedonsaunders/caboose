@@ -142,7 +142,7 @@ export function createContainerController(config: Config, dependencies: { docker
     },
     guest() {
       if (!running) return undefined
-      return { run: (command: string, args: string[], timeoutMs?: number) => exec('root', command, args, timeoutMs) }
+      return { run: (command: string, args: string[], timeoutMs?: number) => exec('root', command, args, timeoutMs), ownerEnv: launchEnv }
     },
     stats: () => ({ host: 'caboose-host', runtime: 'container', gpu, container: name, running }),
     activeResources: () => resources,
