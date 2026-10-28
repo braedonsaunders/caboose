@@ -124,7 +124,7 @@ HTTP API (all JSON, all behind `Authorization: Bearer <device token>`):
 | `GET` | `/v1/apps` | launchable apps from the guest's `.desktop` files: `{ id, name, icon (PNG data URL), categories, exec }` |
 | `POST` | `/v1/apps/:id/launch` | start an app on display `:100` |
 | `POST` | `/v1/session/park` | park now (snapshot with memory); otherwise parked on idle |
-| `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `notification`, `agent.*` |
+| `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `notification`, `agent.*`, `media.*` |
 | `GET` | `/v1/computer` | management status and persisted computer settings; does not wake or lease the computer |
 | `PATCH` | `/v1/computer/settings` | update any of `name`, `memoryMb`, `vcpus`, `idleMs`; returns management status |
 | `POST` | `/v1/computer/restart` | requires `{ "confirm": true }`; cold restart, preserving the disk and discarding memory; returns management status |
@@ -355,6 +355,86 @@ other schemes, control characters and spaces are rejected with 400. Both answer 
 the computer is not running. The guest command channel carries arguments, not stdin, so
 file contents travel base64-encoded in chunks of at most 96 KiB per argument and 768 KiB
 per command and are decoded in the guest; no driver needs more than `run(command, args)`.
+
+## Media handoff
+
+Video reaches the phone the way every window does (see `docs/display.md`, "Video, for
+every app"). Media handoff is only a user action on top of that: from a window's menu,
+**Play on iPhone / Apple TV** moves a video playing in the computer's Chromium to the phone,
+pauses the Linux copy, and afterwards resumes the Linux copy at the phone's position. It
+treats every site the same way; there are no per-site rules.
+
+**Guest** (`guest/media-handoff/`, installed in the image): a Chromium extension, ID
+`cklinclacpchpdgickgonlhnldfmkhbh` (fixed by the public key in its manifest), and its native
+messaging host `com.caboose.media`. The extension watches every `<video>` in every http(s)
+page and frame and offers the most recently started playing one (or, if none plays, the
+most recently started one). The native host keeps `/home/caboose/.cache/caboose/media.json`
+equal to it (atomically replaced, removed when nothing is offered or the browser closes),
+records its pid in `media-host.pid`, and forwards commands from `media-command.json`.
+
+| Offered as | When | Played on the phone from |
+| --- | --- | --- |
+| `kind: "hls"`, `src` | `currentSrc` is http(s) and its path ends in `.m3u8` | `src`, natively |
+| `kind: "video"`, `src` | any other http(s) `currentSrc` | `src`, natively |
+| `kind: "page"` | `currentSrc` is a `blob:` the page assembled (MediaSource) | the page, in the phone's browser; the position does not carry over |
+
+Not supported: DRM (EME) playback off the computer, `data:` and MediaStream sources (calls,
+cameras), muted looping videos (page decoration), videos inside shadow roots, and other
+browsers. `src` is
+the page's own URL for the media; cookies, headers and short-lived signed URLs may not
+work off the computer, which the phone reports as a playback failure.
+
+The media state, in the guest file and as the host sends it:
+
+```ts
+{
+  id: string,              // /^[A-Za-z0-9._-]{1,64}$/, "<tab>.<frame>.<nonce>-<n>"; stable for one
+                           // tab, frame, element and source; a new source is a new id
+  page: string,            // the tab's http(s) URL
+  title: string,           // media session title, else the document or tab title; "" if none
+  src?: string,            // http(s) only, never blob:; present for "hls" and "video", absent for "page"
+  kind: "page" | "hls" | "video",
+  position: number,        // seconds
+  duration: number | null, // seconds; null for live or not yet known
+  paused: boolean,
+  updatedAt: number        // ms since the epoch: when `position` holds (see below)
+}
+```
+
+The extension reports on `play`, `playing`, `pause`, `seeked`, `ended` and `emptied`, and
+every 5 seconds while playing. In the guest file `updatedAt` is the guest-clock sample time.
+**caboose-host** reads the file (with the guest's clock, so skew does not matter) about
+once a second, and only while the computer is already `running` *and* at least one display
+client is connected; reads go straight to the guest, so they never wake the computer, hold
+a lease or delay idle parking. A file whose native host is no longer running is ignored.
+What the host sends has `position` extrapolated to the moment it is sent while playing
+(capped at `duration`), and `updatedAt` set to that moment on the host's clock.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/media` | `{ media: <state> \| null }`; null unless the computer is running. Does not wake or lease |
+| `POST` | `/v1/media/:id/control` | `{ action: "pause" \| "play", position?: number }` → `{ sent: true }` |
+
+Control validates strictly (400): the raw `:id` path segment must match
+`/^[A-Za-z0-9._-]{1,64}$/`; the body may contain only `action` and `position`; `position`
+(seconds, 0–10⁷) is allowed only with `play`, which seeks there and plays. A parked or
+waking computer returns 409; control does not wake it (call `POST /v1/session` first).
+The host writes `{ seq, id, action, position? }` to
+`/home/caboose/.cache/caboose/media-command.json` as user `caboose`, `seq` increasing (ms
+based, so across host restarts too). `sent` means the command reached the computer; an id
+the browser no longer has (tab closed) is ignored there, and the next state shows the
+result.
+
+Control-socket events: `media.playing { media }` on every change of the state (including
+each 5-second heartbeat while playing, and once more when polling starts), and
+`media.stopped { id }` when that video stops being offered (it ended, its tab closed, the
+browser closed, another video replaced it, or the computer stopped running). A control
+socket that connects while polling is running receives the current `media.playing` after
+`computer.settings`.
+
+The handoff flow on the phone: on `media.playing`, offer the video; to hand off, play it
+natively from `position`, then `POST …/control { action: "pause" }`; when the phone stops,
+`POST …/control { action: "play", position: <phone position> }`.
 
 ## Iteration 1: done means
 

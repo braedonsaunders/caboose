@@ -97,6 +97,20 @@ export CABOOSE_URL=https://computer.example.com
 node apps/host/scripts/check-agents.mjs [--codex] [--open]
 ```
 
+## Media handoff
+
+`src/media.ts` reads the video playing in the computer's Chromium from the guest's
+`/home/caboose/.cache/caboose/media.json` (written by `guest/media-handoff`) about once a
+second, only while the computer is already running and a display client is connected,
+and broadcasts `media.playing` / `media.stopped` on the control socket. `GET /v1/media`
+returns the current state (null unless running; it never wakes or leases the computer).
+`POST /v1/media/:id/control` with `{ "action": "pause" }` or
+`{ "action": "play", "position": 42.5 }` writes a command for the guest as user `caboose`
+and returns `{ "sent": true }`, or 409 while the computer is not running. The contract is
+in `../../docs/architecture.md` § Media handoff. Unit tests fake the guest; check a real
+guest with `guest/media-handoff/check.sh`, then play a video in Chromium and watch
+`GET /v1/media` while the app is connected.
+
 The unverified user-service template is `systemd/caboose-host.service`. Set
 `CABOOSE_HOST_DIR` to the absolute path of `apps/host` and `CABOOSE_NODE` to
 the absolute Node executable in `~/.config/caboose/host.env`, in addition to the
