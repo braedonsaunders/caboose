@@ -34,6 +34,16 @@ final class DesktopModel {
     /// well across a room, so wider ones scale up to match.
     static func automaticUI(forWidth width: CGFloat) -> CGFloat { max(1, width / 1600) }
 
+    /// On the phone's or iPad's own screen, held at arm's length: a little smaller than a Mac
+    /// on a phone, a Mac's size on an iPad.
+    static func deviceUI(forWidth width: CGFloat) -> CGFloat { min(1, max(0.72, width / 1100)) }
+
+    /// Fingers on the glass point straight at things; the arrow shows only for a pointer
+    /// (an iPad's mouse or trackpad), not under a finger.
+    var directTouch = false
+    var pointerHovering = false
+    var showsCursor: Bool { !directTouch || pointerHovering }
+
     let pixelsPerPoint: CGFloat
     var size: CGSize = .zero
     var cursor = CGPoint(x: 400, y: 300)

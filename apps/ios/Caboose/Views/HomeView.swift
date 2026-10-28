@@ -17,6 +17,7 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 header
+                DesktopCard()
                 AgentSection()
                 if !model.appWindows.isEmpty { openWindows }
                 appsGrid
