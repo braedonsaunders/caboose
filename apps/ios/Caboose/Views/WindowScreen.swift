@@ -278,6 +278,10 @@ struct WindowScreen: View {
     /// Present actions outside the toolbar so a vertical overflow group cannot clip them.
     @ViewBuilder private func windowActions(for window: RemoteWindow) -> some View {
         Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
+        Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
+            model.session?.exitFullscreen(window, frame: window.frame)
+            withAnimation(.snappy) { chromeVisible = true }
+        }
         if model.agents.available {
             Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
         }

@@ -1503,6 +1503,11 @@ device has a hardware decoder, AV1, and ImageIO for PNG and WebP tiles. Every wr
 window's texture is a blit on one shared Metal queue, which runs command buffers in commit
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
+The window picture and its video layers use the same mapping from the confirmed surface
+size to the view's bounds, including while a resize stretches the previous picture.
+Video clips intersect the window bounds without rescaling the decoded picture. Only the
+active presentation hosts a stream's playback layer; an inactive Yard relinquishes it to
+the app card, and a detached view releases its layers.
 
 - **Windows.** A Linux window opened from Home or Apps is an app card: full screen, sized
   to the phone. On a device with a vertical toolbar, the card starts with its controls
@@ -1515,6 +1520,15 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   title is in the switcher; Options includes Ask Agent, redraw and close. The switcher and
   options open system action dialogs outside the toolbar's overflow group. Full Screen
   hides the controls; its accessible top handle brings them back.
+  Exit App Full Screen in Options focuses the app, sends an Escape press and release,
+  and clears the guest fullscreen and maximized states. It is available even before the
+  app reports fullscreen. The tile's menu offers the same action; pulling an app-requested
+  fullscreen window back into its tile also sends Escape. Hardware Escape reaches the app.
+  Single taps, pointer clicks, double taps and native touch taps use the same bounded
+  keyboard-focus request: text-input-v3 decides whether editing began, with the guest's
+  text cursor as fallback. A double tap that selects or zooms does not itself request the
+  keyboard. Dismissing the keyboard, leaving the view and Return in a non-code app cancel
+  the pending request.
   An external display shows the windows floating, resizing and
   stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
   The green title-bar button maximizes above the dock: its title bar meets the desktop's

@@ -91,6 +91,16 @@ public protocol DisplaySession: AnyObject {
 }
 
 public extension DisplaySession {
+    /// Leave application fullscreen (Escape also exits page/player fullscreen) and restore
+    /// the shell's geometry. Available even when fullscreen metadata has not arrived yet.
+    func exitFullscreen(_ window: RemoteWindow, frame: CGRect) {
+        focus(window)
+        if let escape = Keysyms.special["Escape"] {
+            key(escape, pressed: true, in: window)
+            key(escape, pressed: false, in: window)
+        }
+        configure(window, frame: frame, state: ["fullscreen": false, "maximized": false])
+    }
     func configure(_ window: RemoteWindow, frame: CGRect) { configure(window, frame: frame, state: [:]) }
     func pointerMove(in window: RemoteWindow, to point: CGPoint) { pointerMove(in: window, to: point, modifiers: []) }
     func pointerButton(in window: RemoteWindow, button: Int, pressed: Bool, at point: CGPoint) {

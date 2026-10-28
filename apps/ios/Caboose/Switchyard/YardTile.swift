@@ -111,6 +111,9 @@ struct YardGrabber: View {
                 }
             }
             Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right", action: openCard)
+            Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
+                yard.exitAppFullscreen(window.id)
+            }
             if model.agents.available {
                 Button("Ask Agent About This Window", systemImage: "sparkle") { onAsk(window) }
             }
@@ -143,6 +146,7 @@ struct YardSurface: UIViewRepresentable {
     func makeUIView(context: Context) -> YardSurfaceView {
         let view = YardSurfaceView(content: RemoteWindowView(session: model.yardActive ? model.session : nil, window: window))
         view.content.pixelsPerPoint = pixelsPerPoint
+        view.content.showsVideo = model.yardActive
         let model = model
         view.content.onKeyboardWanted = { wanted in
             if model.keyboardVisible != wanted { model.keyboardVisible = wanted }
@@ -152,6 +156,7 @@ struct YardSurface: UIViewRepresentable {
 
     func updateUIView(_ view: YardSurfaceView, context: Context) {
         view.content.session = model.yardActive ? model.session : nil
+        view.content.showsVideo = model.yardActive
         view.content.pixelsPerPoint = pixelsPerPoint
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.onTouch = onTouch

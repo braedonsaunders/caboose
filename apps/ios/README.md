@@ -129,6 +129,12 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   window and then destroys the stream; the layer stays until the window view has shown that
   repaint, so stale pixels never flash. HDR video streams (PQ, HLG) use the screen's extended
   dynamic range; window pictures are SDR.
+  The base picture and video clips share the confirmed surface-to-view mapping during
+  resizing; the outer Yard transform applies to both once. Only the active presentation
+  owns the playback layer. `VideoLayerGeometryTests`, `VideoSessionTests` and
+  `TapTextFocusTests` cover geometry, repaint retirement and keyboard decisions on macOS;
+  `VideoLayerHostingTests` exercises layer transfer when running the package tests on iOS.
+  `scripts/check-desktop.sh` covers real-device video, fullscreen exit and editing gestures.
 - **Sound.** The computer's sound arrives as 20 ms Opus packets stamped on the server's
   clock, decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`, so iOS
   routes it like any app's sound. The renderer and every video layer share one
