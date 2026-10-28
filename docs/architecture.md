@@ -1224,10 +1224,10 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   device's own screen (on iPad, a toolbar choice keeps the floating desktop instead).
   Windows sit in columns on a horizontal track that scrolls; a column holds one window or
   a stack (two on an upright phone, three elsewhere). Column widths are ⅓, ½, ⅔ or full,
-  offered only where a tile is at least 320 points wide, so an upright iPhone shows one
-  full-width column, a Duo opened out or a phone on its side two, an iPad three. New
-  windows open beside the focused one and share the screen evenly until it is full, then
-  take columns of their own. Each tile's on-screen rect is that window's Linux geometry
+  offered only where a tile is at least 280 points wide and two halves fit, so an upright
+  iPhone shows one full-width column, a Duo opened out or a large phone on its side two,
+  an iPad three. New windows open beside the focused one and share the screen evenly until
+  it is full, then take columns of their own. Each tile's on-screen rect is that window's Linux geometry
   (`configure`), so apps lay out at the tile's size and popups land over their tile; a
   resize stretches the last picture until the new one arrives, and drags send geometry at
   most about eight times a second. The gaps resize (snapping to the presets, with haptic
