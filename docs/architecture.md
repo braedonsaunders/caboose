@@ -60,8 +60,9 @@ base swap.
   hints, transient/popup relationships and damage-driven H.264, which is what lets
   the phone render Linux apps as native surfaces instead of a picture of a
   desktop. Xpra also already carries clipboard, notifications, file transfer,
-  audio, printing, webcam and cursor shapes. A Wayland compositor of our own can
-  replace it later behind the same client window model.
+  audio, printing, webcam and cursor shapes. The owner seat forwards speaker audio
+  via a PulseAudio monitor, with MP3 available for iOS; microphone forwarding is off.
+  A Wayland compositor of our own can replace it later behind the same client model.
 - **Session auth.** Xpra requires a per-boot token (`tcp-auth`/`ws-auth` via an
   `env`/file authenticator). The host writes it with `desk.exec` at wake and hands
   it to the client inside the authenticated `/v1/session` response.
