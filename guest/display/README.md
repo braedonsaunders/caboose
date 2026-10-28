@@ -138,6 +138,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `chromium` | Chromium as a native Wayland client animates at ≥ 55 fps |
 | `chromium-text-input` | touch reaches the page; text-input-v3 is enabled and its commit arrives exactly |
 | `reconnect` | window ids survive a reconnect and each window restarts with a keyframe |
+| `reconnect-idle` | a window streamed in place from its shm buffer that draws nothing between two clients gives the second client the same picture |
 | `replace` | a second client takes over; the first gets `bye(shutdown)` |
 | `popup` | a `<select>` list is its own popup window with the page as parent |
 | `text-input-on-connect` | a client that connects after a field was focused is still told text input is enabled |

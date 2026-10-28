@@ -401,13 +401,19 @@ impl State {
                     w.stream.direct = Some(crate::render::DirectState { image_id: key, commit: d.commit });
                     let result = if in_place { Ok(()) } else { crate::render::copy_direct(&d, &mut image) };
                     match result {
-                        Ok(()) if d.damage.is_empty() => Ok(Rendered::Unchanged),
                         Ok(()) => {
-                            if in_place {
+                            // In place the picture is the buffer itself; the image is not
+                            // kept up to date, so a keyframe of unchanged content (a new
+                            // client) must read the buffer too.
+                            if in_place && (!d.damage.is_empty() || w.stream.need_keyframe) {
                                 shm =
                                     Some(crate::encode::ShmPicture { buffer: d.buffer, x: d.origin.0, y: d.origin.1 });
                             }
-                            Ok(Rendered::Picture(d.damage))
+                            if d.damage.is_empty() {
+                                Ok(Rendered::Unchanged)
+                            } else {
+                                Ok(Rendered::Picture(d.damage))
+                            }
                         }
                         Err(e) => {
                             w.stream.direct = None;
