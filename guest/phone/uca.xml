@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<actions>
+  <action>
+    <icon>phone</icon><name>Share to iPhone</name>
+    <unique-id>caboose-share-to-iphone</unique-id>
+    <command>caboose-share %F</command>
+    <description>Share selected files with your iPhone</description>
+    <patterns>*</patterns><other-files/><audio-files/><image-files/><text-files/><video-files/>
+  </action>
+</actions>

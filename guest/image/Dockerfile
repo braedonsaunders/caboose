@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eat
 COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/caboose-xpra.service image/caboose-xpra-agent.service /builder/
 COPY files /builder/files
 COPY desktop-mcp /builder/desktop-mcp
+COPY phone /builder/phone
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /out/vaapi/caboose_drv_video.so /builder/display/
 COPY display/caboose-display-ready display/systemd/caboose-display.service /builder/display/
 COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /builder/agentd/

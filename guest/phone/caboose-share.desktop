@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Share to iPhone
+Exec=caboose-share %F
+Icon=phone
+Terminal=false
+NoDisplay=true
+MimeType=application/octet-stream;

@@ -7,7 +7,7 @@ docker build -t caboose-computer:gpu -f guest/container/Dockerfile guest
 ```
 
 The image uses Debian 13, the signed Xpra repository at version 6.5.5, Mesa,
-the guest app installer, and Xpra NVENC with PyCUDA. `CABOOSE_GPU=wsl` selects
+the guest app installer, Mesa Vulkan and OpenGL software drivers, and Xpra NVENC with PyCUDA. `CABOOSE_GPU=wsl` selects
 Mesa D3D12 and enables NVENC when WSL exposes NVIDIA; `nvidia` uses native
 NVIDIA, `dri` uses a Linux render node, and `none` uses software rendering. It extracts
 the signed Debian `python3-pycuda` package and installs its runtime libraries
@@ -63,3 +63,13 @@ The image installs `guest/files/caboose-files.py`. `caboose-session start-files`
 as `caboose` after the host writes the wake token; the host publishes port 14700 on loopback
 only. See `docs/architecture.md` § Files and `apps/host/README.md` for the API and checks.
 Recreate a container from the updated image to install the service; its home volume remains.
+
+Cold restart stops and starts the same container, preserving its installed packages and
+catalog rollback cache in the writable layer. Removing or replacing that container discards
+those packages; back up the home volume separately.
+
+## iOS handoff and printing
+
+The container installs the same commands, desktop integration and iPhone CUPS queue as
+the microVM; `caboose-session` starts CUPS for either owner display. See
+[`guest/phone/README.md`](../phone/README.md) for behavior and the scripted guest check.

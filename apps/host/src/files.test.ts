@@ -56,4 +56,12 @@ describe('openUrl', () => {
     expect(calls[0]?.at(-1)).toBe('https://example.com/')
     await expect(openUrl(guest, { url: 'file:///etc/shadow' })).rejects.toBeInstanceOf(AgentInputError)
   })
+
+  it("uses the owner's Caboose Display environment", async () => {
+    const { guest, calls } = recordingGuest()
+    const env = ['DISPLAY=:110', 'WAYLAND_DISPLAY=wayland-caboose-0']
+    await openUrl({ ...guest, ownerEnv: env }, { url: 'https://example.com' })
+    expect(calls[0]?.slice(4, 8)).toEqual(['/usr/bin/env', ...env, '/bin/sh'])
+    expect(calls[0]?.join(' ')).not.toContain('DISPLAY=:100')
+  })
 })

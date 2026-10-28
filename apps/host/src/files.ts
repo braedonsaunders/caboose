@@ -1,4 +1,5 @@
 import { AgentInputError, AgentUnavailableError, type AgentGuest } from './agents.js'
+import { ownerEnv } from './display.js'
 
 /**
  * Agent attachments and links onto the owner's display. Agent attachments use the
@@ -67,9 +68,9 @@ export async function writeGuestFile(guest: AgentGuest, part: string, data: Buff
   }
 }
 
-/** Opens a file or URL on the owner's display (:100) with the desktop's default handler, detached. */
+/** Opens a file or URL with the environment of the owner's display. */
 const OPEN_SCRIPT = [
-  'export HOME=/home/caboose DISPLAY=:100',
+  'export HOME=/home/caboose',
   '[ -d /run/user/1000 ] && export XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus',
   'if command -v xdg-open >/dev/null 2>&1; then opener="xdg-open"',
   'elif command -v gio >/dev/null 2>&1; then opener="gio open"',
@@ -78,7 +79,7 @@ const OPEN_SCRIPT = [
 ].join('\n')
 
 export async function openOnDisplay(guest: AgentGuest, target: string): Promise<void> {
-  await guest.run(RUNUSER, ['-u', 'caboose', '--', '/bin/sh', '-c', OPEN_SCRIPT, 'sh', target], 15_000)
+  await guest.run(RUNUSER, ['-u', 'caboose', '--', '/usr/bin/env', ...ownerEnv(guest), '/bin/sh', '-c', OPEN_SCRIPT, 'sh', target], 15_000)
 }
 
 /** `POST /v1/open`: `{ url }` → opens an http(s) URL in the default browser on the owner's display. */

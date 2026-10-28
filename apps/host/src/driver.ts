@@ -82,7 +82,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
     },
     guest() {
       if (!desk) return undefined
-      return { run: (cmd: string, args: string[], timeoutMs?: number) => command(cmd, args, timeoutMs) }
+      return { run: (cmd: string, args: string[], timeoutMs?: number) => command(cmd, args, timeoutMs), ownerEnv: launchEnv }
     },
     stats: () => ({ host: 'caboose-host', kvm: existsSync('/dev/kvm'), desk: host.stats() }),
     activeResources: () => desk || existsSync(snapshotPath) ? resources : null,

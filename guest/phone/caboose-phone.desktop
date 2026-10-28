@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Open on iPhone
+Exec=caboose-open %u
+Icon=phone
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/mailto;x-scheme-handler/tel;x-scheme-handler/sms;x-scheme-handler/facetime;x-scheme-handler/facetime-audio;x-scheme-handler/maps;x-scheme-handler/geo;

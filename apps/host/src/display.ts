@@ -1,4 +1,5 @@
 import type { DisplayProtocol } from './config.js'
+import type { AgentGuest } from './agents.js'
 
 /**
  * The owner's display server inside the computer, by the protocol the app speaks to it.
@@ -19,6 +20,11 @@ export const OWNER_DISPLAYS: Record<DisplayProtocol, OwnerDisplay> = {
 }
 
 export const DISPLAY_ENV_PATH = '/run/caboose/display.env'
+
+/** The owner's launch environment; a guest without one uses the Xpra default. */
+export function ownerEnv(guest: AgentGuest): string[] {
+  return guest.ownerEnv?.length ? guest.ownerEnv : OWNER_DISPLAYS['xpra-ws'].launchEnv!
+}
 
 /**
  * `KEY=value` pairs from an sh environment file: one assignment per line, an optional
