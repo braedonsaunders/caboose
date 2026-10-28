@@ -123,6 +123,7 @@ enum Tone {
     @Test func packetsPlayOnTheClockBehindTheServer() async throws {
         let clock = MediaClock()
         let player = SoundPlayer(clock: clock)
+        player.renderer.isMuted = true // the renderer still plays the timeline; the Mac stays quiet
         let start: Int64 = 50_000_000
         let packets = try Tone.packets(15)
         let before = Date()
@@ -148,6 +149,7 @@ enum Tone {
     @Test func packetsArrivingInRealTimeNeverRestartTheClock() async throws {
         let clock = MediaClock()
         let player = SoundPlayer(clock: clock)
+        player.renderer.isMuted = true // the renderer still plays the timeline; the Mac stays quiet
         let packets = try Tone.packets(25)
         for (index, packet) in packets.enumerated() {
             player.play(AudioPacket(ptsMicros: UInt64(80_000_000 + index * 20_000), data: packet))
@@ -211,6 +213,7 @@ enum Tone {
         let base = CabooseDisplaySessionTests()
         let session = try await base.ready(features: ["vsync", "ack", "audio"])
         let player = try #require(session.sound)
+        player.renderer.isMuted = true
         for (index, packet) in try Tone.packets(5).enumerated() {
             base.stream.server([(.audio, ["codec": "opus", "pts_us": CBOR(UInt64(9_000_000 + index * 20_000)), "channels": 2, "data": .bytes(packet)])])
         }
