@@ -6,13 +6,13 @@ import {
 } from '@braedonsaunders/appkit-ui'
 import { Mail, ShieldCheck, Users } from 'lucide-react'
 import {
-  CabooseApiError, buildInviteLink, type Administrator, type CabooseClient, type Me, type PendingInvite,
+  CabooseApiError, buildInviteLink, type Administrator, type CabooseClient, type Me, type PendingInvite, type Person, type ComputerSummary,
 } from '../api.js'
+import { navigate, routeHref } from '../navigation.js'
 import { errorMessage } from '../components/common.js'
 
 /**
- * The administrators of a tenant, and invitations for new ones. The people whose computers
- * they run need no account: each uses their computer from their phone.
+ * People and their computers, with administrator login access managed separately.
  */
 export function People({ client, me, onUnauthorized }: { client: CabooseClient; me: Me; onUnauthorized: () => void }) {
   const [tenantId, setTenantId] = React.useState(me.tenants[0]?.id ?? '')
@@ -21,21 +21,37 @@ export function People({ client, me, onUnauthorized }: { client: CabooseClient; 
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState<string | null>(null)
   const [link, setLink] = React.useState<{ email: string; url: string } | null>(null)
+  const [people, setPeople] = React.useState<Person[] | null>(null)
+  const [computers, setComputers] = React.useState<ComputerSummary[]>([])
+  const currentTenant = React.useRef(tenantId)
+  currentTenant.current = tenantId
+  const generation = React.useRef(0)
   const tenant = me.tenants.find(entry => entry.id === tenantId)
 
   const refresh = React.useCallback(async () => {
-    if (!tenantId) return
+    if (!tenantId || currentTenant.current !== tenantId) return
+    const request = ++generation.current
     try {
-      const [admins, pending] = await Promise.all([client.administrators(tenantId), client.invites(tenantId)])
+      const [persons, machines, admins, pending] = await Promise.all([
+        client.people(tenantId), client.computers(), client.administrators(tenantId), client.invites(tenantId),
+      ])
+      if (generation.current !== request || currentTenant.current !== tenantId) return
+      setPeople(persons.people)
+      setComputers(machines.computers)
       setAdministrators(admins.administrators)
       setInvites(pending.invites)
       setError(null)
     } catch (failure) {
+      if (generation.current !== request || currentTenant.current !== tenantId) return
       if (failure instanceof CabooseApiError && failure.isUnauthorized) onUnauthorized()
       else setError(errorMessage(failure))
     }
   }, [client, tenantId, onUnauthorized])
-  React.useEffect(() => { setAdministrators(null); setInvites(null); setLink(null); void refresh() }, [refresh])
+  React.useEffect(() => {
+    setPeople(null); setComputers([]); setAdministrators(null); setInvites(null); setLink(null); setError(null)
+    void refresh()
+    return () => { generation.current++ }
+  }, [refresh])
 
   async function act(key: string, work: () => Promise<unknown>, done: string) {
     setBusy(key)
@@ -48,6 +64,22 @@ export function People({ client, me, onUnauthorized }: { client: CabooseClient; 
     } finally {
       setBusy(null)
       await refresh()
+    }
+  }
+
+  async function addPerson() {
+    const name = await promptDialog({ title: `Add a person to ${tenant?.name ?? 'this tenant'}`, label: 'Name', confirmLabel: 'Add person' })
+    if (name?.trim()) await act('person', () => client.createPerson(tenantId, name.trim()), 'Person added.')
+  }
+
+  async function renamePerson(person: Person) {
+    const name = await promptDialog({ title: `Rename ${person.name}`, label: 'Name', confirmLabel: 'Rename' })
+    if (name?.trim()) await act(person.id, () => client.renamePerson(person.id, name.trim()), 'Person renamed.')
+  }
+
+  async function deletePerson(person: Person) {
+    if (await confirmDialog({ title: `Delete ${person.name}?`, message: 'Remove this person from the tenant. Reassign any computers first. Administrator login access is managed separately.', confirmLabel: 'Delete', tone: 'danger' })) {
+      await act(person.id, () => client.deletePerson(person.id), 'Person deleted.')
     }
   }
 
@@ -85,7 +117,7 @@ export function People({ client, me, onUnauthorized }: { client: CabooseClient; 
       <div className="space-y-6">
         <PageHeader
           title="People"
-          description="Administrators manage computers here. The people who use the computers need no account: give each computer to its person on its page, then pair their phone."
+          description="People own computers. Administrator access is managed separately below."
           actions={
             <div className="flex flex-wrap items-center gap-2">
               {me.tenants.length > 1 ? (
@@ -123,6 +155,39 @@ export function People({ client, me, onUnauthorized }: { client: CabooseClient; 
         ) : null}
 
         {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+
+        {tenantId ? (
+          <DashboardPanel title={`People in ${tenant?.name ?? 'this tenant'}`} icon={<Users className="size-4" aria-hidden />}>
+            <div className="mb-4 flex justify-end">
+              <Button disabled={busy !== null} onClick={() => void addPerson()}>Add person</Button>
+            </div>
+            {people === null ? (
+              <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Loading people…</div>
+            ) : people.length === 0 ? (
+              <EmptyState icon={<Users className="size-6" aria-hidden />} title="No people yet" description="Add the people who will use this tenant’s computers. They do not need an administrator login." />
+            ) : (
+              <Table containerClassName="border-0 shadow-none">
+                <TableHeader><TableRow noAnimate><TableHead>Name</TableHead><TableHead>Computers</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader>
+                <TableBody>{people.map(person => {
+                  const owned = computers.filter(computer => computer.personId === person.id && computer.tenantId === tenantId)
+                  return (
+                    <TableRow key={person.id}>
+                      <TableCell className="font-medium">{person.name}{person.userId === me.user?.id ? <span className="ml-2 text-xs text-fg-muted">you</span> : null}</TableCell>
+                      <TableCell>{owned.length ? <div className="flex flex-wrap gap-3">{owned.map(computer => {
+                        const href = routeHref({ page: 'computer', id: computer.id, tab: 'overview' })
+                        return <a key={computer.id} href={href} className="text-sm underline underline-offset-4" onClick={event => { event.preventDefault(); navigate(href) }}>{computer.settings.name}</a>
+                      })}</div> : <span className="text-sm text-fg-muted">No computers</span>}</TableCell>
+                      <TableCell><div className="flex justify-end gap-2">
+                        <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void renamePerson(person)}>Rename</Button>
+                        <Button size="sm" variant="ghost" disabled={busy !== null || owned.length > 0} title={owned.length ? 'Reassign this person’s computers first.' : undefined} onClick={() => void deletePerson(person)}>Delete</Button>
+                      </div></TableCell>
+                    </TableRow>
+                  )
+                })}</TableBody>
+              </Table>
+            )}
+          </DashboardPanel>
+        ) : null}
 
         {tenantId ? (
           <DashboardPanel title="Administrators" icon={<ShieldCheck className="size-4" aria-hidden />}>

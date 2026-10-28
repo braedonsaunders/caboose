@@ -3,16 +3,16 @@ import { formatIdleDuration, formatMemoryMb, type ComputerSummary, type Tenant }
 import { navigate, routeHref } from '../navigation.js'
 import { stateLabel, stateTone } from '../state.js'
 
-/** Every computer on the host, each row opening that computer's page. The tenant shows when there is more than one. */
+/** Every computer on the host, each row opening that computer's page. Each row shows its ownership chain. */
 export function ComputersTable({ computers, tenants }: { computers: ComputerSummary[]; tenants: Tenant[] }) {
-  const tenantName = (id: string | null) => tenants.find(tenant => tenant.id === id)?.name ?? '—'
+  const tenantName = (id: string | null) => tenants.find(tenant => tenant.id === id)?.name ?? 'Assignment required'
   return (
     <Table containerClassName="border-0 shadow-none">
       <TableHeader>
         <TableRow noAnimate>
           <TableHead>Name</TableHead>
           <TableHead className="hidden sm:table-cell">Person</TableHead>
-          {tenants.length > 1 ? <TableHead className="hidden md:table-cell">Tenant</TableHead> : null}
+          <TableHead className="hidden md:table-cell">Tenant</TableHead>
           <TableHead>State</TableHead>
           <TableHead className="hidden sm:table-cell">Size</TableHead>
           <TableHead className="hidden md:table-cell">Screens</TableHead>
@@ -29,8 +29,8 @@ export function ComputersTable({ computers, tenants }: { computers: ComputerSumm
                   {computer.settings.name}
                 </a>
               </TableCell>
-              <TableCell className="hidden text-sm sm:table-cell">{computer.person ?? <span className="text-fg-muted">—</span>}</TableCell>
-              {tenants.length > 1 ? <TableCell className="hidden text-sm md:table-cell">{tenantName(computer.tenantId)}</TableCell> : null}
+              <TableCell className="hidden text-sm sm:table-cell">{computer.personId ? computer.person : <span className="text-fg-muted">Assignment required</span>}</TableCell>
+              <TableCell className="hidden text-sm md:table-cell">{tenantName(computer.tenantId)}</TableCell>
               <TableCell>
                 <Badge variant={stateTone(computer.state)}>{stateLabel(computer.state)}</Badge>
                 {computer.lastError ? <span className="ml-2 text-xs text-danger">error</span> : null}

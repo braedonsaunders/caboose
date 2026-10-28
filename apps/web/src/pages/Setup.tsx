@@ -49,7 +49,7 @@ export function Setup({ onDone }: { onDone: () => void }) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {status?.claimed ? (
+          {!status ? (<Alert variant={error ? "destructive" : "info"}><AlertDescription>{error ?? "Checking setup status…"}</AlertDescription></Alert>) : status.claimed ? (
             <Alert variant="info"><AlertDescription>This host is already set up. Sign in instead.</AlertDescription></Alert>
           ) : status?.codeRequired && !code ? (
             <Alert variant="warning"><AlertDescription>Open the setup link the host printed when it started; it carries the setup code.</AlertDescription></Alert>
