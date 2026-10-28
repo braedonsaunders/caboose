@@ -2,7 +2,7 @@
 // is served from localhost). Each test gets its own home, task directory and agent state.
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -223,6 +223,28 @@ describe('a turn', () => {
     // The runner never logs values; only the agent itself said it, in its own message.
     expect(log).not.toContain('hello there')
     expect((await t.events()).filter(event => JSON.stringify(event).includes('hello there')).map(event => event.type)).toEqual(['text'])
+  })
+
+  it('sets and removes variables with set-env, keeps comments, and reports names, never values', async () => {
+    const t = await task()
+    const dir = join(t.home, '.config', 'caboose', 'agents')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'stand-in.env'), '# mine\nOLD=1\n', { mode: 0o600 })
+    const setEnv = changes => promisify(execFile)(process.execPath, [RUNNER, 'set-env', 'stand-in', JSON.stringify(changes)], { env: t.env })
+    const { stdout } = await setEnv({ set: { STAND_IN_GREETING: ' "quoted" with spaces ', OPENROUTER_API_KEY: 'sk-or-1' } })
+    expect(JSON.parse(stdout)).toEqual({ env: ['OLD', 'OPENROUTER_API_KEY', 'STAND_IN_GREETING'] })
+    expect((await stat(join(dir, 'stand-in.env'))).mode & 0o777).toBe(0o600)
+    await t.prompt(1, 'env')
+    t.start()
+    await t.turnEnd(1)
+    expect(await t.texts(1)).toContain('env:  "quoted" with spaces ')
+    expect(JSON.parse((await setEnv({ remove: ['OLD'], set: { OPENROUTER_API_KEY: 'sk-or-2' } })).stdout)).toEqual({ env: ['OPENROUTER_API_KEY', 'STAND_IN_GREETING'] })
+    expect(await readFile(join(dir, 'stand-in.env'), 'utf8')).toBe('# mine\nSTAND_IN_GREETING=" "quoted" with spaces "\nOPENROUTER_API_KEY="sk-or-2"\n')
+    const { stdout: state } = await promisify(execFile)(process.execPath, [RUNNER, 'state'], { env: t.env })
+    expect(JSON.parse(state).agents['stand-in'].env).toEqual(['OPENROUTER_API_KEY', 'STAND_IN_GREETING'])
+    expect(state).not.toContain('sk-or-2')
+    await expect(setEnv({ set: { 'BAD NAME': 'x' } })).rejects.toThrow(/invalid variable name/)
+    await expect(setEnv({ set: { KEY: 'two\nlines' } })).rejects.toThrow(/single line/)
   })
 
   it('reads and writes files for the agent inside the home directory only', async () => {
