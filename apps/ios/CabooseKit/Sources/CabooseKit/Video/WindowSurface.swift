@@ -123,33 +123,6 @@ public final class WindowSurface: @unchecked Sendable {
         pixels.withUnsafeBytes { upload(bgra: $0.baseAddress!, rowBytes: rowBytes, x: x, y: y, width: width, height: height) }
     }
 
-    /// Copies a decoded video picture into a region on the GPU, without touching its pixels on the CPU.
-    /// `encodedSize` is the picture's size when the server scaled the video down to keep its frame
-    /// rate (Xpra's `scaled_size`); it is drawn back up to the region on the GPU.
-    public func upload(pixelBuffer: CVPixelBuffer, x: Int, y: Int, width: Int, height: Int, encodedSize: CGSize? = nil) {
-        guard let texture else { return }
-        let sourceWidth = CVPixelBufferGetWidth(pixelBuffer), sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
-        var cvTexture: CVMetalTexture?
-        CVMetalTextureCacheCreateTextureFromImage(
-            kCFAllocatorDefault, renderer.textureCache, pixelBuffer, nil, .bgra8Unorm, sourceWidth, sourceHeight, 0, &cvTexture)
-        guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture) else { return }
-        if let encodedSize, Int(encodedSize.width) < width || Int(encodedSize.height) < height {
-            scale(source, from: CGRect(origin: .zero, size: encodedSize), into: CGRect(x: x, y: y, width: width, height: height),
-                  keeping: cvTexture)
-            return
-        }
-        guard let region = clamp(x: x, y: y, width: min(width, sourceWidth), height: min(height, sourceHeight), in: texture),
-              let commands = renderer.queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder()
-        else { return }
-        blit.copy(from: source, sourceSlice: 0, sourceLevel: 0,
-                  sourceOrigin: MTLOrigin(x: region.origin.x - x, y: region.origin.y - y, z: 0), sourceSize: region.size,
-                  to: texture, destinationSlice: 0, destinationLevel: 0, destinationOrigin: region.origin)
-        blit.endEncoding()
-        commands.addCompletedHandler { _ in _ = cvTexture } // keep the CVMetalTexture alive until the copy lands
-        commands.commit()
-        bump()
-    }
-
     /// Draws the `crop` of a decoded picture — its visible part, without the encoder's padding
     /// (NVENC codes 2160 lines as 2176) — into `rect` of the window: copied 1:1 when the sizes
     /// match, scaled on the GPU when they do not.
@@ -195,33 +168,6 @@ public final class WindowSurface: @unchecked Sendable {
             scaler.encode(commandBuffer: commands, sourceTexture: source, destinationTexture: texture)
         }
         commands.addCompletedHandler { _ in _ = cvTexture }
-        commands.commit()
-        bump()
-    }
-
-    /// Applies Xpra "scroll" draws: each rectangle moves by (dx, dy) within the window.
-    public func scroll(_ moves: [(x: Int, y: Int, width: Int, height: Int, dx: Int, dy: Int)]) {
-        guard let texture, !moves.isEmpty, let commands = renderer.queue.makeCommandBuffer() else { return }
-        for move in moves {
-            guard let source = clamp(x: move.x, y: move.y, width: move.width, height: move.height, in: texture),
-                  let destination = clamp(x: source.origin.x + move.dx, y: source.origin.y + move.dy,
-                                          width: source.size.width, height: source.size.height, in: texture)
-            else { continue }
-            let sourceOrigin = MTLOrigin(x: destination.origin.x - move.dx, y: destination.origin.y - move.dy, z: 0)
-            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: .bgra8Unorm, width: destination.size.width, height: destination.size.height, mipmapped: false)
-            descriptor.storageMode = .private
-            guard let scratch = renderer.device.makeTexture(descriptor: descriptor),
-                  let blit = commands.makeBlitCommandEncoder() else { continue }
-            // Source and destination overlap, so stage through a scratch texture.
-            blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: sourceOrigin,
-                      sourceSize: destination.size, to: scratch, destinationSlice: 0, destinationLevel: 0,
-                      destinationOrigin: MTLOrigin())
-            blit.copy(from: scratch, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
-                      sourceSize: destination.size, to: texture, destinationSlice: 0, destinationLevel: 0,
-                      destinationOrigin: destination.origin)
-            blit.endEncoding()
-        }
         commands.commit()
         bump()
     }

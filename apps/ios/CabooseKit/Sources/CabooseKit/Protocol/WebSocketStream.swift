@@ -113,3 +113,13 @@ public final class WebSocketStream: NSObject, ByteStream, URLSessionWebSocketDel
         finish(closeCode == .normalClosure ? nil : TransportError.closed(code: closeCode.rawValue))
     }
 }
+
+public enum TransportError: Error, LocalizedError {
+    case closed(code: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .closed(let code): "The display connection closed (code \(code))."
+        }
+    }
+}

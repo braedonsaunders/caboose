@@ -41,10 +41,10 @@ public enum AnnexB {
     public static func hevcType(of unit: Data) -> UInt8 { ((unit.first ?? 0) >> 1) & 0x3F }
 }
 
-/// The video codecs the client decodes in hardware, by Xpra's encoding names.
-public enum VideoCodec: String, Sendable {
+/// The video codecs `H264Decoder` decodes in hardware.
+public enum VideoCodec: Sendable {
     case h264
-    case hevc = "h265"
+    case hevc
 }
 
 /// A per-window hardware video decoder: one access unit in, the picture it produced out.
@@ -54,9 +54,8 @@ public protocol PictureDecoder: AnyObject {
 }
 
 /// Decodes one window's H.264 or HEVC stream into IOSurface-backed BGRA pixel buffers that
-/// Metal can sample without a copy. Xpra is asked for no B-frames, so output order is
-/// decode order and every frame is displayed as soon as it decodes. HEVC is what a GPU
-/// encoder sends at 4K (Xpra's NVENC H.264 path stops at level 5.0, below 4K frame sizes).
+/// Metal can sample without a copy. caboose-display encodes without B-frames, so output
+/// order is decode order and every frame is displayed as soon as it decodes.
 public final class H264Decoder: PictureDecoder {
     public let codec: VideoCodec
     private var session: VTDecompressionSession?

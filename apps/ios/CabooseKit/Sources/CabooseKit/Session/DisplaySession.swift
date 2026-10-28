@@ -10,9 +10,9 @@ public enum DisplaySessionState: Equatable, Sendable {
     case closed(reason: String?)
 }
 
-/// One connection to the computer's display server, whichever protocol it speaks: Xpra
-/// (`XpraSession`) or Caboose Display (`CabooseDisplaySession`). The app's window screens,
-/// desktop and input work against this, so both stand behind the same window model.
+/// One connection to a display of the computer: the owner's, or the agent seat's.
+/// `CabooseDisplaySession` implements it over the Caboose Display Protocol; the app's window
+/// screens, desktop and input work against this, so tests can stand in for a live display.
 ///
 /// Positions are in the window's own pixel space; sizes and frames in the server's pixels.
 @MainActor

@@ -35,7 +35,7 @@ final class AppModel {
     /// A window on the agent seat being watched or taken over full screen.
     var presentedAgentWindowID: Int?
     private(set) var credentials: Credentials?
-    /// The owner's display: Caboose Display where the host serves it, otherwise Xpra.
+    /// The owner's display.
     private(set) var session: (any DisplaySession)?
     private(set) var computer: HostClient.Session.Computer?
     private(set) var apps: [HostClient.App] = []
@@ -55,7 +55,7 @@ final class AppModel {
     private(set) var desktop = DesktopModel(pixelsPerPoint: 1)
     private var externalSize: CGSize = .zero
     private var placedWindowIDs = Set<Int>()
-    /// Last frames of the computer's windows, by Xpra window id, for instant resume.
+    /// Last frames of the computer's windows, by window id, for instant resume.
     private var frameCache: [Int: CGImage] = [:]
     private var reconnectAttempts = 0
     private var reconnectTask: Task<Void, Never>?
@@ -219,9 +219,7 @@ final class AppModel {
         let caps = displayCapabilities()
         placedWindowIDs.removeAll()
         let url = host.socketURL(display.path)
-        let session: any DisplaySession = display.protocol == HostClient.Session.Display.cabooseDisplay
-            ? CabooseDisplaySession(displayURL: url, token: host.token, password: display.token, capabilities: caps)
-            : XpraSession(displayURL: url, token: host.token, password: display.token, capabilities: caps)
+        let session: any DisplaySession = CabooseDisplaySession(displayURL: url, token: host.token, password: display.token, capabilities: caps)
         session.onClipboardText = { text in UIPasteboard.general.string = text }
         session.clipboardProvider = { UIPasteboard.general.string }
         session.onBell = { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
