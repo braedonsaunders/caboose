@@ -16,6 +16,7 @@ final class DesktopModel {
         case titleBar(Int)
         case close(Int)
         case minimize(Int)
+        case zoom(Int)
         case content(Int, CGPoint)  // window id, point in window pixels
         case resize(Int)
     }
@@ -47,6 +48,7 @@ final class DesktopModel {
     func sync(with windows: [RemoteWindow]) {
         let ids = Set(windows.map(\.id))
         stacking.removeAll { !ids.contains($0) }
+        unzoomedFrames = unzoomedFrames.filter { ids.contains($0.key) }
         for window in windows.sorted(by: { $0.id < $1.id }) where !stacking.contains(window.id) { stacking.append(window.id) }
         minimized.formIntersection(ids)
     }
@@ -80,13 +82,16 @@ final class DesktopModel {
             guard chrome.contains(point) else { continue }
             let content = contentRect(window)
             if content.contains(point) {
-                if !window.isAuxiliary, point.x > content.maxX - 18, point.y > content.maxY - 18 { return .resize(id) }
+                if !window.isAuxiliary, point.x > content.maxX - 18 * ui, point.y > content.maxY - 18 * ui { return .resize(id) }
                 let local = CGPoint(x: (point.x - content.minX) * pixelsPerPoint, y: (point.y - content.minY) * pixelsPerPoint)
                 return .content(id, local)
             }
-            let x = point.x - chrome.minX
-            if x < 26 { return .close(id) }
-            if x < 46 { return .minimize(id) }
+            // The traffic lights as DesktopWindow draws them: 12-point circles 8 apart after a
+            // 12-point inset, all scaled by `ui`; each takes half the gap on either side.
+            let x = (point.x - chrome.minX) / ui
+            if x < 28 { return .close(id) }
+            if x < 48 { return .minimize(id) }
+            if x < 68 { return .zoom(id) }
             return .titleBar(id)
         }
         return .none
@@ -114,6 +119,7 @@ final class DesktopModel {
         case .dock(let id): open(id)
         case .close(let id): if let window = session.windows[id] { session.close(window) }
         case .minimize(let id): minimize(id)
+        case .zoom(let id): toggleZoom(id, session)
         case .titleBar(let id), .resize(let id): raise(id); focus(id, session)
         case .content(let id, let local):
             guard let window = session.windows[id] else { return }
@@ -188,6 +194,52 @@ final class DesktopModel {
 
     private func focus(_ id: Int, _ session: XpraSession) {
         session.focus(session.windows[id])
+    }
+
+    /// The second click of a double-click. In a window it is the app's own double-click (the
+    /// first already reached it); on a title bar it zooms, as on a Mac; elsewhere it repeats.
+    func doubleClick(session: XpraSession?, open: (String) -> Void) {
+        guard let session else { return }
+        switch hitTest(cursor, windows: session.windows) {
+        case .titleBar(let id): toggleZoom(id, session)
+        case .content: break
+        default: click(session: session, open: open)
+        }
+    }
+
+    /// Frames windows had before they were zoomed, to restore them.
+    private var unzoomedFrames: [Int: CGRect] = [:]
+
+    /// The green button: fill the desktop above the dock, or go back to where it was.
+    func toggleZoom(_ id: Int, _ session: XpraSession) {
+        guard let window = session.windows[id] else { return }
+        raise(id)
+        focus(id, session)
+        if let previous = unzoomedFrames.removeValue(forKey: id) {
+            session.configure(window, frame: previous)
+            return
+        }
+        unzoomedFrames[id] = window.frame
+        let margin = 8 * ui
+        let top = margin + titleBarHeight
+        let bottom = size.height - dockHeight - 10 * ui - margin
+        let area = CGRect(x: margin, y: top, width: size.width - 2 * margin, height: max(200, bottom - top))
+        session.configure(window, frame: CGRect(x: area.minX * pixelsPerPoint, y: area.minY * pixelsPerPoint,
+                                                width: area.width * pixelsPerPoint, height: area.height * pixelsPerPoint).integral)
+    }
+
+    /// The dock icon of an app with windows: bring back what was minimized, else bring its
+    /// latest window forward. Returns false when the app has no windows and should launch.
+    func reveal(_ windowIDs: [Int], session: XpraSession?) -> Bool {
+        guard let session, !windowIDs.isEmpty else { return false }
+        let hidden = windowIDs.filter { minimized.contains($0) }
+        for id in hidden { raise(id) }
+        let front = (hidden.isEmpty ? windowIDs : hidden).max { (stacking.firstIndex(of: $0) ?? -1) < (stacking.firstIndex(of: $1) ?? -1) }
+        if let front {
+            raise(front)
+            focus(front, session)
+        }
+        return true
     }
 
     /// A good first place for a new window: centred, cascading, clear of the dock.

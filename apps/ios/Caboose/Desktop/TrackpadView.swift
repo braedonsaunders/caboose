@@ -136,14 +136,19 @@ final class TrackpadSurface: UIView, UIKeyInput {
         lastCentroid = centroid(event)
         guard remaining == 0 else { return }
         let duration = (event?.timestamp ?? 0) - touchStart
+        let open: (String) -> Void = { [weak self] id in
+            guard let app = self?.model?.apps.first(where: { $0.id == id }) else { return }
+            self?.model?.openOnDesktop(app)
+        }
         if dragging {
             desktop?.endDrag(session: session)
             dragging = false
-        } else if duration < 0.25, travel < 10 {
-            let open: (String) -> Void = { [weak self] id in
-                guard let app = self?.model?.apps.first(where: { $0.id == id }) else { return }
-                self?.model?.open(app)
+            // A second tap that never moved was a double-click, not a drag.
+            if duration < 0.25, travel < 10 {
+                desktop?.doubleClick(session: session, open: open)
+                lastTapEnded = 0
             }
+        } else if duration < 0.25, travel < 10 {
             desktop?.click(button: maxTouches >= 2 ? 3 : 1, session: session, open: open)
             haptics.impactOccurred()
             lastTapEnded = event?.timestamp ?? 0

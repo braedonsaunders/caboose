@@ -50,7 +50,7 @@ struct DesktopWindow: View {
                 HStack(spacing: 8 * ui) {
                     TrafficLight(color: .red, symbol: "xmark", hot: desktop.hovered == .close(window.id), ui: ui)
                     TrafficLight(color: .yellow, symbol: "minus", hot: desktop.hovered == .minimize(window.id), ui: ui)
-                    TrafficLight(color: .green, symbol: "plus", hot: false, ui: ui)
+                    TrafficLight(color: .green, symbol: "arrow.up.left.and.arrow.down.right", hot: desktop.hovered == .zoom(window.id), ui: ui)
                     Spacer(minLength: 8 * ui)
                     if let icon { Image(uiImage: icon).resizable().frame(width: 15 * ui, height: 15 * ui) }
                     Text(window.title.isEmpty ? "Window" : window.title)
@@ -150,6 +150,8 @@ struct Cursor: View {
             .font(.system(size: 24 * ui, weight: .regular))
             .foregroundStyle(.white)
             .shadow(color: .black.opacity(0.6), radius: 1.5 * ui)
-            .offset(x: 7 * ui, y: 10 * ui)
+            // The symbol's tip is 3.5 × 2.5 points into its 20 × 28 glyph; this puts the tip,
+            // not the glyph's centre, on the point that clicks land on.
+            .offset(x: 6.5 * ui, y: 11.5 * ui)
     }
 }

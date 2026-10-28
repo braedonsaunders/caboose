@@ -306,11 +306,22 @@ final class AppModel {
         }
     }
 
+    /// A dock click on the big screen: show the app's windows if it has any, else launch it.
+    func openOnDesktop(_ app: HostClient.App) {
+        let ids = appWindows.filter { matches($0, app) }.map(\.id)
+        if desktop.reveal(ids, session: session) { return }
+        launch(app)
+    }
+
     func open(_ app: HostClient.App) {
         if let existing = appWindows.first(where: { matches($0, app) }) {
             presentedWindowID = existing.id
             return
         }
+        launch(app)
+    }
+
+    private func launch(_ app: HostClient.App) {
         guard let host else { return }
         launching = app
         launchStartedAt = Date()
