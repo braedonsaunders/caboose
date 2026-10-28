@@ -77,7 +77,19 @@ fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 }
 JS
 if [[ -z $stage_home ]]; then
   for service in com.caboose.menu com.caboose.host; do
-    if launchctl print "$label/$service" >/dev/null 2>&1; then launchctl bootout "$label/$service"; fi
+    if launchctl print "$label/$service" >/dev/null 2>&1; then
+      launchctl bootout "$label/$service"
+      # bootout can return before the job is unloaded. Wait beyond ExitTimeOut before
+      # switching versions or bootstrapping the same label again.
+      for ((attempt=0; attempt<180; attempt++)); do
+        if ! launchctl print "$label/$service" >/dev/null 2>&1; then break; fi
+        sleep 1
+      done
+      if launchctl print "$label/$service" >/dev/null 2>&1; then
+        echo "Timed out stopping $service; current version remains selected" >&2
+        exit 1
+      fi
+    fi
   done
 fi
 "$node" - "$root" "$install" "$agents" "$install_home/Applications/Caboose.app" <<'JS'

@@ -50,11 +50,12 @@ JS
   if [[ $pass == first ]]; then cp "$root/disks/owner-token" "$work/first-token";
   else cmp "$root/disks/owner-token" "$work/first-token"; fi
   launchctl bootout "$domain/$label"
-  loaded=0
-  for _ in $(seq 1 100); do
+  for _ in $(seq 1 180); do
     if ! launchctl print "$domain/$label" >/dev/null 2>&1; then break; fi
-    sleep 0.2
+    sleep 1
   done
+  if launchctl print "$domain/$label" >/dev/null 2>&1; then echo 'LaunchAgent still loaded after bootout' >&2; exit 1; fi
+  loaded=0
   for _ in $(seq 1 100); do
     if ! curl -fsS -o /dev/null "http://127.0.0.1:$port/v1/setup" 2>/dev/null; then break; fi
     sleep 0.2

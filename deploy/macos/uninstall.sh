@@ -29,6 +29,14 @@ fi
 for service in com.caboose.menu com.caboose.host; do
   if [[ -z $stage_home ]] && launchctl print "gui/$(id -u)/$service" >/dev/null 2>&1; then
     launchctl bootout "gui/$(id -u)/$service"
+    for ((attempt=0; attempt<180; attempt++)); do
+      if ! launchctl print "gui/$(id -u)/$service" >/dev/null 2>&1; then break; fi
+      sleep 1
+    done
+    if launchctl print "gui/$(id -u)/$service" >/dev/null 2>&1; then
+      echo "Timed out stopping $service; programs and computer data retained" >&2
+      exit 1
+    fi
   fi
   rm -f "$agents/$service.plist"
 done

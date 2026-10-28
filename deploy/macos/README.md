@@ -32,6 +32,8 @@ that version's menu app. Edit `install.json` in the data directory to change `po
 Defaults are port 7310, 3072 MiB and two vCPUs, with one running computer at a time.
 
 Running the installer again stops the host, changes the selected version, and restarts it.
+Upgrade and uninstall wait for launchd to unload the host before changing its program files.
+If shutdown times out, they stop and retain the installed programs and computer data.
 It retains settings and everything in `disks/`: accounts, computer disks and memory
 snapshots. Logs are in `logs/`. The menu's Show Logs opens that directory.
 
