@@ -42,6 +42,18 @@ reconciled before schedule evaluation on every tick. They reset the cursor and i
 undispatched work. Restoring a profile has no archive backlog. Already admitted tasks
 remain resolvable through their stable UUIDs.
 
+## HTTP API
+
+Routes use the same computer/tenant authorization as profile and task APIs and remain
+available while the computer is parked. `GET /v1/agent/routines` returns `{ routines, error }`;
+`POST` creates a definition and returns `201 { routine }`. `GET/PATCH /:id` read/edit it;
+`DELETE /:id` removes it. `POST /:id/run` returns `202 { run }` after durable reservation.
+`GET /:id/history` returns that routine's history and `GET /history` returns all retained
+runs, both as `{ runs }`. Run ids are the task UUIDs. No public response includes internal
+launch snapshots. Control clients receive `agent.routines.changed` after persisted changes.
+The production host opens one scheduler in each computer's state directory and starts it
+independently of phone connections. It closes the scheduler before retiring the computer.
+
 ## Integration contract
 
 ```ts
