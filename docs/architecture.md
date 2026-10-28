@@ -1077,19 +1077,59 @@ window's texture is a blit on one shared Metal queue, which runs command buffers
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-- **Shell.** On iPhone each Linux window is an app card: full screen, with native
-  app-switcher gestures between cards and a home grid of Linux apps with their real
-  icons. Home's Shelf offers optional catalog apps, and Library groups packs and lets the
-  owner install, update, roll back or remove them; progress follows the control socket. On
-  iPad and external displays the same windows float, resize and stack, with a dock and a
-  menu bar. Transient windows (menus, dialogs, tooltips) are positioned relative to their
-  parent, never as separate cards.
+- **Windows.** On iPhone each Linux window is an app card: full screen, with native
+  app-switcher gestures between cards. On the Desktop tab, iPad and external displays the
+  same windows float, resize and stack, with a dock and Launchpad. Transient windows
+  (menus, dialogs, tooltips) are positioned relative to their parent, never as separate
+  cards.
 - **Lifecycle.** The display socket closes when the app goes to the background; the
   computer parks on idle and resumes on the next foreground. The last frame of every window
   is cached, so reopening is instant while the stream reconnects.
-- **Computer settings.** A Computer sheet (from Home, the parked screen and the failure
-  screen) edits the management settings, shows `restartRequired`, parks, and restarts after
-  confirmation; Park Now lands on a parked screen with Wake.
+
+### Shell
+
+The app is a system tab view (SwiftUI `TabView` with `Tab`), so each device gets the
+system's tab bar or sidebar. Every tab's toolbar ends with the Computer settings and a
+lifecycle menu: Turn On (`POST /v1/session`) while parked or out of reach, Park
+(`POST /v1/session/park`) and, where `capabilities.restart` is true, Restart after
+confirmation (`POST /v1/computer/restart`). The host has no power-off. Host messages
+(`lastError`, a component update's failure) show as one-line statuses whose text, with
+repeated lines removed and clipped to a few lines, opens on tap.
+
+| Tab | What it is |
+| --- | --- |
+| Home | The computer's state, one-tap AirPlay, quick actions, agents working or waiting for approval (answered in place), open windows, pinned and recently opened apps, and the home's newest visible files (from the same `/v1/fs` scan that feeds Spotlight), which open with their default app |
+| Desktop | The computer's desktop on this screen, configured for exactly the space beside or between the bars, with Keyboard, AirPlay and Full Screen in the toolbar; while a TV shows the desktop, the phone's trackpad |
+| Agents | The Ask bar, approvals, tasks and the agent seat's windows |
+| Apps | Every desktop entry, the Shelf and Library |
+| Terminal | A native terminal, present when the app is built with it |
+
+`caboose://home`, `desktop`, `agents`, `apps` and `terminal` select a tab;
+`caboose://task/<id>` opens a task and `caboose://airplay` runs Home's AirPlay action.
+Pinned and recent apps are kept on the phone per computer.
+
+- **Vertical bar.** On iPhone Duo (iOS 27.1) the system draws the tab bar and toolbar
+  items together in a bar on the side, and moves the status bar into it. Toolbar items are
+  icon buttons so that they can move there. The Desktop tab keeps the tab bar whole
+  (`toolbarVerticalCompressionBehavior(.prefersTabBar)`), gives Full Screen the lowest
+  visibility priority and the Computer pair the highest, and reads
+  `toolbarVerticalEdge` to extend the desktop under the top and bottom insets beside the
+  bar. Full Screen hides the bars and gives the desktop the whole display; a handle at the
+  top brings them back. No screen disables the vertical bar.
+- **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. Home's
+  AirPlay control remembers the AirPlay output the computer's sound last played on (from the
+  audio session's route) and, on a tap, switches the session to long-form video routing and
+  calls `prepareRouteSelectionForPlayback`, so the system reconnects or offers a device as
+  its Automatically AirPlay setting allows. Beside it is the system route picker
+  (`AVRoutePickerView`). The desktop reaches a TV only when the owner starts Screen
+  Mirroring; the app then claims the external display as a desktop.
+- **Background.** One choice covers the app's tabs and the desktop on the phone and on a
+  TV: the brand gradient, photographs that change every quarter hour, one photograph, or the
+  owner's own picture, kept on the phone. On the phone a sheer of the brand gradient lies
+  over a photograph, which extends under the bars. The last photograph is cached so no
+  screen starts black.
+- **Computer settings.** The Computer sheet edits the management settings, shows
+  `restartRequired`, parks, restarts after confirmation and chooses the background.
 
 ### Input
 
