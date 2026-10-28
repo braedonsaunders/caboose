@@ -184,6 +184,9 @@ pub struct State {
     pub focus_history: Vec<u64>,
     pub videos: crate::video::server::Videos,
     pub clipboard: crate::clipboard::Clipboard,
+    /// The compositor's PulseAudio, when it runs.
+    pub audio: Option<crate::audio::Audio>,
+    pub audio_tx: smithay::reexports::calloop::channel::Sender<crate::audio::Packet>,
     /// Bumped per client session; stale encoder results are discarded.
     pub generation: u64,
     pub stats: Stats,

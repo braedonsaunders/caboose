@@ -363,6 +363,26 @@ def check_clipboard_bridge():
     return with_server(["sh", "-c", script], run)
 
 
+def check_audio():
+    # A 440 Hz tone played into the session's default output arrives as Opus the probe
+    # decodes, at the right level; the silence before it is not sent.
+    tone = os.path.join(tempfile.mkdtemp(), "tone.wav")
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=4",
+                    "-ac", "2", tone], check=True)
+    def run(proc, token):
+        r = probe(["--token-file", token, "--duration", "7", "--windows", "1", "--audio"])
+        a = r["audio"]
+        if a["packets"] < 180 or a["decoded"] != a["packets"] or a["errors"] or a["channels"] != 2:
+            raise Failed(f"audio arrived as {a}")
+        if a["peak"] < 0.05:
+            raise Failed(f"the tone is missing (peak {a['peak']})")
+        # One second of silence is sent, then nothing until the tone: a gap.
+        if a["gaps"] < 1 or a["packets"] > 4 * 50 + 2 * 50:
+            raise Failed(f"silence was sent: {a}")
+        return f"{a['packets']} stereo Opus packets decoded, peak {a['peak']}, silence skipped"
+    return with_server(["sh", "-c", f"weston-terminal & sleep 3.5; paplay {tone}; exec sleep 60"], run)
+
+
 def check_idle():
     def run(proc, token):
         r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--server-pid", str(proc.pid)])
@@ -392,6 +412,7 @@ CHECKS = [
     ("clipboard-wayland", check_clipboard_wayland),
     ("clipboard-x11", check_clipboard_x11),
     ("clipboard-bridge", check_clipboard_bridge),
+    ("audio", check_audio),
     ("idle", check_idle),
 ]
 

@@ -25,16 +25,21 @@ pub struct Session {
     pub last_vsync: HashMap<u32, Instant>,
     /// What the client plays as `video.*` streams.
     pub video_decoders: Vec<Codec>,
+    /// The client plays Opus audio.
+    pub audio: bool,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
-pub fn features(xwayland: bool, video: bool) -> Vec<String> {
+pub fn features(xwayland: bool, video: bool, audio: bool) -> Vec<String> {
     let mut f = vec!["vsync", "ack", "touch", "text-input-v3", "cursor-named", "clipboard"];
     if xwayland {
         f.push("xwayland");
     }
     if video {
         f.push("video");
+    }
+    if audio {
+        f.push("audio");
     }
     f.into_iter().map(String::from).collect()
 }
@@ -104,6 +109,9 @@ impl State {
 
     fn end_session(&mut self) {
         self.video_session_ended();
+        if let Some(a) = self.audio.as_mut() {
+            a.stop_capture();
+        }
         self.session = None;
         self.generation += 1;
         self.release_input();
@@ -212,12 +220,20 @@ impl State {
                 features: features(
                     self.xwm.is_some() || self.config.x_display.is_some(),
                     self.videos.socket.is_some() && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()),
+                    self.audio.is_some(),
                 ),
             }),
         );
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
         let video_decoders = hello.video_decoders.clone().unwrap_or_default();
-        self.session = Some(Session { conn, ready: true, backend, last_vsync: HashMap::new(), video_decoders });
+        let audio = hello.audio_decoders.as_ref().is_some_and(|d| d.iter().any(|c| c == "opus"));
+        self.session = Some(Session { conn, ready: true, backend, last_vsync: HashMap::new(), video_decoders, audio });
+        if audio {
+            let (tx, bitrate) = (self.audio_tx.clone(), self.config.audio_bitrate);
+            if let Some(a) = self.audio.as_mut() {
+                a.start_capture(tx, bitrate);
+            }
+        }
         for w in self.windows.iter_mut() {
             w.announced = None;
             w.stream.reset_for_client();
@@ -442,6 +458,18 @@ impl State {
         }
     }
 
+    /// Sound from the computer, for a client that plays it.
+    pub fn on_audio_packet(&mut self, packet: crate::audio::Packet) {
+        let Some(conn) = self.session.as_ref().filter(|s| s.ready && s.audio).map(|s| s.conn) else { return };
+        let message = Message::Audio(proto::Audio {
+            codec: "opus".into(),
+            pts_us: packet.pts_us,
+            channels: Some(crate::audio::CHANNELS),
+            data: packet.data,
+        });
+        self.net.send(conn, &message);
+    }
+
     /// An encoder finished a picture.
     pub fn on_encoded(&mut self, done: Done) {
         let Some(w) = self.windows.get_mut(done.window) else { return };
@@ -559,8 +587,9 @@ mod tests {
 
     #[test]
     fn features_name_xwayland_only_when_running() {
-        assert!(!features(false, false).contains(&"xwayland".to_string()));
-        assert!(features(true, false).contains(&"xwayland".to_string()));
-        assert!(features(false, true).contains(&"video".to_string()));
+        assert!(!features(false, false, false).contains(&"xwayland".to_string()));
+        assert!(features(true, false, false).contains(&"xwayland".to_string()));
+        assert!(features(false, true, false).contains(&"video".to_string()));
+        assert!(features(false, false, true).contains(&"audio".to_string()));
     }
 }

@@ -239,11 +239,14 @@ pub struct Notification {
     pub body: String,
 }
 
-/// `audio` (0x40).
+/// `audio` (0x40): one 20 ms Opus packet at 48 kHz.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Audio {
     pub codec: String,
+    /// Server CLOCK_MONOTONIC of the packet's first sample (the clock of frame.pts_us).
     pub pts_us: u64,
+    /// 1 or 2; absent means 2.
+    pub channels: Option<u32>,
     pub data: Vec<u8>,
 }
 
@@ -256,6 +259,8 @@ pub struct ClientHello {
     pub displays: Vec<Display>,
     /// Codecs the client can play as `video.*` streams; absent means none.
     pub video_decoders: Option<Vec<Codec>>,
+    /// Audio codecs the client plays (`"opus"`); absent means no audio is sent.
+    pub audio_decoders: Option<Vec<String>>,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -710,6 +715,7 @@ impl Message {
             Message::Audio(m) => MapBuilder::new()
                 .put("codec", m.codec.as_str())
                 .put("pts_us", m.pts_us)
+                .opt("channels", m.channels)
                 .put("data", m.data.clone())
                 .build(),
             Message::Pong { t_us } | Message::Ping { t_us } => MapBuilder::new().put("t_us", *t_us).build(),
@@ -720,6 +726,7 @@ impl Message {
                 .put("decoders", codecs_value(&m.decoders))
                 .put("displays", displays_value(&m.displays))
                 .opt("video_decoders", m.video_decoders.as_deref().map(codecs_value))
+                .opt("audio_decoders", m.audio_decoders.clone())
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -869,9 +876,12 @@ impl Message {
                 summary: f.string("summary")?,
                 body: f.string("body")?,
             }),
-            AUDIO => {
-                Message::Audio(Audio { codec: f.string("codec")?, pts_us: f.u64("pts_us")?, data: f.bytes("data")? })
-            }
+            AUDIO => Message::Audio(Audio {
+                codec: f.string("codec")?,
+                pts_us: f.u64("pts_us")?,
+                channels: f.opt_u32("channels")?,
+                data: f.bytes("data")?,
+            }),
             VIDEO_CREATE => Message::VideoCreate(VideoCreate {
                 id: f.u64("id")?,
                 window: f.u64("window")?,
@@ -921,6 +931,10 @@ impl Message {
                 video_decoders: match f.opt("video_decoders", fields::as_array)? {
                     None => None,
                     Some(_) => Some(codecs_from(&f, "video_decoders")?),
+                },
+                audio_decoders: match f.opt("audio_decoders", fields::as_array)? {
+                    None => None,
+                    Some(_) => Some(f.strings("audio_decoders")?),
                 },
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },

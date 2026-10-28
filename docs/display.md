@@ -171,7 +171,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …) |
 | `0x30` | `clipboard` | `mime`, `data: bytes` |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
-| `0x40` | `audio` | `codec: "opus"`, `pts_us`, `data: bytes` |
+| `0x40` | `audio` | `codec: "opus"`, `pts_us`, `channels?: uint` (1 or 2, absent = 2), `data: bytes` |
 | `0x7E` | `pong` | `t_us` (echoed from `ping`) |
 | `0x7F` | `bye` | `reason: "auth"\|"version"\|"shutdown"\|"protocol"` |
 
@@ -179,7 +179,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]` |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]` |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
@@ -213,6 +213,15 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
 - Clients keep pointer gestures (tap, long-press right-click, swipe to scroll) for
   `xwayland: true` windows and send real touch to native Wayland ones, because most X11
   apps turn a touch drag into a selection.
+
+### Audio
+
+The computer's sound is one Opus stream: each `audio` message is one 20 ms packet (960
+samples per channel) at 48 kHz, stereo, with `pts_us` the server `CLOCK_MONOTONIC` of its
+first sample, the clock of `frame` and `video.present`, so a client plays sound and pictures
+on one timeline. It goes only to a client whose hello lists `"opus"` in `audio_decoders`.
+Digital silence is not sent after a second of it: a gap in `pts_us` is silence, and packets
+resume without a reset. The server lists `audio` in `features` when it has sound to send.
 
 ### Video streams
 
@@ -260,7 +269,7 @@ measurements and the scripted checks.
   screen; libx264, libx265 and NVENC (from system memory, the WSL2
   path) behind one `Encoder` trait; pacing on vsync with acknowledgement-based flow
   control; pointer, multitouch, keys and text-input-v3 input; the text clipboard between
-  the phone, Wayland and X11 applications; reconnect and replacement;
+  the phone, Wayland and X11 applications; the computer's sound as Opus; reconnect and replacement;
   video layer 1, codec passthrough ([codec-passthrough.md](codec-passthrough.md)): the
   driver's socket, streams bound to windows by their marker, `video.*` out with
   `video.present` at the moment the application shows each frame; the container and
@@ -268,7 +277,7 @@ measurements and the scripted checks.
 - **Next:** a GPU renderer that composes into dmabufs, and the zero-copy encoders on it
   (dmabuf → NVENC through CUDA external memory, dmabuf → VA-API), which also enables the
   exact passthrough binding; video layers 2 (YUV subsurfaces) and 3 (detected motion);
-  lossless tiles; cursor images, Pencil and audio.
+  lossless tiles; cursor images and Pencil.
 - **Passthrough reach:** Chromium and Firefox decode through VA only with a working GPU
   process, which needs a DRM render node; on WSL2 and hosts without a GPU their video stays
   in the window picture (layers 2 and 3 are for that). Players that decode on the CPU
