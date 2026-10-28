@@ -363,6 +363,11 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one("pong", "", Message::Pong { t_us: 98_765_432_100 }),
         one("bye-auth", "Sent before closing on a token mismatch.", Message::Bye { reason: ByeReason::Auth }),
         one(
+            "bye-replaced",
+            "Sent to a client when another client takes over the display.",
+            Message::Bye { reason: ByeReason::Replaced },
+        ),
+        one(
             "client-hello",
             "A phone with a TV attached.",
             Message::ClientHello(ClientHello {

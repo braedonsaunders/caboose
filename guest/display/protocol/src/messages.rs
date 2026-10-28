@@ -73,7 +73,13 @@ string_enum!(TouchPhase { Down => "down", Motion => "motion", Up => "up", Cancel
 string_enum!(PencilPhase {
     Down => "down", Motion => "motion", Up => "up", Cancel => "cancel", Hover => "hover", Leave => "leave"
 });
-string_enum!(ByeReason { Auth => "auth", Version => "version", Shutdown => "shutdown", Protocol => "protocol" });
+string_enum!(ByeReason {
+    Auth => "auth",
+    Version => "version",
+    Shutdown => "shutdown",
+    Protocol => "protocol",
+    Replaced => "replaced",
+});
 
 fn enum_field<T>(f: &Fields<'_>, key: &'static str, parse: fn(&str) -> Option<T>) -> Result<T, ProtocolError> {
     f.req(key, |v| match v {

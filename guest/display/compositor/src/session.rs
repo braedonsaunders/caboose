@@ -217,7 +217,7 @@ impl State {
         // One client at a time: the newest wins.
         if let Some(old) = self.session.take() {
             tracing::info!("connection {conn} replaces {}", old.conn);
-            self.net.close_with(old.conn, Some(&Message::Bye { reason: ByeReason::Shutdown }));
+            self.net.close_with(old.conn, Some(&Message::Bye { reason: ByeReason::Replaced }));
             self.session = Some(old);
             self.end_session();
         }
@@ -331,6 +331,15 @@ impl State {
         }
         self.motion_tick();
         let session_conn = self.session.as_ref().map(|s| s.conn);
+        let timeout = self.config.client_timeout;
+        if let Some(conn) =
+            session_conn.filter(|c| timeout.is_some_and(|t| self.net.silent_for(*c).is_some_and(|s| s > t)))
+        {
+            // A suspended or vanished client keeps its TCP connection; it would hold the
+            // display and queue everything sent to it.
+            tracing::info!("connection {conn}: client silent for over {:?}, closing", timeout.unwrap());
+            self.net.close_with(conn, None);
+        }
         for conn in self.net.ids() {
             if Some(conn) != session_conn && self.net.age(conn).is_some_and(|a| a > HELLO_TIMEOUT) {
                 tracing::info!("connection {conn}: no hello, closing");

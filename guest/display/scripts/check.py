@@ -227,9 +227,9 @@ def check_replace():
         probe(["--token-file", token, "--duration", "2", "--windows", "1"])
         out, _ = first.communicate(timeout=30)
         report = json.loads(out.strip().splitlines()[-1])
-        if report["bye"] != "shutdown":
+        if report["bye"] != "replaced":
             raise Failed(f"the replaced client got bye {report['bye']!r}")
-        return "a second client takes over; the first gets bye(shutdown)"
+        return "a second client takes over; the first gets bye(replaced)"
     return with_server(["weston-simple-shm"], run)
 
 
@@ -481,6 +481,172 @@ def check_motion():
             f"the final pictures match at {match:.1f} dB")
 
 
+def server_status(pid):
+    fields = dict(line.split(":", 1) for line in open(f"/proc/{pid}/status") if ":" in line)
+    return int(fields["Threads"]), int(fields["VmRSS"].split()[0]) // 1024
+
+
+def probe_cmd(token, *args):
+    return [os.path.join(BIN, "caboose-display-probe"), "--url", f"ws://127.0.0.1:{PORT}/", "--token-file", token,
+            "--json", *args]
+
+
+def check_storm():
+    # 48 broken connections while a window animates: TCP connections closed at once or
+    # left silent, WebSocket handshakes cut short, a wrong token, and clients killed
+    # mid-stream. Then a normal client must be served as usual, and the server must have
+    # let go of what the broken ones held.
+    import socket
+    def run(proc, token):
+        probe(["--token-file", token, "--duration", "1", "--windows", "1"])
+        threads0, rss0 = server_status(proc.pid)
+        silent = []
+        for i in range(48):
+            kind = i % 6
+            if kind == 0:
+                socket.create_connection(("127.0.0.1", PORT)).close()
+            elif kind == 1:
+                silent.append(socket.create_connection(("127.0.0.1", PORT)))
+            elif kind == 2:
+                c = socket.create_connection(("127.0.0.1", PORT))
+                c.sendall(b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n")
+                c.close()
+            elif kind == 3:
+                probe(["--token", "wrong", "--duration", "1"], check=False)
+            else:
+                p = subprocess.Popen(probe_cmd(token, "--duration", "5"), stdout=subprocess.DEVNULL)
+                time.sleep(0.3 + 0.2 * (i % 3))
+                p.kill()
+                p.wait()
+        time.sleep(1)
+        for c in silent:
+            c.close()
+        time.sleep(4)
+        r = probe(["--token-file", token, "--duration", "3", "--windows", "1"])
+        w = r["windows"][0]
+        threads1, rss1 = server_status(proc.pid)
+        if proc.poll() is not None:
+            raise Failed("the server exited")
+        if not w["keyframe_first"] or w["fps"] < 50 or w["decode_errors"]:
+            raise Failed(f"the client after the storm: {w}")
+        if threads1 > threads0 + 1 or rss1 > rss0 + 64:
+            raise Failed(f"threads {threads0} → {threads1}, RSS {rss0} → {rss1} MB")
+        return (f"48 broken connections later a client streams at {w['fps']:.0f} fps; threads {threads0} → "
+                f"{threads1}, RSS {rss0} → {rss1} MB")
+    return with_server(["weston-simple-shm"], run)
+
+
+def check_takeover():
+    # Two devices taking the display from each other, six times in a row while a window
+    # animates: each newcomer starts with a keyframe, each one replaced is told so.
+    def run(proc, token):
+        threads0, _ = server_status(proc.pid)
+        clients = []
+        for _ in range(6):
+            clients.append(subprocess.Popen(probe_cmd(token, "--duration", "8", "--windows", "1"),
+                                            stdout=subprocess.PIPE, text=True))
+            time.sleep(1.2)
+        reports = []
+        for c in clients:
+            out, _ = c.communicate(timeout=30)
+            reports.append(json.loads(out.strip().splitlines()[-1]))
+        for i, r in enumerate(reports):
+            w = r["windows"][0] if r["windows"] else None
+            if not w or not w["keyframe_first"] or w["frames"] < 30 or w["decode_errors"]:
+                raise Failed(f"client {i}: {w}")
+            expected = None if i == len(reports) - 1 else "replaced"
+            if r["bye"] != expected:
+                raise Failed(f"client {i} got bye {r['bye']!r}, expected {expected!r}")
+        threads1, _ = server_status(proc.pid)
+        if threads1 > threads0 + 1:
+            raise Failed(f"threads {threads0} → {threads1}")
+        return f"6 takeovers: each client began with a keyframe, each replaced one got bye(replaced)"
+    return with_server(["weston-simple-shm"], run)
+
+
+def check_resize_streaming():
+    # Chromium animating while the client resizes its window ten times, 300 ms apart:
+    # every size starts with a keyframe, nothing fails to decode, the last size sticks.
+    sizes = [(800, 600), (1200, 700), (640, 480), (1280, 800), (900, 900), (700, 1000), (1000, 560),
+             (1180, 720), (720, 720), (1024, 768)]
+    actions = ";".join(f"resize:{w},{h}" for w, h in sizes) + ";wait:1500"
+    def run(proc, token):
+        r = probe(["--token-file", token, "--duration", "7", "--windows", "1", "--actions", actions])
+        w = r["windows"][0]
+        if w["decode_errors"] or not w["keyframe_after_resize"]:
+            raise Failed(f"decode errors {w['decode_errors']}, a size without a keyframe: {not w['keyframe_after_resize']}")
+        if w["sizes"] < 6 or tuple(w["size"][:2]) != (1024, 768):
+            raise Failed(f"{w['sizes']} sizes seen, ending at {w['size']}")
+        return f"{w['sizes']} sizes while animating, each from a keyframe, ending at {w['size'][0]}x{w['size'][1]}"
+    return with_server(CHROMIUM + ["--window-size=1000,700", f"--app={PAGES}/motion.html"], run)
+
+
+def check_app_crash():
+    # Two animating windows and an xterm; one animation and the xterm are killed with
+    # SIGKILL mid-stream. Their windows go, the other keeps streaming, and the server
+    # serves the next client the survivor.
+    pids = tempfile.mkdtemp(prefix="crash-")
+    launcher = (f"weston-simple-shm & echo $! > {pids}/a; weston-simple-shm & echo $! > {pids}/b; "
+                f"xterm & echo $! > {pids}/x; exec sleep 600")
+    def run(proc, token):
+        c = subprocess.Popen(probe_cmd(token, "--duration", "6", "--windows", "3"), stdout=subprocess.PIPE, text=True)
+        time.sleep(2.5)
+        for name in ("a", "x"):
+            os.kill(int(open(f"{pids}/{name}").read()), 9)
+        out, _ = c.communicate(timeout=30)
+        r = json.loads(out.strip().splitlines()[-1])
+        gone = [w for w in r["windows"] if w["destroyed"]]
+        alive = [w for w in r["windows"] if not w["destroyed"]]
+        if len(gone) != 2 or len(alive) != 1 or any(w["decode_errors"] for w in r["windows"]):
+            raise Failed(f"windows after the crash: {r['windows']}")
+        if alive[0]["frames"] < 250:
+            raise Failed(f"the survivor sent only {alive[0]['frames']} frames in 6 s")
+        after = probe(["--token-file", token, "--duration", "2", "--windows", "1"])
+        if proc.poll() is not None or len(after["windows"]) != 1:
+            raise Failed(f"after the crash the next client got {len(after['windows'])} windows")
+        return "two of three applications killed mid-stream: their windows went, the survivor streamed on"
+    return with_server(["sh", "-c", launcher], run)
+
+
+def established(port):
+    """Established TCP connections to `port` on this machine."""
+    n = 0
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        for line in open(table).read().splitlines()[1:]:
+            local, state = line.split()[1], line.split()[3]
+            n += state == "01" and int(local.split(":")[1], 16) == port
+    return n
+
+
+def check_stalled_client():
+    # A client that stops reading while sound plays (a phone suspended with its socket
+    # open): the server must not queue for it without bound, and closes it once it has
+    # been silent for --client-timeout (5 s here). The next client is served as usual.
+    def run(proc, token):
+        c = subprocess.Popen(probe_cmd(token, "--duration", "16", "--windows", "1", "--audio", "--stall-after", "2"),
+                             stdout=subprocess.DEVNULL)
+        time.sleep(2.5)
+        _, rss0 = server_status(proc.pid)
+        held = established(PORT)
+        # 5 s of silence, the next once-a-second check, then 3 s for the close handshake
+        # the stalled peer never answers.
+        time.sleep(10)
+        _, rss1 = server_status(proc.pid)
+        left = established(PORT)
+        c.kill()
+        c.wait()
+        if held < 1 or left != 0:
+            raise Failed(f"{held} connection(s) while stalled, {left} after the timeout")
+        if rss1 > rss0 + 32:
+            raise Failed(f"RSS grew {rss0} → {rss1} MB for a stalled client")
+        r = probe(["--token-file", token, "--duration", "2", "--windows", "1"])
+        if not r["windows"][0]["keyframe_first"]:
+            raise Failed("the next client did not start with a keyframe")
+        return f"a stalled client was closed after the timeout, RSS {rss0} → {rss1} MB; the next one was served"
+    return with_server(["sh", "-c", "weston-simple-shm & while true; do paplay /dev/urandom --raw 2>/dev/null; sleep 1; done"],
+                       run, extra=("--client-timeout", "5"))
+
+
 def check_idle():
     def run(proc, token):
         r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--server-pid", str(proc.pid)])
@@ -503,6 +669,11 @@ CHECKS = [
     ("reconnect", check_reconnect),
     ("reconnect-idle", check_reconnect_idle),
     ("replace", check_replace),
+    ("storm", check_storm),
+    ("takeover", check_takeover),
+    ("resize-streaming", check_resize_streaming),
+    ("app-crash", check_app_crash),
+    ("stalled-client", check_stalled_client),
     ("popup", check_popup),
     ("text-input-on-connect", check_text_input_on_connect),
     ("autocorrect", check_autocorrect),

@@ -57,6 +57,8 @@ struct Conn {
     decoder: StreamDecoder,
     token: Option<RegistrationToken>,
     opened: Instant,
+    /// When the peer last sent anything.
+    heard: Instant,
     /// Set once the connection was asked to close; a peer that never finishes the
     /// close handshake is dropped by [`Net::stale_closing`].
     closing: Option<Instant>,
@@ -72,6 +74,9 @@ fn config() -> WebSocketConfig {
     let mut c = WebSocketConfig::default();
     c.max_message_size = Some(proto::MAX_PAYLOAD + proto::HEADER_LEN);
     c.max_frame_size = Some(proto::MAX_PAYLOAD + proto::HEADER_LEN);
+    // A peer that stops reading must not grow the server without bound: past a few
+    // of the largest messages waiting, the connection is closed.
+    c.max_write_buffer_size = 3 * (proto::MAX_PAYLOAD + proto::HEADER_LEN);
     c
 }
 
@@ -151,6 +156,11 @@ impl Net {
         self.conns.get(&id).map(|c| c.opened.elapsed())
     }
 
+    /// How long since the peer last sent anything.
+    pub fn silent_for(&self, id: ConnId) -> Option<std::time::Duration> {
+        self.conns.get(&id).map(|c| c.heard.elapsed())
+    }
+
     pub fn ids(&self) -> Vec<ConnId> {
         self.conns.keys().copied().collect()
     }
@@ -174,7 +184,11 @@ impl Net {
         }
         if let Socket::Open(ws) = &mut conn.socket {
             loop {
-                match ws.read() {
+                let read = ws.read();
+                if read.is_ok() {
+                    conn.heard = Instant::now();
+                }
+                match read {
                     Ok(WsMessage::Binary(bytes)) => {
                         conn.decoder.push(&bytes);
                         loop {
@@ -274,8 +288,17 @@ fn state_accept<S: HasNet>(state: &mut S, stream: TcpStream, peer: SocketAddr) {
             return;
         }
     };
-    net.conns
-        .insert(id, Conn { socket, decoder: StreamDecoder::new(), token: None, opened: Instant::now(), closing: None });
+    net.conns.insert(
+        id,
+        Conn {
+            socket,
+            decoder: StreamDecoder::new(),
+            token: None,
+            opened: Instant::now(),
+            heard: Instant::now(),
+            closing: None,
+        },
+    );
     tracing::info!("connection {id} from {peer}");
     let token = state.loop_handle().insert_source(
         Generic::new(registration, Interest::BOTH, Mode::Edge),

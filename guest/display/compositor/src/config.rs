@@ -25,6 +25,8 @@ OPTIONS:
                            comparisons)
     --no-motion            keep regions that update at video rates in the window picture
                            instead of sending them as their own video stream
+    --client-timeout SECS  close a client that has sent nothing for this long; 0 = never
+                           [default: 30]
     --encoder KIND         auto | software | nvenc [default: auto]
     --crf N                encoder quality, lower is better [default: 23]
     --preset NAME          x264 preset [default: ultrafast]
@@ -85,6 +87,8 @@ pub struct Config {
     pub always_compose: bool,
     /// Send regions that update at video rates as their own video stream (layer 3).
     pub motion: bool,
+    /// Close a client that has sent nothing for this long.
+    pub client_timeout: Option<std::time::Duration>,
     pub encoder: Choice,
     pub settings: Settings,
     pub display: DisplaySpec,
@@ -105,6 +109,7 @@ impl Default for Config {
             renderer: RendererChoice::Pixman,
             always_compose: false,
             motion: true,
+            client_timeout: Some(std::time::Duration::from_secs(30)),
             encoder: Choice::Auto,
             settings: Settings::default(),
             display: DisplaySpec { width: 1920, height: 1080, refresh_hz: 60.0, scale: 1.0 },
@@ -168,6 +173,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             }
             "--always-compose" => config.always_compose = true,
             "--no-motion" => config.motion = false,
+            "--client-timeout" => {
+                let secs: u64 = number(value(&mut args, &arg)?, &arg)?;
+                config.client_timeout = (secs > 0).then(|| std::time::Duration::from_secs(secs));
+            }
             "--list-encoders" => config.list_encoders = true,
             "-h" | "--help" => return Ok(Parsed::Help),
             "--" => {
