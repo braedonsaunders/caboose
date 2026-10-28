@@ -1,0 +1,8 @@
+{
+  "name": "bye-auth",
+  "description": "Sent before closing on a token mismatch.",
+  "messages": [
+    {"direction": "server", "type": "bye", "type_id": 127, "fields": {"reason": "auth"}}
+  ],
+  "hex": "7f0d000000a166726561736f6e6461757468"
+}

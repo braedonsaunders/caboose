@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["protocol"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+repository = "https://github.com/braedonsaunders/caboose"
+rust-version = "1.85"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+debug = "line-tables-only"

@@ -1,0 +1,8 @@
+{
+  "name": "key-shift-a",
+  "description": "Keysym 0x41 (A) pressed with shift held.",
+  "messages": [
+    {"direction": "client", "type": "key", "type_id": 147, "fields": {"mods": ["shift"], "keysym": 65, "pressed": true}}
+  ],
+  "hex": "931f000000a3646d6f647381657368696674666b657973796d18416770726573736564f5"
+}

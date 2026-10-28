@@ -1,0 +1,8 @@
+{
+  "name": "liberal-vsync-wide-int",
+  "description": "Not canonical: a uint64-width integer for t_us and keys reversed.",
+  "messages": [
+    {"direction": "client", "type": "vsync", "type_id": 130, "fields": {"t_us": 1000, "display": 1}, "payload_hex": "a264745f75731b00000000000003e867646973706c617901", "canonical_payload_hex": "a264745f75731903e867646973706c617901"}
+  ],
+  "hex": "8218000000a264745f75731b00000000000003e867646973706c617901"
+}

@@ -1,9 +1,10 @@
 import * as React from 'react'
 import { AppShell, Button, ConfirmRoot, Toaster, type LinkRender } from '@braedonsaunders/appkit-ui'
-import { LogOut, TrainFront } from 'lucide-react'
+import { LogOut } from 'lucide-react'
 import { CabooseClient, readSessionToken, writeSessionToken } from './api.js'
 import { NAVIGATION_GROUPS, navigate, usePathname } from './navigation.js'
 import { useComputer } from './useComputer.js'
+import { Car } from './brand/Logo.js'
 import { SignIn } from './pages/SignIn.js'
 import { Overview } from './pages/Overview.js'
 import { Settings } from './pages/Settings.js'
@@ -63,7 +64,8 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
       linkRender={linkRender}
       brand={
         <span className="flex items-center gap-2 font-semibold">
-          <TrainFront className="size-5" aria-hidden />
+          {/* The car's windows are lit while the computer is up, dark while it is parked. */}
+          <Car height={22} lights={computer.status?.state !== 'parked'} decorative />
           <span className="truncate">{name}</span>
         </span>
       }

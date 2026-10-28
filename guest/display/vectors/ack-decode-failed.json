@@ -1,0 +1,8 @@
+{
+  "name": "ack-decode-failed",
+  "description": "decoded_us is -1 when decoding failed; a request_keyframe follows.",
+  "messages": [
+    {"direction": "client", "type": "ack", "type_id": 131, "fields": {"id": 7, "pts_us": 1234567890, "decoded_us": -1}}
+  ],
+  "hex": "831d000000a362696407667074735f75731a499602d26a6465636f6465645f757320"
+}

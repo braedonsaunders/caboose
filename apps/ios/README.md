@@ -11,6 +11,10 @@ The iPhone and iPad app, and **CabooseKit**, its native Xpra client.
   `UI/RemoteWindowView` (presentation and touch/trackpad/keyboard input).
 - `Caboose/` — the app: setup, wake, Home (open windows and the computer's apps), and the
   full-screen window screen.
+- `Caboose/Brand/` — the logo drawn natively in SwiftUI: the wordmark draws itself in on
+  setup, the car rolls while the computer wakes and parks with its windows dark. It is
+  the same geometry and timing as `apps/web/src/brand/brand.ts`; change both together.
+  The app icon is rendered from that module's SVG by `scripts/render-app-icon.sh` (macOS).
 
 ## Computer settings
 
@@ -58,5 +62,10 @@ two fingers scroll, a two-finger tap right-clicks, two quick taps double-click a
 touch and move drags. Those rules live in `CabooseKit/Input/TrackpadGestures.swift` and are
 unit-tested with staggered fingers, because real fingers never land or lift together.
 On a device, check that a two-finger tap opens a context menu even right after a tap,
-that two fingers that move scroll without a click, and that tap-tap opens a desktop file. The iOS keyboard types through `UIKeyInput`; hardware
+that two fingers that move scroll without a click, and that tap-tap opens a desktop file. The iOS keyboard types through `UITextInput` (`CabooseKit/UI/RemoteTextInputView.swift`), with
+the edits turned into keystrokes by `CabooseKit/Input/TypingBuffer.swift`, which is unit-tested
+for autocorrect, swipe words, marked text and deletes. On a device, check in Chromium's address
+bar that a misspelt word is corrected in place, that a swiped word arrives whole, that the
+Japanese Romaji and Chinese Pinyin keyboards commit their candidates, and that the terminal
+gets no autocorrect until `Aa` on the key bar turns it on. Hardware
 keys are sent as X keys, with ⌘ mapped to Control so ⌘C/⌘V/⌘T do what Mac users expect.

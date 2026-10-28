@@ -1,0 +1,8 @@
+{
+  "name": "touch-two-fingers",
+  "description": "Two contacts in one wl_touch.frame.",
+  "messages": [
+    {"direction": "client", "type": "touch", "type_id": 144, "fields": {"id": 7, "points": [{"x": {"$float": 512.5}, "y": {"$float": 900.25}, "slot": 0, "force": {"$float": 0.5}, "phase": "motion", "radius": {"$float": 21.0}}, {"x": {"$float": 700.0}, "y": {"$float": 1200.75}, "slot": 1, "phase": "down"}]}}
+  ],
+  "hex": "907e000000a26269640766706f696e747382a66178fb40800400000000006179fb408c22000000000064736c6f740065666f726365fb3fe0000000000000657068617365666d6f74696f6e66726164697573fb4035000000000000a46178fb4085e000000000006179fb4092c3000000000064736c6f740165706861736564646f776e"
+}

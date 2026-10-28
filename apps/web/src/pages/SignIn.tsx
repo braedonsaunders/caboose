@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { Alert, AlertDescription, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Label } from '@braedonsaunders/appkit-ui'
-import { TrainFront } from 'lucide-react'
 import { CabooseApiError, CabooseClient } from '../api.js'
+import { Wordmark } from '../brand/Logo.js'
 
 /**
  * The owner token is checked against the host before it is kept, and only for this
@@ -34,8 +34,9 @@ export function SignIn({ onSignIn }: { onSignIn: (token: string) => void }) {
     <main className="flex min-h-screen items-center justify-center p-6">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <TrainFront className="mb-2 size-8" aria-hidden />
-          <CardTitle>Caboose</CardTitle>
+          <CardTitle className="mb-3">
+            <Wordmark height={52} motion="intro" />
+          </CardTitle>
           <CardDescription>
             Manage the computer this host runs: its settings, parking, restarts and agents.
           </CardDescription>
