@@ -8,7 +8,6 @@ struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @State private var chromeVisible = true
     @State private var verticalEdge: HorizontalEdge?
-    @State private var detectedToolbar = false
     @State private var askingAbout: RemoteWindow?
     @State private var showingApps = false
     @State private var showingOptions = false
@@ -36,11 +35,11 @@ struct WindowScreen: View {
                 if let window = model.window(model.presentedWindowID) { controls(for: window) }
             }
             .toolbarVisibility(chromeVisible ? .automatic : .hidden, for: .navigationBar)
-            .onChange(of: verticalEdge, initial: true) { _, edge in
-                if edge != nil && !detectedToolbar {
-                    detectedToolbar = true
-                    chromeVisible = false
-                }
+            .toolbarBackground(toolbarBackground, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+            .onChange(of: verticalEdge) { old, edge in
+                if old == nil && edge != nil { chromeVisible = false }
+                if old != nil && edge == nil { chromeVisible = true }
             }
             .overlay(alignment: .top) { ApprovalBanner().padding(.top, 8) }
             .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
@@ -71,6 +70,17 @@ struct WindowScreen: View {
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }
+    }
+
+    /// The native bar paints the selected wallpaper itself, rather than sampling the
+    /// remote app beneath its material. The fallback uses the shell's dusk colours.
+    private var toolbarBackground: AnyShapeStyle {
+        if let image = WallpaperStore.shared.image {
+            return AnyShapeStyle(ImagePaint(image: Image(uiImage: image)))
+        }
+        return AnyShapeStyle(LinearGradient(colors: [Color(red: 0.10, green: 0.08, blue: 0.20),
+                                                     Color(red: 0.12, green: 0.06, blue: 0.10)],
+                                            startPoint: .top, endPoint: .bottom))
     }
 
     /// Keep the remote surface separate from the shell's toolbar and presentation tree.
@@ -221,6 +231,7 @@ struct WindowScreen: View {
                 model.presentedWindowID = nil
             }
             .labelStyle(.iconOnly)
+            .simultaneousGesture(toolbarDismissSwipe)
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
             if verticalEdge != nil {
@@ -228,19 +239,34 @@ struct WindowScreen: View {
                     withAnimation(.snappy) { chromeVisible = false }
                 }
                 .labelStyle(.iconOnly)
+                .simultaneousGesture(toolbarDismissSwipe)
             }
             Button("Switch App", systemImage: "macwindow.on.rectangle") { showingApps = true }
                 .labelStyle(.iconOnly)
                 .accessibilityValue(window.title.isEmpty ? "Window" : window.title)
+                .simultaneousGesture(toolbarDismissSwipe)
 
             Button(model.keyboardVisible ? "Hide Keyboard" : "Keyboard",
                    systemImage: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard") {
                 model.keyboardVisible.toggle()
             }
             .labelStyle(.iconOnly)
+            .simultaneousGesture(toolbarDismissSwipe)
 
             Button("Window Options", systemImage: "ellipsis") { showingOptions = true }
                 .labelStyle(.iconOnly)
+                .simultaneousGesture(toolbarDismissSwipe)
+        }
+    }
+
+    /// Installed on the native controls themselves, so a drag beginning over the bar
+    /// does not depend on the remote surface receiving that touch.
+    private var toolbarDismissSwipe: some Gesture {
+        DragGesture(minimumDistance: 10).onEnded { value in
+            guard let edge = verticalEdge, abs(value.translation.width) > 30,
+                  abs(value.translation.width) > abs(value.translation.height) else { return }
+            let outward = edge == .trailing ? value.translation.width > 0 : value.translation.width < 0
+            if outward { withAnimation(.snappy) { chromeVisible = false } }
         }
     }
 
@@ -315,15 +341,13 @@ private struct WindowCardViewport<Content: View>: View {
     var body: some View {
         GeometryReader(content: content)
             .ignoresSafeArea(.container, edges: ignoredEdges)
-            .onAppear { if let barEdge { verticalEdge = barEdge } }
-            .onChange(of: barEdge) { _, edge in
-                if controlsVisible || edge != nil { verticalEdge = edge }
-            }
+            .onAppear { verticalEdge = barEdge }
+            .onChange(of: barEdge) { _, edge in verticalEdge = edge }
     }
 
     private var ignoredEdges: Edge.Set {
         if !controlsVisible { return .all }
-        return barEdge == nil && verticalEdge == nil ? [] : .all
+        return barEdge == nil ? [] : .all
     }
 }
 
