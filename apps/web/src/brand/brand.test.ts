@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  INK_DARK, INK_LIGHT, LETTER_X, TIE, appIconSvg, faviconSvg, readmeWordmarkSvg, wordmarkSvg,
+  INK_DARK, INK_LIGHT, LETTER_X, RAIL, TIE, WORDMARK_VIEWBOX, appIconSvg, faviconSvg, readmeWordmarkSvg, wordmarkSvg,
 } from './brand.js'
 
 // The checked-in brand files are this module's output. `vitest -u` rewrites them.
@@ -31,8 +31,18 @@ describe('standalone files parse as XML', () => {
 })
 
 describe('geometry', () => {
-  it('sets "caboose" on the advance widths, wheels for o', () => {
-    expect(LETTER_X).toEqual([0, 108, 222, 346, 460, 574, 680])
+  it('spaces "caboose" by the clear space between letters, wheels for o', () => {
+    expect(LETTER_X).toEqual([0, 99, 223, 347, 461, 568, 676])
+    // The wheels sit 14 apart, rim to rim: the spacing every other pair is set against.
+    expect(LETTER_X[4]! - LETTER_X[3]! - 100).toBe(14)
+  })
+
+  it('ends the rail flush with the c and the e, inside the view box', () => {
+    const [x, , width] = WORDMARK_VIEWBOX
+    expect(RAIL.from - 6).toBe(0)
+    expect(RAIL.to + 6).toBe(LETTER_X[6]! + 100)
+    expect(x).toBeLessThan(RAIL.from - 6)
+    expect(x + width).toBeGreaterThan(RAIL.to + 6)
   })
 
   it('rolls exactly one wheel revolution across a whole number of ties', () => {
@@ -59,9 +69,27 @@ describe('rendering', () => {
 
   it('still logos carry no animation, and every animated one honours reduced motion', () => {
     expect(wordmarkSvg({ ink: 'currentColor', motion: 'none' })).not.toContain('@keyframes')
-    for (const motion of ['intro', 'rolling'] as const) {
+    for (const motion of ['intro', 'idle', 'rolling'] as const) {
       expect(wordmarkSvg({ ink: 'currentColor', motion })).toContain('prefers-reduced-motion')
     }
+  })
+
+  it('shows the ties only while the train rolls', () => {
+    expect(wordmarkSvg({ ink: '#000', motion: 'none' })).not.toContain('<rect')
+    // At rest the track is hidden; the cycle fades it in for the roll and out after.
+    for (const motion of ['intro', 'idle'] as const) {
+      const svg = wordmarkSvg({ ink: '#000', motion, id: 'w' })
+      expect(svg).toContain('#w .track { opacity: 0; }')
+      expect(svg).toMatch(/#w \.track \{ animation: cb-ties-cycle 24s linear [\d.]+s infinite; \}/)
+    }
+    // Busy, the ties are always there, sliding.
+    expect(wordmarkSvg({ ink: '#000', motion: 'rolling', id: 'w' })).not.toContain('.track {')
+  })
+
+  it('an idle logo rolls now and then without drawing itself in', () => {
+    const idle = wordmarkSvg({ ink: '#000', motion: 'idle', id: 'w' })
+    expect(idle).toContain('#w .wheel { animation: cb-turn-cycle 24s linear 6s infinite; }')
+    expect(idle).not.toContain('cb-draw')
   })
 
   it('a parked computer shows its hubs unlit', () => {
@@ -72,7 +100,7 @@ describe('rendering', () => {
   })
 
   it('sizes from height when given, from CSS when not', () => {
-    expect(wordmarkSvg({ ink: '#000', height: 37 })).toContain('width="167.2" height="37"')
+    expect(wordmarkSvg({ ink: '#000', height: 43 })).toContain('width="196" height="43"')
     expect(wordmarkSvg({ ink: '#000' })).not.toMatch(/<svg[^>]* height=/)
   })
 })

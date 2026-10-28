@@ -23,16 +23,18 @@ export const ICON_STEEL = '#F1ECE2'
 export const ICON_NAVY_TOP = '#22355A'
 export const ICON_NAVY_BOTTOM = '#111A2E'
 
-export type Motion = 'intro' | 'rolling' | 'none'
+export type Motion = 'intro' | 'idle' | 'rolling' | 'none'
 
 export interface BrandOptions {
   /** Stroke colour; `currentColor` lets the surrounding text colour (and theme) decide. */
   ink: string
   amber?: string
   /**
-   * `intro` draws the logo in, rolls three wheel-turns, then rolls three again every 12 s.
+   * `intro` draws the logo in and rolls three wheel-turns, then rolls again now and then.
+   * `idle` is the still logo that rolls three wheel-turns now and then.
    * `rolling` keeps the wheels turning and the ties sliding (busy states).
-   * `none` is the still logo. All motion stops under `prefers-reduced-motion`.
+   * `none` is the still logo. At rest the rail stands alone; the ties show only while the
+   * train rolls. All motion stops under `prefers-reduced-motion`.
    */
   motion?: Motion
   /** Unique per document when several logos share a page; it scopes styles and clip ids. */
@@ -41,37 +43,63 @@ export interface BrandOptions {
   height?: number
 }
 
-/** Six ties per wheel revolution (2πr / 6), so one full turn of a wheel lands seamlessly. */
 const round = (value: number) => Math.round(value * 100) / 100
 
+/** Six ties per wheel revolution (2πr / 6), so one full turn of a wheel lands seamlessly. */
 export const TIE = (2 * Math.PI * 40) / 6
 const ROLL = round(TIE * 6)
 
 const ring = (cx: number) => `<circle class="st" pathLength="1" cx="${cx}" cy="50" r="40"/>`
 const stroke = (d: string) => `<path class="st" pathLength="1" d="${d}"/>`
 
-/** Glyph advance widths and strokes, origin at the glyph's left edge, x-height 0..100. */
+/**
+ * Glyph strokes, origin at the glyph's left edge, x-height 0..100, and the horizontal
+ * extent of each glyph's ink, which the spacing below is measured from.
+ */
 const GLYPHS = {
-  c: { advance: 108, strokes: [stroke('M79.7 23.2A40 40 0 1 0 79.7 76.8')] },
-  a: { advance: 114, strokes: [ring(50), stroke('M90 0L90 100')] },
-  b: { advance: 124, strokes: [stroke('M10 -38L10 100'), ring(60)] },
-  o: { advance: 114, strokes: [] },
-  s: { advance: 106, strokes: [stroke('M77.7 20A32 20 0 1 0 50 50A32 20 0 1 1 22.3 80')] },
-  e: { advance: 100, strokes: [stroke('M90 50A40 40 0 1 0 75.7 80.6'), stroke('M10 50L100 50')] },
+  c: { ink: [0, 87], strokes: [stroke('M79.7 23.2A40 40 0 1 0 79.7 76.8')] },
+  a: { ink: [0, 100], strokes: [ring(50), stroke('M90 0L90 100')] },
+  b: { ink: [0, 110], strokes: [stroke('M10 -38L10 100'), ring(60)] },
+  o: { ink: [0, 100], strokes: [] },
+  // Two stacked elliptical bowls, the lower a little fuller, meeting on a level spine.
+  // The terminals end near level, so their butt cuts sit almost flat and the s stands upright.
+  s: { ink: [9, 93], strokes: [stroke('M80.08 24.4A31 19 0 1 0 50 48A33 21 0 1 1 17.98 74.08')] },
+  e: { ink: [0, 100], strokes: [stroke('M90 50A40 40 0 1 0 82.77 72.94'), stroke('M10 50L100 50')] },
 } as const
 
 const WORD = ['c', 'a', 'b', 'o', 'o', 's', 'e'] as const
 
+/**
+ * The clear space between neighbours' ink, set by eye rather than by box: the o-wheels'
+ * 14 is the anchor; the open c needs less, and the a's stem facing the b's stem needs more.
+ */
+const GAPS = [12, 24, 14, 14, 16, 15] as const
+
 /** Left edge of each letter of "caboose". */
-export const LETTER_X: readonly number[] = WORD.reduce<number[]>((xs, _letter, index) => {
-  xs.push(index === 0 ? 0 : xs[index - 1]! + GLYPHS[WORD[index - 1]!].advance)
+export const LETTER_X: readonly number[] = WORD.reduce<number[]>((xs, letter, index) => {
+  if (index === 0) return [0]
+  const before = GLYPHS[WORD[index - 1]!]
+  xs.push(round(xs[index - 1]! + before.ink[1] + GAPS[index - 1]! - GLYPHS[letter].ink[0]))
   return xs
 }, [])
 
-/** Wordmark view box: x, y, width, height. */
-export const WORDMARK_VIEWBOX = [-22, -50, 836, 185] as const
+/** The word's right edge: where the e's ink ends, and where the rail ends with it. */
+const WORD_END = LETTER_X[WORD.length - 1]! + GLYPHS.e.ink[1]
 
-/** Intro timeline (seconds). The iOS port mirrors these. */
+/**
+ * The rail spans the word exactly: its round caps (radius 6) end flush with the c's left
+ * edge and the e's right edge. The ties show on the stretch inside the caps.
+ */
+export const RAIL = { from: 6, to: WORD_END - 6 } as const
+const TRACK = { from: RAIL.from, to: RAIL.to } as const
+
+/**
+ * Wordmark view box: x, y, width, height. It holds the rail's caps and the b's ascender
+ * with a little room, and the ties under the rail while they show.
+ */
+export const WORDMARK_VIEWBOX = [-4, -42, WORD_END + 8, 172] as const
+
+/** Motion timeline (seconds). The iOS port mirrors these. */
 export const TIMING = {
   rail: { delay: 0.05, duration: 0.7 },
   letter: (index: number) => round(0.25 + index * 0.07),
@@ -79,31 +107,24 @@ export const TIMING = {
   hubAfter: 0.5,
   pop: 0.45,
   roll: { delay: 0.7, duration: 3.2, turns: 3 },
-  cycle: 12,
+  /** The ties fade in as the train starts and fade out after it stops. */
+  ties: { in: 0.4, out: 0.8 },
+  /** An idle logo first rolls this long after it appears, */
+  idleDelay: 6,
+  /** and every logo at rest rolls again once a cycle. */
+  cycle: 24,
 } as const
 
 function styles(scope: string, motion: Motion): string {
   const s = `#${scope}`
   const { turns } = TIMING.roll
   const travel = round(ROLL * turns)
+  const percent = (seconds: number) => `${round((seconds / TIMING.cycle) * 100)}%`
   // The share of each cycle spent rolling; the rest of it the train is at rest.
-  const rolling = `${round((TIMING.roll.duration / TIMING.cycle) * 100)}%`
+  const rolling = percent(TIMING.roll.duration)
   const base = `${s} .wheel, ${s} .pop { transform-box: fill-box; transform-origin: center; }`
   if (motion === 'none') return base
   const common = `
-    @keyframes cb-draw { from { stroke-dashoffset: 1; } }
-    @keyframes cb-fade { from { opacity: 0; } }
-    @keyframes cb-pop { from { opacity: 0; transform: scale(.2); } }
-    @keyframes cb-roll-in { from { transform: translateX(${travel}px); } }
-    @keyframes cb-turn-in { from { transform: rotate(-${360 * turns}deg); } }
-    @keyframes cb-roll-cycle {
-      0% { transform: translateX(${travel}px); animation-timing-function: cubic-bezier(.45,0,.2,1); }
-      ${rolling}, 100% { transform: translateX(0); }
-    }
-    @keyframes cb-turn-cycle {
-      0% { transform: rotate(-${360 * turns}deg); animation-timing-function: cubic-bezier(.45,0,.2,1); }
-      ${rolling}, 100% { transform: rotate(0); }
-    }
     @keyframes cb-roll { from { transform: translateX(${ROLL}px); } to { transform: translateX(0); } }
     @keyframes cb-turn { from { transform: rotate(-360deg); } to { transform: rotate(0); } }
     ${base}
@@ -113,18 +134,46 @@ function styles(scope: string, motion: Motion): string {
     ${s} .wheel { animation: cb-turn 1.8s linear infinite; }
     ${s} .ties { animation: cb-roll 1.8s linear infinite; }`
   }
-  const { rail, draw, pop, roll, cycle } = TIMING
+  const { rail, draw, pop, roll, ties, cycle } = TIMING
+  const cycles = `
+    @keyframes cb-roll-cycle {
+      0% { transform: translateX(${travel}px); animation-timing-function: cubic-bezier(.45,0,.2,1); }
+      ${rolling}, 100% { transform: translateX(0); }
+    }
+    @keyframes cb-turn-cycle {
+      0% { transform: rotate(-${360 * turns}deg); animation-timing-function: cubic-bezier(.45,0,.2,1); }
+      ${rolling}, 100% { transform: rotate(0); }
+    }
+    @keyframes cb-ties-cycle {
+      0%, ${percent(roll.duration + ties.out)}, 100% { opacity: 0; }
+      ${percent(ties.in)}, ${rolling} { opacity: 1; }
+    }
+    ${s} .track { opacity: 0; }`
+  // Resting styles are the finished logo, ties hidden; every animation fills backwards
+  // or not at all, so a renderer that ignores animation (or a reader with reduced motion)
+  // still sees the whole still logo.
+  if (motion === 'idle') {
+    const first = TIMING.idleDelay
+    return `${common}${cycles}
+    ${s} .wheel { animation: cb-turn-cycle ${cycle}s linear ${first}s infinite; }
+    ${s} .ties { animation: cb-roll-cycle ${cycle}s linear ${first}s infinite; }
+    ${s} .track { animation: cb-ties-cycle ${cycle}s linear ${first}s infinite; }`
+  }
   const ease = 'cubic-bezier(.4,0,.2,1)'
   const rollEase = 'cubic-bezier(.3,.1,.2,1)'
-  // Resting styles are the finished logo; intros fill backwards, so a renderer that
-  // ignores animation (or a reader with reduced motion) still sees the whole thing.
-  return `${common}
+  return `${common}${cycles}
+    @keyframes cb-draw { from { stroke-dashoffset: 1; } }
+    @keyframes cb-fade { from { opacity: 0; } }
+    @keyframes cb-pop { from { opacity: 0; transform: scale(.2); } }
+    @keyframes cb-roll-in { from { transform: translateX(${travel}px); } }
+    @keyframes cb-turn-in { from { transform: rotate(-${360 * turns}deg); } }
     ${s} .st { stroke-dasharray: 1; animation: cb-draw ${draw}s ${ease} var(--d) backwards; }
     ${s} .rail { stroke-dasharray: 1; animation: cb-draw ${rail.duration}s ${ease} ${rail.delay}s backwards; }
     ${s} .spoke { animation: cb-fade .3s ease-out var(--d) backwards; }
     ${s} .pop { animation: cb-pop ${pop}s cubic-bezier(.34,1.56,.64,1) var(--d) backwards; }
     ${s} .wheel { animation: cb-turn-in ${roll.duration}s ${rollEase} ${roll.delay}s backwards, cb-turn-cycle ${cycle}s linear ${roll.delay + cycle}s infinite; }
-    ${s} .ties { animation: cb-roll-in ${roll.duration}s ${rollEase} ${roll.delay}s backwards, cb-roll-cycle ${cycle}s linear ${roll.delay + cycle}s infinite; }`
+    ${s} .ties { animation: cb-roll-in ${roll.duration}s ${rollEase} ${roll.delay}s backwards, cb-roll-cycle ${cycle}s linear ${roll.delay + cycle}s infinite; }
+    ${s} .track { animation: cb-ties-cycle ${cycle}s linear ${roll.delay}s infinite; }`
 }
 
 const delay = (seconds: number) => ` style="--d:${round(seconds)}s"`
@@ -165,11 +214,14 @@ export function wordmarkSvg(options: BrandOptions & { lit?: boolean }): string {
     if (letter === 'o') return lit ? wheel(x, amber, start) : wheel(x, ink, start, false)
     return `<g transform="translate(${x} 0)"${delay(start)}>${GLYPHS[letter].strokes.join('')}</g>`
   }).join('')
+  // The ties show only while the train rolls, so a still logo has none to hide.
+  const track = motion === 'none' ? '' :
+    `<defs><clipPath id="${id}-track"><rect x="${TRACK.from}" y="100" width="${TRACK.to - TRACK.from}" height="40"/></clipPath></defs>` +
+    `<g class="track" clip-path="url(#${id}-track)">${ties(TRACK.from - ROLL * TIMING.roll.turns, TRACK.to, ink, 0.32)}</g>`
   return open(WORDMARK_VIEWBOX, id, height) +
     `<style>${styles(id, motion)}</style>` +
-    `<defs><clipPath id="${id}-track"><rect x="-8" y="100" width="796" height="40"/></clipPath></defs>` +
-    `<g clip-path="url(#${id}-track)">${ties(-8 - ROLL * TIMING.roll.turns, 788, ink, 0.32)}</g>` +
-    `<path class="rail" pathLength="1" d="M-12 106H792" fill="none" stroke="${ink}" stroke-width="12" stroke-linecap="round"/>` +
+    track +
+    `<path class="rail" pathLength="1" d="M${RAIL.from} 106H${RAIL.to}" fill="none" stroke="${ink}" stroke-width="12" stroke-linecap="round"/>` +
     `<g fill="none" stroke="${ink}" stroke-width="20" stroke-linejoin="round">${letters}</g>` +
     `</svg>`
 }
@@ -220,7 +272,8 @@ export function faviconSvg(): string {
 export function readmeWordmarkSvg(scheme: 'light' | 'dark'): string {
   const note = `<!-- Caboose wordmark (${scheme}). Generated by apps/web/src/brand/brand.ts; do not edit by hand —\n` +
     `     change brand.ts and run \`pnpm -F caboose-web test -u\`. The rail draws, "caboose" writes\n` +
-    `     itself in, the amber hubs pop, and the train rolls one wheel-turn (six ties slide by), then again\n` +
-    `     every 12 s. Resting styles are the finished logo, so still renderers show it complete. -->\n`
+    `     itself in, the amber hubs pop, and the train rolls three wheel-turns over ties that show only for\n` +
+    `     the ride, then again every ${TIMING.cycle} s. Resting styles are the finished logo, so still renderers\n` +
+    `     show it complete. -->\n`
   return note + wordmarkSvg({ ink: scheme === 'light' ? INK_LIGHT : INK_DARK, motion: 'intro', height: 120 }) + '\n'
 }
