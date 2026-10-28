@@ -1,80 +1,106 @@
 import CabooseKit
 import SwiftUI
 
-/// Where the composer sends: Caboose (the iPhone's model, which hands real work on) or one agent.
+/// The agent a new chat goes to.
 enum AskTarget {
-    /// The storage key: "" for Caboose, else an agent's registry id.
+    /// The storage key: "" for the default agent, else an agent's registry id.
     static let key = "caboose.agent.target"
 }
 
-/// The Agents tab's composer: talk to Caboose, or straight to one of the computer's agents.
-struct AskBar: View {
+/// The chat composer. In a new chat it picks the agent; in a chat it talks to that chat's
+/// agent, and while the agent works, what you send waits for its turn to end.
+struct ChatComposer: View {
     @Environment(AppModel.self) private var model
+    /// The chat, or nil for a new one.
+    let task: AgentCenter.Task?
+    var connectModel: () -> Void = {}
     @State private var prompt = ""
     @AppStorage(AskTarget.key) private var target = ""
     @AppStorage("caboose.agent.askFirst") private var askFirst = false
     @AppStorage("caboose.agent.craftMcp") private var craftMcp = true
-    @AppStorage("caboose.agent.delegate") private var delegate = ""
     @FocusState private var focused: Bool
-    var connectModel: () -> Void = {}
 
     var body: some View {
         let agents = model.agents
-        let direct = agents.listing(target).flatMap { $0.isInstalled ? $0 : nil }
+        let name = task.map { agents.name(of: $0) } ?? chosen.map(\.name) ?? agents.defaultAgent.flatMap { agents.listing($0)?.name }
         HStack(alignment: .bottom, spacing: 8) {
-            Menu {
-                Picker("Talk To", selection: $target) {
-                    Label(OnDeviceAgent.isAvailable ? "Caboose" : agents.defaultAgent.flatMap { agents.listing($0)?.name }.map { "Caboose (\($0))" } ?? "Caboose",
-                          systemImage: "sparkles").tag("")
-                    ForEach(agents.installedAgents) { agent in
-                        Text(agent.name).tag(agent.id)
-                    }
-                }
-                Section {
-                    Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
-                    Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
-                }
-                Section {
-                    Button(action: connectModel) { Label("Connect a Model…", systemImage: "key") }
-                    Button { model.showAgentSettings = true } label: { Label("Agents…", systemImage: "slider.horizontal.3") }
-                }
-            } label: {
-                Group {
-                    if let direct { AgentAvatar(name: direct.name, size: 30) } else { CabooseAvatar(size: 30) }
-                }
+            menu
                 .frame(width: 36, height: 36)
-            }
-            .accessibilityLabel("Talk to \(direct?.name ?? "Caboose")")
-            TextField(direct.map { "Message \($0.name)…" } ?? "Ask Caboose anything…", text: $prompt, axis: .vertical)
+            TextField(name.map { "Message \($0)…" } ?? "Message your computer…", text: $prompt, axis: .vertical)
                 .lineLimit(1 ... 6)
                 .focused($focused)
                 .submitLabel(.send)
                 .onSubmit(send)
                 .padding(.vertical, 8)
-            Button(action: send) {
-                Image(systemName: "arrow.up")
-                    .font(.body.weight(.bold))
-                    .frame(width: 34, height: 34)
+            if let task, task.isRunning, prompt.isEmpty {
+                Button { Task { await agents.cancel(task) } } label: {
+                    Image(systemName: "stop.fill").font(.body.weight(.bold)).frame(width: 34, height: 34)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .accessibilityLabel("Stop")
+            } else {
+                Button(action: send) {
+                    Image(systemName: "arrow.up").font(.body.weight(.bold)).frame(width: 34, height: 34)
+                }
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.circle)
+                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel(task?.isRunning == true ? "Send When It's Ready" : "Send")
             }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.circle)
-            .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .opacity(prompt.isEmpty ? 0.4 : 1)
         }
         .padding(.leading, 8).padding(.trailing, 6).padding(.vertical, 5)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 26))
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
         .animation(.snappy, value: prompt.isEmpty)
         .onAppear { if model.askFocusRequested { focused = true; model.askFocusRequested = false } }
         .onChange(of: model.askFocusRequested) { _, requested in
             if requested { focused = true; model.askFocusRequested = false }
         }
         // A suggestion lands in the composer, to send as is or edit first.
-        .onChange(of: model.agents.draft) { _, draft in
+        .onChange(of: agents.draft, initial: true) { _, draft in
             guard let draft else { return }
             prompt = draft
             focused = true
-            model.agents.draft = nil
+            agents.draft = nil
         }
+    }
+
+    /// The installed agent a new chat goes to, when the owner picked one.
+    private var chosen: AgentListing? { model.agents.listing(target).flatMap { $0.isInstalled ? $0 : nil } }
+
+    private var menu: some View {
+        let agents = model.agents
+        return Menu {
+            if let task {
+                let others = agents.installedAgents.filter { $0.id != task.agent }
+                if !others.isEmpty {
+                    Menu("Ask Another Agent", systemImage: "arrow.triangle.branch") {
+                        ForEach(others) { agent in
+                            Button(agent.name) { Task { await agents.retry(task, with: agent.id) } }
+                        }
+                    }
+                }
+            } else {
+                Picker("Agent", selection: $target) {
+                    Text(agents.defaultAgent.flatMap { agents.listing($0)?.name }.map { "Default (\($0))" } ?? "Default Agent").tag("")
+                    ForEach(agents.installedAgents) { agent in Text(agent.name).tag(agent.id) }
+                }
+                Section {
+                    Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
+                    Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
+                }
+            }
+            Section {
+                Button(action: connectModel) { Label("Connect a Model…", systemImage: "key") }
+                Button { model.showAgentSettings = true } label: { Label("Agents…", systemImage: "slider.horizontal.3") }
+            }
+        } label: {
+            let name = task.map { agents.name(of: $0) } ?? chosen?.name ?? agents.defaultAgent.flatMap { agents.listing($0)?.name }
+            if let name { AgentAvatar(name: name, size: 30) } else { CabooseAvatar(size: 30) }
+        }
+        .accessibilityLabel("Agent")
     }
 
     private func send() {
@@ -82,12 +108,11 @@ struct AskBar: View {
         guard !text.isEmpty else { return }
         prompt = ""
         let agents = model.agents
-        // An agent uninstalled elsewhere falls back to Caboose.
-        if let agent = agents.listing(target), agent.isInstalled {
-            Task { await agents.start(text, agent: agent.id, askFirst: askFirst) }
+        if let task {
+            Task { await agents.reply(to: task, text) }
         } else {
-            let chosen = agents.listing(delegate)?.isInstalled == true ? delegate : nil
-            Task { await agents.send(text, agent: chosen, askFirst: askFirst) }
+            let agent = chosen?.id
+            Task { await agents.say(text, agent: agent, askFirst: askFirst) }
         }
     }
 }

@@ -139,35 +139,3 @@ final class ModelProviderTests: XCTestCase {
         XCTAssertEqual(price.output, 15, accuracy: 0.0001)
     }
 }
-
-final class ConversationTests: XCTestCase {
-    struct Task: Identifiable { var id: String; var started: Date }
-
-    func testKeepsTheNewestMessagesAndSettlesInterruptedOnes() throws {
-        var log = ConversationLog()
-        for index in 0 ..< ConversationLog.limit + 5 { log.append(ConversationMessage(prompt: "\(index)", status: .done)) }
-        XCTAssertEqual(log.messages.count, ConversationLog.limit)
-        XCTAssertEqual(log.messages.first?.prompt, "5")
-        let working = ConversationMessage(prompt: "still going")
-        log.append(working)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("log.json")
-        try log.save(to: url)
-        let loaded = ConversationLog.load(from: url)
-        XCTAssertEqual(loaded.messages.count, ConversationLog.limit)
-        XCTAssertEqual(loaded.messages.last?.status, .failed)
-        XCTAssertNotNil(loaded.messages.last?.reply)
-        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
-    }
-
-    func testMergesByStartTimeAndNestsHandedOverTasks() {
-        let now = Date()
-        let messages = [
-            ConversationMessage(date: now.addingTimeInterval(-30), prompt: "how's it going?", status: .done),
-            ConversationMessage(date: now.addingTimeInterval(-10), prompt: "tidy downloads", status: .done, taskID: "handed"),
-        ]
-        let tasks = [Task(id: "handed", started: now.addingTimeInterval(-9)), Task(id: "direct", started: now.addingTimeInterval(-20)),
-                     Task(id: "latest", started: now)]
-        let items = ConversationItem.merge(messages: messages, tasks: tasks) { $0.started }
-        XCTAssertEqual(items.map(\.id), ["m:\(messages[0].id.uuidString)", "t:direct", "m:\(messages[1].id.uuidString)", "t:latest"])
-    }
-}

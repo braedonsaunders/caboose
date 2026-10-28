@@ -1,214 +1,125 @@
 import CabooseKit
 import SwiftUI
 
-/// The Agents tab: a conversation with Caboose. What you ask goes to the iPhone's own model,
-/// which answers, acts on the computer, or hands real work to one of the computer's agents;
-/// that work appears in the conversation as a live card that opens into its own thread. Work
-/// in progress stays pinned along the top.
+/// The Agents tab: a chat with an agent on your computer. Everything you send goes to that
+/// agent as the next turn of one session, so it always has the whole conversation; while it
+/// works, what you send waits for its turn to end. New Chat starts a fresh session, and the
+/// chat list holds the earlier ones. Other chats still working are pinned along the top.
 struct AgentsScreen: View {
     @Environment(AppModel.self) private var model
-    @State private var path: [String] = []
     @State private var connectingModel = false
-    @State private var clearing = false
+    @State private var showingChats = false
 
     var body: some View {
-        NavigationStack(path: $path) {
+        let agents = model.agents
+        let chat = agents.currentChat.flatMap { id in agents.tasks.first { $0.id == id } }
+        NavigationStack {
             Group {
                 if model.phase != .ready {
                     ComputerStateView()
-                } else if !model.agents.available {
+                } else if !agents.available {
                     ContentUnavailableView("No Agents on This Host", systemImage: "sparkles",
                                            description: Text("Update caboose-host to talk to agents on this computer."))
+                } else if let chat {
+                    AgentThreadView(taskID: chat.id)
+                        .id(chat.id)
                 } else {
-                    Conversation(connectModel: { connectingModel = true })
-                        // Bars, so the conversation blurs away beneath them as it scrolls.
-                        .safeAreaBar(edge: .top) { LiveStrip { path.append($0) } }
-                        .safeAreaBar(edge: .bottom) {
-                            AskBar(connectModel: { connectingModel = true }).padding(.horizontal, 14).padding(.bottom, 8)
-                        }
+                    NewChat(connectModel: { connectingModel = true })
+                        .safeAreaBar(edge: .bottom) { ChatComposer(task: nil) { connectingModel = true } }
+                        .navigationTitle("New Chat")
                 }
             }
+            .safeAreaBar(edge: .top) { LiveStrip(excluding: chat?.id) { agents.currentChat = $0 } }
             .background { ShellBackground() }
-            .navigationTitle("Agents")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationDestination(for: String.self) { AgentThreadView(taskID: $0) }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Chats", systemImage: "list.bullet") { showingChats = true }
+                }
+                if chat != nil {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("New Chat", systemImage: "square.and.pencil") { agents.currentChat = nil }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
-                    AgentsMenu(connectModel: { connectingModel = true }, clear: { clearing = true })
+                    Button("Agent Settings", systemImage: "slider.horizontal.3") { model.showAgentSettings = true }
                 }
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 ComputerToolbar()
             }
-            .confirmationDialog("Clear your conversation with Caboose?", isPresented: $clearing, titleVisibility: .visible) {
-                Button("Clear Conversation", role: .destructive) { model.agents.clearConversation() }
-            } message: {
-                Text("Tasks on your computer stay, with their own threads.")
-            }
         }
         .sheet(isPresented: $connectingModel) { ConnectModelView().environment(model) }
-        .onChange(of: model.agents.focusedTask, initial: true) { _, id in
+        .sheet(isPresented: $showingChats) { ChatList().environment(model) }
+        .onChange(of: agents.focusedTask, initial: true) { _, id in
             guard let id else { return }
-            path = [id]
-            model.agents.focusedTask = nil
+            agents.currentChat = id
+            agents.focusedTask = nil
         }
     }
 }
 
-/// Connect a model, agent settings, and clearing the conversation.
-private struct AgentsMenu: View {
+/// Every chat on the computer, newest first: its name, agent, and where it stands.
+private struct ChatList: View {
     @Environment(AppModel.self) private var model
-    let connectModel: () -> Void
-    let clear: () -> Void
-
-    var body: some View {
-        Menu {
-            Button("Connect a Model…", systemImage: "key", action: connectModel)
-            Button("Agent Settings", systemImage: "slider.horizontal.3") { model.showAgentSettings = true }
-            if !model.agents.conversation.messages.isEmpty {
-                Button("Clear Conversation", systemImage: "trash", role: .destructive, action: clear)
-            }
-        } label: {
-            Label("Agents", systemImage: "ellipsis")
-        }
-    }
-}
-
-/// The conversation, oldest first and kept scrolled to the newest; a greeting when it is empty.
-private struct Conversation: View {
-    @Environment(AppModel.self) private var model
-    let connectModel: () -> Void
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         let agents = model.agents
-        let items = ConversationItem.merge(messages: agents.conversation.messages, tasks: agents.tasks, started: AgentCenter.started)
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 22) {
-                if needsModel { SetupCard(connectModel: connectModel) }
-                if items.isEmpty {
-                    Greeting()
-                } else {
-                    ForEach(items) { item in
-                        switch item {
-                        case .message(let message): MessageView(message: message, connectModel: connectModel)
-                        case .task(let task):
-                            VStack(alignment: .leading, spacing: 10) {
-                                PromptBubble(text: task.prompt, attachments: 0)
-                                TaskCard(task: task, connectModel: connectModel)
+        NavigationStack {
+            List(agents.tasks) { task in
+                Button {
+                    agents.currentChat = task.id
+                    dismiss()
+                } label: {
+                    HStack(spacing: 12) {
+                        AgentAvatar(name: agents.name(of: task), size: 32)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(agents.title(of: task)).font(.body.weight(.medium)).lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(agents.name(of: task))
+                                if let started = AgentCenter.started(task) {
+                                    Text("·")
+                                    Text(started, format: .relative(presentation: .named))
+                                }
                             }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
+                        Spacer(minLength: 0)
+                        TaskStatusPill(task: task)
                     }
                 }
+                .foregroundStyle(.primary)
+                .listRowBackground(task.id == agents.currentChat ? Color.accentColor.opacity(0.12) : nil)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .frame(maxWidth: 760)
-            .frame(maxWidth: .infinity)
-            .animation(.snappy, value: items.map(\.id))
-        }
-        .defaultScrollAnchor(.bottom)
-        .defaultScrollAnchor(.bottom, for: .sizeChanges)
-        .scrollDismissesKeyboard(.interactively)
-        .scrollEdgeEffectStyle(.soft, for: .vertical)
-        .refreshable {
-            await agents.refresh()
-            await agents.refreshAgents()
-        }
-    }
-
-    /// Real work needs a computer agent; until one is installed and chosen, say how to get one.
-    private var needsModel: Bool {
-        let agents = model.agents
-        return agents.defaultAgent == nil || agents.installedAgents.isEmpty
-    }
-}
-
-/// What the owner asked Caboose, and its answer: the steps it took on the computer, what it
-/// said, and the task it handed over, live.
-private struct MessageView: View {
-    @Environment(AppModel.self) private var model
-    let message: ConversationMessage
-    let connectModel: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            PromptBubble(text: message.prompt)
-                .contextMenu {
-                    Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = message.prompt }
-                    Button("Ask Again", systemImage: "arrow.clockwise") { model.agents.draft = message.prompt }
-                    Button("Delete", systemImage: "trash", role: .destructive) { model.agents.dismiss(message) }
-                }
-            HStack(alignment: .top, spacing: 10) {
-                CabooseAvatar(size: 28, busy: message.status == .working)
-                VStack(alignment: .leading, spacing: 8) {
-                    if !message.steps.isEmpty {
-                        FlowSteps(steps: message.steps)
-                    }
-                    switch message.status {
-                    case .working:
-                        if message.steps.isEmpty { TypingDots() }
-                    case .done, .failed:
-                        if let reply = message.reply, !reply.isEmpty {
-                            Text(Markdown.inline(reply))
-                                .font(.body)
-                                .foregroundStyle(message.status == .failed ? .orange : .primary)
-                                .textSelection(.enabled)
-                        }
-                    }
-                    if let id = message.taskID, let task = model.agents.tasks.first(where: { $0.id == id }) {
-                        TaskCard(task: task, connectModel: connectModel)
+            .overlay {
+                if agents.tasks.isEmpty { ContentUnavailableView("No Chats Yet", systemImage: "bubble.left.and.bubble.right") }
+            }
+            .refreshable { await agents.refresh() }
+            .navigationTitle("Chats")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("New Chat", systemImage: "square.and.pencil") {
+                        agents.currentChat = nil
+                        dismiss()
                     }
                 }
-                Spacer(minLength: 0)
             }
         }
     }
 }
 
-/// The things Caboose did on the computer, as small chips.
-private struct FlowSteps: View {
-    let steps: [String]
-
-    var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 6) {
-                ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
-                    Label(step, systemImage: "arrow.turn.down.right")
-                        .font(.caption.weight(.medium))
-                        .lineLimit(1)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .glassEffect(.regular.tint(Brand.amber.opacity(0.12)), in: .capsule)
-                }
-            }
-        }
-        .scrollIndicators(.hidden)
-        .scrollClipDisabled()
-    }
-}
-
-private struct TypingDots: View {
-    var body: some View {
-        HStack(spacing: 5) {
-            ForEach(0 ..< 3) { index in
-                Circle().frame(width: 7, height: 7).foregroundStyle(.secondary)
-                    .phaseAnimator([0.3, 1]) { dot, phase in dot.opacity(phase) } animation: { _ in
-                        .easeInOut(duration: 0.5).delay(Double(index) * 0.15)
-                    }
-            }
-        }
-        .padding(.vertical, 8)
-        .accessibilityLabel("Thinking")
-    }
-}
-
-/// Work in progress, pinned above the conversation: each running or waiting task with its
-/// current step. Tapping one opens its thread.
+/// Other chats whose agents are working or waiting on you, pinned above the current one.
 private struct LiveStrip: View {
     @Environment(AppModel.self) private var model
+    let excluding: String?
     let open: (String) -> Void
 
     var body: some View {
         let agents = model.agents
-        let live = agents.tasks.filter { $0.isRunning || $0.pendingApproval != nil }
+        let live = agents.tasks.filter { $0.id != excluding && ($0.isRunning || $0.pendingApproval != nil) }
             .sorted { ($0.pendingApproval != nil ? 0 : 1) < ($1.pendingApproval != nil ? 0 : 1) }
         if !live.isEmpty {
             ScrollView(.horizontal) {
@@ -224,8 +135,8 @@ private struct LiveStrip: View {
                                     CabooseWheel(motion: .rolling).frame(width: 16, height: 16)
                                 }
                                 VStack(alignment: .leading, spacing: 0) {
-                                    Text(agents.name(of: task)).font(.caption.weight(.semibold))
-                                    Text(task.pendingApproval.map { "Wants to use \($0.tool)" } ?? agents.threads[task.id]?.activity ?? task.prompt)
+                                    Text(agents.title(of: task)).font(.caption.weight(.semibold))
+                                    Text(task.pendingApproval.map { "Wants to use \($0.tool)" } ?? agents.threads[task.id]?.activity ?? agents.name(of: task))
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }
@@ -242,66 +153,64 @@ private struct LiveStrip: View {
             }
             .scrollIndicators(.hidden)
             .padding(.vertical, 4)
-            .transition(.move(edge: .top).combined(with: .opacity))
         }
     }
 }
 
-/// An empty conversation: who is listening, and a few things to ask.
-private struct Greeting: View {
+/// A new chat: who will answer, a few things to ask, and how to connect a model if none can.
+private struct NewChat: View {
     @Environment(AppModel.self) private var model
+    @AppStorage(AskTarget.key) private var target = ""
+    let connectModel: () -> Void
 
     var body: some View {
         let agents = model.agents
-        let worker = agents.defaultAgent.flatMap { agents.listing($0)?.name }
-        VStack(spacing: 18) {
-            CabooseAvatar(size: 72)
-                .padding(.top, 36)
-            Text("What should your computer do?")
-                .font(.title2.weight(.bold))
-                .multilineTextAlignment(.center)
-            Text(subtitle(worker: worker))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-            VStack(spacing: 8) {
-                ForEach(suggestions, id: \.text) { suggestion in
-                    Button { agents.draft = suggestion.text } label: {
-                        Label(suggestion.text, systemImage: suggestion.symbol)
-                            .font(.subheadline)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 14).padding(.vertical, 11)
-                    }
-                    .buttonStyle(.plain)
-                    .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
+        let agent = agents.listing(target).flatMap { $0.isInstalled ? $0 : nil } ?? agents.defaultAgent.flatMap { agents.listing($0) }
+        ScrollView {
+            VStack(spacing: 18) {
+                if agents.defaultAgent == nil || agents.installedAgents.isEmpty {
+                    SetupCard(connectModel: connectModel)
                 }
+                Group {
+                    if let agent { AgentAvatar(name: agent.name, size: 72) } else { CabooseAvatar(size: 72) }
+                }
+                .padding(.top, 36)
+                Text("What should your computer do?")
+                    .font(.title2.weight(.bold))
+                    .multilineTextAlignment(.center)
+                Text(agent.map { "\($0.name) works on its own screen in your computer, so yours stays free. Ask it anything, and keep talking while it works." }
+                     ?? "Connect a model, and an agent works on its own screen in your computer.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                VStack(spacing: 8) {
+                    ForEach(Self.suggestions, id: \.text) { suggestion in
+                        Button { agents.draft = suggestion.text } label: {
+                            Label(suggestion.text, systemImage: suggestion.symbol)
+                                .font(.subheadline)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 14).padding(.vertical, 11)
+                        }
+                        .buttonStyle(.plain)
+                        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
+                    }
+                }
+                .frame(maxWidth: 420)
             }
-            .frame(maxWidth: 420)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: 760)
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
+        .scrollDismissesKeyboard(.interactively)
     }
 
-    private func subtitle(worker: String?) -> String {
-        switch (OnDeviceAgent.isAvailable, worker) {
-        case (true, let worker?): "Caboose answers right here on your iPhone, works your apps, and hands bigger jobs to \(worker) on your computer."
-        case (true, nil): "Caboose answers right here on your iPhone and works your apps. Connect a model for bigger jobs."
-        case (false, let worker?): "\(worker) works on its own screen in your computer, so yours stays free."
-        case (false, nil): "Connect a model, and an agent works on its own screen in your computer."
-        }
-    }
-
-    private var suggestions: [(symbol: String, text: String)] {
-        var list: [(String, String)] = []
-        if OnDeviceAgent.isAvailable {
-            list.append(("macwindow", "What's on my screen?"))
-            list.append(("safari", "Open the weather for tomorrow"))
-        }
-        list.append(("folder", "Tidy my Downloads folder by type and tell me what you moved"))
-        list.append(("doc.richtext", "Summarize the newest document in my Documents folder"))
-        list.append(("tablecells", "Make a spreadsheet comparing three laptops under $1,500"))
-        return list
-    }
+    static let suggestions: [(symbol: String, text: String)] = [
+        ("folder", "Tidy my Downloads folder by type and tell me what you moved"),
+        ("doc.richtext", "Summarize the newest document in my Documents folder"),
+        ("tablecells", "Make a spreadsheet comparing three laptops under $1,500"),
+        ("safari", "Find tomorrow's weather and leave it open in the browser"),
+    ]
 }
 
 /// Shown until a computer agent can take work: connect a model with a key, or sign in to one.
@@ -324,6 +233,8 @@ private struct SetupCard: View {
             }
         }
         .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(.regular.tint(Brand.amber.opacity(0.10)), in: .rect(cornerRadius: 22))
+        .padding(.top, 12)
     }
 }

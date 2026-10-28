@@ -945,7 +945,12 @@ specified in `guest/agentd/README.md`; in short:
   exits within 20 s is stopped). Each turn appends to the same `transcript.jsonl`; the task
   keeps its id, `prompt` and `startedAt`, returns to `running`, and `turns` counts the
   turns. Output the earlier turn writes after it was cancelled is not shown as the new
-  turn's.
+  turn's. A reply to a running or paused task waits in the task's `queued` list (at most 10
+  replies, 32000 characters together, kept in the host's memory, so a host restart drops
+  them). When the turn ends, everything waiting goes to the agent as one turn, the replies
+  separated by blank lines, under the same lease and without an `agent.task.finished` for
+  the turn in between. Cancel drops what is waiting; a turn that ends signed out keeps it
+  for the next reply, which sends it first.
 - **Cancel** writes a cancel to the inbox. The runner sends `session/cancel`, answers
   waiting permission requests `cancelled`, and ends the turn with
   `stopReason: "cancelled"`; an agent that has not stopped after 15 s is terminated, and
@@ -977,7 +982,7 @@ specified in `guest/agentd/README.md`; in short:
 | `POST` | `/v1/agent/tasks` | `{ prompt, agent?, approvals?: "ask" \| "auto", craftMcp?: boolean, attachments?: [{ name, type?, data (base64) }] }` → `{ id }`. 400 when no agent is given and no default is set; 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | Recent tasks, newest first |
 | `GET` | `/v1/agent/tasks/:id/transcript` | → `{ entries: TranscriptEntry[], truncated }`: every turn of the task's conversation, read from the end of its `transcript.jsonl` (at most 2 MiB; `truncated` when earlier lines were left out). 404 for an unknown task, 409 while the computer is not running |
-| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`. 409 while the task is running or paused, or for a task that cannot be continued; 404 for an unknown task |
+| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`. While the task is running or paused the reply waits in `task.queued`. 409 for a task that cannot be continued or when too much is already waiting; 404 for an unknown task |
 | `POST` | `/v1/agent/tasks/:id/approvals/:requestId` | `{ allow: boolean, message?, optionId? }` → `{ resolved }`; `false` when that request is no longer waiting |
 | `POST` | `/v1/agent/tasks/:id/cancel` | → `{ cancelled }` |
 | `POST` | `/v1/agent/tasks/:id/pause` | → `{ paused }`; the task becomes `paused` |
@@ -1023,7 +1028,8 @@ A task record:
   approvals: "ask" | "auto",
   pendingApproval?: { id: string, tool: string, summary: string, options?: Array<{ id: string, name: string, kind: string }> },  // oldest request waiting
   attachments?: string[],         // absolute guest paths
-  signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>  // when the agent was signed out
+  signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>,  // when the agent was signed out
+  queued?: string[]               // replies waiting for the current turn to end, oldest first
 }
 ```
 
@@ -1036,6 +1042,7 @@ Control-socket events:
 | `agent.task.paused`, `agent.task.resumed` | `{ id }` |
 | `agent.task.finished` | `{ id, status: "succeeded" \| "failed" \| "cancelled", summary, signIn? }` |
 | `agent.task.replied` | `{ id, prompt, turn }` |
+| `agent.task.queued` | `{ id, queued: string[] }`: the replies waiting for the turn to end changed |
 | `agent.task.approval` | `{ id, request: { id, tool, summary, options? } }`, once per request |
 | `agent.task.approval.resolved` | `{ id, requestId, allow }` |
 | `agent.task.event` | `{ id, turn, entry: TranscriptEntry }`: each entry of the current turn as the host reads it |
@@ -1228,22 +1235,21 @@ Pinned and recent apps are kept on the phone per computer.
 
 ### Agent space
 
-- **Conversation.** The Agents tab is a conversation with Caboose. Where Apple Intelligence
-  is available a message goes to the on-device model (below), which answers, acts, or hands
-  the work to the default agent; otherwise, or when the composer names an agent, it starts a
-  task directly. The conversation (what the owner asked, the steps the model took, its
-  reply, the task it handed over) is kept on the phone, at most 80 messages, in
-  `Application Support/Agents/conversation.json`. Each task shows in it as a live card: its
-  plan's progress and current step from `agent.task.event`, approvals, and how it ended.
-  Running and waiting tasks are pinned above the conversation.
-- **Threads.** A task opens into its whole conversation from
+- **Chats.** The Agents tab is a chat with an agent on the computer, and a chat is a task:
+  its first message starts it with the chosen agent (the default unless the composer names
+  another), and every later message is a reply, so the agent has the whole conversation in
+  one session. Sent while the agent works, a message waits in the task's queue and shows as
+  waiting, with Send Now, which cancels the turn and sends it at once. New Chat starts a
+  fresh task; the chat list is the task list, and other chats still working are pinned
+  along the top. Where Apple Intelligence is available the phone's Foundation Models model
+  names each chat from its first message for the list; it handles nothing the owner says.
+- **Transcript.** A chat shows its whole conversation from
   `GET /v1/agent/tasks/:id/transcript`, then follows `agent.task.event`: prompts, messages,
   collapsible thoughts, tool calls grouped and updated in place, the plan as a checklist,
-  permissions with their answers, and context use. Finished tasks take replies; running
-  ones can be stopped or watched on the seat. Pending approvals show on the card, in the
-  thread and as a banner over every screen, with the agent's always-allow option when it
+  permissions with their answers, and context use. A working agent can be stopped or
+  watched on the seat. Pending approvals show in the chat, on Home and as a banner over every screen, with the agent's always-allow option when it
   has one. A task whose agent was signed out offers its sign-in methods, Connect a Model,
-  and running the same request with another agent. A window's menu hands the window
+  and asking another agent the same thing in a new chat. A window's menu hands the window
   (screenshot, title, app) to an agent as an attachment.
 - **Connect a Model.** An API key instead of an account: OpenRouter (through the registry's
   `goose`, with `GOOSE_PROVIDER=openrouter`, `GOOSE_MODEL` from OpenRouter's public model
@@ -1258,16 +1264,6 @@ Pinned and recent apps are kept on the phone per computer.
   sign in on the computer's screen, add or remove environment variables such as an API key,
   and choose the default agent. Registry icons are SVG, which iOS does not draw, so agents
   show their initials.
-- **On-device model.** Where Apple Intelligence is available, Caboose's replies come from
-  the phone's Foundation Models model. It runs on the device and sends nothing to a model
-  provider, and keeps one session across messages until its context fills. It answers
-  questions about the agents from the task list and their threads (`check_agents`). Its
-  tools act through the host: launch an app (`/v1/apps/:id/launch`), open a
-  page or search (`/v1/open`), type or press keys (`/v1/screen/type`, `/v1/screen/keys`),
-  look at the focused window and press a control by name (`/v1/screen/elements`,
-  `/v1/screen/act`), park the computer, and delegate anything that needs several steps,
-  code, files or judgement to a computer agent as a task. It acts on the accessibility tree
-  rather than on pixel coordinates. `apps/ios/OnDeviceEval` evaluates it on a device.
 
 ### Notifications
 

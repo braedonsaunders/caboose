@@ -21,10 +21,10 @@ final class AgentCenter {
         var pendingApproval: Approval?
         /// How to sign in, when the task stopped because its agent was signed out.
         var signIn: [SignInMethod]?
+        /// Replies waiting for the agent's turn to end; they go to it together as its next turn.
+        var queued: [String]?
 
         var isRunning: Bool { status == "running" || status == "queued" || status == "paused" }
-        /// A finished task's conversation can be continued with a reply.
-        var canReply: Bool { !isRunning }
     }
 
     /// The agent is waiting for the owner to allow or deny one action.
@@ -53,9 +53,13 @@ final class AgentCenter {
     private(set) var tasks: [Task] = []
     /// Each task's conversation as far as it is known: read from the host when opened, then live.
     private(set) var threads: [String: AgentThread] = [:]
-    /// The conversation with Caboose itself: what the owner asked and what the iPhone did about it.
-    private(set) var conversation = ConversationLog.load(from: AgentCenter.conversationURL)
-    /// A task to show, asked for from elsewhere in the app (Home, a notification); the Agents tab opens it.
+    /// The chat the Agents tab shows: a task, whose turns are the conversation. Nil for a new chat.
+    var currentChat: String? = UserDefaults.standard.string(forKey: AgentCenter.chatKey) {
+        didSet { UserDefaults.standard.set(currentChat, forKey: Self.chatKey) }
+    }
+    /// Short names for chats, by task id, written by the iPhone's model where it has one.
+    private(set) var titles: [String: String] = UserDefaults.standard.dictionary(forKey: AgentCenter.titlesKey) as? [String: String] ?? [:]
+    /// A chat to show, asked for from elsewhere in the app (Home, a notification); the Agents tab opens it.
     var focusedTask: String?
     /// Text for the composer to take, from a suggestion.
     var draft: String?
@@ -65,9 +69,8 @@ final class AgentCenter {
     private(set) var registryError: String?
     /// Agents being installed now.
     private(set) var installing: Set<String> = []
-    /// Requests the iPhone's own model handled, newest first.
-    var localRuns: [ConversationMessage] { conversation.messages.reversed() }
-    private var onDevice: OnDeviceConversation?
+    private static let chatKey = "caboose.agent.chat"
+    private static let titlesKey = "caboose.agent.titles"
     private(set) var output: [String: [Line]] = [:]
     private(set) var available = true
     var lastError: String?
@@ -85,7 +88,6 @@ final class AgentCenter {
 
     func attach(host: HostClient) {
         self.host = host
-        onDevice = nil // a new connection; the next message starts a session with it
         openControl()
         Swift.Task { await refresh() }
         Swift.Task { await refreshAgents() }
@@ -109,9 +111,9 @@ final class AgentCenter {
         threads = [:]
         catalog = []
         defaultAgent = nil
-        onDevice = nil
-        conversation.clear()
-        saveConversation()
+        currentChat = nil
+        titles = [:]
+        UserDefaults.standard.removeObject(forKey: Self.titlesKey)
         available = true
     }
 
@@ -150,6 +152,7 @@ final class AgentCenter {
                                   startedAt: Self.timestamp(Date()), turns: 1, approvals: approvals), at: 0)
             }
             if threads[id] == nil { threads[id] = AgentThread(entries: [], prompt: prompt) }
+            nameChat(id, from: prompt)
             openSeatIfNeeded()
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             return id
@@ -159,21 +162,49 @@ final class AgentCenter {
         }
     }
 
-    /// Asks Caboose: the iPhone's own model where Apple Intelligence is available, which answers,
-    /// acts, or hands the work to `agent` (the default agent when nil); otherwise that agent directly.
-    func send(_ prompt: String, agent: String?, askFirst: Bool = false) async {
-        if OnDeviceAgent.isAvailable {
-            await askOnDevice(prompt, delegatingTo: agent, askFirst: askFirst)
-        } else {
-            await start(prompt, agent: agent, askFirst: askFirst)
+    /// Says something in the current chat: its next turn, or, while the agent is working, a
+    /// reply that waits for the turn to end. With no chat it starts one with `agent` (the
+    /// default agent when nil).
+    func say(_ text: String, agent: String?, askFirst: Bool) async {
+        if let id = currentChat, let task = tasks.first(where: { $0.id == id }) {
+            await reply(to: task, text)
+        } else if let id = await start(text, agent: agent, askFirst: askFirst) {
+            currentChat = id
         }
     }
 
-    /// Runs a task's request again with another agent, as a new task.
-    func retry(_ task: Task, with agent: String?) async -> String? {
+    /// Stops the agent's turn and sends what was waiting right away.
+    func sendNow(_ task: Task) async {
+        guard let waiting = task.queued, !waiting.isEmpty else { return }
+        await cancel(task)
+        if let index = tasks.firstIndex(where: { $0.id == task.id }) {
+            tasks[index].status = "cancelled"
+            tasks[index].queued = nil
+            await reply(to: tasks[index], waiting.joined(separator: "\n\n"))
+        }
+    }
+
+    /// Asks another agent the chat's last request, in a new chat, and shows it.
+    func retry(_ task: Task, with agent: String?) async {
         let last = threads[task.id]?.lastTurn?.prompt ?? ""
         let prompt = last.isEmpty ? task.prompt : last
-        return await start(prompt, agent: agent, askFirst: task.approvals == "ask")
+        if let id = await start(prompt, agent: agent, askFirst: task.approvals == "ask") { currentChat = id }
+    }
+
+    /// What to call a chat in the list.
+    func title(of task: Task) -> String {
+        titles[task.id] ?? task.prompt.split(whereSeparator: \.isNewline).first.map(String.init) ?? task.prompt
+    }
+
+    /// Names a new chat from its first message with the iPhone's own model, when it has one.
+    private func nameChat(_ id: String, from prompt: String) {
+        Swift.Task {
+            guard let title = await ChatTitler.title(for: prompt) else { return }
+            titles[id] = title
+            let kept = Set(tasks.map(\.id))
+            titles = titles.filter { kept.contains($0.key) || $0.key == id }
+            UserDefaults.standard.set(titles, forKey: Self.titlesKey)
+        }
     }
 
     // MARK: Threads
@@ -205,28 +236,6 @@ final class AgentCenter {
         if loadingThreads.contains(id) { pendingEntries[id, default: []].append(entry) }
         if threads[id] == nil, let task = tasks.first(where: { $0.id == id }) { threads[id] = AgentThread(entries: [], prompt: task.prompt) }
         threads[id]?.append(entry)
-    }
-
-    /// One line per recent task for the on-device model: what it was asked, and where it stands.
-    func statusReport() -> String {
-        guard !tasks.isEmpty else { return "No agent has been given a task yet." }
-        return tasks.prefix(6).map { task in
-            let name = name(of: task)
-            let asked = task.prompt.count > 90 ? task.prompt.prefix(90) + "…" : Substring(task.prompt)
-            let state: String
-            if let approval = task.pendingApproval {
-                state = "waiting for the owner to allow \(approval.tool)"
-            } else if task.isRunning {
-                let thread = threads[task.id]
-                let progress = thread?.progress.map { " (step \($0.done + 1) of \($0.total))" } ?? ""
-                state = task.status == "paused" ? "paused" : "working\(progress): \(thread?.activity ?? output[task.id]?.last?.text ?? "just started")"
-            } else if task.signIn?.isEmpty == false {
-                state = "stopped: \(name) needs signing in"
-            } else {
-                state = "\(task.status): \(task.summary ?? "")"
-            }
-            return "- \(name), asked “\(asked)”, is \(state.count > 300 ? String(state.prefix(300)) + "…" : state)"
-        }.joined(separator: "\n")
     }
 
     static func timestamp(_ date: Date) -> String { date.formatted(.iso8601) }
@@ -307,50 +316,17 @@ final class AgentCenter {
         await refreshAgents()
     }
 
-    /// Hands a request to the iPhone's own model; it acts through the host or delegates to `fallback`.
-    func askOnDevice(_ prompt: String, delegatingTo fallback: String?, askFirst: Bool = false) async {
-        guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let message = ConversationMessage(prompt: prompt)
-        conversation.append(message)
-        saveConversation()
-        if onDevice == nil { onDevice = OnDeviceConversation(host: host, center: self) }
-        await onDevice?.respond(to: message.id, prompt: prompt, delegate: fallback, askFirst: askFirst)
-    }
-
-    func dismiss(_ message: ConversationMessage) {
-        conversation.remove(message.id)
-        saveConversation()
-    }
-
-    /// Forgets the conversation with Caboose; the computer's tasks stay.
-    func clearConversation() {
-        conversation.clear()
-        onDevice = nil
-        saveConversation()
-    }
-
-    /// Updates a message the on-device model is working on.
-    func updateMessage(_ id: UUID, _ change: (inout ConversationMessage) -> Void) {
-        conversation.update(id, change)
-        if conversation.messages.first(where: { $0.id == id })?.status != .working { saveConversation() }
-    }
-
-    private func saveConversation() {
-        do { try conversation.save(to: Self.conversationURL) } catch { lastError = error.localizedDescription }
-    }
-
-    private static var conversationURL: URL {
-        URL.applicationSupportDirectory.appending(path: "Agents", directoryHint: .isDirectory).appending(path: "conversation.json")
-    }
-
-    /// Continues a finished task's conversation.
+    /// Continues a chat: the next turn, or, while the agent is working, a reply that waits for it.
     func reply(to task: Task, _ prompt: String) async {
         guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         do {
             let updated = try await host.replyToAgentTask(task.id, prompt: prompt)
+            let started = (updated.turns ?? 1) > (tasks.first { $0.id == task.id }?.turns ?? task.turns ?? 1)
             replace(updated)
-            output[task.id, default: []].append(Line(kind: "prompt", text: prompt))
-            threads[task.id]?.begin(turn: updated.turns ?? (task.turns ?? 1) + 1, prompt: prompt)
+            if started {
+                output[task.id, default: []].append(Line(kind: "prompt", text: prompt))
+                threads[task.id]?.begin(turn: updated.turns ?? 1, prompt: prompt)
+            }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         } catch {
             lastError = error.localizedDescription
@@ -484,6 +460,11 @@ final class AgentCenter {
         case "agent.task.event":
             if let entry = Self.decode(TranscriptEntry.self, event["entry"]) { record(entry, for: id) }
             return
+        case "agent.task.queued":
+            if let index = tasks.firstIndex(where: { $0.id == id }) {
+                let queued = event["queued"] as? [String] ?? []
+                tasks[index].queued = queued.isEmpty ? nil : queued
+            }
         case "agent.task.paused", "agent.task.resumed":
             if let index = tasks.firstIndex(where: { $0.id == id }) {
                 tasks[index].status = type == "agent.task.paused" ? "paused" : "running"

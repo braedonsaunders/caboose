@@ -1,15 +1,14 @@
 import CabooseKit
 import SwiftUI
 
-/// One task's whole conversation with its agent: each turn's prompt, what the agent thought,
-/// planned, ran and said, the permissions it asked for, and how the turn ended. While the agent
-/// works it streams in; when it is done, a reply continues the same session.
+/// A chat: one task's whole conversation with its agent. Each turn's message, what the agent
+/// thought, planned, ran and said, the permissions it asked for, and how the turn ended, live
+/// while it works. What you send while it works waits for the turn to end, or goes now with
+/// Send Now, which stops the turn.
 struct AgentThreadView: View {
     @Environment(AppModel.self) private var model
     let taskID: String
-    @State private var reply = ""
     @State private var connectingModel = false
-    @FocusState private var replying: Bool
 
     var body: some View {
         let agents = model.agents
@@ -41,6 +40,7 @@ struct AgentThreadView: View {
                         if agents.isLoading(taskID) && thread.turns.allSatisfy({ $0.items.isEmpty }) {
                             ProgressView().frame(maxWidth: .infinity)
                         }
+                        if let queued = task.queued, !queued.isEmpty { QueuedView(task: task, queued: queued) }
                     }
                     .padding(.horizontal, 18)
                     .padding(.vertical, 12)
@@ -49,10 +49,10 @@ struct AgentThreadView: View {
                 }
                 .defaultScrollAnchor(.bottom)
                 .scrollDismissesKeyboard(.interactively)
-                .safeAreaBar(edge: .bottom) { composer(task) }
+                .safeAreaBar(edge: .bottom) { ChatComposer(task: task) { connectingModel = true } }
                 .toolbar { toolbar(task) }
-                .navigationTitle(agents.name(of: task))
-                .navigationSubtitle(task.prompt)
+                .navigationTitle(agents.title(of: task))
+                .navigationSubtitle(agents.name(of: task))
                 .navigationBarTitleDisplayMode(.inline)
             } else {
                 ContentUnavailableView("Task Unavailable", systemImage: "sparkles",
@@ -65,46 +65,6 @@ struct AgentThreadView: View {
         .sheet(isPresented: $connectingModel) { ConnectModelView().environment(model) }
     }
 
-    @ViewBuilder private func composer(_ task: AgentCenter.Task) -> some View {
-        let agents = model.agents
-        Group {
-            if task.isRunning {
-                HStack {
-                    Label(task.status == "paused" ? "Paused while you drive" : "\(agents.name(of: task)) is working", systemImage: "ellipsis")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Spacer()
-                    Button(role: .destructive) { Task { await agents.cancel(task) } } label: {
-                        Label("Stop", systemImage: "stop.fill").font(.subheadline.weight(.semibold))
-                    }
-                    .buttonStyle(.glass)
-                }
-                .padding(.horizontal, 16).padding(.vertical, 10)
-                .glassEffect(.regular, in: .rect(cornerRadius: 24))
-            } else {
-                HStack(alignment: .bottom, spacing: 8) {
-                    TextField("Reply to \(agents.name(of: task))…", text: $reply, axis: .vertical)
-                        .lineLimit(1 ... 6)
-                        .focused($replying)
-                        .submitLabel(.send)
-                        .onSubmit { send(task) }
-                        .padding(.vertical, 8)
-                        .padding(.leading, 10)
-                    Button { send(task) } label: {
-                        Image(systemName: "arrow.up").font(.body.weight(.bold)).frame(width: 34, height: 34)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.circle)
-                    .disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                .padding(5)
-                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 26))
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 8)
-        .animation(.snappy, value: task.isRunning)
-    }
-
     @ToolbarContentBuilder private func toolbar(_ task: AgentCenter.Task) -> some ToolbarContent {
         let agents = model.agents
         let seatWindows = agents.seat?.windows.values.filter { !$0.isAuxiliary }.sorted { $0.id < $1.id } ?? []
@@ -115,20 +75,10 @@ struct AgentThreadView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
-                if !task.isRunning {
-                    let others = agents.installedAgents.filter { $0.id != task.agent }
-                    if !others.isEmpty {
-                        Menu("Ask Another Agent", systemImage: "arrow.triangle.branch") {
-                            ForEach(others) { agent in
-                                Button(agent.name) { Task { await agents.retry(task, with: agent.id) } }
-                            }
-                        }
-                    }
-                    if let summary = task.summary, !summary.isEmpty {
-                        Button("Copy Answer", systemImage: "doc.on.doc") { UIPasteboard.general.string = summary }
-                    }
-                } else {
+                if task.isRunning {
                     Button("Stop", systemImage: "stop", role: .destructive) { Task { await agents.cancel(task) } }
+                } else if let summary = task.summary, !summary.isEmpty {
+                    Button("Copy Answer", systemImage: "doc.on.doc") { UIPasteboard.general.string = summary }
                 }
                 Button("Connect a Model…", systemImage: "key") { connectingModel = true }
             } label: {
@@ -136,12 +86,29 @@ struct AgentThreadView: View {
             }
         }
     }
+}
 
-    private func send(_ task: AgentCenter.Task) {
-        let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        reply = ""
-        Task { await model.agents.reply(to: task, text) }
+/// What the owner sent while the agent worked: it goes with the agent's next turn, or now.
+private struct QueuedView: View {
+    @Environment(AppModel.self) private var model
+    let task: AgentCenter.Task
+    let queued: [String]
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            ForEach(Array(queued.enumerated()), id: \.offset) { _, text in
+                PromptBubble(text: text).opacity(0.6)
+            }
+            HStack(spacing: 10) {
+                Label("Waiting for \(model.agents.name(of: task)) to finish this step", systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Send Now") { Task { await model.agents.sendNow(task) } }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.glass)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
 
