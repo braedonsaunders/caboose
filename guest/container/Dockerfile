@@ -41,9 +41,10 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     printf '[Settings]\ngtk-theme-name=WhiteSur-Dark\ngtk-icon-theme-name=WhiteSur-dark\ngtk-cursor-theme-name=WhiteSur-cursors\ngtk-font-name=Inter 10\ngtk-application-prefer-dark-theme=1\n' > /etc/xdg/gtk-3.0/settings.ini && \
     printf 'CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --use-gl=angle --use-angle=gl"\n' > /etc/chromium.d/caboose-gpu && \
     rm -rf /tmp/themes /tmp/desktop-mcp /var/lib/apt/lists/*
+COPY container/chromium-gpu /etc/chromium.d/caboose-gpu
 COPY container/caboose-session /usr/local/bin/caboose-session
 COPY container/caboose-audio.sh /etc/profile.d/caboose-audio.sh
 RUN chmod 0755 /usr/local/bin/caboose-session && \
     printf '\n[ -r /etc/profile.d/caboose-audio.sh ] && . /etc/profile.d/caboose-audio.sh\n' >> /etc/bash.bashrc
-ENV LD_PRELOAD= GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA XPRA_PYCUDA_WSL=1 XPRA_NVIDIA_HARDWARE=1 XPRA_NVENC_PRESET=P1 XPRA_NVENC_TUNING=low-latency XPRA_BACKWARDS_COMPATIBLE=0 GDK_SCALE=1 QT_QPA_PLATFORMTHEME=gtk3
+ENV LD_PRELOAD= CABOOSE_GPU=none XPRA_BACKWARDS_COMPATIBLE=0 GDK_SCALE=1 QT_QPA_PLATFORMTHEME=gtk3
 CMD ["sleep", "infinity"]

@@ -6,8 +6,10 @@ Build from the repository root with Docker on an NVIDIA WSL2 host:
 docker build -t caboose-computer:gpu -f guest/container/Dockerfile guest
 ```
 
-The image uses Debian 13, the signed Xpra repository at version 6.5.5, Mesa's
-D3D12 driver, the guest app installer, and Xpra NVENC with PyCUDA. It extracts
+The image uses Debian 13, the signed Xpra repository at version 6.5.5, Mesa,
+the guest app installer, and Xpra NVENC with PyCUDA. `CABOOSE_GPU=wsl` selects
+Mesa D3D12 and enables NVENC when WSL exposes NVIDIA; `nvidia` uses native
+NVIDIA, `dri` uses a Linux render node, and `none` uses software rendering. It extracts
 the signed Debian `python3-pycuda` package and installs its runtime libraries
 without Debian's full CUDA development toolkit and kernel driver: WSL supplies
 `libcuda` and NVENC through `/usr/lib/wsl/lib`. It does not install a Linux

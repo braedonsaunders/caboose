@@ -1,0 +1,4 @@
+# Mesa D3D12 is available to WSL containers through /dev/dxg.
+if [ "${CABOOSE_GPU:-none}" = wsl ]; then
+  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --use-gl=angle --use-angle=gl"
+fi

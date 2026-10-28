@@ -1,6 +1,22 @@
 #!/bin/bash
 set -euo pipefail
 export HOME=/home/caboose
+case ${CABOOSE_GPU:-none} in
+  wsl)
+    export GALLIUM_DRIVER=d3d12 XPRA_PYCUDA_WSL=1
+    unset MESA_D3D12_DEFAULT_ADAPTER_NAME
+    if [ -x /usr/lib/wsl/lib/nvidia-smi ] && /usr/lib/wsl/lib/nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
+      export XPRA_NVIDIA_HARDWARE=1 XPRA_NVENC_PRESET=P1 XPRA_NVENC_TUNING=low-latency
+    else
+      unset XPRA_NVIDIA_HARDWARE XPRA_NVENC_PRESET XPRA_NVENC_TUNING
+    fi ;;
+  nvidia)
+    unset GALLIUM_DRIVER MESA_D3D12_DEFAULT_ADAPTER_NAME XPRA_PYCUDA_WSL XPRA_NVIDIA_HARDWARE LIBVA_DRIVER_NAME
+    export XPRA_NVENC_PRESET=P1 XPRA_NVENC_TUNING=low-latency ;;
+  dri|none)
+    unset GALLIUM_DRIVER MESA_D3D12_DEFAULT_ADAPTER_NAME XPRA_PYCUDA_WSL XPRA_NVIDIA_HARDWARE XPRA_NVENC_PRESET XPRA_NVENC_TUNING LIBVA_DRIVER_NAME ;;
+  *) echo "Unsupported CABOOSE_GPU: ${CABOOSE_GPU}" >&2; exit 2 ;;
+esac
 export XDG_RUNTIME_DIR=/run/user/1000
 install -d -o caboose -g caboose -m 0700 "$XDG_RUNTIME_DIR"
 start_display() {
