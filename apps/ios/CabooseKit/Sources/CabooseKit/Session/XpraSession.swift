@@ -446,9 +446,10 @@ public final class XpraSession {
     /// Each key carries the modifiers its character needs; the server presses Shift to match.
     public func type(_ text: String, in window: RemoteWindow?) {
         for character in text {
-            guard let stroke = Keysyms.stroke(for: character) else { continue }
-            key(stroke, pressed: true, in: window)
-            key(stroke, pressed: false, in: window)
+            for stroke in Keysyms.strokes(for: character) {
+                key(stroke, pressed: true, in: window)
+                key(stroke, pressed: false, in: window)
+            }
         }
     }
 

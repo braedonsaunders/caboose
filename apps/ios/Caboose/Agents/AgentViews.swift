@@ -131,6 +131,7 @@ struct TaskCard: View {
         case "succeeded": Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case "failed": Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
         case "cancelled": Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+        case "paused": Image(systemName: "pause.circle.fill").foregroundStyle(.yellow)
         default: ProgressView().controlSize(.small)
         }
     }
@@ -145,7 +146,8 @@ struct AgentWindowScreen: View {
             Color.black.ignoresSafeArea()
             if let seat = model.agents.seat, let id = model.presentedAgentWindowID, let window = seat.windows[id] {
                 GeometryReader { proxy in
-                    AgentSeatCanvas(seat: seat, window: window, pixelsPerPoint: model.pixelsPerPoint)
+                    AgentSeatCanvas(seat: seat, window: window, pixelsPerPoint: model.pixelsPerPoint,
+                                    interactive: model.agents.tookOver)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         .onAppear {
                             let frame = CGRect(x: 0, y: 0, width: proxy.size.width * model.pixelsPerPoint,
@@ -165,10 +167,27 @@ struct AgentWindowScreen: View {
                         .padding(.horizontal, 14).frame(height: 40)
                         .glassEffect(.regular, in: .capsule)
                     Spacer()
+                    takeOverButton
                 }
                 .padding(.horizontal, 12).padding(.top, 4)
             }
         }
+        // Leaving the window always hands control back to the agent.
+        .onDisappear { Task { await model.agents.handBack() } }
+    }
+
+    /// Watching is the default; taking over stops the agent until it is handed back.
+    private var takeOverButton: some View {
+        let agents = model.agents
+        return Button {
+            Task { agents.tookOver ? await agents.handBack() : await agents.takeOver() }
+        } label: {
+            Label(agents.tookOver ? "Hand Back" : "Take Over",
+                  systemImage: agents.tookOver ? "arrow.uturn.backward" : "hand.raised.fill")
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 14).frame(height: 40)
+        }
+        .glassEffect(agents.tookOver ? .regular.tint(.orange).interactive() : .regular.interactive(), in: .capsule)
     }
 }
 
@@ -176,14 +195,17 @@ struct AgentSeatCanvas: UIViewRepresentable {
     let seat: XpraSession
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
+    let interactive: Bool
 
     func makeUIView(context: Context) -> RemoteWindowView {
         let view = RemoteWindowView(session: seat, window: window)
         view.pixelsPerPoint = pixelsPerPoint
+        view.isInteractive = interactive
         return view
     }
 
     func updateUIView(_ view: RemoteWindowView, context: Context) {
         if view.remoteWindow?.id != window.id { view.attach(window) }
+        view.isInteractive = interactive
     }
 }

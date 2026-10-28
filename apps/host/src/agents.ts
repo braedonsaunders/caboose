@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto'
  * transcript and turns it into control-socket events. See docs/architecture.md § Agents.
  */
 export type AgentKind = 'claude' | 'codex'
-export type TaskStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type TaskStatus = 'running' | 'paused' | 'succeeded' | 'failed' | 'cancelled'
 
 export interface AgentTask {
   id: string
@@ -23,6 +23,8 @@ export interface AgentTask {
 export type AgentEvent =
   | { type: 'agent.task.started'; id: string; agent: AgentKind; prompt: string }
   | { type: 'agent.task.output'; id: string; kind: 'text' | 'tool' | 'error'; text: string }
+  | { type: 'agent.task.paused'; id: string }
+  | { type: 'agent.task.resumed'; id: string }
   | { type: 'agent.task.finished'; id: string; status: TaskStatus; summary: string }
 
 export interface AgentGuest {
@@ -115,7 +117,7 @@ export class AgentTasks {
     const dir = `${HOME}/Agents/${id}`
     await guest.run('/bin/sh', ['-c', 'systemctl start caboose-xpra-agent.service || true'], 30_000)
     await guest.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/bin/sh', '-c',
-      'mkdir -p "$1" && printf %s "$2" > "$1/prompt.txt"', 'sh', dir, prompt], 15_000)
+      'mkdir -p "$1" && printf %s "$2" > "$1/prompt.txt" && printf %s "$3" > "$1/agent"', 'sh', dir, prompt, agent], 15_000)
     await guest.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/bin/sh', '-c', launchScript(agent), 'sh', dir], 15_000)
     const task: AgentTask = { id, agent, prompt, status: 'running', startedAt: new Date().toISOString() }
     this.tracked.set(id, { task, offset: 0, carry: '' })
@@ -128,12 +130,61 @@ export class AgentTasks {
   async cancel(id: string): Promise<boolean> {
     const entry = this.tracked.get(id)
     const guest = this.guest()
-    if (!entry || !TASK_ID.test(id) || entry.task.status !== 'running' || !guest) return false
-    await guest.run('/bin/sh', ['-c', 'pid=$(cat "$1/pid" 2>/dev/null) && kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true',
-      'sh', `${HOME}/Agents/${id}`], 15_000)
+    if (!entry || !TASK_ID.test(id) || !isLive(entry.task.status) || !guest) return false
+    // A paused task only sees the TERM once it is continued.
+    await guest.run('/bin/sh', ['-c', `${signal('TERM')}; ${signal('CONT')}`, 'sh', `${HOME}/Agents/${id}`], 15_000)
     this.finish(entry, 'cancelled', 'Cancelled.')
     return true
   }
+
+  /**
+   * Taking over an agent's window stops the agent (SIGSTOP to its whole process group) so the
+   * owner and the agent never type into the same app at once; handing back continues it.
+   */
+  async pauseTask(id: string): Promise<boolean> { return this.hold(id, true) }
+  async resumeTask(id: string): Promise<boolean> { return this.hold(id, false) }
+
+  private async hold(id: string, paused: boolean): Promise<boolean> {
+    const entry = this.tracked.get(id)
+    const guest = this.guest()
+    if (!entry || !TASK_ID.test(id) || !guest || entry.task.status !== (paused ? 'running' : 'paused')) return false
+    await guest.run('/bin/sh', ['-c', signal(paused ? 'STOP' : 'CONT'), 'sh', `${HOME}/Agents/${id}`], 15_000)
+    entry.task.status = paused ? 'paused' : 'running'
+    this.emit({ type: paused ? 'agent.task.paused' : 'agent.task.resumed', id })
+    return true
+  }
+
+  /**
+   * Rebuilds the task list from the task directories in the guest, once per host process,
+   * so a host restart neither forgets tasks nor drops the lease under one still running.
+   */
+  async restore(): Promise<void> {
+    const guest = this.guest()
+    if (this.restored || !guest) return
+    this.restored = true
+    const listing = await guest.run('/bin/sh', ['-c', RESTORE_SCRIPT, 'sh', `${HOME}/Agents`], 20_000).catch(() => '')
+    for (const line of listing.split('\n')) {
+      const [id, agent, started, exitCode, alive, size, prompt, last] = line.split('\t')
+      if (!id || !TASK_ID.test(id) || this.tracked.has(id)) continue
+      const task: AgentTask = {
+        id, agent: agent === 'codex' ? 'codex' : 'claude', prompt: decode(prompt), status: 'running',
+        startedAt: new Date(Number(started) * 1000).toISOString(),
+      }
+      const entry: Tracked = { task, offset: Number(size) || 0, carry: '' }
+      this.tracked.set(id, entry)
+      if (exitCode === '' && alive === '1') {
+        this.releases.set(id, this.acquire())
+        continue
+      }
+      const result = interpretLine(decode(last)).result
+      if (exitCode === '') this.finish(entry, 'failed', 'Stopped when the computer restarted.', false)
+      else this.finish(entry, result ? (result.ok ? 'succeeded' : 'failed') : exitCode === '0' ? 'succeeded' : 'failed',
+        result?.summary ?? (exitCode === '0' ? 'Done.' : `The agent exited with code ${exitCode}.`), false)
+    }
+    this.resume()
+  }
+
+  private restored = false
 
   /** Stops tailing (the computer is parking); running tasks resume being tailed on wake. */
   pause(): void {
@@ -142,7 +193,8 @@ export class AgentTasks {
   }
 
   resume(): void {
-    if ([...this.tracked.values()].some(entry => entry.task.status === 'running')) this.ensurePolling()
+    if (!this.restored) void this.restore()
+    if ([...this.tracked.values()].some(entry => isLive(entry.task.status))) this.ensurePolling()
   }
 
   private ensurePolling(): void {
@@ -157,7 +209,7 @@ export class AgentTasks {
     this.polling = true
     try {
       for (const entry of this.tracked.values()) {
-        if (entry.task.status !== 'running') continue
+        if (!isLive(entry.task.status)) continue
         const dir = `${HOME}/Agents/${entry.task.id}`
         const chunk = await guest.run('/bin/sh', ['-c',
           'tail -c +"$(( $2 + 1 ))" "$1/transcript.jsonl" 2>/dev/null | head -c 1048576; printf "\\n__CABOOSE__%s:%s" "$(cat "$1/exit-code" 2>/dev/null)" "$(cat "$1/stderr.log" 2>/dev/null | tail -c 400 | tr "\\n" " ")"',
@@ -191,20 +243,46 @@ export class AgentTasks {
       }
     } finally {
       this.polling = false
-      if (![...this.tracked.values()].some(entry => entry.task.status === 'running')) this.pause()
+      if (![...this.tracked.values()].some(entry => isLive(entry.task.status))) this.pause()
     }
   }
 
-  private finish(entry: Tracked, status: TaskStatus, summary: string): void {
-    if (entry.task.status !== 'running') return
+  private finish(entry: Tracked, status: TaskStatus, summary: string, announce = true): void {
+    if (!isLive(entry.task.status)) return
     entry.task.status = status
     entry.task.finishedAt = new Date().toISOString()
     entry.task.summary = summary.slice(0, 2000)
     this.releases.get(entry.task.id)?.()
     this.releases.delete(entry.task.id)
-    this.emit({ type: 'agent.task.finished', id: entry.task.id, status, summary: entry.task.summary })
+    if (announce) this.emit({ type: 'agent.task.finished', id: entry.task.id, status, summary: entry.task.summary })
   }
 }
+
+function isLive(status: TaskStatus): boolean { return status === 'running' || status === 'paused' }
+
+/** Signals a task's process group (falling back to its pid); $1 is the task directory. */
+function signal(name: 'TERM' | 'STOP' | 'CONT'): string {
+  return `pid=$(cat "$1/pid" 2>/dev/null) && { kill -${name} -- -"$pid" 2>/dev/null || kill -${name} "$pid" 2>/dev/null; } || true`
+}
+
+function decode(value: string | undefined): string {
+  return value ? Buffer.from(value, 'base64').toString('utf8') : ''
+}
+
+/**
+ * One tab-separated line per task directory, newest 30: id, agent, start time, exit code,
+ * whether its process is alive, transcript size, then base64 prompt and last transcript line.
+ */
+const RESTORE_SCRIPT = [
+  'cd "$1" 2>/dev/null || exit 0',
+  'for d in $(ls -1t | head -30); do',
+  '  [ -f "$d/prompt.txt" ] || continue',
+  '  pid=$(cat "$d/pid" 2>/dev/null); alive=0; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && alive=1',
+  '  printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$d" "$(cat "$d/agent" 2>/dev/null || echo claude)" "$(stat -c %Y "$d/prompt.txt")" \\',
+  '    "$(cat "$d/exit-code" 2>/dev/null)" "$alive" "$(stat -c %s "$d/transcript.jsonl" 2>/dev/null || echo 0)" \\',
+  '    "$(base64 -w0 < "$d/prompt.txt")" "$(tail -n 1 "$d/transcript.jsonl" 2>/dev/null | base64 -w0)"',
+  'done',
+].join('\n')
 
 export class AgentInputError extends Error {}
 export class AgentUnavailableError extends Error {

@@ -15,7 +15,7 @@ final class AgentCenter {
         var finishedAt: String?
         var summary: String?
 
-        var isRunning: Bool { status == "running" || status == "queued" }
+        var isRunning: Bool { status == "running" || status == "queued" || status == "paused" }
     }
 
     struct Line: Identifiable, Equatable {
@@ -48,11 +48,23 @@ final class AgentCenter {
         seat = nil
     }
 
+    /// Forgets the computer entirely: a different one, or none, is next.
+    func reset() {
+        tookOver = false
+        detach()
+        host = nil
+        seatToken = nil
+        tasks = []
+        output = [:]
+        available = true
+    }
+
     func refresh() async {
         guard let host else { return }
         do {
             tasks = try await host.agentTasks()
             available = true
+            if !tasks.isEmpty { openSeatIfNeeded() }
         } catch HostClient.Failure.server(404, _) {
             available = false // a host without the agents API
         } catch {
@@ -65,6 +77,7 @@ final class AgentCenter {
         do {
             let id = try await host.startAgentTask(prompt: prompt, agent: agent)
             tasks.insert(Task(id: id, agent: agent, prompt: prompt, status: "running", startedAt: nil, finishedAt: nil, summary: nil), at: 0)
+            openSeatIfNeeded()
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         } catch {
             lastError = error.localizedDescription
@@ -73,6 +86,36 @@ final class AgentCenter {
 
     func cancel(_ task: Task) async {
         try? await host?.cancelAgentTask(task.id)
+    }
+
+    /// The owner is driving the agent seat: running agents are stopped so the two never
+    /// type into the same app at once.
+    private(set) var tookOver = false
+
+    func takeOver() async {
+        guard let host, !tookOver else { return }
+        tookOver = true
+        for task in tasks where task.status == "running" { try? await host.holdAgentTask(task.id, paused: true) }
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+    }
+
+    func handBack() async {
+        guard let host, tookOver else { return }
+        tookOver = false
+        for task in tasks where task.status == "paused" { try? await host.holdAgentTask(task.id, paused: false) }
+    }
+
+    /// Remembers how to reach the agent seat. The seat's display server only starts once an
+    /// agent is in use, so a computer nobody delegates to never runs a second Xpra.
+    func prepareSeat(displayToken: String, capabilities: ClientCapabilities) {
+        seatToken = (displayToken, capabilities)
+        if !tasks.isEmpty { openSeatIfNeeded() }
+    }
+
+    private var seatToken: (String, ClientCapabilities)?
+
+    private func openSeatIfNeeded() {
+        if let (token, capabilities) = seatToken { openSeat(displayToken: token, capabilities: capabilities) }
     }
 
     /// Opens the agent seat's display so its windows can be watched and taken over.
@@ -125,8 +168,13 @@ final class AgentCenter {
                 tasks.insert(Task(id: id, agent: event["agent"] as? String ?? "agent", prompt: event["prompt"] as? String ?? "",
                                   status: "running", startedAt: nil, finishedAt: nil, summary: nil), at: 0)
             }
+            openSeatIfNeeded()
         case "agent.task.output":
             output[id, default: []].append(Line(kind: event["kind"] as? String ?? "text", text: event["text"] as? String ?? ""))
+        case "agent.task.paused", "agent.task.resumed":
+            if let index = tasks.firstIndex(where: { $0.id == id }) {
+                tasks[index].status = type == "agent.task.paused" ? "paused" : "running"
+            }
         case "agent.task.finished":
             if let index = tasks.firstIndex(where: { $0.id == id }) {
                 tasks[index].status = event["status"] as? String ?? "succeeded"
@@ -154,5 +202,9 @@ extension HostClient {
 
     func cancelAgentTask(_ id: String) async throws {
         let _: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/cancel", timeout: 20)
+    }
+
+    func holdAgentTask(_ id: String, paused: Bool) async throws {
+        let _: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/\(paused ? "pause" : "resume")", timeout: 20)
     }
 }
