@@ -626,6 +626,7 @@ final class AppModel {
     var wallpaperPickerPresented = false
     /// The owner asked to restart and is being asked to confirm.
     var restartConfirmationPresented = false
+    var lifecycleActionsPresented = false
 
     /// Parks the computer with its memory, so it resumes exactly as it was.
     func parkComputer() async throws {
