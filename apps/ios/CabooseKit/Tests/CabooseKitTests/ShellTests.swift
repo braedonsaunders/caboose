@@ -98,3 +98,23 @@ final class VisibleRecentFilesTests: XCTestCase {
         XCTAssertEqual(RecentFiles.visible(files, limit: 2).map(\.path), ["Documents/report.odt", "Downloads/photo.jpg"])
     }
 }
+
+final class LaunchpadLayoutTests: XCTestCase {
+    func testABigScreenGetsSevenFullColumns() {
+        let layout = LaunchpadLayout(size: CGSize(width: 1920, height: 1080), ui: 1.2, dockHeight: 76 * 1.2)
+        XCTAssertEqual(layout.columns, 7)
+        XCTAssertEqual(layout.column, 150 * 1.2, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(layout.width, 1920)
+    }
+
+    func testANarrowPhoneDesktopFitsInsideItsWidth() {
+        // iPhone Duo closed, beside the vertical bar: about 375 by 678 points at ui 0.72.
+        for width in [320.0, 375.0, 430.0, 700.0] {
+            let layout = LaunchpadLayout(size: CGSize(width: width, height: 678), ui: 0.72, dockHeight: 76 * 0.72)
+            XCTAssertLessThanOrEqual(layout.width, width - 2 * 24 * 0.72 + 0.001, "width \(width)")
+            XCTAssertGreaterThanOrEqual(layout.columns, 2)
+            XCTAssertLessThanOrEqual(layout.icon, layout.column)
+            XCTAssertGreaterThanOrEqual(layout.rows, 1)
+        }
+    }
+}

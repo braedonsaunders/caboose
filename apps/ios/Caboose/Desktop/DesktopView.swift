@@ -12,7 +12,8 @@ struct DesktopView: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .topLeading) {
-                WallpaperView(store: WallpaperStore.shared)
+                // On the phone the tab draws the photograph, under its bars too.
+                if fillsScreen { WallpaperView(store: WallpaperStore.shared) }
                 if let session = model.session {
                     ForEach(desktop.stacking.compactMap { session.windows[$0] }.filter { desktop.isVisible($0.id) }) { window in
                         DesktopWindow(window: window, desktop: desktop, icon: model.icon(for: window))
@@ -37,10 +38,12 @@ struct DesktopView: View {
             .coordinateSpace(name: "desktop")
             .onAppear {
                 desktop.size = proxy.size
-                WallpaperStore.shared.show(pixelSize: CGSize(width: proxy.size.width * desktop.pixelsPerPoint,
-                                                             height: proxy.size.height * desktop.pixelsPerPoint))
+                if fillsScreen {
+                    WallpaperStore.shared.show(pixelSize: CGSize(width: proxy.size.width * desktop.pixelsPerPoint,
+                                                                 height: proxy.size.height * desktop.pixelsPerPoint))
+                }
             }
-            .onDisappear { WallpaperStore.shared.stop() }
+            .onDisappear { if fillsScreen { WallpaperStore.shared.stop() } }
             .onChange(of: proxy.size) { _, size in desktop.size = size }
         }
         .ignoresSafeArea(edges: fillsScreen ? .all : [])
@@ -190,7 +193,9 @@ struct Cursor: View {
     }
 }
 
-/// Every app on the computer, in a grid over the desktop, as on a Mac.
+/// Every app on the computer, in a grid over the desktop, as on a Mac. The grid fits the
+/// desktop it is on: up to seven columns on a big screen, fewer beside a phone's bars, and as
+/// many rows as fit above the dock.
 struct Launchpad: View {
     @Environment(AppModel.self) private var model
     let desktop: DesktopModel
@@ -198,21 +203,22 @@ struct Launchpad: View {
     var body: some View {
         let ui = desktop.ui
         let apps = model.partitionedApps.main
-        let columns = Array(repeating: GridItem(.fixed(150 * ui), spacing: 28 * ui), count: 7)
-        ZStack {
-            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
-            LazyVGrid(columns: columns, spacing: 30 * ui) {
-                ForEach(apps.prefix(42)) { app in
+        let layout = LaunchpadLayout(size: desktop.size, ui: ui, dockHeight: desktop.dockHeight)
+        let columns = Array(repeating: GridItem(.fixed(layout.column), spacing: layout.spacing), count: layout.columns)
+        ZStack(alignment: .top) {
+            Rectangle().fill(.ultraThinMaterial)
+            LazyVGrid(columns: columns, spacing: layout.spacing) {
+                ForEach(apps.prefix(layout.columns * layout.rows)) { app in
                     let hot = desktop.hovered == .launcher(app.id)
                     VStack(spacing: 8 * ui) {
                         Group {
                             if let icon = model.appIcons[app.id] {
                                 Image(uiImage: icon).resizable().scaledToFit()
                             } else {
-                                Image(systemName: "app.dashed").font(.system(size: 50 * ui))
+                                Image(systemName: "app.dashed").font(.system(size: layout.icon * 0.6))
                             }
                         }
-                        .frame(width: 84 * ui, height: 84 * ui)
+                        .frame(width: layout.icon, height: layout.icon)
                         .scaleEffect(hot ? 1.12 : 1)
                         .animation(.spring(duration: 0.2), value: hot)
                         Text(app.name)
@@ -221,13 +227,14 @@ struct Launchpad: View {
                             .lineLimit(1)
                             .shadow(color: .black.opacity(0.5), radius: 2)
                     }
-                    .frame(width: 150 * ui)
+                    .frame(width: layout.column)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launcherFrames[app.id] = $0 }
                 }
             }
-            .padding(.top, 60 * ui)
-            .padding(.bottom, desktop.dockHeight + 40 * ui)
+            .padding(.top, layout.top)
         }
+        .frame(width: desktop.size.width, height: desktop.size.height)
+        .clipped()
         .onDisappear { desktop.launcherFrames = [:] }
     }
 }

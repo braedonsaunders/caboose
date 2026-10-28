@@ -81,8 +81,17 @@ struct ComputerStateView: View {
 }
 
 /// Every tab's trailing pair: the Computer settings, and the lifecycle menu below it.
+/// They overflow last when the vertical bar runs short of room.
 struct ComputerToolbar: ToolbarContent {
     var body: some ToolbarContent {
+        if #available(iOS 27.0, *) {
+            items.visibilityPriority(.high)
+        } else {
+            items
+        }
+    }
+
+    private var items: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
             ComputerSettingsButton()
             LifecycleMenu()
@@ -151,12 +160,12 @@ struct LifecycleMenu: View {
 }
 
 extension View {
-    /// Prefers keeping a task's toolbar items over the tab bar when the vertical bar is short
-    /// of space (iOS 27.1); a no-op where there is no vertical bar.
+    /// Keeps the tab bar whole in the vertical bar (iOS 27.1) and lets the toolbar's own items
+    /// overflow first, as on every tab; a no-op where there is no vertical bar.
     @ViewBuilder
-    func prefersToolbarItemsInVerticalBar() -> some View {
+    func keepsTabBarInVerticalBar() -> some View {
         if #available(iOS 27.1, *) {
-            toolbarVerticalCompressionBehavior(.prefersToolbarItems)
+            toolbarVerticalCompressionBehavior(.prefersTabBar)
         } else {
             self
         }

@@ -6,25 +6,29 @@ import UIKit
 /// the dock and Launchpad; or, while a TV shows the desktop, this phone as its trackpad.
 ///
 /// Its actions sit in the toolbar, so on iPhone Duo they join the tab bar in the vertical bar
-/// on the side, and the tab bar gives way to them first when space runs short. The desktop
-/// itself fills the safe area: the computer lays its windows out for exactly the space left
-/// beside the vertical bar, or between the top and bottom bars.
+/// on the side, which stays fully shown as on every tab. The desktop fills everything beside
+/// the vertical bar, or between horizontal bars, and the computer lays its windows out for
+/// exactly that space; when the bars change, so does the desktop. Full Screen gives it the
+/// whole display until the handle at the top brings the bars back. Behind it all, under the
+/// bar as well, is the desktop's photograph with a sheer of the brand gradient.
 struct DesktopScreen: View {
     @Environment(AppModel.self) private var model
-    @State private var showAgents = false
     @State private var showAirPlay = false
+    @State private var fullScreen = false
 
     var body: some View {
         NavigationStack {
             Group {
                 if model.phase != .ready {
-                    ComputerStateView().background { Backdrop() }
+                    ComputerStateView()
                 } else if model.externalDisplayActive {
-                    TrackpadScreen(desktop: model.desktop).background { Backdrop() }
+                    TrackpadScreen(desktop: model.desktop)
                 } else {
-                    DesktopStage()
+                    DesktopStage(fullScreen: fullScreen)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background { ShellWallpaper(store: WallpaperStore.shared) }
             .navigationTitle("Desktop")
             .navigationBarTitleDisplayMode(.inline)
             // The desktop needs the height more than a title: with the vertical bar the top
@@ -34,10 +38,13 @@ struct DesktopScreen: View {
                 if model.phase == .ready { actions }
                 ComputerToolbar()
             }
-            .prefersToolbarItemsInVerticalBar()
-            .sheet(isPresented: $showAgents) {
-                AgentsScreen(dismiss: { showAgents = false }).environment(model)
-            }
+            .keepsTabBarInVerticalBar()
+            .toolbarVisibility(fullScreen ? .hidden : .automatic, for: .navigationBar, .tabBar)
+            .statusBarHidden(fullScreen)
+            .persistentSystemOverlays(fullScreen ? .hidden : .automatic)
+            .overlay(alignment: .top) { if fullScreen { exitFullScreenHandle } }
+            .animation(.snappy, value: fullScreen)
+            .onChange(of: model.phase) { _, phase in if phase != .ready { fullScreen = false } }
             .sheet(isPresented: $showAirPlay) {
                 AirPlaySheet().environment(model)
                     .presentationDetents([.medium])
@@ -45,31 +52,56 @@ struct DesktopScreen: View {
         }
     }
 
+    /// The desktop's own actions. Agents and Apps are tabs beside them and Launchpad is in
+    /// the dock, so they are not repeated here. Full Screen gives way first when room runs out.
     @ToolbarContentBuilder private var actions: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
             Button(model.keyboardVisible ? "Hide Keyboard" : "Keyboard",
                    systemImage: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard") {
                 model.keyboardVisible.toggle()
             }
-            if !model.externalDisplayActive {
-                Button("Apps", systemImage: "square.grid.3x3") {
-                    withAnimation(.snappy) { model.desktop.launchpadOpen.toggle() }
-                }
-            }
-            Button("Agents", systemImage: "sparkles") { showAgents = true }
-                .badge(model.agents.awaitingApproval.count)
-        }
-        ToolbarSpacer(.fixed, placement: .topBarTrailing)
-        ToolbarItem(placement: .topBarTrailing) {
             Button("AirPlay", systemImage: model.airPlay.current != nil ? "airplay.audio" : "airplay.video") { showAirPlay = true }
+        }
+        if !model.externalDisplayActive {
+            if #available(iOS 27.0, *) {
+                fullScreenItem.visibilityPriority(.low)
+            } else {
+                fullScreenItem
+            }
         }
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
     }
+
+    private var fullScreenItem: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { fullScreen = true }
+        }
+    }
+
+    /// In full screen, a pull-down tab at the top edge brings the bars back.
+    private var exitFullScreenHandle: some View {
+        Capsule()
+            .fill(.white.opacity(0.45))
+            .frame(width: 44, height: 5)
+            .padding(.top, 6)
+            .frame(width: 120, height: 28, alignment: .top)
+            .contentShape(Rectangle())
+            .onTapGesture { fullScreen = false }
+            .gesture(DragGesture(minimumDistance: 8).onEnded { value in
+                if value.translation.height > 12 { fullScreen = false }
+            })
+            .accessibilityLabel("Exit Full Screen")
+            .accessibilityAddTraits(.isButton)
+    }
 }
 
-/// The phone's own desktop in the space the tab gives it.
+/// The phone's own desktop, edge to edge. Beside a vertical bar it takes the full height and
+/// everything up to the bar; with horizontal bars, the space between them; in full screen,
+/// the whole display. The computer is configured for exactly that size.
 private struct DesktopStage: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
+    let fullScreen: Bool
 
     var body: some View {
         GeometryReader { proxy in
@@ -80,7 +112,23 @@ private struct DesktopStage: View {
             .onAppear { model.desktopStageResized(to: proxy.size) }
             .onChange(of: proxy.size) { _, size in model.desktopStageResized(to: size) }
         }
-        .background(Color.black.ignoresSafeArea())
+        .ignoresSafeArea(edges: ignoredEdges)
+    }
+
+    private var ignoredEdges: Edge.Set {
+        if fullScreen { return .all }
+        switch barEdge {
+        case .trailing: return [.top, .bottom, .leading]
+        case .leading: return [.top, .bottom, .trailing]
+        case nil: return []
+        }
+    }
+}
+
+extension EnvironmentValues {
+    /// The edge of the vertical bar (iPhone Duo, iOS 27.1), or nil where bars are horizontal.
+    var toolbarVerticalEdgeIfAvailable: HorizontalEdge? {
+        if #available(iOS 27.1, *) { toolbarVerticalEdge } else { nil }
     }
 }
 

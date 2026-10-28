@@ -4,8 +4,6 @@ import SwiftUI
 /// The Agents tab: ask, approve, and follow every task, and watch the agent seat's windows.
 struct AgentsScreen: View {
     @Environment(AppModel.self) private var model
-    /// Shown as a sheet over the desktop, with Done instead of a tab.
-    var dismiss: (() -> Void)?
 
     var body: some View {
         NavigationStack {
@@ -25,11 +23,6 @@ struct AgentsScreen: View {
             .background { Backdrop() }
             .navigationTitle("Agents")
             .toolbar {
-                if let dismiss {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close", systemImage: "xmark", action: dismiss)
-                    }
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Agent Settings", systemImage: "slider.horizontal.3") { model.showAgentSettings = true }
                 }

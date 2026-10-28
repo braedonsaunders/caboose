@@ -86,8 +86,9 @@ extension Wallpaper {
     ]
 }
 
-/// The desktop's photograph: a random one per session, a new one every quarter hour, fetched
-/// at the display's own pixel size and kept on the phone so a repeat costs nothing.
+/// The desktop's photograph, the same one on a TV and on the phone: a new one every quarter
+/// hour or on request, fetched at the display's own pixel size and kept on the phone so a
+/// repeat costs nothing. The last one shows again at launch, before anything loads.
 @MainActor @Observable
 final class WallpaperStore {
     static let shared = WallpaperStore()
@@ -97,13 +98,25 @@ final class WallpaperStore {
     private var pixelSize = CGSize(width: 3840, height: 2160)
     private var rotation: Timer?
     private var loading: Task<Void, Never>?
+    private static let lastKey = "caboose.wallpaper.last"
 
-    /// Starts showing photographs for a display of this many pixels.
+    init() {
+        // The last photograph, from the cache, so a screen that shows it never starts black.
+        guard let saved = UserDefaults.standard.string(forKey: Self.lastKey) else { return }
+        let parts = saved.split(separator: " ")
+        guard parts.count == 2, let id = Int(parts[0]), let wallpaper = Wallpaper.library.first(where: { $0.id == id }),
+              let image = UIImage(contentsOfFile: Self.cacheDirectory.appendingPathComponent(String(parts[1])).path) else { return }
+        current = wallpaper
+        self.image = image
+    }
+
+    /// Starts showing photographs for a display of this many pixels. A new size keeps the
+    /// photograph and fetches it at that size.
     func show(pixelSize size: CGSize) {
         guard size.width > 0, size.height > 0 else { return }
         let changed = size != pixelSize
         pixelSize = size
-        if image == nil || changed { next() }
+        if image == nil || current == nil { next() } else if changed, let current { load(current) }
         rotation?.invalidate()
         rotation = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { _ in
             Task { @MainActor in WallpaperStore.shared.next() }
@@ -117,7 +130,10 @@ final class WallpaperStore {
 
     /// A different photograph, chosen at random.
     func next() {
-        let choice = Wallpaper.library.filter { $0 != current }.randomElement() ?? Wallpaper.library[0]
+        load(Wallpaper.library.filter { $0 != current }.randomElement() ?? Wallpaper.library[0])
+    }
+
+    private func load(_ choice: Wallpaper) {
         let width = Int(pixelSize.width), height = Int(pixelSize.height)
         loading?.cancel()
         loading = Task {
@@ -126,12 +142,19 @@ final class WallpaperStore {
                 image = loaded
                 current = choice
             }
+            UserDefaults.standard.set("\(choice.id) \(Self.fileName(choice, width: width, height: height))", forKey: Self.lastKey)
         }
     }
 
+    private static var cacheDirectory: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Wallpapers")
+    }
+
+    private static func fileName(_ wallpaper: Wallpaper, width: Int, height: Int) -> String { "\(wallpaper.id)-\(width)x\(height).jpg" }
+
     private static func load(_ wallpaper: Wallpaper, width: Int, height: Int) async -> UIImage? {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Wallpapers")
-        let file = caches.appendingPathComponent("\(wallpaper.id)-\(width)x\(height).jpg")
+        let caches = cacheDirectory
+        let file = caches.appendingPathComponent(fileName(wallpaper, width: width, height: height))
         if let data = try? Data(contentsOf: file), let image = UIImage(data: data) { return await image.byPreparingForDisplay() }
         do {
             let (data, response) = try await URLSession.shared.data(from: wallpaper.url(width: width, height: height))
@@ -142,6 +165,44 @@ final class WallpaperStore {
         } catch {
             return nil
         }
+    }
+}
+
+/// The photograph behind the phone's tabs, edge to edge and under the bars, with a sheer of the
+/// brand's gradient so glass controls stay legible over a bright sky or snow. It follows the
+/// same photograph the TV shows; with none yet, it is the brand gradient alone.
+struct ShellWallpaper: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.displayScale) private var scale
+    let store: WallpaperStore
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Backdrop()
+                if let image = store.image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .id(store.current)
+                        .transition(.opacity)
+                    Backdrop().opacity(0.38)
+                    LinearGradient(colors: [.black.opacity(0.22), .clear, .clear, .black.opacity(0.3)],
+                                   startPoint: .top, endPoint: .bottom)
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+            // The TV, when one is connected, sets the size photographs are fetched at.
+            .onAppear { if !model.externalDisplayActive { store.show(pixelSize: pixels(proxy.size)) } }
+            .onChange(of: proxy.size) { _, size in if !model.externalDisplayActive { store.show(pixelSize: pixels(size)) } }
+        }
+        .ignoresSafeArea()
+    }
+
+    private func pixels(_ size: CGSize) -> CGSize {
+        CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
     }
 }
 
