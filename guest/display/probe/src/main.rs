@@ -734,7 +734,7 @@ fn run(args: Args) -> Result<bool, String> {
                     _ => 0.0,
                 };
                 format!(
-                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{}}}",
+                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{}}}",
                     w.title,
                     w.kind,
                     w.parent.map(|p| p.to_string()).unwrap_or("null".into()),
@@ -748,6 +748,7 @@ fn run(args: Args) -> Result<bool, String> {
                     w.size.1,
                     w.frames,
                     w.keyframes,
+                    w.bytes,
                     if span > 0.0 { (w.frames.saturating_sub(1)) as f64 / span } else { 0.0 },
                     w.bytes as f64 * 8.0 / 1000.0 / elapsed,
                     percentile(&w.decode_us, 0.5) / 1000.0,

@@ -383,6 +383,39 @@ def check_audio():
     return with_server(["sh", "-c", f"weston-terminal & sleep 3.5; paplay {tone}; exec sleep 60"], run)
 
 
+def psnr(a, b):
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-i", a, "-i", b, "-lavfi", "psnr", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    for word in out.split():
+        if word.startswith("average:"):
+            return float(word.split(":")[1].replace("inf", "99"))
+    raise Failed(f"ffmpeg psnr: {out[-300:]}")
+
+
+def check_refine():
+    # A quiet terminal full of text: the keyframe is coded at the normal QP, then once,
+    # 300 ms later, the same picture sharpened, then nothing. Measured against a
+    # near-lossless reference, the sharpened picture must be clearly closer than the
+    # unrefined one.
+    text = ["xterm", "-geometry", "100x40", "-e", "sh", "-c", "ls -l /usr/bin | head -38; exec sleep 600"]
+    def picture(extra):
+        out = tempfile.mkdtemp(prefix="refine-")
+        def run(proc, token):
+            r = probe(["--token-file", token, "--duration", "3", "--windows", "1", "--save", out])
+            return r["windows"][0], os.path.join(out, "window-1.png")
+        return with_server(text, run, extra=extra)
+    _, reference = picture(("--crf", "1", "--refine-qp", "0"))
+    off, soft = picture(("--refine-qp", "0"))
+    on, sharp = picture(())
+    if off["frames"] != 1 or on["frames"] != 2 or on["keyframes"] != 1:
+        raise Failed(f"frames: {off['frames']} without refinement, {on['frames']} ({on['keyframes']} key) with")
+    before, after = psnr(soft, reference), psnr(sharp, reference)
+    if after < before + 3:
+        raise Failed(f"refinement took the picture from {before:.1f} dB to {after:.1f} dB")
+    sharpening = (on["bytes"] - off["bytes"]) / 1000
+    return f"one sharpening picture ({sharpening:.0f} kB) takes a quiet terminal from {before:.1f} to {after:.1f} dB PSNR"
+
+
 def check_idle():
     def run(proc, token):
         r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--server-pid", str(proc.pid)])
@@ -413,6 +446,7 @@ CHECKS = [
     ("clipboard-x11", check_clipboard_x11),
     ("clipboard-bridge", check_clipboard_bridge),
     ("audio", check_audio),
+    ("refine", check_refine),
     ("idle", check_idle),
 ]
 

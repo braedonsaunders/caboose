@@ -41,11 +41,17 @@ This directory is a Cargo workspace:
   while fewer than two of the window's frames are unacknowledged, so applications draw at
   the rate the link and the screen can show. A window whose display sends no vsync gets
   frame callbacks once a second.
-- **Encoders.** libx264 (default for software: H.264 at constant QP, `ultrafast`,
-  zero latency, keyframes only on request), libx265, and NVENC (`h264_nvenc`,
+- **Encoders.** libx264 (default for software: H.264 at one QP for every picture,
+  `ultrafast`, zero latency, keyframes only on request), libx265, and NVENC (`h264_nvenc`,
   `hevc_nvenc`, `av1_nvenc`) from system memory, all through libavcodec behind one
   `Encoder` trait. Each is probed at start-up by encoding a test picture; only working
   ones are offered. `--list-encoders` prints them.
+- **Sharpening.** Pictures are coded at `--crf` (23), which keeps updates small but
+  leaves text soft. An area of a window that has not changed for `--refine-after` (300 ms)
+  is coded once more at `--refine-qp` (12): it rides along in the next picture the window
+  sends anyway (a caret blink, the next keystroke), or, if the window has gone quiet, in
+  one extra picture of the same content. libx264 then skips those macroblocks, so they
+  stay sharp until they change again. libx264 only; `--refine-qp 0` turns it off.
 - **Input.** Pointer (buttons as a pressed set, precise and wheel scrolling), multitouch
   (`wl_touch`, one frame per message), keys by keysym (mapped to the keymap, with the
   modifiers a level needs), and text: commits and pre-edit text go to the focused surface
@@ -140,6 +146,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `clipboard-x11` | an X11 copy (xclip) reaches the phone on connect, and the phone's copy reaches X11 |
 | `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
 | `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
+| `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer (measured: 42.4 → 50.3 dB, one 34 kB picture) |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 ### Measured
@@ -162,6 +169,25 @@ Comparing damaged blocks before converting took Chromium's 720p frames from 7.9 
 pixels that change cover about 1%. Reading single-buffer windows in place instead of
 composing them took full-window 1080p video from 13.1 to 12.0 ms of server CPU per frame
 (composition was 2.3 ms of it; `--always-compose` turns this off for comparisons).
+
+libx264 runs in CRF mode with `qcomp=1`, so every P picture gets the same QP, as constant QP
+would. Constant QP turns off AQ, which the sharpening's per-macroblock QP offsets need,
+and skips x264's lowres pass. The lowres pass costs a fixed amount per picture, but its
+motion vectors find scrolls that ultrafast's own search misses. Measured in the encoder
+alone on one thread, with synthetic text. The CRF column is
+`cargo test -p caboose-display bench_text -- --ignored --nocapture`; the constant QP
+column was measured the same way before the switch:
+
+| Picture | Constant QP 23 | CRF 23, `qcomp=1` |
+| --- | --- | --- |
+| 1080p, one glyph typed | 3.2 ms, 193 B | 4.4 ms, 198 B |
+| 1080p, scrolled 18 px | 11.7 ms, 226 kB | 10.9 ms, 22 kB |
+| 720p, one glyph typed | 1.1 ms, 129 B | 1.6 ms, 131 B |
+| 720p, scrolled 18 px | 5.0 ms, 63 kB | 5.2 ms, 12 kB |
+
+The Chromium 720p check measures 3.8 ms per frame with it (3.6 ms in the table, before).
+Sharpening 30 typed glyphs at 1080p is one 1.7 kB picture; the first sharpening of a whole
+window after its keyframe is the largest (a full screen of dense text: 470 kB, 15 ms).
 
 ## Run
 

@@ -26,6 +26,9 @@ OPTIONS:
     --encoder KIND         auto | software | nvenc [default: auto]
     --crf N                encoder quality, lower is better [default: 23]
     --preset NAME          x264 preset [default: ultrafast]
+    --refine-qp N          code areas that went quiet once more at this QP, so text
+                           sharpens (H.264 software); 0 turns it off [default: 12]
+    --refine-after MS      how long an area must be quiet first [default: 300]
     --encoder-threads N    threads per software encoder; 0 = 1 up to 1080p, 4 above [default: 0]
     --display WxH@HZxS     the display used before a client connects [default: 1920x1080@60x1]
     --list-encoders        print the usable encoders and exit
@@ -106,7 +109,7 @@ impl Default for Config {
 }
 
 pub enum Parsed {
-    Run(Config),
+    Run(Box<Config>),
     Help,
 }
 
@@ -149,6 +152,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             }
             "--crf" => config.settings.crf = number(value(&mut args, &arg)?, &arg)?,
             "--preset" => config.settings.preset = value(&mut args, &arg)?,
+            "--refine-qp" => config.settings.refine_qp = number(value(&mut args, &arg)?, &arg)?,
+            "--refine-after" => config.settings.refine_after_ms = number(value(&mut args, &arg)?, &arg)?,
             "--encoder-threads" => config.settings.threads = number(value(&mut args, &arg)?, &arg)?,
             "--display" => {
                 let v = value(&mut args, &arg)?;
@@ -165,7 +170,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             other => return Err(format!("unknown argument: {other}")),
         }
     }
-    Ok(Parsed::Run(config))
+    Ok(Parsed::Run(Box::new(config)))
 }
 
 #[cfg(test)]
@@ -174,7 +179,7 @@ mod tests {
 
     fn run(args: &[&str]) -> Config {
         match parse(args.iter().map(|s| s.to_string())).unwrap() {
-            Parsed::Run(c) => c,
+            Parsed::Run(c) => *c,
             Parsed::Help => panic!("help"),
         }
     }
@@ -202,6 +207,14 @@ mod tests {
         assert_eq!((d.refresh_hz, d.scale), (60.0, 1.0));
         assert!(DisplaySpec::parse("0x10").is_none());
         assert!(DisplaySpec::parse("10x10@60x0.5").is_none());
+    }
+
+    #[test]
+    fn refinement_is_on_by_default_and_tunable() {
+        let c = run(&[]);
+        assert_eq!((c.settings.refine_qp, c.settings.refine_after_ms), (12, 300));
+        let c = run(&["--refine-qp", "0", "--refine-after", "1000"]);
+        assert_eq!((c.settings.refine_qp, c.settings.refine_after_ms), (0, 1000));
     }
 
     #[test]

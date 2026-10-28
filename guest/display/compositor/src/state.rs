@@ -134,14 +134,17 @@ pub struct Stats {
     /// Pixels re-encoded vs pixels in the pictures sent.
     pub damaged_px: u64,
     pub picture_px: u64,
+    /// Pictures that only sharpened unchanged content.
+    pub refines: u64,
 }
 
 impl Stats {
     pub fn summary(&self) -> String {
         let per = |v: u64| if self.frames > 0 { v as f64 / self.frames as f64 / 1000.0 } else { 0.0 };
         format!(
-            "{} frames, {} kB, {} renders ({} direct from shm, {} unchanged), {:.0}% of pixels damaged; per frame: render {:.2} ms, encode {:.2} ms CPU",
+            "{} frames ({} sharpening), {} kB, {} renders ({} direct from shm, {} unchanged), {:.0}% of pixels damaged; per frame: render {:.2} ms, encode {:.2} ms CPU",
             self.frames,
+            self.refines,
             self.bytes / 1000,
             self.renders,
             self.direct,
@@ -192,6 +195,8 @@ pub struct State {
     pub stats: Stats,
     /// The cursor last sent, so it is re-sent to a new client.
     pub cursor: Option<proto::Message>,
+    /// The wake-up for the next refinement: when (monotonic µs), and its timer.
+    pub refine_timer: Option<(u64, smithay::reexports::calloop::RegistrationToken)>,
 }
 
 impl HasNet for State {

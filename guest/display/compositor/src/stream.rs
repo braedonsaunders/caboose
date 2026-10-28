@@ -8,7 +8,10 @@
 //!   never queued or encoded;
 //! - at most [`MAX_UNACKED`] encoded frames per window wait for the client's `ack`, and
 //!   frame callbacks are held while the window is at that limit, so the application
-//!   slows to what the link and the client can show.
+//!   slows to what the link and the client can show;
+//! - an encoder that refines says when its quiet areas are due (`refine_at_us`); a
+//!   window that has not changed by then gets one more picture of the same content,
+//!   sharper, under the same limits (a change first sharpens along the way).
 
 use crate::encode::{Backend, CpuImage, EncodeError, Encoder, Input, Settings, ShmPicture};
 use crate::render::Canvas;
@@ -30,6 +33,9 @@ pub struct Job {
     /// Look for passthrough video markers in the picture.
     pub detect: bool,
     pub keyframe: bool,
+    /// Sharpen the previous picture instead of encoding `image` (which only travels
+    /// back with the answer).
+    pub refine: bool,
     /// What changed since the previous picture; `None` for everything.
     pub damage: Option<Vec<Rect>>,
     pub rect: Rect,
@@ -79,6 +85,10 @@ pub struct Encoded {
     pub encode_us: u64,
     /// Thread CPU time spent on this picture, microseconds.
     pub cpu_us: u64,
+    /// When to sharpen next if nothing changes, in milliseconds from now.
+    pub refine_in_ms: Option<u64>,
+    /// The picture sharpened the previous one.
+    pub refined: bool,
 }
 
 struct Worker {
@@ -105,6 +115,21 @@ impl Worker {
                     let size = (job.image.width, job.image.height);
                     let reuse = encoder.as_ref().is_some_and(|(b, e)| *b == job.backend && e.coded_size() == size);
                     let mut fresh = false;
+                    if job.refine && !reuse {
+                        // The encoder whose picture this sharpens is gone; the window
+                        // starts over with a keyframe.
+                        let _ = done.send(Done {
+                            hits: None,
+                            window: job.window,
+                            generation: job.generation,
+                            pts_us: job.pts_us,
+                            image: job.image,
+                            result: Err("no picture to refine".into()),
+                            rect: job.rect,
+                            crop: job.crop,
+                        });
+                        continue;
+                    }
                     if !reuse {
                         encoder = match job.backend.create(size.0, size.1, &job.settings) {
                             Ok(e) => Some((job.backend.clone(), e)),
@@ -131,7 +156,8 @@ impl Worker {
                         Some(shm) => Input::Shm(shm),
                         None => Input::Cpu(&job.image),
                     };
-                    let result: Result<_, EncodeError> = enc.encode(input, job.keyframe || fresh, damage);
+                    let result: Result<_, EncodeError> =
+                        if job.refine { enc.refine() } else { enc.encode(input, job.keyframe || fresh, damage) };
                     let result = result
                         .map(|p| Encoded {
                             codec: enc.codec(),
@@ -139,6 +165,8 @@ impl Worker {
                             data: p.data,
                             encode_us: start.elapsed().as_micros() as u64,
                             cpu_us: thread_cpu_us().saturating_sub(cpu0),
+                            refine_in_ms: p.refine_in_ms,
+                            refined: job.refine,
                         })
                         .map_err(|e| e.to_string());
                     if result.is_err() {
@@ -186,6 +214,10 @@ pub struct Stream {
     worker: Option<Worker>,
     /// Frame callbacks are waiting for the next vsync.
     pub callbacks_pending: bool,
+    /// Monotonic microseconds when the encoder has quiet areas to sharpen.
+    pub refine_at_us: Option<u64>,
+    /// The visible part of the last picture submitted.
+    pub crop: Rect,
 }
 
 impl Stream {
@@ -199,6 +231,19 @@ impl Stream {
     /// increasing.
     pub fn next_pts(&mut self) -> u64 {
         let pts = self.commit_us.max(self.last_pts + 1);
+        self.last_pts = pts;
+        pts
+    }
+
+    /// A sharper picture of unchanged content is due: the window is quiet, the encoder
+    /// said so, and flow control has room.
+    pub fn refine_due(&self, now_us: u64) -> bool {
+        !self.dirty && self.can_send() && self.image.is_some() && self.refine_at_us.is_some_and(|t| t <= now_us)
+    }
+
+    /// The pts for a sharpened picture: its content is from earlier, its pixels now.
+    pub fn refine_pts(&mut self, now_us: u64) -> u64 {
+        let pts = now_us.max(self.last_pts + 1);
         self.last_pts = pts;
         pts
     }
@@ -232,6 +277,7 @@ impl Stream {
         // generation is stale); the new client gets a new worker and image.
         self.encoding = false;
         self.worker = None;
+        self.refine_at_us = None;
     }
 
     /// Takes (or makes) a picture buffer of the coded size. A new buffer has no history,
@@ -254,8 +300,13 @@ impl Stream {
         let window = job.window;
         let worker = self.worker.get_or_insert_with(|| Worker::spawn(window, done.clone()));
         self.encoding = true;
-        self.dirty = false;
-        self.need_keyframe = false;
+        if !job.refine {
+            self.dirty = false;
+            self.need_keyframe = false;
+        }
+        // The answer says when to sharpen next.
+        self.refine_at_us = None;
+        self.crop = job.crop;
         if let Err(e) = worker.tx.send(job) {
             // The worker exited; recover the image and try again on the next tick.
             self.worker = None;
@@ -287,6 +338,21 @@ mod tests {
         assert!(!s.can_release_callbacks());
         s.encoding = false;
         assert!(s.can_release_callbacks());
+    }
+
+    #[test]
+    fn refinement_waits_for_its_time_a_quiet_window_and_room() {
+        let mut s = Stream { image: Some(CpuImage::new(2, 2)), refine_at_us: Some(1000), ..Default::default() };
+        assert!(!s.refine_due(999));
+        assert!(s.refine_due(1000));
+        s.mark_dirty(1000);
+        assert!(!s.refine_due(2000));
+        s.dirty = false;
+        s.in_flight.extend([1, 2]);
+        assert!(!s.refine_due(2000));
+        s.in_flight.clear();
+        s.reset_for_client();
+        assert!(!s.refine_due(2000));
     }
 
     #[test]

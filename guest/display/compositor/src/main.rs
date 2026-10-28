@@ -67,7 +67,7 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
     let config = match config::parse(std::env::args().skip(1)) {
-        Ok(Parsed::Run(c)) => c,
+        Ok(Parsed::Run(c)) => *c,
         Ok(Parsed::Help) => {
             print!("{}", config::USAGE);
             return;
@@ -373,6 +373,7 @@ fn run(config: Config) -> Result<(), String> {
         generation: 0,
         stats: Default::default(),
         cursor: None,
+        refine_timer: None,
     };
 
     if state.config.audio {
