@@ -19,6 +19,17 @@ describe('generated brand files', () => {
   })
 })
 
+describe('standalone files parse as XML', () => {
+  // An <img> parses SVG strictly. A double hyphen inside a comment is a fatal XML
+  // error that shows as a broken image, though browsers forgive it in inline SVG.
+  const files = { light: readmeWordmarkSvg('light'), dark: readmeWordmarkSvg('dark'), icon: appIconSvg(), favicon: faviconSvg() }
+  for (const [name, svg] of Object.entries(files)) {
+    it(`${name}: comments never contain "--"`, () => {
+      for (const [, body] of svg.matchAll(/<!--([\s\S]*?)-->/g)) expect(body).not.toContain('--')
+    })
+  }
+})
+
 describe('geometry', () => {
   it('sets "caboose" on the advance widths, wheels for o', () => {
     expect(LETTER_X).toEqual([0, 108, 222, 346, 460, 574, 680])
