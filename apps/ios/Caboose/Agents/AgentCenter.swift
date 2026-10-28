@@ -307,9 +307,31 @@ final class AgentCenter {
         await refreshAgents()
     }
 
-    func signIn(_ agentID: String, with method: SignInMethod) async throws {
+    /// Starts a sign-in: on the phone, its page and terminal come to the app (`AgentSignInView`);
+    /// otherwise it opens on the computer's screen.
+    func signIn(_ agentID: String, with method: SignInMethod, onPhone: Bool = true) async throws {
+        guard let host else { throw HostClient.Failure.server(409, "Connect to your computer first.") }
+        try await host.signInAgent(agentID, method: method.id, onPhone: onPhone)
+        await refreshAgents()
+    }
+
+    /// The sign-in's progress as the computer reports it now.
+    func signInStatus(of agentID: String) async throws -> AgentListing.SignInStatus? {
+        guard let host else { throw HostClient.Failure.server(409, "Connect to your computer first.") }
+        let response = try await host.agents()
+        catalog = response.agents.sorted { rank($0) < rank($1) }
+        defaultAgent = response.defaultAgent
+        return listing(agentID)?.signInStatus
+    }
+
+    func deliverSignInCallback(_ agentID: String, url: URL) async throws {
+        guard let host else { throw HostClient.Failure.server(409, "Connect to your computer first.") }
+        try await host.deliverSignInCallback(agentID, url: url)
+    }
+
+    func cancelSignIn(_ agentID: String) async {
         guard let host else { return }
-        try await host.signInAgent(agentID, method: method.id)
+        try? await host.cancelSignIn(agentID)
         await refreshAgents()
     }
 

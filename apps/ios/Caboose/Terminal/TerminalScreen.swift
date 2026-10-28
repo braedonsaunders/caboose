@@ -98,7 +98,7 @@ struct TerminalScreen: View {
 }
 
 /// Hosts the long-lived terminal view, which moves into each new container as the tab is rebuilt.
-private struct TerminalSurface: UIViewRepresentable {
+struct TerminalSurface: UIViewRepresentable {
     let view: CabooseTerminalView
 
     func makeUIView(context: Context) -> UIView {
