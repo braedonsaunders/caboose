@@ -1285,9 +1285,9 @@ delayed-execution policies, persistence/recovery requirements and focused tests.
 | `GET` | `/v1/agents` | The agents this computer can run (below). Never wakes the computer; shows the last known installed state while it is parked |
 | `POST` | `/v1/agents/:id/install` | → `{ agent }`. Prefetch the registry's current version and learn its sign-in methods; can take up to 15 minutes. 404 for an id not in the registry, 409 while the computer is not running or has no runner, 502 when the install fails |
 | `PUT` | `/v1/agents/:id/env` | `{ set?: { NAME: value }, remove?: [NAME] }` → `{ env: [NAME] }`. Names are shell-style; values are one line of at most 8192 characters. 400 for invalid input, 409 while the computer is not running |
-| `POST` | `/v1/agents/:id/sign-in` | `{ methodId, on?: "phone" \| "display" }` → `{ started: true, method: { id, name, description?, type } }`. `on` defaults to `"display"`. A new sign-in replaces the agent's running one. 400 for an unknown method |
-| `POST` | `/v1/agents/:id/sign-in/callback` | `{ url }` → `{ delivered: true, status }`: hands the agent waiting on the computer's loopback the address its sign-in page sent the browser back to. `url` must be `http://localhost:<port>/…` (or `127.0.0.1`, `[::1]`). 400 for any other address, 409 when no sign-in is running, 502 when nothing answers there |
-| `POST` | `/v1/agents/:id/sign-in/cancel` | → `{ cancelled }`: stops the agent's running sign-in |
+| `POST` | `/v1/agents/:id/sign-in` | `{ methodId, on?: "phone" \| "display" }` → `{ started: true, method: { id, name, description?, type }, attempt }`. `on` defaults to `"display"`. Each start is a new attempt that replaces the agent's running one ([Signing in](#signing-in)). 400 for an unknown method |
+| `POST` | `/v1/agents/:id/sign-in/callback` | `{ attempt, url }` → `{ delivered: true, status }`: hands the agent waiting on the computer's loopback the address sign-in `attempt`'s page sent the browser back to. `url` must be `http://localhost:<port>/…` (or `127.0.0.1`, `[::1]`). 400 for any other address or without an attempt, 409 unless `attempt` is the agent's running sign-in on the phone, 502 when nothing answers there |
+| `POST` | `/v1/agents/:id/sign-in/cancel` | `{ attempt }` → `{ cancelled }`: stops the agent's running sign-in if it is `attempt`; `cancelled: false` leaves any other attempt running. 400 without an attempt |
 | `POST` | `/v1/agent/tasks` | `{ prompt, agent?, approvals?: "ask" \| "auto", craftMcp?: boolean, attachments?: [{ name, type?, data (base64) }] }` → `{ id }`. 400 when no agent is given and no default is set; 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | Recent tasks, newest first |
 | `GET` | `/v1/agent/tasks/:id/transcript` | → `{ entries: TranscriptEntry[], truncated }`: every turn of the task's conversation, read from the end of its `transcript.jsonl` (at most 2 MiB; `truncated` when earlier lines were left out). 404 for an unknown task, 409 while the computer is not running |
@@ -1314,7 +1314,7 @@ routes answer 409 while the computer is not running or when its image has no run
     distribution: "npx" | "uvx" | "binary",
     installed: { version: string } | null,
     signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>,  // once known
-    signInStatus?: { methodId: string, status: "running" | "succeeded" | "failed", on?: "phone" | "display",
+    signInStatus?: { methodId: string, status: "running" | "succeeded" | "failed", attempt?: string, on?: "phone" | "display",
                      url?: string, terminal?: string, message?: string, startedAt?: string, finishedAt?: string },
     env?: string[]                               // variable names its environment file sets; never values
   }>,                                            // registry order; installed agents no longer in the registry last
@@ -1409,9 +1409,20 @@ A sign-in runs `on` the phone or the owner's display:
   the host passes to the runner, an `agent` method's page opens in the computer's browser
   and a `terminal` method in a terminal window.
 
-A new sign-in for an agent stops its running one (the runner's process group, and its
-terminal session); `POST /v1/agents/:id/sign-in/cancel` does the same. Progress is reported
-as `signInStatus` in `GET /v1/agents` (`~/.local/share/caboose/agents/<id>/sign-in.json`).
+Every start is a new **attempt**, a UUID the host chooses and returns, recorded in
+`signInStatus.attempt`. Starting replaces the agent's running attempt, whatever its `on`
+and whoever started it; a caller without an attempt (an app from before them) can only
+start. Delivering a callback and cancelling name their attempt and do nothing to any other,
+so a sheet left open from an older attempt never reaches a newer one. In the runner,
+starting, replacing, cancelling, every record of progress and delivering a callback each
+read and act on `sign-in.json` holding the agent's sign-in lock (`sign-in.lock`, created
+exclusively; one whose holder process is gone, that was never written, or that is older than
+two minutes is taken over, through a second lock so only one process takes it). A runner
+records progress only while its attempt is still the agent's; once replaced or cancelled it
+hangs up its terminal session and exits. Stopping an attempt signals the runner's process
+group only after reading the runner's command line to confirm it is that attempt's runner,
+with SIGKILL after three seconds, and hangs up its terminal session. Progress is reported as
+`signInStatus` in `GET /v1/agents` (`~/.local/share/caboose/agents/<id>/sign-in.json`).
 Credentials stay wherever the agent keeps them in the owner's home.
 
 ### The agent seat

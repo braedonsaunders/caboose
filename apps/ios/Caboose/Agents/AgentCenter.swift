@@ -308,11 +308,13 @@ final class AgentCenter {
     }
 
     /// Starts a sign-in: on the phone, its page and terminal come to the app (`AgentSignInView`);
-    /// otherwise it opens on the computer's screen.
-    func signIn(_ agentID: String, with method: SignInMethod, onPhone: Bool = true) async throws {
+    /// otherwise it opens on the computer's screen. Returns its attempt.
+    @discardableResult
+    func signIn(_ agentID: String, with method: SignInMethod, onPhone: Bool = true) async throws -> String? {
         guard let host else { throw HostClient.Failure.server(409, "Connect to your computer first.") }
-        try await host.signInAgent(agentID, method: method.id, onPhone: onPhone)
+        let attempt = try await host.signInAgent(agentID, method: method.id, onPhone: onPhone)
         await refreshAgents()
+        return attempt
     }
 
     /// The sign-in's progress as the computer reports it now.
@@ -324,14 +326,15 @@ final class AgentCenter {
         return listing(agentID)?.signInStatus
     }
 
-    func deliverSignInCallback(_ agentID: String, url: URL) async throws {
+    func deliverSignInCallback(_ agentID: String, attempt: String, url: URL) async throws {
         guard let host else { throw HostClient.Failure.server(409, "Connect to your computer first.") }
-        try await host.deliverSignInCallback(agentID, url: url)
+        try await host.deliverSignInCallback(agentID, attempt: attempt, url: url)
     }
 
-    func cancelSignIn(_ agentID: String) async {
+    /// Stops sign-in `attempt`, if it is still running; a newer one is left alone.
+    func cancelSignIn(_ agentID: String, attempt: String) async {
         guard let host else { return }
-        try? await host.cancelSignIn(agentID)
+        try? await host.cancelSignIn(agentID, attempt: attempt)
         await refreshAgents()
     }
 

@@ -25,6 +25,8 @@ struct AgentSignInView: View {
     enum Pane: Hashable { case page, terminal }
 
     @State private var phase = Phase.starting
+    /// This sheet's sign-in among the agent's: it follows, finishes and cancels only this one.
+    @State private var attempt: String?
     @State private var status: AgentListing.SignInStatus?
     @State private var pane = Pane.page
     @State private var terminal: TerminalModel?
@@ -52,8 +54,11 @@ struct AgentSignInView: View {
         .task(id: attempt) { await run() }
         .onDisappear {
             terminal?.hide()
-            // Leaving before it finished stops it, so nothing waits on the computer.
-            if phase == .running || phase == .starting { Task { await model.agents.cancelSignIn(agentID) } }
+            // Leaving before it finished stops it, so nothing waits on the computer. Only this
+            // sheet's attempt: a newer sign-in for the agent is left running.
+            if phase == .running || phase == .starting, let attempt {
+                Task { await model.agents.cancelSignIn(agentID, attempt: attempt) }
+            }
         }
     }
 
@@ -167,6 +172,7 @@ struct AgentSignInView: View {
     private func run() async {
         let agents = model.agents
         phase = .starting
+        attempt = nil
         status = nil
         answered = []
         terminal?.hide()
@@ -174,7 +180,7 @@ struct AgentSignInView: View {
         // What the computer reported before this sign-in, so a stale result is not taken for its own.
         let before = try? await agents.signInStatus(of: agentID)
         do {
-            try await agents.signIn(agentID, with: method)
+            attempt = try await agents.signIn(agentID, with: method)
         } catch {
             phase = .failed(error.localizedDescription)
             return
@@ -183,8 +189,14 @@ struct AgentSignInView: View {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(1.5))
             guard !Task.isCancelled, phase == .running else { return }
-            guard let current = try? await agents.signInStatus(of: agentID), current.methodId == method.id,
-                  before == nil || current.startedAt != before?.startedAt else { continue }
+            guard let current = try? await agents.signInStatus(of: agentID) else { continue }
+            if let theirs = current.attempt, theirs != attempt {
+                // The previous attempt until this one records itself; after that, a newer one.
+                if theirs == before?.attempt { continue }
+                phase = .failed("Another sign-in to \(name) started, so this one stopped.")
+                return
+            }
+            if current.attempt == nil, before != nil, current.startedAt == before?.startedAt { continue }
             follow(current)
             if phase != .running { return }
         }
@@ -192,7 +204,7 @@ struct AgentSignInView: View {
 
     private func follow(_ current: AgentListing.SignInStatus) {
         // A computer whose runner predates signing in on the phone opens it on its own screen.
-        if current.isRunning, current.on == nil { phase = .onScreen; return }
+        if current.isRunning, current.on == nil || current.attempt == nil { phase = .onScreen; return }
         if current.url != status?.url, current.url != nil { pane = .page }
         if let session = current.terminal, terminal == nil {
             terminal = TerminalModel(pinnedTo: session)
@@ -216,12 +228,12 @@ struct AgentSignInView: View {
     /// The page sent the browser back to the computer's localhost: that answer belongs to the
     /// agent waiting there, so it goes to the computer.
     private func deliver(_ back: URL, for page: String) {
-        guard !delivering, !answered.contains(page) else { return }
+        guard !delivering, !answered.contains(page), let attempt else { return }
         delivering = true
         Task {
             defer { delivering = false }
             do {
-                try await model.agents.deliverSignInCallback(agentID, url: back)
+                try await model.agents.deliverSignInCallback(agentID, attempt: attempt, url: back)
                 answered.insert(page)
                 if terminal != nil { pane = .terminal }
             } catch {
