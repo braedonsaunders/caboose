@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- Plays the check video full-window and reports, in the title, the frame rate the
+     page itself presents (requestVideoFrameCallback), to compare with the stream's. -->
+<meta charset="utf-8">
+<title>video</title>
+<style>html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+video { width: 100vw; height: 100vh; object-fit: contain; }</style>
+<video id="v" autoplay muted loop playsinline></video>
+<script>
+  const v = document.getElementById('v');
+  v.src = new URLSearchParams(location.search).get('src') || 'video.mp4';
+  let frames = 0;
+  const tick = () => { frames++; v.requestVideoFrameCallback(tick); };
+  v.requestVideoFrameCallback(tick);
+  setInterval(() => { document.title = `video ${frames} fps`; frames = 0; }, 1000);
+</script>
