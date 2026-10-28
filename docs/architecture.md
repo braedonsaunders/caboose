@@ -1548,13 +1548,17 @@ truecolor, 256 colours, bold and italic, the alternate screen, mouse reporting, 
 paste and OSC 8 links. CabooseKit holds the protocol (`Terminal/`: messages, closes, keys,
 and `TerminalConnection`, which tracks the output offset); the app holds the view.
 
-- **Look.** Caboose Night: SF Mono on the icon's navy (`#0E1626`) at 82% opacity over the
+- **Look.** Caboose Night: SF Mono on the icon's navy (`#0E1626`) at 50% opacity over the
   wallpaper, cream text, an amber cursor and selection, and a sixteen-colour palette from
   which the 256-colour cube derives. Pinch, or Larger and Smaller Text in the session menu,
   sets the size from 8 to 28 points; it is kept on the phone. Like Desktop, the terminal
   fills the screen beside a vertical sidebar without a title strip or outer margins.
   The grid has a ten-point inset inside its navy background to keep text and the cursor
-  clear of the edges; the keyboard still reduces the grid's height.
+  clear of the edges; one uniform background covers both inset and grid. The keyboard opens
+  when entering Terminal and still reduces the grid's height. A single tap in the middle
+  hides it for reading; another tap shows it again. Links and double-tap selection retain
+  their actions. Sessions and computer lifecycle actions open system action dialogs, so
+  the Duo's toolbar overflow does not constrain a nested menu's height.
 - **Input.** A key row above the keyboard has Esc, Tab, sticky Ctrl and Alt (for the row's
   keys and the keyboard's next one), arrows that repeat while held, `` | ~ / - _ ` \ : * $ ``,
   Home, End, Page Up and Page Down, and Hide Keyboard. Unmodified arrows follow the

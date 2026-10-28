@@ -12,6 +12,7 @@ struct TerminalScreen: View {
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
     @State private var terminal = TerminalModel.shared
     @State private var onScreen = false
+    @State private var sessionsPresented = false
 
     /// The terminal needs the computer, not its display: it wakes the computer itself, and
     /// runs while the display is connecting, has failed or shows on another device. Only a
@@ -29,14 +30,12 @@ struct TerminalScreen: View {
                 TerminalSurface(view: terminal.view)
                     .padding(10)
                     .background {
-                        // Fill only the inset: SwiftTerm already draws the translucent center.
-                        Rectangle().strokeBorder(
-                            Color(uiColor: TerminalTheme.background).opacity(TerminalTheme.backgroundOpacity),
-                            lineWidth: 10)
+                        // One background covers the grid and inset; the renderer is clear.
+                        Color(uiColor: TerminalTheme.background).opacity(TerminalTheme.backgroundOpacity)
                     }
                     .ignoresSafeArea(.container, edges: terminalEdges)
                     .overlay(alignment: .bottom) { TerminalStatusBar(terminal: terminal) }
-                    .onAppear { onScreen = true; attach() }
+                    .onAppear { onScreen = true; attach(showKeyboard: true) }
                     .onDisappear { onScreen = false; terminal.hide() }
             } else {
                 ComputerStateView()
@@ -48,6 +47,17 @@ struct TerminalScreen: View {
         .toolbar(removing: .title)
         .toolbar {
             if computerAvailable { ToolbarItem(placement: .topBarTrailing) { sessionMenu } }
+        }
+        .confirmationDialog("Terminal", isPresented: $sessionsPresented, titleVisibility: .visible) {
+            Button("New Session") { terminal.newSession() }
+            ForEach(terminal.sessions) { session in
+                Button(session.displayName + (session.id == terminal.sessionID ? " ✓" : "")) { terminal.open(session) }
+            }
+            Button("Larger Text") { terminal.adjustTextSize(by: 1) }
+            Button("Smaller Text") { terminal.adjustTextSize(by: -1) }
+            if terminal.sessionID != nil {
+                Button("Close Session", role: .destructive) { terminal.closeSession() }
+            }
         }
         .keepsTabBarInVerticalBar()
         .onChange(of: scenePhase) { _, phase in
@@ -68,42 +78,23 @@ struct TerminalScreen: View {
         }
     }
 
-    private func attach() {
+    private func attach(showKeyboard: Bool = false) {
         terminal.show(host: model.host)
-        // With a hardware keyboard, typing goes straight to the shell; on the phone's own
-        // keyboard a tap brings it up, so the screen is not half covered on arrival.
-        if GCKeyboard.coalesced != nil { DispatchQueue.main.async { _ = terminal.view.becomeFirstResponder() } }
+        if showKeyboard || GCKeyboard.coalesced != nil {
+            DispatchQueue.main.async { _ = terminal.view.becomeFirstResponder() }
+        }
     }
 
     private var sessionMenu: some View {
-        Menu {
-            Button("New Session", systemImage: "plus") { terminal.newSession() }
-            if !terminal.sessions.isEmpty {
-                Section("Sessions") {
-                    ForEach(terminal.sessions) { session in
-                        Button { terminal.open(session) } label: {
-                            if session.id == terminal.sessionID {
-                                Label(session.displayName, systemImage: "checkmark")
-                            } else {
-                                Text(session.displayName)
-                            }
-                            if session.attached, session.id != terminal.sessionID { Text("Open on another device") }
-                        }
-                    }
-                }
-            }
-            Section {
-                Button("Larger Text", systemImage: "textformat.size.larger") { terminal.adjustTextSize(by: 1) }
-                Button("Smaller Text", systemImage: "textformat.size.smaller") { terminal.adjustTextSize(by: -1) }
-            }
-            if terminal.sessionID != nil {
-                Button("Close Session", systemImage: "xmark", role: .destructive) { terminal.closeSession() }
-            }
+        Button {
+            sessionsPresented = true
+            Task { await terminal.refreshSessions() }
         } label: {
             Label("Sessions", systemImage: "terminal")
         }
-        .onAppear { Task { await terminal.refreshSessions() } }
+
     }
+
 }
 
 /// Hosts the long-lived terminal view, which moves into each new container as the tab is rebuilt.

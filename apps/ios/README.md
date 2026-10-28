@@ -167,8 +167,9 @@ Control so ⌘C, ⌘V and ⌘T do what Mac users expect.
 
 The Terminal tab is a native terminal on a shell in the computer, not a streamed window. It
 uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT), pinned in `project.yml`:
-the maintained Swift terminal emulator, with truecolor, a Metal renderer, selection, OSC 8
-links and hardware keyboards on iOS. Its look, key row, gestures, reattach and session menu
+the maintained Swift terminal emulator, with truecolor, selection, OSC 8 links and hardware
+keyboards on iOS. Caboose uses its Core Graphics renderer so default cells remain transparent
+over the terminal background; explicit ANSI backgrounds remain visible. Its look, key row, gestures, reattach and session menu
 are in `docs/architecture.md` § 6 Terminal.
 
 ## Agents
