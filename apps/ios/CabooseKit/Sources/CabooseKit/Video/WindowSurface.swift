@@ -144,6 +144,19 @@ public final class WindowSurface: @unchecked Sendable {
         bump()
     }
 
+    /// The current pixels as an image, for showing a window instantly before its stream resumes.
+    public func snapshot() -> CGImage? {
+        guard let texture else { return nil }
+        let rowBytes = texture.width * 4
+        var pixels = [UInt8](repeating: 0, count: rowBytes * texture.height)
+        texture.getBytes(&pixels, bytesPerRow: rowBytes, from: MTLRegionMake2D(0, 0, texture.width, texture.height), mipmapLevel: 0)
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
+        return CGImage(width: texture.width, height: texture.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: rowBytes,
+                       space: CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
     private func bump() {
         lock.lock()
         generation &+= 1

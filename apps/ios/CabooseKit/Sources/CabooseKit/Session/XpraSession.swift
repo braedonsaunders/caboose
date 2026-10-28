@@ -96,6 +96,9 @@ public final class XpraSession {
     public var onBell: (() -> Void)?
     public var onRaise: ((Int) -> Void)?
     public var onOpenURL: ((URL) -> Void)?
+    /// A cached last frame for a window id, shown until the server's first draw arrives.
+    /// Xpra keeps window ids stable across reconnects, so this makes resuming look instant.
+    public var cachedFrame: ((Int) -> CGImage?)?
 
     private let url: URL
     private let token: String
@@ -268,6 +271,7 @@ public final class XpraSession {
             transport?.send(packet)
         }
         pipelines[wid] = pipeline
+        if let frame = cachedFrame?(wid) { pipeline.seed(frame) }
         let window = RemoteWindow(id: wid, frame: frame, overrideRedirect: overrideRedirect, surface: pipeline.surface)
         window.apply(metadata: metadata)
         windows[wid] = window
