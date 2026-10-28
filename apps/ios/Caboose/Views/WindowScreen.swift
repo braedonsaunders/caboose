@@ -8,6 +8,7 @@ struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @State private var chromeVisible = true
     @State private var verticalEdge: HorizontalEdge?
+    @State private var enteredVerticalLayout = false
     @State private var askingAbout: RemoteWindow?
     @State private var showingApps = false
     @State private var showingOptions = false
@@ -37,9 +38,13 @@ struct WindowScreen: View {
             .toolbarVisibility(chromeVisible ? .automatic : .hidden, for: .navigationBar)
             .toolbarBackground(toolbarBackground, for: .navigationBar)
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-            .onChange(of: verticalEdge) { old, edge in
-                if old == nil && edge != nil { chromeVisible = false }
-                if old != nil && edge == nil { chromeVisible = true }
+            .onChange(of: verticalEdge) { _, edge in
+                // Hiding the native bar can clear its environment edge. It must not
+                // reveal itself again in response to its own visibility change.
+                if edge != nil && !enteredVerticalLayout {
+                    enteredVerticalLayout = true
+                    chromeVisible = false
+                }
             }
             .overlay(alignment: .top) { ApprovalBanner().padding(.top, 8) }
             .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
@@ -235,7 +240,7 @@ struct WindowScreen: View {
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
             if verticalEdge != nil {
-                Button("Hide window controls", systemImage: "rectangle.expand.vertical") {
+                Button("Hide Sidebar", systemImage: verticalEdge == .leading ? "sidebar.left" : "sidebar.right") {
                     withAnimation(.snappy) { chromeVisible = false }
                 }
                 .labelStyle(.iconOnly)
@@ -342,7 +347,14 @@ private struct WindowCardViewport<Content: View>: View {
         GeometryReader(content: content)
             .ignoresSafeArea(.container, edges: ignoredEdges)
             .onAppear { verticalEdge = barEdge }
-            .onChange(of: barEdge) { _, edge in verticalEdge = edge }
+            .onChange(of: barEdge) { _, edge in
+                // Keep the reveal edge while hidden; read current placement again
+                // when controls are visible after a fold or orientation change.
+                if controlsVisible || edge != nil { verticalEdge = edge }
+            }
+            .onChange(of: controlsVisible) { _, visible in
+                if visible { verticalEdge = barEdge }
+            }
     }
 
     private var ignoredEdges: Edge.Set {

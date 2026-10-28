@@ -499,40 +499,42 @@ struct SignInRow: View {
             Label("\(agents.name(of: task)) isn't signed in on your computer.", systemImage: "person.crop.circle.badge.exclamationmark")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            ScrollView(.horizontal) {
-                HStack(spacing: 8) {
-                    ForEach(methods) { method in
-                        Button {
-                            Task {
-                                do {
-                                    try await agents.signIn(task.agent, with: method)
-                                    started = "Finish signing in on your computer's screen, then reply to try again."
-                                } catch {
-                                    started = error.localizedDescription
-                                }
-                            }
-                        } label: {
-                            Label(methods.count == 1 ? "Sign In" : method.name, systemImage: method.type == "terminal" ? "terminal" : "person.badge.key")
-                        }
-                        .buttonStyle(.glass)
-                    }
-                    Button(action: connectModel) { Label("Use Another Model", systemImage: "key") }
+            HStack(spacing: 8) {
+                if methods.count == 1, let method = methods.first {
+                    Button { signIn(with: method) } label: { Label("Sign In", systemImage: "person.badge.key") }
                         .buttonStyle(.glassProminent)
-                    if !others.isEmpty {
-                        Menu {
-                            ForEach(others) { agent in
-                                Button(agent.name) { Task { await agents.retry(task, with: agent.id) } }
-                            }
-                        } label: {
-                            Label("Ask Another Agent", systemImage: "arrow.triangle.branch")
+                } else {
+                    Menu {
+                        ForEach(methods) { method in
+                            Button(method.name, systemImage: method.type == "terminal" ? "terminal" : "person.badge.key") { signIn(with: method) }
                         }
-                        .buttonStyle(.glass)
-                    }
+                    } label: { Label("Sign In", systemImage: "person.badge.key") }
+                    .buttonStyle(.glassProminent)
                 }
+                Menu {
+                    ForEach(others) { agent in
+                        Button(agent.name) { Task { await agents.retry(task, with: agent.id) } }
+                    }
+                    Section { Button("Use Another Model…", systemImage: "key", action: connectModel) }
+                } label: {
+                    Label("Ask Another", systemImage: "arrow.triangle.branch")
+                }
+                .buttonStyle(.glass)
             }
-            .scrollIndicators(.hidden)
-            .scrollClipDisabled()
+            .controlSize(.small)
+            .font(.caption.weight(.semibold))
             if let started { Text(started).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+
+    private func signIn(with method: SignInMethod) {
+        Task {
+            do {
+                try await model.agents.signIn(task.agent, with: method)
+                started = "Finish signing in on your computer's screen, then reply to try again."
+            } catch {
+                started = error.localizedDescription
+            }
         }
     }
 }
