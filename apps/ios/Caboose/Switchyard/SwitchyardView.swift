@@ -32,6 +32,9 @@ struct SwitchyardView: View {
                     cover(window, screen: proxy.size)
                         .zIndex(4)
                 }
+                popups(model.session?.windows ?? [:], keyTarget: yard.keyTarget(in: model.session?.windows ?? [:]),
+                       size: yard.coverWindow == nil ? area : proxy.size)
+                    .zIndex(4.5)
                 if yard.overviewOpen {
                     YardOverview(yard: yard)
                         .frame(width: proxy.size.width, height: proxy.size.height)
@@ -86,7 +89,6 @@ struct SwitchyardView: View {
                 }
             }
             handles
-            popups(windows, keyTarget: keyTarget)
             edges
             if yard.layout.isEmpty {
                 YardLauncher(yard: yard, inline: true)
@@ -121,6 +123,7 @@ struct SwitchyardView: View {
         return YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: p > 0 || yard.stretches(window.id),
                            keyboard: model.keyboardVisible && keyTarget == window.id) {}
             .frame(width: rect.width, height: rect.height)
+            .background(.black)
             .clipShape(RoundedRectangle(cornerRadius: yard.metrics.cornerRadius * p + 28 * p * (1 - p), style: .continuous))
             .shadow(color: .black.opacity(0.4 * p), radius: 24, y: 10)
             .overlay(alignment: .top) { coverHandle(screen: screen).opacity(1 - p) }
@@ -213,11 +216,10 @@ struct SwitchyardView: View {
     /// Menus, tooltips and dialogs float above the tiles where the computer put them: a tile's
     /// Linux position is where it is on screen, so they line up with their window.
     @ViewBuilder
-    private func popups(_ windows: [Int: RemoteWindow], keyTarget: Int?) -> some View {
+    private func popups(_ windows: [Int: RemoteWindow], keyTarget: Int?, size: CGSize) -> some View {
         let scale = yard.pixelsPerPoint
-        let size = yard.metrics.size
         ForEach(windows.values.filter(\.isAuxiliary).sorted { $0.id < $1.id }) { popup in
-            let width = popup.frame.width / scale, height = popup.frame.height / scale
+            let width = min(size.width, popup.frame.width / scale), height = min(size.height, popup.frame.height / scale)
             let x = min(max(0, popup.frame.minX / scale), max(0, size.width - width))
             let y = min(max(0, popup.frame.minY / scale), max(0, size.height - height))
             YardSurface(window: popup, pixelsPerPoint: scale, stretch: false,

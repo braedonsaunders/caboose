@@ -42,6 +42,9 @@ final class YardModel {
             guard storageKey != oldValue else { return }
             memory = YardMemory.decoded(from: storageKey.flatMap { UserDefaults.standard.data(forKey: $0) })
             scroll = 0
+            zoomed = nil
+            coverProgress = 0
+            invalidate()
         }
     }
 
@@ -118,6 +121,10 @@ final class YardModel {
         }
         sent = sent.filter { windows[$0.key] != nil }
         settling = settling.filter { windows[$0.key] != nil }
+        if let zoomed, windows[zoomed] == nil {
+            self.zoomed = nil
+            coverProgress = 0
+        }
         placedDialogs.formIntersection(windows.keys)
         if layout != before {
             if let focused = layout.focused, layout.focused != before.focused { reveal(focused) }
@@ -153,7 +160,7 @@ final class YardModel {
         sent[window.id] = target
         guard window.frame != target else { return }
         if window.frame.size != target.size { settle(window.id) }
-        session.configure(window, frame: target)
+        session.configure(window, frame: target, state: ["maximized": false])
     }
 
     /// Stretches the window's last picture over its new tile until Linux redraws it at that
@@ -177,13 +184,15 @@ final class YardModel {
     private func fitDialog(_ dialog: RemoteWindow, parent: RemoteWindow?) {
         guard let session else { return }
         let scale = pixelsPerPoint
-        let around = parent.flatMap { tiles[$0.id] } ?? CGRect(origin: .zero, size: metrics.size)
+        let available = coverWindow == nil || screenSize == .zero ? metrics.size : screenSize
+        let bounds = CGRect(origin: .zero, size: available)
+        let around = parent.flatMap { $0.id == coverWindow ? bounds : tiles[$0.id] } ?? bounds
         let margin: CGFloat = 12
-        let width = min(dialog.frame.width / scale, metrics.size.width - 2 * margin)
-        let height = min(dialog.frame.height / scale, metrics.size.height - 2 * margin)
+        let width = min(dialog.frame.width / scale, max(1, available.width - 2 * margin))
+        let height = min(dialog.frame.height / scale, max(1, available.height - 2 * margin))
         var origin = CGPoint(x: around.midX - width / 2, y: around.midY - height / 2)
-        origin.x = min(max(margin, origin.x), metrics.size.width - margin - width)
-        origin.y = min(max(margin, origin.y), metrics.size.height - margin - height)
+        origin.x = min(max(margin, origin.x), available.width - margin - width)
+        origin.y = min(max(margin, origin.y), available.height - margin - height)
         let target = CGRect(x: origin.x * scale, y: origin.y * scale, width: width * scale, height: height * scale).integral
         if dialog.frame != target { session.configure(dialog, frame: target) }
         session.focus(dialog)

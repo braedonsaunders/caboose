@@ -43,7 +43,7 @@ struct DesktopScreen: View {
             .toolbarVisibility(immersive ? .hidden : .automatic, for: .navigationBar, .tabBar)
             .statusBarHidden(immersive)
             .persistentSystemOverlays(immersive ? .hidden : .automatic)
-            .overlay(alignment: .top) { if fullScreen { exitFullScreenHandle } }
+            .overlay(alignment: .top) { if fullScreen && model.yard.coverWindow == nil { exitFullScreenHandle } }
             .animation(.snappy, value: immersive)
             .onChange(of: model.phase) { _, phase in if phase != .ready { fullScreen = false } }
             .sheet(isPresented: $showAirPlay) {

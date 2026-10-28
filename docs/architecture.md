@@ -1218,6 +1218,10 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   to the phone, and a swipe in from either side edge goes to the next or previous open app
   in the order they opened. An external display shows the windows floating, resizing and
   stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
+  The green title-bar button maximizes above the dock: its title bar meets the desktop's
+  top edge, and its content ends eight UI-scaled points above the dock. Rotation and UI
+  scaling update this area. Maximizing and restoring clear the guest's maximized state
+  so it uses the client-provided size, while an app's own full-screen request is preserved.
   Transient windows (menus, dialogs, tooltips) are positioned relative to their parent,
   never as separate cards.
 - **Switchyard.** Without an external display the Desktop tab tiles the windows on the
@@ -1229,17 +1233,23 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   an iPad three. New windows open beside the focused one and share the screen evenly until
   it is full, then take columns of their own. Each tile's on-screen rect is that window's Linux geometry
   (`configure`), so apps lay out at the tile's size and popups land over their tile; a
-  resize stretches the last picture until the new one arrives, and drags send geometry at
+  resize stretches the entire last picture without cropping until the new one arrives, and drags send geometry at
   most about eight times a second. The gaps resize (snapping to the presets, with haptic
-  detents), the grabber at a tile's top carries it to a new column, into a stack or onto
-  another tile, and opens its menu (width, full screen card, ask an agent, redraw,
-  close). A window whose own minimum is wider than its tile is shown whole, scaled to fit.
+  detents). The grabber at a tile's top carries it to a new column, into a stack or onto
+  another tile; a tap gives the tile the keyboard, two taps zoom it to full screen, and a
+  long press opens its menu (full screen, width, open as a card, ask an agent, redraw,
+  close). Full screen is edge to edge: the bars, the dock, the status bar and the home
+  indicator step aside, the window is configured to the whole display, and a pull down
+  from the small tab at its top edge shrinks it back into its tile under the finger. An
+  app asking for full screen gets the same, and is told when it is pulled back. Menus and
+  dialogs appear above the covering window and fit within the display. A window
+  whose own minimum is wider than its tile is shown whole, scaled to fit.
   The dock stays along the bottom under the tiles: the everyday apps, one car per column
   (tap to go to it, slide along them to move along the track), Overview (every window, tap
   to go, swipe up to close) and All Apps. The side edges also move along the track.
-  ⌘⌥ with the arrows moves focus, with ⇧ moves the window, and R, F, W, O, A and Return
-  cycle the width, toggle full width, close, open Overview, open an app and open a
-  terminal; ⌘⌥ reaches Linux as Ctrl+Alt, so plain ⌘ stays the apps' Ctrl. The layout
+  ⌘⌥ with the arrows moves focus, with ⇧ moves the window, and R, F, ⇧F, W, O, A and
+  Return cycle the width, toggle full screen, toggle full width, close, open Overview, open
+  an app and open a terminal; ⌘⌥ reaches Linux as Ctrl+Alt, so plain ⌘ stays the apps' Ctrl. The layout
   and each app's hand-chosen width are kept per computer (window ids survive reconnects
   and parking). The layout engine is `CabooseKit/Switchyard` and is unit-tested.
 - **Lifecycle.** The display socket closes when the app goes to the background; the
@@ -1295,9 +1305,11 @@ Pinned and recent apps are kept on the phone per computer.
 
 ### Input
 
-- **Touch.** Native Wayland windows take real multi-touch. Xwayland windows get pointer
+- **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap cancels
+  the touch sequence and sends a right-click with a brief amber ring and haptic. Xwayland windows get pointer
   gestures: tap, drag and long press, with a two-finger tap or a long press for a right
-  click and swipes that scroll with momentum. A tap shows the keyboard when the app
+  click (an amber ring blooms where it lands, with a tick) and swipes that scroll with
+  momentum. A tap shows the keyboard when the app
   answers it with a text cursor or text-input-v3 focus, and hides it otherwise. Dialogs are
   fitted and centred on the phone.
 - **Pointer.** A hardware trackpad and mouse work through `UIPointerInteraction` and

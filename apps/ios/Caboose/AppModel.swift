@@ -345,7 +345,9 @@ final class AppModel {
             desktop.sync(with: Array(session.windows.values))
             for (index, window) in appWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
                 placedWindowIDs.insert(window.id)
-                session.configure(window, frame: desktop.remembered(window) ?? desktop.placement(for: window, index: index))
+                let frame = desktop.isZoomed(window.id) ? desktop.maximizedFrame
+                    : desktop.remembered(window) ?? desktop.placement(for: window, index: index)
+                session.configure(window, frame: frame, state: ["maximized": false])
                 desktop.raise(window.id)
             }
             // Dialogs and tool windows: over their parent, or centred, never left at the origin.

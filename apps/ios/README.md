@@ -80,8 +80,10 @@ its offset, is replaced by a second connection, exits, and checks the closes tha
 
 ## Checking Switchyard on a device
 
-The layout is unit-tested (`swift test --filter SwitchyardTests`); the gestures and the
-picture need a device with the computer awake. On the Desktop tab, with three apps open:
+The layout and work-area geometry are unit-tested (`swift test --filter 'SwitchyardTests|DesktopGeometryTests'`).
+Run `sh scripts/check-desktop.sh` for the real-device checks, including external-display
+maximizing and browser controls. The gestures and picture need a device with the computer
+awake. On the Desktop tab, with three apps open:
 
 1. Upright iPhone: one full-width column; the side edges and the dock's cars move between
    columns, and the lit car follows. Drag a grabber to the bottom quarter of another tile: they stack.
@@ -91,6 +93,9 @@ picture need a device with the computer awake. On the Desktop tab, with three ap
    hardware keyboard (hold ⌘ to see them listed). Plain ⌘C still copies in the app.
 4. Open a menu and a dialog in a tile: both appear over that tile. Park and wake: the same
    columns come back.
+5. Tap a grabber twice: the window zooms to the whole screen with no bars. Pull the tab at the
+   top edge down: it shrinks back into its tile. Two fingers tapped on a window right-click,
+   with a ring where they landed.
 
 ## How it renders
 
@@ -133,7 +138,9 @@ its texture into a `CAMetalLayer` only when a picture changed it.
 ## How input works
 
 Native Wayland windows take real multi-touch: every finger is a touch slot and each UIKit
-event is one touch frame, so pinch, swipe and long-press are the app's own. Apple Pencil is a
+event is one touch frame, so pinch, swipe and long-press are the app's own. A two-finger tap
+cancels that native touch sequence and sends a right-click, with a brief ring and haptic.
+Apple Pencil is a
 tablet with pressure, tilt and azimuth on every coalesced sample, and hover on iPads that
 have it. X11 windows (through Xwayland) take pointer gestures, since X11 apps turn a touch
 drag into a selection: swipe scrolls with momentum, tap clicks, double-tap double-clicks, a
