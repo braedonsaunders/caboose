@@ -1095,8 +1095,13 @@ specified in `guest/agentd/README.md`; in short:
 - The host writes `task.json` `{ agent: <resolved spec>, cwd, approvals, idleMs,
   craftServers }`, prompts as `inbox/<turn, 6 digits>.prompt.json`, cancels as
   `inbox/cancel-<n>.json`, and decisions as `approvals/<requestId>.decision`. The runner
-  writes `transcript.jsonl`, `draft.json`, `approvals/<requestId>.json` and `session`; the launch script
-  records `pid` and `exit-code`. Every file is written whole and renamed into place.
+  writes `transcript.jsonl`, `draft.json`, `approvals/<requestId>.json`, `session` and
+  `receipts/<turn>.json`; the launch script records `pid` and `exit-code`. The host's
+  `delivery.json` journal stores ordered admitted replies, operation fingerprints and the
+  current delivery intent and monotonic turn count; `deliveries/<turn>.json` retains each
+  published prompt. Journal and prompt publication use file fsync, atomic rename and directory fsync. A runner creates
+  an exclusive, fsynced claim before removing an inbox prompt or calling ACP, and atomically
+  records completion after fsync of the terminal transcript event.
 - `initialize` advertises file reads and writes (resolved paths, refused outside
   `/home/caboose`, at most 10 MB), no terminals, and terminal sign-in.
 - Each turn is `session/prompt` with a text block, and each attachment as an `image` block
@@ -1106,7 +1111,8 @@ specified in `guest/agentd/README.md`; in short:
   (`continuity: new | resume | load | recap`), `text` and `thought`, `tool` and
   `tool_update` (title, kind, status), `plan`, `mode`, `permission`, `usage`, and exactly
   one of `turn_end` (ACP `stopReason` and the turn's last message as `summary`),
-  `turn_failed` or `auth_required` per turn, each with its turn number.
+  `turn_failed` or `auth_required` per completed turn, each with its turn number. Interrupted
+  runners leave an incomplete claim rather than fabricating a terminal result.
 - While a message or thought is arriving, the runner atomically saves `draft.json` at most
   every 200 ms: `{ turn, after, kind: "text" | "thought", text }`, with at most the last
   16000 characters and `after` the transcript byte position before that message. It removes
@@ -1126,7 +1132,11 @@ specified in `guest/agentd/README.md`; in short:
   `defaultAgent`. The ids `claude` and `codex` are accepted as `claude-acp` and
   `codex-acp`. The host resolves the agent (installed version first), starts the agent seat,
   writes the attachments, `task.json` and the first prompt, and starts the runner. The
-  task's `prompt` stays as the owner wrote it.
+  task's `prompt` stays as the owner wrote it. Internally,
+  `AgentTasks.start(input, options?: { id?: string })` accepts a canonical lowercase UUID.
+  Repeating that id finds its persisted task, including after a lost launch response; a
+  different original payload conflicts. Without an id the host generates one. The task
+  directory is admitted by renaming a fully staged directory before launching its runner.
 - **Approvals.** With `approvals: "ask"`, each ACP `session/request_permission` becomes
   `approvals/<requestId>.json` `{ tool, kind, summary, input, options: [{ id, name, kind }],
   requestedAt }` and waits, with no time limit (the task's lease keeps the computer awake),
@@ -1144,12 +1154,23 @@ specified in `guest/agentd/README.md`; in short:
   turns. Output the earlier turn writes after it was cancelled is not shown as the new
   turn's. A reply to a running or paused task waits in the task's `queued` list (at most 10
   replies, 32000 characters, four files and 10 MB decoded together). Files are staged in
-  distinct per-message directories; queue metadata stays in host memory, so a host restart
-  drops waiting replies. When the turn ends, everything waiting goes to the agent as one turn, the replies
+  distinct per-message directories and flushed before the queue journal commits. Admission
+  is persisted before success is returned, and both replies and files survive a host restart.
+  An optional `operationId` is an opaque, task-local string of 1–200 characters without
+  control characters. Repeating it with the original prompt and file names, types and
+  contents returns the existing task without adding a reply or turn; a changed payload
+  conflicts. Task ids and reply operations compare the original request fields, independently
+  of later registry or default-agent changes. Each task retains at most 2048 operation
+  records in a journal bounded to 1 MiB; new admissions beyond either limit conflict.
+  Queue admission, cancellation, Send Now and delivery transitions are serialized per task;
+  polling cannot dispatch a second copy of a claimed transition.
+  When the turn ends, everything waiting goes to the agent as one turn, the replies
   separated by blank lines, under the same lease and without an `agent.task.finished` for
   the turn in between. Cancel drops what is waiting; a turn that ends signed out keeps it
   for the next reply, which sends it first. Send Now cancels the current turn and delivers
-  the waiting prompts and their staged files together, retaining the queue if delivery fails.
+  the waiting prompts and their staged files together, retaining durable admission if
+  delivery fails. An intent precedes publication, and a published batch remains in the
+  journal until a matching receipt or transcript proves it was taken.
 - **Cancel** writes a cancel to the inbox. The runner sends `session/cancel`, answers
   waiting permission requests `cancelled`, and ends the turn with
   `stopReason: "cancelled"`; an agent that has not stopped after 15 s is terminated, and
@@ -1162,13 +1183,24 @@ specified in `guest/agentd/README.md`; in short:
 - **Polling.** While any task is live the host runs one guest command per second for all of
   them: new transcript bytes from each task's offset (1 MiB per tick shared between tasks,
   read as base64 so offsets stay exact), the runner's exit code, and pending approval
-  requests. A runner that exits before its turn ends fails the task with the end of its
-  stderr.
+  requests. Turn boundaries trigger bounded journal and receipt reconciliation. A runner
+  that exits before its turn ends fails the task; a claim or ambiguous delivery reports
+  uncertainty, while an unclaimed failure retains the end of its stderr.
 - **Restore.** Each task directory records its agent, prompt, approval mode and turn
   count, so a restarted host rebuilds the task list from the guest: a task whose last turn
   ended is finished with that turn's result, one whose runner is still working takes the
-  lease again, and either can be replied to. A task directory without `task.json` is listed
-  but cannot be continued.
+  lease again, and either can be replied to. Recovery reads every task directory, restores
+  admitted replies in order and resumes proven unclaimed delivery. Completion receipts or
+  terminal transcript events reconcile runners loaded before an upgrade, which do not emit
+  receipts. Their ambiguous `turn_failed` events remain uncertain, because they cannot
+  distinguish an execution interruption from a reported error. A missing inbox by itself
+  never proves delivery. An interrupted claim, an agent process dying during ACP, or
+  publication without an inbox or result becomes a failed task
+  with `delivery: { turn, state: "uncertain", message }`; its intent and remaining replies
+  stay on disk. This task does not send further replies: inspect its transcript and published
+  prompt before starting another task, because external actions may already have happened.
+  Corrupt or oversized journals block mutation instead of discarding their contents. A task
+  directory without `task.json` is listed but cannot be continued.
 - **Lifetime.** Tasks keep running while the phone is locked. The host holds a lease while
   any task is running or paused, so the computer is not parked under a working agent.
 
@@ -1181,7 +1213,7 @@ specified in `guest/agentd/README.md`; in short:
 | `POST` | `/v1/agent/tasks` | `{ prompt, agent?, approvals?: "ask" \| "auto", craftMcp?: boolean, attachments?: [{ name, type?, data (base64) }] }` → `{ id }`. 400 when no agent is given and no default is set; 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | Recent tasks, newest first |
 | `GET` | `/v1/agent/tasks/:id/transcript` | → `{ entries: TranscriptEntry[], truncated }`: every turn of the task's conversation, read from the end of its `transcript.jsonl` (at most 2 MiB; `truncated` when earlier lines were left out). 404 for an unknown task, 409 while the computer is not running |
-| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt, attachments?: [{ name, type?, data (base64) }] }` → `{ task }`. While the task is running or paused the reply waits in `task.queued`. 409 for a task that cannot be continued or when too much is already waiting; 404 for an unknown task |
+| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt, attachments?: [{ name, type?, data (base64) }], operationId? }` → `{ task }`. While the task is running or paused the reply waits in `task.queued`. 409 for a task that cannot be continued or when too much is already waiting; 404 for an unknown task |
 | `POST` | `/v1/agent/tasks/:id/send-now` | → `{ task }`. Stops the current turn and sends its queued prompts and files immediately. 409 when nothing is waiting or a next turn is already starting; 404 for an unknown task |
 | `POST` | `/v1/agent/tasks/:id/approvals/:requestId` | `{ allow: boolean, message?, optionId? }` → `{ resolved }`; `false` when that request is no longer waiting |
 | `POST` | `/v1/agent/tasks/:id/cancel` | → `{ cancelled }` |
@@ -1231,7 +1263,8 @@ A task record:
   signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>,  // when the agent was signed out
   queued?: string[],              // replies waiting for the current turn to end, oldest first
   queuedAttachments?: string[][], // guest file paths, aligned with queued
-  draft?: { turn: number, kind: "text" | "thought", text: string } // live, replaceable message snapshot
+  draft?: { turn: number, kind: "text" | "thought", text: string }, // live, replaceable message snapshot
+  delivery?: { turn: number, state: "uncertain", message: string }
 }
 ```
 

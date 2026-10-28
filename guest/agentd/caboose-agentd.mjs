@@ -15,7 +15,7 @@ import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createWriteStream, existsSync, readFileSync } from 'node:fs'
 import {
-  appendFile, chmod, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile,
+  appendFile, chmod, mkdir, open, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile,
 } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -348,11 +348,11 @@ function errorMessage(error) {
 /** Sign-in methods as clients see them: id, name, description and kind. Unknown kinds are left out. */
 export function publicAuthMethods(methods) {
   if (!Array.isArray(methods)) return []
-  return methods.flatMap(method => {
+  return methods.slice(0, 20).flatMap(method => {
     if (!method || typeof method.id !== 'string' || typeof method.name !== 'string') return []
     const type = method.type === undefined || method.type === null || method.type === 'agent' ? 'agent' : method.type === 'terminal' ? 'terminal' : undefined
     if (!type) return []
-    return [{ id: method.id, name: method.name, ...(typeof method.description === 'string' && method.description ? { description: method.description } : {}), type }]
+    return [{ id: method.id.slice(0, 200), name: method.name.slice(0, 200), ...(typeof method.description === 'string' && method.description ? { description: method.description.slice(0, 500) } : {}), type }]
   })
 }
 
@@ -413,8 +413,25 @@ async function writeTextFile({ path, content }) {
 
 async function writeJson(path, value) {
   const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.tmp`)
-  await writeFile(temporary, JSON.stringify(value))
+  const handle = await open(temporary, 'w', 0o600)
+  try { await handle.writeFile(JSON.stringify(value)); await handle.sync() } finally { await handle.close() }
   await rename(temporary, path)
+  await syncDirectory(dirname(path))
+}
+
+async function syncDirectory(path) {
+  const handle = await open(path, 'r')
+  try { await handle.sync() } finally { await handle.close() }
+}
+
+async function readBoundedFile(path, max) {
+  const handle = await open(path, 'r')
+  try {
+    const buffer = Buffer.alloc(max + 1)
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+    if (bytesRead > max) throw new Error('Oversized stored agent message')
+    return buffer.subarray(0, bytesRead).toString('utf8')
+  } finally { await handle.close() }
 }
 
 async function readJson(path) {
@@ -427,12 +444,13 @@ async function readJson(path) {
 class Transcript {
   constructor(path) { this.path = path; this.chain = Promise.resolve() }
   write(event) {
+    if (['turn_end', 'turn_failed', 'auth_required'].includes(event.type)) this.lastResult = event
     const line = JSON.stringify({ ...event, at: new Date().toISOString() }) + '\n'
     return this.then(() => appendFile(this.path, line), 'transcript write')
   }
   /** Runs `step` after every write before it, so files written alongside stay in order. */
   then(step, what) {
-    this.chain = this.chain.then(step).catch(error => console.error(`${what} failed:`, error))
+    this.chain = this.chain.then(step).catch(error => { this.error ??= error; console.error(`${what} failed:`, error) })
     return this.chain
   }
   flushed() { return this.chain }
@@ -662,7 +680,7 @@ export function recapFrom(lines, beforeTurn) {
   return `This task continues an earlier conversation that could not be reloaded. A recap of it:\n\n${parts.join('\n\n')}\n\nThe new request follows.\n\n`
 }
 
-class Task {
+export class Task {
   constructor(dir) {
     this.dir = dir
     this.inbox = join(dir, 'inbox')
@@ -699,9 +717,41 @@ class Task {
 
   async take(name) {
     const path = join(this.inbox, name)
-    const text = await readFile(path, 'utf8').catch(() => undefined)
-    await unlink(path).catch(() => {})
-    try { return JSON.parse(text) } catch { return undefined }
+    const text = await readBoundedFile(path, 262144).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
+    if (text === undefined) return undefined
+    let message
+    try { message = JSON.parse(text) } catch { throw new Error('Invalid inbox JSON') }
+    if (message?.type === 'prompt') {
+      if (!Number.isSafeInteger(message.turn) || message.turn < 1 || message.turn > 999999
+          || typeof message.text !== 'string' || !message.text.trim() || message.text.length > 32000
+          || (message.deliveryId !== undefined && (typeof message.deliveryId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(message.deliveryId)))
+          || (message.attachments !== undefined && (!Array.isArray(message.attachments) || message.attachments.length > 4
+            || message.attachments.some(file => !file || typeof file.path !== 'string' || !isAbsolute(file.path) || file.path.length > 1024
+              || typeof file.name !== 'string' || file.name.length > 255 || (file.mimeType !== undefined && (typeof file.mimeType !== 'string' || file.mimeType.length > 255)))))) throw new Error('Invalid prompt message')
+      const receipts = join(this.dir, 'receipts')
+      await mkdir(receipts, { recursive: true })
+      await syncDirectory(this.dir)
+      const receiptPath = join(receipts, `${String(message.turn).padStart(6, '0')}.json`)
+      // Exclusive durable claim precedes unlink and every ACP call. An existing claim is
+      // never rerun, even if the previous runner died before writing its first user event.
+      let handle
+      try { handle = await open(receiptPath, 'wx', 0o600) } catch (error) {
+        if (error.code !== 'EEXIST') throw error
+        const prior = await readBoundedFile(receiptPath, 131072).then(text => JSON.parse(text)).catch(() => undefined)
+        if (prior?.state === 'completed' && prior.turn === message.turn && prior.deliveryId === (message.deliveryId ?? null)) {
+          await unlink(path); await syncDirectory(this.inbox); return undefined
+        }
+        throw new Error(`Turn ${message.turn} has an existing claim without a confirmed result; delivery is uncertain and is not replayed.`)
+      }
+      try {
+        await handle.writeFile(JSON.stringify({ turn: message.turn, deliveryId: message.deliveryId ?? null, state: 'claimed' }))
+        await handle.sync()
+      } finally { await handle.close() }
+      await syncDirectory(receipts)
+    }
+    await unlink(path)
+    await syncDirectory(this.inbox)
+    return message
   }
 
   /** The next prompt, or undefined once `waitMs` passes with none. Cancels between turns do nothing. */
@@ -723,6 +773,16 @@ class Task {
     let message = await this.nextPrompt(STARTUP_WAIT_MS)
     while (message) {
       const keepGoing = await this.runTurn(message)
+      // Flush the terminal event before acknowledging completion. A crash or failed fsync
+      // leaves a claim, which recovery reports as uncertain instead of repeating effects.
+      await this.transcript.flushed()
+      if (this.interrupted) throw new Error('Runner interrupted')
+      if (this.transcript.error) throw this.transcript.error
+      const transcript = await open(join(this.dir, 'transcript.jsonl'), 'r')
+      try { await transcript.sync() } finally { await transcript.close() }
+      await writeJson(join(this.dir, 'receipts', `${String(message.turn).padStart(6, '0')}.json`), {
+        turn: message.turn, deliveryId: message.deliveryId ?? null, state: 'completed', result: this.transcript.lastResult,
+      })
       if (!keepGoing) break
       message = await this.nextPrompt(this.idleMs)
     }
@@ -897,7 +957,7 @@ class Task {
   /** Runs one prompt turn to its end. Returns false when the runner should stop (signed out). */
   async runTurn(message) {
     this.turn = message.turn
-    this.transcript.write({ type: 'user', turn: message.turn, text: clip(message.text, 32_000),
+    await this.transcript.write({ type: 'user', turn: message.turn, text: clip(message.text, 32_000),
       ...(Array.isArray(message.attachments) && message.attachments.length ? { attachments: message.attachments.map(file => file?.path).filter(path => typeof path === 'string') } : {}) })
     let cancelled = false
     let watcher
@@ -941,15 +1001,16 @@ class Task {
       await this.transcript.write({ type: 'turn_end', turn: message.turn, stopReason, summary })
       return true
     } catch (caught) {
+      if (this.interrupted) throw caught
       let error = caught
       if (agent && !isAuthRequired(error) && !(error instanceof AgentExited)) error = await agent.exitError(1000) ?? error
       this.normaliser.end()
       if (isAuthRequired(error)) {
         const methods = this.agent?.init?.authMethods ?? []
-        await this.transcript.write({ type: 'auth_required', turn: message.turn, message: errorMessage(error), authMethods: publicAuthMethods(methods) })
+        await this.transcript.write({ type: 'auth_required', turn: message.turn, message: clip(errorMessage(error), MAX_SUMMARY), authMethods: publicAuthMethods(methods) })
         return false
       }
-      await this.transcript.write({ type: 'turn_failed', turn: message.turn, message: clip(errorMessage(error), MAX_SUMMARY) })
+      await this.transcript.write({ type: 'turn_failed', turn: message.turn, message: clip(errorMessage(error), MAX_SUMMARY), ...(error instanceof AgentExited ? { uncertain: true } : {}) })
       if (!this.agent || error instanceof AgentExited) { await this.agent?.close(); this.agent = null; this.sessionId = null }
       return true
     } finally {
@@ -1127,7 +1188,8 @@ async function main(argv) {
     if (!argument || !isAbsolute(argument)) throw new Error('run needs an absolute task directory')
     const task = new Task(argument)
     const stop = async signal => {
-      await task.fail(new Error('Stopped.')).catch(() => {})
+      task.interrupted = true
+      await task.transcript.write({ type: 'notice', text: 'Runner interrupted; the active turn may have performed external actions. Delivery is uncertain and is not replayed.' }).catch(() => {})
       await task.agent?.close().catch(() => {})
       await task.transcript.flushed()
       process.exit(signal === 'SIGTERM' ? 143 : 130)
