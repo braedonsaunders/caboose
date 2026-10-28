@@ -60,6 +60,10 @@ the module, GL players fall back to decoding locally).
 
 ## Apps
 
+The image includes Mesa Vulkan and OpenGL software drivers for applications that need
+software rendering. The on-demand app catalog and Shelf are not yet available, so
+the existing base application lineup remains installed.
+
 `apps.sh` is the same idempotent installer used by the image builder and existing
 Debian 13 amd64 computers. To upgrade an existing guest, copy it into the guest and
 run `sudo bash apps.sh`. It does not reboot the computer. Debian packages come

@@ -7,7 +7,7 @@ docker build -t caboose-computer:gpu -f guest/container/Dockerfile guest
 ```
 
 The image uses Debian 13, the signed Xpra repository at version 6.5.5, Mesa,
-the guest app installer, and Xpra NVENC with PyCUDA. `CABOOSE_GPU=wsl` selects
+the guest app installer, Mesa Vulkan and OpenGL software drivers, and Xpra NVENC with PyCUDA. `CABOOSE_GPU=wsl` selects
 Mesa D3D12 and enables NVENC when WSL exposes NVIDIA; `nvidia` uses native
 NVIDIA, `dri` uses a Linux render node, and `none` uses software rendering. It extracts
 the signed Debian `python3-pycuda` package and installs its runtime libraries

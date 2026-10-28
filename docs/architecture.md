@@ -73,7 +73,8 @@ base swap.
   Thunar, Mousepad, LibreOffice, Obsidian, document, media and image tools; developer
   tools including Git, Neovim, Lazygit, Lazydocker, btop, mise and modern shell tools;
   and the Claude Code, Codex, OpenCode and Gemini CLI agents. Terminal tools and agents
-  have desktop launchers. Fonts: Inter, JetBrains Mono and Noto (incl. CJK, emoji).
+  have desktop launchers. Mesa Vulkan and OpenGL software drivers are included. Fonts:
+  Inter, JetBrains Mono and Noto (incl. CJK, emoji).
 - **Agent runner.** `caboose-agentd` (`/opt/caboose/agentd`, Node with the pinned ACP
   TypeScript SDK) runs any Agent Client Protocol agent for a task; `uv` is installed for
   agents published as Python packages. See Agents.
