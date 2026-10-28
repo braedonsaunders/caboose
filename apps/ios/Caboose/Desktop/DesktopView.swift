@@ -6,6 +6,8 @@ import SwiftUI
 struct DesktopView: View {
     @Environment(AppModel.self) private var model
     let desktop: DesktopModel
+    /// A TV's desktop covers the whole screen; the phone's stays inside the bars.
+    var fillsScreen = true
 
     var body: some View {
         GeometryReader { proxy in
@@ -41,7 +43,8 @@ struct DesktopView: View {
             .onDisappear { WallpaperStore.shared.stop() }
             .onChange(of: proxy.size) { _, size in desktop.size = size }
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: fillsScreen ? .all : [])
+        .clipped()
     }
 }
 

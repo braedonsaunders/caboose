@@ -2,88 +2,79 @@ import CabooseKit
 import SwiftUI
 import UIKit
 
-/// The Mac-like desktop on this phone's or iPad's own screen. Home stays the launcher; this
-/// is the computer's whole desktop when you want windows side by side.
-struct DeviceDesktopScreen: View {
+/// The Desktop tab: the computer's whole desktop on this screen, windows side by side with
+/// the dock and Launchpad; or, while a TV shows the desktop, this phone as its trackpad.
+///
+/// Its actions sit in the toolbar, so on iPhone Duo they join the tab bar in the vertical bar
+/// on the side, and the tab bar gives way to them first when space runs short. The desktop
+/// itself fills the safe area: the computer lays its windows out for exactly the space left
+/// beside the vertical bar, or between the top and bottom bars.
+struct DesktopScreen: View {
+    @Environment(AppModel.self) private var model
+    @State private var showAgents = false
+    @State private var showAirPlay = false
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if model.phase != .ready {
+                    ComputerStateView().background { Backdrop() }
+                } else if model.externalDisplayActive {
+                    TrackpadScreen(desktop: model.desktop).background { Backdrop() }
+                } else {
+                    DesktopStage()
+                }
+            }
+            .navigationTitle("Desktop")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { if model.phase == .ready { actions } }
+            .prefersToolbarItemsInVerticalBar()
+            .sheet(isPresented: $showAgents) {
+                AgentsScreen(dismiss: { showAgents = false }).environment(model)
+            }
+            .sheet(isPresented: $showAirPlay) {
+                AirPlaySheet().environment(model)
+                    .presentationDetents([.medium])
+            }
+        }
+    }
+
+    @ToolbarContentBuilder private var actions: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button(model.keyboardVisible ? "Hide Keyboard" : "Keyboard",
+                   systemImage: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard") {
+                model.keyboardVisible.toggle()
+            }
+            if !model.externalDisplayActive {
+                Button("Apps", systemImage: "square.grid.3x3") {
+                    withAnimation(.snappy) { model.desktop.launchpadOpen.toggle() }
+                }
+            }
+            Button("Agents", systemImage: "sparkles") { showAgents = true }
+                .badge(model.agents.awaitingApproval.count)
+        }
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button("AirPlay", systemImage: model.airPlay.current != nil ? "airplay.audio" : "airplay.video") { showAirPlay = true }
+            Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
+        }
+    }
+}
+
+/// The phone's own desktop in the space the tab gives it.
+private struct DesktopStage: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack(alignment: .topTrailing) {
-                DesktopView(desktop: model.desktop)
+            ZStack {
+                DesktopView(desktop: model.desktop, fillsScreen: false)
                 DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
-                    .ignoresSafeArea()
-                controls
-                    .padding(.top, max(8, proxy.safeAreaInsets.top))
-                    .padding(.trailing, max(10, proxy.safeAreaInsets.trailing))
             }
-            .onChange(of: proxy.size) { _, _ in model.deviceDesktopResized(to: fullSize(proxy)) }
+            .onAppear { model.desktopStageResized(to: proxy.size) }
+            .onChange(of: proxy.size) { _, size in model.desktopStageResized(to: size) }
         }
-        .ignoresSafeArea()
-        .statusBarHidden()
-        .persistentSystemOverlays(.hidden)
-    }
-
-    private func fullSize(_ proxy: GeometryProxy) -> CGSize {
-        CGSize(width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
-               height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom)
-    }
-
-    private var controls: some View {
-        HStack(spacing: 8) {
-            Button { model.keyboardVisible.toggle() } label: {
-                Image(systemName: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
-                    .frame(width: 36, height: 36)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel(model.keyboardVisible ? "Hide keyboard" : "Show keyboard")
-            Button { withAnimation(.smooth) { model.closeDeviceDesktop() } } label: {
-                Image(systemName: "square.grid.2x2").frame(width: 36, height: 36)
-            }
-            .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel("Back to Home")
-        }
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(.white)
-    }
-}
-
-/// Home's way in: a desktop, so it looks like one, apart from the app grid.
-struct DesktopCard: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        Button {
-            let bounds = UIScreen.main.bounds
-            withAnimation(.smooth) { model.openDeviceDesktop(size: bounds.size) }
-        } label: {
-            HStack(spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(red: 0.25, green: 0.35, blue: 0.6), Color(red: 0.55, green: 0.3, blue: 0.45)],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                    // Two little windows and a dock: the desktop at a glance.
-                    VStack(spacing: 3) {
-                        HStack(alignment: .top, spacing: 4) {
-                            RoundedRectangle(cornerRadius: 2).fill(.white.opacity(0.85)).frame(width: 26, height: 18)
-                            RoundedRectangle(cornerRadius: 2).fill(.white.opacity(0.6)).frame(width: 18, height: 24)
-                        }
-                        Capsule().fill(.white.opacity(0.45)).frame(width: 34, height: 5)
-                    }
-                }
-                .frame(width: 64, height: 46)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Desktop").font(.headline)
-                    Text("Your windows side by side, with the dock and Launchpad")
-                        .font(.footnote).foregroundStyle(.secondary).lineLimit(2)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
-            }
-            .padding(12)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 20))
-        }
-        .buttonStyle(.plain)
+        .background(Color.black.ignoresSafeArea())
     }
 }
 

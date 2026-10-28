@@ -1,5 +1,6 @@
-import SwiftUI
+import CabooseKit
 import CoreSpotlight
+import SwiftUI
 
 @main
 struct CabooseApp: App {
@@ -15,7 +16,7 @@ struct CabooseApp: App {
                 .onOpenURL { url in
                     if url.isFileURL { model.documents.receive(url) }
                     else if let credentials = Credentials(link: url) { model.connect(with: credentials) }
-                    else if url.scheme == "caboose", url.host == "task", let id = url.pathComponents.dropFirst().first { model.notificationTaskID = id }
+                    else if let link = ShellLink(url) { model.follow(link) }
                 }
                 .onContinueUserActivity(CSSearchableItemActionType) { activity in
                     guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String else { return }
@@ -42,37 +43,16 @@ struct RootView: View {
     var body: some View {
         ZStack {
             Backdrop()
-            switch model.phase {
-            case .needsSetup:
+            if model.phase == .needsSetup {
                 SetupView()
-            case .waking, .connecting:
-                WakeView(connecting: model.phase == .connecting)
-            case .restarting:
-                RestartingView()
-            case .parked:
-                ParkedView()
-            case .failed(let message):
-                FailureView(message: message)
-            case .displayElsewhere:
-                ElsewhereView()
-            case .ready where model.externalDisplayActive:
-                TrackpadScreen(desktop: model.desktop)
-            case .ready where model.deviceDesktopActive:
-                DeviceDesktopScreen()
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
-            case .ready:
-                HomeView()
-                    .fullScreenCover(isPresented: Binding(
-                        get: { model.presentedWindowID != nil },
-                        set: { if !$0 { model.presentedWindowID = nil } })) {
-                        WindowScreen()
-                            .environment(model)
-                    }
+            } else {
+                MainTabs()
             }
         }
-        .animation(.smooth(duration: 0.35), value: model.phase)
+        .animation(.smooth(duration: 0.35), value: model.phase == .needsSetup)
         .overlay(alignment: .top) {
-            if model.phase == .ready, !model.externalDisplayActive { ApprovalBanner() }
+            // Home and Agents answer approvals in place; the other tabs get the banner.
+            if model.phase == .ready, !model.externalDisplayActive, [.desktop, .apps].contains(model.selectedTab) { ApprovalBanner() }
         }
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
         .sheet(item: Binding(get: { model.phase == .ready ? model.documents.pending : nil }, set: { _ in })) { item in
