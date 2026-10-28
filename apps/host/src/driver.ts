@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { createDeskHost, createCloudHypervisorBackend, type DeskHandle, type DeskBackend, type DeskHost, type DeskHostOptions } from '@braedonsaunders/appkit-desk'
 import type { Config } from './config.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
+import { TERMINAL_PORT } from './terminal.js'
 import { configureGuest, ensureNetwork, networkSlot, removeNetwork } from './network.js'
 import type { App, Controller, Session } from './server.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
@@ -92,6 +93,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     displayUrl: `ws://${address.guest}:${OWNER_DISPLAY_PORT}/`,
     agentDisplayUrl: `ws://${address.guest}:${AGENT_DISPLAY_PORT}/`,
     fileService: () => ({ url: `http://${address.guest}:14700`, token: displayToken }),
+    terminalService: () => ({ url: `http://${address.guest}:${TERMINAL_PORT}`, token: displayToken }),
     async ensureAgentSeat() {
       // Same per-wake token and user as the owner's display; started only when wanted.
       await startDisplay('caboose-display-agent.service', AGENT_DISPLAY_PORT)

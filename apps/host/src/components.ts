@@ -78,7 +78,7 @@ export async function upgradeComponents(guest: AgentGuest, mode: ComponentsMode,
     } else if (mode === 'container') {
       await guest.run('/usr/local/libexec/caboose-components-services', [], 70_000)
     } else {
-      await guest.run('/bin/sh', ['-c', 'systemctl start caboose-files.service; for i in $(seq 1 60); do systemctl is-active --quiet caboose-files.service && ss -lnt | grep -Eq ":14700[[:space:]]" && exit 0; sleep 1; done; echo file-service-not-ready >&2; exit 1'], 70_000)
+      await guest.run('/bin/sh', ['-c', 'systemctl start caboose-files.service caboose-terminal.service; for i in $(seq 1 60); do systemctl is-active --quiet caboose-files.service && ss -lnt | grep -Eq ":14700[[:space:]]" && exit 0; sleep 1; done; echo file-service-not-ready >&2; exit 1'], 70_000)
     }
     onStatus({ state: 'succeeded', version: payload.version })
   } catch (error) {

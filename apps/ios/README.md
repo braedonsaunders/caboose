@@ -7,8 +7,9 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 
 | Path | What |
 | --- | --- |
-| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input. |
-| `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and, when built in, Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
+| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input. |
+| `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
+| `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, SwiftTerm's view in the Caboose look and the key row above the keyboard. |
 | `Caboose/Brand/` | The logo drawn natively in SwiftUI. It shares geometry and timing with `apps/web/src/brand/brand.ts`; change both together. `scripts/render-app-icon.sh` renders the app icon from the same SVG (macOS). |
 | `Share/` | The share extension (target `CabooseShare`). |
 | `Files/` | The File Provider extension that shows the computer in the Files app. |
@@ -23,6 +24,10 @@ cp Caboose/Config/Local.xcconfig.example Caboose/Config/Local.xcconfig   # optio
 xcodegen generate
 open Caboose.xcodeproj
 ```
+
+The Terminal tab uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT), whose
+package runs a small build plug-in. Xcode asks once to **Trust & Enable** it; command-line
+builds pass `-skipPackagePluginValidation` to `xcodebuild`.
 
 Set your own team in `project.yml` (`DEVELOPMENT_TEAM`) to run on a device. The extensions'
 bundle ids are the app's plus a suffix (`.share`, `.files`, `.widgets`). All of them sign
@@ -66,6 +71,11 @@ computer (through a host), connects, waits for every window's keyframe, ticks vs
 features, the windows, pictures per second, failed decodes and the round trip.
 `CABOOSE_SOUND_CHECK=1 swift test --filter LiveSound` measures sound against picture on
 the compositor's sound test page.
+
+The terminal's protocol, keys and connection are unit-tested over a fake transport. Against
+a real host, `CABOOSE_HOST_URL=… CABOOSE_HOST_TOKEN=… swift test --filter LiveTerminal`
+opens a terminal over URLSession as the app does, runs a command, resizes, reattaches from
+its offset, is replaced by a second connection, exits, and checks the closes that follow.
 
 ## How it renders
 
@@ -127,6 +137,14 @@ follows the app's own text-input state, and the field's purpose turns autocorrec
 terminals and password fields. Where the app supports text input, marked text (Chinese,
 Japanese, Korean) is a real preedit. Hardware keys are sent as keys, with ⌘ mapped to
 Control so ⌘C, ⌘V and ⌘T do what Mac users expect.
+
+## Terminal
+
+The Terminal tab is a native terminal on a shell in the computer, not a streamed window. It
+uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT), pinned in `project.yml`:
+the maintained Swift terminal emulator, with truecolor, a Metal renderer, selection, OSC 8
+links and hardware keyboards on iOS. Its look, key row, gestures, reattach and session menu
+are in `docs/architecture.md` § 6 Terminal.
 
 ## Agents
 

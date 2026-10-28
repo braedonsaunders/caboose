@@ -21,6 +21,7 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | `src/network.ts` | Each guest's TAP device and /30, NAT and the network fence. |
 | `src/agents.ts`, `src/registry.ts`, `src/agent-catalog.ts` | Agent tasks, the Agent Client Protocol registry, and agent install and sign-in. |
 | `src/fs-proxy.ts`, `src/files.ts` | `/v1/fs` and `/v1/files`, through the guest's file service. |
+| `src/terminal.ts` | `/v1/terminal`: the terminal relay to the guest's terminal service, its control messages and session routes. |
 | `src/screen.ts` | `/v1/screen/*`, the owner's display through its accessibility tree. |
 | `src/app-catalog*.ts`, `src/craft-jobs.ts` | The optional application catalog and Craft CLI jobs. |
 | `src/media.ts`, `src/phone.ts`, `src/desktop-notifications.ts` | Media handoff, iOS handoff, and desktop notifications from the guest. |
@@ -224,7 +225,7 @@ agent. The owner's guest has address `192.0.2.2` on the TAP device `caboose0`.
 **Container** (`CABOOSE_RUNTIME=container`). For a GPU a container can use but a VM cannot:
 WSL2's `/dev/dxg`, an NVIDIA GPU through the NVIDIA container toolkit, or Linux render nodes.
 The host runs the image on its own Docker network with public DNS, publishes the displays
-(14600, 14601) and the file service (14700) on loopback only, mounts the home volume, passes
+(14600, 14601), the file service (14700) and the terminal service (14701) on loopback only, mounts the home volume, passes
 the GPU (`/dev/udmabuf` too, when the host has it), and drives the computer with
 `docker exec` and the image's `caboose-session start | ready | start-agent | start-files`.
 Parking freezes the container (`docker pause`): memory stays in RAM and waking is immediate,
@@ -294,6 +295,17 @@ The list is captured when the task is created.
 token). Streaming requests wake the computer and hold a lease until the transfer finishes.
 The route, precondition, Trash and change-feed contract is in `docs/architecture.md` § Files.
 
+`/v1/terminal` ([`src/terminal.ts`](src/terminal.ts), `docs/architecture.md` § Terminal) is a
+WebSocket per terminal, relayed to the guest's terminal service
+([`guest/terminal`](../../guest/terminal/README.md), port 14701, authenticated with the
+per-wake token). It wakes the computer only with `wake=1`, holds a lease while open, allows 8
+per client (the owner, or each phone), closes after 15 minutes with nothing either way,
+pauses each side until the other has flushed, and checks every JSON control message in both
+directions. Sessions outlive their connection; `GET /v1/terminal/sessions` lists them and
+`DELETE /v1/terminal/sessions/:id` hangs one up. A container created before the terminal
+existed has no port for it, so the host reaches the service on the container's bridge
+address.
+
 `/v1/screen/elements`, `act`, `type` and `keys` (`src/screen.ts`, `docs/architecture.md`
 § Screen) read and drive the owner's display, Wayland and X11 applications alike. They run
 `/opt/caboose/a11y.py` and `/opt/caboose/seat.py`
@@ -362,8 +374,8 @@ disposable-guest check, and `check-upgrade.mjs` (below) the real-host one.
 These run against a deployed host with a built guest, are separate from the unit tests, and
 change the computer as described. Except for `check-push.mjs`, each reads
 `CABOOSE_OWNER_TOKEN` and `CABOOSE_URL` from the environment; keep the token in your private
-environment, not in shell history. `check-fs.mjs`, `check-craft.mjs` and `check-open-app.sh`
-require `CABOOSE_URL`; the others default to `http://127.0.0.1:7310`. Run them from the repository root with Node 22.
+environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-craft.mjs` and
+`check-open-app.sh` require `CABOOSE_URL`; the others default to `http://127.0.0.1:7310`. Run them from the repository root with Node 22.
 
 | Command | What it checks |
 | --- | --- |
@@ -373,6 +385,7 @@ require `CABOOSE_URL`; the others default to `http://127.0.0.1:7310`. Run them f
 | `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |
 | `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk; the owner's computer is only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
+| `node apps/host/scripts/check-terminal.mjs` | Opens a terminal through `/v1/terminal` (waking the computer), checks the login shell's environment, resizes, lists the session, detaches, reattaches from its offset and receives what was written meanwhile, then exits the shell with a code. A failed check hangs the session up. |
 | `node apps/host/scripts/check-fs.mjs` | Creates a temporary directory, uploads, lists, downloads a byte range, moves, and trashes its files and the directory. |
 | `node apps/host/scripts/check-agents.mjs [--agent <id>] [--install] [--open]` | Saves a file to `~/Downloads`, lists the registry, and runs a real task with the given agent (default: the computer's default agent) that asks before acting with an attachment, approves it through the API, and replies. The agent must be signed in; `--install` installs it first; `--open` also opens https://example.com on the owner's display. |
 | `node apps/host/scripts/check-craft.mjs <app> <files…>` | Runs a Craft job (`photocraft`, `pdfcraft`, `lightcraft`, `filmcraft`) on the given files, checks the output signature and moves the job directory to Trash. FilmCraft media must already be on the computer at the paths in the project. Failed jobs remain for inspection. |
@@ -387,5 +400,5 @@ Debian 13 container where the real `caboose-agentd`, installed by its own `insta
 drives a stand-in ACP agent.
 
 `guest/desktop-mcp/check-a11y.sh` covers the accessibility helper behind the screen routes,
-`guest/media-handoff/check.sh` the media handoff guest, and `guest/files/check-service.py`
-the file service; see their READMEs.
+`guest/media-handoff/check.sh` the media handoff guest, `guest/files/check-service.py` the
+file service, and `guest/terminal/check-service.py` the terminal service; see their READMEs.

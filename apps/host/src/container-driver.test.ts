@@ -3,7 +3,8 @@ import { config } from './config.js'
 import { containerPlacement, createContainerController, detectGpu, gpuArgs, type Docker } from './container-driver.js'
 import { DISPLAY_ENV } from './display.test.js'
 
-function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
+/** `published` are the container ports Docker reports as mapped; the bridge address is 172.18.0.2. */
+function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited', published = ['14700', '14701']) {
   let status = initial
   const calls: string[][] = []
   const docker: Docker = async args => {
@@ -12,6 +13,7 @@ function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
       case 'inspect':
         if (status === 'missing') throw new Error('No such object')
         if (args.includes('{{json .HostConfig}}')) return '{"Memory":4294967296,"NanoCpus":2000000000}'
+        if (args.some(arg => arg.includes('.IPAddress'))) return '172.18.0.2\n'
         return `${status}\n`
       case 'run': status = 'running'; return 'id\n'
       case 'start': case 'unpause': status = 'running'; return ''
@@ -19,7 +21,11 @@ function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
       case 'stop': status = 'exited'; return ''
       case 'rm': status = 'missing'; return ''
       case 'network': return ''
-      case 'port': return '127.0.0.1:14700\n'
+      case 'port': {
+        const port = args[2]!.split('/')[0]!
+        const host = { '14700': args[1] === 'caboose-owner' ? '14700' : '20032', '14701': args[1] === 'caboose-owner' ? '14701' : '20033' }[port]
+        return published.includes(port) ? `127.0.0.1:${host}\n` : ''
+      }
       case 'exec':
         if (args.includes('list')) return '[]'
         if (args.includes('/run/caboose/display.env')) return DISPLAY_ENV
@@ -44,12 +50,21 @@ describe('createContainerController', () => {
     expect(session.display.token).toMatch(/^[0-9a-f]{64}$/)
     const run = fake.calls.find(call => call[0] === 'run')!
     expect(run).toEqual(expect.arrayContaining(['--device', '/dev/dxg', 'CABOOSE_GPU=wsl', '-v', '/srv/caboose/home:/home/caboose', '--memory', '6144m', '--cpus', '4',
-      '-p', '127.0.0.1:14600:14600', '-p', '127.0.0.1:14601:14601', '--security-opt', 'seccomp=unconfined', 'caboose-computer:gpu']))
+      '-p', '127.0.0.1:14700:14700', '-p', '127.0.0.1:14701:14701', '-p', '127.0.0.1:14600:14600', '-p', '127.0.0.1:14601:14601', '--security-opt', 'seccomp=unconfined', 'caboose-computer:gpu']))
     expect(run.at(-1)).toBe('caboose-computer:gpu')
     const execs = fake.calls.filter(call => call[0] === 'exec').map(call => call.slice(4).join(' '))
     expect(execs[0]).toContain('/run/caboose/display-token')
     expect(execs).toEqual(expect.arrayContaining(['/usr/local/bin/caboose-session start', '/usr/local/bin/caboose-session ready']))
     expect(controller.guest()).toBeDefined()
+    expect(controller.terminalService?.()).toEqual({ url: 'http://127.0.0.1:14701', token: session.display.token })
+  })
+
+  it('reaches the terminal on the bridge address of a container created without its port', async () => {
+    const fake = fakeDocker('paused', ['14700'])
+    const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
+    await controller.wake()
+    expect(controller.terminalService?.().url).toBe('http://172.18.0.2:14701')
+    expect(controller.componentsWarning?.()).toBeUndefined()
   })
 
   it('launches apps with the owner display\'s launch environment, and starts the agent seat on demand', async () => {
@@ -175,10 +190,10 @@ describe('container network fence', () => {
 
   it("gives every other computer its own container, home, network and ports, and keeps the owner's", async () => {
     expect(containerPlacement(settings, { id: 'owner', slot: 0 })).toEqual({
-      name: 'caboose-owner', home: '/srv/caboose/home', network: 'caboose', bridge: 'caboose-br0', ports: { display: 14600, agent: 14601, files: 14700 },
+      name: 'caboose-owner', home: '/srv/caboose/home', network: 'caboose', bridge: 'caboose-br0', ports: { display: 14600, agent: 14601, files: 14700, terminal: 14701 },
     })
     expect(containerPlacement(settings, { id: 'c-0123456789', slot: 3 })).toEqual({
-      name: 'caboose-c-0123456789', home: '/srv/caboose/home-c-0123456789', network: 'caboose-3', bridge: 'caboose-br3', ports: { display: 20030, agent: 20031, files: 20032 },
+      name: 'caboose-c-0123456789', home: '/srv/caboose/home-c-0123456789', network: 'caboose-3', bridge: 'caboose-br3', ports: { display: 20030, agent: 20031, files: 20032, terminal: 20033 },
     })
     const fake = fakeDocker('missing')
     const fenced: string[] = []
@@ -186,9 +201,10 @@ describe('container network fence', () => {
     await controller.wake()
     const run = fake.calls.find(call => call[0] === 'run')!
     expect(run).toEqual(expect.arrayContaining(['--name', 'caboose-c-0123456789', '--network', 'caboose-3', '-v', 'caboose-home-c-0123456789:/home/caboose',
-      '-p', '127.0.0.1:20030:14600', '-p', '127.0.0.1:20031:14601', '-p', '127.0.0.1:20032:14700']))
+      '-p', '127.0.0.1:20030:14600', '-p', '127.0.0.1:20031:14601', '-p', '127.0.0.1:20032:14700', '-p', '127.0.0.1:20033:14701']))
     expect(controller.displayUrl).toBe('ws://127.0.0.1:20030/')
     expect(controller.fileService?.().url).toBe('http://127.0.0.1:20032')
+    expect(controller.terminalService?.().url).toBe('http://127.0.0.1:20033')
     await controller.destroy!()
     expect(fake.calls.filter(call => ['rm', 'volume', 'network'].includes(call[0]!)).map(call => call.join(' '))).toEqual(expect.arrayContaining([
       'rm -f caboose-c-0123456789', 'volume rm -f caboose-home-c-0123456789', 'network rm caboose-3',

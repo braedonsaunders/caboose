@@ -92,6 +92,8 @@ it (see [Updating a running computer](#updating-a-running-computer)).
   - [`guest/agentd`](../agentd/README.md): the agent runner in `/opt/caboose/agentd`;
   - [`guest/files`](../files/README.md): the file service and `caboose-files.service`
     (installed, started by the host at each wake);
+  - [`guest/terminal`](../terminal/README.md): the terminal service and
+    `caboose-terminal.service` (enabled);
   - [`guest/notifications`](../notifications/README.md): the owner's notification monitor
     (`caboose-notifications.service`, enabled) and the notification endpoints and agent bus
     the display units require;
@@ -176,4 +178,5 @@ Against a deployed host (see [`apps/host`](../../apps/host/README.md#real-host-c
 
 The components have their own checks: `guest/desktop-mcp/check-a11y.sh` (Docker),
 `guest/notifications/check.sh` and `check-container.sh`, `guest/phone/check.sh`,
-`guest/media-handoff/check.sh`, and `guest/files/check-service.py`.
+`guest/media-handoff/check.sh`, `guest/files/check-service.py` and
+`guest/terminal/check-service.py`.

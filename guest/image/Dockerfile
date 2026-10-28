@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eat
 COPY image/build-inside.sh image/configure-guest.sh image/apps.sh /builder/
 COPY components /builder/components
 COPY files /builder/files
+COPY terminal /builder/terminal
 COPY desktop-mcp /builder/desktop-mcp
 COPY notifications /builder/notifications
 

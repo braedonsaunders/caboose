@@ -1,0 +1,15 @@
+[Unit]
+Description=Caboose terminals
+
+[Service]
+User=caboose
+Group=caboose
+Environment=HOME=/home/caboose
+ExecStart=/usr/bin/python3 /opt/caboose/terminal/caboose-terminal.py
+# Stopping the service closes every terminal, which hangs up its shell; what a shell
+# started with nohup or setsid keeps running, as after a dropped SSH connection.
+KillMode=process
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

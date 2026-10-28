@@ -45,6 +45,7 @@ for p in proc sys dev; do mount --rbind "/$p" "$work/root/$p"; mount --make-rsla
 cp /builder/configure-guest.sh /builder/apps.sh "$work/root/tmp/"
 cp -r /builder/components "$work/root/tmp/components"
 cp -r /builder/files "$work/root/tmp/files"
+cp -r /builder/terminal "$work/root/tmp/terminal"
 cp -r /builder/desktop-mcp "$work/root/tmp/desktop-mcp"
 cp -r /builder/display "$work/root/tmp/caboose-display"
 cp -r /builder/agentd "$work/root/tmp/agentd"
@@ -55,7 +56,7 @@ chroot "$work/root" /usr/bin/env LD_PRELOAD=/usr/local/lib/libeatmydata.so.1 /bi
 cp "$(ls "$work/root"/boot/vmlinuz-* | sort -V | tail -1)" "$work/vmlinux"
 cp "$(ls "$work/root"/boot/initrd.img-* | sort -V | tail -1)" "$work/initrd"
 rm -f "$work/root/usr/local/lib/libeatmydata.so.1" "$work/root/etc/dpkg/dpkg.cfg.d/99-caboose-build" "$work/root/etc/dpkg/dpkg.cfg.d/99-build-speed"
-rm -rf "$work/root/tmp/components" "$work/root/tmp/notifications" "$work/root/tmp/desktop-mcp" "$work/root/tmp/caboose-display" "$work/root/tmp/agentd" "$work/root/tmp/files" "$work/root/tmp/phone"
+rm -rf "$work/root/tmp/components" "$work/root/tmp/notifications" "$work/root/tmp/desktop-mcp" "$work/root/tmp/caboose-display" "$work/root/tmp/agentd" "$work/root/tmp/files" "$work/root/tmp/terminal" "$work/root/tmp/phone"
 rm "$work/root/tmp/configure-guest.sh" "$work/root/tmp/apps.sh"
 # Complete update work after the final /usr changes to avoid a slow first boot.
 chroot "$work/root" /sbin/ldconfig
