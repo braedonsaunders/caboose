@@ -17,7 +17,7 @@ RUN cd /src && cargo build --release --locked -p caboose-display -p caboose-disp
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      xvfb xwayland xauth x11-utils xdotool wmctrl imagemagick dbus dbus-x11 at-spi2-core \
+      xvfb xwayland libegl1 libgl1-mesa-dri xauth x11-utils xdotool wmctrl imagemagick dbus dbus-x11 at-spi2-core \
       python3 python3-gi python3-pyatspi gir1.2-gtk-3.0 gsettings-desktop-schemas \
       libglib2.0-bin mousepad chromium nodejs fonts-dejavu-core procps \
       libpixman-1-0 libxkbcommon0 libavcodec61 libavformat61 libavutil59 libswscale8 && \
