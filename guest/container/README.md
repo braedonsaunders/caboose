@@ -20,6 +20,13 @@ mounts a persistent home, and runs `caboose-session` to start Xpra. The owner
 seat is `:100` on WebSocket port 14500; the agent seat starts lazily on `:101`
 and port 14501. Both use `/run/caboose/xpra-token`. `caboose-session ready`
 waits for Xpra to answer, and `start` and `start-agent` are safe to repeat.
+Like the microVM's units, `caboose-session` starts Xpra with the apps' accessibility
+switched back on (`--env=NO_AT_BRIDGE=0 --start-env=GTK_A11Y=atspi`, and
+`ACCESSIBILITY_ENABLED`, `GNOME_ACCESSIBILITY` and `QT_LINUX_ACCESSIBILITY_ALWAYS_ON`, also
+in the image's environment) and starts each display's own accessibility bus before any app
+(`a11y.py bus`), so the desktop tools and `/v1/screen` read each display separately even
+though both share the container's session bus. See `guest/desktop-mcp/README.md`; its
+`check-a11y.sh` exercises this under Docker without a GPU.
 
 With the host session running, run `docker exec -u root caboose-owner bash -s <
 guest/container/check.sh` to check the live Xpra encoder and MP3 dependencies.

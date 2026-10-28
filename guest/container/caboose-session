@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 export HOME=/home/caboose
+# Accessibility trees for a11y.py: Chromium and Electron, Firefox, Qt.
+export ACCESSIBILITY_ENABLED=1 GNOME_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 case ${CABOOSE_GPU:-none} in
   wsl)
     export GALLIUM_DRIVER=d3d12 XPRA_PYCUDA_WSL=1
@@ -24,14 +26,22 @@ if [ ! -S /run/dbus/system_bus_socket ]; then dbus-daemon --system --fork; fi
 if [ ! -S "$XDG_RUNTIME_DIR/bus" ]; then
   runuser -u caboose -- dbus-daemon --session --address="unix:path=$XDG_RUNTIME_DIR/bus" --fork
 fi
+# Start the display's accessibility bus before any app, so every app on it joins that bus
+# (see guest/desktop-mcp/README.md). Safe to repeat; an app still runs without it.
+a11y_bus() {
+  runuser -u caboose -- env HOME="$HOME" DISPLAY="$1" python3 /opt/caboose/a11y.py bus --display "$1" --wait 30 >/dev/null ||
+    echo "No accessibility bus for $1" >&2
+}
 start_display() {
   local display=$1 port=$2 speaker=$3
-  if runuser -u caboose -- env DISPLAY="$display" xpra info "$display" >/dev/null 2>&1; then return; fi
+  if runuser -u caboose -- env DISPLAY="$display" xpra info "$display" >/dev/null 2>&1; then a11y_bus "$display"; return; fi
+  # Xpra's packaged config switches GTK's accessibility bridge off for the apps it starts.
   runuser -u caboose -- env HOME="$HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     xpra seamless "$display" --daemon=yes --bind-ws="0.0.0.0:$port" \
     --ws-auth=file:filename=/run/caboose/xpra-token --html=off --clipboard=on \
     --notifications=on --file-transfer=on --mdns=off --printing=off --webcam=off \
-    --speaker="$speaker" --microphone=off
+    --speaker="$speaker" --microphone=off --env=NO_AT_BRIDGE=0 --start-env=GTK_A11Y=atspi
+  a11y_bus "$display"
 }
 ready() {
   local display=$1

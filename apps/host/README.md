@@ -77,6 +77,11 @@ the guest only through the driver's `guest().run(command, args)`; file contents 
 as base64 argument chunks and decoded in the guest, so both the microVM and container
 drivers support them without a stdin channel.
 
+The owner-screen routes (`/v1/screen/*`, § Screen) are in `src/screen.ts`: they run the
+guest's accessibility helper `/opt/caboose/a11y.py` (see `guest/desktop-mcp`) and `xdotool`
+as `caboose` on `:100`. `guest/desktop-mcp/check-a11y.sh` runs that helper in real Xvfb and
+Xpra sessions under Docker.
+
 The guest scripts behind these routes (the batched poll, replies, approval decisions,
 restore after a host restart, attachments and Downloads) run for real in a Debian 13
 container with stand-in `claude` and `codex` CLIs. This needs only Docker:

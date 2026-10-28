@@ -8,6 +8,7 @@ import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
 import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
+import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenType } from './screen.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
 export interface Session { state: string; display: { path: string; token: string; protocol: 'xpra-ws' }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
@@ -165,6 +166,12 @@ export function createCabooseServer(options: { token: string; settings: Settings
         await computer.run(() => media.send(command))
         return json(response, 200, { sent: true })
       }
+      if (request.method === 'GET' && path === '/v1/screen/elements') return json(response, 200, await computer.run(() => screenElements(controller.guest())))
+      const screen = { '/v1/screen/act': screenAct, '/v1/screen/type': screenType, '/v1/screen/keys': screenKeys }[path]
+      if (request.method === 'POST' && screen) {
+        const input = await readJson(request)
+        return json(response, 200, await computer.run(() => screen(controller.guest(), input)))
+      }
       if (request.method === 'POST' && path === '/v1/files') {
         const input = await readJson(request, FILE_BODY_LIMIT)
         return json(response, 200, await computer.run(() => saveDownload(controller.guest(), input)))
@@ -176,7 +183,7 @@ export function createCabooseServer(options: { token: string; settings: Settings
       return json(response, 404, { error: 'not found' })
     })().catch(error => {
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError) return json(response, 400, { error: error.message })
-      if (error instanceof AgentNotFoundError) return json(response, 404, { error: error.message })
+      if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof AgentConflictError || error instanceof ComputerConflictError) return json(response, 409, { error: error.message })
       console.error('Caboose request failed:', error)
       if (!response.headersSent) json(response, 500, { error: 'computer operation failed' })

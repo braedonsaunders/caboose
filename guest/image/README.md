@@ -35,12 +35,15 @@ container's image paths must be empty, and the container must have no overlays.
 The staging files remain available for inspection after installation.
 
 The builder installs Xpra 6.5.5 from its upstream repository, pinned with APT,
-the desktop MCP server from `guest/desktop-mcp`, and the Bunkhouse guest agent
+the desktop MCP server and its accessibility helper from `guest/desktop-mcp` (which also
+switches on the apps' accessibility trees), and the Bunkhouse guest agent
 at a pinned source revision with appkit-desk
 0.6.0. The agent listens on vsock port 5252. Xpra starts only when the host has
 written its per-wake password; it does not run automatically at boot. A separate `caboose-xpra-agent.service`
 provides display `:101` on port `14501` with the same token when explicitly
-started by the host on demand. Debian OS packages follow their signed
+started by the host on demand. Both units pass Xpra `--env=NO_AT_BRIDGE=0
+--start-env=GTK_A11Y=atspi` and the accessibility environment, and start each display's
+accessibility bus as it comes up (`a11y.py bus`, see `guest/desktop-mcp/README.md`). Debian OS packages follow their signed
 repositories at build time; the app installer pins its external releases.
 
 ## Apps

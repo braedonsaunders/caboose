@@ -15,7 +15,7 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
     apt-get update && apt-get install -y --no-install-recommends \
       sudo systemd dbus dbus-user-session dbus-x11 xauth xvfb x11-utils xdotool wmctrl xclip \
       python3 python3-gi gir1.2-gtk-3.0 python3-pyatspi python3-websockets \
-      libglib2.0-bin libglib2.0-dev-bin imagemagick ffmpeg at-spi2-core xfce4-settings \
+      libglib2.0-bin libglib2.0-dev-bin imagemagick ffmpeg at-spi2-core gsettings-desktop-schemas xfce4-settings \
       code nodejs sassc libxml2-utils qt5-gtk-platformtheme qt6-gtk-platformtheme \
       libgl1-mesa-dri mesa-va-drivers mesa-utils vainfo libx264-164 \
       pulseaudio gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools \
@@ -49,5 +49,6 @@ COPY container/caboose-session /usr/local/bin/caboose-session
 COPY container/caboose-audio.sh /etc/profile.d/caboose-audio.sh
 RUN chmod 0755 /usr/local/bin/caboose-session && \
     printf '\n[ -r /etc/profile.d/caboose-audio.sh ] && . /etc/profile.d/caboose-audio.sh\n' >> /etc/bash.bashrc
-ENV LD_PRELOAD= CABOOSE_GPU=none DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus XPRA_BACKWARDS_COMPATIBLE=0 GDK_SCALE=1 QT_QPA_PLATFORMTHEME=gtk3
+ENV LD_PRELOAD= CABOOSE_GPU=none DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus XPRA_BACKWARDS_COMPATIBLE=0 GDK_SCALE=1 QT_QPA_PLATFORMTHEME=gtk3 \
+    ACCESSIBILITY_ENABLED=1 GNOME_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 CMD ["sleep", "infinity"]
