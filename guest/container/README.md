@@ -21,6 +21,14 @@ seat is `:100` on WebSocket port 14500; the agent seat starts lazily on `:101`
 and port 14501. Both use `/run/caboose/xpra-token`. `caboose-session ready`
 waits for Xpra to answer, and `start` and `start-agent` are safe to repeat.
 
+The image also carries [Caboose Display](../display/README.md), built in the
+Dockerfile's first stage. `caboose-session start-display` starts it (WebSocket `14600`,
+Wayland `wayland-caboose-0`, Xwayland `:110`; with `CABOOSE_GPU=wsl` it can use NVENC
+through `/usr/lib/wsl/lib`), and `caboose-session ready-display` waits until it answers
+a hello made with the per-wake token. Launchers read the application environment from
+`/run/caboose/display.env` (sh syntax). Under Caboose Display Chromium runs as a native
+Wayland client. Xpra remains the default display.
+
 With the host session running, run `docker exec -u root caboose-owner bash -s <
 guest/container/check.sh` to check the live Xpra encoder and MP3 dependencies.
 Use `apps/host/scripts/e2e.sh` to check the host/display protocol and parking.

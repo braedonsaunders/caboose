@@ -43,6 +43,14 @@ provides display `:101` on port `14501` with the same token when explicitly
 started by the host on demand. Debian OS packages follow their signed
 repositories at build time; the app installer pins its external releases.
 
+The image also carries [Caboose Display](../display/README.md) (`caboose-display`,
+`caboose-display-probe`, `caboose-display-ready`, built in the builder's first stage) and
+`caboose-display.service`, which is installed but not enabled: Xpra stays the default.
+A host that selects Caboose Display writes the token, starts `caboose-display.service`
+instead of `caboose-xpra.service`, and waits for `caboose-display-ready 60`. The service
+serves WebSocket port `14600`, runs Xwayland on `:110`, and writes the environment for
+launched applications to `/run/caboose/display.env`.
+
 ## Apps
 
 `apps.sh` is the same idempotent installer used by the image builder and existing

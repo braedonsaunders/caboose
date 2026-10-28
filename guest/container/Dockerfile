@@ -1,3 +1,17 @@
+# Caboose Display (guest/display): built here so the image carries it; Xpra stays
+# the default display until the host selects caboose-display.
+FROM debian:trixie-slim AS display
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl build-essential pkg-config clang libclang-dev \
+      libwayland-dev libxkbcommon-dev libudev-dev libpixman-1-dev \
+      libavcodec-dev libavformat-dev libavutil-dev libswscale-dev && \
+    rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0
+COPY display /src
+RUN cd /src && cargo build --release --locked -p caboose-display -p caboose-display-probe
+
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 # This disposable image build can safely skip per-package fsync on WSL's HDD.
@@ -13,7 +27,7 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg && \
     printf 'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\n' > /etc/apt/sources.list.d/nodesource.list && \
     apt-get update && apt-get install -y --no-install-recommends \
-      sudo systemd dbus dbus-user-session dbus-x11 xauth xvfb x11-utils xdotool wmctrl xclip \
+      sudo systemd dbus dbus-user-session dbus-x11 xauth xvfb xwayland x11-utils xdotool wmctrl xclip \
       python3 python3-gi gir1.2-gtk-3.0 python3-pyatspi python3-websockets \
       libglib2.0-bin libglib2.0-dev-bin imagemagick ffmpeg at-spi2-core xfce4-settings \
       code nodejs sassc libxml2-utils qt5-gtk-platformtheme qt6-gtk-platformtheme \
@@ -43,6 +57,8 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     rm -rf /tmp/themes /tmp/desktop-mcp /var/lib/apt/lists/*
 RUN apt-get update && apt-get install -y --no-install-recommends chromium-sandbox && rm -rf /var/lib/apt/lists/*
 COPY container/chromium-gpu /etc/chromium.d/caboose-gpu
+COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /usr/local/bin/
+COPY display/caboose-display-ready /usr/local/bin/caboose-display-ready
 COPY container/caboose-session /usr/local/bin/caboose-session
 COPY container/caboose-audio.sh /etc/profile.d/caboose-audio.sh
 RUN chmod 0755 /usr/local/bin/caboose-session && \
