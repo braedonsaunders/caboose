@@ -51,6 +51,9 @@ cp "$(ls "$work/root"/boot/initrd.img-* | sort -V | tail -1)" "$work/initrd"
 rm -f "$work/root/usr/local/lib/libeatmydata.so.1" "$work/root/etc/dpkg/dpkg.cfg.d/99-caboose-build" "$work/root/etc/dpkg/dpkg.cfg.d/99-build-speed"
 rm -rf "$work/root/tmp/desktop-mcp"
 rm "$work/root/tmp/configure-guest.sh" "$work/root/tmp/caboose-xpra.service" "$work/root/tmp/caboose-xpra-agent.service"
+# Complete update work after the final /usr changes to avoid a slow first boot.
+chroot "$work/root" /sbin/ldconfig
+chroot "$work/root" /usr/lib/systemd/systemd-update-done
 sync
 for p in dev/pts dev proc sys; do umount -l "$work/root/$p" 2>/dev/null || true; done
 umount "$work/root"
