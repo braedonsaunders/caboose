@@ -28,10 +28,11 @@ Each component has its own README with how to build, run and test it.
  │  │  windows on iPad / TV     │  /v1/*        │  ├ Lifecycle: wake, lease, park, restart   │
  │  ├ CabooseKit                │  /v1/display  │  ├ Display relay: WS ⇄ guest WS (bytes)    │
  │  │  ├ CabooseDisplaySession  │  /v1/control  │  ├ Files relay: HTTP ⇄ guest file service  │
+ │  │  ├ TerminalConnection     │  /v1/terminal │  ├ Terminal relay: WS ⇄ guest terminal     │
  │  │  ├ VideoToolbox, Metal    │               │  ├ Agents, catalog, media, phone handoff   │
  │  │  └ Touch, trackpad,       │               │  └ APNs: alerts and Live Activities        │
  │  │    keyboard, clipboard    │               │        │ guest agent (exec)                │
- │  ├ Agent space               │               │        │ TCP 14600 / 14601 / 14700         │
+ │  ├ Agent space               │               │        │ TCP 14600 / 14601 / 14700 / 14701 │
  │  └ Files, Shortcuts,         │               │ ┌──────▼───────────────────────────────┐   │
  │    Spotlight, widgets,       │               │ │ The computer (Debian 13)             │   │
  │    Live Activities           │               │ │  ├ caboose-display        :14600     │   │
@@ -39,6 +40,7 @@ Each component has its own README with how to build, run and test it.
                                                 │ │  ├ caboose-display-agent  :14601     │   │
                                                 │ │  │   agent seat, Xwayland :101       │   │
                                                 │ │  ├ caboose-files          :14700     │   │
+                                                │ │  ├ caboose-terminal       :14701     │   │
                                                 │ │  ├ caboose-agentd (ACP runner)       │   │
                                                 │ │  ├ notifications, phone, media       │   │
                                                 │ │  └ apps: Chromium, VS Code, terminal,│   │
@@ -113,8 +115,8 @@ computer in `error` with the reason in `lastError`, and the next wake retries it
 
 ### Guest components
 
-Caboose's own guest plumbing (the file service, the notification monitor and endpoints, and
-phone handoff) is a bundle listed in `guest/components/manifest.json` and installed by
+Caboose's own guest plumbing (the file and terminal services, the notification monitor and
+endpoints, and phone handoff) is a bundle listed in `guest/components/manifest.json` and installed by
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
 
@@ -129,7 +131,9 @@ same installer to update computers whose disks predate the host:
   `/v1/control` sends `computer.upgrade` with `state` `checking`, `updating`, `succeeded` or
   `failed`.
 - A container created without the port 14700 mapping cannot reach the file service; the
-  management status warns that it must be recreated (keep its home volume).
+  management status warns that it must be recreated (keep its home volume). One created
+  without the 14701 mapping needs nothing: the host reaches its terminal service on the
+  container's address on its bridge network.
 
 The bundle does not include Caboose Display or its units, which come with the image.
 
@@ -154,8 +158,8 @@ host's devices when unset or `auto`:
 The container is created with `--init`, `--restart no`, `--shm-size 2g`, the computer's
 memory and CPU limits, DNS `1.1.1.1` and `9.9.9.9`, its home at `/home/caboose` from
 `CABOOSE_CONTAINER_HOME` (a named volume or an absolute host path, `caboose-home` by
-default), and any extra `CABOOSE_CONTAINER_ARGS`. It publishes ports 14600, 14601 and
-14700 on `127.0.0.1` only. Its session script provides:
+default), and any extra `CABOOSE_CONTAINER_ARGS`. It publishes ports 14600, 14601, 14700
+and 14701 on `127.0.0.1` only. Its session script provides:
 
 ```
 caboose-session start        # CUPS and the print queue, the owner's session bus,
@@ -275,8 +279,8 @@ without a trailing newline, to `/run/caboose/display-token`, owned by `caboose` 
 0600. A microVM gets a new token at every boot or resume. A container gets one the first
 time the host wakes it after the host starts, and again after each restart.
 
-Both display instances re-read the file on every hello, and the file service reads it on
-every request. The token reaches the app only inside the authenticated `/v1/session`
+Both display instances re-read the file on every hello, the file service on every request,
+and the terminal service on every connection. The token reaches the app only inside the authenticated `/v1/session`
 response; the host relays display bytes without inspecting them.
 
 ### Guest services
@@ -286,6 +290,20 @@ response; the host relays display bytes without inspecting them.
 `Authorization: Bearer <display token>` on every request. The host starts it at each wake
 before the owner's display, and waits up to 60 s for it to listen; a computer without the
 service still wakes. The protocol is in [Files](#files).
+
+**Terminal service.** `guest/terminal/caboose-terminal.py` (`/opt/caboose/terminal/`,
+`caboose-terminal.service` in the microVM, `caboose-components-services` in the container)
+runs as `caboose` on TCP 14701, Python with the image's `python3-websockets`. Every request
+needs `Authorization: Bearer <display token>`. Each WebSocket on `/` is one session: a login
+shell (`caboose`'s shell, `-bash`) in `/home/caboose` on its own pseudo-terminal, with
+`TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=Caboose` and the owner
+display's launch environment, so a program started from it opens on the owner's display.
+Sessions outlive their connection: at most 16 exist, and a new one past that hangs up the
+one left unattached longest. Each keeps its last 256 KiB of output for reattaching, and while
+nobody is attached its output is read and kept, so the shell never blocks. Stopping the
+service hangs up every shell; what a shell started with `nohup` or `setsid` keeps running.
+`GET /sessions` and `GET /hangup?session=` serve the host's session routes. The protocol is
+in [Terminal](#terminal).
 
 **Notifications.** `caboose-notifications.service` runs `monitor.py`, which observes
 `org.freedesktop.Notifications.Notify` calls on the owner's session bus and writes each as a
@@ -418,7 +436,7 @@ The computer has one state: `parked`, `waking`, `running`, `parking`, `restartin
   computer, configures its network and clock, writes the display token, starts the file
   service, starts the owner's display and reads its launch environment. A microVM whose
   snapshot cannot be restored is reported as an error rather than cold-booted.
-- **Leases.** Each open display or control WebSocket holds a lease, as do running agent
+- **Leases.** Each open display, control or terminal WebSocket holds a lease, as do running agent
   tasks, catalog operations, Craft jobs, agent installs and sign-ins, and each `/v1/fs`
   request until its response completes. With no lease, the computer parks after the
   `idleMs` setting. HTTP polling of `/v1/computer` holds no lease, so leaving the web
@@ -528,7 +546,7 @@ Management status:
   limits: { memoryMb: { min: 512, max: 65536 }, vcpus: { min: 1, max: 32 }, idleMs: { min: 60000, max: 86400000 } },
   activeResources: { memoryMb: number, vcpus: number } | null,
   restartRequired: boolean,
-  clients: { display: number, control: number },
+  clients: { display: number, control: number, terminal: number },
   tasks: { running: number, paused: number },
   capabilities: { restart: boolean, push: boolean },
   lastError: string | null
@@ -606,6 +624,47 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
 - `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.
+
+### Terminal
+
+A terminal is a WebSocket relayed to the guest's terminal service. Each connection is one
+session; the session, a shell on the computer, outlives it.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/terminal?cols=&rows=` | **WebSocket.** A new session of `cols` × `rows` (1–1000 × 1–500) |
+| `GET` | `/v1/terminal?cols=&rows=&session=<id>[&offset=<n>]` | **WebSocket.** Reattach to a session, resized to `cols` × `rows`; `offset` is how much of its output this client already holds |
+| `GET` | `/v1/terminal/sessions` | `{ sessions: [{ id, title, command, cwd, cols, rows, created, attached }] }`, oldest first: the title the shell last set, the foreground program and its directory (each null when unknown), `created` in Unix milliseconds |
+| `DELETE` | `/v1/terminal/sessions/:id` | Hang up the session's shell → `{ hungUp: true }`; 404 when it has ended |
+
+The upgrade answers 409 while the computer is not running, unless the query has `wake=1`,
+which **wakes** it first; 400 for an invalid query, and 429 when the client (the owner, or
+one phone) already has 8 terminals open. Session ids are 32 hex characters.
+
+- **Messages.** Binary messages are terminal bytes: the client's are input, the host's are
+  output. Text messages are JSON control messages. The client sends
+  `{ type: "resize", cols, rows }` and `{ type: "hangup" }`. The host sends
+  `{ type: "hello", session, offset, reset, modes? }` first, then output, and
+  `{ type: "exit", code }` or `{ type: "exit", code: null, signal }` when the shell ends,
+  before closing with 1000. The host checks every control message field by field in both
+  directions and re-encodes it; anything else closes the socket with 4400 (from the client)
+  or 1011 (from the guest).
+- **Reattach.** Output is a byte stream; `hello.offset` is the position of the first byte
+  that follows. With `offset` in the query and still kept (the last 256 KiB), the stream
+  continues from it with `reset: false`. Otherwise the client clears its terminal
+  (`reset: true`), applies `modes` (`{ "<DEC private mode>": set }` for cursor keys, cursor
+  visibility, the alternate screen, mouse reporting, focus events and bracketed paste, when
+  the kept output no longer sets them) and receives what is kept. A full-screen program on
+  the alternate screen is resized and restored so it repaints.
+- **Closes.** 4404 `session ended` (it exited, was hung up, or the computer restarted);
+  4001 `attached elsewhere` (another connection took the session; one is attached at a
+  time); 4408 `idle` (nothing either way for 15 minutes); 1013 `too many terminal
+  sessions`; 1011 when the guest cannot be reached. A park closes the socket and keeps the
+  session; a restart ends it.
+- **Flow.** Each client connection gets its own guest connection. As in the display relay,
+  each side is paused until the other has flushed, so a slow client slows the shell rather
+  than filling a buffer; payloads are at most 1 MiB. With no client, a session's output is
+  kept only in its 256 KiB replay.
 
 ### Catalog routes
 
@@ -1233,6 +1292,37 @@ Pinned and recent apps are kept on the phone per computer.
   compositor does not advertise the `pencil` feature, so Apple Pencil acts as touch and
   Linux applications receive no pressure or tilt.
 
+### Terminal
+
+The Terminal tab is a native terminal on a real shell in the computer, built on
+[SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) 1.99.1 (MIT): xterm-256color with
+truecolor, 256 colours, bold and italic, the alternate screen, mouse reporting, bracketed
+paste and OSC 8 links. CabooseKit holds the protocol (`Terminal/`: messages, closes, keys,
+and `TerminalConnection`, which tracks the output offset); the app holds the view.
+
+- **Look.** Caboose Night: SF Mono on the icon's navy (`#0E1626`) at 82% opacity over the
+  wallpaper, cream text, an amber cursor and selection, and a sixteen-colour palette from
+  which the 256-colour cube derives. Pinch, or Larger and Smaller Text in the session menu,
+  sets the size from 8 to 28 points; it is kept on the phone.
+- **Input.** A key row above the keyboard has Esc, Tab, sticky Ctrl and Alt (for the row's
+  keys and the keyboard's next one), arrows that repeat while held, `` | ~ / - _ ` \ : * $ ``,
+  Home, End, Page Up and Page Down, and Hide Keyboard. Unmodified arrows follow the
+  application's cursor-key mode; modified keys are xterm's. A hardware keyboard types
+  directly (Option is Meta) and focuses the terminal on arrival. Long press or double tap
+  selects, with Copy, Paste and Select All; programs can copy to the phone's clipboard with
+  OSC 52, but never read it.
+- **Behaviour.** A tap on a URL in the output or an OSC 8 link opens it in Safari. The bell
+  is a haptic and a flash. The grid follows the view: rotation, the keyboard, the vertical
+  bar and pinch each send a resize. Leaving the app or the tab detaches; coming back
+  reattaches from the last byte received, so nothing repeats. A dropped connection retries
+  after 0.5, 1, 2, 4 and 8 s, then every 15 s. When the shell exits, another device takes
+  the session, or the connection closes as idle, the screen says so with one action (New
+  Session, Show Here, Reconnect); typing after an idle close reconnects. A session that
+  ended while away is replaced with a new one, with a note.
+- **Sessions.** The session menu starts a new session, switches between the computer's
+  sessions (`GET /v1/terminal/sessions`) and closes the current one. The current session's
+  id is kept on the phone, so the app reopens it after a relaunch.
+
 ### Agent space
 
 - **Chats.** The Agents tab is a chat with an agent on the computer, and a chat is a task:
@@ -1388,14 +1478,14 @@ app group and a Keychain access group.
   rejected; containers sit on separate bridge networks) and has its own disk and data
   directory.
 - **Display token.** A random per-wake token in `/run/caboose/display-token` (mode 0600,
-  owned by `caboose`) authorizes the guest's display and file services. It reaches a
+  owned by `caboose`) authorizes the guest's display, file and terminal services. It reaches a
   client only inside an authenticated `/v1/session` response.
 - **Control sockets.** Each seat's control socket is a Unix socket in a directory only
   `caboose` can open, and the compositor serves only peers of its own user. It is never
   exposed outside the computer.
 - **Fencing.** The guest cannot open connections to the host, and by default cannot reach
-  private, link-local, CGNAT or reserved ranges. Display and file ports are reachable only
-  from the host: over the TAP device for a microVM, on `127.0.0.1` for a container.
+  private, link-local, CGNAT or reserved ranges. Display, file and terminal ports are
+  reachable only from the host: over the TAP device for a microVM, on `127.0.0.1` for a container.
 - **Guest input.** The host treats the guest as able to produce malformed data. Phone
   events, media state, notification records, task transcripts and approval requests are
   validated and bounded, and the host never relays a guest-supplied file path.
