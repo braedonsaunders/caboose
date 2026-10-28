@@ -16,7 +16,7 @@ describe('ComputerRegistry', () => {
   it("always has the owner's computer, on slot 0 with its files at the image root", async () => {
     const dir = await root()
     const registry = await ComputerRegistry.open(dir)
-    expect(registry.list()).toEqual([{ id: OWNER_COMPUTER, slot: 0, createdAt: null }])
+    expect(registry.list()).toEqual([{ id: OWNER_COMPUTER, slot: 0, createdAt: null, tenantId: null, person: null }])
     expect(registry.dataDir(OWNER_COMPUTER)).toBe(dir)
     await expect(registry.remove(OWNER_COMPUTER)).rejects.toThrow(/cannot be deleted/)
   })
@@ -24,9 +24,9 @@ describe('ComputerRegistry', () => {
   it('makes computers on the lowest free slot, keeps them across restarts, and frees a deleted slot', async () => {
     const dir = await root()
     const registry = await ComputerRegistry.open(dir)
-    const a = await registry.create(new Date('2026-10-28T12:00:00Z'))
+    const a = await registry.create({ tenantId: null, person: null }, new Date('2026-10-28T12:00:00Z'))
     const b = await registry.create()
-    expect(a).toEqual({ id: expect.stringMatching(/^c-[0-9a-f]{10}$/), slot: 1, createdAt: '2026-10-28T12:00:00.000Z' })
+    expect(a).toEqual({ id: expect.stringMatching(/^c-[0-9a-f]{10}$/), slot: 1, createdAt: '2026-10-28T12:00:00.000Z', tenantId: null, person: null })
     expect(b.slot).toBe(2)
     expect(registry.dataDir(a.id)).toBe(join(dir, 'computers', a.id))
     await registry.remove(a.id)
@@ -34,6 +34,37 @@ describe('ComputerRegistry', () => {
     const reopened = await ComputerRegistry.open(dir)
     expect(reopened.list().map(c => c.slot)).toEqual([0, 2, 1])
     expect(reopened.get(b.id)).toEqual(b)
+  })
+
+  it('keeps each computer in a tenant with its person, and gives a new host\'s computers to its first tenant', async () => {
+    const dir = await root()
+    const registry = await ComputerRegistry.open(dir)
+    const tenant = '11111111-1111-4111-8111-111111111111'
+    const other = '22222222-2222-4222-8222-222222222222'
+    const kids = await registry.create({ tenantId: other, person: '  Sam ' })
+    expect(kids).toMatchObject({ tenantId: other, person: 'Sam' })
+    const loose = await registry.create()
+    await registry.adoptUnassigned(tenant)
+    expect(registry.get(OWNER_COMPUTER)?.tenantId).toBe(tenant)
+    expect(registry.get(loose.id)?.tenantId).toBe(tenant)
+    expect(registry.get(kids.id)?.tenantId).toBe(other)
+    await registry.assign(OWNER_COMPUTER, { person: 'Braedon' })
+    await registry.assign(kids.id, { person: null })
+    await expect(registry.assign(kids.id, { person: 'tab\there' })).rejects.toThrow(/person/)
+    const reopened = await ComputerRegistry.open(dir)
+    expect(reopened.get(OWNER_COMPUTER)).toMatchObject({ tenantId: tenant, person: 'Braedon' })
+    expect(reopened.get(kids.id)).toMatchObject({ tenantId: other, person: null })
+  })
+
+  it('reads a registry from before tenants', async () => {
+    const dir = await root()
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(join(dir, 'computers.json'), JSON.stringify({ ownerCreatedAt: '2026-10-01T00:00:00.000Z', computers: [{ id: 'c-0123456789', slot: 1, createdAt: '2026-10-02T00:00:00.000Z' }] }))
+    const registry = await ComputerRegistry.open(dir)
+    expect(registry.list()).toEqual([
+      { id: OWNER_COMPUTER, slot: 0, createdAt: '2026-10-01T00:00:00.000Z', tenantId: null, person: null },
+      { id: 'c-0123456789', slot: 1, createdAt: '2026-10-02T00:00:00.000Z', tenantId: null, person: null },
+    ])
   })
 
   it('refuses a damaged registry rather than forgetting computers', async () => {

@@ -33,7 +33,8 @@ The image contains Debian 13 with Mesa (OpenGL, VA-API drivers), Xwayland, Pulse
 driver ([`guest/vaapi`](../vaapi/README.md)), the app lineup from `guest/image/apps.sh`, the
 desktop MCP server and accessibility helper ([`guest/desktop-mcp`](../desktop-mcp/README.md)),
 the agent runner ([`guest/agentd`](../agentd/README.md)), the file service
-([`guest/files`](../files/README.md)), notifications
+([`guest/files`](../files/README.md)), the terminal service
+([`guest/terminal`](../terminal/README.md)), notifications
 ([`guest/notifications`](../notifications/README.md)), phone handoff and the `iPhone` printer
 ([`guest/phone`](../phone/README.md)), media handoff
 ([`guest/media-handoff`](../media-handoff/README.md)), and the WhiteSur theme. Its
@@ -51,8 +52,8 @@ the image as `caboose-owner` (`CABOOSE_CONTAINER_NAME`) with:
 - `/home/caboose` on the volume or absolute host path in `CABOOSE_CONTAINER_HOME` (default
   volume `caboose-home`);
 - memory and CPU limits from the computer's settings, and a 2 GiB `/dev/shm`;
-- the owner's display (14600), the agent seat (14601) and the file service (14700)
-  published on `127.0.0.1` only;
+- the owner's display (14600), the agent seat (14601), the file service (14700) and the
+  terminal service (14701) published on `127.0.0.1` only;
 - the GPU chosen by `CABOOSE_GPU` (detected by default), passed into the container as
   `CABOOSE_GPU`;
 - any extra arguments from `CABOOSE_CONTAINER_ARGS`.
@@ -60,7 +61,8 @@ the image as `caboose-owner` (`CABOOSE_CONTAINER_NAME`) with:
 Published ports are fixed when the container is created. The host updates the guest
 components inside an existing container at wake (`guest/components`), but a container whose
 display or file service ports are not published as above must be recreated from the current
-image; its home volume is kept.
+image; its home volume is kept. A missing terminal port needs no recreation: the host then
+reaches the terminal service on the container's bridge address.
 
 | `CABOOSE_GPU` | Host | The container gets | Apps render with | Caboose Display encodes with |
 | --- | --- | --- | --- | --- |

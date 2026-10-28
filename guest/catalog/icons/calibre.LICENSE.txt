@@ -1,0 +1,148 @@
+Calibre icon: /usr/share/icons/hicolor/256x256/apps/calibre-gui.png from the Debian 13 package calibre 8.5.0+ds-1+deb13u3, scaled from 256×256 to 128×128.
+Copyright and licence follow, from /usr/share/doc/calibre/copyright in calibre 8.5.0+ds-1+deb13u3.
+
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: calibre
+Upstream-Contact: Kovid Goyal <kovid@kovidgoyal.net>
+Source: https://calibre-ebook.com/downloads
+Files-Excluded: resources/fonts/liberation
+                resources/icons.rcc
+                resources/images.qrc
+                src/calibre/gui2/*_ui.py
+
+Files: *
+Copyright: Copyright (C) 2008 Kovid Goyal <kovid@kovidgoyal.net>
+License: GPL-3
+
+Files: resources/mathjax/*
+Copyright: Copyright (c) 2017-2022 The MathJax Consortium
+License: Apache-2.0
+
+Files: src/calibre/ebooks/pdf/utils.h
+Copyright: Copyright 2009 Kovid Goyal <kovid@kovidgoyal.net>
+License: GPL-2+
+
+Files: src/calibre/ebooks/hyphenate.py
+Copyright: Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken.
+License: hyphenate-license
+ Copying and distribution of this file, with or without modification,
+ are permitted in any medium without royalty provided the copyright
+ notice and this notice are preserved.
+
+Files: src/odf/*
+Copyright: Copyright (C) 2006-2008 Søren Roug, European Environment Agency
+License: LGPL-2.1+
+
+Files: src/odf/teletype.py
+       src/odf/easyliststyle.py
+Copyright: Copyright (C) 2008, J. David Eisenberg
+License: GPL-2+
+
+Files: src/calibre/utils/lzx/*
+Copyright: Copyright (C) 2002, Matthew T. Russotto
+           Copyright (C) 2008, Marshall T. Vandegrift <llasram@gmail.com>
+           Copyright (C) 2006-2008, Alexander Chemeris
+License: LGPL-2.1
+
+Files: src/calibre/utils/msdes/d3des.h
+       src/calibre/utils/msdes/des.c
+Copyright: Copyright (C) 1988,1989,1990,1991,1992, Richard Outerbridge
+License: public-domain
+ THIS SOFTWARE PLACED IN THE PUBLIC DOMAIN BY THE AUTHOUR
+
+Files: src/calibre/utils/msdes/msdesmodule.c
+Copyright: Copyright (C) 2008, Marshall T. Vandegrift <llasram@gmail.com>
+License: GPL-3
+
+Files: src/calibre/utils/msdes/spr.h
+Copyright: Copyright (C) 2002, Dan A. Jackson
+License: GPL-2+
+
+Files: src/calibre/gui2/pictureflow/*
+Copyright: (C) Copyright 2007 Trolltech ASA
+License: BSD-3-Clause
+
+Files: src/calibre/ebooks/lit/*
+Copyright: 2008, Marshall T. Vandegrift <llasram@gmail.com>
+License: GPL-3
+
+Files: src/calibre/ebooks/lrf/*
+Copyright: 2008, Anatoly Shipitsin <norguhtar at gmail.com>
+           copyright 2002 Paul Henry Tremblay
+           Copyright (C) 2008 B.Scott Wxby [bswxby]
+           Copyright (C) 2007 David Chen SonyReader<at>DaveChen<dot>org
+           Copyright (c) 2007 Mike Higgins (Falstaff)
+License: GPL-3
+
+Files: src/calibre/ebooks/rtf2xml/*
+Copyright: copyright 2002 Paul Henry Tremblay
+License: GPL-2
+
+Files: src/calibre/web/feeds/recipes/*
+Copyright: 2008, Darko Miletic <darko.miletic at gmail.com>
+           2008, Mathieu Godlewski <mathieu at godlewski.fr>
+           Copyright (C) 2008 B.Scott Wxby [bswxby]
+           Copyright (C) 2007 David Chen SonyReader<at>DaveChen<dot>org
+           2008, Derry FitzGerald
+License: GPL-3
+
+Files: src/calibre/ebooks/metadata/*
+Copyright: 2008, Ashish Kulkarni <kulkarni.ashish@gmail.com>
+           Copyright (C) 2006 Søren Roug, European Environment Agency
+License: GPL-3
+
+Files: src/calibre/translations/*
+Copyright: Copyright (C) 2007, Kovid Goyal
+           Copyright (C) 2008, Rosetta Contributors and Canonical Ltd.
+License: GPL-3
+
+
+License: Apache-2.0
+ The full text of the GPL is distributed as in
+ /usr/share/common-licenses/Apache-2.0 on Debian systems.
+
+License: GPL-2
+ The full text of the GPL is distributed as in
+ /usr/share/common-licenses/GPL-2 on Debian systems.
+
+License: GPL-2+
+ The full text of the GPL is distributed as in
+ /usr/share/common-licenses/GPL-2 on Debian systems.
+
+License: GPL-3
+ The full text of the GPL is distributed as in
+ /usr/share/common-licenses/GPL-3 on Debian systems.
+
+License: LGPL-2.1
+ The full text of the LGPL is distributed as in
+ /usr/share/common-licenses/LGPL-2.1 on Debian systems.
+
+License: LGPL-2.1+
+ The full text of the LGPL is distributed as in
+ /usr/share/common-licenses/LGPL-2.1 on Debian systems.
+
+License: BSD-3-Clause
+ All rights reserved.
+ .
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+ .
+     * Redistributions of source code must retain the above copyright notice,
+       this list of conditions and the following disclaimer.
+     * Redistributions in binary form must reproduce the above copyright notice,
+       this list of conditions and the following disclaimer in the documentation
+       and/or other materials provided with the distribution.
+     * Neither the name of the CherryPy Team nor the names of its contributors
+       may be used to endorse or promote products derived from this software
+       without specific prior written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE
+ FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

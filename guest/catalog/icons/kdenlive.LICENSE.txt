@@ -1,0 +1,160 @@
+Kdenlive icon: /usr/share/icons/hicolor/256x256/apps/kdenlive.png from the Debian 13 package kdenlive-data 24.12.3-2+deb13u1, scaled from 256×256 to 128×128.
+Copyright and licence follow, from /usr/share/doc/kdenlive-data/copyright in kdenlive-data 24.12.3-2+deb13u1.
+
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+
+Files: *
+Copyright: 2007-2024, Jean-Baptiste Mardelle (jb@kdenlive.org)
+License: GPL-2+
+
+Files: src/core.cpp
+  src/core.h
+  src/mltconnection.h
+Copyright: 2014, Till Theato <root@ttill.de>
+License: GPL-3+
+
+Files: src/doc/kthumb.cpp
+Copyright: : Marco Gittler / : 2005, Lcio Fl�io Corr� / : 2002,Jason Wood
+License: GPL-2+
+
+Files: src/jogshuttle/jogaction.cpp
+  src/jogshuttle/jogaction.h
+  src/jogshuttle/jogshuttleconfig.cpp
+Copyright: 2010, Pascal Fleury (fleury@users.sourceforge.net)
+License: GPL-2+
+
+Files: src/jogshuttle/jogmanager.cpp
+  src/jogshuttle/jogmanager.h
+Copyright: 2014, Till Theato <root@ttill.de>
+License: GPL-3+
+
+Files: src/kdenlivecore_export.h
+Copyright: 2007, Matthias Kretz <kretz@kde.org>
+License: LGPL-2+
+
+Files: src/lib/*
+Copyright: 2012, Simon A. Eugster <simon.eu@gmail.com>
+License: GPL-2+
+
+Files: src/lib/audio/*
+Copyright: 2008, 2010-2012, Simon Andreas Eugster (simon.eu@gmail.com)
+License: GPL-2+
+
+Files: src/lib/audio/audioCorrelation.cpp
+  src/lib/audio/audioInfo.h
+  src/lib/audio/audioStreamInfo.cpp
+  src/lib/audio/audioStreamInfo.h
+  src/lib/audio/fftCorrelation.cpp
+  src/lib/audio/fftCorrelation.h
+Copyright: 2012, Simon A. Eugster (Granjow) <simon.eu@gmail.com>
+License: GPL-3+
+
+Files: src/lib/external/*
+Copyright: 2003-2010, Mark Borgerding (Mark@Borgerding.net)
+License: BSD-3-clause
+
+Files: src/lib/external/media_ctrl/*
+Copyright: 2001-2007, Dan Dennedy <dan@dennedy.org>
+License: GPL-2+
+
+Files: src/main.cpp
+Copyright: 2008, Jean-Baptiste Mardelle (jb@kdenlive.org)
+  2007, 2015, Kdenlive authors
+  2007, Marco Gittler (g.marco@freenet.de)
+License: GPL-2+
+
+Files: src/project/clipstabilize.cpp
+  src/project/clipstabilize.h
+Copyright: 2011, Marco Gittler (marco@gitma.de)
+  2008, Jean-Baptiste Mardelle (jb@kdenlive.org)
+License: GPL-2+
+
+Files: src/project/notesplugin.cpp
+  src/project/notesplugin.h
+  src/project/projectmanager.cpp
+  src/project/projectmanager.h
+Copyright: 2014, Till Theato <root@ttill.de>
+License: GPL-3+
+
+Files: src/scopes/*
+Copyright: 2008, 2010-2012, Simon Andreas Eugster (simon.eu@gmail.com)
+License: GPL-2+
+
+Files: src/scopes/audioscopes/audiosignal.cpp
+  src/scopes/audioscopes/audiosignal.h
+Copyright: 2010, Marco Gittler (g.marco@freenet.de)
+License: GPL-2+
+
+Files: src/statusbarmessagelabel.cpp
+  src/statusbarmessagelabel.h
+Copyright: 2006, Peter Penz
+License: GPL-2+
+
+Files: src/titler/unicodedialog.cpp
+  src/titler/unicodedialog.h
+Copyright: 2008, 2010-2012, Simon Andreas Eugster (simon.eu@gmail.com)
+License: GPL-2+
+
+Files: src/utils/thememanager.cpp
+  src/utils/thememanager.h
+Copyright: 2006-2013, Gilles Caulier <caulier dot gilles at gmail dot com>
+License: GPL-2+
+
+Files: testingArea/*
+Copyright: 2012, Simon A. Eugster (Granjow) <simon.eu@gmail.com>
+License: GPL-3+
+
+Files: thumbnailer/*
+Copyright: 2006-2008
+License: GPL-2+
+
+License: BSD-3-clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are met:
+ .
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the author nor the names of any contributors may be used to endorse
+   or promote products derived from this software without specific prior
+   written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License: GPL-2+
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; version 2 dated June, 1991, or (at
+ your option) any later version.
+ .
+ On Debian systems, the complete text of version 2 of the GNU General
+ Public License can be found in '/usr/share/common-licenses/GPL-2'.
+
+License: GPL-3+
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; version 3 dated June, 2007, or (at
+ your option) any later version.
+ .
+ On Debian systems, the complete text of version 3 of the GNU General
+ Public License can be found in '/usr/share/common-licenses/GPL-3'.
+
+License: LGPL-2+
+ This program is free software; you can redistribute it and/or modify it
+ under the terms of the GNU Library General Public License as published by the
+ Free Software Foundation; version 2 of the License, or (at
+ your option) any later version.
+ .
+ On Debian systems, the complete text of version 2 of the GNU Library General
+ Public License can be found in `/usr/share/common-licenses/LGPL-2'.

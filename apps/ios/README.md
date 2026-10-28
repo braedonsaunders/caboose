@@ -7,13 +7,13 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 
 | Path | What |
 | --- | --- |
-| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input. |
-| `Caboose/` | The app: pairing, wake, Home (open windows and the computer's apps), window screens, the desktop on a TV or iPad, agents, settings, intents. |
+| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input. |
+| `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
+| `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, SwiftTerm's view in the Caboose look and the key row above the keyboard. |
 | `Caboose/Brand/` | The logo drawn natively in SwiftUI. It shares geometry and timing with `apps/web/src/brand/brand.ts`; change both together. `scripts/render-app-icon.sh` renders the app icon from the same SVG (macOS). |
 | `Share/` | The share extension (target `CabooseShare`). |
 | `Files/` | The File Provider extension that shows the computer in the Files app. |
 | `Widgets/`, `Shared/` | The WidgetKit extension: widgets, controls and Live Activities. |
-| `OnDeviceEval/` | A small app that measures the On iPhone agent on a device ([its README](OnDeviceEval/README.md)). |
 
 ## Build
 
@@ -24,6 +24,10 @@ cp Caboose/Config/Local.xcconfig.example Caboose/Config/Local.xcconfig   # optio
 xcodegen generate
 open Caboose.xcodeproj
 ```
+
+The Terminal tab uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT), whose
+package runs a small build plug-in. Xcode asks once to **Trust & Enable** it; command-line
+builds pass `-skipPackagePluginValidation` to `xcodebuild`.
 
 Set your own team in `project.yml` (`DEVELOPMENT_TEAM`) to run on a device. The extensions'
 bundle ids are the app's plus a suffix (`.share`, `.files`, `.widgets`). All of them sign
@@ -67,6 +71,11 @@ computer (through a host), connects, waits for every window's keyframe, ticks vs
 features, the windows, pictures per second, failed decodes and the round trip.
 `CABOOSE_SOUND_CHECK=1 swift test --filter LiveSound` measures sound against picture on
 the compositor's sound test page.
+
+The terminal's protocol, keys and connection are unit-tested over a fake transport. Against
+a real host, `CABOOSE_HOST_URL=… CABOOSE_HOST_TOKEN=… swift test --filter LiveTerminal`
+opens a terminal over URLSession as the app does, runs a command, resizes, reattaches from
+its offset, is replaced by a second connection, exits, and checks the closes that follow.
 
 ## How it renders
 
@@ -129,26 +138,50 @@ terminals and password fields. Where the app supports text input, marked text (C
 Japanese, Korean) is a real preedit. Hardware keys are sent as keys, with ⌘ mapped to
 Control so ⌘C, ⌘V and ⌘T do what Mac users expect.
 
+## Terminal
+
+The Terminal tab is a native terminal on a shell in the computer, not a streamed window. It
+uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT), pinned in `project.yml`:
+the maintained Swift terminal emulator, with truecolor, a Metal renderer, selection, OSC 8
+links and hardware keyboards on iOS. Its look, key row, gestures, reattach and session menu
+are in `docs/architecture.md` § 6 Terminal.
+
 ## Agents
 
-The Ask bar on Home starts a task with the computer's default agent or any agent installed
-from the Agent Client Protocol registry. **Ask Before Acting** makes the agent stop before
-each action until you tap Allow (or the agent's always-allow option) or Deny, on the task
-card or on the banner that shows over any screen. A finished task takes a reply that
-continues the same conversation. Settings › Agents installs and updates agents, signs in to
-them on the computer's screen, gives one an API key or other environment, and sets the
-default. **Use Craft App Tools** controls whether new tasks offer installed catalog MCP
-servers to the agent.
+The Agents tab is a chat with an agent on your computer. A chat is one of the computer's
+agent tasks: the first message starts it with the default agent (or the one picked in the
+composer's menu), and everything after is the next turn of the same session, so the agent
+always has the whole conversation. Send while it is working and the message waits for its
+turn to end, shown as waiting with **Send Now**, which stops the turn and sends it at once.
+**New Chat** starts a fresh session; the chat list holds the rest, and other chats still
+working are pinned along the top. Where Apple Intelligence is available, the on-device model
+names each chat from its first message (`ChatTitler`); nothing you say goes through it.
+
+The chat shows what the agent does as it does it (`AgentThreadView`, folded by
+`AgentThread` in CabooseKit): its answers, collapsible thoughts, tool calls, its plan as a
+checklist, the permissions it asked for, and how much context it has used, read from the
+host's transcript route and then live. Stop it, watch its window on the agent seat, or ask
+another agent the same thing in a new chat. **Ask Before Acting** makes the agent stop
+before each action until you tap Allow (or its always-allow option) or Deny, in the chat, on
+Home or on the banner over any screen. **Use Craft App Tools** controls whether new chats
+offer installed catalog MCP servers to the agent.
+
+**Connect a Model** uses an API key instead of an account: an OpenRouter key and any of its
+tool-using models (run by the registry's goose), or an Anthropic or OpenAI key (Claude Agent
+or Codex). The app installs the agent, puts the key in its environment in the computer, and
+makes it the default. A chat whose agent is signed out offers its sign-in, Connect a Model,
+or another agent. Settings › Agents installs and updates any registry agent, signs in to
+them on the computer's screen, edits their environment, and sets the default.
 
 Agents run their GUI apps on the agent seat, a second display of the computer. The app
-connects to it as it does to the owner's display (`/v1/display?seat=agent`, without sound),
-and its windows appear in the Agent space, where you can watch them, take over and hand back.
+connects to it as it does to the owner's display (`/v1/display?seat=agent`, without sound);
+watch its windows from the chat, take over and hand back. A window's `…` menu has **Ask
+Agent About This Window**, which sends its screenshot, title and app with your request.
 
-Where Apple Intelligence is available the bar also offers **On iPhone**: Apple's on-device
-model (`Caboose/Agents/OnDevice*.swift`). It opens apps and pages, types, presses shortcuts,
-presses buttons in the focused window by name (through the host's accessibility routes),
-parks the computer, and hands anything bigger to a computer agent. A window's `…` menu has
-**Ask Agent About This Window**, which sends its screenshot, title and app with your request.
+On a device paired to a running computer, check: start a chat, then send "how's it going?"
+while the agent works and see it wait and go with the next turn; tap Send Now and see the
+turn stop and the message go at once; open the chat list and switch chats; connect an
+OpenRouter key and see goose become the default and answer.
 
 ## iOS integration
 
@@ -183,12 +216,19 @@ parks the computer, and hands anything bigger to a computer agent. A window's `�
 
 ## Computer settings
 
-Home's menu, the parked screen and the failure screen open **Computer**: the computer's name,
-the memory and cores it boots with (applied on the next restart), how long it waits before
-parking, Park Now, Restart, and Change Computer. It uses the host's management API
-(`docs/architecture.md`) and follows `computer.settings` events on the control socket.
-Home's Shelf offers optional applications from the computer's pinned catalog; Library groups
-them into packs and offers updates, rollback to a cached release, and removal.
+The cog in every tab's toolbar opens **Computer**: the computer's name, the memory and cores
+it boots with (applied on the next restart), how long it waits before parking, Park Now,
+Restart, the wallpaper, and Change Computer. Beside the cog, the lifecycle menu shows the
+computer's state and offers Turn On, Park and Restart as they apply. Both use the host's
+management API (`docs/architecture.md`) and follow `computer.settings` events on the control
+socket. The Apps tab's Shelf offers optional applications from the computer's pinned
+catalog; Library groups them into packs and offers updates, rollback to a cached release,
+and removal.
+
+The wallpaper lies behind every tab and the desktop, here and on a TV: the brand gradient,
+photographs that change every quarter hour, one photograph, or a picture of your own from
+Photos. Choose it in Computer settings, from the Desktop's overflow menu, or with a long
+press on Home's background.
 
 The same sheet shows the progress and any failure of a guest component update the host
 runs at wake. A container created without the Files port mapping shows that it must be
@@ -205,7 +245,7 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   and Chinese Pinyin keyboards commit their candidates; the terminal gets no autocorrect
   until `Aa` on the key bar turns it on.
 - **Share sheet.** Share a Safari page and pick Open on Computer; share a photo and pick Save
-  and Open; share a photo with a request to an agent and see the task appear on Home.
+  and Open; share a photo with a request to an agent and see the task appear on Home and in Agents.
 - **Files.** Create a folder, save and edit a document in place and verify it on Linux;
   rename and move from each side; delete in Files and check the guest's Trash; park the
   computer and open a file to verify wake; go offline and verify Files reports the host
@@ -228,3 +268,14 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   and check Spotlight; sign out and verify the entries disappear.
 - **Shelf and Library.** Install PhotoCraft from the Shelf, follow its progress, open it, and
   remove it from Library.
+- **Tabs and the vertical bar.** On iPhone Duo, closed and open in landscape, every tab's
+  bar is on the side with the tabs, the cog and the lifecycle menu; on the Desktop tab the
+  desktop fills the space beside the bar and resizes when the device folds or rotates; on a
+  phone without the bar, the tab bar and toolbar are horizontal. Open the Desktop's
+  Launchpad on the closed phone and check that it and the dock fit. Capture either display
+  with `xcrun devicectl device capture screenshot --display-unique-id <id>` (ids from
+  `devicectl device info displays`); `caboose://home`, `desktop`, `agents` and `apps`
+  select a tab.
+- **AirPlay.** With an AirPlay device in reach, play to it once from Home's route picker;
+  Home then names it, and its main control reconnects or offers it as the Automatically
+  AirPlay setting allows. Park, Turn On and Restart from the lifecycle menu.

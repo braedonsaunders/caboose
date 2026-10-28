@@ -32,6 +32,8 @@ final class AppModel {
     /// Videos playing on the computer that can move to the phone.
     let media = MediaHandoff()
     let phone = PhoneHandoff()
+    /// Where the computer's sound plays, and the AirPlay device it last played on.
+    let airPlay = AirPlayCenter()
     /// A window on the agent seat being watched or taken over full screen.
     var presentedAgentWindowID: Int?
     private(set) var credentials: Credentials?
@@ -50,6 +52,14 @@ final class AppModel {
     private(set) var pairing = false
     /// Why the last pairing code did not sign this phone in.
     var pairingFailure: String?
+    /// The shell's selected tab.
+    var selectedTab: ShellTab = .home
+    /// Home's pinned and recently opened apps, kept on the phone for this computer.
+    private(set) var shortcuts = AppShortcuts()
+    /// The newest files in the computer's home, hidden ones left out, from the last file scan.
+    private(set) var recentFiles: [RecentFile] = []
+    /// A file opened from Home: its window opens full screen when it appears.
+    private var openingFileSince: Date?
 
     /// Linux pixels per iOS point. 2 gives crisp text with the guest running at 192 dpi.
     let pixelsPerPoint: CGFloat = 2
@@ -75,6 +85,7 @@ final class AppModel {
         let saved = Credentials.load()
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
+        shortcuts = Self.loadShortcuts(for: saved)
         agents.onComputer = { [weak self] status in
             self?.computerStatus = status
             if let credentials = self?.credentials { FileDomains.register(credentials, name: status.settings.name) }
@@ -135,6 +146,10 @@ final class AppModel {
             LiveActivityCoordinator.shared.unregister(from: host)
         }
         credentials.save()
+        if self.credentials?.fileDomainIdentifier != credentials.fileDomainIdentifier {
+            shortcuts = Self.loadShortcuts(for: credentials)
+            recentFiles = []
+        }
         self.credentials = credentials
         activeHostURL = nil
         Task { await wake() }
@@ -154,6 +169,10 @@ final class AppModel {
         phone.reset()
         computerStatus = nil
         settingsPresented = false
+        recentFiles = []
+        selectedTab = .home
+        deviceDesktopActive = false
+        desktopStageSize = .zero
         if let credentials { FileDomains.remove(credentials) }
         Credentials.clear()
         credentials = nil
@@ -241,7 +260,8 @@ final class AppModel {
         session.onBell = { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
         session.onOpenURL = { [weak self] url in self?.phone.open(url) }
         session.onNotification = { note in Self.post(note) }
-        session.onRaise = { [weak self] wid in self?.presentedWindowID = wid }
+        // A window raised on the desktop stays on the desktop; only the phone's cards follow it.
+        session.onRaise = { [weak self] wid in if self?.desktopActive == false { self?.presentedWindowID = wid } }
         session.cachedFrame = { [weak self] wid in self?.frameCache[wid] }
         self.session = session
         session.connect()
@@ -318,7 +338,7 @@ final class AppModel {
             desktop.sync(with: Array(session.windows.values))
             for (index, window) in appWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
                 placedWindowIDs.insert(window.id)
-                session.configure(window, frame: desktop.placement(for: window, index: index))
+                session.configure(window, frame: desktop.remembered(window) ?? desktop.placement(for: window, index: index))
                 desktop.raise(window.id)
             }
             // Dialogs and tool windows: over their parent, or centred, never left at the origin.
@@ -335,7 +355,11 @@ final class AppModel {
         }
         if let target = launching, let newest = added.compactMap({ session.windows[$0] }).first(where: { !$0.isAuxiliary && matches($0, target) }) {
             launching = nil
-            presentedWindowID = newest.id
+            if !desktopActive { presentedWindowID = newest.id }
+        }
+        if let since = openingFileSince, let newest = added.compactMap({ session.windows[$0] }).first(where: { !$0.isAuxiliary }) {
+            openingFileSince = nil
+            if Date().timeIntervalSince(since) < 30, !desktopActive { presentedWindowID = newest.id }
         }
         showSharedDocumentIfAvailable()
     }
@@ -388,13 +412,42 @@ final class AppModel {
         (deviceDesktopActive ? DesktopModel.deviceUI(forWidth: width) : DesktopModel.automaticUI(forWidth: width)) * desktopZoom
     }
 
+    /// The space the Desktop tab gives the desktop, once it has been laid out.
+    private var desktopStageSize: CGSize = .zero
+
+    /// The Desktop tab reports the space it has for the desktop.
+    func desktopStageResized(to size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        desktopStageSize = size
+        updateDeviceDesktop()
+    }
+
+    /// The phone's own desktop comes up when the Desktop tab is selected and stays up as the
+    /// owner moves between tabs, so coming back shows it exactly as it was: no relayout, no
+    /// reconfigure. It goes down only for a full-screen card (`leaveDeviceDesktop`) or a TV.
+    func updateDeviceDesktop() {
+        guard selectedTab == .desktop, !externalDisplayActive, desktopStageSize != .zero else { return }
+        if !deviceDesktopActive { openDeviceDesktop(size: desktopStageSize) }
+        else { deviceDesktopResized(to: desktopStageSize) }
+    }
+
+    /// Takes the phone's desktop down so a window can be a full-screen card, keeping each
+    /// window's place on it for when the desktop comes back.
+    private func leaveDeviceDesktop() {
+        guard deviceDesktopActive else { return }
+        if let session { desktop.remember(Array(session.windows.values)) }
+        closeDeviceDesktop()
+    }
+
     func openDeviceDesktop(size: CGSize) {
         guard !externalDisplayActive, size.width > 0, size.height > 0 else { return }
         deviceDesktopActive = true
         externalSize = size
         // The phone's own desktop renders at 2x like the rest of the app, not the screen's 3x:
         // indistinguishable at arm's length, and under half the pixels to encode and send.
-        desktop = DesktopModel(pixelsPerPoint: min(2, max(1, UIScreen.main.scale)))
+        // Coming back, it is the same desktop: stacking, minimized windows and their places.
+        let scale = min(2, max(1, UIScreen.main.scale))
+        if !(desktop.directTouch && desktop.pixelsPerPoint == scale) { desktop = DesktopModel(pixelsPerPoint: scale) }
         desktop.directTouch = true
         desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
@@ -428,6 +481,7 @@ final class AppModel {
         externalScale = scale
         desktop = DesktopModel(pixelsPerPoint: tvPixelsPerPoint(width: size.width, scale: scale))
         externalDisplayActive = true
+        selectedTab = .desktop // the phone's Desktop tab is the TV's trackpad
         desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
         desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -493,6 +547,7 @@ final class AppModel {
     func externalDisplayDisconnected() {
         externalDisplayActive = false
         reconnectForDisplayChange()
+        updateDeviceDesktop()
     }
 
     /// The Linux apps keep running; only the display size the server lays them out for changes.
@@ -504,7 +559,8 @@ final class AppModel {
             sessionChanged()
             return
         }
-        guard let host, let lastDisplay else { return }
+        // While waking, the coming session is opened for the new screen; in the background, nothing opens.
+        guard sceneActive, phase == .ready || phase == .connecting, let host, let lastDisplay else { return }
         phase = .connecting
         startSession(host: host, display: lastDisplay)
     }
@@ -529,9 +585,18 @@ final class AppModel {
         computerStatus = try await host.updateSettings(changes)
     }
 
+    /// A park is underway.
+    private(set) var parking = false
+    /// The wallpaper picker, from Home's background, the Desktop's menu or settings.
+    var wallpaperPickerPresented = false
+    /// The owner asked to restart and is being asked to confirm.
+    var restartConfirmationPresented = false
+
     /// Parks the computer with its memory, so it resumes exactly as it was.
     func parkComputer() async throws {
         guard let host else { return }
+        parking = true
+        defer { parking = false }
         closeDisplay()
         do {
             try await host.park()
@@ -578,7 +643,8 @@ final class AppModel {
         fileSearchTask = Task {
             do {
                 try await Task.sleep(for: .seconds(1))
-                try await ComputerSearch.refreshFiles(credentials: credentials)
+                let files = try await ComputerSearch.refreshFiles(credentials: credentials)
+                if self.credentials == credentials { recentFiles = RecentFiles.visible(files, limit: 8) }
             }
             catch { /* Keep the previous index when the computer is unavailable. */ }
         }
@@ -650,12 +716,92 @@ final class AppModel {
         launch(app)
     }
 
+    /// Opens an app: on the desktop when one is up, else as a full-screen card. A parked or
+    /// sleeping computer is woken first.
     func open(_ app: HostClient.App) {
+        recordOpen(app)
+        if phase != .ready {
+            Task {
+                await wake()
+                if phase == .connecting || phase == .ready { launch(app) }
+            }
+            return
+        }
+        if externalDisplayActive || (deviceDesktopActive && selectedTab == .desktop) {
+            openOnDesktop(app)
+            return
+        }
+        leaveDeviceDesktop()
         if let existing = appWindows.first(where: { matches($0, app) }) {
             presentedWindowID = existing.id
             return
         }
         launch(app)
+    }
+
+    // MARK: Home
+
+    private static func shortcutsKey(_ credentials: Credentials) -> String { "caboose.shortcuts." + credentials.fileDomainIdentifier }
+
+    private static func loadShortcuts(for credentials: Credentials?) -> AppShortcuts {
+        guard let credentials, let data = UserDefaults.standard.data(forKey: shortcutsKey(credentials)),
+              let saved = try? JSONDecoder().decode(AppShortcuts.self, from: data) else { return AppShortcuts() }
+        return saved
+    }
+
+    private func saveShortcuts() {
+        guard let credentials, let data = try? JSONEncoder().encode(shortcuts) else { return }
+        UserDefaults.standard.set(data, forKey: Self.shortcutsKey(credentials))
+    }
+
+    private func recordOpen(_ app: HostClient.App) {
+        shortcuts.recordOpen(app.id)
+        saveShortcuts()
+    }
+
+    func togglePin(_ app: HostClient.App) {
+        shortcuts.togglePin(app.id)
+        saveShortcuts()
+    }
+
+    var pinnedApps: [HostClient.App] {
+        shortcuts.pinnedApps(available: Set(apps.map(\.id))).compactMap { id in apps.first { $0.id == id } }
+    }
+
+    func recentApps(limit: Int) -> [HostClient.App] {
+        shortcuts.recentApps(available: Set(apps.map(\.id)), limit: limit).compactMap { id in apps.first { $0.id == id } }
+    }
+
+    /// Opens a home-relative file on the computer with its default app; the app's new
+    /// window opens full screen on the phone.
+    func openFile(_ path: String) async {
+        guard let credentials else { return }
+        if !(deviceDesktopActive && selectedTab == .desktop) { leaveDeviceDesktop() }
+        openingFileSince = Date()
+        do {
+            try await HostShortcutFiles(credentials: credentials).open(path)
+            if desktopActive { openingFileSince = nil }
+        } catch {
+            openingFileSince = nil
+            launchFailure = "\((path as NSString).lastPathComponent) didn't open. \(error.localizedDescription)"
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    /// Shows a window as a full-screen card, leaving the phone's desktop first if it is up.
+    func show(windowID: Int) {
+        if selectedTab == .desktop { selectedTab = .home }
+        leaveDeviceDesktop()
+        presentedWindowID = windowID
+    }
+
+    /// Follows a `caboose://` shell link.
+    func follow(_ link: ShellLink) {
+        switch link {
+        case .tab(let tab): selectedTab = tab == .terminal && !TerminalSlot.isFilled ? .home : tab
+        case .task(let id): notificationTaskID = id
+        case .airPlay: selectedTab = .home; airPlay.connect()
+        }
     }
 
     private func launch(_ app: HostClient.App) {

@@ -16,7 +16,7 @@ function same(a: ComputerSettings | null, b: ComputerSettings | null): boolean {
 }
 
 /** `onDelete` is absent for the owner's computer, which cannot be deleted. */
-export function Settings({ client, computer, onDelete }: { client: CabooseClient; computer: ComputerHandle; onDelete?: () => Promise<void> }) {
+export function Settings({ client, computer, onDelete, assignment }: { client: CabooseClient; computer: ComputerHandle; onDelete?: () => Promise<void>; assignment?: React.ReactNode }) {
   const { status } = computer
   const actions = useComputerActions(client, computer)
   const [draft, setDraft] = React.useState<ComputerSettings | null>(status?.settings ?? null)
@@ -119,6 +119,8 @@ export function Settings({ client, computer, onDelete }: { client: CabooseClient
           }
         />
       </SettingsSection>
+
+      {assignment}
 
       <SettingsSection
         title="Resources"

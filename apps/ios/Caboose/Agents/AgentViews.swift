@@ -1,202 +1,259 @@
 import CabooseKit
 import SwiftUI
 
-/// "Ask your computer": hand a task to an agent that works on its own seat.
-struct AskBar: View {
+/// The agent a new chat goes to.
+enum AskTarget {
+    /// The storage key: "" for the default agent, else an agent's registry id.
+    static let key = "caboose.agent.target"
+}
+
+/// The chat composer. In a new chat it picks the agent; in a chat it talks to that chat's
+/// agent, and while the agent works, what you send waits for its turn to end.
+struct ChatComposer: View {
     @Environment(AppModel.self) private var model
+    /// The chat, or nil for a new one.
+    let task: AgentCenter.Task?
+    var connectModel: () -> Void = {}
     @State private var prompt = ""
-    /// A registry id, "" for the owner's default agent, or `onDevice`.
-    @AppStorage("caboose.agent.choice") private var agent = ""
+    @AppStorage(AskTarget.key) private var target = ""
     @AppStorage("caboose.agent.askFirst") private var askFirst = false
     @AppStorage("caboose.agent.craftMcp") private var craftMcp = true
-    @AppStorage("caboose.agent.delegate") private var delegate = ""
     @FocusState private var focused: Bool
-
-    /// The bar's choice for the phone's own model, beside the computer's agents.
-    static let onDevice = "iphone"
 
     var body: some View {
         let agents = model.agents
-        HStack(spacing: 10) {
-            Menu {
-                Picker("Agent", selection: $agent) {
-                    if OnDeviceAgent.isAvailable { Label("On iPhone", systemImage: "iphone").tag(Self.onDevice) }
-                    Label(agents.defaultAgent.flatMap { agents.listing($0)?.name }.map { "Default (\($0))" } ?? "Default Agent",
-                          systemImage: "sparkles").tag("")
-                    ForEach(agents.installedAgents.filter { $0.id != agents.defaultAgent }) { agent in
-                        Text(agent.name).tag(agent.id)
-                    }
-                }
-                if agent != Self.onDevice {
-                    Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
-                    Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
-                }
-                Button { model.showAgentSettings = true } label: { Label("Agents…", systemImage: "slider.horizontal.3") }
-            } label: {
-                Image(systemName: agent == Self.onDevice ? "iphone" : "sparkles")
-                    .frame(width: 36, height: 36)
-            }
-            TextField("Ask your computer to do something…", text: $prompt, axis: .vertical)
-                .lineLimit(1 ... 4)
+        let name = task.map { agents.name(of: $0) } ?? chosen.map(\.name) ?? agents.defaultAgent.flatMap { agents.listing($0)?.name }
+        HStack(alignment: .bottom, spacing: 8) {
+            menu
+                .frame(width: 36, height: 36)
+            TextField(name.map { "Message \($0)…" } ?? "Message your computer…", text: $prompt, axis: .vertical)
+                .lineLimit(1 ... 6)
                 .focused($focused)
                 .submitLabel(.send)
                 .onSubmit(send)
-            if !prompt.isEmpty {
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill").font(.title2)
+                .padding(.vertical, 8)
+            if let task, task.isRunning, prompt.isEmpty {
+                Button { Task { await agents.cancel(task) } } label: {
+                    Image(systemName: "stop.fill").font(.body.weight(.bold)).frame(width: 34, height: 34)
                 }
-                .transition(.scale.combined(with: .opacity))
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .accessibilityLabel("Stop")
+            } else {
+                Button(action: send) {
+                    Image(systemName: "arrow.up").font(.body.weight(.bold)).frame(width: 34, height: 34)
+                }
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.circle)
+                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel(task?.isRunning == true ? "Send When It's Ready" : "Send")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24))
+        .padding(.leading, 8).padding(.trailing, 6).padding(.vertical, 5)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 26))
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
         .animation(.snappy, value: prompt.isEmpty)
         .onAppear { if model.askFocusRequested { focused = true; model.askFocusRequested = false } }
         .onChange(of: model.askFocusRequested) { _, requested in
             if requested { focused = true; model.askFocusRequested = false }
         }
+        // A suggestion lands in the composer, to send as is or edit first.
+        .onChange(of: agents.draft, initial: true) { _, draft in
+            guard let draft else { return }
+            prompt = draft
+            focused = true
+            agents.draft = nil
+        }
+    }
+
+    /// The installed agent a new chat goes to, when the owner picked one.
+    private var chosen: AgentListing? { model.agents.listing(target).flatMap { $0.isInstalled ? $0 : nil } }
+
+    private var menu: some View {
+        let agents = model.agents
+        return Menu {
+            if let task {
+                let others = agents.installedAgents.filter { $0.id != task.agent }
+                if !others.isEmpty {
+                    Menu("Ask Another Agent", systemImage: "arrow.triangle.branch") {
+                        ForEach(others) { agent in
+                            Button(agent.name) { Task { await agents.retry(task, with: agent.id) } }
+                        }
+                    }
+                }
+            } else {
+                Picker("Agent", selection: $target) {
+                    Text(agents.defaultAgent.flatMap { agents.listing($0)?.name }.map { "Default (\($0))" } ?? "Default Agent").tag("")
+                    ForEach(agents.installedAgents) { agent in Text(agent.name).tag(agent.id) }
+                }
+                Section {
+                    Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
+                    Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
+                }
+            }
+            Section {
+                Button(action: connectModel) { Label("Connect a Model…", systemImage: "key") }
+                Button { model.showAgentSettings = true } label: { Label("Agents…", systemImage: "slider.horizontal.3") }
+            }
+        } label: {
+            let name = task.map { agents.name(of: $0) } ?? chosen?.name ?? agents.defaultAgent.flatMap { agents.listing($0)?.name }
+            if let name { AgentAvatar(name: name, size: 30) } else { CabooseAvatar(size: 30) }
+        }
+        .accessibilityLabel("Agent")
     }
 
     private func send() {
-        let text = prompt
+        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
         prompt = ""
-        focused = false
         let agents = model.agents
-        if agent == Self.onDevice, OnDeviceAgent.isAvailable {
-            Task { await agents.askOnDevice(text, delegatingTo: delegate.isEmpty ? nil : delegate) }
+        if let task {
+            Task { await agents.reply(to: task, text) }
         } else {
-            // An agent uninstalled elsewhere falls back to the default.
-            let chosen = agents.listing(agent)?.isInstalled == true ? agent : nil
-            Task { await agents.ask(text, agent: chosen, askFirst: askFirst) }
+            let agent = chosen?.id
+            Task { await agents.say(text, agent: agent, askFirst: askFirst) }
         }
     }
 }
 
-/// Tasks and the agent seat's windows, on Home.
-struct AgentSection: View {
-    @Environment(AppModel.self) private var model
+/// An agent as a letter mark in a disc, coloured from its name so each agent keeps its own colour.
+struct AgentAvatar: View {
+    let name: String
+    var size: CGFloat = 28
 
     var body: some View {
-        let agents = model.agents
-        if !agents.tasks.isEmpty || !agents.localRuns.isEmpty || !(agents.seat?.windows.isEmpty ?? true) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Agents").font(.headline).foregroundStyle(.secondary)
-                if let seat = agents.seat, !seat.windows.isEmpty {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 14) {
-                            ForEach(seat.windows.values.filter { !$0.isAuxiliary }.sorted { $0.id < $1.id }) { window in
-                                Button { model.presentAgentWindow(window.id) } label: {
-                                    WindowCard(window: window, icon: model.icon(for: window))
-                                        .overlay(alignment: .topTrailing) {
-                                            Label("Agent", systemImage: "sparkle").font(.caption2.weight(.semibold))
-                                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                                .glassEffect(.regular, in: .capsule).padding(8)
-                                        }
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                    .scrollIndicators(.hidden)
-                }
-                ForEach(agents.localRuns.prefix(3)) { run in
-                    OnDeviceCard(run: run)
-                }
-                ForEach(agents.tasks.prefix(6)) { task in
-                    TaskCard(task: task, lines: agents.output[task.id] ?? [])
-                }
-            }
+        let words = name.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let letters = words.count > 1 ? String(words.prefix(2).compactMap(\.first)) : String(name.prefix(2))
+        Text(letters.uppercased())
+            .font(.system(size: size * 0.38, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .frame(width: size, height: size)
+            .background(Self.gradient(for: name), in: .circle)
+            .accessibilityHidden(true)
+    }
+
+    static func gradient(for name: String) -> LinearGradient {
+        let hue = Double(name.unicodeScalars.reduce(UInt32(7)) { ($0 &* 31) &+ $1.value } % 360) / 360
+        return LinearGradient(colors: [Color(hue: hue, saturation: 0.55, brightness: 0.85), Color(hue: (hue + 0.08).truncatingRemainder(dividingBy: 1), saturation: 0.7, brightness: 0.55)],
+                              startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+}
+
+/// Caboose itself: the brand wheel in an amber disc.
+struct CabooseAvatar: View {
+    var size: CGFloat = 28
+    var busy = false
+
+    var body: some View {
+        CabooseWheel(motion: busy ? .rolling : .still)
+            .padding(size * 0.16)
+            .frame(width: size, height: size)
+            .background(Brand.amber.gradient.opacity(0.22), in: .circle)
+            .overlay(Circle().stroke(Brand.amber.opacity(0.5), lineWidth: 1))
+            .accessibilityHidden(true)
+    }
+}
+
+/// A task's state in a word or two, coloured.
+struct TaskStatusPill: View {
+    @Environment(AppModel.self) private var model
+    let task: AgentCenter.Task
+
+    var body: some View {
+        let (text, color) = describe
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .foregroundStyle(color)
+            .background(color.opacity(0.15), in: .capsule)
+    }
+
+    private var describe: (String, Color) {
+        if task.pendingApproval != nil { return ("Needs You", .yellow) }
+        if task.signIn?.isEmpty == false && !task.isRunning { return ("Signed Out", .orange) }
+        switch task.status {
+        case "running", "queued":
+            if let progress = model.agents.threads[task.id]?.progress { return ("Step \(min(progress.done + 1, progress.total)) of \(progress.total)", Brand.amber) }
+            return ("Working", Brand.amber)
+        case "paused": return ("Paused", .yellow)
+        case "succeeded": return ("Done", .green)
+        case "cancelled": return ("Stopped", .secondary)
+        default: return ("Failed", .orange)
         }
     }
 }
 
+/// A computer agent's task in the conversation: who has it, what it is doing now (its plan's
+/// progress and current step) or how it ended, and anything it needs from the owner. Tapping
+/// it opens the whole conversation with that agent.
 struct TaskCard: View {
     @Environment(AppModel.self) private var model
     let task: AgentCenter.Task
-    let lines: [AgentCenter.Line]
-    @State private var expanded = false
-    @State private var reply = ""
+    /// Kept for callers that pass the task's flattened output; the card reads the thread.
+    var lines: [AgentCenter.Line] = []
+    var connectModel: () -> Void = {}
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                statusIcon
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(task.prompt).font(.subheadline.weight(.semibold)).lineLimit(expanded ? nil : 2)
-                    Text(task.summary ?? lines.last?.text ?? (task.isRunning ? "Working…" : ""))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(expanded ? nil : 2)
-                    Text(model.agents.name(of: task)).font(.caption2).foregroundStyle(.tertiary)
-                }
-                Spacer(minLength: 0)
-                if task.isRunning {
-                    Button { Task { await model.agents.cancel(task) } } label: {
-                        Image(systemName: "stop.circle").font(.title3)
+        let agents = model.agents
+        let thread = agents.threads[task.id]
+        VStack(alignment: .leading, spacing: 12) {
+            NavigationLink {
+                AgentThreadView(taskID: task.id)
+            } label: {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        AgentAvatar(name: agents.name(of: task), size: 26)
+                        Text(agents.name(of: task)).font(.subheadline.weight(.semibold))
+                        TaskStatusPill(task: task)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                     }
-                    .buttonStyle(.plain)
+                    if task.isRunning {
+                        if let progress = thread?.progress {
+                            ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+                                .tint(Brand.amber)
+                        }
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            if task.status == "paused" {
+                                Image(systemName: "pause.fill").foregroundStyle(.yellow)
+                            } else {
+                                CabooseWheel(motion: .rolling).frame(width: 14, height: 14)
+                            }
+                            Text(thread?.activity ?? lines.last?.text ?? agents.output[task.id]?.last?.text ?? "Getting started…")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .contentTransition(.opacity)
+                        }
+                    } else if let summary = task.summary, !summary.isEmpty, task.signIn?.isEmpty != false {
+                        Text(Markdown.inline(summary))
+                            .font(.callout)
+                            .lineLimit(8)
+                            .multilineTextAlignment(.leading)
+                    }
                 }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             if let approval = task.pendingApproval {
                 ApprovalRow(task: task, approval: approval)
             }
-            // A signed-out agent: sign in on the computer's screen, then reply to retry.
+            // A signed-out agent: sign in on the computer's screen, use a key, or hand the request to another model.
             if let methods = task.signIn, !methods.isEmpty, !task.isRunning {
-                SignInRow(agentID: task.agent, methods: methods)
-            }
-            if expanded, !lines.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(lines.suffix(200)) { line in
-                            Text(line.text)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(line.kind == "error" ? .orange : line.kind == "tool" ? .cyan
-                                                 : line.kind == "prompt" ? .secondary : .primary)
-                                .fontWeight(line.kind == "prompt" ? .semibold : nil)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                }
-                .frame(maxHeight: 260)
-                .defaultScrollAnchor(.bottom)
-            }
-            if expanded, task.canReply {
-                HStack(spacing: 8) {
-                    TextField("Reply to continue…", text: $reply, axis: .vertical)
-                        .lineLimit(1 ... 4)
-                        .submitLabel(.send)
-                        .onSubmit(sendReply)
-                    if !reply.isEmpty {
-                        Button(action: sendReply) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
-                            .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
+                SignInRow(task: task, methods: methods, connectModel: connectModel)
             }
         }
         .padding(14)
-        .glassEffect(.regular, in: .rect(cornerRadius: 18))
-        .contentShape(Rectangle())
-        .onTapGesture { withAnimation(.snappy) { expanded.toggle() } }
+        .glassEffect(.regular.tint(task.pendingApproval != nil ? Color.yellow.opacity(0.10) : .clear), in: .rect(cornerRadius: 22))
+        .animation(.snappy, value: task.status)
     }
+}
 
-    private func sendReply() {
-        let text = reply
-        reply = ""
-        Task { await model.agents.reply(to: task, text) }
-    }
-
-    @ViewBuilder private var statusIcon: some View {
-        switch task.status {
-        case "succeeded": Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case "failed": Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
-        case "cancelled": Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-        case "paused": Image(systemName: "pause.circle.fill").foregroundStyle(.yellow)
-        case _ where task.pendingApproval != nil: Image(systemName: "hand.raised.circle.fill").foregroundStyle(.yellow)
-        default: ProgressView().controlSize(.small)
-        }
+/// Markdown as SwiftUI `Text` draws it: inline styles and links, line breaks kept.
+enum Markdown {
+    static func inline(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
     }
 }
 
@@ -273,30 +330,55 @@ struct AgentSeatCanvas: UIViewRepresentable {
     }
 }
 
-/// Sign-in methods for a task whose agent was signed out.
+/// What to do about a task whose agent was signed out: sign in on the computer's screen, give
+/// it a key, or run the same request with another agent or model.
 struct SignInRow: View {
     @Environment(AppModel.self) private var model
-    let agentID: String
+    let task: AgentCenter.Task
     let methods: [SignInMethod]
+    var connectModel: () -> Void = {}
     @State private var started: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(methods) { method in
-                Button {
-                    Task {
-                        do {
-                            try await model.agents.signIn(agentID, with: method)
-                            started = "Finish signing in on your computer's screen, then reply to try again."
-                        } catch {
-                            started = error.localizedDescription
+        let agents = model.agents
+        let others = agents.installedAgents.filter { $0.id != task.agent }
+        VStack(alignment: .leading, spacing: 8) {
+            Label("\(agents.name(of: task)) isn't signed in on your computer.", systemImage: "person.crop.circle.badge.exclamationmark")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(methods) { method in
+                        Button {
+                            Task {
+                                do {
+                                    try await agents.signIn(task.agent, with: method)
+                                    started = "Finish signing in on your computer's screen, then reply to try again."
+                                } catch {
+                                    started = error.localizedDescription
+                                }
+                            }
+                        } label: {
+                            Label(methods.count == 1 ? "Sign In" : method.name, systemImage: method.type == "terminal" ? "terminal" : "person.badge.key")
                         }
+                        .buttonStyle(.glass)
                     }
-                } label: {
-                    Label("Sign In: \(method.name)", systemImage: method.type == "terminal" ? "terminal" : "person.badge.key")
+                    Button(action: connectModel) { Label("Use Another Model", systemImage: "key") }
+                        .buttonStyle(.glassProminent)
+                    if !others.isEmpty {
+                        Menu {
+                            ForEach(others) { agent in
+                                Button(agent.name) { Task { await agents.retry(task, with: agent.id) } }
+                            }
+                        } label: {
+                            Label("Ask Another Agent", systemImage: "arrow.triangle.branch")
+                        }
+                        .buttonStyle(.glass)
+                    }
                 }
-                .buttonStyle(.glass)
             }
+            .scrollIndicators(.hidden)
+            .scrollClipDisabled()
             if let started { Text(started).font(.caption).foregroundStyle(.secondary) }
         }
     }
@@ -378,7 +460,7 @@ struct AskAboutWindowSheet: View {
     @State private var prompt = ""
     @State private var snapshot: UIImage?
     @State private var sending = false
-    @AppStorage("caboose.agent.choice") private var agent = ""
+    @AppStorage(AskTarget.key) private var agent = ""
     @AppStorage("caboose.agent.askFirst") private var askFirst = false
     @FocusState private var focused: Bool
 
@@ -401,7 +483,6 @@ struct AskAboutWindowSheet: View {
                     // The phone's own model cannot take a screenshot along, so a window goes to a computer agent.
                     Picker("Agent", selection: $agent) {
                         Text("Default Agent").tag("")
-                        if agent == AskBar.onDevice { Text("On iPhone").tag(AskBar.onDevice) }
                         ForEach(model.agents.installedAgents) { Text($0.name).tag($0.id) }
                     }
                     Toggle("Ask Before Acting", isOn: $askFirst)

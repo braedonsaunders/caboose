@@ -28,10 +28,11 @@ Each component has its own README with how to build, run and test it.
  │  │  windows on iPad / TV     │  /v1/*        │  ├ Lifecycle: wake, lease, park, restart   │
  │  ├ CabooseKit                │  /v1/display  │  ├ Display relay: WS ⇄ guest WS (bytes)    │
  │  │  ├ CabooseDisplaySession  │  /v1/control  │  ├ Files relay: HTTP ⇄ guest file service  │
+ │  │  ├ TerminalConnection     │  /v1/terminal │  ├ Terminal relay: WS ⇄ guest terminal     │
  │  │  ├ VideoToolbox, Metal    │               │  ├ Agents, catalog, media, phone handoff   │
  │  │  └ Touch, trackpad,       │               │  └ APNs: alerts and Live Activities        │
  │  │    keyboard, clipboard    │               │        │ guest agent (exec)                │
- │  ├ Agent space               │               │        │ TCP 14600 / 14601 / 14700         │
+ │  ├ Agent space               │               │        │ TCP 14600 / 14601 / 14700 / 14701 │
  │  └ Files, Shortcuts,         │               │ ┌──────▼───────────────────────────────┐   │
  │    Spotlight, widgets,       │               │ │ The computer (Debian 13)             │   │
  │    Live Activities           │               │ │  ├ caboose-display        :14600     │   │
@@ -39,6 +40,7 @@ Each component has its own README with how to build, run and test it.
                                                 │ │  ├ caboose-display-agent  :14601     │   │
                                                 │ │  │   agent seat, Xwayland :101       │   │
                                                 │ │  ├ caboose-files          :14700     │   │
+                                                │ │  ├ caboose-terminal       :14701     │   │
                                                 │ │  ├ caboose-agentd (ACP runner)       │   │
                                                 │ │  ├ notifications, phone, media       │   │
                                                 │ │  └ apps: Chromium, VS Code, terminal,│   │
@@ -113,8 +115,8 @@ computer in `error` with the reason in `lastError`, and the next wake retries it
 
 ### Guest components
 
-Caboose's own guest plumbing (the file service, the notification monitor and endpoints, and
-phone handoff) is a bundle listed in `guest/components/manifest.json` and installed by
+Caboose's own guest plumbing (the file and terminal services, the notification monitor and
+endpoints, and phone handoff) is a bundle listed in `guest/components/manifest.json` and installed by
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
 
@@ -129,7 +131,9 @@ same installer to update computers whose disks predate the host:
   `/v1/control` sends `computer.upgrade` with `state` `checking`, `updating`, `succeeded` or
   `failed`.
 - A container created without the port 14700 mapping cannot reach the file service; the
-  management status warns that it must be recreated (keep its home volume).
+  management status warns that it must be recreated (keep its home volume). One created
+  without the 14701 mapping needs nothing: the host reaches its terminal service on the
+  container's address on its bridge network.
 
 The bundle does not include Caboose Display or its units, which come with the image.
 
@@ -154,8 +158,8 @@ host's devices when unset or `auto`:
 The container is created with `--init`, `--restart no`, `--shm-size 2g`, the computer's
 memory and CPU limits, DNS `1.1.1.1` and `9.9.9.9`, its home at `/home/caboose` from
 `CABOOSE_CONTAINER_HOME` (a named volume or an absolute host path, `caboose-home` by
-default), and any extra `CABOOSE_CONTAINER_ARGS`. It publishes ports 14600, 14601 and
-14700 on `127.0.0.1` only. Its session script provides:
+default), and any extra `CABOOSE_CONTAINER_ARGS`. It publishes ports 14600, 14601, 14700
+and 14701 on `127.0.0.1` only. Its session script provides:
 
 ```
 caboose-session start        # CUPS and the print queue, the owner's session bus,
@@ -275,8 +279,8 @@ without a trailing newline, to `/run/caboose/display-token`, owned by `caboose` 
 0600. A microVM gets a new token at every boot or resume. A container gets one the first
 time the host wakes it after the host starts, and again after each restart.
 
-Both display instances re-read the file on every hello, and the file service reads it on
-every request. The token reaches the app only inside the authenticated `/v1/session`
+Both display instances re-read the file on every hello, the file service on every request,
+and the terminal service on every connection. The token reaches the app only inside the authenticated `/v1/session`
 response; the host relays display bytes without inspecting them.
 
 ### Guest services
@@ -286,6 +290,20 @@ response; the host relays display bytes without inspecting them.
 `Authorization: Bearer <display token>` on every request. The host starts it at each wake
 before the owner's display, and waits up to 60 s for it to listen; a computer without the
 service still wakes. The protocol is in [Files](#files).
+
+**Terminal service.** `guest/terminal/caboose-terminal.py` (`/opt/caboose/terminal/`,
+`caboose-terminal.service` in the microVM, `caboose-components-services` in the container)
+runs as `caboose` on TCP 14701, Python with the image's `python3-websockets`. Every request
+needs `Authorization: Bearer <display token>`. Each WebSocket on `/` is one session: a login
+shell (`caboose`'s shell, `-bash`) in `/home/caboose` on its own pseudo-terminal, with
+`TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=Caboose` and the owner
+display's launch environment, so a program started from it opens on the owner's display.
+Sessions outlive their connection: at most 16 exist, and a new one past that hangs up the
+one left unattached longest. Each keeps its last 256 KiB of output for reattaching, and while
+nobody is attached its output is read and kept, so the shell never blocks. Stopping the
+service hangs up every shell; what a shell started with `nohup` or `setsid` keeps running.
+`GET /sessions` and `GET /hangup?session=` serve the host's session routes. The protocol is
+in [Terminal](#terminal).
 
 **Notifications.** `caboose-notifications.service` runs `monitor.py`, which observes
 `org.freedesktop.Notifications.Notify` calls on the owner's session bus and writes each as a
@@ -342,6 +360,8 @@ display logic: display streams are relayed, not parsed.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CABOOSE_OWNER_TOKEN` | generated | The owner's bearer token; unset, the host generates one into `${CABOOSE_IMAGE_ROOT}/owner-token` (mode 0600) on first start and reuses it |
+| `CABOOSE_DATABASE_URL` | unset | Postgres for accounts and tenants; unset, an embedded PGlite database in `${CABOOSE_IMAGE_ROOT}/identity` |
+| `CABOOSE_AUTH_SECRET` | generated | The session-signing secret (32 characters or more); unset, generated into `${CABOOSE_IMAGE_ROOT}/auth-secret` |
 | `CABOOSE_BIND` | `127.0.0.1` | Listen address |
 | `CABOOSE_PORT` | `7310` | Listen port |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Golden image, overlays, snapshots and host state |
@@ -360,13 +380,17 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_AGENT_REGISTRY_URL` | the public ACP registry | `http(s)` URL of `registry.json` |
 | `CABOOSE_AGENT_IDLE_MS` | `600000` | How long a runner keeps its agent after a turn |
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park |
+| `CABOOSE_PUBLIC_URL` | unset | Where phones reach the host from anywhere (an `http(s)` URL, optionally with a path, without credentials, query or fragment); first in `/v1/host/reach`, and the console auth base URL (auth defaults to loopback when unset) |
+| `CABOOSE_MDNS` | `on` | `off` stops the LAN advertisement ([Reachability](#reachability)) |
 | `CABOOSE_WEB_ROOT` | `apps/web/dist` | The built web console |
 | `CABOOSE_APNS_KEY_PATH`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC` | unset | APNs provider; all four or none |
 
 Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mode 0600:
 
-- `owner-token` when generated, `computers.json` (the computers other than the owner's,
-  with their slots),
+- `owner-token` and `auth-secret` when generated, `setup-code` until the host is set up,
+  `identity/` (the embedded accounts database and its Unix socket, mode 0700),
+  `computers.json` (the computers other than the owner's, with their slots, tenants and
+  people),
   `phones.json` (phone sign-ins, by SHA-256 of their tokens) and `agent-registry.json`.
 - The owner's computer's `caboose.json` (settings), `push-devices.json` and
   `activities.json` at the root, where a host from before several computers kept them.
@@ -391,7 +415,7 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 | `GET` | `/v1/computers` | `{ computers: [{ id, createdAt, …management status }], canCreate, limits: { computers, running } }`. `createdAt` is null for an owner's computer made before the host recorded it; `running` is null for the container runtime |
 | `POST` | `/v1/computers` | `{ name, memoryMb?, vcpus?, idleMs? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. 409 when all 63 slots are taken |
 | `GET` | `/v1/computers/:id` | One computer, as listed |
-| `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer or while a catalog operation, Craft job or component update runs on it |
+| `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer, or while a catalog operation or Craft job someone started runs on it (the message says which; retry when it finishes) |
 | any | `/v1/computers/:id/<route>` | Any computer route (§ Session and display through § Live Activities, and the agent routes of § 5), served by that computer (`/v1/computers/:id/session`, `/v1/computers/:id/fs/list`, `/v1/computers/:id/display`, …) |
 | `POST` | `/v1/computers/:id/pairing` | → 201 `{ code, expiresAt }`: a pairing code for one phone (below) |
 | `GET` | `/v1/computers/:id/phones` | `{ phones: [{ id, name, createdAt, lastUsedAt }] }`: the phones signed in to the computer. `lastUsedAt` is written at most once a minute |
@@ -399,7 +423,16 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 | `POST` | `/v1/pair` | **No token.** `{ code, deviceName }` → 201 `{ token, computer: { id, name } }`. Trades a pairing code for the phone's own token. `deviceName` is 1–60 characters without control characters. 404 for an unknown, used or expired code; 429 for 60 s after 20 wrong codes |
 
 The routes without a computer in the path serve the caller's own computer: the owner's
-computer for the owner token, and the phone's computer for a phone token.
+computer for the owner token and the operator, and the phone's computer for a phone token.
+They answer another administrator 403.
+
+On a host with accounts, `GET /v1/computers` lists only the computers the caller manages,
+and each carries `tenantId` and `person`. `POST /v1/computers` also takes `tenantId`
+(required: a tenant the caller administers) and `person`, and `PATCH /v1/computers/:id`
+changes `person`, or (for the operator) moves the computer to another `tenantId`. Quotas
+are checked whenever a computer is made, resized (`PATCH …/computer/settings`), moved or
+woken (see Accounts and tenants); a computer over quota answers 409 with what it would be
+given and the quota.
 
 **Pairing.** The console asks for a code and shows it as a QR code and as
 `caboose://connect?host=<origin>&code=<code>`. A code is 8 characters from
@@ -408,6 +441,49 @@ host's memory. The app trades it through `POST /v1/pair` at the first of the lin
 addresses that answers, then keeps the token like any other. Phone tokens are `cbp_`
 followed by 43 base64url characters, shown only in the `/v1/pair` response; the host keeps
 their SHA-256.
+
+### Reachability
+
+How a phone finds and reaches the host. `GET /v1/host/reach` lists every address a phone can
+use, best first, and a pairing link carries them all: the first as `host=`, the rest as
+`alt=`. The app uses the first that answers.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/host/reach` | → `Reach` (below). Operator or owner token only |
+| `PUT` | `/v1/host/reach/tailscale` | `{ enabled: boolean }` (nothing else) → `Reach`. Turns Tailscale's HTTPS `serve` for this host on or off. 400 for any other body; 409 with the reason when Tailscale is not installed, is signed out, has HTTPS certificates off for the tailnet, cannot read its Serve configuration, or already serves something else on HTTPS port 443 (which is never replaced or removed, including routes sharing the port). Operator or owner token only |
+
+```ts
+type Reach = {
+  addresses: Array<{ url: string, kind: 'public' | 'tailscale' | 'lan' }>,  // public, then Tailscale, then LAN
+  mdns: { enabled: boolean, name: string | null },
+  tailscale: { installed: boolean, loggedIn: boolean, name?: string, serving: boolean, httpsUrl?: string, error?: string },
+}
+```
+
+- **Public:** `CABOOSE_PUBLIC_URL`, for a host behind its own domain and HTTPS.
+- **Tailscale:** `https://<machine>.<tailnet>.ts.net` while `serve` sends HTTPS on 443 to
+  `http://127.0.0.1:<port>`. Tailscale terminates TLS with the tailnet's certificate. The host
+  finds the `tailscale` CLI on `PATH` or in the macOS app and runs it as the host's user.
+  `error` explains what stops it from serving.
+- **LAN:** `http://<address>:<port>` for each IPv4 address on a real interface. Loopback,
+  link-local, container and VM bridges (`docker*`, `br-*`, `caboose*`, `veth*`, `tap*`,
+  `virbr*`, `vmnet*`, `bridge*`), VPN tunnels (`tailscale*`, `utun*`, `tun*`, `wg*`) and
+  Apple's peer-to-peer links are left out. A host bound to loopback has no LAN address; one
+  bound to a specific address lists only that address.
+
+While the host listens beyond loopback and `CABOOSE_MDNS` is on, it advertises DNS-SD
+service `_caboose._tcp` over mDNS, IPv4 only, on the same LAN interfaces:
+
+| TXT key | Value |
+| --- | --- |
+| `v` | `1`, the record's version |
+| `id` | 16 hex characters, random and kept in `${CABOOSE_IMAGE_ROOT}/host-id`, so a phone recognises a host whose address or name changed |
+| `name` | The owner computer's name, or `Caboose on <machine name>` while it is still `Caboose`; also the instance name |
+| `path` | `/`, the API's base path |
+
+The record's host name is `caboose-<first 8 characters of id>.local`. A client must treat
+unknown keys as reserved and a higher `v` as possibly incompatible.
 
 ### Lifecycle
 
@@ -418,7 +494,7 @@ The computer has one state: `parked`, `waking`, `running`, `parking`, `restartin
   computer, configures its network and clock, writes the display token, starts the file
   service, starts the owner's display and reads its launch environment. A microVM whose
   snapshot cannot be restored is reported as an error rather than cold-booted.
-- **Leases.** Each open display or control WebSocket holds a lease, as do running agent
+- **Leases.** Each open display, control or terminal WebSocket holds a lease, as do running agent
   tasks, catalog operations, Craft jobs, agent installs and sign-ins, and each `/v1/fs`
   request until its response completes. With no lease, the computer parks after the
   `idleMs` setting. HTTP polling of `/v1/computer` holds no lease, so leaving the web
@@ -433,18 +509,77 @@ The computer has one state: `parked`, `waking`, `running`, `parking`, `restartin
 
 While running, the microVM's appkit-desk lease is renewed every 20 s.
 
+### Accounts and tenants
+
+Accounts belong to **administrators**, who use the web console. The people whose computers
+they run need none: each computer names its `person`, who uses it from a phone paired with
+it. A **tenant** is a household or a team: its computers, its administrators, and quotas on
+what its computers are given between them. The first account is the host's **operator**,
+who sees every tenant, makes tenants and sets quotas; the owner token has the same reach.
+
+Accounts, sessions, tenants and memberships are AppKit's identity schema
+(`@braedonsaunders/appkit-db`, with its migrations), signed in through
+`@braedonsaunders/appkit-auth` (Better Auth, email and password); invitations are
+Caboose's own table. They live in Postgres when `CABOOSE_DATABASE_URL` is set, and
+otherwise in an embedded PGlite database in `identity/`, served to the host over a Unix
+socket only its user can open. Quotas are `tenants.settings.quotas`.
+
+**Setting the host up.** Until the first account exists the host is unclaimed. It writes a
+one-time code to `${CABOOSE_IMAGE_ROOT}/setup-code` (mode 0600) and logs
+`Set up Caboose: http://<address>:<port>/setup?code=<code>`. The `/setup` page is served
+only with that code, including on loopback: a local reverse proxy can relay remote visitors
+without forwarding headers. The setup API requires the same code. Once claimed the page
+redirects to `/`. Claiming makes the operator's account and the first tenant, gives that
+tenant every computer the host already runs,
+deletes the code file and signs the browser in.
+
+**Invitations** are links an administrator copies: `/invite?token=<token>`, single-use,
+valid for seven days, kept as a SHA-256. A new administrator chooses a name and password;
+someone with an account confirms it with their password. A tenant keeps at least one
+administrator.
+
+**Quotas** are `memoryMb`, `vcpus` and `diskGb`, each null for no limit. Memory and vCPUs
+count what the tenant's computers are set to be given; disk counts what their microVM disks
+and parked memory use on the host (a container's disk is not measured). Memory and vCPUs are
+checked when a computer is made, resized or moved, and all three when it wakes.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/setup` | **No account.** `{ claimed, codeRequired }` |
+| `POST` | `/v1/setup` | **No account.** `{ name, email, password, tenantName, code }` → 201, with the session cookie. `code` is required from every address; 409 once claimed |
+| any | `/v1/auth/*` | Better Auth: `POST /v1/auth/sign-in/email { email, password }`, `POST /v1/auth/sign-out`, `GET /v1/auth/get-session`, `POST /v1/auth/change-password`. Sign-up is closed; accounts come from setup and invitations |
+| `GET` | `/v1/me` | `{ kind: "owner" \| "admin", user: { id, name, email } \| null, operator, tenants: [{ id, name, quotas, createdAt }] }` |
+| `GET`, `POST` | `/v1/tenants` | The tenants the caller administers, each with `usage: { computers, memoryMb, vcpus, diskBytes }`; the operator makes one with `{ name, quotas? }` |
+| `GET`, `PATCH`, `DELETE` | `/v1/tenants/:id` | One tenant; `PATCH { name?, quotas? }` (quotas: the operator only); `DELETE` (the operator, once it has no computers) |
+| `GET` | `/v1/tenants/:id/administrators` | `{ administrators: [{ userId, name, email, operator, joinedAt }] }` |
+| `DELETE` | `/v1/tenants/:id/administrators/:userId` | Takes an administrator off the tenant; 409 for its last |
+| `GET`, `POST` | `/v1/tenants/:id/invites` | Waiting invitations; `POST { email }` → 201 `{ invite, token }`, the token shown only here |
+| `DELETE` | `/v1/tenants/:id/invites/:invite` | Withdraws an invitation |
+| `GET` | `/v1/invites/:token` | **No account.** `{ tenantName, email, expiresAt, accountExists }` |
+| `POST` | `/v1/invites/:token/accept` | **No account.** `{ name?, password }` → the session cookie; `name` for a new account |
+
+A tenant an administrator does not administer answers 404, as if it were not there.
+
 ### Authentication
 
-Every `/v1` route except `POST /v1/pair`, and every WebSocket upgrade, requires
-`Authorization: Bearer <token>`. The token is either the owner token, compared as SHA-256
-digests in constant time, or a phone token. The owner token reaches every route and every
-computer. A phone token reaches only its own computer's routes, without a computer in the
-path; `/v1/health`, `/v1/host` and `/v1/computers…` answer it 403. Requests with neither
-token get 401.
+A request is from one of three kinds of caller:
+
+- **The owner token**, `Authorization: Bearer <owner token>`, compared as SHA-256 digests in
+  constant time. It reaches every route and every computer, as the operator does.
+- **An administrator**, by the session cookie Better Auth sets at sign-in (30 days,
+  renewed daily). An administrator reaches the computers and tenants they administer; only
+  the operator reaches `/v1/health`, `/v1/host`, `/v1/host/*` and the computer routes without
+  a computer in the path.
+- **A phone token**, which reaches only its own computer's routes, without a computer in the
+  path; `/v1/health`, `/v1/host`, `/v1/host/*`, `/v1/me`, `/v1/tenants…` and `/v1/computers…` answer it 403.
+
+`POST /v1/pair`, setup, invitations and `/v1/auth/*` need none of these. Any other `/v1`
+route, and every WebSocket upgrade, answers 401 without one.
 
 The built web console is served from `CABOOSE_WEB_ROOT` with an SPA fallback for non-API
-`GET`s. Static files are public. The console keeps the owner token in session storage and
-sends it only as an `Authorization` header.
+`GET`s. Static files are public, except `/setup` before the host is claimed. The console
+signs in with an account; signed in with the owner token instead, it keeps the token in
+session storage and sends it only as an `Authorization` header.
 
 ### Conventions
 
@@ -454,11 +589,11 @@ most 64 KiB (15 MiB for `POST /v1/agent/tasks`). Errors are `{ error: string }`:
 | Status | Meaning |
 | --- | --- |
 | 400 | Invalid input, including unknown fields where a route rejects them |
-| 401 | Missing or unknown token |
-| 403 | A phone token on a route for the owner alone |
+| 401 | Missing or unknown token or session |
+| 403 | A phone, or an administrator who is not the operator, on a route that is not theirs |
 | 404 | Unknown route, task, agent, element or device |
-| 409 | The computer is not running (or is restarting, or being deleted), its display is not ready, or a conflicting operation is in progress |
-| 429 | Too many wrong pairing codes |
+| 409 | The computer is not running (or is restarting, or being deleted), its display is not ready, a conflicting operation is in progress, or a tenant's quota would be exceeded |
+| 429 | Too many wrong pairing codes, or sign-in attempts |
 | 502 | The guest or the agent registry failed an operation; the message says why |
 | 503 | Push or Live Activities are not configured |
 
@@ -528,7 +663,7 @@ Management status:
   limits: { memoryMb: { min: 512, max: 65536 }, vcpus: { min: 1, max: 32 }, idleMs: { min: 60000, max: 86400000 } },
   activeResources: { memoryMb: number, vcpus: number } | null,
   restartRequired: boolean,
-  clients: { display: number, control: number },
+  clients: { display: number, control: number, terminal: number },
   tasks: { running: number, paused: number },
   capabilities: { restart: boolean, push: boolean },
   lastError: string | null
@@ -606,6 +741,47 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
 - `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.
+
+### Terminal
+
+A terminal is a WebSocket relayed to the guest's terminal service. Each connection is one
+session; the session, a shell on the computer, outlives it.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/terminal?cols=&rows=` | **WebSocket.** A new session of `cols` × `rows` (1–1000 × 1–500) |
+| `GET` | `/v1/terminal?cols=&rows=&session=<id>[&offset=<n>]` | **WebSocket.** Reattach to a session, resized to `cols` × `rows`; `offset` is how much of its output this client already holds |
+| `GET` | `/v1/terminal/sessions` | `{ sessions: [{ id, title, command, cwd, cols, rows, created, attached }] }`, oldest first: the title the shell last set, the foreground program and its directory (each null when unknown), `created` in Unix milliseconds |
+| `DELETE` | `/v1/terminal/sessions/:id` | Hang up the session's shell → `{ hungUp: true }`; 404 when it has ended |
+
+The upgrade answers 409 while the computer is not running, unless the query has `wake=1`,
+which **wakes** it first; 400 for an invalid query, and 429 when the client (the owner, or
+one phone) already has 8 terminals open. Session ids are 32 hex characters.
+
+- **Messages.** Binary messages are terminal bytes: the client's are input, the host's are
+  output. Text messages are JSON control messages. The client sends
+  `{ type: "resize", cols, rows }` and `{ type: "hangup" }`. The host sends
+  `{ type: "hello", session, offset, reset, modes? }` first, then output, and
+  `{ type: "exit", code }` or `{ type: "exit", code: null, signal }` when the shell ends,
+  before closing with 1000. The host checks every control message field by field in both
+  directions and re-encodes it; anything else closes the socket with 4400 (from the client)
+  or 1011 (from the guest).
+- **Reattach.** Output is a byte stream; `hello.offset` is the position of the first byte
+  that follows. With `offset` in the query and still kept (the last 256 KiB), the stream
+  continues from it with `reset: false`. Otherwise the client clears its terminal
+  (`reset: true`), applies `modes` (`{ "<DEC private mode>": set }` for cursor keys, cursor
+  visibility, the alternate screen, mouse reporting, focus events and bracketed paste, when
+  the kept output no longer sets them) and receives what is kept. A full-screen program on
+  the alternate screen is resized and restored so it repaints.
+- **Closes.** 4404 `session ended` (it exited, was hung up, or the computer restarted);
+  4001 `attached elsewhere` (another connection took the session; one is attached at a
+  time); 4408 `idle` (nothing either way for 15 minutes); 1013 `too many terminal
+  sessions`; 1011 when the guest cannot be reached. A park closes the socket and keeps the
+  session; a restart ends it.
+- **Flow.** Each client connection gets its own guest connection. As in the display relay,
+  each side is paused until the other has flushed, so a slow client slows the shell rather
+  than filling a buffer; payloads are at most 1 MiB. With no client, a session's output is
+  kept only in its 256 KiB replay.
 
 ### Catalog routes
 
@@ -945,7 +1121,12 @@ specified in `guest/agentd/README.md`; in short:
   exits within 20 s is stopped). Each turn appends to the same `transcript.jsonl`; the task
   keeps its id, `prompt` and `startedAt`, returns to `running`, and `turns` counts the
   turns. Output the earlier turn writes after it was cancelled is not shown as the new
-  turn's.
+  turn's. A reply to a running or paused task waits in the task's `queued` list (at most 10
+  replies, 32000 characters together, kept in the host's memory, so a host restart drops
+  them). When the turn ends, everything waiting goes to the agent as one turn, the replies
+  separated by blank lines, under the same lease and without an `agent.task.finished` for
+  the turn in between. Cancel drops what is waiting; a turn that ends signed out keeps it
+  for the next reply, which sends it first.
 - **Cancel** writes a cancel to the inbox. The runner sends `session/cancel`, answers
   waiting permission requests `cancelled`, and ends the turn with
   `stopReason: "cancelled"`; an agent that has not stopped after 15 s is terminated, and
@@ -976,7 +1157,8 @@ specified in `guest/agentd/README.md`; in short:
 | `POST` | `/v1/agents/:id/sign-in` | `{ methodId }` → `{ started: true, method: { id, name, description?, type } }`. 400 for an unknown method |
 | `POST` | `/v1/agent/tasks` | `{ prompt, agent?, approvals?: "ask" \| "auto", craftMcp?: boolean, attachments?: [{ name, type?, data (base64) }] }` → `{ id }`. 400 when no agent is given and no default is set; 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | Recent tasks, newest first |
-| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`. 409 while the task is running or paused, or for a task that cannot be continued; 404 for an unknown task |
+| `GET` | `/v1/agent/tasks/:id/transcript` | → `{ entries: TranscriptEntry[], truncated }`: every turn of the task's conversation, read from the end of its `transcript.jsonl` (at most 2 MiB; `truncated` when earlier lines were left out). 404 for an unknown task, 409 while the computer is not running |
+| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`. While the task is running or paused the reply waits in `task.queued`. 409 for a task that cannot be continued or when too much is already waiting; 404 for an unknown task |
 | `POST` | `/v1/agent/tasks/:id/approvals/:requestId` | `{ allow: boolean, message?, optionId? }` → `{ resolved }`; `false` when that request is no longer waiting |
 | `POST` | `/v1/agent/tasks/:id/cancel` | → `{ cancelled }` |
 | `POST` | `/v1/agent/tasks/:id/pause` | → `{ paused }`; the task becomes `paused` |
@@ -1022,7 +1204,8 @@ A task record:
   approvals: "ask" | "auto",
   pendingApproval?: { id: string, tool: string, summary: string, options?: Array<{ id: string, name: string, kind: string }> },  // oldest request waiting
   attachments?: string[],         // absolute guest paths
-  signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>  // when the agent was signed out
+  signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>,  // when the agent was signed out
+  queued?: string[]               // replies waiting for the current turn to end, oldest first
 }
 ```
 
@@ -1035,8 +1218,25 @@ Control-socket events:
 | `agent.task.paused`, `agent.task.resumed` | `{ id }` |
 | `agent.task.finished` | `{ id, status: "succeeded" \| "failed" \| "cancelled", summary, signIn? }` |
 | `agent.task.replied` | `{ id, prompt, turn }` |
+| `agent.task.queued` | `{ id, queued: string[] }`: the replies waiting for the turn to end changed |
 | `agent.task.approval` | `{ id, request: { id, tool, summary, options? } }`, once per request |
 | `agent.task.approval.resolved` | `{ id, requestId, allow }` |
+| `agent.task.event` | `{ id, turn, entry: TranscriptEntry }`: each entry of the current turn as the host reads it |
+
+A `TranscriptEntry` is one line of the runner's transcript (guest/agentd/README.md), checked
+and trimmed, without the `session` and `mode` bookkeeping; each may carry `at`:
+
+```ts
+| { type: "user", turn, text, attachments?: string[] }
+| { type: "text" | "thought" | "notice", text }                 // at most 16000 characters
+| { type: "tool" | "tool_update", toolId, title, kind, status, detail? }  // ACP tool kind and status
+| { type: "plan", entries: Array<{ content, status }> }
+| { type: "permission", requestId: string | null, tool, summary, auto }
+| { type: "permission_resolved", requestId, allow, message? }
+| { type: "usage", used, size, cost?: { amount, currency } }
+| { type: "turn_end", turn, stopReason, summary }
+| { type: "turn_failed" | "auth_required", turn, message }
+```
 
 ### Signing in
 
@@ -1131,19 +1331,61 @@ window's texture is a blit on one shared Metal queue, which runs command buffers
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-- **Shell.** On iPhone each Linux window is an app card: full screen, with native
-  app-switcher gestures between cards and a home grid of Linux apps with their real
-  icons. Home's Shelf offers optional catalog apps, and Library groups packs and lets the
-  owner install, update, roll back or remove them; progress follows the control socket. On
-  iPad and external displays the same windows float, resize and stack, with a dock and a
-  menu bar. Transient windows (menus, dialogs, tooltips) are positioned relative to their
-  parent, never as separate cards.
+- **Windows.** On iPhone each Linux window is an app card: full screen, with native
+  app-switcher gestures between cards. On the Desktop tab, iPad and external displays the
+  same windows float, resize and stack, with a dock and Launchpad. Transient windows
+  (menus, dialogs, tooltips) are positioned relative to their parent, never as separate
+  cards.
 - **Lifecycle.** The display socket closes when the app goes to the background; the
   computer parks on idle and resumes on the next foreground. The last frame of every window
   is cached, so reopening is instant while the stream reconnects.
-- **Computer settings.** A Computer sheet (from Home, the parked screen and the failure
-  screen) edits the management settings, shows `restartRequired`, parks, and restarts after
-  confirmation; Park Now lands on a parked screen with Wake.
+
+### Shell
+
+The app is a system tab view (SwiftUI `TabView` with `Tab`), so each device gets the
+system's tab bar or sidebar. Every tab's toolbar ends with the Computer settings and a
+lifecycle menu: Turn On (`POST /v1/session`) while parked or out of reach, Park
+(`POST /v1/session/park`) and, where `capabilities.restart` is true, Restart after
+confirmation (`POST /v1/computer/restart`). The host has no power-off. Host messages
+(`lastError`, a component update's failure) show as one-line statuses whose text, with
+repeated lines removed and clipped to a few lines, opens on tap.
+
+| Tab | What it is |
+| --- | --- |
+| Home | The computer's state, one-tap AirPlay, quick actions, agents working or waiting for approval (answered in place), open windows, pinned and recently opened apps, and the home's newest visible files (from the same `/v1/fs` scan that feeds Spotlight), which open with their default app |
+| Desktop | The computer's desktop on this screen, configured for exactly the space beside or between the bars, with Keyboard, AirPlay and Full Screen in the toolbar; while a TV shows the desktop, the phone's trackpad |
+| Agents | The Ask bar, approvals, tasks and the agent seat's windows |
+| Apps | Every desktop entry, the Shelf and Library |
+| Terminal | A native terminal, present when the app is built with it |
+
+`caboose://home`, `desktop`, `agents`, `apps` and `terminal` select a tab;
+`caboose://task/<id>` opens a task and `caboose://airplay` runs Home's AirPlay action.
+Pinned and recent apps are kept on the phone per computer.
+
+- **Vertical bar.** On iPhone Duo (iOS 27.1) the system draws the tab bar and toolbar
+  items together in a bar on the side, and moves the status bar into it. Toolbar items are
+  icon buttons so that they can move there. The Desktop tab keeps the tab bar whole
+  (`toolbarVerticalCompressionBehavior(.prefersTabBar)`), gives Full Screen the lowest
+  visibility priority and the Computer pair the highest, and reads
+  `toolbarVerticalEdge` to extend the desktop under the top and bottom insets beside the
+  bar. Full Screen hides the bars and gives the desktop the whole display; a handle at the
+  top brings them back. No screen disables the vertical bar.
+- **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. Home's
+  AirPlay control remembers the AirPlay output the computer's sound last played on (from the
+  audio session's route) and, on a tap, switches the session to long-form video routing and
+  calls `prepareRouteSelectionForPlayback`, so the system reconnects or offers a device as
+  its Automatically AirPlay setting allows. Beside it is the system route picker
+  (`AVRoutePickerView`). The desktop reaches a TV only when the owner starts Screen
+  Mirroring; the app then claims the external display as a desktop.
+- **Wallpaper.** The desktop's wallpaper is the phone's, not the guest's (the compositor
+  draws no desktop), so one choice covers every tab and the desktop on the phone and on a
+  TV: the brand gradient, photographs that change every quarter hour, one photograph, or the
+  owner's own picture from Photos, kept on the phone. It is chosen from Computer settings,
+  the Desktop's overflow menu or a long press on Home's background. On the phone a sheer of
+  the brand gradient lies over a photograph, which extends under the bars. The last
+  photograph is cached so no screen starts black.
+- **Computer settings.** The Computer sheet edits the management settings, shows
+  `restartRequired`, parks, restarts after confirmation and chooses the wallpaper.
 
 ### Input
 
@@ -1167,13 +1409,63 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   compositor does not advertise the `pencil` feature, so Apple Pencil acts as touch and
   Linux applications receive no pressure or tilt.
 
+### Terminal
+
+The Terminal tab is a native terminal on a real shell in the computer, built on
+[SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) 1.99.1 (MIT): xterm-256color with
+truecolor, 256 colours, bold and italic, the alternate screen, mouse reporting, bracketed
+paste and OSC 8 links. CabooseKit holds the protocol (`Terminal/`: messages, closes, keys,
+and `TerminalConnection`, which tracks the output offset); the app holds the view.
+
+- **Look.** Caboose Night: SF Mono on the icon's navy (`#0E1626`) at 82% opacity over the
+  wallpaper, cream text, an amber cursor and selection, and a sixteen-colour palette from
+  which the 256-colour cube derives. Pinch, or Larger and Smaller Text in the session menu,
+  sets the size from 8 to 28 points; it is kept on the phone.
+- **Input.** A key row above the keyboard has Esc, Tab, sticky Ctrl and Alt (for the row's
+  keys and the keyboard's next one), arrows that repeat while held, `` | ~ / - _ ` \ : * $ ``,
+  Home, End, Page Up and Page Down, and Hide Keyboard. Unmodified arrows follow the
+  application's cursor-key mode; modified keys are xterm's. A hardware keyboard types
+  directly (Option is Meta) and focuses the terminal on arrival. Long press or double tap
+  selects, with Copy, Paste and Select All; programs can copy to the phone's clipboard with
+  OSC 52, but never read it.
+- **Behaviour.** A tap on a URL in the output or an OSC 8 link opens it in Safari. The bell
+  is a haptic and a flash. The grid follows the view: rotation, the keyboard, the vertical
+  bar and pinch each send a resize. Leaving the app or the tab detaches; coming back
+  reattaches from the last byte received, so nothing repeats. A dropped connection retries
+  after 0.5, 1, 2, 4 and 8 s, then every 15 s; only opening the tab or an action wakes a
+  parked computer (`wake=1`), never a retry. When the shell exits, another device takes
+  the session, or the connection closes as idle, the screen says so with one action (New
+  Session, Show Here, Reconnect); typing after an idle close reconnects, and Return after an
+  exit starts a new session. A session that
+  ended while away is replaced with a new one, with a note.
+- **Sessions.** The session menu starts a new session, switches between the computer's
+  sessions (`GET /v1/terminal/sessions`) and closes the current one. The current session's
+  id is kept on the phone, so the app reopens it after a relaunch.
+
 ### Agent space
 
-- **Ask bar.** Starts tasks with the default agent or any installed one, optionally asking
-  before acting. Pending approvals show on the task card and as a banner over every screen,
-  with the agent's always-allow option when it has one. Finished tasks take replies, and a
-  task whose agent was signed out offers its sign-in methods. A window's menu hands the
-  window (screenshot, title, app) to an agent as an attachment.
+- **Chats.** The Agents tab is a chat with an agent on the computer, and a chat is a task:
+  its first message starts it with the chosen agent (the default unless the composer names
+  another), and every later message is a reply, so the agent has the whole conversation in
+  one session. Sent while the agent works, a message waits in the task's queue and shows as
+  waiting, with Send Now, which cancels the turn and sends it at once. New Chat starts a
+  fresh task; the chat list is the task list, and other chats still working are pinned
+  along the top. Where Apple Intelligence is available the phone's Foundation Models model
+  names each chat from its first message for the list; it handles nothing the owner says.
+- **Transcript.** A chat shows its whole conversation from
+  `GET /v1/agent/tasks/:id/transcript`, then follows `agent.task.event`: prompts, messages,
+  collapsible thoughts, tool calls grouped and updated in place, the plan as a checklist,
+  permissions with their answers, and context use. A working agent can be stopped or
+  watched on the seat. Pending approvals show in the chat, on Home and as a banner over every screen, with the agent's always-allow option when it
+  has one. A task whose agent was signed out offers its sign-in methods, Connect a Model,
+  and asking another agent the same thing in a new chat. A window's menu hands the window
+  (screenshot, title, app) to an agent as an attachment.
+- **Connect a Model.** An API key instead of an account: OpenRouter (through the registry's
+  `goose`, with `GOOSE_PROVIDER=openrouter`, `GOOSE_MODEL` from OpenRouter's public model
+  list of tool-using models, and `OPENROUTER_API_KEY`), Anthropic (`claude-acp`,
+  `ANTHROPIC_API_KEY`) or OpenAI (`codex-acp`, `OPENAI_API_KEY`). The app installs the
+  agent, sets its environment with `PUT /v1/agents/:id/env`, and makes it the default; the
+  host learns nothing new.
 - **Agent seat.** The Agent space watches the seat with a second `CabooseDisplaySession`
   on `/v1/display?seat=agent` that plays no sound, so there is one stream of sound: the
   owner's display. Take Over and Hand Back pause and resume tasks.
@@ -1181,14 +1473,6 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   sign in on the computer's screen, add or remove environment variables such as an API key,
   and choose the default agent. Registry icons are SVG, which iOS does not draw, so agents
   show their initials.
-- **On-device model.** Where Apple Intelligence is available, the Ask bar also offers the
-  phone's Foundation Models model. It runs on the device and sends nothing to a model
-  provider. Its tools act through the host: launch an app (`/v1/apps/:id/launch`), open a
-  page or search (`/v1/open`), type or press keys (`/v1/screen/type`, `/v1/screen/keys`),
-  look at the focused window and press a control by name (`/v1/screen/elements`,
-  `/v1/screen/act`), park the computer, and delegate anything that needs several steps,
-  code, files or judgement to a computer agent as a task. It acts on the accessibility tree
-  rather than on pixel coordinates. `apps/ios/OnDeviceEval` evaluates it on a device.
 
 ### Notifications
 
@@ -1304,6 +1588,12 @@ app group and a Keychain access group.
   WebSocket. The web console keeps it in session storage. The host
   speaks plain HTTP on loopback by default; HTTPS and WSS belong in front of it before
   traffic crosses a network.
+- **Accounts.** Administrators sign in with an email and password (hashed by Better Auth;
+  sessions are signed with `CABOOSE_AUTH_SECRET` or the generated `auth-secret`). Sign-up
+  is closed: the first account comes from setting the host up with its one-time code, the
+  rest from single-use invitation links. The host allows twenty sign-in, setup or
+  invitation attempts per client in ten minutes, then answers 429. An administrator
+  sees only their tenants' computers; only the operator sees the host itself.
 - **Phone tokens.** A phone signs in to one computer with its own token, obtained once for a
   single-use, ten-minute pairing code, so no token is ever shown in a link, a QR code or the
   console. The host stores only SHA-256 digests; signing a phone out closes its sockets and
@@ -1313,14 +1603,14 @@ app group and a Keychain access group.
   rejected; containers sit on separate bridge networks) and has its own disk and data
   directory.
 - **Display token.** A random per-wake token in `/run/caboose/display-token` (mode 0600,
-  owned by `caboose`) authorizes the guest's display and file services. It reaches a
+  owned by `caboose`) authorizes the guest's display, file and terminal services. It reaches a
   client only inside an authenticated `/v1/session` response.
 - **Control sockets.** Each seat's control socket is a Unix socket in a directory only
   `caboose` can open, and the compositor serves only peers of its own user. It is never
   exposed outside the computer.
 - **Fencing.** The guest cannot open connections to the host, and by default cannot reach
-  private, link-local, CGNAT or reserved ranges. Display and file ports are reachable only
-  from the host: over the TAP device for a microVM, on `127.0.0.1` for a container.
+  private, link-local, CGNAT or reserved ranges. Display, file and terminal ports are
+  reachable only from the host: over the TAP device for a microVM, on `127.0.0.1` for a container.
 - **Guest input.** The host treats the guest as able to produce malformed data. Phone
   events, media state, notification records, task transcripts and approval requests are
   validated and bounded, and the host never relays a guest-supplied file path.

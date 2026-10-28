@@ -38,10 +38,13 @@ COPY --from=host-deps /src/node_modules ./node_modules
 COPY --from=host-deps /src/apps/host/node_modules ./apps/host/node_modules
 COPY --from=host-deps /src/apps/host/package.json ./apps/host/package.json
 COPY --from=host-build /src/apps/host/dist ./apps/host/dist
+# The identity database's own migrations, beside AppKit's in node_modules.
+COPY apps/host/migrations ./apps/host/migrations
 COPY guest/components ./guest/components
 COPY guest/files ./guest/files
 COPY guest/phone ./guest/phone
 COPY guest/notifications ./guest/notifications
+COPY guest/terminal ./guest/terminal
 COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
 COPY guest/catalog/icons ./guest/catalog/icons
 COPY --from=web-build /src/apps/web/dist ./apps/web/dist

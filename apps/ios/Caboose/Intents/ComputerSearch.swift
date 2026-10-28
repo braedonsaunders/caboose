@@ -1,3 +1,4 @@
+import CabooseKit
 import CoreSpotlight
 import Foundation
 import UniformTypeIdentifiers
@@ -27,7 +28,8 @@ enum ComputerSearch {
             CSSearchableItem(uniqueIdentifier: "file:" + path, domainIdentifier: filesDomain, attributeSet: attributes)
         ], completionHandler: nil)
     }
-    static func refreshFiles(credentials: Credentials) async throws {
+    @discardableResult
+    static func refreshFiles(credentials: Credentials) async throws -> [RecentFile] {
         let files = try await computerFiles(HostShortcutFiles(credentials: credentials))
         try Task.checkCancellation()
         let index = CSSearchableIndex.default()
@@ -40,6 +42,7 @@ enum ComputerSearch {
             return CSSearchableItem(uniqueIdentifier: "file:" + file.path, domainIdentifier: filesDomain, attributeSet: attributes)
         }
         try await index.indexSearchableItems(items)
+        return files
     }
     static func invalidateFiles() {
         CSSearchableIndex.default().deleteSearchableItems(withDomainIdentifiers: [filesDomain], completionHandler: nil)

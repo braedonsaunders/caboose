@@ -310,13 +310,30 @@ final class DesktopModel {
                       width: width * pixelsPerPoint, height: height * pixelsPerPoint).integral
     }
 
+    /// Each window's place when the desktop last went down, in Linux pixels.
+    private var rememberedFrames: [Int: CGRect] = [:]
+
+    /// Keeps the windows' places for when this desktop comes back.
+    func remember(_ windows: [RemoteWindow]) {
+        rememberedFrames = Dictionary(windows.filter { !$0.isOverrideRedirect }.map { ($0.id, $0.frame) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// A window's remembered place, once, if it still fits on the desktop.
+    func remembered(_ window: RemoteWindow) -> CGRect? {
+        guard let frame = rememberedFrames.removeValue(forKey: window.id) else { return nil }
+        let bounds = CGRect(x: 0, y: 0, width: size.width * pixelsPerPoint, height: size.height * pixelsPerPoint)
+        return bounds.contains(frame) ? frame : nil
+    }
+
     /// A good first place for a new window: centred, cascading, clear of the dock.
     func placement(for window: RemoteWindow, index: Int) -> CGRect {
         let usable = CGSize(width: size.width, height: size.height - dockHeight - titleBarHeight)
         let width = min(window.frame.width / pixelsPerPoint, usable.width * 0.8)
         let height = min(window.frame.height / pixelsPerPoint, usable.height * 0.85)
         let offset = CGFloat(index % 6) * 28 * ui
-        let origin = CGPoint(x: (size.width - width) / 2 - 84 * ui + offset, y: titleBarHeight + 40 * ui + offset)
+        var origin = CGPoint(x: (size.width - width) / 2 - 84 * ui + offset, y: titleBarHeight + 40 * ui + offset)
+        // A narrow desktop (a phone held upright beside its bar) keeps the window on screen.
+        origin.x = min(max(0, origin.x), max(0, size.width - width))
         return CGRect(x: origin.x * pixelsPerPoint, y: origin.y * pixelsPerPoint,
                       width: width * pixelsPerPoint, height: height * pixelsPerPoint).integral
     }

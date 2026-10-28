@@ -5,7 +5,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 mode=${1:?expected image-vm, image-container, vm or container}
 case "$mode" in image-vm|image-container|vm|container) ;; *) exit 2;; esac
 export DEBIAN_FRONTEND=noninteractive
-packages=(cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1)
+packages=(cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1)
 missing=()
 for pkg in "${packages[@]}"; do
   [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || :)" = installed ] || missing+=("$pkg")
@@ -22,6 +22,8 @@ if ((${#missing[@]})); then
 fi
 install -Dm755 "$root/files/caboose-files.py" /opt/caboose/files/caboose-files.py
 install -Dm644 "$root/files/caboose-files.service" /etc/systemd/system/caboose-files.service
+install -Dm755 "$root/terminal/caboose-terminal.py" /opt/caboose/terminal/caboose-terminal.py
+install -Dm644 "$root/terminal/caboose-terminal.service" /etc/systemd/system/caboose-terminal.service
 sh "$root/notifications/install.sh"
 bash "$root/phone/install.sh"
 install -d -m 0755 /usr/local/share/caboose
@@ -30,12 +32,13 @@ if [[ "$mode" = *container ]]; then
 else
   mkdir -p /var/lib/systemd/linger
   touch /var/lib/systemd/linger/caboose
-  systemctl enable caboose-files.service caboose-notifications.service cups.service caboose-phone-printer.service
+  systemctl enable caboose-files.service caboose-terminal.service caboose-notifications.service cups.service caboose-phone-printer.service
 fi
 if [[ "$mode" = vm ]]; then
   systemctl daemon-reload
   systemctl restart caboose-notifications.service
   systemctl restart caboose-files.service
+  systemctl restart caboose-terminal.service
   systemctl start cups.service
   systemctl restart caboose-phone-printer.service
 elif [[ "$mode" = container ]]; then

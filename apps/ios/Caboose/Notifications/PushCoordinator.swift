@@ -90,7 +90,7 @@ final class PushCoordinator: NSObject, UNUserNotificationCenterDelegate {
             AppModel.shared.notificationTaskID = task
             AppModel.shared.presentedWindowID = nil
         } else if let window = payload.windowId {
-            AppModel.shared.presentedWindowID = window
+            AppModel.shared.show(windowID: window)
         }
     }
 }

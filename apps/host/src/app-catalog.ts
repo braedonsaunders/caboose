@@ -1,11 +1,18 @@
 import { readFile } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { AgentConflictError, AgentNotFoundError, AgentOperationError, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { loadCatalog, type CatalogData, type CatalogEntry } from './app-catalog-data.js'
 
 type State = { installedVersion: string | null; canRollback: boolean; lastError: string | null; interrupted: boolean }
 type Progress = { id: string; operation: string; phase: 'queued' | 'installing' | 'finished' | 'failed'; message?: string; stage?: string; value?: number | null }
 const EMPTY: State = { installedVersion: null, canRollback: false, lastError: null, interrupted: false }
+const ICONS = new URL('../../../guest/catalog/icons/', import.meta.url)
+
+/** The app's icon from guest/catalog/icons as a PNG data URL, so clients can show apps that are not installed. */
+export function catalogIcon(id: string): string | null {
+  const file = new URL(`${id}.png`, ICONS)
+  return existsSync(file) ? 'data:image/png;base64,' + readFileSync(file).toString('base64') : null
+}
 
 /** Catalog operations are serialized and execute entirely inside the guest as root. */
 export class AppCatalog {
@@ -27,7 +34,7 @@ export class AppCatalog {
       const state = this.states[app.id] ?? EMPTY
       const pinnedVersion = app.source.kind === 'deb' ? app.source.version : null
       const installedVersion = state.installedVersion
-      const iconData = app.source.kind === 'deb' ? 'data:image/png;base64,' + readFileSync(new URL(`../../../guest/catalog/icons/${app.id}.png`, import.meta.url)).toString('base64') : null
+      const iconData = catalogIcon(app.id)
       return { ...app, ...state, iconData, pinnedVersion, updateAvailable: !!(pinnedVersion && installedVersion && installedVersion.split('-')[0] !== pinnedVersion), progress: this.progress.get(app.id) ?? null }
     }) }
   }

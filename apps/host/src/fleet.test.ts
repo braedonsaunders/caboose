@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens, type ComputerRecord } from './computers.js'
 import { PushDevices, PushService } from './push.js'
 import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
@@ -175,4 +175,28 @@ it('serves only the owner computer without a fleet', async () => {
   expect((await fetch(`${base}/v1/computers`, { method: 'POST', headers, body: JSON.stringify({ name: 'More' }) })).status).toBe(409)
   expect((await fetch(`${base}/v1/computers/owner/pairing`, { method: 'POST', headers })).status).toBe(409)
   expect((await fetch(`${base}/v1/computers/owner/computer`, { headers })).status).toBe(200)
+})
+
+it('deletes a computer whose first-wake components upgrade is still running, once the upgrade is done', async () => {
+  const host = await startHost()
+  const kids = await (await host.call('/v1/computers', { method: 'POST', body: { name: 'Kids' } })).json()
+  const fake = host.made.get(kids.id)!
+  // The guest answers the upgrade's first command only when let go.
+  let letGo!: () => void
+  const held = new Promise<void>(resolve => { letGo = resolve })
+  let upgrading = false
+  fake.controller.componentsMode = 'container'
+  fake.controller.guest = () => ({ ownerEnv: [], run: async () => { upgrading = true; await held; return '' } })
+  expect((await host.call(`/v1/computers/${kids.id}/session`, { method: 'POST' })).status).toBe(200)
+  await vi.waitFor(() => expect(upgrading).toBe(true))
+  expect((await (await host.call(`/v1/computers/${kids.id}`)).json()).upgrade?.state).toBe('checking')
+
+  let answered = false
+  const deleting = host.call(`/v1/computers/${kids.id}`, { method: 'DELETE', body: { confirm: true } }).then(response => { answered = true; return response })
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(answered).toBe(false)
+  expect(fake.calls).not.toContain('destroy')
+  letGo()
+  expect((await deleting).status).toBe(200)
+  expect(fake.calls).toContain('destroy')
 })
