@@ -45,6 +45,8 @@ export function Files({ client, computer, onUnauthorized }: { client: CabooseCli
     return false
   }, [onUnauthorized])
 
+  // The handle is a new object each render; its refresh is stable, so loading depends on that alone.
+  const refreshComputer = computer.refresh
   const load = React.useCallback(async (target: string) => {
     const id = ++request.current
     setLoading(true)
@@ -59,9 +61,9 @@ export function Files({ client, computer, onUnauthorized }: { client: CabooseCli
       setError({ status: failure instanceof CabooseApiError ? failure.status : 0, message: errorMessage(failure) })
     } finally {
       if (id === request.current) setLoading(false)
-      void computer.refresh()
+      void refreshComputer()
     }
-  }, [client, computer, fail])
+  }, [client, refreshComputer, fail])
 
   React.useEffect(() => {
     if (canBrowse) void load(path)
