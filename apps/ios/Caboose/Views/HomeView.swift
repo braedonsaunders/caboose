@@ -12,16 +12,6 @@ struct HomeView: View {
     }
 
     /// Real applications first; desktop settings panels and system utilities in their own section.
-    private func partition(_ apps: [HostClient.App]) -> ([HostClient.App], [HostClient.App]) {
-        let systemCategories: Set<String> = ["Settings", "DesktopSettings", "HardwareSettings", "System", "Monitor", "PackageManager"]
-        let primary: Set<String> = ["WebBrowser", "TerminalEmulator", "TextEditor", "Office", "Development", "IDE", "Graphics", "AudioVideo", "FileManager"]
-        var main: [HostClient.App] = [], system: [HostClient.App] = []
-        for app in apps {
-            let categories = Set(app.categories)
-            if !categories.isDisjoint(with: primary) || categories.isDisjoint(with: systemCategories) { main.append(app) } else { system.append(app) }
-        }
-        return (main, system)
-    }
 
     var body: some View {
         ScrollView {
@@ -119,7 +109,7 @@ struct HomeView: View {
                 }
                 .padding(.vertical, 20)
             } else {
-                let (main, system) = partition(model.apps)
+                let (main, system) = model.partitionedApps
                 LazyVGrid(columns: columns, spacing: 22) {
                     ForEach(main) { app in tile(app) }
                 }

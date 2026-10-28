@@ -16,6 +16,10 @@ struct DesktopView: View {
                         DesktopWindow(window: window, desktop: desktop, icon: model.icon(for: window))
                     }
                 }
+                if desktop.launchpadOpen {
+                    Launchpad(desktop: desktop)
+                        .transition(.opacity.combined(with: .scale(scale: 1.04)))
+                }
                 if let session = model.session, desktop.fullscreenWindow(in: session.windows) == nil {
                     Dock(desktop: desktop)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -119,7 +123,7 @@ struct Dock: View {
     var body: some View {
         let ui = desktop.ui
         HStack(spacing: 10 * ui) {
-            ForEach(model.apps.prefix(14)) { app in
+            ForEach(model.dockApps) { app in
                 let hot = desktop.hovered == .dock(app.id)
                 VStack(spacing: 3 * ui) {
                     Group {
@@ -138,6 +142,17 @@ struct Dock: View {
                 }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.dockFrames[app.id] = $0 }
             }
+            Divider().frame(height: 44 * ui).overlay(.white.opacity(0.25))
+            let hot = desktop.hovered == .launchpadButton
+            Image(systemName: "square.grid.3x3.fill")
+                .font(.system(size: 26 * ui, weight: .medium))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 52 * ui, height: 52 * ui)
+                .background(.white.opacity(desktop.launchpadOpen ? 0.25 : 0.12), in: RoundedRectangle(cornerRadius: 12 * ui, style: .continuous))
+                .scaleEffect(hot ? 1.28 : 1, anchor: .bottom)
+                .animation(.spring(duration: 0.22), value: hot)
+                .padding(.bottom, 7 * ui)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launchpadButtonFrame = $0 }
         }
         .padding(.horizontal, 12 * ui)
         .padding(.vertical, 8 * ui)
@@ -161,5 +176,47 @@ struct Cursor: View {
             // The symbol's tip is 3.5 × 2.5 points into its 20 × 28 glyph; this puts the tip,
             // not the glyph's centre, on the point that clicks land on.
             .offset(x: 6.5 * ui, y: 11.5 * ui)
+    }
+}
+
+/// Every app on the computer, in a grid over the desktop, as on a Mac.
+struct Launchpad: View {
+    @Environment(AppModel.self) private var model
+    let desktop: DesktopModel
+
+    var body: some View {
+        let ui = desktop.ui
+        let apps = model.partitionedApps.main
+        let columns = Array(repeating: GridItem(.fixed(150 * ui), spacing: 28 * ui), count: 7)
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
+            LazyVGrid(columns: columns, spacing: 30 * ui) {
+                ForEach(apps.prefix(42)) { app in
+                    let hot = desktop.hovered == .launcher(app.id)
+                    VStack(spacing: 8 * ui) {
+                        Group {
+                            if let icon = model.appIcons[app.id] {
+                                Image(uiImage: icon).resizable().scaledToFit()
+                            } else {
+                                Image(systemName: "app.dashed").font(.system(size: 50 * ui))
+                            }
+                        }
+                        .frame(width: 84 * ui, height: 84 * ui)
+                        .scaleEffect(hot ? 1.12 : 1)
+                        .animation(.spring(duration: 0.2), value: hot)
+                        Text(app.name)
+                            .font(.system(size: 14 * ui, weight: .medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .shadow(color: .black.opacity(0.5), radius: 2)
+                    }
+                    .frame(width: 150 * ui)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launcherFrames[app.id] = $0 }
+                }
+            }
+            .padding(.top, 60 * ui)
+            .padding(.bottom, desktop.dockHeight + 40 * ui)
+        }
+        .onDisappear { desktop.launcherFrames = [:] }
     }
 }

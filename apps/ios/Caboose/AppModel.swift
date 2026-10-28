@@ -211,6 +211,14 @@ final class AppModel {
                 session.configure(window, frame: desktop.placement(for: window, index: index))
                 desktop.raise(window.id)
             }
+            // Dialogs and tool windows: over their parent, or centred, never left at the origin.
+            // Menus and tooltips (override-redirect) keep the place the app chose.
+            for window in session.windows.values where window.isAuxiliary && !window.isOverrideRedirect && !placedWindowIDs.contains(window.id) {
+                placedWindowIDs.insert(window.id)
+                let parent = window.transientFor.flatMap { session.windows[$0] }
+                session.configure(window, frame: desktop.centred(window, over: parent))
+                desktop.raise(window.id)
+            }
         }
         if let presented = presentedWindowID, !current.contains(presented) {
             presentedWindowID = appWindows.first?.id
@@ -304,6 +312,46 @@ final class AppModel {
                 return
             }
         }
+    }
+
+    /// Real applications, and desktop settings panels and system utilities apart from them.
+    var partitionedApps: (main: [HostClient.App], system: [HostClient.App]) {
+        let systemCategories: Set<String> = ["Settings", "DesktopSettings", "HardwareSettings", "System", "Monitor", "PackageManager"]
+        let primary: Set<String> = ["WebBrowser", "TerminalEmulator", "TextEditor", "Office", "Development", "IDE", "Graphics", "AudioVideo", "FileManager"]
+        var main: [HostClient.App] = [], system: [HostClient.App] = []
+        for app in apps {
+            let categories = Set(app.categories)
+            if !categories.isDisjoint(with: primary) || categories.isDisjoint(with: systemCategories) { main.append(app) } else { system.append(app) }
+        }
+        return (main, system)
+    }
+
+    /// The big screen's dock, like a Mac's: one of each kind of everyday app the computer has
+    /// (by .desktop id, then by category), then any other app with a window open.
+    var dockApps: [HostClient.App] {
+        let main = partitionedApps.main
+        let wanted: [(ids: [String], category: String)] = [
+            (["chromium", "google-chrome", "firefox"], "WebBrowser"),
+            (["thunar", "nautilus", "nemo", "pcmanfm"], "FileManager"),
+            (["xfce4-terminal", "ghostty", "alacritty", "kitty", "gnome-terminal"], "TerminalEmulator"),
+            (["code", "vscodium", "zed"], "IDE"),
+            (["obsidian"], ""),
+            (["opencode"], ""),
+            (["mousepad", "gedit", "gnome-text-editor"], "TextEditor"),
+            (["libreoffice-writer"], "WordProcessor"),
+            (["libreoffice-calc"], "Spreadsheet"),
+            (["gimp"], "RasterGraphics"),
+        ]
+        var dock: [HostClient.App] = []
+        for (ids, category) in wanted {
+            let byID = ids.lazy.compactMap { id in main.first { $0.id.lowercased().hasPrefix(id) } }.first
+            let byCategory = category.isEmpty ? nil : main.first { $0.categories.contains(category) }
+            if let app = byID ?? byCategory, !dock.contains(where: { $0.id == app.id }) { dock.append(app) }
+        }
+        for window in appWindows {
+            if let app = apps.first(where: { matches(window, $0) }), !dock.contains(where: { $0.id == app.id }) { dock.append(app) }
+        }
+        return Array(dock.prefix(14))
     }
 
     /// A dock click on the big screen: show the app's windows if it has any, else launch it.

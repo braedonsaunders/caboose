@@ -17,6 +17,8 @@ final class DesktopModel {
         case close(Int)
         case minimize(Int)
         case zoom(Int)
+        case launchpadButton
+        case launcher(String)
         case content(Int, CGPoint)  // window id, point in window pixels
         case resize(Int)
     }
@@ -40,6 +42,10 @@ final class DesktopModel {
     private(set) var stacking: [Int] = []
     private(set) var minimized = Set<Int>()
     var dockFrames: [String: CGRect] = [:]
+    /// Launchpad: every app, in a grid over the desktop.
+    var launchpadOpen = false
+    var launchpadButtonFrame: CGRect = .null
+    var launcherFrames: [String: CGRect] = [:]
 
     private var drag: (hit: Hit, start: CGPoint, frame: CGRect)?
 
@@ -83,7 +89,12 @@ final class DesktopModel {
 
     func hitTest(_ point: CGPoint, windows: [Int: RemoteWindow]) -> Hit {
         if fullscreenWindow(in: windows) == nil {
+            if launchpadButtonFrame.contains(point) { return .launchpadButton }
             for (id, frame) in dockFrames where frame.contains(point) { return .dock(id) }
+        }
+        if launchpadOpen {
+            for (id, frame) in launcherFrames where frame.contains(point) { return .launcher(id) }
+            return .none
         }
         for id in stacking.reversed() where isVisible(id) {
             guard let window = windows[id] else { continue }
@@ -124,7 +135,14 @@ final class DesktopModel {
     func click(button: Int = 1, session: XpraSession?, open: (String) -> Void) {
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
+        if launchpadOpen, hit != .launchpadButton {
+            launchpadOpen = false
+            if case .launcher(let id) = hit { open(id) }
+            return
+        }
         switch hit {
+        case .launchpadButton: launchpadOpen.toggle()
+        case .launcher(let id): open(id)
         case .dock(let id): open(id)
         case .close(let id): if let window = session.windows[id] { session.close(window) }
         case .minimize(let id): minimize(id)
@@ -266,6 +284,20 @@ final class DesktopModel {
             focus(front, session)
         }
         return true
+    }
+
+    /// Where a dialog or tool window opens: centred over its parent's content, or on the
+    /// desktop, kept clear of the top edge and the dock.
+    func centred(_ window: RemoteWindow, over parent: RemoteWindow?) -> CGRect {
+        let usable = CGRect(x: 0, y: titleBarHeight, width: size.width, height: max(100, size.height - dockHeight - titleBarHeight))
+        let width = min(window.frame.width / pixelsPerPoint, usable.width * 0.9)
+        let height = min(window.frame.height / pixelsPerPoint, usable.height * 0.9)
+        let around = parent.map { contentRect($0) } ?? usable
+        var origin = CGPoint(x: around.midX - width / 2, y: around.midY - height / 2)
+        origin.x = min(max(usable.minX, origin.x), usable.maxX - width)
+        origin.y = min(max(usable.minY, origin.y), usable.maxY - height)
+        return CGRect(x: origin.x * pixelsPerPoint, y: origin.y * pixelsPerPoint,
+                      width: width * pixelsPerPoint, height: height * pixelsPerPoint).integral
     }
 
     /// A good first place for a new window: centred, cascading, clear of the dock.
