@@ -1,3 +1,4 @@
+import type { AgentGuest } from './agents.js'
 import type { DisplayProtocol } from './config.js'
 
 /**
@@ -19,6 +20,17 @@ export const OWNER_DISPLAYS: Record<DisplayProtocol, OwnerDisplay> = {
 }
 
 export const DISPLAY_ENV_PATH = '/run/caboose/display.env'
+
+/** The owner display's launch environment `guest` reports, or Xpra's when it reports none. */
+export function ownerEnv(guest: AgentGuest): string[] {
+  return guest.ownerEnv?.length ? guest.ownerEnv : OWNER_DISPLAYS['xpra-ws'].launchEnv!
+}
+
+/** The X display in a launch environment (Xwayland's under Caboose Display); `:100` when it names none. */
+export function x11Display(env: string[]): string {
+  const value = env.filter(pair => pair.startsWith('DISPLAY=')).pop()?.slice('DISPLAY='.length)
+  return value || ':100'
+}
 
 /**
  * `KEY=value` pairs from an sh environment file: one assignment per line, an optional

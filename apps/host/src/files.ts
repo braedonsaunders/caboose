@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { AgentInputError, AgentUnavailableError, type AgentGuest } from './agents.js'
+import { ownerEnv } from './display.js'
 
 /**
  * Files into the owner's computer and links onto its display. The guest channel carries
@@ -70,9 +71,9 @@ export async function writeGuestFile(guest: AgentGuest, part: string, data: Buff
   }
 }
 
-/** Opens a file or URL on the owner's display (:100) with the desktop's default handler, detached. */
+/** Opens a file or URL on the owner's display (run with its launch environment) with the desktop's default handler, detached. */
 const OPEN_SCRIPT = [
-  'export HOME=/home/caboose DISPLAY=:100',
+  'export HOME=/home/caboose',
   '[ -d /run/user/1000 ] && export XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus',
   'if command -v xdg-open >/dev/null 2>&1; then opener="xdg-open"',
   'elif command -v gio >/dev/null 2>&1; then opener="gio open"',
@@ -81,7 +82,7 @@ const OPEN_SCRIPT = [
 ].join('\n')
 
 async function openOnDisplay(guest: AgentGuest, target: string): Promise<void> {
-  await guest.run(RUNUSER, ['-u', 'caboose', '--', '/bin/sh', '-c', OPEN_SCRIPT, 'sh', target], 15_000)
+  await guest.run(RUNUSER, ['-u', 'caboose', '--', '/usr/bin/env', ...ownerEnv(guest), '/bin/sh', '-c', OPEN_SCRIPT, 'sh', target], 15_000)
 }
 
 /** Picks a free name in Downloads and renames the upload into it; prints the final path. */
