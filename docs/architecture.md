@@ -330,6 +330,9 @@ and blank lines, no shell expansion, one pair of matching quotes around a value 
 The file must belong to `caboose` and be closed to group and others (mode 0600), or the
 runner ignores it and logs why. It is applied after the registry's `env`, for tasks,
 installs and sign-ins alike, and its values are never written to transcripts or logs.
+Clients edit it with `PUT /v1/agents/:id/env` (below): the runner merges the change
+(`caboose-agentd set-env`), keeping the file's other lines, and `GET /v1/agents` lists the
+names it sets as `env`, never the values. The host keeps no copy.
 
 ### The runner
 
@@ -425,6 +428,7 @@ keeps them in the owner's home directory.
 | --- | --- | --- |
 | `GET` | `/v1/agents` | the agents this computer can run (below); never wakes the computer, and shows the last known installed state while it is parked |
 | `POST` | `/v1/agents/:id/install` | → `{ agent }`; prefetch the registry's current version into the computer and learn its sign-in methods; can take minutes. 404 for an id not in the registry, 409 while the computer is not running or when it has no runner, 502 when the install fails (with the reason) |
+| `PUT` | `/v1/agents/:id/env` | `{ set?: { NAME: value }, remove?: [NAME] }` → `{ env: [NAME] }`; set or remove variables in the agent's environment file in the computer, such as an API key. Names are shell-style, values one line of at most 8192 characters. 400 for invalid input, 409 while the computer is not running |
 | `POST` | `/v1/agents/:id/sign-in` | `{ methodId }` → `{ started: true, method: { id, name, description?, type } }`; start a sign-in on the owner's display. 400 for an unknown method |
 | `POST` | `/v1/agent/tasks` | `{ prompt, agent?: <registry id>, approvals?: "ask" \| "auto", attachments?: [{ name, type, data (base64) }] }` → `{ id }`. `agent` defaults to `defaultAgent` (400 when neither is set); 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | recent tasks, newest first (task record below) |
@@ -445,7 +449,8 @@ keeps them in the owner's home directory.
     distribution: "npx" | "uvx" | "binary",
     installed: { version: string } | null,
     signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>,  // once known
-    signInStatus?: { methodId: string, status: "running" | "succeeded" | "failed", message?: string, startedAt?: string, finishedAt?: string }
+    signInStatus?: { methodId: string, status: "running" | "succeeded" | "failed", message?: string, startedAt?: string, finishedAt?: string },
+    env?: string[]                               // variable names its environment file sets; never values
   }>,                                            // registry order; installed agents no longer in the registry last
   defaultAgent: string | null,
   registry: { fetchedAt: string | null, error?: string }

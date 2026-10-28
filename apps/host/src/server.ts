@@ -168,6 +168,11 @@ export function createCabooseServer(options: {
         }
         return json(response, 200, await leased(() => catalog.signIn(id, input)))
       }
+      const agentEnv = /^\/v1\/agents\/([^/]+)\/env$/.exec(path)
+      if (request.method === 'PUT' && agentEnv?.[1]) {
+        const input = await readJson(request)
+        return json(response, 200, await leased(() => catalog.setEnv(decodeURIComponent(agentEnv[1]!), input)))
+      }
       if (path === '/v1/agent/tasks' && request.method === 'GET') return json(response, 200, agents.list())
       if (path === '/v1/agent/tasks' && request.method === 'POST') {
         const input = await readJson(request, TASK_BODY_LIMIT)
