@@ -202,11 +202,11 @@ struct ProfileEditor: View {
         NavigationStack {
             Form {
                 Section("Identity") {
-                    TextField("Name", text: $name)
-                    TextField("What does this teammate do?", text: $description, axis: .vertical).lineLimit(2...4)
+                    NativeTextInput("Name", text: $name)
+                    NativeTextInput("What does this teammate do?", text: $description, lines: 2...4)
                 }
                 Section {
-                    TextField("Instructions", text: $instructions, axis: .vertical).lineLimit(6...16)
+                    NativeTextInput("Instructions", text: $instructions, lines: 6...16)
                 } header: { Text("Instructions") } footer: { Text("Changes apply to new conversations. Existing conversations keep their original instructions and memories.") }
                 Section("Provider") {
                     Picker("Runs With", selection: $agent) {
@@ -266,8 +266,8 @@ struct MemoryEditor: View {
         NavigationStack {
             Form {
                 Section("Memory") {
-                    TextField("Title", text: $title)
-                    TextField("What should this teammate remember?", text: $content, axis: .vertical).lineLimit(8...20)
+                    NativeTextInput("Title", text: $title)
+                    NativeTextInput("What should this teammate remember?", text: $content, lines: 8...20)
                 }
                 if let error { Text(error).foregroundStyle(.orange) }
             }

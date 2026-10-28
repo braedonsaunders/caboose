@@ -1652,11 +1652,15 @@ Pinned and recent apps are kept on the phone per computer.
   capitals are on for prose and off in terminals and code editors, with an `Aa` toggle on
   the key bar.
 - **Keyboard accessory.** Remote app cards, tiled and free desktops, the external-display
-  trackpad and the native Terminal use one shared accessory. Hide Keyboard stays at the
+  trackpad, Terminal, the Agents composer and app-owned native form fields use
+  CabooseKit’s shared `KeyBar` accessory. Hide Keyboard stays at the
   top right above the horizontally scrolling key row; it never enters toolbar overflow.
   The row offers Escape, Tab, sticky Ctrl/Alt, repeating arrows, navigation and shell symbols.
   Remote inputs share the same text/composition and modifier handling, with an Aa control
   for autocorrect; Terminal keeps its own terminal-byte semantics without prose correction.
+  Native fields use UIKit text editing, selection and IME; navigation moves native text
+  positions and never inserts terminal escape sequences. Send and Hide clear composer
+  focus; updates and send completion leave it hidden until a tap or explicit focus request.
 - **Pencil.** The client defines `pencil` samples (pressure, tilt, azimuth, hover), but the
   compositor does not advertise the `pencil` feature, so Apple Pencil acts as touch and
   Linux applications receive no pressure or tilt.
@@ -1731,6 +1735,7 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   whose return to the computer's localhost goes to the agent, and a terminal sign-in's
   terminal, with Sign In on Computer's Screen as the other way. A window's menu hands the window
   (screenshot, title, app) to an agent as an attachment.
+  The sign-in sheet uses translucent material over the presenting screen.
 - **Connect a Model.** An API key instead of an account: OpenRouter (through the registry's
   `goose`, with `GOOSE_PROVIDER=openrouter`, `GOOSE_MODEL` from OpenRouter's public model
   list of tool-using models, and `OPENROUTER_API_KEY`), Anthropic (`claude-acp`,

@@ -25,7 +25,7 @@ struct ChatComposer: View {
     @State private var showingFiles = false
     @State private var showingCamera = false
     @State private var dictation = AgentDictation()
-    @FocusState private var focused: Bool
+    @State private var focused = false
 
     private var draft: AgentComposerDraft { model.agents.composerDraft(for: task?.id) }
     private var chosen: AgentListing? { model.agents.listing(target).flatMap { $0.isInstalled ? $0 : nil } }
@@ -99,7 +99,7 @@ struct ChatComposer: View {
             guard let suggestion else { return }
             draft.text = suggestion; focused = true; model.agents.draft = nil
         }
-        .onDisappear { dictation.stop() }
+        .onDisappear { focused = false; dictation.stop() }
         .onChange(of: scenePhase) { _, phase in if phase == .background { dictation.stop() } }
         .onChange(of: model.phase) { _, phase in if phase != .ready { dictation.stop() } }
     }
@@ -131,11 +131,7 @@ struct ChatComposer: View {
     private var inputField: some View {
         @Bindable var draft = draft
         return
-            TextField("Message \(name)…", text: $draft.text, axis: .vertical)
-                .lineLimit(1 ... 7)
-                .focused($focused)
-                .submitLabel(.send)
-                .onSubmit(send)
+            NativeTextInput("Message \(name)…", text: $draft.text, focus: $focused, lines: 1...7, submit: send)
                 .padding(.horizontal, 5).padding(.top, 3)
                 .disabled(dictation.listening || draft.sending)
     }
@@ -254,6 +250,8 @@ struct ChatComposer: View {
         let revision = agents.chatRevision
         let agent = chosen?.id
         let profileId = agents.library.selectedProfileId
+        focused = false
+        model.askFocusRequested = false
         destination.sending = true
         destination.error = nil
         Task {
@@ -611,7 +609,7 @@ struct AskAboutWindowSheet: View {
     @State private var sending = false
     @AppStorage(AskTarget.key) private var agent = ""
     @AppStorage("caboose.agent.askFirst") private var askFirst = false
-    @FocusState private var focused: Bool
+    @State private var focused = false
 
     var body: some View {
         NavigationStack {
@@ -624,9 +622,7 @@ struct AskAboutWindowSheet: View {
                     }
                 }
                 Section {
-                    TextField("What should the agent do with it?", text: $prompt, axis: .vertical)
-                        .lineLimit(3 ... 8)
-                        .focused($focused)
+                    NativeTextInput("What should the agent do with it?", text: $prompt, focus: $focused, lines: 3...8)
                 }
                 Section {
                     // The phone's own model cannot take a screenshot along, so a window goes to a computer agent.

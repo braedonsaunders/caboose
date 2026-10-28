@@ -246,16 +246,10 @@ struct SetupView: View {
                     .foregroundStyle(.secondary)
             }
             VStack(spacing: 12) {
-                TextField("Computer address — https://…", text: $host)
-                    .textContentType(.URL)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                NativeTextInput("Computer address — https://…", text: $host, keyboard: .URL, capitalization: .none, correction: false, contentType: .URL)
                     .padding(14)
                     .glassEffect(.regular, in: .rect(cornerRadius: 14))
-                SecureField("Pairing code or sign-in token", text: $token)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                NativeTextInput("Pairing code or sign-in token", text: $token, secure: true, capitalization: .none, correction: false)
                     .padding(14)
                     .glassEffect(.regular, in: .rect(cornerRadius: 14))
                 if let error {

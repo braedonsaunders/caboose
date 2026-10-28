@@ -347,9 +347,19 @@ memory feature is implied by the composer; conversation continuity belongs to th
 
 ### Shared keyboard controls
 
-App cards, Desktop, the display trackpad and Terminal use CabooseKit's `KeyBar`.
+App cards, Desktop, the display trackpad, Terminal, Agents and app-owned native
+form fields use CabooseKit's `KeyBar`. `Caboose/NativeTextInput.swift` bridges UIKit
+text editing into SwiftUI, retaining marked text, selection, paste, secure entry and
+Dynamic Type. Its multiline fields grow to their line cap, then scroll. Native Ctrl/Alt
+modify accessory navigation; they do not produce terminal control bytes. Composer Send
+and Hide clear focus; rendering and send completion do not reopen the keyboard. A tap,
+suggestion or Ask shortcut explicitly requests it again. The agent sign-in sheet uses
+translucent material over the presenting screen.
 Hide Keyboard stays above the key row at its right edge on iPhone, Duo and iPad;
 scrolling the keys never hides it. Remote inputs share `RemoteTextInputView` for
 composition, autocorrect and sticky modifiers. Terminal adapts the same accessory
 to SwiftTerm's cursor modes and byte protocol. Verify folded/unfolded/rotated layouts,
 Hide and reopening, Ctrl/Alt, held arrows, Return and IME with `scripts/check-desktop.sh`.
+
+Check native text entry with `scripts/check-agents.sh`; this includes keyboard focus,
+IME and selection, native form traits and the sign-in sheet material.
