@@ -115,6 +115,26 @@ describe('durable computer routines', () => {
     f.runtime.acquire = async () => { f.now(91_000); return () => {} }
     await s.tick(); expect(f.calls).toHaveLength(0); expect(s.history()[0]?.status).toBe('skipped'); await s.close()
   })
+  it('coalesce filters scheduled time while allowing execution outside the active window', async () => {
+    const f = fixture(), s = await f.open()
+    await s.create(f.input({ missed: 'coalesce', schedule: { kind: 'once', timeZone: 'UTC', at: '2026-01-01T00:01:00Z', active: { window: { start: '00:00', end: '00:02' } } } }))
+    f.now(600_000); await s.tick()
+    expect(f.calls).toHaveLength(1); expect(s.history()[0]?.scheduledAt).toBe('2026-01-01T00:01:00.000Z'); await s.close()
+  })
+  it('keeps a reservation on lookup failure and rejects oversized envelopes before persisting it', async () => {
+    const f = fixture(), s = await f.open(), r = await s.create(f.input()); await s.runNow(r.id)
+    const lookup = f.runtime.lookup; f.runtime.lookup = async () => { throw new Error('guest unavailable') }
+    await s.tick(); expect(s.history()[0]?.status).toBe('reserved'); expect(f.calls).toHaveLength(0); expect(f.leases()).toBe(0)
+    f.runtime.lookup = lookup; await s.tick(); expect(f.calls).toHaveLength(1)
+    const run = s.history()[0]!; f.tasks.set(run.id, { status: 'succeeded' }); await s.tick()
+    f.runtime.snapshot = async () => ({ revision: 'v1', input: { envelope: 'x'.repeat(128_001) } })
+    await expect(s.runNow(r.id)).rejects.toThrow('too large'); expect(s.history()).toHaveLength(1); await s.close()
+  })
+  it('allows a fresh manual run immediately after an unobserved profile edit', async () => {
+    const f = fixture(), s = await f.open(), r = await s.create(f.input()); f.profile('v2')
+    const run = await s.runNow(r.id); await s.tick()
+    expect(f.calls[0]?.id).toBe(run.id); expect(f.calls[0]?.input).toEqual({ prompt: 'Summarize', envelope: { revision: 'v2' } }); await s.close()
+  })
   it('bounds history and removes terminal envelopes', async () => {
     const f = fixture(), s = await f.open(), r = await s.create(f.input())
     for (let i = 0; i < 105; i++) { const run = await s.runNow(r.id); f.tasks.set(run.id, { status: 'succeeded' }); await s.tick() }
