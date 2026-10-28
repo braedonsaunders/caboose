@@ -34,11 +34,13 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 
 - Node 22 and pnpm.
 - For the microVM runtime (the default): amd64 Linux with `/dev/kvm`, a Cloud Hypervisor
-  binary, and a guest image (`base.raw`, `vmlinux`, `initrd`) built by
-  [`guest/image`](../../guest/image/README.md). The disk root should be on XFS with reflink or
+  binary, and a guest image (`base.raw`, `vmlinux`, `initrd`), either built by
+  [`guest/image`](../../guest/image/README.md) or fetched on first run from
+  `CABOOSE_BASE_IMAGE` (see [Images](#images)). The disk root should be on XFS with reflink or
   on Btrfs; `scripts/setup-disks.sh` prepares one.
 - For the container runtime: Docker and an image built from
-  [`guest/container`](../../guest/container/README.md).
+  [`guest/container`](../../guest/container/README.md), or a registry image that the host
+  pulls on first run.
 - Root, or passwordless `sudo` for `ip`, `iptables` and `sysctl`. The host creates the TAP
   device `caboose0` (microVM) or the Docker network `caboose` with bridge `caboose-br0`
   (container), and installs its forwarding, NAT and fence rules.
@@ -68,8 +70,12 @@ From a checkout, with the variables below in the environment:
 
 ```sh
 pnpm --filter caboose-web build      # the console the host serves at /
-CABOOSE_OWNER_TOKEN=… pnpm --filter caboose-host start
+pnpm --filter caboose-host start
 ```
+
+Without `CABOOSE_OWNER_TOKEN`, the host generates an owner token on first start and keeps it
+in `${CABOOSE_IMAGE_ROOT}/owner-token` (mode 0600). It logs that path; sign in to the console
+with the token in that file.
 
 `systemd/caboose-host.service` runs the same thing as a user service. Put the variables from
 `.env.example` in `~/.config/caboose/host.env` (mode 0600), together with `CABOOSE_HOST_DIR`
@@ -79,22 +85,24 @@ the non-interactive privileges above.
 
 ### Self-host with Docker
 
-`deploy/compose.yaml` builds `apps/host/Dockerfile` and runs the microVM runtime. Use an
-amd64 Linux machine with Docker and Compose, hardware virtualisation and `/dev/kvm`; Docker
-must be able to run privileged containers. Create `deploy/.env` with mode 0600 and a long
-random owner token:
+`deploy/compose.yaml` runs `apps/host/Dockerfile` with the microVM runtime. Use an amd64
+Linux machine with Docker and Compose, hardware virtualisation and `/dev/kvm`; Docker must
+be able to run privileged containers. Build and start it from the checkout:
 
 ```sh
-umask 077
-printf 'CABOOSE_OWNER_TOKEN=%s\n' "$(openssl rand -hex 32)" > deploy/.env
 docker compose -f deploy/compose.yaml up -d --build
+docker compose -f deploy/compose.yaml exec caboose-host cat /data/caboose/disks/owner-token
 ```
 
 The image builds `caboose-host` and `caboose-web` from the workspace lockfile, serves the
 console at `/` on the same port as the API, and pins Cloud Hypervisor to the amd64 v54.0
-static release (checked by SHA-256). The token is supplied only at runtime, never during the
-build. Open `http://localhost:7310` on the server, or your HTTPS proxy, and enter the token;
-the console keeps it in the tab's session storage.
+static release (checked by SHA-256). Open `http://localhost:7310` on the server, or your
+HTTPS proxy, and enter the owner token; the console keeps it in the tab's session storage.
+To choose the token yourself, put `CABOOSE_OWNER_TOKEN` in `deploy/.env` (mode 0600); it is
+supplied only at runtime, never during the build.
+
+Once a release has been published (see [Images](#images)), `up -d` without `--build` pulls
+`ghcr.io/braedonsaunders/caboose-host` (`CABOOSE_VERSION` picks the tag) instead of building.
 
 State lives in `/data/caboose` on the host (`CABOOSE_STATE_DIR` in `deploy/.env` changes it)
 and the computer's disks in `/data/caboose/disks` inside the container. When the state
@@ -110,23 +118,52 @@ for KVM, loop mounts and TAP networking; run it only on a trusted host. Its TAP,
 and NAT rules live in the container's own network namespace.
 
 The service starts and reports health before a guest image is installed, but cannot wake a
-computer until `base.raw`, `vmlinux` and `initrd` are in its disk root. Build them straight
-into the running container with `CABOOSE_HOST_CONTAINER` (see
+computer until `base.raw`, `vmlinux` and `initrd` are in its disk root. A release image
+fetches them itself on first start. A checkout build has no `CABOOSE_BASE_IMAGE`; set it
+to a published `caboose-base` reference, build them straight into the running container with `CABOOSE_HOST_CONTAINER` (see
 [`guest/image`](../../guest/image/README.md)), or copy them in:
 
 ```sh
 docker cp base.raw "$(docker compose -f deploy/compose.yaml ps -q caboose-host)":/data/caboose/disks/base.raw
 ```
 
-To rotate the token, replace `CABOOSE_OWNER_TOKEN` in `deploy/.env` and run
-`docker compose -f deploy/compose.yaml up -d`; every client needs the new token. Docker
-administrators can read the token from the container's configuration.
+To rotate the token, replace `CABOOSE_OWNER_TOKEN` in `deploy/.env` (or delete the generated
+`owner-token` file) and run `docker compose -f deploy/compose.yaml up -d --force-recreate`;
+every client needs the new token. Docker administrators can read the token from the
+container's configuration or its state directory.
+
+### Images
+
+A release publishes three images to GHCR from `.github/workflows/release.yml` when a `v*`
+tag is pushed:
+
+| Image | What |
+| --- | --- |
+| `caboose-computer` | The computer as a container ([`guest/container`](../../guest/container/README.md)). |
+| `caboose-base` | The microVM image as an OCI artifact with three layers titled `base.raw.zst` (zstd), `vmlinux` and `initrd`. |
+| `caboose-host` | This host, built with `CABOOSE_BASE_IMAGE` and `CABOOSE_CONTAINER_IMAGE` set to the two images above, pinned by digest. |
+
+When a microVM host starts without the three files in its disk root, it fetches them from
+`CABOOSE_BASE_IMAGE`. It uses the registry's anonymous pull, checks every blob against its
+digest as it streams, decompresses the disk, and writes it sparse. The manifest is checked
+too when the reference is pinned by digest. A file that fails its check is deleted and
+fetched again on the next wake; files that passed are kept. A container host whose Docker
+lacks `CABOOSE_CONTAINER_IMAGE` pulls it when the reference names a registry.
+
+While a download runs, a wake is refused with 409 and its progress, for example
+"Downloading the computer's image (42%)", and `GET /v1/health` reports `image` (see
+docs/architecture.md). A release pins its images, so a host never moves to a newer image
+on its own, and a new base image reaches only new computers (see
+[`guest/image`](../../guest/image/README.md)).
+
+GHCR makes a new package private. After the first release, a maintainer must make each of
+the three packages public in its package settings before anonymous pulls work.
 
 ## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CABOOSE_OWNER_TOKEN` | required | The bearer token for every `/v1` request. |
+| `CABOOSE_OWNER_TOKEN` | generated | The bearer token for every `/v1` request. Unset: generated once into `${CABOOSE_IMAGE_ROOT}/owner-token`. |
 | `CABOOSE_BIND` | `127.0.0.1` | Listen address (`0.0.0.0` for every IPv4 interface). |
 | `CABOOSE_PORT` | `7310` | Listen port. |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Guest image, overlays, snapshots and the host's state files. |
@@ -135,7 +172,8 @@ administrators can read the token from the container's configuration.
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor (microVM). |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container`. |
-| `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` | The computer's image (container). |
+| `CABOOSE_BASE_IMAGE` | empty (release: pinned) | OCI reference fetched when the disk root lacks the image (microVM). |
+| `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` (release: pinned) | The computers' image (container); pulled when missing if it names a registry. |
 | `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The owner's computer's container name; others are `caboose-<id>` (container). |
 | `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume name or absolute host path for the owner's `/home/caboose`; others append `-<id>` (container). |
 | `CABOOSE_CONTAINER_ARGS` | empty | Extra `docker run` arguments, whitespace-separated (container). |

@@ -90,6 +90,27 @@ The image contains:
 `/home/caboose/.cache` is a 512 MiB tmpfs in the microVM, so the queues under
 `~/.cache/caboose` do not survive a cold boot.
 
+### Published images
+
+A `v*` tag publishes the computer to GHCR in two forms (`.github/workflows/release.yml`):
+`caboose-computer`, the container image, and `caboose-base`, an OCI artifact whose three
+layers are titled `base.raw.zst` (the zstd-compressed disk), `vmlinux` and `initrd`. The
+release's `caboose-host` image sets `CABOOSE_BASE_IMAGE` and `CABOOSE_CONTAINER_IMAGE` to
+both, pinned by digest.
+
+On start, a microVM host whose disk root lacks any of the three files fetches them from
+`CABOOSE_BASE_IMAGE` with an anonymous registry pull. Every blob, and a manifest that is
+pinned by digest, is verified against its SHA-256 digest while it streams; the disk is
+decompressed and written sparse, through a `.part` file renamed only after verification.
+Files already present are never fetched. A container host pulls `CABOOSE_CONTAINER_IMAGE`
+when Docker lacks it and the reference names a registry. Neither runtime ever replaces an
+image that is present, so a host moves to a new image only when its operator changes the
+reference and removes the old files.
+
+While the image is being fetched, `POST /v1/session` (and anything that wakes) answers 409
+with its progress ("Downloading the computer's image (42%)"). A failed fetch puts the
+computer in `error` with the reason in `lastError`, and the next wake retries it.
+
 ### Guest components
 
 Caboose's own guest plumbing (the file service, the notification monitor and endpoints, and
@@ -320,7 +341,7 @@ display logic: display streams are relayed, not parsed.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CABOOSE_OWNER_TOKEN` | required | The owner's bearer token |
+| `CABOOSE_OWNER_TOKEN` | generated | The owner's bearer token; unset, the host generates one into `${CABOOSE_IMAGE_ROOT}/owner-token` (mode 0600) on first start and reuses it |
 | `CABOOSE_BIND` | `127.0.0.1` | Listen address |
 | `CABOOSE_PORT` | `7310` | Listen port |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Golden image, overlays, snapshots and host state |
@@ -330,7 +351,8 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor binary |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container` |
 | `CABOOSE_GPU` | `auto` | Container GPU: `auto`, `wsl`, `nvidia`, `dri` or `none` |
-| `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` | Container image |
+| `CABOOSE_BASE_IMAGE` | unset (release: pinned) | OCI reference of the microVM image, fetched when the disk root lacks it ([Published images](#published-images)) |
+| `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` (release: pinned) | Container image for every computer; pulled when missing if it names a registry |
 | `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The owner's computer's container name; others are `caboose-<id>` |
 | `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume or absolute host path for `/home/caboose`; other computers use it with `-<id>` appended |
 | `CABOOSE_CONTAINER_ARGS` | empty | Extra `docker run` arguments, whitespace-separated |
@@ -343,7 +365,8 @@ display logic: display streams are relayed, not parsed.
 
 Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mode 0600:
 
-- `computers.json` (the computers other than the owner's, with their slots),
+- `owner-token` when generated, `computers.json` (the computers other than the owner's,
+  with their slots),
   `phones.json` (phone sign-ins, by SHA-256 of their tokens) and `agent-registry.json`.
 - The owner's computer's `caboose.json` (settings), `push-devices.json` and
   `activities.json` at the root, where a host from before several computers kept them.
@@ -454,7 +477,7 @@ guest answer 409 while it is not running.
 | `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec }]` |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }` |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`. Open an `http(s)` URL (at most 8192 characters, no spaces or control characters) with the default handler on the owner's display |
-| `GET` | `/v1/health` | microVM: `{ host, kvm, desk, machine }` with appkit-desk's stats; container: `{ host, runtime: "container", gpu, container, running, machine }`. `machine` is `{ memoryMb, availableMemoryMb, cpus, disk: { totalBytes, freeBytes } \| null }`: the machine the computers share, with `disk` the volume holding `CABOOSE_IMAGE_ROOT` (null when it cannot be read) |
+| `GET` | `/v1/health` | microVM: `{ host, kvm, desk, machine }` with appkit-desk's stats; container: `{ host, runtime: "container", gpu, container, running, machine }`; both add `image`. `machine` is `{ memoryMb, availableMemoryMb, cpus, disk: { totalBytes, freeBytes } \| null }`: the machine the computers share, with `disk` the volume holding `CABOOSE_IMAGE_ROOT` (null when it cannot be read). `image` is `{ state: "ready" \| "fetching" \| "failed" \| "missing", reference: string \| null, receivedBytes?, totalBytes?, message? }`: the computer's image ([Published images](#published-images)); `missing` means no reference to fetch from |
 | `GET` | `/v1/host` | How the host was started (below) |
 
 A WebSocket upgrade answers 401 without the owner token, 404 for another path, 409 unless
@@ -1276,8 +1299,9 @@ app group and a Keychain access group.
 
 ## 7. Security model
 
-- **Owner token.** One bearer token (`CABOOSE_OWNER_TOKEN`) authorizes every `/v1` route,
-  every computer and every WebSocket. The web console keeps it in session storage. The host
+- **Owner token.** One bearer token (`CABOOSE_OWNER_TOKEN`, or generated into the state
+  directory with mode 0600) authorizes every `/v1` route, every computer and every
+  WebSocket. The web console keeps it in session storage. The host
   speaks plain HTTP on loopback by default; HTTPS and WSS belong in front of it before
   traffic crosses a network.
 - **Phone tokens.** A phone signs in to one computer with its own token, obtained once for a

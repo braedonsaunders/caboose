@@ -5,14 +5,27 @@ import { config } from './config.js'
 import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens, type ComputerRecord } from './computers.js'
 import { createContainerController } from './container-driver.js'
 import { createController, createDeskPool } from './driver.js'
-import { createCabooseServer, type ComputerPieces } from './server.js'
+import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
 import { describeHost, machineResources } from './host-info.js'
 import { AgentRegistry } from './registry.js'
+import { ComputerConflictError } from './lifecycle.js'
+import { ownerToken } from './owner-token.js'
+import { containerImage, describeImage, microvmImage, type ImageProvisioner } from './provision.js'
 import { openSettings, type ComputerSettings } from './settings.js'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const deployment = config(process.env)
+const owner = deployment.token ? { token: deployment.token, created: false } : await ownerToken(join(deployment.imageRoot, 'owner-token'))
+if (!deployment.token) {
+  console.log(owner.created
+    ? `Generated the owner token in ${join(deployment.imageRoot, 'owner-token')}. Sign in to the console with it.`
+    : `Using the owner token in ${join(deployment.imageRoot, 'owner-token')}.`)
+}
+// One provisioner for every computer: they all boot from the same image.
+const image = deployment.runtime === 'container'
+  ? containerImage({ image: deployment.containerImage })
+  : microvmImage({ imageRoot: deployment.imageRoot, reference: deployment.baseImage })
 const apns = await apnsFromEnvironment(process.env)
 const sender = apns ? new APNsSender(apns) : undefined
 const computers = await ComputerRegistry.open(deployment.imageRoot)
@@ -33,23 +46,44 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const controller = deployment.runtime === 'container'
     ? createContainerController(deployment, { identity, settings: () => settings.get() })
     : createController(deployment, { identity, ...(desks ? { desks } : {}), settings: () => settings.get() })
-  return { settings, controller, ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  return { settings, controller: withImage(controller, image), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
-const owner = await open(computers.get(OWNER_COMPUTER)!)
+const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
 const existing = []
 for (const record of computers.list().filter(c => c.id !== OWNER_COMPUTER)) existing.push({ record, pieces: await open(record) })
 const registry = new AgentRegistry({ url: deployment.agentRegistryUrl, cachePath: join(deployment.imageRoot, 'agent-registry.json') })
 const webRoot = process.env.CABOOSE_WEB_ROOT ? resolve(process.env.CABOOSE_WEB_ROOT) : fileURLToPath(new URL('../../web/dist', import.meta.url))
 const host = describeHost(deployment, process.env, { push: !!sender, liveActivities: !!(apns && sender) })
 const app = createCabooseServer({
-  token: deployment.token, ...owner, registry, host, agentIdleMs: deployment.agentIdleMs, webRoot,
+  token: owner.token, ...ownerComputer, registry, host, agentIdleMs: deployment.agentIdleMs, webRoot,
   machine: () => machineResources(deployment.imageRoot),
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null },
 })
 app.server.listen(deployment.port, deployment.host, () => console.log(`caboose-host listening on ${deployment.host}:${deployment.port}`))
+// Fetch a missing image now rather than on the first wake; a failure is retried by the next wake.
+void image.ensure().then(() => console.log(describeImage(image.status())), error => console.error(error instanceof Error ? error.message : error))
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
     void app.shutdown().then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
   })
+}
+
+/**
+ * Wakes wait for the computer's image: while it downloads, a wake is refused with its
+ * progress, and `GET /v1/health` reports it as `image`.
+ */
+function withImage(controller: Controller, provisioner: ImageProvisioner): Controller {
+  const gated = Object.create(controller) as Controller
+  gated.wake = async () => {
+    // Checking for an image that is present takes moments; a download never holds a wake open.
+    const ensured = provisioner.ensure().catch(() => undefined)
+    await Promise.race([ensured, new Promise(resolve => setTimeout(resolve, 1000).unref())])
+    const status = provisioner.status()
+    if (status.state === 'fetching') throw new ComputerConflictError(describeImage(status))
+    if (status.state === 'failed') throw new Error(describeImage(status))
+    return controller.wake()
+  }
+  gated.stats = () => ({ ...(controller.stats() as object), image: provisioner.status() })
+  return gated
 }

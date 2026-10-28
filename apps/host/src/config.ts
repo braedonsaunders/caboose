@@ -2,7 +2,8 @@ import { resolve } from 'node:path'
 import { REGISTRY_URL } from './registry.js'
 
 export interface Config {
-  token: string
+  /** `CABOOSE_OWNER_TOKEN`; null means the host generates one in its state directory. */
+  token: string | null
   host: string
   port: number
   idleMs: number
@@ -13,6 +14,8 @@ export interface Config {
   /** "microvm" (Cloud Hypervisor, the default) or "container" (for a GPU only a container can use). */
   runtime: 'microvm' | 'container'
   containerImage: string
+  /** An OCI reference for the microVM image, fetched on first run when the disk root lacks it. */
+  baseImage: string | null
   containerName: string
   /** A named volume or an absolute host path for /home/caboose. */
   containerHome: string
@@ -43,9 +46,8 @@ function integer(value: string | undefined, fallback: number, name: string, max:
   return parsed
 }
 export function config(env: NodeJS.ProcessEnv): Config {
-  if (!env.CABOOSE_OWNER_TOKEN) throw new Error('CABOOSE_OWNER_TOKEN is required')
   return {
-    token: env.CABOOSE_OWNER_TOKEN,
+    token: env.CABOOSE_OWNER_TOKEN || null,
     host: env.CABOOSE_BIND ?? '127.0.0.1',
     port: integer(env.CABOOSE_PORT, 7310, 'CABOOSE_PORT', 65535),
     idleMs: integer(env.CABOOSE_IDLE_MS, 600_000, 'CABOOSE_IDLE_MS', 2_147_483_647),
@@ -55,6 +57,7 @@ export function config(env: NodeJS.ProcessEnv): Config {
     vmmPath: env.CABOOSE_VMM_PATH ?? '/usr/local/bin/cloud-hypervisor',
     runtime: runtime(env.CABOOSE_RUNTIME),
     containerImage: env.CABOOSE_CONTAINER_IMAGE ?? 'caboose-computer:latest',
+    baseImage: env.CABOOSE_BASE_IMAGE || null,
     containerName: env.CABOOSE_CONTAINER_NAME ?? 'caboose-owner',
     containerHome: env.CABOOSE_CONTAINER_HOME ?? 'caboose-home',
     containerArgs: (env.CABOOSE_CONTAINER_ARGS ?? '').split(/\s+/).filter(Boolean),
