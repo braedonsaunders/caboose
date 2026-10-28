@@ -503,11 +503,23 @@ export class AgentTasks {
     const operation = (entry.replyChain ?? Promise.resolve()).catch(() => {}).then(async () => {
       if (!entry.queue.length) throw new AgentConflictError('No messages are waiting.')
       if (entry.replying) throw new AgentConflictError('The next turn is already starting.')
-      const replies = [...entry.queue]
-      if (isLive(entry.task.status)) await this.cancel(id)
-      else { entry.queue = []; this.syncQueue(entry) }
-      try { return await this.sendTurn(entry, replies, 0) }
-      catch (error) { entry.queue.unshift(...replies); this.syncQueue(entry); throw error }
+      // Claim the transition before cancellation yields: poll() can finish this turn meanwhile.
+      entry.replying = true
+      const replies = entry.queue.splice(0)
+      this.syncQueue(entry)
+      try {
+        if (isLive(entry.task.status)) await this.cancel(id)
+        return await this.sendTurn(entry, replies, 0)
+      } catch (error) {
+        entry.queue.unshift(...replies)
+        this.syncQueue(entry)
+        if (!isLive(entry.task.status)) {
+          this.releases.get(id)?.()
+          this.releases.delete(id)
+          this.announceFinished(entry)
+        }
+        throw error
+      } finally { entry.replying = false }
     })
     entry.replyChain = operation
     return operation
@@ -818,6 +830,9 @@ export class AgentTasks {
     if (signIn) entry.task.signIn = signIn
     entry.pending = []
     delete entry.task.pendingApproval
+    // A claimed Send Now transition owns the lease and the next delivery, even if polling
+    // observes a normal turn_end while cancellation is still in flight.
+    if (announce && entry.replying) return
     // Replies waited for this turn: they go to the agent now, as one turn, under the same lease.
     if (announce && entry.queue.length && status !== 'cancelled' && !signIn) {
       void this.continueQueue(entry, status)

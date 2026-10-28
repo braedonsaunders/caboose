@@ -99,6 +99,7 @@ function fakeGuest() {
   const tasks = new Map<string, FakeTask>()
   const calls: string[][] = []
   let polls = 0
+  let beforeCancel: (() => Promise<void>) | undefined
   let listing = ''
   const task = (id: string): FakeTask => {
     let entry = tasks.get(id)
@@ -160,13 +161,17 @@ function fakeGuest() {
         state.exitCode = ''
         return 'delivered\n'
       }
-      if (script.includes('"type":"cancel"')) task(idOf(rest[0]!)).inbox.push('cancel')
+      if (script.includes('"type":"cancel"')) {
+        await beforeCancel?.()
+        task(idOf(rest[0]!)).inbox.push('cancel')
+      }
       return ''
     },
   }
   return {
     guest, calls, task,
     get polls() { return polls },
+    beforeCancel: (hook: () => Promise<void>) => { beforeCancel = hook },
     setListing: (value: string) => { listing = value },
     append: (id: string, event: object) => { const state = task(id); state.transcript = Buffer.concat([state.transcript, Buffer.from(JSON.stringify(event) + '\n')]) },
     exit: (id: string, code: string, message = '') => { task(id).exitCode = code; task(id).stderr = message },
@@ -437,6 +442,55 @@ describe('AgentTasks', () => {
     message = JSON.parse(fake.task(task.id).inbox.at(-1)!)
     expect(message.attachments[0]).toMatchObject({ name: 'notes.txt', mimeType: 'text/plain' })
     expect(message.text).toBe('third')
+  })
+
+  it('claims Send Now before cancellation yields to a normal polled turn end', async () => {
+    const { fake, tasks, events, release } = setup()
+    const task = await tasks.start({ prompt: 'working' })
+    await tasks.reply(task.id, { prompt: 'queued', attachments: [{ name: 'notes.txt', data: b64('contents') }] })
+    let resume!: () => void
+    let entered!: () => void
+    const gate = new Promise<void>(resolve => { resume = resolve })
+    const cancelling = new Promise<void>(resolve => { entered = resolve })
+    fake.beforeCancel(async () => { entered(); await gate })
+    const sending = tasks.sendNow(task.id)
+    await cancelling
+    fake.append(task.id, user(1))
+    fake.append(task.id, end(1, 'finished just before cancellation'))
+    await tasks.poll()
+    expect(release).not.toHaveBeenCalled()
+    expect(fake.task(task.id).inbox).toHaveLength(1)
+    resume()
+    await sending
+    const prompts = fake.task(task.id).inbox.filter(value => value !== 'cancel').map(value => JSON.parse(value))
+    expect(prompts.filter(prompt => prompt.turn === 2)).toHaveLength(1)
+    expect(prompts.at(-1)).toMatchObject({ turn: 2, text: 'queued', attachments: [{ name: 'notes.txt' }] })
+    expect(tasks.list()[0]?.turns).toBe(2)
+    expect(events.filter(event => event.type === 'agent.task.replied')).toHaveLength(1)
+    expect(events.filter(event => event.type === 'agent.task.finished')).toHaveLength(0)
+  })
+
+  it('restores waiting files when Send Now delivery fails after the old turn finishes', async () => {
+    const { fake, tasks, release } = setup()
+    const task = await tasks.start({ prompt: 'working' })
+    await tasks.reply(task.id, { prompt: 'queued', attachments: [{ name: 'notes.txt', data: b64('contents') }] })
+    const paths = tasks.list()[0]!.queuedAttachments
+    fake.beforeCancel(async () => {
+      fake.append(task.id, user(1)); fake.append(task.id, end(1, 'done'))
+      await tasks.poll()
+    })
+    const run = fake.guest.run
+    fake.guest.run = async (command, args, timeout) => {
+      if (args.some(arg => arg.includes('echo launched'))) throw new Error('delivery failed')
+      return run(command, args, timeout)
+    }
+    await expect(tasks.sendNow(task.id)).rejects.toThrow('delivery failed')
+    expect(tasks.list()[0]).toMatchObject({ queued: ['queued'], queuedAttachments: paths, status: 'succeeded' })
+    expect(release).toHaveBeenCalledTimes(1)
+    fake.guest.run = run
+    await tasks.sendNow(task.id)
+    expect(tasks.list()[0]).toMatchObject({ status: 'running', turns: 2 })
+    expect(tasks.list()[0]!.queued).toBeUndefined()
   })
 
   it('bounds files across concurrent queued replies and supports files on a finished reply', async () => {
