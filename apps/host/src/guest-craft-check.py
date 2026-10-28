@@ -1,4 +1,4 @@
-import importlib.util, json, os, sys, tempfile, unittest
+import importlib.util, io, json, os, sys, tempfile, unittest
 sys.dont_write_bytecode = True
 from unittest.mock import patch
 
@@ -17,6 +17,7 @@ class GuestCraftTest(unittest.TestCase):
             commands = []
             class Process:
                 pid = 1
+                stdout = io.BytesIO()
                 def wait(self, timeout=None): return 0
             def spawn(args, **kwargs):
                 commands.append(args)

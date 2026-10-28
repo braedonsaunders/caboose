@@ -1,5 +1,5 @@
 """Run one host-whitelisted operation as the guest owner, in a staged job directory."""
-import json, os, signal, stat, subprocess, sys, tempfile, time
+import json, os, signal, stat, subprocess, sys, threading, time
 
 
 def execute(request, root='/home/caboose'):
@@ -36,23 +36,35 @@ def execute(request, root='/home/caboose'):
     warnings = []
     deadline = time.monotonic() + 3450
     for command, output, output_name in commands:
-        # Keep verbose encoders from accumulating unbounded output in memory. Kill the
-        # whole child process group on timeout, including an encoder started by the CLI.
+        # Drain encoder output while retaining only the tail, without unbounded
+        # memory or temporary disk growth. Kill the whole group on timeout.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError('Craft operation timed out')
-        with tempfile.TemporaryFile() as log:
-            process = subprocess.Popen(['/usr/sbin/runuser', '-u', 'caboose', '--', *command], cwd=directory, stdout=log, stderr=log, start_new_session=True)
+        process = subprocess.Popen(['/usr/sbin/runuser', '-u', 'caboose', '--', *command], cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+        tail = bytearray()
+        def drain():
+            while chunk := process.stdout.read(4096):
+                tail.extend(chunk)
+                if len(tail) > 4000:
+                    del tail[:-4000]
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        try:
+            code = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            reader.join()
+            raise RuntimeError('Craft operation timed out')
+        reader.join(timeout=2)
+        if reader.is_alive():
             try:
-                code = process.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
-                raise RuntimeError('Craft operation timed out')
-            log.seek(0, os.SEEK_END)
-            size = log.tell()
-            log.seek(max(0, size - 4000))
-            detail = log.read().decode('utf-8', errors='replace').strip()
+            except ProcessLookupError:
+                pass
+            reader.join(timeout=2)
+        detail = bytes(tail).decode('utf-8', errors='replace').strip()
         if code:
             raise RuntimeError((detail or 'Craft command failed')[-1000:])
         if detail:
