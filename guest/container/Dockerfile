@@ -47,5 +47,5 @@ COPY container/caboose-session /usr/local/bin/caboose-session
 COPY container/caboose-audio.sh /etc/profile.d/caboose-audio.sh
 RUN chmod 0755 /usr/local/bin/caboose-session && \
     printf '\n[ -r /etc/profile.d/caboose-audio.sh ] && . /etc/profile.d/caboose-audio.sh\n' >> /etc/bash.bashrc
-ENV LD_PRELOAD= CABOOSE_GPU=none XPRA_BACKWARDS_COMPATIBLE=0 GDK_SCALE=1 QT_QPA_PLATFORMTHEME=gtk3
+ENV LD_PRELOAD= CABOOSE_GPU=none DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus XPRA_BACKWARDS_COMPATIBLE=0 GDK_SCALE=1 QT_QPA_PLATFORMTHEME=gtk3
 CMD ["sleep", "infinity"]

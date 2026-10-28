@@ -19,6 +19,11 @@ case ${CABOOSE_GPU:-none} in
 esac
 export XDG_RUNTIME_DIR=/run/user/1000
 install -d -o caboose -g caboose -m 0700 "$XDG_RUNTIME_DIR"
+install -d -m 0755 /run/dbus
+if [ ! -S /run/dbus/system_bus_socket ]; then dbus-daemon --system --fork; fi
+if [ ! -S "$XDG_RUNTIME_DIR/bus" ]; then
+  runuser -u caboose -- dbus-daemon --session --address="unix:path=$XDG_RUNTIME_DIR/bus" --fork
+fi
 start_display() {
   local display=$1 port=$2 speaker=$3
   if runuser -u caboose -- env DISPLAY="$display" xpra info "$display" >/dev/null 2>&1; then return; fi
