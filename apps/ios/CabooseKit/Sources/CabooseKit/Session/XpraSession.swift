@@ -426,7 +426,9 @@ public final class XpraSession {
     // MARK: Windows
 
     /// Moves and resizes a window on the server, e.g. to fill the phone.
-    public func configure(_ window: RemoteWindow, frame: CGRect) {
+    /// Sizes and places a window. `state` changes its window-manager state as well, e.g.
+    /// `["fullscreen": false]` to bring a window out of a full screen it took on another display.
+    public func configure(_ window: RemoteWindow, frame: CGRect, state: [String: Bool] = [:]) {
         let rounded = frame.integral
         window.resizeCounter += 1
         window.frame = rounded
@@ -435,8 +437,9 @@ public final class XpraSession {
             "geometry": [.int(Int64(rounded.minX)), .int(Int64(rounded.minY)), .int(Int64(rounded.width)), .int(Int64(rounded.height))],
             "resize-counter": .int(Int64(window.resizeCounter)),
             "properties": .dict([]),
-            "state": .dict([]),
+            "state": .dict(state.map { RPair(RValue($0.key), .bool($0.value)) }),
         ]])
+        if let fullscreen = state["fullscreen"] { window.isFullscreen = fullscreen }
     }
 
     public func focus(_ window: RemoteWindow?) {
