@@ -7,8 +7,8 @@ import { useSearchParam } from '../navigation.js'
 
 /**
  * Setting a new host up: the first account, which is the host's operator, and the first
- * tenant, which gets every computer the host already runs. The host serves this page only to
- * itself, or with the one-time code it printed and wrote to its state directory.
+ * tenant, which gets every computer the host already runs. The host serves this page only
+ * with the one-time code it printed and wrote to its state directory.
  */
 export function Setup({ onDone }: { onDone: () => void }) {
   const code = useSearchParam('code') ?? undefined

@@ -209,8 +209,9 @@ the operator's, who sees every tenant and the host itself.
 
 A new host is unclaimed: it writes a one-time code to `${CABOOSE_IMAGE_ROOT}/setup-code` and
 logs `Set up Caboose: http://<address>:<port>/setup?code=<code>`. `/setup` opens with that
-code, or on the host itself; it makes the operator's account and the first tenant, gives it
-the host's computers, and deletes the file. Other administrators join by invitation links
+code, including on the host itself: a local proxy may relay outside traffic without
+forwarding headers. It makes the operator's account and the first tenant, gives it the
+host's computers, and deletes the file. Other administrators join by invitation links
 from **People**. Accounts and sessions are AppKit's (`appkit-auth`, `appkit-db`) in the
 embedded database, or Postgres with `CABOOSE_DATABASE_URL`. Back up `identity/` (or the
 Postgres database) with the disks. The owner token keeps working for the whole API.

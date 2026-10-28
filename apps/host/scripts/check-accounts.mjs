@@ -20,6 +20,11 @@ async function call(path, { method = 'GET', body, expect = 200, bearer = token }
 }
 
 const setup = await call('/v1/setup', { bearer: null })
+assert.equal(setup.codeRequired, !setup.claimed)
+if (!setup.claimed) {
+  await call('/v1/setup', { method: 'POST', bearer: null, body: {}, expect: 400 })
+  console.log('An unclaimed host requires its setup code, including on loopback.')
+}
 console.log(setup.claimed ? 'The host is set up.' : 'The host is not set up yet; its setup link is in the log and setup-code.')
 const me = await call('/v1/me')
 assert.equal(me.kind, 'owner')

@@ -31,16 +31,6 @@ export interface TenancyContext {
   adoptUnassigned(tenantId: string): Promise<void>
 }
 
-/**
- * A request from the machine itself rather than through a proxy: the setup page and claim are
- * open to it without the setup code.
- */
-export function fromLoopback(request: IncomingMessage): boolean {
-  const address = request.socket.remoteAddress ?? ''
-  const loopback = address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
-  return loopback && !request.headers['x-forwarded-for'] && !request.headers.forwarded
-}
-
 /** Copies a Better Auth answer's session cookie onto ours. */
 function passCookies(from: Response, to: ServerResponse): void {
   const cookies = from.headers.getSetCookie()
@@ -78,11 +68,11 @@ export async function tenancyRoute(context: TenancyContext, request: IncomingMes
   // --- Without an account: setting the host up, and accepting an invitation ---
   if (path === '/v1/setup' && method === 'GET') {
     const claimed = await identity.claimed()
-    return json(response, 200, { claimed, codeRequired: !claimed && !fromLoopback(request) })
+    return json(response, 200, { claimed, codeRequired: !claimed })
   }
   if (path === '/v1/setup' && method === 'POST') {
     const input = await readJson(request)
-    const claimed = await identity.claim(input, fromLoopback(request))
+    const claimed = await identity.claim(input)
     await context.adoptUnassigned(claimed.tenantId)
     const signedIn = await identity.signIn(claimed.email, input.password as string, webHeaders(request))
     passCookies(signedIn, response)

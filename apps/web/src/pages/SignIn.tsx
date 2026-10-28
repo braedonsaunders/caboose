@@ -3,7 +3,6 @@ import { Alert, AlertDescription, Button, Card, CardContent, CardDescription, Ca
 import { CabooseApiError, CabooseClient } from '../api.js'
 import { Wordmark } from '../brand/Logo.js'
 import { errorMessage } from '../components/common.js'
-import { navigate } from '../navigation.js'
 
 /**
  * Administrators sign in with their account. The owner token still opens the console, for
@@ -17,12 +16,12 @@ export function SignIn({ onSignIn }: { onSignIn: (session: { kind: 'account' } |
   const [token, setToken] = React.useState('')
   const [checking, setChecking] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
-  const [unclaimed, setUnclaimed] = React.useState<{ codeRequired: boolean } | null>(null)
+  const [unclaimed, setUnclaimed] = React.useState(false)
 
   React.useEffect(() => {
     new CabooseClient(() => '').setupStatus().then(
-      status => setUnclaimed(status.claimed ? null : { codeRequired: status.codeRequired }),
-      () => setUnclaimed(null),
+      status => setUnclaimed(!status.claimed),
+      () => setUnclaimed(false),
     )
   }, [])
 
@@ -67,9 +66,7 @@ export function SignIn({ onSignIn }: { onSignIn: (session: { kind: 'account' } |
               <AlertDescription>
                 <div className="space-y-2">
                   <p>This host has not been set up yet.</p>
-                  {unclaimed.codeRequired
-                    ? <p>Open the setup link the host printed when it started, or open this page on the host itself.</p>
-                    : <Button size="sm" onClick={() => navigate('/setup')}>Set up this host</Button>}
+                  <p>Open the setup link the host printed when it started; it carries the one-time setup code.</p>
                 </div>
               </AlertDescription>
             </Alert>

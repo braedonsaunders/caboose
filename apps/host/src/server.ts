@@ -22,7 +22,7 @@ import { MAX_SLOTS } from './network.js'
 import { ComputerCapacityError, OWNER_COMPUTER, PairingCodes, PairingRateLimitError, personName, phoneName, type ComputerAssignment, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
 import { toNodeHandler } from 'better-auth/node'
 import { IdentityConflictError, IdentityInputError, IdentityNotFoundError, type AdminPrincipal, type Identity } from './identity/service.js'
-import { SignInThrottle, administers, fromLoopback, isSignInAttempt, tenancyRoute, tenantUsage, webHeaders, type TenancyContext } from './identity/routes.js'
+import { SignInThrottle, administers, isSignInAttempt, tenancyRoute, tenantUsage, webHeaders, type TenancyContext } from './identity/routes.js'
 import type { DisplayProtocol } from './config.js'
 import { DisplayNotReadyError } from './display.js'
 import type { ComputerResources } from './driver.js'
@@ -796,11 +796,11 @@ export function createCabooseServer(options: ComputerPieces & {
     void (async () => {
       const path = new URL(request.url ?? '/', 'http://localhost').pathname
       if (path !== '/v1' && !path.startsWith('/v1/')) {
-        // Until the host is claimed, its setup page is the machine's own or the setup code's holder's.
+        // Until the host is claimed, its setup page requires the one-time setup code.
         if (path === '/setup' && identity) {
           if (await identity.claimed()) { response.writeHead(302, { location: '/' }); return response.end() }
           const code = new URL(request.url ?? '/', 'http://localhost').searchParams.get('code')
-          if (!fromLoopback(request) && !await identity.setupCodeMatches(code)) return json(response, 403, { error: 'Open the setup link the host printed, or open it on the host itself' })
+          if (!await identity.setupCodeMatches(code)) return json(response, 403, { error: 'Open the setup link the host printed' })
         }
         if (options.webRoot) return serveWeb(request, response, options.webRoot, path)
         return json(response, 404, { error: 'not found' })

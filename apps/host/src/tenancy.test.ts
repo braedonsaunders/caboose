@@ -1,6 +1,6 @@
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -81,18 +81,25 @@ describe('a host with accounts and tenants', () => {
   const operator = browser()
   let home: string
 
-  it('is set up once, from the machine itself or with the setup code, and gives its computers to the first tenant', async () => {
+  it('requires the setup code even on loopback, claims once and gives its computers to the first tenant', async () => {
     const anonymous = browser()
-    expect(await (await anonymous('/v1/setup')).json()).toEqual({ claimed: false, codeRequired: false })
+    expect(await (await anonymous('/v1/setup')).json()).toEqual({ claimed: false, codeRequired: true })
     expect(await (await anonymous('/v1/setup', { headers: proxied })).json()).toEqual({ claimed: false, codeRequired: true })
     expect((await anonymous('/setup', { headers: proxied })).status).toBe(403)
-    expect((await anonymous('/setup')).status).toBe(200)
+    expect((await anonymous('/setup')).status).toBe(403)
+    expect((await anonymous('/setup?code=wrong')).status).toBe(403)
+    expect((await anonymous(`/setup?code=${'é'.repeat(64)}`)).status).toBe(403)
+    const code = (await readFile(join(root, 'setup-code'), 'utf8')).trim()
+    expect((await anonymous(`/setup?code=${code}`, { headers: proxied })).status).toBe(200)
     expect(existsSync(join(root, 'setup-code'))).toBe(true)
     expect((await anonymous('/v1/me')).status).toBe(401)
 
     const owner = { name: 'Braedon', email: 'owner@example.com', password: 'correct horse', tenantName: 'Home' }
     expect((await anonymous('/v1/setup', { method: 'POST', body: owner, headers: proxied })).status).toBe(400)
-    expect((await operator('/v1/setup', { method: 'POST', body: owner })).status).toBe(201)
+    expect((await anonymous('/v1/setup', { method: 'POST', body: owner })).status).toBe(400)
+    expect((await anonymous('/v1/setup', { method: 'POST', body: { ...owner, code: 'é'.repeat(64) } })).status).toBe(400)
+    expect((await operator('/v1/setup', { method: 'POST', body: { ...owner, code }, headers: proxied })).status).toBe(201)
+    expect(await (await anonymous('/v1/setup')).json()).toEqual({ claimed: true, codeRequired: false })
     expect(existsSync(join(root, 'setup-code'))).toBe(false)
     expect((await anonymous('/v1/setup', { method: 'POST', body: { ...owner, email: 'again@example.com' } })).status).toBe(409)
     expect((await anonymous('/setup')).status).toBe(302)

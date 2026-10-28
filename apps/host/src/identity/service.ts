@@ -133,19 +133,22 @@ export class Identity {
 
   async setupCodeMatches(candidate: unknown): Promise<boolean> {
     const code = await this.setupCode()
-    if (!code || typeof candidate !== 'string' || candidate.length !== code.length) return false
-    return timingSafeEqual(Buffer.from(candidate), Buffer.from(code))
+    if (!code || typeof candidate !== 'string') return false
+    const supplied = Buffer.from(candidate)
+    const expected = Buffer.from(code)
+    return supplied.length === expected.length && timingSafeEqual(supplied, expected)
   }
 
   /**
    * Makes the operator's account and the first tenant, and gives it every computer the host
-   * already runs. Allowed once: with the setup code, or from the host itself.
+   * already runs. Allowed once, with the setup code even on loopback: a local proxy may
+   * relay remote visitors.
    */
-  async claim(input: Record<string, unknown>, fromLoopback: boolean): Promise<{ userId: string; tenantId: string; email: string }> {
+  async claim(input: Record<string, unknown>): Promise<{ userId: string; tenantId: string; email: string }> {
     if (this.claiming) throw new IdentityConflictError('This host is already being set up')
     const work = (async () => {
       if (await this.claimed()) throw new IdentityConflictError('This host is already set up')
-      if (!fromLoopback && !await this.setupCodeMatches(input.code)) throw new IdentityInputError('The setup code is missing or wrong')
+      if (!await this.setupCodeMatches(input.code)) throw new IdentityInputError('The setup code is missing or wrong')
       const name = label(input.name, 'name')
       const address = email(input.email)
       const secret = password(input.password)

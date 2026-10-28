@@ -483,9 +483,10 @@ socket only its user can open. Quotas are `tenants.settings.quotas`.
 **Setting the host up.** Until the first account exists the host is unclaimed. It writes a
 one-time code to `${CABOOSE_IMAGE_ROOT}/setup-code` (mode 0600) and logs
 `Set up Caboose: http://<address>:<port>/setup?code=<code>`. The `/setup` page is served
-only with that code or to the host itself (a loopback request with no `X-Forwarded-For` or
-`Forwarded` header); once claimed it redirects to `/`. Claiming makes the operator's
-account and the first tenant, gives that tenant every computer the host already runs,
+only with that code, including on loopback: a local reverse proxy can relay remote visitors
+without forwarding headers. The setup API requires the same code. Once claimed the page
+redirects to `/`. Claiming makes the operator's account and the first tenant, gives that
+tenant every computer the host already runs,
 deletes the code file and signs the browser in.
 
 **Invitations** are links an administrator copies: `/invite?token=<token>`, single-use,
@@ -501,7 +502,7 @@ checked when a computer is made, resized or moved, and all three when it wakes.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/v1/setup` | **No account.** `{ claimed, codeRequired }` |
-| `POST` | `/v1/setup` | **No account.** `{ name, email, password, tenantName, code? }` → 201, with the session cookie. `code` is needed except from the host itself; 409 once claimed |
+| `POST` | `/v1/setup` | **No account.** `{ name, email, password, tenantName, code }` → 201, with the session cookie. `code` is required from every address; 409 once claimed |
 | any | `/v1/auth/*` | Better Auth: `POST /v1/auth/sign-in/email { email, password }`, `POST /v1/auth/sign-out`, `GET /v1/auth/get-session`, `POST /v1/auth/change-password`. Sign-up is closed; accounts come from setup and invitations |
 | `GET` | `/v1/me` | `{ kind: "owner" \| "admin", user: { id, name, email } \| null, operator, tenants: [{ id, name, quotas, createdAt }] }` |
 | `GET`, `POST` | `/v1/tenants` | The tenants the caller administers, each with `usage: { computers, memoryMb, vcpus, diskBytes }`; the operator makes one with `{ name, quotas? }` |
