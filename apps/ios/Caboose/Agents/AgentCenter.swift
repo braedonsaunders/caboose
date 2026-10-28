@@ -11,6 +11,7 @@ final class AgentCenter {
         /// The agent's registry id.
         var agent: String
         var agentName: String?
+        var profileId: String?
         var prompt: String
         var status: String
         var startedAt: String?
@@ -52,6 +53,7 @@ final class AgentCenter {
         var text: String
     }
 
+    let library = AgentLibrary()
     private(set) var tasks: [Task] = []
     /// Each task's conversation as far as it is known: read from the host when opened, then live.
     private(set) var threads: [String: AgentThread] = [:]
@@ -101,6 +103,7 @@ final class AgentCenter {
 
     func attach(host: HostClient) {
         self.host = host
+        library.attach(host)
         attached = true
         openControl()
         Swift.Task { await refresh() }
@@ -117,6 +120,7 @@ final class AgentCenter {
 
     /// Forgets the computer entirely: a different one, or none, is next.
     func reset() {
+        library.reset()
         tookOver = false
         pausedForTakeover = []
         detach()
@@ -158,14 +162,19 @@ final class AgentCenter {
     }
 
     /// Starts a task and returns its id, or nil when it could not start (`lastError` says why).
-    func start(_ prompt: String, agent: String?, askFirst: Bool = false, attachments: [Attachment] = []) async -> String? {
+    func start(_ prompt: String, agent: String?, askFirst: Bool = false, attachments: [Attachment] = [], profileId: String? = nil) async -> String? {
         guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         let approvals = askFirst ? "ask" : "auto"
         do {
-            let id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments, craftMcp: UserDefaults.standard.object(forKey: "caboose.agent.craftMcp") as? Bool ?? true)
+            let id: String
+            if let profileId {
+                id = try await host.startProfileTask(profileId, prompt: prompt, attachments: attachments)
+            } else {
+                id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments, craftMcp: UserDefaults.standard.object(forKey: "caboose.agent.craftMcp") as? Bool ?? true)
+            }
             if !tasks.contains(where: { $0.id == id }) {
                 let chosen = agent ?? defaultAgent ?? ""
-                tasks.insert(Task(id: id, agent: chosen, agentName: listing(chosen)?.name, prompt: prompt, status: "running",
+                tasks.insert(Task(id: id, agent: chosen, agentName: listing(chosen)?.name, profileId: profileId, prompt: prompt, status: "running",
                                   startedAt: Self.timestamp(Date()), turns: 1, approvals: approvals), at: 0)
             }
             if threads[id] == nil { threads[id] = AgentThread(entries: [], prompt: prompt) }
@@ -495,11 +504,13 @@ final class AgentCenter {
             onEvent?(type, event)
             return
         }
+        if type == "agent.profiles.changed" { Swift.Task { await library.refreshProfiles() }; return }
+        if type == "agent.routines.changed" { Swift.Task { await library.refreshRoutines(); await library.refreshHistory(); await refresh() }; return }
         guard let id = event["id"] as? String else { return }
         switch type {
         case "agent.task.started":
             if !tasks.contains(where: { $0.id == id }) {
-                tasks.insert(Task(id: id, agent: event["agent"] as? String ?? "", agentName: event["agentName"] as? String,
+                tasks.insert(Task(id: id, agent: event["agent"] as? String ?? "", agentName: event["agentName"] as? String, profileId: event["profileId"] as? String,
                                   prompt: event["prompt"] as? String ?? "", status: "running", startedAt: Self.timestamp(Date()), turns: 1), at: 0)
             }
             openSeatIfNeeded()
