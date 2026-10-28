@@ -12,15 +12,19 @@ struct WindowScreen: View {
             Color.black.ignoresSafeArea()
             if let window = model.window(model.presentedWindowID) {
                 GeometryReader { proxy in
+                    // Keys go to the topmost dialog, if one is up, else to the window.
+                    let popups = model.auxiliaryWindows(for: window)
+                    let keyTarget = popups.last { !$0.isOverrideRedirect }?.id ?? window.id
                     ZStack(alignment: .topLeading) {
-                        RemoteWindowCanvas(window: window, keyboardVisible: model.keyboardVisible)
+                        RemoteWindowCanvas(window: window, keyboardVisible: model.keyboardVisible && keyTarget == window.id)
                             .frame(width: proxy.size.width, height: proxy.size.height)
-                        ForEach(model.auxiliaryWindows(for: window)) { popup in
-                            RemoteWindowCanvas(window: popup, keyboardVisible: false)
+                        ForEach(popups) { popup in
+                            RemoteWindowCanvas(window: popup, keyboardVisible: model.keyboardVisible && keyTarget == popup.id)
                                 .frame(width: popup.frame.width / model.pixelsPerPoint,
                                        height: popup.frame.height / model.pixelsPerPoint)
                                 .offset(popupOffset(popup, in: window, size: proxy.size))
                                 .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+                                .onAppear { fitDialog(popup, over: window, in: proxy.size) }
                         }
                     }
                     .onAppear { fit(window, to: proxy.size) }
@@ -112,6 +116,23 @@ struct WindowScreen: View {
         session.focus(window)
     }
 
+    /// A dialog (not a menu or tooltip) is moved, and shrunk if it must be, to sit centred in
+    /// the shown area: apps size and place dialogs for a desktop, and half of one off the
+    /// edge of a phone cannot be reached. The server is told, so clicks land where it shows.
+    private func fitDialog(_ dialog: RemoteWindow, over parent: RemoteWindow, in size: CGSize) {
+        guard !dialog.isOverrideRedirect, let session = model.session, size.width > 0 else { return }
+        let scale = model.pixelsPerPoint
+        let margin = 12 * scale
+        let area = CGSize(width: size.width * scale, height: size.height * scale)
+        let width = min(dialog.frame.width, area.width - 2 * margin)
+        let height = min(dialog.frame.height, area.height - 2 * margin)
+        let target = CGRect(x: parent.frame.minX + (area.width - width) / 2,
+                            y: parent.frame.minY + (area.height - height) / 2,
+                            width: width, height: height).integral
+        if dialog.frame != target { session.configure(dialog, frame: target) }
+        session.focus(dialog)
+    }
+
     /// Popups are placed where the server put them relative to their parent, kept on screen.
     private func popupOffset(_ popup: RemoteWindow, in parent: RemoteWindow, size: CGSize) -> CGSize {
         let scale = model.pixelsPerPoint
@@ -131,6 +152,10 @@ struct RemoteWindowCanvas: UIViewRepresentable {
     func makeUIView(context: Context) -> RemoteWindowView {
         let view = RemoteWindowView(session: model.session, window: window)
         view.pixelsPerPoint = model.pixelsPerPoint
+        let model = model
+        view.onKeyboardWanted = { wanted in
+            if model.keyboardVisible != wanted { model.keyboardVisible = wanted }
+        }
         return view
     }
 
@@ -139,7 +164,7 @@ struct RemoteWindowCanvas: UIViewRepresentable {
         if view.remoteWindow?.id != window.id { view.attach(window) }
         if keyboardVisible, !view.isFirstResponder {
             DispatchQueue.main.async { view.becomeFirstResponder() }
-        } else if !keyboardVisible, view.isFirstResponder, model.presentedWindowID == window.id {
+        } else if !keyboardVisible, view.isFirstResponder {
             DispatchQueue.main.async { view.resignFirstResponder() }
         }
     }
