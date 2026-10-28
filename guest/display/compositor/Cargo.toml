@@ -1,0 +1,23 @@
+[package]
+name = "caboose-display"
+description = "Caboose Display: a headless Wayland compositor that streams each window as its own video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+caboose-display-protocol = { path = "../protocol" }
+ffmpeg-next = { version = "7.1.0", default-features = false, features = ["codec", "format"] }
+libc = "0.2"
+png = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tungstenite = { version = "0.27", default-features = false, features = ["handshake"] }
+unicode-segmentation = "1.12"
+
+[dependencies.smithay]
+version = "0.7.0"
+default-features = false
+features = ["wayland_frontend", "desktop", "xwayland", "renderer_pixman"]

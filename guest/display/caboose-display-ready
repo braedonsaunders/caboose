@@ -1,0 +1,12 @@
+#!/bin/sh
+# Exits 0 once caboose-display on 127.0.0.1:14600 answers a hello made with the
+# per-wake token; otherwise keeps trying for TIMEOUT seconds (default 60).
+timeout=${1:-60}
+token=/run/caboose/xpra-token
+i=0
+while [ "$i" -lt "$timeout" ]; do
+  if [ -r "$token" ] && caboose-display-probe --check --token-file "$token" >/dev/null 2>&1; then exit 0; fi
+  i=$((i + 1)); sleep 1
+done
+echo 'caboose-display did not become ready' >&2
+exit 1

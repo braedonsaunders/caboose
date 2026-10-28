@@ -62,7 +62,10 @@ base swap.
   desktop. Xpra also already carries clipboard, notifications, file transfer,
   audio, printing, webcam and cursor shapes. The owner seat forwards speaker audio
   via a PulseAudio monitor, with MP3 available for iOS; microphone forwarding is off.
-  A Wayland compositor of our own can replace it later behind the same client model.
+  Caboose Display (`guest/display`, [display.md](display.md)), Caboose's own headless
+  Wayland compositor with Xwayland, is in both guest images on WebSocket `14600` with the
+  same token file, installed but not the default; it replaces Xpra behind the same
+  window model when the host selects it.
 - **Session auth.** Xpra requires a per-boot token (`tcp-auth`/`ws-auth` via an
   `env`/file authenticator). The host writes it with `desk.exec` at wake and hands
   it to the client inside the authenticated `/v1/session` response.

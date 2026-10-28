@@ -1,0 +1,12 @@
+<!doctype html>
+<!-- A <select>: Chromium opens its list as an xdg_popup, a window of its own. -->
+<meta charset="utf-8">
+<title>Caboose popup</title>
+<style>
+  html, body { margin: 0; background: #fff; font: 28px system-ui, sans-serif; }
+  select { font: inherit; position: absolute; left: 40px; top: 40px; width: 400px; }
+</style>
+<select id="s">
+  <option>Alpha</option><option>Bravo</option><option>Charlie</option><option>Delta</option>
+</select>
+<script>document.getElementById('s').addEventListener('change', e => { document.title = 'picked ' + e.target.value; });</script>

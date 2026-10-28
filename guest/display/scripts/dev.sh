@@ -13,7 +13,7 @@ cache=${XDG_CACHE_HOME:-$HOME/.cache}/caboose-display
 mkdir -p "$cache/registry" "$cache/git"
 image=${CABOOSE_DISPLAY_IMAGE:-caboose-display-dev}
 set -- --rm -i --init \
-  --user "$(id -u):$(id -g)" -e HOME=/tmp -e CARGO_BUILD_JOBS="${CABOOSE_DISPLAY_CPUS:-6}" \
+  --user "$(id -u):$(id -g)" -e HOME=/tmp -e CARGO_BUILD_JOBS="${CABOOSE_DISPLAY_CPUS:-6}" -e CARGO_INCREMENTAL=0 \
   --cpus "${CABOOSE_DISPLAY_CPUS:-6}" --memory "${CABOOSE_DISPLAY_MEMORY:-6g}" \
   -v "$here:/src" -w /src \
   -v "$cache/registry:/opt/cargo/registry" -v "$cache/git:/opt/cargo/git" \

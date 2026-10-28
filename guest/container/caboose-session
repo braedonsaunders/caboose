@@ -41,9 +41,26 @@ ready() {
   done
   echo "Xpra $display did not become ready" >&2; return 1
 }
+# Caboose Display (docs/display.md): the owner seat as a Wayland compositor with
+# Xwayland, streaming each window on WebSocket port 14600. Launchers read the
+# application environment from /run/caboose/display.env once it is ready.
+start_caboose_display() {
+  if caboose-display-probe --check --token-file /run/caboose/xpra-token >/dev/null 2>&1; then return; fi
+  install -d -m 0755 /run/caboose
+  install -o caboose -g caboose -m 0644 /dev/null /run/caboose/display.env
+  local log=/home/caboose/.cache/caboose-display.log
+  runuser -u caboose -- install -d -m 0700 /home/caboose/.cache
+  local libs=
+  if [ "${CABOOSE_GPU:-none}" = wsl ]; then libs=/usr/lib/wsl/lib; fi
+  runuser -u caboose -- env HOME="$HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" LD_LIBRARY_PATH="$libs" \
+    setsid caboose-display --env-file /run/caboose/display.env >>"$log" 2>&1 < /dev/null &
+}
 case ${1:-} in
   start) start_display :100 14500 on ;;
   start-agent) start_display :101 14501 off; ready :101 ;;
   ready) ready "${2:?display required}" ;;
-  *) echo 'Usage: caboose-session start | start-agent | ready DISPLAY' >&2; exit 2 ;;
+  start-display) start_caboose_display ;;
+  ready-display) caboose-display-ready 120 ;;
+  *) echo 'Usage: caboose-session start | start-agent | ready DISPLAY | start-display | ready-display' >&2; exit 2 ;;
 esac

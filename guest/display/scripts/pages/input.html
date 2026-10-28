@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- A focused text field and a touch/click log, for input checks. -->
+<meta charset="utf-8">
+<title>Caboose input</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; font: 28px system-ui, sans-serif; }
+  input { font: inherit; margin: 24px; width: 80%; }
+  #log { margin: 24px; color: #333; }
+</style>
+<input id="field" autofocus placeholder="type here">
+<div id="log">no input yet</div>
+<script>
+  const log = document.getElementById('log');
+  const field = document.getElementById('field');
+  let pointer = 'none';
+  field.focus();
+  // The title carries what arrived, so a headless check can read it from window.update.
+  const report = () => { document.title = `${pointer}|${field.value}`; };
+  addEventListener('pointerdown', e => {
+    pointer = e.pointerType;
+    log.textContent = `${e.pointerType} down at ${Math.round(e.clientX)},${Math.round(e.clientY)}`;
+    report();
+    setTimeout(() => field.focus(), 0);
+  });
+  field.addEventListener('input', report);
+</script>
