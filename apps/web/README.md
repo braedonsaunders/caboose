@@ -24,7 +24,8 @@ on the same port as its API: sign in with the owner token, then see and manage t
   APNs development or production; remove one. When the host has no APNs key it says how to
   configure one.
 - **System** — the host version, runtime, GPU, image, push and Live Activities
-  configuration, health from `/v1/health`, the last lifecycle error, and the non-secret
+  configuration, health from `/v1/health`, the last lifecycle error, the state of a guest
+  component update, and the non-secret
   `CABOOSE_*` variables the host started with (`GET /v1/host`). These are read-only: they
   change by editing the host's environment and restarting it, which the page explains.
 - **Agents** — pick any agent from the Agent Client Protocol registry (installed ones

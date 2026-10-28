@@ -11,7 +11,7 @@ try {
   const source = fileURLToPath(new URL('..', import.meta.url))
   docker('run', '-d', '--name', name, '-v', `${source}:/bundle:ro`, 'debian:trixie-slim', 'sleep', 'infinity')
   const run = (command: string, args: string[]) => docker('exec', '-u', 'root', name, command, ...args)
-  run('/bin/sh', ['-c', 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 iproute2 dbus && useradd -m -u 1000 caboose && mkdir -p /home/caboose/Documents /run/caboose && echo keep > /home/caboose/Documents/sentinel && echo token > /run/caboose/xpra-token && chown caboose:caboose /run/caboose/xpra-token'])
+  run('/bin/sh', ['-c', 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 iproute2 dbus && useradd -m -u 1000 caboose && mkdir -p /home/caboose/Documents /run/caboose && echo keep > /home/caboose/Documents/sentinel && echo token > /run/caboose/display-token && chown caboose:caboose /run/caboose/display-token'])
   run('/bin/sh', ['-c', `mkdir -p /etc/xdg/Thunar /home/caboose/.config/Thunar; printf '%s' '<actions><action><unique-id>existing</unique-id></action></actions>' > /etc/xdg/Thunar/uca.xml; printf '%s' owner-custom > /home/caboose/.config/Thunar/uca.xml`])
   const guest: AgentGuest = { run: async (cmd, args) => run(cmd, args) }
   run('/bin/sh', ['-c', `printf '%s\n' '#!/bin/bash' 'start_printing() {' '  /usr/local/libexec/caboose-phone-printer-setup' '}' 'start_printing; true' > /usr/local/bin/caboose-session`])

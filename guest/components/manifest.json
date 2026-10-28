@@ -10,6 +10,7 @@
   "notifications/caboose-notifications.service",
   "notifications/caboose-notification-daemon.service",
   "notifications/caboose-agent-bus.service",
+  "notifications/caboose-agent-notification-daemon.service",
   "phone/install.sh",
   "phone/caboose-phone",
   "phone/caboose-phone.desktop",

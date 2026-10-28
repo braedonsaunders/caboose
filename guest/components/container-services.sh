@@ -1,5 +1,5 @@
 #!/bin/bash
-# Caboose plumbing for a container; independent of either display protocol.
+# Caboose plumbing for a container: the file service, the notification monitor and printing.
 set -euo pipefail
 uid=$(id -u caboose)
 runtime=/run/user/$uid
