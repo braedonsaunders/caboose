@@ -1,4 +1,10 @@
 #!/bin/sh
 set -eu
+export LC_ALL=C
 # The PDF PPD causes CUPS/cups-filters to convert jobs to PDF before the backend.
+existing=$(lpstat -v iPhone 2>/dev/null || true)
+if [ -n "$existing" ] && [ "$existing" != 'device for iPhone: caboose-phone:/' ]; then
+  echo 'The existing iPhone printer is not Caboose’s; rename it before setting up the Caboose printer.' >&2
+  exit 1
+fi
 lpadmin -p iPhone -v caboose-phone:/ -P /usr/local/share/caboose/phone.ppd -E

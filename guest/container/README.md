@@ -62,7 +62,7 @@ reviewed against the Docker version and local security requirements.
 The image installs `guest/files/caboose-files.py`. `caboose-session start-files` starts it
 as `caboose` after the host writes the wake token; the host publishes port 14700 on loopback
 only. See `docs/architecture.md` § Files and `apps/host/README.md` for the API and checks.
-Recreate a container from the updated image to install the service; its home volume remains.
+The host upgrades existing container layers through the shared components installer. An older container without the port 14700 mapping must be recreated to enable Files; back up its writable layer first, and preserve its home volume.
 ## Desktop notifications
 
 The owner session's D-Bus notification monitor writes a bounded private queue under
@@ -83,3 +83,5 @@ those packages; back up the home volume separately.
 The container installs the same commands, desktop integration and iPhone CUPS queue as
 the microVM; `caboose-session` starts CUPS for either owner display. See
 [`guest/phone/README.md`](../phone/README.md) for behavior and the scripted guest check.
+
+Both guest builders use `guest/components/install.sh`; see `guest/components/README.md` for the disposable upgrade check.

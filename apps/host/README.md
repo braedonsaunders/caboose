@@ -81,8 +81,7 @@ sets how long an agent stays running after a turn, waiting for a reply. Agent at
 Shared files and `/v1/fs` use the guest's authenticated TCP file service, installed in both
 images; streaming requests wake the computer and hold a lease until the transfer finishes.
 The full route, precondition, Trash and change-feed contract is in `../../docs/architecture.md` § Files.
-Existing computer disks need the service installed in the guest; rebuilding the golden image
-updates newly created computers only.
+Existing computers receive the service through the automatic components upgrade described below.
 
 With Node 22 and a real computer, the file check creates a temporary directory, uploads,
 lists, downloads a byte range, moves and trashes its files and the directory:
@@ -282,6 +281,16 @@ connected. `GET /v1/phone/files/:id` reads a staged file through the guest comma
 channel; it does not accept arbitrary guest paths or wake the computer. See
 `../../docs/architecture.md` § iOS weave for the schema, limits and delivery semantics,
 and `../../guest/phone/README.md` for the guest-side CUPS and command check.
+
+## Guest components
+
+Existing computers receive component updates after wake; status and failures appear in
+`GET /v1/computer` and `computer.upgrade` events. Old containers without port 14700
+mapped must be recreated for Files; preserve the home and back up the writable layer.
+Run `guest/components/check-container.sh` for the disposable guest check. With
+`CABOOSE_URL` and `CABOOSE_OWNER_TOKEN` set, run `node apps/host/scripts/check-upgrade.mjs`
+for the real-host check; it wakes the computer and exercises Files. See
+`guest/components/README.md` for prerequisites and retry behavior.
 
 ## Catalog tools for agents
 

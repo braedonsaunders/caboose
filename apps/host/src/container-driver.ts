@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { guardContainerPrinting } from './components.js'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -75,6 +76,7 @@ export function createContainerController(config: Config, dependencies: { docker
   let launchEnv = owner.launchEnv ?? []
   let displayToken = ''
   let running = false
+  let filesPortWarning: string | undefined
 
   async function state(): Promise<'missing' | 'running' | 'paused' | 'stopped'> {
     try {
@@ -135,6 +137,8 @@ export function createContainerController(config: Config, dependencies: { docker
   }
 
   const controller: Controller = {
+    componentsMode: 'container',
+    componentsWarning: () => filesPortWarning,
     displayUrl: `ws://127.0.0.1:${owner.port}/`,
     agentDisplayUrl: 'ws://127.0.0.1:14501/',
     fileService: () => ({ url: 'http://127.0.0.1:14700', token: displayToken }),
@@ -163,12 +167,15 @@ export function createContainerController(config: Config, dependencies: { docker
       }
       running = true
       try {
+        const mapping = await docker(['port', name, '14700/tcp'], 15_000).catch(() => '')
+        filesPortWarning = mapping.split(/\r?\n/).some(line => line.trim() === '127.0.0.1:14700') ? undefined : 'Recreate the container to enable Files.'
+
         if (!displayToken) {
           displayToken = randomBytes(32).toString('hex')
           // Xpra reads the password file on each connection; never put a newline in it.
           await exec('root', '/bin/sh', ['-c', 'install -d -m 0755 /run/caboose; printf %s "$1" > /run/caboose/xpra-token; chown caboose:caboose /run/caboose/xpra-token; chmod 0600 /run/caboose/xpra-token', 'sh', displayToken])
         }
-        await exec('root', '/bin/sh', ['-c', '[ ! -f /opt/caboose/files/caboose-files.py ] || exec /usr/local/bin/caboose-session start-files'], 70_000).catch(error => console.error('File service unavailable:', error))
+        await guardContainerPrinting({ run: (cmd, args, timeout) => exec('root', cmd, args, timeout) }).catch(error => console.error('Container printing guard unavailable:', error))
         if (config.display === 'caboose-display') {
           await exec('root', '/usr/local/bin/caboose-session', ['start-display'], 240_000)
           await exec('root', '/usr/local/bin/caboose-session', ['ready-display'], 240_000)

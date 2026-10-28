@@ -288,6 +288,12 @@ Screen/Dynamic Island updates and ends on completion, then start a task from ano
 and verify push-to-start. Real delivery depends on iOS and APNs and cannot be proved by a
 simulator build.
 
+## Guest component updates
+
+The Computer sheet shows automatic guest component update progress and failures reported
+by the host. An older container without the Files port mapping shows a recreation warning.
+The display can be used while the update runs.
+
 ## Shortcuts and Spotlight
 
 Shortcuts wake or park the computer, open a Linux app or URL, start an agent task, and

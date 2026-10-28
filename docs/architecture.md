@@ -191,9 +191,16 @@ and its build and checks are documented in `guest/container/README.md`.
 A Debian 13 (trixie, amd64) golden image booted by Cloud Hypervisor. Each computer's
 disk is a reflink copy-on-write clone of the base, exactly the appkit-desk model: it
 costs no space up front and each user's installs and home persist. A clone is
-independent of the base once made, so a new base image reaches new computers only;
-updating existing ones is a guest-side upgrade (apt and the Caboose units), not a
-base swap.
+independent of the base once made, so a new base image reaches new computers only.
+On wake the host compares its bundled guest-component hash with the guest marker and,
+when needed, installs the shared components asynchronously through root guest exec.
+The marker is written only after success; a failure is retried on the next wake and does
+not block the display. The same installer serves both image builders and both runtimes.
+A running upgrade holds a lease and rejects park or restart. `GET /v1/computer` includes
+`upgrade: null | { state, version?, message? }` and `/v1/control` sends `computer.upgrade`
+with states `checking`, `updating`, `succeeded`, or `failed`. An older container without
+port 14700 mapped must be recreated for Files; preserve its home and back up its writable
+layer first. The Thunar action is a system default; user custom actions take precedence.
 
 - **Display server: Xpra in seamless mode** on display `:100`, listening for
   WebSocket on `0.0.0.0:14500` inside the guest (reachable only from the host over
@@ -291,7 +298,7 @@ HTTP API (JSON except streamed file contents, all behind `Authorization: Bearer 
 | `GET` | `/v1/apps` | launchable apps from the guest's `.desktop` files: `{ id, name, icon (PNG data URL), categories, exec }` |
 | `POST` | `/v1/apps/:id/launch` | start an app on the owner's display: Xpra's `:100`, or under Caboose Display with the launch environment it writes to `/run/caboose/display.env` |
 | `POST` | `/v1/session/park` | park now (snapshot with memory); otherwise parked on idle |
-| `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `notification`, `agent.*`, `media.*`, `fs.changed` |
+| `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `computer.upgrade`, `notification`, `agent.*`, `media.*`, `fs.changed` |
 | `GET` | `/v1/computer` | management status and persisted computer settings; does not wake or lease the computer |
 | `PATCH` | `/v1/computer/settings` | update any of `name`, `memoryMb`, `vcpus`, `idleMs`, `defaultAgent`; returns management status |
 | `POST` | `/v1/computer/restart` | requires `{ "confirm": true }`; cold restart, preserving the disk and discarding memory; returns management status |
@@ -774,8 +781,7 @@ The private `guest/files` service listens on guest TCP port 14700, runs as `cabo
 reads the same per-wake token file as the displays on every request. The microVM host reaches
 it over the fenced TAP; the container publishes it on host loopback only. Both guest images
 install it. The host relays bytes without buffering an entire file and holds a lifecycle
-lease from wake until the response completes. Existing computers need this service installed
-in the guest; changing a golden image alone does not upgrade a pre-existing computer.
+lease from wake until the response completes. Existing computers receive this service through the guest-components upgrade described above.
 
 The `/v1/fs` routes above require the owner bearer token. `path` and `destination` are
 relative to `/home/caboose`; the empty path denotes the root. Traversal, absolute paths,

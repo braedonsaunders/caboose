@@ -1,3 +1,4 @@
+import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
 import { parseCraftRequest, runCraft } from './craft-jobs.js'
 import { proxyFiles, type FileService } from './fs-proxy.js'
 import { agentJob, parseJob, type ActivityService } from './activities.js'
@@ -26,6 +27,8 @@ import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenTy
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
 export interface Controller extends ComputerDriver<Session> {
+  componentsMode?: ComponentsMode
+  componentsWarning?(): string | undefined
   stats(): unknown
   apps(): Promise<App[]>
   launch(id: string, path?: string): Promise<void>
@@ -82,6 +85,15 @@ export function createCabooseServer(options: {
   function broadcast(event: unknown): void {
     const message = JSON.stringify(event)
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
+  }
+  let upgrade: UpgradeStatus | null = null
+  let upgrading = false
+  let upgradeWork: Promise<void> | undefined
+  function publishUpgrade(status: UpgradeStatus): void {
+    const warning = controller.componentsWarning?.()
+    upgrade = warning && status.state === 'succeeded' ? { ...status, message: warning } : status
+    broadcast({ type: 'computer.upgrade', upgrade })
+    broadcastSettings()
   }
   const home = new HomeOwnership()
   const catalog = new AgentCatalog(options.registry ?? new AgentRegistry(), () => controller.guest(), settings, home)
@@ -142,6 +154,12 @@ export function createCabooseServer(options: {
     media.setActive(computer.state === 'running' && sockets.size - controls.size > 0)
     phone.setActive(computer.state === 'running' && phoneControls.size > 0)
   }
+  async function ensureFilesReady(): Promise<void> {
+    await upgradeWork
+    if (upgrade?.state === 'failed') throw new ComputerConflictError(upgrade.message ?? 'Caboose components could not be updated')
+    const warning = controller.componentsWarning?.()
+    if (warning) throw new ComputerConflictError(warning)
+  }
   function managementStatus() {
     const desired = settings.get()
     const active = controller.activeResources()
@@ -152,6 +170,7 @@ export function createCabooseServer(options: {
       clients: { display: sockets.size - controls.size, control: controls.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
       capabilities: { restart: typeof controller.restart === 'function', push: !!options.push },
+      upgrade,
       lastError: computer.lastError ?? controller.lastError?.() ?? null,
     }
   }
@@ -168,6 +187,14 @@ export function createCabooseServer(options: {
   function closeSockets(): void { for (const socket of sockets) socket.terminate() }
   computer.subscribe(state => {
     broadcast({ type: 'computer.state', state })
+    if (state === 'running' && controller.componentsMode && !upgrading) {
+      const guest = controller.guest()
+      if (guest) {
+        upgrading = true
+        const release = computer.acquire()
+        upgradeWork = upgradeComponents(guest, controller.componentsMode, publishUpgrade).finally(() => { upgrading = false; release() })
+      }
+    }
     if (state === 'running') agents.resume()
     else { agents.pause(); media.computerStopped() }
     syncMedia()
@@ -196,6 +223,7 @@ export function createCabooseServer(options: {
         }
         if (input.app !== undefined && (typeof input.app !== 'string' || !/^[a-zA-Z0-9._-]+\.desktop$/.test(input.app))) throw new AgentInputError('invalid application id')
         return computer.wakeAndRun(async () => {
+          await ensureFilesReady()
           if (!controller.fileService || !controller.guest()) throw new AgentUnavailableError()
           const service = controller.fileService(), url = new URL('/stat', service.url)
           url.searchParams.set('path', relative)
@@ -208,6 +236,7 @@ export function createCabooseServer(options: {
       }
       if (path.startsWith('/v1/fs/')) {
         return computer.wakeAndRun(async () => {
+          await ensureFilesReady()
           if (!controller.fileService) throw new AgentUnavailableError()
           await proxyFiles(controller.fileService(), request, response)
         })
@@ -278,6 +307,7 @@ export function createCabooseServer(options: {
         return json(response, 200, managementStatus())
       }
       if (request.method === 'POST' && path === '/v1/computer/restart') {
+        if (upgrading) throw new ComputerConflictError('Caboose components are updating')
         if (appCatalog.busy || craftBusy) throw new ComputerConflictError('An application operation is in progress')
         const body = await readJson(request)
         if (body.confirm !== true) throw new SettingsInputError('Restart closes apps and discards unsaved work; confirm must be true')
@@ -295,6 +325,7 @@ export function createCabooseServer(options: {
         return json(response, 200, { ...session, computer: { ...session.computer, name: settings.get().name } })
       }
       if (request.method === 'POST' && path === '/v1/session/park') {
+        if (upgrading) throw new ComputerConflictError('Caboose components are updating')
         if (appCatalog.busy || craftBusy) throw new ComputerConflictError('An application operation is in progress')
         await computer.park(closeSockets)
         return json(response, 200, { state: computer.state })
@@ -332,11 +363,11 @@ export function createCabooseServer(options: {
         } finally { craftBusy--; craftJobs.delete(input.job) }
       }
       const packInstall = /^\/v1\/catalog\/packs\/([^/]+)\/install$/.exec(path)
-      if (request.method === 'POST' && packInstall?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
+      if (request.method === 'POST' && packInstall?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
       const appAction = /^\/v1\/catalog\/([^/]+)\/(install|update|rollback)$/.exec(path)
-      if (request.method === 'POST' && appAction?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
+      if (request.method === 'POST' && appAction?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
       const removeApp = /^\/v1\/catalog\/([^/]+)$/.exec(path)
-      if (request.method === 'DELETE' && removeApp?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
+      if (request.method === 'DELETE' && removeApp?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
       if (request.method === 'GET' && path === '/v1/apps') {
         return json(response, 200, await computer.run(() => controller.apps()))
       }
@@ -410,6 +441,7 @@ export function createCabooseServer(options: {
         if (input.open !== undefined && typeof input.open !== 'boolean') throw new AgentInputError('open must be a boolean')
         const data = decodeBase64(input.data, 'data')
         return json(response, 200, await computer.wakeAndRun(async () => {
+          await ensureFilesReady()
           if (!controller.fileService || !controller.guest()) throw new AgentUnavailableError()
           const service = controller.fileService()
           const headers = { authorization: `Bearer ${service.token}` }
@@ -508,6 +540,7 @@ export function createCabooseServer(options: {
     } catch { release(); socket.destroy() }
   })
   async function shutdown(): Promise<void> {
+    await upgradeWork
     await computer.park(closeSockets)
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }

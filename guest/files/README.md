@@ -6,18 +6,10 @@ writes that file before starting the service. It opens path components through d
 file descriptors without following links. Its `/changes` endpoint uses Linux inotify and a
 bounded, per-process journal. See `../../docs/architecture.md` § Files for the protocol.
 
-Both guest image builders install it. To upgrade an existing VM guest from a trusted root
-shell, copy this directory into the guest and run:
-
-```sh
-install -D -m 0755 caboose-files.py /opt/caboose/files/caboose-files.py
-install -m 0644 caboose-files.service /etc/systemd/system/caboose-files.service
-systemctl daemon-reload
-```
-
-The host starts the unit on the next wake. For the container runtime, rebuild its image and
-recreate the container with the existing home volume instead of installing into a running
-container. Never publish port 14700 to the network: it is a private host-to-guest transport.
+Both image builders and the host's automatic existing-guest upgrade install it through
+`guest/components`. Never publish port 14700 to the network: it is a private host-to-guest
+transport. Old containers without a port mapping must be recreated for Files; preserve the
+home volume and back up the writable layer first.
 
 From the repository root, run the Linux service check with Docker:
 
