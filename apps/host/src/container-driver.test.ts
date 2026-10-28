@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { config } from './config.js'
-import { createContainerController, type Docker } from './container-driver.js'
+import { createContainerController, detectGpu, gpuArgs, type Docker } from './container-driver.js'
 
 function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
   let status = initial
@@ -31,11 +31,11 @@ const settings = config({
 describe('createContainerController', () => {
   it('creates the computer with the GPU, its home and loopback-only displays, then starts the session', async () => {
     const fake = fakeDocker('missing')
-    const controller = createContainerController(settings, { docker: fake.docker, gpuDevice: '/' })
+    const controller = createContainerController(settings, { docker: fake.docker, exists: path => path === '/dev/dxg' })
     const session = await controller.wake()
     expect(session.display.token).toMatch(/^[0-9a-f]{64}$/)
     const run = fake.calls.find(call => call[0] === 'run')!
-    expect(run).toEqual(expect.arrayContaining(['--device', '/', '-v', '/srv/caboose/home:/home/caboose', '--memory', '6144m', '--cpus', '4',
+    expect(run).toEqual(expect.arrayContaining(['--device', '/dev/dxg', 'CABOOSE_GPU=wsl', '-v', '/srv/caboose/home:/home/caboose', '--memory', '6144m', '--cpus', '4',
       '-p', '127.0.0.1:14500:14500', '--security-opt', 'seccomp=unconfined', 'caboose-computer:gpu']))
     expect(run.at(-1)).toBe('caboose-computer:gpu')
     const execs = fake.calls.filter(call => call[0] === 'exec').map(call => call.slice(4).join(' '))
@@ -46,7 +46,7 @@ describe('createContainerController', () => {
 
   it('parks by freezing and resumes with the same display token', async () => {
     const fake = fakeDocker('missing')
-    const controller = createContainerController(settings, { docker: fake.docker, gpuDevice: '/nonexistent' })
+    const controller = createContainerController(settings, { docker: fake.docker, exists: () => false })
     const first = await controller.wake()
     await controller.park()
     expect(fake.calls.at(-1)).toEqual(['pause', 'caboose-owner'])
@@ -57,9 +57,9 @@ describe('createContainerController', () => {
     expect(fake.calls.filter(call => call[0] === 'run')).toHaveLength(1)
   })
 
-  it('starts a stopped computer instead of recreating it, and leaves out the GPU when the host has none', async () => {
+  it('starts a stopped computer instead of recreating it', async () => {
     const fake = fakeDocker('exited')
-    const controller = createContainerController(settings, { docker: fake.docker, gpuDevice: '/nonexistent' })
+    const controller = createContainerController(settings, { docker: fake.docker, exists: () => false })
     await controller.wake()
     expect(fake.calls.some(call => call[0] === 'start')).toBe(true)
     expect(fake.calls.some(call => call[0] === 'run')).toBe(false)
@@ -67,11 +67,33 @@ describe('createContainerController', () => {
 
   it('runs the agent seat and app commands inside the container', async () => {
     const fake = fakeDocker('running')
-    const controller = createContainerController(settings, { docker: fake.docker, gpuDevice: '/nonexistent' })
+    const controller = createContainerController(settings, { docker: fake.docker, exists: () => false })
     await controller.wake()
     await controller.ensureAgentSeat()
     expect(fake.calls.at(-1)).toEqual(['exec', '-u', 'root', 'caboose-owner', '/usr/local/bin/caboose-session', 'start-agent'])
     expect(await controller.apps()).toEqual([])
     expect(fake.calls.at(-1)?.slice(0, 4)).toEqual(['exec', '-u', 'caboose', 'caboose-owner'])
+  })
+})
+
+describe('GPU selection', () => {
+  it('detects the GPU a container can use on each kind of host', () => {
+    expect(detectGpu(path => path === '/dev/dxg')).toBe('wsl')
+    expect(detectGpu(path => path === '/dev/nvidiactl')).toBe('nvidia')
+    expect(detectGpu(path => path === '/dev/dri/renderD128')).toBe('dri')
+    expect(detectGpu(() => false)).toBe('none')
+  })
+
+  it('hands each kind to the container its own way', () => {
+    expect(gpuArgs('nvidia')).toEqual(expect.arrayContaining(['--gpus', 'all', 'CABOOSE_GPU=nvidia']))
+    expect(gpuArgs('dri')).toEqual(expect.arrayContaining(['--device', '/dev/dri']))
+    expect(gpuArgs('none')).toEqual(['-e', 'CABOOSE_GPU=none'])
+  })
+
+  it('uses a configured GPU over detection', async () => {
+    const fake = fakeDocker('missing')
+    const controller = createContainerController({ ...settings, gpu: 'none' }, { docker: fake.docker, exists: () => true })
+    await controller.wake()
+    expect(fake.calls.find(call => call[0] === 'run')).toEqual(expect.arrayContaining(['CABOOSE_GPU=none']))
   })
 })
