@@ -30,7 +30,7 @@ struct ChatComposer: View {
     private var draft: AgentComposerDraft { model.agents.composerDraft(for: task?.id) }
     private var chosen: AgentListing? { model.agents.listing(target).flatMap { $0.isInstalled ? $0 : nil } }
     private var name: String {
-        task.map { model.agents.name(of: $0) } ?? chosen?.name
+        task.map { model.agents.name(of: $0) } ?? model.agents.library.selectedProfile?.name ?? chosen?.name
             ?? model.agents.defaultAgent.flatMap { model.agents.listing($0)?.name } ?? "Your agent"
     }
 
@@ -200,12 +200,25 @@ struct ChatComposer: View {
                     }
                 }
             } else {
-                Picker("Agent", selection: $target) {
-                    Text("Default Agent").tag("")
-                    ForEach(agents.installedAgents) { Text($0.name).tag($0.id) }
+                Section("Teammate") {
+                    ForEach(agents.library.activeProfiles) { profile in
+                        Button(profile.name, systemImage: agents.library.selectedProfileId == profile.id ? "checkmark.circle.fill" : "person.crop.circle") { agents.library.selectedProfileId = profile.id }
+                    }
+                    Button("Without a Teammate") { agents.library.selectedProfileId = nil }
                 }
-                Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
-                Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
+                if let profile = agents.library.selectedProfile {
+                    Section("Teammate Settings") {
+                        Text(agents.listing(profile.agent)?.name ?? profile.agent)
+                        Text(profile.approvals == "ask" ? "Ask before acting" : "Automatic approvals")
+                    }
+                } else {
+                    Picker("Agent", selection: $target) {
+                        Text("Default Agent").tag("")
+                        ForEach(agents.installedAgents) { Text($0.name).tag($0.id) }
+                    }
+                    Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
+                    Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
+                }
             }
             Section {
                 Button(action: connectModel) { Label("Connect a Model…", systemImage: "key") }
@@ -240,13 +253,14 @@ struct ChatComposer: View {
         let agents = model.agents
         let revision = agents.chatRevision
         let agent = chosen?.id
+        let profileId = agents.library.selectedProfileId
         destination.sending = true
         destination.error = nil
         Task {
             defer { destination.sending = false }
             let success: Bool
             if let task { success = await agents.reply(to: task, prompt, attachments: files) }
-            else if let id = await agents.start(prompt, agent: agent, askFirst: askFirst, attachments: files) {
+            else if let id = await agents.start(prompt, agent: agent, askFirst: askFirst, attachments: files, profileId: profileId) {
                 if agents.chatRevision == revision { agents.currentChat = id }
                 success = true
             } else { success = false }

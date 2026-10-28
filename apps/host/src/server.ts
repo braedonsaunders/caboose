@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
 import { parseCraftRequest, runCraft } from './craft-jobs.js'
 import { proxyFiles, type FileService } from './fs-proxy.js'
@@ -34,6 +35,10 @@ import type { PushService } from './push.js'
 import type { HostInfo, MachineResources } from './host-info.js'
 import type { AgentEvent } from './agents.js'
 import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenType } from './screen.js'
+import { agentAutomation } from './agent-automation.js'
+import { type AgentToolJournal, type ToolDispatcher } from './agent-tools-journal.js'
+import { type AgentRoutines, type RoutineOptions, type RoutineTask } from './agent-routines.js'
+import { AgentProfiles, prepareProfileStart } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
@@ -73,7 +78,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService }
+export interface ComputerPieces { settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
 
 
 /**
@@ -123,14 +128,57 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const home = new HomeOwnership()
   const catalog = new AgentCatalog(shared.registry, () => controller.guest(), settings, home)
   const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire(), loadCatalog(shared.guestArchitecture))
-  const agents = new AgentTasks(() => controller.guest(), event => {
+  let toolsError: string | null = null
+  const toolJournalReady: Promise<AgentToolJournal | null> = pieces.openToolJournal && pieces.profiles
+    ? pieces.openToolJournal(agentAutomation(pieces.profiles, () => routinesReady, () => broadcast({ type: 'agent.profiles.changed' })))
+      .catch(error => { toolsError = error instanceof Error ? error.message : String(error); console.error('Cannot open agent tools:', error); return null })
+    : Promise.resolve(null)
+  const agents: AgentTasks = new AgentTasks(() => controller.guest(), event => {
     broadcast(event)
     if (push) void push.event(event as AgentEvent, foregroundClients.size > 0).catch(error => console.error('Push event failed:', error))
     const job = agentJob(event as AgentEvent)
     if (job && activities) void activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
   }, () => computer.acquire(), {
+    ...(pieces.openToolJournal ? { toolJournal: async () => { const journal = await toolJournalReady; if (!journal) throw new AgentConflictError(toolsError ?? 'Agent tools are unavailable'); return journal } } : {}),
     resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(shared.agentIdleMs !== undefined ? { idleMs: shared.agentIdleMs } : {}),
   })
+  let routineError: string | null = null
+  const routineTask = (task: ReturnType<AgentTasks['list']>[number]): RoutineTask => ({
+    status: task.delivery ? 'failed' : task.status === 'running' || task.status === 'paused' ? 'active' : task.status === 'succeeded' ? 'succeeded' : 'failed',
+    ...(task.delivery?.message || task.summary ? { detail: task.delivery?.message ?? task.summary } : {}),
+  })
+  const routinesReady: Promise<AgentRoutines | null> = pieces.openRoutines?.({
+    runtime: {
+      snapshot: async (profileId, prompt) => {
+        if (!pieces.profiles) return null
+        let profile
+        try { profile = pieces.profiles.get(profileId) } catch (error) { if (error instanceof AgentNotFoundError) return null; throw error }
+        if (profile.archived) return null
+        const prepared = prepareProfileStart(pieces.profiles, { profileId, prompt })
+        return { revision: createHash('sha256').update(JSON.stringify(profile)).digest('hex'), input: { request: prepared.input, profile: prepared.profile } }
+      },
+      acquire: async () => {
+        const release = computer.acquire()
+        try { await computer.wake(); await ensureFilesReady(); return release } catch (error) { release(); throw error }
+      },
+      lookup: async taskId => {
+        await agents.restore()
+        const task = agents.list().find(task => task.id === taskId)
+        return task ? routineTask(task) : null
+      },
+      start: async (envelope, taskId) => {
+        // Only the durable scheduler creates this envelope; public routes accept definitions.
+        if (!envelope.request || typeof envelope.request !== 'object' || Array.isArray(envelope.request) || !envelope.profile || typeof envelope.profile !== 'object') throw new AgentInputError('Invalid routine launch envelope')
+        return routineTask(await agents.start(envelope.request as Record<string, unknown>, { id: taskId, profile: envelope.profile as import('./agents.js').AgentProfileSnapshot }))
+      },
+    },
+    onChange: () => { routineError = null; broadcast({ type: 'agent.routines.changed' }) },
+    onError: error => { routineError = error instanceof Error ? error.message : String(error); console.error('Agent routine error:', error) },
+  }).then(routines => { routines.start(); return routines }).catch(error => {
+    routineError = error instanceof Error ? error.message : String(error)
+    console.error('Cannot open agent routines:', error)
+    return null
+  }) ?? Promise.resolve(null)
   const desktopNotifications = new DesktopNotifications(() => controller.guest(), event => {
     broadcast({ type: 'notification', ...event })
     if (push) void push.desktop(event, foregroundClients.size > 0).catch(error => console.error('Desktop push failed:', error))
@@ -203,6 +251,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
       capabilities: { restart: typeof controller.restart === 'function', push: !!push },
       upgrade,
+      routines: { error: routineError },
+      agentTools: { error: toolsError },
       lastError: computer.lastError ?? controller.lastError?.() ?? null,
     }
   }
@@ -238,6 +288,49 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const phoneSockets = new Map<WebSocket, string>()
 
   async function handle(request: IncomingMessage, response: ServerResponse, path: string, principal: Principal): Promise<unknown> {
+    if (path === '/v1/agent/routines' || path.startsWith('/v1/agent/routines/')) {
+      const routines = await routinesReady
+      if (!routines) return json(response, 503, { error: routineError ?? 'Agent routines are unavailable' })
+      if (path === '/v1/agent/routines' && request.method === 'GET') return json(response, 200, { routines: routines.list(), error: routineError })
+      if (path === '/v1/agent/routines' && request.method === 'POST') return json(response, 201, { routine: await routines.create(await readJson(request)) })
+      if (path === '/v1/agent/routines/history' && request.method === 'GET') return json(response, 200, { runs: routines.history() })
+      const match = /^\/v1\/agent\/routines\/([0-9a-f-]{36})(?:\/(run|history))?$/.exec(path)
+      if (match) {
+        const [, routineId, action] = match
+        if (action === 'history' && request.method === 'GET') return json(response, 200, { runs: routines.history(routineId!) })
+        if (action === 'run' && request.method === 'POST') { const run = await routines.runNow(routineId!); return json(response, 202, { run: { ...run, input: {} } }) }
+        if (!action && request.method === 'GET') return json(response, 200, { routine: routines.get(routineId!) })
+        if (!action && request.method === 'PATCH') return json(response, 200, { routine: await routines.update(routineId!, await readJson(request)) })
+        if (!action && request.method === 'DELETE') { await routines.delete(routineId!); return json(response, 200, { deleted: true }) }
+      }
+      return json(response, 404, NOT_FOUND)
+    }
+    if (path === '/v1/agent/profiles' || path.startsWith('/v1/agent/profiles/')) {
+      const profiles = pieces.profiles
+      if (!profiles) return json(response, 503, { error: 'Agent profiles are unavailable' })
+      if (path === '/v1/agent/profiles' && request.method === 'GET') return json(response, 200, { profiles: profiles.list(true) })
+      if (path === '/v1/agent/profiles' && request.method === 'POST') {
+        const profile = await profiles.create(await readJson(request))
+        broadcast({ type: 'agent.profiles.changed' })
+        return json(response, 201, { profile })
+      }
+      const profilePath = /^\/v1\/agent\/profiles\/([0-9a-f-]{36})(?:\/memories(?:\/([0-9a-f-]{36}))?)?$/.exec(path)
+      if (profilePath) {
+        const [, id, memoryId] = profilePath
+        if (path.endsWith(id!) && request.method === 'GET') return json(response, 200, { profile: profiles.get(id!) })
+        let profile
+        if (path.endsWith(id!) && request.method === 'PATCH') profile = await profiles.update(id!, await readJson(request))
+        else if (path.endsWith('/memories') && request.method === 'POST') profile = await profiles.remember(id!, await readJson(request))
+        else if (memoryId && request.method === 'PATCH') profile = await profiles.remember(id!, await readJson(request), memoryId)
+        else if (memoryId && request.method === 'DELETE') profile = await profiles.forget(id!, memoryId)
+        if (profile) {
+          await (await routinesReady)?.profileChanged(profile.id)
+          broadcast({ type: 'agent.profiles.changed' })
+          return json(response, 200, { profile })
+        }
+      }
+      return json(response, 404, { error: 'Profile route not found' })
+    }
     if (request.method === 'GET' && path === '/v1/terminal/sessions') {
       return json(response, 200, { sessions: await computer.run(async () => listTerminalSessions(await ensureTerminalReady())) })
     }
@@ -426,7 +519,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (path === '/v1/agent/tasks' && request.method === 'GET') return json(response, 200, agents.list())
     if (path === '/v1/agent/tasks' && request.method === 'POST') {
       const input = await readJson(request, TASK_BODY_LIMIT)
-      const task = await computer.run(() => agents.start(input))
+      const prepared = prepareProfileStart(pieces.profiles, input)
+      const task = await computer.run(() => agents.start(prepared.input, { profile: prepared.profile }))
       return json(response, 200, { id: task.id })
     }
     const transcript = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/transcript$/.exec(path)
@@ -605,6 +699,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   }
 
   async function shutdown(): Promise<void> {
+    await (await routinesReady)?.close()
+    agents.pause()
+    await agents.drainToolWork()
+    await (await toolJournalReady)?.drain()
     await upgradeWork
     await computer.park(closeSockets)
   }
@@ -614,6 +712,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
    * disk goes. A components upgrade the host started on its own is waited for, not refused.
    */
   async function destroy(): Promise<void> {
+    await (await routinesReady)?.close()
+    agents.pause()
+    await agents.drainToolWork()
+    await (await toolJournalReady)?.drain()
     await upgradeWork?.catch(() => {})
     await computer.retire(async () => {
       closeSockets()

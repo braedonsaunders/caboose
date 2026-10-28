@@ -29,6 +29,7 @@ const VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.ur
 const HOME = process.env.HOME || homedir()
 const AGENTS_DIR = join(HOME, '.local', 'share', 'caboose', 'agents')
 const DESKTOP_MCP = process.env.CABOOSE_DESKTOP_MCP ?? '/opt/caboose/desktop-mcp.mjs'
+const AGENT_TOOLS = new URL('./agent-tools.mjs', import.meta.url).pathname
 const POLL_MS = Number(process.env.CABOOSE_AGENTD_POLL_MS) || 250
 const CANCEL_GRACE_MS = Number(process.env.CABOOSE_AGENTD_CANCEL_GRACE_MS) || 15_000
 const INITIALIZE_TIMEOUT_MS = Number(process.env.CABOOSE_AGENTD_INIT_TIMEOUT_MS) || 120_000
@@ -700,6 +701,12 @@ export class Task {
     const config = JSON.parse(await readFile(join(this.dir, 'task.json'), 'utf8'))
     this.spec = readSpec(config.agent)
     this.cwd = typeof config.cwd === 'string' && isAbsolute(config.cwd) ? config.cwd : this.dir
+    this.agentTools = config.agentTools === true && typeof config.profileId === 'string' && existsSync(AGENT_TOOLS)
+    this.profileInstructions = ''
+    if (config.profileId !== undefined) {
+      if (typeof config.profileId !== 'string' || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(config.profileId)) throw new Error('Invalid profile id')
+      this.profileInstructions = await readBoundedFile(join(this.dir, 'profile-instructions.txt'), 400_000)
+    }
     this.craftServers = Array.isArray(config.craftServers) ? config.craftServers.filter(server =>
       server && typeof server.name === 'string' && /^caboose-[a-z0-9.-]+$/.test(server.name) &&
       typeof server.command === 'string' && /^[a-zA-Z0-9._-]+$/.test(server.command) &&
@@ -818,6 +825,7 @@ export class Task {
     const mcpServers = existsSync(DESKTOP_MCP)
       ? [{ name: 'caboose-desktop', command: process.execPath, args: [DESKTOP_MCP], env: seatEnv() }]
       : []
+    if (this.agentTools) mcpServers.push({ name: 'caboose-agent-tools', command: process.execPath, args: [AGENT_TOOLS, this.dir], env: [] })
     mcpServers.push(...this.craftServers)
     const previous = (await readFile(join(this.dir, 'session'), 'utf8').catch(() => '')).trim()
     const request = (method, params) => Promise.race([agent.connection.agent.request(method, params), agent.died])
@@ -936,7 +944,7 @@ export class Task {
       const lines = (await readFile(join(this.dir, 'transcript.jsonl'), 'utf8').catch(() => '')).split('\n')
       text = recapFrom(lines, message.turn) + text
     }
-    const blocks = [{ type: 'text', text }]
+    const blocks = [...(this.profileInstructions ? [{ type: 'text', text: this.profileInstructions }] : []), { type: 'text', text }]
     for (const file of Array.isArray(message.attachments) ? message.attachments : []) {
       if (typeof file?.path !== 'string' || !isAbsolute(file.path)) continue
       const info = await stat(file.path).catch(() => undefined)
@@ -957,6 +965,7 @@ export class Task {
   /** Runs one prompt turn to its end. Returns false when the runner should stop (signed out). */
   async runTurn(message) {
     this.turn = message.turn
+    if (this.agentTools) await writeFile(join(this.dir, 'tool-turn'), String(message.turn), { mode: 0o600 })
     await this.transcript.write({ type: 'user', turn: message.turn, text: clip(message.text, 32_000),
       ...(Array.isArray(message.attachments) && message.attachments.length ? { attachments: message.attachments.map(file => file?.path).filter(path => typeof path === 'string') } : {}) })
     let cancelled = false
@@ -1019,6 +1028,7 @@ export class Task {
       await this.cancelWaiting()
       this.cancelling = false
       this.turn = null
+      if (this.agentTools) await unlink(join(this.dir, 'tool-turn')).catch(() => {})
     }
   }
 

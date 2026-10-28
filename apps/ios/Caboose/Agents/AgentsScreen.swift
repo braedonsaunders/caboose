@@ -9,6 +9,7 @@ struct AgentsScreen: View {
     @Environment(AppModel.self) private var model
     @State private var connectingModel = false
     @State private var showingChats = false
+    @State private var showingLibrary = false
 
     var body: some View {
         let agents = model.agents
@@ -42,6 +43,9 @@ struct AgentsScreen: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
+                    Button("Teammates and Routines", systemImage: "person.2") { showingLibrary = true }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("Agent Settings", systemImage: "slider.horizontal.3") { model.showAgentSettings = true }
                 }
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
@@ -53,6 +57,7 @@ struct AgentsScreen: View {
         } message: { Text(agents.lastError ?? "") }
         .sheet(isPresented: $connectingModel) { ConnectModelView().environment(model) }
         .sheet(isPresented: $showingChats) { ChatList().environment(model) }
+        .sheet(isPresented: $showingLibrary) { AgentLibraryView().environment(model) }
         .onChange(of: agents.focusedTask, initial: true) { _, id in
             guard let id else { return }
             agents.currentChat = id
@@ -170,21 +175,22 @@ private struct NewChat: View {
 
     var body: some View {
         let agents = model.agents
+        let profile = agents.library.selectedProfile
         let agent = agents.listing(target).flatMap { $0.isInstalled ? $0 : nil } ?? agents.defaultAgent.flatMap { agents.listing($0) }
         ScrollView {
             VStack(spacing: 18) {
-                if agents.defaultAgent == nil || agents.installedAgents.isEmpty {
+                if profile == nil && (agents.defaultAgent == nil || agents.installedAgents.isEmpty) {
                     SetupCard(connectModel: connectModel)
                 }
                 Group {
-                    if let agent { AgentAvatar(name: agent.name, size: 72) } else { CabooseAvatar(size: 72) }
+                    if let profile { AgentAvatar(name: profile.name, size: 72) } else if let agent { AgentAvatar(name: agent.name, size: 72) } else { CabooseAvatar(size: 72) }
                 }
                 .padding(.top, 36)
                 Text("What shall we\nmake happen?")
                     .font(.system(.largeTitle, design: .rounded, weight: .bold))
                     .tracking(-0.7)
                     .multilineTextAlignment(.center)
-                Text(agent.map { "Your files. Your apps. \($0.name), with a whole computer to work with." }
+                Text(profile.map { "\($0.name) is ready. Your instructions, memories, and workspace carry into this conversation." } ?? agent.map { "Your files. Your apps. \($0.name), with a whole computer to work with." }
                      ?? "Your files. Your apps. Connect an agent and give it a whole computer to work with.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)

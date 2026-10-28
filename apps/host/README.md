@@ -20,6 +20,7 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | `src/display.ts` | Display ports, the per-wake token, and the launch environment each display writes. |
 | `src/network.ts` | Each guest's TAP device and /30, NAT and the network fence. |
 | `src/agents.ts`, `src/registry.ts`, `src/agent-catalog.ts` | Agent tasks, the Agent Client Protocol registry, and agent install and sign-in. |
+| `src/agent-routines.ts` | Persistent per-computer routines, same-UUID task recovery and bounded run history; [adapter contract and tests](../../docs/agent-routines.md). |
 | `src/fs-proxy.ts`, `src/files.ts` | `/v1/fs` and `/v1/files`, through the guest's file service. |
 | `src/terminal.ts` | `/v1/terminal`: the terminal relay to the guest's terminal service, its control messages and session routes. |
 | `src/screen.ts` | `/v1/screen/*`, the owner's display through its accessibility tree. |
@@ -469,3 +470,10 @@ drives a stand-in ACP agent.
 `guest/desktop-mcp/check-a11y.sh` covers the accessibility helper behind the screen routes,
 `guest/media-handoff/check.sh` the media handoff guest, `guest/files/check-service.py` the
 file service, and `guest/terminal/check-service.py` the terminal service; see their READMEs.
+
+Agent profiles are private per-computer records in `agent-profiles.json`, with identity,
+provider, instructions, approval default and owner-editable memories. Profile APIs remain
+available while the computer is parked. Tasks select `profileId`; new conversations receive
+its current context snapshot and share `~/AgentWorkspaces/<profile UUID>`. Existing
+conversations retain their snapshot. Archiving a profile prevents new starts and preserves
+its workspace. See the architecture contract for endpoints and limits.

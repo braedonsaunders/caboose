@@ -59,6 +59,10 @@ Conventions used throughout:
 - Everything the guest produces (queue files, state files, command output) is untrusted
   input. The host validates it field by field before it reaches a client.
 
+Profile tasks can use host-scoped memory and routine MCP tools over a bounded task-directory
+mailbox; the host owns the task/profile binding and durable request receipts. The mailbox
+never carries an owner or phone bearer token. See [agent routines](agent-routines.md#agent-tools-and-durability).
+
 ## 2. The computer
 
 ### Guest image
@@ -1117,6 +1121,28 @@ never written to transcripts or logs. Clients edit it with `PUT /v1/agents/:id/e
 runner merges the change (`caboose-agentd set-env`) and keeps the file's other lines. The
 host keeps no copy.
 
+### Persistent agent profiles
+
+Each computer has private host-owned `agent-profiles.json` identity records, available
+while the guest is parked. A profile has a UUID, name, description, instructions, registry
+agent, approval default, archive flag and owner-editable memories with stable UUIDs.
+`GET/POST /v1/agent/profiles` list/create profiles; `GET/PATCH /v1/agent/profiles/:id`
+read/edit them. `POST /v1/agent/profiles/:id/memories` adds a memory;
+`PATCH/DELETE /v1/agent/profiles/:id/memories/:memoryId` edits/removes one. These routes
+use the same computer/tenant authorization as tasks. Writes are serialized and atomically
+persisted before acknowledgment; corrupt state fails closed.
+
+A task request can select `profileId`. The host resolves its provider and approval defaults
+(ask unless the owner chose auto), snapshots instructions and memories, and uses the fixed
+`/home/caboose/AgentWorkspaces/<profile UUID>` working directory. Each conversation still
+has its own task directory and transcript. The guest receives the snapshot in
+`profile-instructions.txt` with `profileId` in `task.json` and `profile-id` for host restore.
+The runner supplies this context on every turn without adding it to the owner's transcript.
+Profile edits apply to new conversations; existing conversations retain their admitted
+snapshot. An archived profile cannot start a conversation; restoring it retains its memories
+and workspace. Raw task requests cannot supply arbitrary instructions or workspace paths.
+Stable task-ID retries compare the profile snapshot as well as the original prompt/files.
+
 ### The runner
 
 `caboose-agentd` (`guest/agentd`, installed at `/opt/caboose/agentd`) is the ACP client.
@@ -1126,7 +1152,7 @@ exchange files in the task directory `/home/caboose/Agents/<task id>/`. The file
 specified in `guest/agentd/README.md`; in short:
 
 - The host writes `task.json` `{ agent: <resolved spec>, cwd, approvals, idleMs,
-  craftServers }`, prompts as `inbox/<turn, 6 digits>.prompt.json`, cancels as
+  craftServers, profileId? }`, prompts as `inbox/<turn, 6 digits>.prompt.json`, cancels as
   `inbox/cancel-<n>.json`, and decisions as `approvals/<requestId>.decision`. The runner
   writes `transcript.jsonl`, `draft.json`, `approvals/<requestId>.json`, `session` and
   `receipts/<turn>.json`; the launch script records `pid` and `exit-code`. The host's
@@ -1158,6 +1184,19 @@ specified in `guest/agentd/README.md`; in short:
   conversation with `session/resume` if the agent advertises it, else `session/load` (the
   replayed history is not written again), else `session/new` with a recap of the earlier
   turns at the start of the prompt; that turn's summary says so.
+
+### Persistent routine scheduler
+
+The host's `AgentRoutines` module stores per-computer routine definitions, recurrence
+cursors and bounded run history in a private durable file. It uses AppKit recurrence for
+IANA timezone schedules. Cursor advancement and a stable task UUID with its exact launch
+snapshot are reserved atomically before waking the computer. The runtime adapter acquires
+the existing computer lease, restores and looks up that UUID, then revalidates the routine
+and profile before idempotent task admission. Paused, deleted, archived or edited records
+cannot admit stale reserved work. One outstanding run per routine is allowed; overlap
+is skipped. Missed runs use explicit skip with delivery grace or coalesce policies, with
+no archive/restore backlog. See [the scheduler contract](agent-routines.md) for the adapter,
+delayed-execution policies, persistence/recovery requirements and focused tests.
 
 ### Tasks
 
@@ -1425,13 +1464,16 @@ order, so no draw waits for the GPU before the next frame is decoded and acknowl
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
 - **Windows.** A Linux window opened from Home or Apps is an app card: full screen, sized
-  to the phone, and a swipe in from either side edge goes to the next or previous open app
-  in the order they opened. Back, the app switcher, Keyboard and Window Options use the
-  system toolbar: on a vertical-bar device they sit on the side and the app uses the full
-  height beside it; elsewhere they occupy a compact horizontal toolbar within the safe
-  area. The window title is in the switcher; Options includes Ask Agent, redraw and close.
-  The switcher and options open system action dialogs outside the toolbar's overflow group.
-  Full Screen hides the controls; its accessible top handle brings them back.
+  to the phone. On a device with a vertical toolbar, the card starts with its controls
+  hidden and fills the screen. A swipe inward from the toolbar edge reveals the native
+  toolbar over the card; a swipe outward on its controls or the Hide window controls button
+  hides it. The toolbar uses the selected wallpaper as its background, with the shell's
+  dusk colours while no photograph is available. The opposite edge switches to the
+  neighbouring app; where there is no vertical toolbar, either edge switches apps.
+  Back, the app switcher, Keyboard and Window Options use the system toolbar. The window
+  title is in the switcher; Options includes Ask Agent, redraw and close. The switcher and
+  options open system action dialogs outside the toolbar's overflow group. Full Screen
+  hides the controls; its accessible top handle brings them back.
   An external display shows the windows floating, resizing and
   stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
   The green title-bar button maximizes above the dock: its title bar meets the desktop's
@@ -1512,8 +1554,7 @@ Pinned and recent apps are kept on the phone per computer.
   and clipped to its measured content viewport; folding, rotation and tab changes report
   that viewport again. Home's Open, Pinned and Recent rows receive the measured column
   width and clip within it; recent file names and paths truncate within the same column.
-  The Desktop toolbar's Full Screen action dialog also offers Hide Desktop Bars, giving the
-  desktop the whole display; a handle at the top brings the bars back. No screen disables
+  The Desktop toolbar’s Full Screen control opens the focused app card. No screen disables
   the vertical bar.
 - **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. Home's
   AirPlay control remembers the AirPlay output the computer's sound last played on (from the

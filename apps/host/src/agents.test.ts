@@ -4,6 +4,7 @@ import {
   readAttachments, transcriptEntry, type AgentEvent, type AgentGuest, type AgentResolver,
 } from './agents.js'
 import type { AgentLaunch } from './registry.js'
+import type { AgentToolJournal } from './agent-tools-journal.js'
 
 const b64 = (text: string | Buffer) => Buffer.from(text).toString('base64')
 const line = (event: object) => JSON.stringify(event)
@@ -133,7 +134,7 @@ function fakeGuest() {
       }
       if (script.includes('ls -1t')) return listing || [...tasks.entries()].flatMap(([id, state]) => state.metadata ? [[id, state.metadata[2], '1790000500', state.exitCode, state.alive ? '1' : '0', state.transcript.length,
         b64(state.metadata[1]!), b64(state.transcript.toString().trim().split('\n').reverse().find(line => /"type":"(turn_end|turn_failed|auth_required)"/.test(line)) ?? ''), state.metadata[4],
-        Math.max(1, ...state.inbox.filter(x => x !== 'cancel').map(x => JSON.parse(x).turn)), '1', '', b64(state.metadata[3]!)].join('\t')] : []).join('\n')
+        Math.max(1, ...state.inbox.filter(x => x !== 'cancel').map(x => JSON.parse(x).turn)), '1', '', b64(state.metadata[3]!), state.files.get(`/home/caboose/Agents/${id}/profile-id`) ?? ''].join('\t')] : []).join('\n')
       if (rest[1]?.startsWith('// caboose confirm journal')) return 'confirmed'
       if (rest[1]?.startsWith('// caboose delivery journal write')) {
         task(idOf(rest[0]!)).files.set('delivery.json', Buffer.from(rest.slice(2).join(''), 'base64').toString('utf8'))
@@ -1120,4 +1121,75 @@ describe('durable admission and recovery', () => {
     expect(JSON.parse(s.fake.task(t.id).inbox.at(-1)!)).toMatchObject({ turn: 3, text: 'next' })
   })
 
+})
+
+
+describe('persistent profile tasks', () => {
+  const profile = { id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', instructions: 'Remember that reports use Toronto time.', workspace: '/home/caboose/AgentWorkspaces/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }
+  it('stages identity outside the owner prompt and restores it with the shared workspace', async () => {
+    const s = setup()
+    const id = '11111111-2222-3333-4444-555555555555'
+    const input = { prompt: 'Write the report', agent: 'codex', profileId: profile.id }
+    try {
+      const task = await s.tasks.start(input, { id, profile })
+      expect(task.profileId).toBe(profile.id)
+      const state = s.fake.task(id)
+      expect(JSON.parse(state.files.get('task.json')!)).toMatchObject({ cwd: profile.workspace, profileId: profile.id })
+      expect(state.files.get(`/home/caboose/Agents/${id}/profile-instructions.txt`)).toBe(profile.instructions)
+      expect(JSON.parse(state.inbox[0]!).text).toBe('Write the report')
+      const restored = new AgentTasks(() => s.fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000 })
+      try {
+        await restored.restore()
+        expect(restored.list().find(t => t.id === id)?.profileId).toBe(profile.id)
+        await expect(restored.start(input, { id, profile })).resolves.toMatchObject({ id, profileId: profile.id })
+        await expect(restored.start(input, { id, profile: { ...profile, instructions: 'Different' } })).rejects.toThrow(AgentConflictError)
+      } finally { restored.pause() }
+    } finally { s.tasks.pause() }
+  })
+  it('binds profile tools before admission and does not enable them without a journal', async () => {
+    const fake = fakeGuest()
+    const bindTask = vi.fn(async () => {})
+    const journal = { bindTask } as unknown as AgentToolJournal
+    const tasks = new AgentTasks(() => fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000, toolJournal: async () => journal })
+    try {
+      fake.beforeLaunch(() => { expect(bindTask).toHaveBeenCalledTimes(1) })
+      const result = await tasks.start({ prompt: 'hello', profileId: profile.id }, { profile })
+      expect(bindTask).toHaveBeenCalledWith(result.id, profile.id)
+      expect(JSON.parse(fake.task(result.id).files.get('task.json')!).agentTools).toBe(true)
+      fake.beforeLaunch(() => {})
+      const ordinary = await tasks.start({ prompt: 'hello' })
+      expect(JSON.parse(fake.task(ordinary.id).files.get('task.json')!).agentTools).toBeUndefined()
+      expect(bindTask).toHaveBeenCalledTimes(1)
+    } finally { tasks.pause() }
+  })
+  it('drains an in-flight mailbox poll after pausing', async () => {
+    const fake = fakeGuest()
+    let release!: () => void
+    const waiting = new Promise<void>(resolve => { release = resolve })
+    let calls = 0
+    const journal = { bindTask: vi.fn(async () => {}) } as unknown as AgentToolJournal
+    const tasks = new AgentTasks(() => fake.guest, () => {}, () => () => {}, {
+      resolver: resolver(), pollMs: 10, toolJournal: async () => { if (++calls > 1) await waiting; return calls === 1 ? journal : null },
+    })
+    try {
+      await tasks.start({ prompt: 'hello', profileId: profile.id }, { profile })
+      await vi.waitFor(() => expect(calls).toBeGreaterThan(1))
+      tasks.pause()
+      let drained = false
+      const done = tasks.drainToolWork().then(() => { drained = true })
+      await Promise.resolve()
+      expect(drained).toBe(false)
+      release()
+      await done
+      expect(drained).toBe(true)
+    } finally { release(); tasks.pause() }
+  })
+  it('rejects unresolved profiles and arbitrary workspace paths before guest writes', async () => {
+    const s = setup()
+    try {
+      await expect(s.tasks.start({ prompt: 'Hi', profileId: profile.id })).rejects.toThrow('Resolve')
+      await expect(s.tasks.start({ prompt: 'Hi' }, { profile: { ...profile, workspace: '/etc' } })).rejects.toThrow('Invalid persistent')
+      expect(s.fake.calls).toHaveLength(0)
+    } finally { s.tasks.pause() }
+  })
 })

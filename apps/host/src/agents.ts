@@ -4,6 +4,8 @@ import type { HomeOwnership } from './home.js'
 import { decodeBase64, sanitizeFileName, uniqueName, writeGuestFile } from './files.js'
 import type { AgentLaunch } from './registry.js'
 import { AGENT_DISPLAY_ENV_PATH } from './display.js'
+import type { AgentToolJournal } from './agent-tools-journal.js'
+import { pollAgentTools } from './agent-tools-mailbox.js'
 
 /**
  * Agent tasks: any Agent Client Protocol (ACP) agent from the registry, run inside the
@@ -33,7 +35,12 @@ export interface PendingApproval {
 
 export interface AgentDraft { turn: number; kind: 'text' | 'thought'; text: string }
 
+export interface AgentProfileSnapshot { id: string; instructions: string; workspace: string }
+export interface AgentStartOptions { id?: string; profile?: AgentProfileSnapshot }
+
 export interface AgentTask {
+  /** Persistent identity; conversations still have their own ids and transcripts. */
+  profileId?: string
   id: string
   /** The ACP registry id of the agent. */
   agent: string
@@ -113,6 +120,8 @@ export interface AgentResolver {
 
 export interface AgentTaskOptions {
   resolver: AgentResolver
+  /** Enables profile tools only after a host-owned binding is persisted. */
+  toolJournal?: () => Promise<AgentToolJournal | null>
   craftServers?: () => Promise<Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }>>
   pollMs?: number
   /** Starts the agent seat's display; defaults to the microVM's systemd unit. */
@@ -370,6 +379,9 @@ export class AgentTasks {
   private timer: ReturnType<typeof setInterval> | undefined
   private polling = false
   private readonly resolver: AgentResolver
+  private readonly toolJournal?: AgentTaskOptions["toolJournal"]
+  private toolPolling = false
+  private toolWork?: Promise<void>
   private readonly craftServers?: AgentTaskOptions["craftServers"]
   private readonly pollMs: number
   private readonly ensureSeat?: () => Promise<void>
@@ -383,6 +395,7 @@ export class AgentTasks {
     options: AgentTaskOptions,
   ) {
     this.resolver = options.resolver
+    this.toolJournal = options.toolJournal
     this.craftServers = options.craftServers
     this.pollMs = options.pollMs ?? 1000
     this.ensureSeat = options.ensureSeat
@@ -406,14 +419,21 @@ export class AgentTasks {
 
   private startChain: Promise<unknown> = Promise.resolve()
 
-  async start(input: Record<string, unknown>, options?: { id?: string }): Promise<AgentTask> {
+  async start(input: Record<string, unknown>, options?: AgentStartOptions): Promise<AgentTask> {
     if (options?.id !== undefined && (typeof options.id !== 'string' || !UUID.test(options.id))) throw new AgentInputError('id must be a canonical UUID')
-    const operation = this.startChain.catch(() => {}).then(() => this.startTask(input, options?.id))
+    const operation = this.startChain.catch(() => {}).then(() => this.startTask(input, options))
     this.startChain = operation
     return operation
   }
 
-  private async startTask(input: Record<string, unknown>, stableId?: string): Promise<AgentTask> {
+  private async startTask(input: Record<string, unknown>, options?: AgentStartOptions): Promise<AgentTask> {
+    const stableId = options?.id
+    const profile = options?.profile
+    if (profile && (!UUID.test(profile.id) || profile.workspace !== `${HOME}/AgentWorkspaces/${profile.id}` ||
+      typeof profile.instructions !== 'string' || profile.instructions.includes('\0') || profile.instructions.length > 100_000)) {
+      throw new AgentInputError('Invalid persistent agent snapshot')
+    }
+    if (input.profileId !== undefined && input.profileId !== profile?.id) throw new AgentInputError('Resolve the agent profile before starting a task')
     const prompt = readPrompt(input.prompt)
     const approvals = input.approvals === 'ask' ? 'ask' : input.approvals === 'auto' || input.approvals === undefined ? 'auto' : undefined
     if (!approvals) throw new AgentInputError('approvals must be "ask" or "auto"')
@@ -421,7 +441,7 @@ export class AgentTasks {
     const files = readAttachments(input.attachments)
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
-    const original = fingerprint(input, files, true)
+    const original = fingerprint(input, files, true, profile)
     const id = stableId ?? randomUUID()
     if (stableId) {
       await this.restoring
@@ -436,6 +456,8 @@ export class AgentTasks {
     const agentId = this.readAgent(input.agent)
     const launch = await this.resolver.launch(agentId)
     const journal: DeliveryJournal = { ...emptyJournal(), original, turns: 1, intent: { id: randomUUID(), turn: 1, replies: [] } }
+    const toolJournal = profile && this.toolJournal ? await this.toolJournal() : null
+    if (profile && toolJournal) await toolJournal.bindTask(id, profile.id)
     const dir = `${HOME}/Agents/${id}`
     const staging = `${HOME}/Agents/.${id}.${randomUUID()}`
     const attachments = files.map(file => `${dir}/attachments/${file.name}`)
@@ -448,7 +470,13 @@ export class AgentTasks {
         await asCaboose(guest, 'mv -- "$1.part" "$1" && sync -f "$1"', [staged])
       }
       const craftServers = input.craftMcp === false ? [] : await this.craftServers?.() ?? []
-      const config = JSON.stringify({ agent: launch, cwd: dir, approvals, idleMs: this.idleMs, craftServers })
+      if (profile) {
+        await asCaboose(guest, 'mkdir -p -- "$1"', [profile.workspace])
+        await writeGuestFile(guest, `${staging}/profile-id`, Buffer.from(profile.id))
+        await writeGuestFile(guest, `${staging}/profile-instructions.txt`, Buffer.from(profile.instructions))
+      }
+      const config = JSON.stringify({ agent: launch, cwd: profile?.workspace ?? dir, approvals, idleMs: this.idleMs, craftServers,
+        ...(profile ? { profileId: profile.id } : {}), ...(toolJournal ? { agentTools: true } : {}) })
       const message = JSON.stringify({ type: 'prompt', turn: 1, deliveryId: journal.intent!.id, text: prompt,
         ...(files.length ? { attachments: files.map((file, index) => ({ path: attachments[index], name: file.name, ...(file.type ? { mimeType: file.type } : {}) })) } : {}) })
       await writeGuestFile(guest, `${staging}/initial-prompt.json`, Buffer.from(message))
@@ -458,7 +486,7 @@ export class AgentTasks {
       throw error
     }
     const task: AgentTask = {
-      id, agent: agentId, agentName: launch.name, prompt, status: 'running', startedAt: new Date().toISOString(), turns: 1, approvals,
+      id, ...(profile ? { profileId: profile.id } : {}), agent: agentId, agentName: launch.name, prompt, status: 'running', startedAt: new Date().toISOString(), turns: 1, approvals,
       ...(attachments.length ? { attachments } : {}),
     }
     this.tracked.set(id, { task, offset: 0, carry: Buffer.alloc(0), turn: 0, resumable: true, pending: [], queue: [], journal })
@@ -865,14 +893,14 @@ export class AgentTasks {
     if (!guest) throw new AgentUnavailableError()
     const listing = await guest.run('/bin/sh', ['-c', RESTORE_SCRIPT, 'sh', `${HOME}/Agents`, onlyId ?? ''], 20_000)
     for (const line of listing.split('\n')) {
-      const [id, agent, started, exitCode, alive, size, prompt, last, mode, turnsField, resumable, attached, name] = line.split('\t')
+      const [id, agent, started, exitCode, alive, size, prompt, last, mode, turnsField, resumable, attached, name, profileId] = line.split('\t')
       if (!id || !TASK_ID.test(id) || this.tracked.has(id) || onlyId && id !== onlyId) continue
       const attachments = decode(attached).split('\n').filter(file => file && file.length <= 255 && !file.includes('/') && !/[\u0000-\u001f]/.test(file) && file !== '..' && file !== '.' && !file.endsWith('.part')).slice(0, MAX_ATTACHMENTS).map(file => `${HOME}/Agents/${id}/attachments/${file}`)
       let turns = Math.min(999999, Math.max(1, Number.parseInt(turnsField ?? '', 10) || 1))
       const agentId = agent && AGENT_ID.test(agent) ? LEGACY_AGENTS[agent] ?? agent : 'unknown'
       const agentName = decode(name).trim().slice(0, 100)
       const task: AgentTask = {
-        id, agent: agentId, ...(agentName ? { agentName } : {}), prompt: decode(prompt).slice(0, MAX_PROMPT), status: 'running',
+        id, ...(profileId && UUID.test(profileId) ? { profileId } : {}), agent: agentId, ...(agentName ? { agentName } : {}), prompt: decode(prompt).slice(0, MAX_PROMPT), status: 'running',
         startedAt: new Date(Number.isFinite(Number(started)) && Number(started) > 0 && Number(started) < 8640000000000 ? Number(started) * 1000 : 0).toISOString(),
         turns, approvals: mode === 'ask' ? 'ask' : 'auto',
         ...(attachments.length ? { attachments } : {}),
@@ -945,6 +973,9 @@ export class AgentTasks {
     this.timer = undefined
   }
 
+  /** After pause, wait for any mailbox guest command and admitted dispatch to settle. */
+  async drainToolWork(): Promise<void> { await this.toolWork }
+
   resume(): void {
     if (this.needsRecovery && !this.recovering) {
       this.needsRecovery = false
@@ -959,8 +990,33 @@ export class AgentTasks {
 
   private ensurePolling(): void {
     if (this.timer) return
-    this.timer = setInterval(() => { void this.poll() }, this.pollMs)
+    this.timer = setInterval(() => {
+      void this.poll()
+      if (!this.toolWork) {
+        const work = this.pollTools()
+        this.toolWork = work
+        void work.finally(() => { if (this.toolWork === work) this.toolWork = undefined })
+      }
+    }, this.pollMs)
     this.timer.unref()
+  }
+
+  private async pollTools(): Promise<void> {
+    if (this.toolPolling || !this.toolJournal || !this.timer) return
+    const guest = this.guest()
+    if (!guest) return
+    this.toolPolling = true
+    try {
+      const journal = await this.toolJournal()
+      if (!journal || !this.timer) return
+      const live = [...this.tracked.values()].flatMap(({ task }) => task.status === 'running' && task.profileId && journal.profileForTask(task.id) === task.profileId
+        ? [{ id: task.id, profileId: task.profileId, turn: task.turns }] : [])
+      await pollAgentTools(guest, journal, live, task => {
+        const current = this.tracked.get(task.id)?.task
+        return Boolean(this.timer && current?.status === 'running' && current.profileId === task.profileId && current.turns === task.turn)
+      })
+    } catch (error) { console.error('Agent tool mailbox failed:', error) }
+    finally { this.toolPolling = false }
   }
 
   /**
@@ -1250,7 +1306,7 @@ const TRANSCRIPT_SCRIPT = [
  * One tab-separated line per task directory (or the requested $2 id): id, agent id, start time, the
  * runner's exit code, whether it is alive, transcript size, base64 prompt, base64 last line
  * that ends a turn, approval mode, turns, whether task.json exists (1 or 0), base64
- * attachment names, base64 agent name.
+ * attachment names, base64 agent name, optional profile UUID.
  */
 const RESTORE_SCRIPT = [
   'cd "$1" 2>/dev/null || exit 0',
@@ -1259,11 +1315,11 @@ const RESTORE_SCRIPT = [
   '  pid=$(cat "$d/pid" 2>/dev/null); alive=0; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && alive=1',
   '  resumable=0; [ -f "$d/task.json" ] && resumable=1',
   `  last=$(tail -c 2097152 "$d/transcript.jsonl" 2>/dev/null | grep -E '"type":"(turn_end|turn_failed|auth_required)"' | tail -n 1 | head -c 131072)`,
-  '  printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$d" "$(head -c 64 "$d/agent" 2>/dev/null)" "$(stat -c %Y "$d/prompt.txt")" \\',
+  '  printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$d" "$(head -c 64 "$d/agent" 2>/dev/null)" "$(stat -c %Y "$d/prompt.txt")" \\',
   '    "$(cat "$d/exit-code" 2>/dev/null)" "$alive" "$(stat -c %s "$d/transcript.jsonl" 2>/dev/null || echo 0)" \\',
   '    "$(head -c 128000 "$d/prompt.txt" | base64 -w0)" "$(printf %s "$last" | base64 -w0)" \\',
   '    "$(head -c 8 "$d/approval-mode" 2>/dev/null || echo auto)" "$(head -c 8 "$d/turns" 2>/dev/null || echo 1)" "$resumable" \\',
-  '    "$(ls -1 "$d/attachments" 2>/dev/null | head -c 4096 | base64 -w0)" "$(head -c 400 "$d/agent-name" 2>/dev/null | base64 -w0)"',
+  '    "$(ls -1 "$d/attachments" 2>/dev/null | head -c 4096 | base64 -w0)" "$(head -c 400 "$d/agent-name" 2>/dev/null | base64 -w0)" "$(head -c 36 "$d/profile-id" 2>/dev/null)"',
   'done',
 ].join('\n')
 
@@ -1280,9 +1336,10 @@ export class AgentNotFoundError extends Error {
 }
 
 /** Fixed field order; compare original request fields and file contents, never mutable launch defaults. */
-function fingerprint(input: Record<string, unknown>, files: ReturnType<typeof readAttachments>, start = false): string {
+function fingerprint(input: Record<string, unknown>, files: ReturnType<typeof readAttachments>, start = false, profile?: AgentProfileSnapshot): string {
   return createHash('sha256').update(JSON.stringify({ prompt: input.prompt,
     ...(start ? { agent: input.agent ?? null, approvals: input.approvals ?? null, craftMcp: input.craftMcp ?? null } : {}),
+    ...(profile ? { profile } : {}),
     attachments: files.map((file, index) => ({ name: (input.attachments as any[])[index].name,
       type: (input.attachments as any[])[index].type ?? null, sha256: createHash('sha256').update(file.data).digest('hex') })) })).digest('hex')
 }

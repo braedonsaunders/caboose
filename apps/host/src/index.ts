@@ -1,3 +1,5 @@
+import { AgentToolJournal } from './agent-tools-journal.js'
+import { AgentRoutines } from './agent-routines.js'
 import { ActivityService, ActivityStore } from './activities.js'
 import { APNsSender, apnsFromEnvironment } from './apns.js'
 import { PushDevices, PushService } from './push.js'
@@ -8,6 +10,7 @@ import { createController, createDeskPool } from './driver.js'
 import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
 import { describeHost, machineResources } from './host-info.js'
 import { AgentRegistry } from './registry.js'
+import { AgentProfiles } from './agent-profiles.js'
 import { ComputerConflictError } from './lifecycle.js'
 import { ownerToken, secretFile } from './owner-token.js'
 import { openIdentityDatabase } from './identity/database.js'
@@ -58,7 +61,8 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const controller = deployment.runtime === 'container'
     ? createContainerController(deployment, { identity, settings: () => settings.get() })
     : createController(deployment, { identity, ...(desks ? { desks } : {}), settings: () => settings.get() })
-  return { settings, controller: withImage(controller, image), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
+  return { settings, profiles, openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)

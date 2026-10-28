@@ -106,6 +106,19 @@ async function pendingApproval(dir) {
 }
 
 describe('a turn', () => {
+  it('offers profile tools only when the host enables them on a profile task', async () => {
+    const t = await task()
+    const config = JSON.parse(await readFile(join(t.dir, 'task.json'), 'utf8'))
+    await writeFile(join(t.dir, 'task.json'), JSON.stringify({ ...config, profileId: '11111111-1111-4111-8111-111111111111', agentTools: true }))
+    await writeFile(join(t.dir, 'profile-instructions.txt'), 'Be helpful.')
+    await t.prompt(1, 'hello')
+    t.start()
+    await t.turnEnd(1)
+    expect((await t.texts(1)).some(text => text.includes('mcp: caboose-desktop,caboose-agent-tools'))).toBe(true)
+    for (let i = 0; i < 50 && await stat(join(t.dir, 'tool-turn')).then(() => true, () => false); i++) await new Promise(resolve => setTimeout(resolve, 20))
+    await expect(stat(join(t.dir, 'tool-turn'))).rejects.toThrow()
+  })
+
   it('offers installed catalog servers to an ACP session', async () => {
     const t = await task({ craftServers: [
       { name: 'caboose-photocraft', command: 'photocraft-cli', args: ['mcp'], env: [] },
@@ -576,4 +589,22 @@ describe('durable turn receipts', () => {
     expect(await readFile(join(t.dir, 'inbox/000001.prompt.json'), 'utf8')).toContain('xxx')
     expect(await t.events()).toEqual([])
   })
+})
+
+
+it('supplies persistent profile instructions on every turn without rewriting the owner transcript', async () => {
+  const t = await task()
+  const config = JSON.parse(await readFile(join(t.dir, 'task.json'), 'utf8'))
+  config.profileId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+  await writeFile(join(t.dir, 'task.json'), JSON.stringify(config))
+  await writeFile(join(t.dir, 'profile-instructions.txt'), 'You are the weekly research teammate.')
+  t.start()
+  await t.prompt(1, 'First report')
+  await t.turnEnd(1)
+  await t.prompt(2, 'Second report')
+  await t.turnEnd(2)
+  const sessionName = (await readdir(t.state)).find(name => name.startsWith('session-'))
+  const session = JSON.parse(await readFile(join(t.state, sessionName), 'utf8'))
+  expect(session.history.map(turn => turn.user)).toEqual(['You are the weekly research teammate.\nFirst report', 'You are the weekly research teammate.\nSecond report'])
+  expect((await t.events()).filter(e => e.type === 'user').map(e => e.text)).toEqual(['First report', 'Second report'])
 })
