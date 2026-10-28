@@ -104,6 +104,9 @@ computer, so run it only when that lifecycle change is appropriate.
 The owner seat enables speaker audio and disables microphone forwarding. The
 guest installs PulseAudio and GStreamer’s MP3 and PulseAudio plugins. With the
 computer running, `sudo bash guest/image/check-audio.sh` checks the service,
-PulseAudio, plugins and Xpra's advertised MP3 encoder; when a phone has requested
+PulseAudio, plugins, shell routing and Xpra's advertised MP3 encoder; when a phone has requested
 audio, it also prints its speaker state and packet count. Hearing audio still
 requires a client connected with speaker playback enabled.
+Login and interactive Bash shells on `:100` discover Xpra's PulseAudio server
+from its X11 root property; an explicitly configured `PULSE_SERVER` is preserved,
+and the separate `:101` agent seat is not redirected to the owner's speaker.

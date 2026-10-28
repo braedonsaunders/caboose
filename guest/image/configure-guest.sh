@@ -76,6 +76,22 @@ cat > /etc/fonts/local.conf <<'FONTS'
 FONTS
 mkdir -p /etc/environment.d
 printf 'QT_QPA_PLATFORMTHEME=gtk3\n' > /etc/environment.d/90-caboose.conf
+# Xpra publishes its private PulseAudio socket on the :100 X root window.
+# Shells started outside Xpra's process tree need the same setting for tools
+# such as xdg-open. Do not redirect the agent seat or override an explicit server.
+cat > /etc/profile.d/caboose-audio.sh <<'AUDIO'
+case ${DISPLAY:-} in
+  :100|:100.*)
+    if [ -z "${PULSE_SERVER:-}" ] && command -v xprop >/dev/null 2>&1; then
+      caboose_pulse_server=$(xprop -root -notype PULSE_SERVER 2>/dev/null | sed -n 's/^PULSE_SERVER = "\(.*\)"$/\1/p')
+      if [ -n "$caboose_pulse_server" ]; then export PULSE_SERVER="$caboose_pulse_server"; fi
+      unset caboose_pulse_server
+    fi
+    ;;
+esac
+AUDIO
+grep -Fqx '[ -r /etc/profile.d/caboose-audio.sh ] && . /etc/profile.d/caboose-audio.sh' /etc/bash.bashrc || \
+  printf '%s\n' '[ -r /etc/profile.d/caboose-audio.sh ] && . /etc/profile.d/caboose-audio.sh' >> /etc/bash.bashrc
 chown -R caboose:caboose /home/caboose
 printf 'caboose\n' > /etc/hostname
 printf 'LABEL=caboose / ext4 defaults,noatime 0 1\ntmpfs /home/caboose/.cache tmpfs rw,nosuid,nodev,noatime,size=512M,uid=1000,gid=1000,mode=0700 0 0\n' > /etc/fstab
