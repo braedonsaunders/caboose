@@ -95,10 +95,14 @@ node apps/host/scripts/check-fs.mjs
 
 The guest-service check runs its Linux inotify and filesystem operations in an ephemeral
 Python container: `docker run --rm -v "$PWD/guest/files:/checks:ro" python:3.13-slim python3 /checks/check-service.py`.
+`guest().ownerEnv` is what a GUI on the owner's display needs (sign-in, opening files and URLs,
+the screen routes): `DISPLAY=:100` under Xpra, or the launch environment Caboose Display
+writes at each wake.
 
 The owner-screen routes (`/v1/screen/*`, § Screen) are in `src/screen.ts`: they run the
 guest's accessibility helper `/opt/caboose/a11y.py` (see `guest/desktop-mcp`) and `xdotool`
-as `caboose` on `:100`. `guest/desktop-mcp/check-a11y.sh` runs that helper in real Xvfb and
+as `caboose` with the owner display's launch environment (Xpra's `:100`, or Xwayland's under
+Caboose Display; X11 windows only there). `guest/desktop-mcp/check-a11y.sh` runs that helper in real Xvfb and
 Xpra sessions under Docker.
 
 The guest scripts behind these routes (task start, the batched poll, replies, approval

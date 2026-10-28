@@ -62,7 +62,11 @@ export type AgentEvent =
 export interface AgentGuest {
   /** Runs a command in the guest as root; resolves stdout, rejects on non-zero exit. */
   run(command: string, args: string[], timeoutMs?: number): Promise<string>
-  /** The owner's display launch environment, if supplied by the runtime. */
+  /**
+   * What a GUI started on the owner's display needs, as `KEY=value` pairs: `DISPLAY=:100`
+   * under Xpra, caboose-display's launch environment under Caboose Display. A guest that
+   * does not say is Xpra's (see ownerEnv in display.ts).
+   */
   ownerEnv?: string[]
 }
 

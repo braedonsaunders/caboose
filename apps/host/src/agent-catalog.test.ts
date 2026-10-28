@@ -142,7 +142,16 @@ describe('AgentCatalog', () => {
     const started = await catalog.signIn('codex-acp', { methodId: 'chat-gpt' })
     expect(started).toEqual({ started: true, method: { id: 'chat-gpt', name: 'ChatGPT', description: 'Use ChatGPT to authenticate', type: 'agent' } })
     expect(fake.calls.filter(call => call.mode === 'probe')).toHaveLength(1)
-    expect(fake.calls.at(-1)).toEqual({ mode: 'sign-in', argument: { agent: expect.objectContaining({ id: 'codex-acp', version: '2.3.0' }), methodId: 'chat-gpt', display: ':100' } })
+    expect(fake.calls.at(-1)).toEqual({ mode: 'sign-in', argument: { agent: expect.objectContaining({ id: 'codex-acp', version: '2.3.0' }), methodId: 'chat-gpt', env: { DISPLAY: ':100' } } })
+  })
+
+  it('starts a sign-in with the launch environment of the display the owner sees', async () => {
+    const fake = fakeGuest()
+    const env = ['WAYLAND_DISPLAY=wayland-caboose-0', 'DISPLAY=:110', 'GDK_BACKEND=wayland,x11', 'QT_QPA_PLATFORM=wayland;xcb']
+    const catalog = new AgentCatalog(registry(), () => ({ ...fake.guest, ownerEnv: env }), settingsStore())
+    await catalog.signIn('claude-acp', { methodId: 'claude-ai-login' })
+    expect(fake.calls.at(-1)).toMatchObject({ mode: 'sign-in', argument: { methodId: 'claude-ai-login',
+      env: { WAYLAND_DISPLAY: 'wayland-caboose-0', DISPLAY: ':110', GDK_BACKEND: 'wayland,x11', QT_QPA_PLATFORM: 'wayland;xcb' } } })
   })
 
   it('accepts only agents a task could run as the default', async () => {

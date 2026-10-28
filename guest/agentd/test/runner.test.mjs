@@ -32,7 +32,7 @@ async function sandbox({ caps = '', auth = false } = {}) {
   await writeFile(join(bin, 'npx'), `#!/bin/sh\nshift 2\nexec "${process.execPath}" "${STAND_IN}" "$@"\n`)
   await writeFile(join(bin, 'npm'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${root}/npm.log"\n`)
   // A terminal emulator that runs its command in the foreground, as -e … would.
-  await writeFile(join(bin, 'x-terminal-emulator'), `#!/bin/sh\nshift\nprintf '%s %s\\n' "$DISPLAY" "$STAND_IN_LOGIN" > "${root}/terminal.log"\necho | "$@"\n`)
+  await writeFile(join(bin, 'x-terminal-emulator'), `#!/bin/sh\nshift\nprintf '%s %s %s\\n' "$DISPLAY" "\${WAYLAND_DISPLAY:-none}" "$STAND_IN_LOGIN" > "${root}/terminal.log"\necho | "$@"\n`)
   for (const name of ['npx', 'npm', 'x-terminal-emulator']) await chmod(join(bin, name), 0o755)
   const env = {
     ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, DISPLAY: ':101',
@@ -333,7 +333,7 @@ describe('sign-in', () => {
 
   it('signs in through the agent, then tasks run', async () => {
     const box = await sandbox({ auth: true })
-    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-login', display: ':100' })
+    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-login', env: { DISPLAY: ':100' } })
     expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-login', status: 'succeeded' })
     expect(await readFile(join(box.state, 'signed-in'), 'utf8')).toBe('agent')
     await expect(run(box, 'sign-in', { agent: AGENT, methodId: 'nope' })).rejects.toThrow()
@@ -342,10 +342,17 @@ describe('sign-in', () => {
 
   it('signs in with a terminal method on the owner display', async () => {
     const box = await sandbox({ auth: true })
-    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-terminal', display: ':100' })
+    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-terminal' })
     expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-terminal', status: 'succeeded' })
     expect(await readFile(join(box.state, 'signed-in'), 'utf8')).toBe('terminal')
-    expect((await readFile(join(box.root, 'terminal.log'), 'utf8')).trim()).toBe(':100 1')
+    expect((await readFile(join(box.root, 'terminal.log'), 'utf8')).trim()).toBe(':100 none 1')
+  })
+
+  it('opens the terminal with the launch environment the host sends, as on Caboose Display', async () => {
+    const box = await sandbox({ auth: true })
+    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-terminal', env: { WAYLAND_DISPLAY: 'wayland-caboose-0', DISPLAY: ':110', 'bad name': 'x' } })
+    expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-terminal', status: 'succeeded' })
+    expect((await readFile(join(box.root, 'terminal.log'), 'utf8')).trim()).toBe(':110 wayland-caboose-0 1')
   })
 })
 

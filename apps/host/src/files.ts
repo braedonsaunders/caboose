@@ -68,7 +68,7 @@ export async function writeGuestFile(guest: AgentGuest, part: string, data: Buff
   }
 }
 
-/** Opens a file or URL with the environment of the owner's display. */
+/** Opens a file or URL on the owner's display (run with its launch environment) with the desktop's default handler, detached. */
 const OPEN_SCRIPT = [
   'export HOME=/home/caboose',
   '[ -d /run/user/1000 ] && export XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus',

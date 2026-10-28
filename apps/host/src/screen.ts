@@ -1,12 +1,13 @@
 import { AgentInputError, AgentUnavailableError, type AgentGuest } from './agents.js'
+import { ownerEnv, x11Display } from './display.js'
 
 /**
  * The owner's display through its accessibility tree, for the iPhone's on-device agent and
  * the web console: list the focused window's controls, act on one, type, press a shortcut.
- * Everything runs as `caboose` on display :100 through /opt/caboose/a11y.py (see
+ * Everything runs as `caboose` with the owner display's launch environment, on its X display
+ * (Xpra's :100, or Xwayland's under Caboose Display), through /opt/caboose/a11y.py (see
  * guest/desktop-mcp) and xdotool. See docs/architecture.md § Screen.
  */
-const DISPLAY = ':100'
 const A11Y = '/opt/caboose/a11y.py'
 const ELEMENT_ID = /^[\x21-\x7e]{1,200}$/
 const ACTIONS = new Set(['press', 'focus', 'set-text'])
@@ -34,9 +35,12 @@ export const ON_DISPLAY = [
   'printf "%s\\n%s" "$code" "$out"',
 ].join('\n')
 
-async function onDisplay(guest: AgentGuest | undefined, args: string[]): Promise<{ code: number; out: string }> {
+/** Runs `args(display)` on the owner's display, `display` being its X display. */
+async function onDisplay(guest: AgentGuest | undefined, args: (display: string) => string[]): Promise<{ code: number; out: string }> {
   if (!guest) throw new AgentUnavailableError()
-  const out = await guest.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/bin/sh', '-c', ON_DISPLAY, 'sh', DISPLAY, ...args], 20_000)
+  const env = ownerEnv(guest)
+  const display = x11Display(env)
+  const out = await guest.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/env', ...env, '/bin/sh', '-c', ON_DISPLAY, 'sh', display, ...args(display)], 20_000)
   const newline = out.indexOf('\n')
   return { code: Number(out.slice(0, newline < 0 ? undefined : newline)), out: newline < 0 ? '' : out.slice(newline + 1) }
 }
@@ -46,7 +50,7 @@ function parse(out: string): any {
 }
 
 export async function screenElements(guest: AgentGuest | undefined): Promise<ScreenElements> {
-  const { code, out } = await onDisplay(guest, ['/usr/bin/python3', A11Y, 'elements', '--display', DISPLAY])
+  const { code, out } = await onDisplay(guest, display => ['/usr/bin/python3', A11Y, 'elements', '--display', display])
   if (code !== 0) throw new Error(`a11y.py elements failed (${code}): ${out.slice(0, 300)}`)
   const value = parse(out)
   return {
@@ -61,7 +65,7 @@ export async function screenAct(guest: AgentGuest | undefined, input: Record<str
   if (typeof element !== 'string' || !ELEMENT_ID.test(element)) throw new AgentInputError('element must be an element id from /v1/screen/elements')
   if (typeof action !== 'string' || !ACTIONS.has(action)) throw new AgentInputError('action must be "press", "focus" or "set-text"')
   if (action === 'set-text' && (typeof text !== 'string' || text.length > MAX_TEXT)) throw new AgentInputError('set-text needs text of at most 10000 characters')
-  const { code, out } = await onDisplay(guest, ['/usr/bin/python3', A11Y, 'act', '--display', DISPLAY, '--element', element, '--action', action,
+  const { code, out } = await onDisplay(guest, display => ['/usr/bin/python3', A11Y, 'act', '--display', display, '--element', element, '--action', action,
     ...(action === 'set-text' ? ['--text', text as string] : [])])
   if (code === 3) throw new ScreenElementGoneError()
   if (code !== 0) throw new Error(`a11y.py act failed (${code}): ${out.slice(0, 300)}`)
@@ -70,7 +74,7 @@ export async function screenAct(guest: AgentGuest | undefined, input: Record<str
 
 export async function screenType(guest: AgentGuest | undefined, input: Record<string, unknown>): Promise<{ ok: true }> {
   if (typeof input.text !== 'string' || !input.text || input.text.length > MAX_TEXT) throw new AgentInputError('text must be 1–10000 characters')
-  const { code, out } = await onDisplay(guest, ['/usr/bin/xdotool', 'type', '--clearmodifiers', '--delay', '4', '--', input.text])
+  const { code, out } = await onDisplay(guest, () => ['/usr/bin/xdotool', 'type', '--clearmodifiers', '--delay', '4', '--', input.text as string])
   if (code !== 0) throw new Error(`xdotool type failed (${code}): ${out.slice(0, 300)}`)
   return { ok: true }
 }
@@ -78,7 +82,7 @@ export async function screenType(guest: AgentGuest | undefined, input: Record<st
 export async function screenKeys(guest: AgentGuest | undefined, input: Record<string, unknown>): Promise<{ ok: true }> {
   const keys = typeof input.keys === 'string' ? input.keys.trim() : ''
   if (!KEYS.test(keys)) throw new AgentInputError('keys must be key combinations such as "ctrl+s" or "ctrl+shift+t", separated by spaces')
-  const { code, out } = await onDisplay(guest, ['/usr/bin/xdotool', 'key', '--clearmodifiers', ...keys.split(' ').map(normalizeKey)])
+  const { code, out } = await onDisplay(guest, () => ['/usr/bin/xdotool', 'key', '--clearmodifiers', ...keys.split(' ').map(normalizeKey)])
   if (code !== 0) throw new Error(`xdotool key failed (${code}): ${out.slice(0, 300)}`)
   return { ok: true }
 }

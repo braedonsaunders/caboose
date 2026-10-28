@@ -118,11 +118,13 @@ turn number. Updates outside a turn (including the history an agent replays on
   says so.
 - **Signed out.** An `auth_required` error (ACP code -32000) from `session/new`, `load`,
   `resume` or `prompt` ends the turn with an `auth_required` event and the runner exits.
-- **Sign-in** (`sign-in` mode, spec `{ agent, methodId, display }`): progress in
+- **Sign-in** (`sign-in` mode, spec `{ agent, methodId, env? }`): progress in
   `~/.local/share/caboose/agents/<id>/sign-in.json` `{ methodId, status: "running" |
   "succeeded" | "failed", message?, startedAt, finishedAt? }`. An `agent` method is ACP
-  `authenticate`, with the agent started on `display` (the owner's `:100`) so the browser it
-  opens is on the owner's screen; it waits up to 30 minutes. A `terminal` method opens
+  `authenticate`, with the agent started with `env`, the owner display's launch environment
+  from the host (`{ DISPLAY: ":100" }` under Xpra, the default; `WAYLAND_DISPLAY`, Xwayland's
+  `DISPLAY` and toolkit hints under Caboose Display), so the browser it opens is on the
+  owner's screen; it waits up to 30 minutes. A `terminal` method opens
   `xfce4-terminal` (else `x-terminal-emulator`) on that display running the agent's own
   program with the method's `args` in place of the registry's, and its `env` over the
   registry's; exit status 0 is success, after which the runner initializes the agent again.
