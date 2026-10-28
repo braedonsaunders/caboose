@@ -138,8 +138,9 @@ pub fn bgrx_to_i420(src: &[u8], stride: usize, width: u32, height: u32, rects: O
 /// cheaper than converting, so only what really changed is converted and encoded.
 pub fn changed_blocks(
     src: &[u8],
+    src_stride: usize,
     shadow: &mut [u8],
-    stride: usize,
+    shadow_stride: usize,
     width: u32,
     height: u32,
     rects: &[Rect],
@@ -165,13 +166,13 @@ pub fn changed_blocks(
                 let (x0, bw) = (mx * MB * 4, (w - mx * MB).min(MB) * 4);
                 let mut differs = false;
                 for y in y0..y0 + bh {
-                    let at = y * stride + x0;
+                    let (s, d) = (y * src_stride + x0, y * shadow_stride + x0);
                     if differs {
-                        shadow[at..at + bw].copy_from_slice(&src[at..at + bw]);
-                    } else if src[at..at + bw] != shadow[at..at + bw] {
+                        shadow[d..d + bw].copy_from_slice(&src[s..s + bw]);
+                    } else if src[s..s + bw] != shadow[d..d + bw] {
                         differs = true;
                         // Rows above matched; copy from here down.
-                        shadow[at..at + bw].copy_from_slice(&src[at..at + bw]);
+                        shadow[d..d + bw].copy_from_slice(&src[s..s + bw]);
                     }
                 }
                 differs
@@ -270,10 +271,22 @@ mod tests {
         // everything.
         src[(20 * w as usize + 40) * 4] = 255;
         src[(40 * w as usize + 63) * 4 + 1] = 7;
-        let changed = changed_blocks(&src, &mut shadow, stride, w, h, &[Rect::new(0, 0, 64, 48)]);
+        let changed = changed_blocks(&src, stride, &mut shadow, stride, w, h, &[Rect::new(0, 0, 64, 48)]);
         assert_eq!(changed, vec![Rect::new(32, 16, 16, 16), Rect::new(48, 32, 16, 16)]);
         assert!(src == shadow, "changed blocks are copied into the shadow");
-        assert!(changed_blocks(&src, &mut shadow, stride, w, h, &[Rect::new(0, 0, 64, 48)]).is_empty());
+        assert!(changed_blocks(&src, stride, &mut shadow, stride, w, h, &[Rect::new(0, 0, 64, 48)]).is_empty());
+    }
+
+    #[test]
+    fn source_and_shadow_strides_may_differ() {
+        let (w, h) = (32u32, 16u32);
+        let src_stride = 200; // a client buffer wider than the picture
+        let mut src = vec![0u8; src_stride * h as usize];
+        let mut shadow = vec![0u8; w as usize * 4 * h as usize];
+        src[3 * src_stride + 20 * 4] = 9;
+        let changed = changed_blocks(&src, src_stride, &mut shadow, w as usize * 4, w, h, &[Rect::new(0, 0, 32, 16)]);
+        assert_eq!(changed, vec![Rect::new(16, 0, 16, 16)]);
+        assert_eq!(shadow[3 * w as usize * 4 + 20 * 4], 9);
     }
 
     #[test]
@@ -283,7 +296,7 @@ mod tests {
         let mut src = vec![0u8; stride * h as usize];
         let mut shadow = src.clone();
         src[0] = 1;
-        assert!(changed_blocks(&src, &mut shadow, stride, w, h, &[Rect::new(32, 0, 16, 16)]).is_empty());
+        assert!(changed_blocks(&src, stride, &mut shadow, stride, w, h, &[Rect::new(32, 0, 16, 16)]).is_empty());
     }
 
     #[test]
@@ -295,7 +308,7 @@ mod tests {
         src[16 * 4] = 1;
         src[32 * 4] = 1;
         assert_eq!(
-            changed_blocks(&src, &mut shadow, stride, w, h, &[Rect::new(0, 0, 64, 16)]),
+            changed_blocks(&src, stride, &mut shadow, stride, w, h, &[Rect::new(0, 0, 64, 16)]),
             vec![Rect::new(16, 0, 32, 16)]
         );
     }

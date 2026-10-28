@@ -19,6 +19,8 @@ OPTIONS:
     --no-xwayland          do not start Xwayland
     --env-file PATH        write WAYLAND_DISPLAY/DISPLAY for launchers here once ready
     --renderer KIND        pixman [default: pixman]
+    --always-compose       compose every window, never copy a shm buffer directly (for
+                           comparisons)
     --encoder KIND         auto | software | nvenc [default: auto]
     --crf N                encoder quality, lower is better [default: 23]
     --preset NAME          x264 preset [default: ultrafast]
@@ -70,6 +72,7 @@ pub struct Config {
     pub x_display: Option<u32>,
     pub env_file: Option<PathBuf>,
     pub renderer: RendererChoice,
+    pub always_compose: bool,
     pub encoder: Choice,
     pub settings: Settings,
     pub display: DisplaySpec,
@@ -86,6 +89,7 @@ impl Default for Config {
             x_display: Some(110),
             env_file: None,
             renderer: RendererChoice::Pixman,
+            always_compose: false,
             encoder: Choice::Auto,
             settings: Settings::default(),
             display: DisplaySpec { width: 1920, height: 1080, refresh_hz: 60.0, scale: 1.0 },
@@ -143,6 +147,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
                 config.display =
                     DisplaySpec::parse(&v).ok_or_else(|| format!("--display: expected WxH@HZxSCALE, got {v}"))?;
             }
+            "--always-compose" => config.always_compose = true,
             "--list-encoders" => config.list_encoders = true,
             "-h" | "--help" => return Ok(Parsed::Help),
             "--" => {

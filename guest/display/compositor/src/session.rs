@@ -307,7 +307,42 @@ impl State {
             let (mut image, image_id) = w.stream.take_image(coded_w, coded_h);
             let mut canvas = w.stream.canvas.take().unwrap();
             let started = Instant::now();
-            let rendered = canvas.render(&mut self.renderer, &root, local.loc, &mut image, image_id);
+            // A window that is one shm buffer is streamed from it: read in place by the
+            // encoder when the picture needs no padding, otherwise copied (damage only).
+            let in_place = coded_w == pic_w as u32 && coded_h == pic_h as u32;
+            let key = if in_place { crate::render::SHM_IN_PLACE } else { image_id };
+            let since = w.stream.direct.filter(|d| d.image_id == key).map(|d| d.commit);
+            let direct =
+                if self.config.always_compose { None } else { crate::render::direct(&root, local, size, since) };
+            let mut shm = None;
+            let rendered = match direct {
+                Some(d) => {
+                    self.stats.direct += 1;
+                    w.stream.direct = Some(crate::render::DirectState { image_id: key, commit: d.commit });
+                    let result = if in_place { Ok(()) } else { crate::render::copy_direct(&d, &mut image) };
+                    match result {
+                        Ok(()) if d.damage.is_empty() => Ok(Rendered::Unchanged),
+                        Ok(()) => {
+                            if in_place {
+                                shm =
+                                    Some(crate::encode::ShmPicture { buffer: d.buffer, x: d.origin.0, y: d.origin.1 });
+                            }
+                            Ok(Rendered::Picture(d.damage))
+                        }
+                        Err(e) => {
+                            w.stream.direct = None;
+                            Err(e)
+                        }
+                    }
+                }
+                None => {
+                    if w.stream.direct.take().is_some() {
+                        // The image was written behind the damage tracker's back.
+                        canvas.invalidate();
+                    }
+                    canvas.render(&mut self.renderer, &root, local.loc, &mut image, image_id)
+                }
+            };
             self.stats.render_us += started.elapsed().as_micros() as u64;
             let w = self.windows.get_mut(id).unwrap();
             w.stream.canvas = Some(canvas);
@@ -347,6 +382,7 @@ impl State {
                         generation,
                         pts_us,
                         image,
+                        shm,
                         keyframe: w.stream.need_keyframe,
                         damage,
                         rect,
