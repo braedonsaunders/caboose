@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs'
+import { statfs } from 'node:fs/promises'
+import { availableParallelism, freemem, totalmem } from 'node:os'
 import { join } from 'node:path'
 import type { Config, GpuKind } from './config.js'
 import { detectGpu } from './container-driver.js'
@@ -79,4 +81,32 @@ function withoutCredentials(value: string): string {
   } catch {
     return value
   }
+}
+
+/** The machine the host runs on, as `GET /v1/health` reports it in `machine`: what its computers share. */
+export interface MachineResources {
+  memoryMb: number
+  /** Memory the kernel reports available now. */
+  availableMemoryMb: number
+  cpus: number
+  /** The volume holding CABOOSE_IMAGE_ROOT (disks and memory snapshots); null when it cannot be read. */
+  disk: { totalBytes: number; freeBytes: number } | null
+}
+
+interface MachineProbe {
+  totalmem(): number
+  freemem(): number
+  cpus(): number
+  statfs(path: string): Promise<{ bsize: number; blocks: number; bavail: number }>
+}
+
+const MIB = 1024 * 1024
+
+export async function machineResources(root: string, probe: MachineProbe = { totalmem, freemem, cpus: availableParallelism, statfs }): Promise<MachineResources> {
+  let disk: MachineResources['disk'] = null
+  try {
+    const volume = await probe.statfs(root)
+    disk = { totalBytes: volume.blocks * volume.bsize, freeBytes: volume.bavail * volume.bsize }
+  } catch {}
+  return { memoryMb: Math.floor(probe.totalmem() / MIB), availableMemoryMb: Math.floor(probe.freemem() / MIB), cpus: probe.cpus(), disk }
 }

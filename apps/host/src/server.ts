@@ -21,7 +21,7 @@ import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
 import { DesktopNotifications } from './desktop-notifications.js'
 import type { PushService } from './push.js'
-import type { HostInfo } from './host-info.js'
+import type { HostInfo, MachineResources } from './host-info.js'
 import type { AgentEvent } from './agents.js'
 import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenType } from './screen.js'
 
@@ -75,6 +75,8 @@ export function createCabooseServer(options: {
   activities?: ActivityService
   /** How this host was started, for `GET /v1/host`. */
   host?: HostInfo
+  /** The machine's memory, CPUs and disk, for `GET /v1/health`. */
+  machine?: () => Promise<MachineResources>
 }) {
   const { controller, token, settings } = options
   const computer = new ComputerLifecycle(controller, settings.get().idleMs)
@@ -242,7 +244,9 @@ export function createCabooseServer(options: {
           await proxyFiles(controller.fileService(), request, response)
         })
       }
-      if (request.method === 'GET' && path === '/v1/health') return json(response, 200, controller.stats())
+      if (request.method === 'GET' && path === '/v1/health') {
+        return json(response, 200, { ...(controller.stats() as object), ...(options.machine ? { machine: await options.machine() } : {}) })
+      }
       if (request.method === 'GET' && path === '/v1/host' && options.host) return json(response, 200, options.host)
       if (path === '/v1/activities' && request.method === 'POST') {
         if (!options.activities) return json(response, 503, { error: 'Live Activities unavailable' })

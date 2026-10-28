@@ -379,7 +379,7 @@ guest answer 409 while it is not running.
 | `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec }]` |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }` |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`. Open an `http(s)` URL (at most 8192 characters, no spaces or control characters) with the default handler on the owner's display |
-| `GET` | `/v1/health` | microVM: `{ host, kvm, desk }` with appkit-desk's stats; container: `{ host, runtime: "container", gpu, container, running }` |
+| `GET` | `/v1/health` | microVM: `{ host, kvm, desk, machine }` with appkit-desk's stats; container: `{ host, runtime: "container", gpu, container, running, machine }`. `machine` is `{ memoryMb, availableMemoryMb, cpus, disk: { totalBytes, freeBytes } \| null }`: the machine the computers share, with `disk` the volume holding `CABOOSE_IMAGE_ROOT` (null when it cannot be read) |
 | `GET` | `/v1/host` | How the host was started (below) |
 
 A WebSocket upgrade answers 401 without the owner token, 404 for another path, 409 unless
@@ -552,7 +552,7 @@ follow the pinned releases' CLIs:
 ### Screen
 
 The owner's display can be read and acted on through its accessibility tree, so a client
-(the phone's on-device model, or the web console) can work with what the owner sees
+(such as the phone's on-device model) can work with what the owner sees
 without pixels:
 
 | Method | Path | Purpose |

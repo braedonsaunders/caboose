@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { gpuLabel, healthFacts, runtimeLabel, upgradeLabel } from './host.js'
+import { gpuLabel, healthFacts, healthProblems, runtimeLabel, sharePercent, upgradeLabel } from './host.js'
 
 describe('host', () => {
   it('names the runtime and GPU', () => {
@@ -21,5 +21,17 @@ describe('host', () => {
     expect(vm.find(fact => fact.label === 'Desk error')?.value).toBe('boom')
     expect(healthFacts({ host: 'caboose-host', runtime: 'container', gpu: 'none', container: 'caboose-owner', running: true }))
       .toEqual([{ label: 'Container', value: 'caboose-owner' }, { label: 'Container state', value: 'Running' }])
+  })
+
+  it('lifts host problems out of health, and shares a machine in whole percent', () => {
+    const desk = { resident: 0, queued: 0, capacity: 1, suspended: 0, lastStartedAt: null, lastSuspendedAt: null, reconnects: 0, lastReconnectAt: null, lastError: null, snapshotCpuFallbacks: 0 }
+    expect(healthProblems({ host: 'caboose-host', kvm: true, desk })).toEqual([])
+    expect(healthProblems({ host: 'caboose-host', kvm: false, desk: { ...desk, lastError: 'boot failed' } })).toEqual([
+      '/dev/kvm is not present, so the host cannot start a microVM.', 'boot failed',
+    ])
+    // A parked container is not running, and that is not a problem.
+    expect(healthProblems({ host: 'caboose-host', runtime: 'container', gpu: 'none', container: 'caboose-owner', running: false })).toEqual([])
+    expect(sharePercent(6144, 32768)).toBe(19)
+    expect(sharePercent(1, 0)).toBe(0)
   })
 })

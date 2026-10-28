@@ -2,17 +2,14 @@ import * as React from 'react'
 import { AppShell, Button, ConfirmRoot, PromptRoot, Toaster, type LinkRender } from '@braedonsaunders/appkit-ui'
 import { LogOut } from 'lucide-react'
 import { CabooseClient, readSessionToken, writeSessionToken } from './api.js'
-import { NAVIGATION_GROUPS, navigate, usePathname } from './navigation.js'
+import { NAVIGATION_GROUPS, navigate, sidebarPath, useRoute } from './navigation.js'
 import { useComputer } from './useComputer.js'
+import { useHost } from './useHost.js'
 import { Wordmark } from './brand/Logo.js'
 import { SignIn } from './pages/SignIn.js'
 import { Overview } from './pages/Overview.js'
-import { Settings } from './pages/Settings.js'
-import { Agents } from './pages/Agents.js'
-import { Apps } from './pages/Apps.js'
-import { Files } from './pages/Files.js'
-import { Devices } from './pages/Devices.js'
-import { System } from './pages/System.js'
+import { Computer } from './pages/Computer.js'
+import { Host } from './pages/Host.js'
 
 /** Every navigation entry routes client-side, so the shell never reloads the page. */
 const linkRender: LinkRender = ({ href, children, className, title, ariaCurrent, role }) => (
@@ -54,17 +51,20 @@ export function App() {
 }
 
 function Console({ token, onSignOut }: { token: string; onSignOut: () => void }) {
-  const pathname = usePathname()
+  const route = useRoute()
   const client = React.useMemo(() => new CabooseClient(() => token), [token])
   const computer = useComputer(client, onSignOut)
+  const host = useHost(client, onSignOut)
   const name = computer.status?.settings.name ?? 'Caboose'
 
-  React.useEffect(() => { document.title = `${name} — Caboose` }, [name])
+  React.useEffect(() => {
+    document.title = route.page === 'computer' ? `${name} — Caboose` : route.page === 'host' ? 'Host — Caboose' : 'Caboose'
+  }, [name, route.page])
 
   return (
     <AppShell
       groups={NAVIGATION_GROUPS}
-      pathname={pathname}
+      pathname={sidebarPath(route)}
       navigationMode="sidebar"
       linkRender={linkRender}
       brand={
@@ -78,13 +78,11 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
         </Button>
       }
     >
-      {pathname === '/settings' ? <Settings client={client} computer={computer} /> : null}
-      {pathname === '/agents' ? <Agents client={client} computer={computer} onUnauthorized={onSignOut} /> : null}
-      {pathname === '/apps' ? <Apps client={client} computer={computer} onUnauthorized={onSignOut} /> : null}
-      {pathname === '/files' ? <Files client={client} computer={computer} onUnauthorized={onSignOut} /> : null}
-      {pathname === '/devices' ? <Devices client={client} computer={computer} onUnauthorized={onSignOut} /> : null}
-      {pathname === '/system' ? <System client={client} computer={computer} onUnauthorized={onSignOut} /> : null}
-      {pathname === '/' ? <Overview client={client} computer={computer} token={token} /> : null}
+      {route.page === 'overview' ? <Overview computer={computer} host={host} /> : null}
+      {route.page === 'computer'
+        ? <Computer client={client} computer={computer} host={host} tab={route.tab} token={token} onUnauthorized={onSignOut} />
+        : null}
+      {route.page === 'host' ? <Host host={host} /> : null}
     </AppShell>
   )
 }
