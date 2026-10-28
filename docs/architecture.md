@@ -237,7 +237,7 @@ microVM itself the GPU through VFIO passthrough, keeping VM isolation and durabl
 TypeScript on Node 22, built on AppKit packages. It owns no display logic: the
 Xpra byte stream is relayed, not parsed.
 
-HTTP API (all JSON, all behind `Authorization: Bearer <device token>`):
+HTTP API (JSON except streamed file contents, all behind `Authorization: Bearer <device token>`):
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -256,11 +256,19 @@ HTTP API (all JSON, all behind `Authorization: Bearer <device token>`):
 | `GET` | `/v1/apps` | launchable apps from the guest's `.desktop` files: `{ id, name, icon (PNG data URL), categories, exec }` |
 | `POST` | `/v1/apps/:id/launch` | start an app on display `:100` |
 | `POST` | `/v1/session/park` | park now (snapshot with memory); otherwise parked on idle |
-| `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `notification`, `agent.*`, `media.*` |
+| `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `notification`, `agent.*`, `media.*`, `fs.changed` |
 | `GET` | `/v1/computer` | management status and persisted computer settings; does not wake or lease the computer |
 | `PATCH` | `/v1/computer/settings` | update any of `name`, `memoryMb`, `vcpus`, `idleMs`, `defaultAgent`; returns management status |
 | `POST` | `/v1/computer/restart` | requires `{ "confirm": true }`; cold restart, preserving the disk and discarding memory; returns management status |
-| `POST` | `/v1/files` | `{ name, data (base64), open? }` → `{ path }`: save a file into the computer's `~/Downloads` (see Agents › Files) |
+| `POST` | `/v1/files` | `{ name, data (base64), open? }` → `{ path }`: save in `~/Downloads` (legacy clients; see Files) |
+| `GET` | `/v1/fs/list?path=…` | list a home-relative directory |
+| `GET` | `/v1/fs/stat?path=…` | stat a home-relative item |
+| `GET`, `PUT` | `/v1/fs/content?path=…` | streamed download (including Range) and upload |
+| `POST` | `/v1/fs/mkdir?path=…` | create a directory |
+| `POST` | `/v1/fs/move?path=…` | move or rename with `{ destination }` |
+| `DELETE` | `/v1/fs/item?path=…` | move an item to the guest's Trash |
+| `GET` | `/v1/fs/changes?anchor=…` | query the inotify journal and its sync anchor |
+| `POST` | `/v1/fs/open` | `{ path }` → open a home-relative item on the owner display |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`: open an `http(s)` URL in the default browser on `:100` |
 
 Management status has this shape (resources are MiB and idle time is milliseconds):
@@ -700,15 +708,57 @@ Firefox are started with their accessibility trees enabled so web content is inc
 
 ### Files
 
-`POST /v1/files` saves `{ name, data }` (at most 50 MB decoded) into
-`/home/caboose/Downloads/`, owned by `caboose`. The name is sanitised as for attachments
-and made unique (`report (2).pdf`); the response is the absolute path. `open: true` then
-opens it with the desktop's default application on the owner's display `:100`
-(`xdg-open`, else `gio open`). `POST /v1/open` opens an `http`/`https` URL the same way;
-other schemes, control characters and spaces are rejected with 400. Both answer 409 while
-the computer is not running. The guest command channel carries arguments, not stdin, so
-file contents travel base64-encoded in chunks of at most 96 KiB per argument and 768 KiB
-per command and are decoded in the guest; no driver needs more than `run(command, args)`.
+The private `guest/files` service listens on guest TCP port 14700, runs as `caboose`, and
+reads the same per-wake token file as the displays on every request. The microVM host reaches
+it over the fenced TAP; the container publishes it on host loopback only. Both guest images
+install it. The host relays bytes without buffering an entire file and holds a lifecycle
+lease from wake until the response completes. Existing computers need this service installed
+in the guest; changing a golden image alone does not upgrade a pre-existing computer.
+
+The `/v1/fs` routes above require the owner bearer token. `path` and `destination` are
+relative to `/home/caboose`; the empty path denotes the root. Traversal, absolute paths,
+NULs, symlinks and special files are rejected, and directory components are opened without
+following symlinks. Names beginning `.caboose-upload-` are reserved for temporary uploads.
+Lists return `{ items: [{ name, kind, size, mtime, etag, contentType, identity }] }`; `kind`
+is `file` or `directory`, `mtime` is Unix milliseconds, and the opaque quoted `etag` changes
+on replacement or modification. `identity` identifies a Linux inode and helps the Files
+provider reconcile a rename after an expired anchor; hard links can share it.
+
+A GET of `content` streams bytes, accepts a single `Range: bytes=…` including suffix ranges,
+and answers 206 with `Content-Range` or 416 for an unsatisfiable range. PUT streams a file
+with a known length or chunked transfer encoding to a temporary file, then atomically places
+it. Use `If-None-Match: *` for create and `If-Match: <etag>` for replacement; a version
+mismatch returns 412 and replacement without a precondition returns 428. The version check
+is immediately before placement, but Linux applications do not participate in the service's
+lock, so it cannot make that check atomic with a concurrent direct filesystem write. `mkdir`
+returns 201; move accepts an optional `If-Match` and refuses an existing destination (409);
+delete also accepts `If-Match` and uses the freedesktop home Trash. A move to Trash across
+filesystems can fail instead of permanently deleting the item.
+
+`changes` returns `{ anchor, changed, reset, events: [{ path, removed, cookie }] }`.
+Anchors are opaque and scoped to one guest-service instance. A missing, expired, overflowed,
+or previous-instance anchor has `reset: true` and requires a complete re-enumeration; the
+journal is bounded. Rename events carry the inotify cookie to associate the old and new path.
+When a control socket is connected the host polls the journal and broadcasts
+`{ type: "fs.changed", anchor }`; a client also checks its anchor on enumerator wake.
+
+The replicated iOS File Provider registers a domain named for the paired computer, enumerates
+its home, downloads on demand, and uploads coordinated edits with version checks. It tracks
+stable provider IDs in its extension storage across moves, signals the working set when the
+app receives `fs.changed`, and re-enumerates after an expired anchor. It requests file bytes
+on demand; the system can generate previews for materialized files. Separate server-side
+thumbnail generation is not implemented. Files access wakes a parked computer; an offline
+host is reported to Files as unreachable. Device behavior requires the real-host and device
+checks in the component READMEs.
+Document-type associations and an app-level open-in-place workflow are a later lane; the
+provider supports coordinated writes back to the computer now.
+
+`POST /v1/files` remains available for existing clients: it accepts `{ name, data, open? }`
+with base64 data, picks a unique name in `~/Downloads`, and uses the bulk service. Its JSON
+body still has to be held in memory, so new clients should use streamed `PUT /v1/fs/content`.
+The Share extension uploads from a temporary file and optionally opens it on the computer.
+`POST /v1/open` opens an `http(s)` URL on the owner's display; other schemes, control
+characters and spaces are rejected. It answers 409 while the computer is not running.
 
 ## Media handoff
 

@@ -62,6 +62,8 @@ export type AgentEvent =
 export interface AgentGuest {
   /** Runs a command in the guest as root; resolves stdout, rejects on non-zero exit. */
   run(command: string, args: string[], timeoutMs?: number): Promise<string>
+  /** The owner's display launch environment, if supplied by the runtime. */
+  ownerEnv?: string[]
 }
 
 /** Which agent a task runs, and how. Implemented by AgentCatalog over the ACP registry. */

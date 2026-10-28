@@ -1,0 +1,12 @@
+[Unit]
+Description=Caboose private file service
+
+[Service]
+User=caboose
+Group=caboose
+Environment=HOME=/home/caboose
+ExecStart=/usr/bin/python3 /opt/caboose/files/caboose-files.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -58,11 +58,29 @@ every site (contract: `docs/architecture.md` § Media handoff).
 Caboose appears in the iOS share sheet. A web page can be opened in the computer's browser;
 photos, files and text can be saved in `~/Downloads` (and opened there); any of them can be
 handed to an agent with a request (photos are scaled to 2048 px, at most 4 files and 10 MB).
-The app and the extension share the host address and token through the Keychain access group
+The share extension stages files on disk and streams them to the computer; the size limit
+for agent attachments still applies. The app and the extensions share the host address and token through the Keychain access group
 `<team>.com.braedonsaunders.caboose.shared`; an install that paired before this moves its
 pairing there on first launch, so it does not need pairing again. On a device, check: share a
 Safari page and pick Open on Computer; share a photo and pick Save and Open; share a photo
 with "describe this" to an agent and see the task appear on Home.
+
+## Files app
+
+The paired computer appears as a Files location named after the computer. Files can enumerate
+its home, download on demand, create folders, upload edits, rename, move and delete items.
+The replicated provider uses version checks for coordinated writes and polls the guest's sync
+anchor when its enumerator wakes; the app signals it on live `fs.changed` events. The system
+can generate previews for downloaded items; there is no separate server thumbnail service.
+A parked computer wakes for file access. An unreachable host is reported as offline.
+
+On a signed device paired to a guest with `guest/files` installed, open the location in Files,
+create a folder, save a document from another app, open and edit it in place, and verify the
+edit on Linux. Rename and move it from each side, verify changes appear after reconnecting,
+then delete it in Files and check the guest Trash. Park the computer and open a file to verify
+wake; disconnect the network and verify Files reports the host unavailable without discarding
+an offline edit. Verify a conflicting Linux edit is not overwritten. A simulator build alone
+does not verify the File Provider daemon or device entitlements.
 
 ## Drop into Linux
 
@@ -84,8 +102,8 @@ a drag source available. Device checks require a real computer and iOS device.
 dialog sends a PDF to the phone's print dialog. Share and print files are limited to
 10 MiB. Requests wait in the guest while the phone is disconnected, expire after 24 hours,
 and are delivered at most once. Every action asks first; no background URL opens. The
-`PhoneFileDownloading` protocol currently uses the bounded guest-command download and can
-switch to the streamed `/v1/fs` client when that lane lands.
+`PhoneFileDownloading` protocol currently uses the bounded guest-command download; the
+streamed `/v1/fs` API is available for a later handoff-client upgrade.
 
 For a real-device check, connect to the computer, open a terminal, run
 `caboose-open 'mailto:person@example.com'`, and confirm only after verifying the URL.

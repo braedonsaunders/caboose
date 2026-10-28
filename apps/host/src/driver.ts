@@ -75,13 +75,14 @@ export function createController(config: Config, dependencies: { backend?: DeskB
   const controller: Controller = {
     displayUrl: `ws://${GUEST_ADDRESS}:${owner.port}/`,
     agentDisplayUrl: `ws://${GUEST_ADDRESS}:14501/`,
+    fileService: () => ({ url: `http://${GUEST_ADDRESS}:14700`, token: displayToken }),
     async ensureAgentSeat() {
       // Same per-wake token file and user as the owner's display; started only when wanted.
       await startDisplay('caboose-xpra-agent.service', 14501)
     },
     guest() {
       if (!desk) return undefined
-      return { run: (cmd: string, args: string[], timeoutMs?: number) => command(cmd, args, timeoutMs) }
+      return { run: (cmd: string, args: string[], timeoutMs?: number) => command(cmd, args, timeoutMs), ownerEnv: launchEnv }
     },
     stats: () => ({ host: 'caboose-host', kvm: existsSync('/dev/kvm'), desk: host.stats() }),
     activeResources: () => desk || existsSync(snapshotPath) ? resources : null,
@@ -112,6 +113,7 @@ export function createController(config: Config, dependencies: { backend?: DeskB
         displayToken = randomBytes(32).toString('hex')
         // A password file is read by Xpra on connection; never put a newline in it.
         await command('/bin/sh', ['-c', `install -d -m 0755 /run/caboose; printf %s "$1" > /run/caboose/xpra-token; chown caboose:caboose /run/caboose/xpra-token; chmod 0600 /run/caboose/xpra-token`, 'sh', displayToken])
+        await command('/bin/sh', ['-c', '[ -f /opt/caboose/files/caboose-files.py ] || exit 0; systemctl start caboose-files.service || exit 1; for i in $(seq 1 60); do systemctl is-active --quiet caboose-files.service && ss -lnt | grep -Eq ":14700[[:space:]]" && exit 0; sleep 1; done; echo file-service-not-ready >&2; exit 1'], 70_000).catch(error => console.error('File service unavailable:', error))
         if (config.display === 'caboose-display') await startCabooseDisplay()
         else await startDisplay('caboose-xpra.service', 14500)
         clearHeartbeat()
