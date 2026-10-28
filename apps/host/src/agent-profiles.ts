@@ -187,3 +187,20 @@ export function profileContext(profile: AgentProfile): string {
     profile.memories.length ? `Saved memories (editable by the owner):\n${profile.memories.map(memory => `- ${memory.title}: ${memory.content}`).join('\n')}` : '',
   ].filter(Boolean).join('\n\n')
 }
+
+/** Resolve owner-controlled identity separately from the untrusted task request. */
+export function prepareProfileStart(profiles: AgentProfiles | undefined, input: Record<string, unknown>): {
+  input: Record<string, unknown>
+  profile?: { id: string; instructions: string; workspace: string }
+} {
+  if (input.instructions !== undefined || input.workspace !== undefined) throw new AgentInputError('Edit instructions and workspace through an agent profile')
+  if (input.profileId === undefined) return { input }
+  if (typeof input.profileId !== 'string' || !UUID.test(input.profileId)) throw new AgentInputError('Invalid agent profile id')
+  if (!profiles) throw new AgentConflictError('Agent profiles are unavailable')
+  const profile = profiles.get(input.profileId)
+  if (profile.archived) throw new AgentConflictError('Restore this agent profile before starting a task')
+  return {
+    input: { ...input, agent: input.agent ?? profile.agent, approvals: input.approvals ?? profile.approvals },
+    profile: { id: profile.id, instructions: profileContext(profile), workspace: profileWorkspace(profile.id) },
+  }
+}

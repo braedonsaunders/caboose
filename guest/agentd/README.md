@@ -47,7 +47,7 @@ note on stderr. Values are never written to the transcript or logs.
 
 The host writes these, each whole and renamed into place:
 
-- `task.json` — `{ agent: <spec>, cwd, approvals: "ask" | "auto", idleMs, craftServers }`.
+- `task.json` — `{ agent: <spec>, cwd, approvals: "ask" | "auto", idleMs, craftServers, profileId? }`.
 - `inbox/<turn, 6 digits>.prompt.json` — `{ type: "prompt", turn, deliveryId?, text, attachments?: [{ path, name, mimeType? }] }`.
 - `delivery.json` — version 1 journal: `{ version: 1, turns?, original?, startAttachments?, queue, operations, intent?, cancelled? }`.
   `turns` is the monotonic allocated turn count, independent of the launch script's `turns`
@@ -119,7 +119,7 @@ a turn (including the history an agent replays on `session/load`) are not writte
   symlinks included, and refused outside the home directory), `terminal: false`, and
   `auth.terminal: true`. The `authMethods` it returns are kept in
   `~/.local/share/caboose/agents/<id>/auth.json`.
-- **Session.** `session/new` with the task directory as `cwd` and the MCP server
+- **Session.** `session/new` with the configured task or persistent-profile workspace as `cwd` and the MCP server
   `caboose-desktop` (`node /opt/caboose/desktop-mcp.mjs`, see `guest/desktop-mcp`), so every
   agent can drive GUI apps on the agent seat. Its environment carries the seat's launch
   environment from the runner's: `CABOOSE_AGENT_DISPLAY` (the runner's `DISPLAY`),
@@ -201,3 +201,9 @@ container through caboose-host's own guest scripts.
 The guest components installer also installs the runner on existing computers. Matching
 pinned runtime dependencies are reused; both image builders retain their image install.
 An already running task keeps its loaded script until its runner exits.
+
+When `task.json` names a profile UUID, `profile-instructions.txt` contains its admitted
+identity/instruction/memory snapshot (at most 400 KB). The runner supplies this as a separate
+text block on every turn; user transcript entries retain only the actual owner prompt.
+Missing or oversized profile context fails the runner instead of silently dropping identity.
+The host keeps `profile-id` alongside the config to restore the task's identity after restart.

@@ -577,3 +577,21 @@ describe('durable turn receipts', () => {
     expect(await t.events()).toEqual([])
   })
 })
+
+
+it('supplies persistent profile instructions on every turn without rewriting the owner transcript', async () => {
+  const t = await task()
+  const config = JSON.parse(await readFile(join(t.dir, 'task.json'), 'utf8'))
+  config.profileId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+  await writeFile(join(t.dir, 'task.json'), JSON.stringify(config))
+  await writeFile(join(t.dir, 'profile-instructions.txt'), 'You are the weekly research teammate.')
+  t.start()
+  await t.prompt(1, 'First report')
+  await t.turnEnd(1)
+  await t.prompt(2, 'Second report')
+  await t.turnEnd(2)
+  const sessionName = (await readdir(t.state)).find(name => name.startsWith('session-'))
+  const session = JSON.parse(await readFile(join(t.state, sessionName), 'utf8'))
+  expect(session.history.map(turn => turn.user)).toEqual(['You are the weekly research teammate.\nFirst report', 'You are the weekly research teammate.\nSecond report'])
+  expect((await t.events()).filter(e => e.type === 'user').map(e => e.text)).toEqual(['First report', 'Second report'])
+})

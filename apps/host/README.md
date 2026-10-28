@@ -457,3 +457,10 @@ drives a stand-in ACP agent.
 `guest/desktop-mcp/check-a11y.sh` covers the accessibility helper behind the screen routes,
 `guest/media-handoff/check.sh` the media handoff guest, `guest/files/check-service.py` the
 file service, and `guest/terminal/check-service.py` the terminal service; see their READMEs.
+
+Agent profiles are private per-computer records in `agent-profiles.json`, with identity,
+provider, instructions, approval default and owner-editable memories. Profile APIs remain
+available while the computer is parked. Tasks select `profileId`; new conversations receive
+its current context snapshot and share `~/AgentWorkspaces/<profile UUID>`. Existing
+conversations retain their snapshot. Archiving a profile prevents new starts and preserves
+its workspace. See the architecture contract for endpoints and limits.

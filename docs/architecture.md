@@ -1084,6 +1084,28 @@ never written to transcripts or logs. Clients edit it with `PUT /v1/agents/:id/e
 runner merges the change (`caboose-agentd set-env`) and keeps the file's other lines. The
 host keeps no copy.
 
+### Persistent agent profiles
+
+Each computer has private host-owned `agent-profiles.json` identity records, available
+while the guest is parked. A profile has a UUID, name, description, instructions, registry
+agent, approval default, archive flag and owner-editable memories with stable UUIDs.
+`GET/POST /v1/agent/profiles` list/create profiles; `GET/PATCH /v1/agent/profiles/:id`
+read/edit them. `POST /v1/agent/profiles/:id/memories` adds a memory;
+`PATCH/DELETE /v1/agent/profiles/:id/memories/:memoryId` edits/removes one. These routes
+use the same computer/tenant authorization as tasks. Writes are serialized and atomically
+persisted before acknowledgment; corrupt state fails closed.
+
+A task request can select `profileId`. The host resolves its provider and approval defaults
+(ask unless the owner chose auto), snapshots instructions and memories, and uses the fixed
+`/home/caboose/AgentWorkspaces/<profile UUID>` working directory. Each conversation still
+has its own task directory and transcript. The guest receives the snapshot in
+`profile-instructions.txt` with `profileId` in `task.json` and `profile-id` for host restore.
+The runner supplies this context on every turn without adding it to the owner's transcript.
+Profile edits apply to new conversations; existing conversations retain their admitted
+snapshot. An archived profile cannot start a conversation; restoring it retains its memories
+and workspace. Raw task requests cannot supply arbitrary instructions or workspace paths.
+Stable task-ID retries compare the profile snapshot as well as the original prompt/files.
+
 ### The runner
 
 `caboose-agentd` (`guest/agentd`, installed at `/opt/caboose/agentd`) is the ACP client.
@@ -1093,7 +1115,7 @@ exchange files in the task directory `/home/caboose/Agents/<task id>/`. The file
 specified in `guest/agentd/README.md`; in short:
 
 - The host writes `task.json` `{ agent: <resolved spec>, cwd, approvals, idleMs,
-  craftServers }`, prompts as `inbox/<turn, 6 digits>.prompt.json`, cancels as
+  craftServers, profileId? }`, prompts as `inbox/<turn, 6 digits>.prompt.json`, cancels as
   `inbox/cancel-<n>.json`, and decisions as `approvals/<requestId>.decision`. The runner
   writes `transcript.jsonl`, `draft.json`, `approvals/<requestId>.json`, `session` and
   `receipts/<turn>.json`; the launch script records `pid` and `exit-code`. The host's

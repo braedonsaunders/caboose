@@ -34,7 +34,7 @@ import type { PushService } from './push.js'
 import type { HostInfo, MachineResources } from './host-info.js'
 import type { AgentEvent } from './agents.js'
 import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenType } from './screen.js'
-import { AgentProfiles } from './agent-profiles.js'
+import { AgentProfiles, prepareProfileStart } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
@@ -452,7 +452,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (path === '/v1/agent/tasks' && request.method === 'GET') return json(response, 200, agents.list())
     if (path === '/v1/agent/tasks' && request.method === 'POST') {
       const input = await readJson(request, TASK_BODY_LIMIT)
-      const task = await computer.run(() => agents.start(input))
+      const prepared = prepareProfileStart(pieces.profiles, input)
+      const task = await computer.run(() => agents.start(prepared.input, { profile: prepared.profile }))
       return json(response, 200, { id: task.id })
     }
     const transcript = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/transcript$/.exec(path)

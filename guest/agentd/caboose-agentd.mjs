@@ -700,6 +700,11 @@ export class Task {
     const config = JSON.parse(await readFile(join(this.dir, 'task.json'), 'utf8'))
     this.spec = readSpec(config.agent)
     this.cwd = typeof config.cwd === 'string' && isAbsolute(config.cwd) ? config.cwd : this.dir
+    this.profileInstructions = ''
+    if (config.profileId !== undefined) {
+      if (typeof config.profileId !== 'string' || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(config.profileId)) throw new Error('Invalid profile id')
+      this.profileInstructions = await readBoundedFile(join(this.dir, 'profile-instructions.txt'), 400_000)
+    }
     this.craftServers = Array.isArray(config.craftServers) ? config.craftServers.filter(server =>
       server && typeof server.name === 'string' && /^caboose-[a-z0-9.-]+$/.test(server.name) &&
       typeof server.command === 'string' && /^[a-zA-Z0-9._-]+$/.test(server.command) &&
@@ -936,7 +941,7 @@ export class Task {
       const lines = (await readFile(join(this.dir, 'transcript.jsonl'), 'utf8').catch(() => '')).split('\n')
       text = recapFrom(lines, message.turn) + text
     }
-    const blocks = [{ type: 'text', text }]
+    const blocks = [...(this.profileInstructions ? [{ type: 'text', text: this.profileInstructions }] : []), { type: 'text', text }]
     for (const file of Array.isArray(message.attachments) ? message.attachments : []) {
       if (typeof file?.path !== 'string' || !isAbsolute(file.path)) continue
       const info = await stat(file.path).catch(() => undefined)

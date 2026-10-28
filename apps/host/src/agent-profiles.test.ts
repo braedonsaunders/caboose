@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { AgentProfiles, profileContext, profileWorkspace } from './agent-profiles.js'
+import { AgentProfiles, prepareProfileStart, profileContext, profileWorkspace } from './agent-profiles.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -72,4 +72,17 @@ it('does not acknowledge failed persistence and recovers for the next write', as
   expect(profiles.list()).toEqual([])
   const profile = await profiles.create({ name: 'Saved', agent: 'codex-acp' })
   expect(profiles.get(profile.id).name).toBe('Saved')
+})
+
+
+it('resolves profile identity and safe defaults, rejecting archived and arbitrary overrides', async () => {
+  const { profiles } = await setup()
+  const profile = await profiles.create({ name: 'Planner', agent: 'codex-acp', instructions: 'Use primary sources' })
+  const prepared = prepareProfileStart(profiles, { profileId: profile.id, prompt: 'Plan' })
+  expect(prepared.input).toMatchObject({ agent: 'codex-acp', approvals: 'ask' })
+  expect(prepared.profile).toEqual({ id: profile.id, workspace: profileWorkspace(profile.id), instructions: profileContext(profile) })
+  expect(() => prepareProfileStart(profiles, { instructions: 'Override' })).toThrow()
+  expect(() => prepareProfileStart(profiles, { workspace: '/etc' })).toThrow()
+  await profiles.update(profile.id, { archived: true })
+  expect(() => prepareProfileStart(profiles, { profileId: profile.id })).toThrow('Restore')
 })
