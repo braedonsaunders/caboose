@@ -36,6 +36,9 @@ final class AppModel {
     let airPlay = AirPlayCenter()
     /// A window on the agent seat being watched or taken over full screen.
     var presentedAgentWindowID: Int?
+    private(set) var filesRegistrationError: String?
+    private(set) var filesRegistering = false
+    private var filesRegistrationRevision = 0
     private(set) var credentials: Credentials?
     /// The owner's display.
     private(set) var session: (any DisplaySession)?
@@ -96,7 +99,7 @@ final class AppModel {
         shortcuts = Self.loadShortcuts(for: saved)
         agents.onComputer = { [weak self] status in
             self?.computerStatus = status
-            if let credentials = self?.credentials { FileDomains.register(credentials, name: status.settings.name) }
+            self?.registerFiles(name: status.settings.name)
         }
         agents.onEvent = { [weak self] type, event in
             guard let self else { return }
@@ -107,6 +110,7 @@ final class AppModel {
             if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
             if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials); self.documents.requestSync(model: self) }
         }
+        registerFiles()
         catalog.onChange = { [weak self] in await self?.refreshApps() }
         media.attach(host: { [weak self] in self?.host })
         phone.attach(host: { [weak self] in self?.host })
@@ -168,6 +172,8 @@ final class AppModel {
             recentFiles = []
         }
         self.credentials = credentials
+        filesRegistrationError = nil
+        registerFiles(name: "Caboose")
         activeHostURL = nil
         Task { await wake() }
     }
@@ -190,11 +196,32 @@ final class AppModel {
         selectedTab = .home
         deviceDesktopActive = false
         deviceViewport = DeviceViewport()
+        filesRegistrationRevision += 1
+        filesRegistering = false
+        filesRegistrationError = nil
         if let credentials { FileDomains.remove(credentials) }
         Credentials.clear()
         credentials = nil
         activeHostURL = nil
         phase = .needsSetup
+    }
+
+    /// Advertise the paired computer without depending on its host or display being online.
+    func registerFiles(name: String? = nil) {
+        guard let credentials else { return }
+        filesRegistrationRevision += 1
+        let revision = filesRegistrationRevision
+        filesRegistering = true
+        let displayName = name ?? computerStatus?.settings.name ?? computer?.name ?? "Caboose"
+        FileDomains.register(credentials, name: displayName) { [weak self] error in
+            guard let self, self.filesRegistrationRevision == revision,
+                  self.credentials?.fileDomainIdentifier == credentials.fileDomainIdentifier else { return }
+            self.filesRegistering = false
+            self.filesRegistrationError = error.map {
+                let detail = $0 as NSError
+                return "\(detail.localizedDescription) (\(detail.domain) \(detail.code))"
+            }
+        }
     }
 
     // MARK: Lifecycle
@@ -215,10 +242,7 @@ final class AppModel {
             // an old computer's control channel in either case.
             guard sceneActive, self.host?.token == host.token, self.host?.baseURL == host.baseURL else { return }
             computer = wake.computer
-            if let credentials {
-                FileDomains.register(credentials, name: wake.computer.name)
-                FileDomains.signal(credentials)
-            }
+            registerFiles(name: wake.computer.name)
             if !quiet { phase = .connecting }
             startSession(host: host, display: wake.display)
             agents.detach()
@@ -239,6 +263,7 @@ final class AppModel {
 
     func sceneBecameActive() {
         sceneActive = true
+        registerFiles()
         phone.setActive(true)
         documents.requestSync(model: self)
         showSharedDocumentIfAvailable()
