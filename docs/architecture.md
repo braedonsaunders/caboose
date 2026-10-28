@@ -123,6 +123,41 @@ forking:
 - The golden-image builder and guest agent move from Bunkhouse into AppKit so
   Bunkhouse and Caboose build their machines the same way.
 
+## Agents
+
+Agents are the coding and computer-use CLIs already installed in the computer — Claude
+Code and Codex — signed in once with the owner's own accounts from Caboose's terminal.
+The host holds no model keys. An agent works on its **own seat**, so it never moves the
+owner's pointer or types into the owner's windows.
+
+- **Agent seat.** `caboose-xpra-agent.service` runs a second Xpra seamless display `:101`
+  (WebSocket `0.0.0.0:14501`, same token file and username as `:100`). GUI apps an agent
+  starts appear there. The app shows them in an Agent space and can take any of them
+  over; the owner can also watch the seat live.
+- **Desktop tools.** `caboose-desktop-mcp` (stdio MCP server, in the image) gives an agent
+  `screenshot`, `click`, `type`, `key`, `scroll`, `launch`, `list_windows` and `focus` on
+  `:101`, so a CLI agent can drive GUI apps as well as the shell. Claude Code and Codex
+  are configured to load it.
+- **Tasks.** The host runs a task as a keep-alive desk job, as user `caboose`, in
+  `/home/caboose/Agents/<task-id>/` (or a chosen directory), with `DISPLAY=:101`:
+  `claude -p <prompt> --output-format stream-json` or `codex exec --json <prompt>`.
+  Output is parsed into events; the raw transcript is kept in the task directory.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/agent/tasks` | `{ prompt, agent: "claude" \| "codex", cwd? }` → `{ id }` |
+| `GET` | `/v1/agent/tasks` | recent tasks: `{ id, agent, prompt, status, startedAt, finishedAt, summary }` |
+| `POST` | `/v1/agent/tasks/:id/cancel` | stop a running task |
+| `GET` | `/v1/display?seat=agent` | **WebSocket.** Relay to the agent seat's Xpra on `:101` |
+
+Control-socket events: `agent.task.started { id, agent, prompt }`,
+`agent.task.output { id, kind: "text" | "tool" | "error", text }`,
+`agent.task.finished { id, status: "succeeded" | "failed" | "cancelled", summary }`.
+A task that finds its CLI signed out fails with `status: "failed"` and a summary telling
+the owner to sign in from Terminal. Tasks keep running while the phone is locked: the
+computer is a server, and the host holds a lease while any task runs, so the computer is
+not parked under a working agent.
+
 ## Iteration 1: done means
 
 Open Caboose on the iPhone, sign in with the owner token and host URL, watch it

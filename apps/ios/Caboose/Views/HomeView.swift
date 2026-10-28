@@ -9,6 +9,7 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 header
+                AgentSection()
                 if !model.appWindows.isEmpty { openWindows }
                 appsGrid
             }
@@ -17,7 +18,17 @@ struct HomeView: View {
             .padding(.bottom, 40)
         }
         .scrollIndicators(.hidden)
-        .refreshable { await model.refreshApps() }
+        .refreshable { await model.refreshApps(); await model.agents.refresh() }
+        .safeAreaInset(edge: .bottom) {
+            if model.agents.available {
+                AskBar().padding(.horizontal, 16).padding(.bottom, 6)
+            }
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { model.presentedAgentWindowID != nil },
+            set: { if !$0 { model.presentedAgentWindowID = nil } })) {
+            AgentWindowScreen().environment(model)
+        }
     }
 
     private var header: some View {

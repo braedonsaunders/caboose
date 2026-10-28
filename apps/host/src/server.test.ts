@@ -14,7 +14,7 @@ it('authenticates routes and relays binary websocket messages while holding a le
   upstream.on('connection', socket => socket.on('message', (data, binary) => socket.send(data, { binary })))
   const wake = vi.fn(async () => ({ state: 'running', display: { path: '/v1/display', token: 'display', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }))
   const park = vi.fn(async () => {})
-  const controller: Controller = { wake, park, stats: () => ({ ok: true }), apps: async () => [], launch: async () => {}, displayUrl: `ws://127.0.0.1:${(upstream.address() as AddressInfo).port}` }
+  const controller: Controller = { wake, park, stats: () => ({ ok: true }), apps: async () => [], launch: async () => {}, displayUrl: `ws://127.0.0.1:${(upstream.address() as AddressInfo).port}`, agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined }
   const app = createCabooseServer({ token: 'owner', idleMs: 50, controller })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')

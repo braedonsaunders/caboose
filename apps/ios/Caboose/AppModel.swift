@@ -18,6 +18,9 @@ final class AppModel {
     }
 
     private(set) var phase: Phase
+    let agents = AgentCenter()
+    /// A window on the agent seat being watched or taken over full screen.
+    var presentedAgentWindowID: Int?
     private(set) var credentials: Credentials?
     private(set) var session: XpraSession?
     private(set) var computer: HostClient.Session.Computer?
@@ -97,6 +100,9 @@ final class AppModel {
             computer = wake.computer
             if !quiet { phase = .connecting }
             startSession(host: host, display: wake.display)
+            agents.detach()
+            agents.attach(host: host)
+            agents.openSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await refreshApps() }
         } catch {
             phase = .failed(error.localizedDescription)
@@ -120,6 +126,7 @@ final class AppModel {
         }
         session?.disconnect()
         session = nil
+        agents.detach()
         knownWindowIDs.removeAll()
         if case .ready = phase { phase = .waking }
     }
@@ -221,6 +228,16 @@ final class AppModel {
             self.session = nil
             await self.wake(quiet: true)
         }
+    }
+
+    func presentAgentWindow(_ id: Int) {
+        presentedAgentWindowID = id
+    }
+
+    private func seatCapabilities() -> ClientCapabilities {
+        let bounds = UIScreen.main.bounds
+        let side = max(bounds.width, bounds.height) * pixelsPerPoint
+        return ClientCapabilities(desktopWidth: Int(side), desktopHeight: Int(side), dpi: Int(96 * pixelsPerPoint))
     }
 
     // MARK: External display

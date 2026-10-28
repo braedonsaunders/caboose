@@ -33,6 +33,15 @@ export function createController(config: Config, dependencies: { backend?: DeskB
   }
   return {
     displayUrl: `ws://${GUEST_ADDRESS}:14500/`,
+    agentDisplayUrl: `ws://${GUEST_ADDRESS}:14501/`,
+    async ensureAgentSeat() {
+      // Same per-wake token file and user as the owner's display; started only when wanted.
+      await command('/bin/sh', ['-c', 'systemctl start caboose-xpra-agent.service && systemctl is-active --quiet caboose-xpra-agent.service'])
+    },
+    guest() {
+      if (!desk) return undefined
+      return { run: (cmd: string, args: string[], timeoutMs?: number) => command(cmd, args, timeoutMs) }
+    },
     stats: () => ({ host: 'caboose-host', kvm: existsSync('/dev/kvm'), desk: host.stats() }),
     async wake(): Promise<Session> {
       await Promise.all([
