@@ -1,0 +1,50 @@
+<!doctype html>
+<!-- What a page playing a passthrough video shows: the driver's placeholder marker
+     (guest/vaapi marker.h) instead of decoded pixels, for ?tag=T, its sequence number
+     advancing at ?fps=N, at ?x,?y,?w,?h in the page. Dark modules are Y 16 and bright
+     ones Y 56 limited range, which reach the screen as RGB 0 and 47. -->
+<meta charset="utf-8">
+<title>marker</title>
+<style>html, body { margin: 0; background: #f4f4f4; overflow: hidden; } canvas { position: absolute; }</style>
+<canvas id="c"></canvas>
+<script>
+  const q = new URLSearchParams(location.search);
+  const tag = +q.get('tag') || 0, fps = +q.get('fps') || 30;
+  const W = +q.get('w') || 640, H = +q.get('h') || 360;
+  const c = document.getElementById('c');
+  c.width = W; c.height = H;
+  c.style.left = (+q.get('x') || 100) + 'px'; c.style.top = (+q.get('y') || 80) + 'px';
+  const g = c.getContext('2d');
+  function crc7(d) {
+    let crc = 0;
+    for (let i = 17; i >= 0; i--) {
+      const bit = (d >> i) & 1, top = (crc >> 6) & 1;
+      crc = (crc << 1) & 0x7f;
+      if (bit ^ top) crc ^= 0x09;
+    }
+    return crc;
+  }
+  function payload(col, row, seq) {
+    const d = (col & 7) | ((row & 7) << 3) | ((tag & 63) << 6) | ((seq & 63) << 12);
+    return d | (crc7(d) << 18);
+  }
+  function bright(i, j, seq) {
+    const x = i % 7, y = j % 7, p = payload(Math.floor(i / 7), Math.floor(j / 7), seq);
+    if (x == 0 || y == 0 || x == 6 || y == 6) return ((x + y) & 1) == 0;
+    return ((p >> ((y - 1) * 5 + (x - 1))) & 1) == 1;
+  }
+  let seq = 0;
+  function paint() {
+    for (let j = 0; j < 56; j++) {
+      for (let i = 0; i < 56; i++) {
+        g.fillStyle = bright(i, j, seq) ? 'rgb(47,47,47)' : 'rgb(0,0,0)';
+        const x0 = Math.floor(i * W / 56), y0 = Math.floor(j * H / 56);
+        g.fillRect(x0, y0, Math.floor((i + 1) * W / 56) - x0, Math.floor((j + 1) * H / 56) - y0);
+      }
+    }
+    document.title = `marker ${tag} ${seq}`;
+    seq = (seq + 1) & 63;
+  }
+  paint();
+  setInterval(paint, 1000 / fps);
+</script>

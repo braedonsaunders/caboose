@@ -260,10 +260,19 @@ measurements and the scripted checks.
   screen; libx264, libx265 and NVENC (from system memory, the WSL2
   path) behind one `Encoder` trait; pacing on vsync with acknowledgement-based flow
   control; pointer, multitouch, keys and text-input-v3 input; reconnect and replacement;
-  the container and microVM integration (installed, not the default).
+  video layer 1, codec passthrough ([codec-passthrough.md](codec-passthrough.md)): the
+  driver's socket, streams bound to windows by their marker, `video.*` out with
+  `video.present` at the moment the application shows each frame; the container and
+  microVM integration, with the driver (installed, not the default).
 - **Next:** a GPU renderer that composes into dmabufs, and the zero-copy encoders on it
-  (dmabuf → NVENC through CUDA external memory, dmabuf → VA-API); lossless tiles; clipboard,
-  cursor images, Pencil and audio; the `video.*` layers.
+  (dmabuf → NVENC through CUDA external memory, dmabuf → VA-API), which also enables the
+  exact passthrough binding; video layers 2 (YUV subsurfaces) and 3 (detected motion);
+  lossless tiles; clipboard, cursor images, Pencil and audio.
+- **Passthrough reach:** Chromium and Firefox decode through VA only with a working GPU
+  process, which needs a DRM render node; on WSL2 and hosts without a GPU their video stays
+  in the window picture (layers 2 and 3 are for that). Players that decode on the CPU
+  through VA (mpv, GStreamer, FFmpeg) pass through anywhere the driver runs. VA carries no
+  HDR metadata, and AV1 is presented one picture late (docs in guest/vaapi).
 - **Not measurable here yet:** milestone 2's success criterion needs a Linux host with an
   encode-capable GPU. The development machine's GPU (Radeon HD 7450) has VA-API decode
   only, and the RTX 4080 machine runs WSL2, which has no DRM render node.

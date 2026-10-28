@@ -47,6 +47,8 @@ pub struct Window {
     /// The configure the client asked for that the app has not yet matched.
     pub fullscreen: bool,
     pub maximized: bool,
+    /// The owning process and its ancestors, once looked up (for video binding).
+    pub lineage: Option<Vec<u32>>,
 }
 
 /// The xdg window geometry of a surface: where the window is within the surface

@@ -105,11 +105,14 @@ frame's rectangle, through scaling (to about a quarter of the coded size, or up)
 `object-fit: cover` crops and partial cover. `seq` mod 64 names the exact picture the app is
 showing. The driver rewrites only the modules that change between pictures.
 
-`guest/vaapi/src/marker.c` holds the painter and the reference detector, which
-caboose-display links: `cb_mark_detect()` takes an 8-bit luma plane and stride and returns,
-per frame found, the stream tag, `seq`, the frame's rectangle on screen and the visible
-clip. Its unit tests cover scaled, stretched, cropped, full-range, dithered and mirrored
-frames over busy backgrounds.
+`guest/vaapi/src/marker.c` holds the painter and the reference detector:
+`cb_mark_detect()` takes an 8-bit luma plane and stride and returns, per frame found, the
+stream tag, `seq`, the frame's rectangle on screen and the visible clip. Its unit tests
+cover scaled, stretched, cropped, full-range, dithered and mirrored frames over busy
+backgrounds. caboose-display carries a port of it (`guest/display/compositor/src/video/marker.rs`),
+run at half resolution and refined at full resolution around each hit; its scripted
+`passthrough` check runs `cbva-detect` on the same decoded window picture and requires the
+two to agree.
 
 ## Binding and presentation
 
@@ -119,6 +122,9 @@ caboose-display binds a stream to a window in one of two ways:
    is that surface: the overlay path of mpv `--vo=dmabuf-wayland`, GStreamer's
    `waylandsink`, and Firefox and Chromium when they delegate video to a subsurface. The
    rectangle is the subsurface; the frame shown is the last `FRAME` for that surface.
+   *Not used yet:* caboose-display's pixman renderer offers only linear RGB dmabuf formats,
+   so applications never present an NV12 decode surface to it, and every stream is bound by
+   its pixels until a GPU renderer lands.
 2. **Pixels.** Everything composited by the app itself (Chromium, Firefox, mpv `--vo=gpu`,
    X11 players through Xwayland): the compositor runs the detector over the damaged parts
    of window buffers. The rectangle and clip come from the tags; the H.264 1080p padding
@@ -141,9 +147,11 @@ The switch happens:
 - **When the app reads pixels back** through VA: `vaGetImage`, or mapping a `vaDeriveImage`
   image of a surface that holds a marker (FFmpeg's `hwdownload`, mpv `--hwdec=vaapi-copy`,
   thumbnailers). Reason 1.
-- **When the compositor sends `DECODE`:** the client cannot decode the codec or profile, or
-  the compositor sees marker modules it cannot bind (the app transformed the video: WebGL,
-  CSS filters, canvas effects), or the client reports decode errors. Reason 2.
+- **When the compositor sends `DECODE`:** the client cannot decode the codec or profile, no
+  marker tag is free (64 live streams), or the client keeps reporting decode errors (three
+  `video.keyframe` requests within 10 s). Reason 2. Recognising marker modules the
+  compositor cannot bind (the app transformed the video: WebGL, CSS filters, canvas
+  effects) is not implemented yet; such a video shows its marker in the window picture.
 
 A bitstream the driver cannot rebuild (H.264 `pic_order_cnt_type` 1, slice groups, 4:2:2
 and 4:4:4, and the per-codec cases in [guest/vaapi](../guest/vaapi/README.md)) cannot be

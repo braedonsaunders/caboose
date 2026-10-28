@@ -50,8 +50,8 @@ libavcodec and libavutil.
 `driverdir`, `/usr/lib/x86_64-linux-gnu/dri` on Debian; `DESTDIR` is honoured), or point
 `LIBVA_DRIVERS_PATH` at the build directory. caboose-display sets
 `LIBVA_DRIVER_NAME=caboose` (and `GST_VA_ALL_DRIVERS=1`, for GStreamer) in the sessions it
-runs; the guest images install the driver
-together with caboose-display, which is not in them yet. Without a listening
+runs (only when the driver is installed and its socket is listening); both guest images
+build and install the driver together with caboose-display. Without a listening
 compositor the driver does not initialise, and players decode in software as they would
 without a hardware decoder.
 

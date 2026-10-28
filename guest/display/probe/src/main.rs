@@ -27,6 +27,7 @@ OPTIONS:
     --token-file PATH      read the token from a file
     --display WxH@HZxS     a display to announce (repeatable) [default: 1920x1080@60x1]
     --decoders LIST        comma-separated codecs [default: hevc,h264]
+    --video-decoders LIST  codecs to accept as video.* streams [default: none]
     --duration SECS        how long to run [default: 10]
     --windows N            fail unless at least N windows appear
     --min-fps F            fail unless the busiest window reaches F fps
@@ -48,6 +49,7 @@ struct Args {
     token: String,
     displays: Vec<proto::Display>,
     decoders: Vec<Codec>,
+    video_decoders: Option<Vec<Codec>>,
     duration: Duration,
     windows: Option<usize>,
     min_fps: Option<f64>,
@@ -82,6 +84,7 @@ fn parse_args() -> Result<Args, String> {
         token: String::new(),
         displays: Vec::new(),
         decoders: vec![Codec::Hevc, Codec::H264],
+        video_decoders: None,
         duration: Duration::from_secs(10),
         windows: None,
         min_fps: None,
@@ -109,6 +112,14 @@ fn parse_args() -> Result<Args, String> {
                 let v = value()?;
                 let id = a.displays.len() as u32 + 1;
                 a.displays.push(parse_display(id, &v).ok_or_else(|| format!("bad --display {v}"))?);
+            }
+            "--video-decoders" => {
+                a.video_decoders = Some(
+                    value()?
+                        .split(',')
+                        .map(|c| Codec::parse(c.trim()).ok_or(format!("unknown codec {c}")))
+                        .collect::<Result<_, _>>()?,
+                );
             }
             "--decoders" => {
                 a.decoders = value()?
@@ -187,6 +198,25 @@ struct WindowStats {
     size: (u32, u32),
     /// The first frame received was a keyframe.
     first_keyframe: bool,
+}
+
+/// One `video.*` stream as received.
+struct VideoStats {
+    window: u64,
+    rect: proto::Rect,
+    clip: Option<proto::Rect>,
+    codec: Codec,
+    frames: u64,
+    keyframes: u64,
+    decoded: u64,
+    decode_errors: u64,
+    presents: u64,
+    /// Presents that named a frame this client had not received.
+    unknown_presents: u64,
+    last_present: Option<u64>,
+    seqs: std::collections::HashSet<u64>,
+    decoder: Option<ff::decoder::Video>,
+    destroyed: bool,
 }
 
 struct Decoder {
@@ -336,7 +366,7 @@ fn run(args: Args) -> Result<bool, String> {
             token: args.token.clone(),
             decoders: args.decoders.clone(),
             displays: args.displays.clone(),
-            video_decoders: None,
+            video_decoders: args.video_decoders.clone(),
         }),
     )?;
 
@@ -354,6 +384,7 @@ fn run(args: Args) -> Result<bool, String> {
     let vsync_interval = Duration::from_secs_f64(1.0 / args.displays[0].refresh_hz.max(1.0));
     let mut next_vsync = Instant::now();
     let mut text_input_events = 0u32;
+    let mut videos: BTreeMap<u64, VideoStats> = BTreeMap::new();
     let mut ping_sent: Option<u64> = None;
     let mut rtt_us: Option<u64> = None;
     let mut bye: Option<proto::ByeReason> = None;
@@ -532,6 +563,66 @@ fn run(args: Args) -> Result<bool, String> {
                     }
                 }
                 Message::TextInput(_) => text_input_events += 1,
+                Message::VideoCreate(c) => {
+                    videos.insert(
+                        c.id,
+                        VideoStats {
+                            window: c.window,
+                            rect: c.rect,
+                            clip: c.clip,
+                            codec: c.codec,
+                            frames: 0,
+                            keyframes: 0,
+                            decoded: 0,
+                            decode_errors: 0,
+                            presents: 0,
+                            unknown_presents: 0,
+                            last_present: None,
+                            seqs: Default::default(),
+                            decoder: open_decoder(c.codec).ok(),
+                            destroyed: false,
+                        },
+                    );
+                }
+                Message::VideoUpdate(u) => {
+                    if let Some(v) = videos.get_mut(&u.id) {
+                        if let Some(r) = u.rect {
+                            v.rect = r;
+                        }
+                        if u.clip.is_some() {
+                            v.clip = u.clip;
+                        }
+                    }
+                }
+                Message::VideoDestroy { id } => {
+                    if let Some(v) = videos.get_mut(&id) {
+                        v.destroyed = true;
+                    }
+                }
+                Message::VideoFrame(f) => {
+                    let Some(v) = videos.get_mut(&f.id) else { continue };
+                    v.frames += 1;
+                    v.keyframes += f.keyframe as u64;
+                    v.seqs.insert(f.seq);
+                    if let Some(d) = v.decoder.as_mut() {
+                        let ok = d.send_packet(&ff::Packet::copy(&f.data)).is_ok();
+                        let mut frame = ff::frame::Video::empty();
+                        while ok && d.receive_frame(&mut frame).is_ok() {
+                            v.decoded += 1;
+                        }
+                        if !ok {
+                            v.decode_errors += 1;
+                        }
+                    }
+                    send(&mut ws, &Message::VideoAck { id: f.id, seq: f.seq })?;
+                }
+                Message::VideoPresent { id, seq, .. } => {
+                    if let Some(v) = videos.get_mut(&id) {
+                        v.presents += 1;
+                        v.unknown_presents += !v.seqs.contains(&seq) as u64;
+                        v.last_present = Some(seq);
+                    }
+                }
                 Message::Pong { t_us } if Some(t_us) == ping_sent => rtt_us = Some(monotonic_us() - t_us),
                 _ => {}
             }
@@ -568,6 +659,7 @@ fn run(args: Args) -> Result<bool, String> {
         ok &= busiest_fps >= f;
     }
     ok &= windows.values().all(|w| w.decode_errors == 0);
+    ok &= videos.values().all(|v| v.decode_errors == 0);
 
     if args.json {
         let per: Vec<String> = windows
@@ -602,7 +694,29 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"bye\":{}}}",
+            videos
+                .iter()
+                .map(|(id, v)| format!(
+                    "{{\"id\":{id},\"window\":{},\"codec\":{:?},\"rect\":[{},{},{},{}],\"clip\":{},\"frames\":{},\"keyframes\":{},\"decoded\":{},\"decode_errors\":{},\"presents\":{},\"unknown_presents\":{},\"last_present\":{},\"destroyed\":{}}}",
+                    v.window,
+                    v.codec.as_str(),
+                    v.rect.x,
+                    v.rect.y,
+                    v.rect.w,
+                    v.rect.h,
+                    v.clip.map(|c| format!("[{},{},{},{}]", c.x, c.y, c.w, c.h)).unwrap_or("null".into()),
+                    v.frames,
+                    v.keyframes,
+                    v.decoded,
+                    v.decode_errors,
+                    v.presents,
+                    v.unknown_presents,
+                    v.last_present.map(|s| s.to_string()).unwrap_or("null".into()),
+                    v.destroyed
+                ))
+                .collect::<Vec<_>>()
+                .join(","),
             per.join(","),
             cpu_ms.map(|c| format!("{c:.0}")).unwrap_or("null".into()),
             cpu_ms.map(|c| format!("{:.1}", c / elapsed / 10.0)).unwrap_or("null".into()),

@@ -53,7 +53,10 @@ The image also carries [Caboose Display](../display/README.md) (`caboose-display
 A host that selects Caboose Display writes the token, starts `caboose-display.service`
 instead of `caboose-xpra.service`, and waits for `caboose-display-ready 60`. The service
 serves WebSocket port `14600`, runs Xwayland on `:110`, and writes the environment for
-launched applications to `/run/caboose/display.env`.
+launched applications to `/run/caboose/display.env`. The codec passthrough VA-API driver
+(guest/vaapi) is installed with it; the image loads the `udmabuf` module at boot and gives
+`/dev/udmabuf` to the `caboose` group for the driver's decode surfaces (on kernels without
+the module, GL players fall back to decoding locally).
 
 ## Apps
 

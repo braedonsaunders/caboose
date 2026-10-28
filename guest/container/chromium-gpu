@@ -15,3 +15,9 @@ if [ "${CABOOSE_GPU:-none}" = wsl ]; then
     CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --use-gl=angle --use-angle=gl"
   fi
 fi
+# With the Caboose VA-API driver (set only in Caboose Display sessions, on hosts with a
+# render node), Chromium decodes video through it, so video reaches the phone as its own
+# stream (guest/vaapi).
+if [ -n "${WAYLAND_DISPLAY:-}" ] && [ "${LIBVA_DRIVER_NAME:-}" = caboose ]; then
+  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --enable-features=VaapiVideoDecoder,VaapiVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,VaapiIgnoreDriverChecks"
+fi

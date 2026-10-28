@@ -33,7 +33,9 @@ Dockerfile's first stage. `caboose-session start-display` starts it (WebSocket `
 Wayland `wayland-caboose-0`, Xwayland `:110`; with `CABOOSE_GPU=wsl` it can use NVENC
 through `/usr/lib/wsl/lib`), and `caboose-session ready-display` waits until it answers
 a hello made with the per-wake token. Launchers read the application environment from
-`/run/caboose/display.env` (sh syntax). Under Caboose Display Chromium runs as a native
+`/run/caboose/display.env` (sh syntax), which also selects the codec passthrough VA-API
+driver (guest/vaapi, built in the same stage and installed with it) for those applications;
+on a host with a render node the host passes `/dev/udmabuf` for its decode surfaces. Under Caboose Display Chromium runs as a native
 Wayland client; on WSL with software raster, because its Wayland GPU path needs a DRM
 render node WSL does not have. Xpra remains the default display.
 

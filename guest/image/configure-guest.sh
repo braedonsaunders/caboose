@@ -43,6 +43,10 @@ cp /tmp/desk-vsock-bridge.service /tmp/caboose-xpra.service /tmp/caboose-xpra-ag
 apt-get install -y --no-install-recommends xwayland
 install -m 0755 /tmp/caboose-display/caboose-display /tmp/caboose-display/caboose-display-probe /tmp/caboose-display/caboose-display-ready /usr/local/bin/
 install -m 0644 /tmp/caboose-display/caboose-display.service /etc/systemd/system/
+# Codec passthrough (guest/vaapi): the driver, and /dev/udmabuf for its decode surfaces.
+install -D -m 0644 /tmp/caboose-display/caboose_drv_video.so /usr/lib/x86_64-linux-gnu/dri/caboose_drv_video.so
+printf 'udmabuf\n' > /etc/modules-load.d/caboose-udmabuf.conf
+printf 'KERNEL=="udmabuf", GROUP="caboose", MODE="0660"\n' > /etc/udev/rules.d/70-caboose-udmabuf.rules
 systemctl disable xpra-server.socket xpra-server.service
 systemctl enable desk-guest-agent.service desk-vsock-bridge.service
 systemctl set-default multi-user.target

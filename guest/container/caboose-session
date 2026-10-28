@@ -56,6 +56,9 @@ ready() {
 # application environment from /run/caboose/display.env once it is ready.
 start_caboose_display() {
   if caboose-display-probe --check --token-file /run/caboose/xpra-token >/dev/null 2>&1; then return; fi
+  # The VA-API passthrough driver exports decode surfaces through /dev/udmabuf (passed in
+  # on hosts with a render node); this container's node is the session user's to use.
+  if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi
   install -d -m 0755 /run/caboose
   install -o caboose -g caboose -m 0644 /dev/null /run/caboose/display.env
   local log=/home/caboose/.cache/caboose-display.log
