@@ -40,7 +40,8 @@ open class RemoteTextInputView: UIView, UITextInput {
 
     // MARK: UIKeyInput
 
-    public var hasText: Bool { !buffer.text.isEmpty }
+    /// Always true: the remote field has text from before the buffer, and delete must reach it.
+    public var hasText: Bool { true }
     open func insertText(_ text: String) { perform { $0.insert(text) } }
     open func deleteBackward() { perform { $0.deleteBackward() } }
 
