@@ -35,7 +35,7 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
       libglib2.0-bin libglib2.0-dev-bin imagemagick ffmpeg at-spi2-core gsettings-desktop-schemas xfce4-settings \
       code nodejs sassc libxml2-utils qt5-gtk-platformtheme qt6-gtk-platformtheme \
       libgl1-mesa-dri mesa-va-drivers mesa-utils vainfo libx264-164 \
-      pulseaudio gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools \
+      pulseaudio pulseaudio-utils gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools \
       python3-numpy python3-pytools python3-mako python3-decorator python3-platformdirs \
       libboost-python1.83.0 libboost-thread1.83.0 libcurand10 \
       xpra=6.5.5-r0-1 xpra-server=6.5.5-r0-1 xpra-x11=6.5.5-r0-1 xpra-common=6.5.5-r0-1 \

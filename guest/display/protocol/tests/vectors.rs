@@ -15,6 +15,7 @@ fn media() -> vectors::Media {
         h264_keyframe: std::fs::read(media.join("keyframe-64x64.h264")).unwrap(),
         hevc_keyframe: std::fs::read(media.join("keyframe-64x64.hevc")).unwrap(),
         png: std::fs::read(media.join("icon-16x16.png")).unwrap(),
+        opus_stereo: std::fs::read(media.join("opus-stereo-20ms.opus")).unwrap(),
     }
 }
 

@@ -17,6 +17,8 @@ OPTIONS:
     --socket NAME          Wayland socket name in $XDG_RUNTIME_DIR [default: wayland-caboose-0]
     --x-display N          Xwayland display number [default: 110]
     --no-xwayland          do not start Xwayland
+    --no-audio             do not run PulseAudio or send sound
+    --audio-bitrate BPS    Opus bitrate [default: 128000]
     --env-file PATH        write WAYLAND_DISPLAY/DISPLAY for launchers here once ready
     --renderer KIND        pixman [default: pixman]
     --always-compose       compose every window, never copy a shm buffer directly (for
@@ -70,6 +72,8 @@ pub struct Config {
     pub token_file: Option<PathBuf>,
     pub socket: String,
     pub x_display: Option<u32>,
+    pub audio: bool,
+    pub audio_bitrate: u32,
     pub env_file: Option<PathBuf>,
     pub renderer: RendererChoice,
     pub always_compose: bool,
@@ -87,6 +91,8 @@ impl Default for Config {
             token_file: Some("/run/caboose/xpra-token".into()),
             socket: "wayland-caboose-0".into(),
             x_display: Some(110),
+            audio: true,
+            audio_bitrate: 128_000,
             env_file: None,
             renderer: RendererChoice::Pixman,
             always_compose: false,
@@ -124,6 +130,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             "--socket" => config.socket = value(&mut args, &arg)?,
             "--x-display" => config.x_display = Some(number(value(&mut args, &arg)?, &arg)?),
             "--no-xwayland" => config.x_display = None,
+            "--no-audio" => config.audio = false,
+            "--audio-bitrate" => config.audio_bitrate = number(value(&mut args, &arg)?, &arg)?,
             "--env-file" => config.env_file = Some(value(&mut args, &arg)?.into()),
             "--renderer" => {
                 config.renderer = match value(&mut args, &arg)?.as_str() {
