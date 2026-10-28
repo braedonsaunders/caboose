@@ -21,7 +21,7 @@ import VideoToolbox
     private func frame(_ vector: String) throws -> EncodedFrame {
         var parser = DisplayFrameParser()
         let wire = try DisplayVectorTests.vector(vector).wire
-        guard case .frame(let frame) = try parser.append(wire).first.map(ServerMessage.init) else {
+        guard case .frame(let frame)? = try parser.append(wire).first.map(ServerMessage.init) else {
             throw CancellationError()
         }
         return frame
