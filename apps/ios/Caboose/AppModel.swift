@@ -25,6 +25,7 @@ final class AppModel {
 
     private(set) var phase: Phase
     let agents = AgentCenter()
+    var notificationTaskID: String?
     /// Videos playing on the computer that can move to the phone.
     let media = MediaHandoff()
     /// A window on the agent seat being watched or taken over full screen.
@@ -66,7 +67,11 @@ final class AppModel {
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
         agents.onComputer = { [weak self] status in self?.computerStatus = status }
-        agents.onEvent = { [weak self] type, event in self?.media.handle(type, event) }
+        agents.onEvent = { [weak self] type, event in
+            guard let self else { return }
+            self.media.handle(type, event)
+            if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
+        }
         media.attach(host: { [weak self] in self?.host })
     }
 
@@ -92,6 +97,10 @@ final class AppModel {
     // MARK: Setup
 
     func connect(with credentials: Credentials) {
+        if self.credentials != nil && self.credentials != credentials {
+            PushCoordinator.shared.unregister(from: host)
+            LiveActivityCoordinator.shared.unregister(from: host)
+        }
         credentials.save()
         self.credentials = credentials
         activeHostURL = nil
@@ -99,6 +108,8 @@ final class AppModel {
     }
 
     func signOut() {
+        PushCoordinator.shared.unregister(from: host)
+        LiveActivityCoordinator.shared.unregister(from: host)
         session?.disconnect()
         session = nil
         agents.reset()
@@ -130,6 +141,8 @@ final class AppModel {
             startSession(host: host, display: wake.display)
             agents.detach()
             agents.attach(host: host)
+            PushCoordinator.shared.synchronize()
+            LiveActivityCoordinator.shared.connected()
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await media.refresh() }
             Task { await refreshApps() }
@@ -442,6 +455,7 @@ final class AppModel {
     func refreshComputer() async throws {
         guard let host else { return }
         computerStatus = try await host.computer()
+        LiveActivityCoordinator.shared.sync(agents.tasks)
     }
 
     /// Saves only the given changes. Name and auto-park apply at once; memory and cores at the next restart.
@@ -605,7 +619,17 @@ final class AppModel {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
+    private static func postDesktop(_ event: [String: Any]) {
+        requestNotificationPermission()
+        let content = UNMutableNotificationContent()
+        content.title = (event["summary"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (event["app"] as? String ?? "Caboose")
+        content.body = event["body"] as? String ?? ""
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "linux.\(event["id"] as? String ?? UUID().uuidString)", content: content, trigger: nil))
+    }
+
     private static func post(_ note: RemoteNotification) {
+        requestNotificationPermission()
         let content = UNMutableNotificationContent()
         content.title = note.summary.isEmpty ? note.appName : note.summary
         content.subtitle = note.summary.isEmpty ? "" : note.appName
