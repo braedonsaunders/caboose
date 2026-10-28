@@ -9,12 +9,12 @@ import { setTimeout as delay } from 'node:timers/promises'
 const dir = process.argv[2]
 if (!dir) throw new Error('Task directory required')
 const box = join(dir, 'tool-mailbox')
-const weekdays = { type: 'array', items: { type: 'integer', minimum: 1, maximum: 7 }, minItems: 1, uniqueItems: true }
+const weekdays = { type: 'array', description: 'ISO weekdays: Monday = 1 through Sunday = 7.', items: { type: 'integer', minimum: 1, maximum: 7 }, minItems: 1, uniqueItems: true }
 const time = { type: 'string', pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$' }
-const active = { type: 'object', additionalProperties: false, properties: { weekdays, window: { type: 'object', additionalProperties: false, properties: { start: time, end: time }, required: ['start', 'end'] } } }
+const active = { type: 'object', description: 'Optional filters do not shift cadence or interval anchor. A window opens at its inclusive start and closes at its exclusive end; if end is earlier it crosses midnight and belongs to the opening weekday.', additionalProperties: false, properties: { weekdays, window: { type: 'object', additionalProperties: false, properties: { start: time, end: time }, required: ['start', 'end'] } } }
 const base = { timeZone: { type: 'string', description: 'Named IANA timezone, e.g. America/Toronto; obtain from owner or current context, never guess.' }, active }
 const schedule = { description: 'Calendar times are local HH:mm in timeZone. Instant strings require Z or an offset. For an interval provide its explicit anchor. Calendar DST gaps are skipped; folds use the earlier instant.', oneOf: [
-  ['interval', { everyMs: { type: 'integer', minimum: 1 }, anchor: { type: 'string', format: 'date-time' } }, ['everyMs', 'anchor']],
+  ['interval', { everyMs: { type: 'integer', minimum: 60000, maximum: 9007199254740991 }, anchor: { type: 'string', format: 'date-time' } }, ['everyMs', 'anchor']],
   ['once', { at: { type: 'string', format: 'date-time' } }, ['at']],
   ['daily', { time }, ['time']],
   ['weekly', { time, weekdays }, ['time', 'weekdays']],

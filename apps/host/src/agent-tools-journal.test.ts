@@ -56,6 +56,30 @@ describe('tool receipts', () => {
     expect(await journal.execute(scope, request)).toEqual({ ok: false, error: 'Error: Invalid schedule timezone' })
     expect(dispatch).toHaveBeenCalledTimes(1)
   })
+  it('does not hold the receipt lock across domain dispatch, and fences concurrent duplicates', async () => {
+    const p = await path()
+    let entered!: () => void, release!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const blocked = new Promise<void>(resolve => { release = resolve })
+    const dispatch = vi.fn(async () => { entered(); await blocked; return { id: 'created' } })
+    const journal = await AgentToolJournal.open(p, dispatch)
+    await journal.bindTask(scope.taskId, scope.profileId)
+    const first = journal.execute(scope, request)
+    await started
+    try {
+      const binding = journal.bindTask('44444444-4444-4444-8444-444444444444', scope.profileId)
+      await expect(Promise.race([binding.then(() => 'bound'), new Promise(resolve => setTimeout(() => resolve('blocked'), 500))])).resolves.toBe('bound')
+      expect(await journal.execute(scope, request)).toMatchObject({ ok: false, error: expect.stringContaining('may have completed') })
+      let drained = false
+      const drain = journal.drain().then(() => { drained = true })
+      await Promise.resolve(); expect(drained).toBe(false)
+      release()
+      expect(await first).toEqual({ ok: true, value: { id: 'created' } })
+      await drain
+      expect(dispatch).toHaveBeenCalledTimes(1)
+      expect((await AgentToolJournal.open(p, dispatch)).profileForTask('44444444-4444-4444-8444-444444444444')).toBe(scope.profileId)
+    } finally { release() }
+  })
   it('rejects unknown and oversized requests before dispatch', async () => {
     const p = await path(), dispatch = vi.fn(async () => null)
     const journal = await AgentToolJournal.open(p, dispatch)

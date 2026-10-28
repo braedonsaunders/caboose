@@ -1162,6 +1162,28 @@ describe('persistent profile tasks', () => {
       expect(bindTask).toHaveBeenCalledTimes(1)
     } finally { tasks.pause() }
   })
+  it('drains an in-flight mailbox poll after pausing', async () => {
+    const fake = fakeGuest()
+    let release!: () => void
+    const waiting = new Promise<void>(resolve => { release = resolve })
+    let calls = 0
+    const journal = { bindTask: vi.fn(async () => {}) } as unknown as AgentToolJournal
+    const tasks = new AgentTasks(() => fake.guest, () => {}, () => () => {}, {
+      resolver: resolver(), pollMs: 10, toolJournal: async () => { if (++calls > 1) await waiting; return calls === 1 ? journal : null },
+    })
+    try {
+      await tasks.start({ prompt: 'hello', profileId: profile.id }, { profile })
+      await vi.waitFor(() => expect(calls).toBeGreaterThan(1))
+      tasks.pause()
+      let drained = false
+      const done = tasks.drainToolWork().then(() => { drained = true })
+      await Promise.resolve()
+      expect(drained).toBe(false)
+      release()
+      await done
+      expect(drained).toBe(true)
+    } finally { release(); tasks.pause() }
+  })
   it('rejects unresolved profiles and arbitrary workspace paths before guest writes', async () => {
     const s = setup()
     try {

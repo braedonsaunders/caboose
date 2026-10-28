@@ -30,6 +30,12 @@ if sys.argv[1] == 'poll':
             try:
                 for entry in itertools.islice(os.scandir(d), 256):
                     name = entry.name
+                    if name.endswith('.response') and U.fullmatch(name[:-9]):
+                        try: os.stat(name[:-9] + '.request', dir_fd=d, follow_symlinks=False)
+                        except FileNotFoundError:
+                            try: os.unlink(name, dir_fd=d)
+                            except FileNotFoundError: pass
+                        continue
                     if len(out) >= 16: break
                     if not name.endswith('.request') or not U.fullmatch(name[:-8]): continue
                     try:

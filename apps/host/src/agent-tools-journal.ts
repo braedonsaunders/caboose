@@ -24,6 +24,7 @@ interface State { version: 1; receipts: Receipt[]; bindings?: Record<string, str
 export class AgentToolJournal {
   private chain: Promise<unknown> = Promise.resolve()
   private failed = false
+  private readonly flights = new Set<Promise<unknown>>()
   private readonly path: string
   private state: State
   private readonly dispatch: ToolDispatcher
@@ -52,26 +53,42 @@ export class AgentToolJournal {
     return new AgentToolJournal(path, state, dispatch)
   }
 
+  /** Wait for admitted bindings and requests after callers stop admitting work. */
+  async drain(): Promise<void> {
+    while (this.flights.size) await Promise.allSettled([...this.flights])
+    await this.chain
+  }
+
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const operation = this.chain.then(fn)
+    this.chain = operation.catch(() => {})
+    return operation
+  }
+
+  private reservedSize(state: State): number {
+    return Buffer.byteLength(JSON.stringify(state)) + state.receipts.filter(r => !r.result).length * (MAX_RESULT + 4096)
+  }
+
   profileForTask(taskId: string): string | undefined { return this.state.bindings?.[taskId] }
 
   bindTask(taskId: string, profileId: string): Promise<void> {
-    const operation = this.chain.then(async () => {
+    const operation = this.serial(async () => {
       if (this.failed) throw new Error('Tool journal persistence failed; reopen before continuing')
       if (!uuid.test(taskId) || !uuid.test(profileId)) throw new Error('Invalid tool task binding')
       const existing = this.profileForTask(taskId)
       if (existing && existing !== profileId) throw new Error('Tool task binding conflicts')
       if (existing) return
       const bindings = { ...this.state.bindings, [taskId]: profileId }
-      if (Object.keys(bindings).length > MAX_TOTAL || Buffer.byteLength(JSON.stringify(this.state)) + 256 > MAX_STATE) throw new Error('Tool journal capacity reached')
+      if (Object.keys(bindings).length > MAX_TOTAL || this.reservedSize(this.state) + 256 > MAX_STATE) throw new Error('Tool journal capacity reached')
       await this.persist({ ...this.state, bindings })
     })
-    this.chain = operation.catch(() => {})
     return operation
   }
 
   execute(scope: ToolScope, request: ToolRequest, allowed: () => boolean = () => true): Promise<ToolResult> {
-    const operation = this.chain.then(() => this.perform(scope, request, allowed))
-    this.chain = operation.catch(() => {})
+    const operation = this.perform(scope, request, allowed)
+    this.flights.add(operation)
+    void operation.then(() => this.flights.delete(operation), () => this.flights.delete(operation))
     return operation
   }
 
@@ -90,33 +107,40 @@ export class AgentToolJournal {
   }
 
   private async perform(scope: ToolScope, request: ToolRequest, allowed: () => boolean): Promise<ToolResult> {
-    if (this.failed) throw new Error('Tool journal persistence failed; reopen before continuing')
-    if (!allowed()) throw new Error('Agent turn is no longer active')
-    if (!uuid.test(scope.taskId) || !uuid.test(scope.profileId) || !Number.isSafeInteger(scope.turn) || scope.turn < 1 || !request || !uuid.test(request.id) || !tools.has(request.tool) || !request.arguments || typeof request.arguments !== 'object' || Array.isArray(request.arguments)) throw new Error('Invalid tool request or task scope')
-    if (this.profileForTask(scope.taskId) !== scope.profileId) throw new Error('Task has no matching host tool binding')
-    const payload = JSON.stringify({ tool: request.tool, arguments: request.arguments })
-    if (Buffer.byteLength(payload) > MAX_REQUEST) throw new Error('Tool request too large')
-    const hash = createHash('sha256').update(payload).digest('hex')
-    const previous = this.state.receipts.find(r => r.taskId === scope.taskId && r.id === request.id)
-    if (previous) {
-      if (previous.hash !== hash || previous.profileId !== scope.profileId || previous.turn !== scope.turn) throw new Error('Tool request id conflicts with an earlier request')
-      return previous.result ? structuredClone(previous.result) : { ok: false, error: 'The previous operation may have completed. Inspect memory or routines before deciding what to do; it will not be repeated.' }
-    }
-    if (this.state.receipts.filter(r => r.taskId === scope.taskId).length >= MAX_RECORDS) throw new Error('Task tool receipt limit reached; start a new task')
-    if (this.state.receipts.length >= MAX_TOTAL || Buffer.byteLength(JSON.stringify(this.state)) + MAX_RESULT + 4096 > MAX_STATE) throw new Error('Tool journal capacity reached')
-    // Read operations have no effects, but are journaled too so duplicate IDs remain consistent.
-    const receipt: Receipt = { id: request.id, ...scope, hash }
-    await this.persist({ ...this.state, receipts: [...this.state.receipts, receipt] })
+    const admission = await this.serial(async (): Promise<{ receipt?: Receipt; prior?: ToolResult }> => {
+      if (this.failed) throw new Error('Tool journal persistence failed; reopen before continuing')
+      if (!allowed()) throw new Error('Agent turn is no longer active')
+      if (!uuid.test(scope.taskId) || !uuid.test(scope.profileId) || !Number.isSafeInteger(scope.turn) || scope.turn < 1 || !request || !uuid.test(request.id) || !tools.has(request.tool) || !request.arguments || typeof request.arguments !== 'object' || Array.isArray(request.arguments)) throw new Error('Invalid tool request or task scope')
+      if (this.profileForTask(scope.taskId) !== scope.profileId) throw new Error('Task has no matching host tool binding')
+      const payload = JSON.stringify({ tool: request.tool, arguments: request.arguments })
+      if (Buffer.byteLength(payload) > MAX_REQUEST) throw new Error('Tool request too large')
+      const hash = createHash('sha256').update(payload).digest('hex')
+      const previous = this.state.receipts.find(r => r.taskId === scope.taskId && r.id === request.id)
+      if (previous) {
+        if (previous.hash !== hash || previous.profileId !== scope.profileId || previous.turn !== scope.turn) throw new Error('Tool request id conflicts with an earlier request')
+        return { prior: previous.result ? structuredClone(previous.result) : { ok: false, error: 'The previous operation may have completed. Inspect memory or routines before deciding what to do; it will not be repeated.' } }
+      }
+      if (this.state.receipts.filter(r => r.taskId === scope.taskId).length >= MAX_RECORDS) throw new Error('Task tool receipt limit reached; start a new task')
+      if (this.state.receipts.length >= MAX_TOTAL || this.reservedSize(this.state) + MAX_RESULT + 8192 > MAX_STATE) throw new Error('Tool journal capacity reached')
+      const receipt: Receipt = { id: request.id, ...scope, hash }
+      await this.persist({ ...this.state, receipts: [...this.state.receipts, receipt] })
+      return { receipt }
+    })
+    if (admission.prior) return admission.prior
+    const receipt = admission.receipt!
     let result: ToolResult
     try {
       if (!allowed()) throw new ToolValidationError('Agent turn is no longer active')
       const value = await this.dispatch(scope, request.tool, request.arguments)
       const encoded = JSON.stringify(value ?? null)
-      result = Buffer.byteLength(encoded) <= MAX_RESULT ? { ok: true, value: value ?? null } : { ok: false, error: reads.has(request.tool) ? 'Tool result too large' : 'Operation completed but its result was too large; inspect current state.' }
+      result = Buffer.byteLength(encoded) <= MAX_RESULT ? { ok: true, value: JSON.parse(encoded) as unknown } : { ok: false, error: reads.has(request.tool) ? 'Tool result too large' : 'Operation completed but its result was too large; inspect current state.' }
     } catch (error) {
       result = { ok: false, error: reads.has(request.tool) || error instanceof ToolValidationError ? String(error).slice(0, 2000) : 'Operation failed or its outcome is uncertain. Inspect current state before retrying.' }
     }
-    await this.persist({ ...this.state, receipts: this.state.receipts.map(r => r === receipt ? { ...r, result } : r) })
+    await this.serial(async () => {
+      if (this.failed) throw new Error('Tool journal persistence failed; reopen before continuing')
+      await this.persist({ ...this.state, receipts: this.state.receipts.map(r => r.taskId === receipt.taskId && r.id === receipt.id ? { ...r, result } : r) })
+    })
     return structuredClone(result)
   }
 }

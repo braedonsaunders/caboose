@@ -381,6 +381,7 @@ export class AgentTasks {
   private readonly resolver: AgentResolver
   private readonly toolJournal?: AgentTaskOptions["toolJournal"]
   private toolPolling = false
+  private toolWork?: Promise<void>
   private readonly craftServers?: AgentTaskOptions["craftServers"]
   private readonly pollMs: number
   private readonly ensureSeat?: () => Promise<void>
@@ -972,6 +973,9 @@ export class AgentTasks {
     this.timer = undefined
   }
 
+  /** After pause, wait for any mailbox guest command and admitted dispatch to settle. */
+  async drainToolWork(): Promise<void> { await this.toolWork }
+
   resume(): void {
     if (this.needsRecovery && !this.recovering) {
       this.needsRecovery = false
@@ -986,7 +990,14 @@ export class AgentTasks {
 
   private ensurePolling(): void {
     if (this.timer) return
-    this.timer = setInterval(() => { void this.poll(); void this.pollTools() }, this.pollMs)
+    this.timer = setInterval(() => {
+      void this.poll()
+      if (!this.toolWork) {
+        const work = this.pollTools()
+        this.toolWork = work
+        void work.finally(() => { if (this.toolWork === work) this.toolWork = undefined })
+      }
+    }, this.pollMs)
     this.timer.unref()
   }
 

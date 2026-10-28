@@ -41,7 +41,11 @@ describe('profile tool mailbox', () => {
   it('serves MCP over real stdio and dispatches through the guest mailbox', async () => {
     const s = await setup()
     s.send(1, 'initialize', {}); expect((await s.wait(1)).result.capabilities.tools).toEqual({})
-    s.send(2, 'tools/list'); expect((await s.wait(2)).result.tools.map((t: any) => t.name)).toContain('routine_get')
+    s.send(2, 'tools/list')
+    const tools = (await s.wait(2)).result.tools
+    expect(tools.map((t: any) => t.name)).toContain('routine_get')
+    const intervals = tools.find((t: any) => t.name === 'routine_create').inputSchema.properties.schedule.oneOf
+    expect(intervals[0].properties.everyMs).toMatchObject({ minimum: 60000, maximum: Number.MAX_SAFE_INTEGER })
     s.send(3, 'tools/call', { name: 'routine_create', arguments: { name: 'Daily' } })
     const box = join(s.taskDir, 'tool-mailbox')
     for (let i = 0; i < 100; i++) { try { if ((await readdir(box)).some(x => x.endsWith('.request'))) break } catch {} await new Promise(r => setTimeout(r, 20)) }

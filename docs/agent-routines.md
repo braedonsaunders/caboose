@@ -176,6 +176,8 @@ uncertain and is not executed again. The caller must inspect current memories or
 routines before making a new request. A timeout or closed stdio connection can occur
 after the host began an operation, so the result is similarly uncertain. This protects
 against repeating the same request ID, not a new ID the caller chooses after a timeout.
+On shutdown or before parking, the host pauses task polling, awaits
+`AgentTasks.drainToolWork()` and then `AgentToolJournal.drain()` after closing admission.
 The journal is single-process, capped at 256 receipts per task, 2000 task bindings and
 receipts per computer, and 32 MiB; when full, tools fail rather than discard receipts.
 A host restart restores bindings from the private journal, never from guest files.
