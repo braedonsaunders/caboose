@@ -5,7 +5,7 @@ import {
 } from '@braedonsaunders/appkit-ui'
 import { Monitor, Plus } from 'lucide-react'
 import {
-  effectiveLimits, formatIdleDuration, formatMemoryMb, validateSettingsInput, type CabooseClient, type ComputersResponse, type NewComputer,
+  effectiveLimits, formatIdleDuration, formatMemoryMb, validateSettingsInput, type CabooseClient, type ComputersResponse, type Me, type NewComputer,
 } from '../api.js'
 import { ComputersTable } from '../components/ComputersTable.js'
 import { errorMessage } from '../components/common.js'
@@ -14,7 +14,7 @@ import { idleChoices, memoryChoices } from '../state.js'
 import type { ComputersHandle } from '../useComputer.js'
 import { RollingWordmark } from '../brand/Logo.js'
 
-export function Computers({ client, computers }: { client: CabooseClient; computers: ComputersHandle }) {
+export function Computers({ client, computers, me }: { client: CabooseClient; computers: ComputersHandle; me: Me }) {
   const { list, error } = computers
   const [creating, setCreating] = React.useState(false)
 
@@ -56,13 +56,14 @@ export function Computers({ client, computers }: { client: CabooseClient; comput
         ) : null}
 
         <DashboardPanel title="All computers" icon={<Monitor className="size-4" aria-hidden />}>
-          <ComputersTable computers={list.computers} />
+          <ComputersTable computers={list.computers} tenants={me.tenants} />
         </DashboardPanel>
       </div>
 
       <NewComputerDialog
         open={creating}
         list={list}
+        me={me}
         onClose={() => setCreating(false)}
         onCreate={async input => {
           const made = await client.createComputer(input)
@@ -76,9 +77,10 @@ export function Computers({ client, computers }: { client: CabooseClient; comput
   )
 }
 
-function NewComputerDialog({ open, list, onClose, onCreate }: {
+function NewComputerDialog({ open, list, me, onClose, onCreate }: {
   open: boolean
   list: ComputersResponse
+  me: Me
   onClose: () => void
   onCreate: (input: NewComputer) => Promise<void>
 }) {
@@ -86,10 +88,12 @@ function NewComputerDialog({ open, list, onClose, onCreate }: {
   const limits = effectiveLimits(template)
   const initial = React.useCallback((): NewComputer => ({
     name: '',
+    person: '',
+    ...(me.tenants[0] ? { tenantId: me.tenants[0].id } : {}),
     memoryMb: template?.settings.memoryMb ?? 4096,
     vcpus: template?.settings.vcpus ?? 2,
     idleMs: template?.settings.idleMs ?? 600_000,
-  }), [template])
+  }), [template, me.tenants])
   const [draft, setDraft] = React.useState<NewComputer>(initial)
   const [saving, setSaving] = React.useState(false)
   const [touched, setTouched] = React.useState(false)
@@ -108,7 +112,7 @@ function NewComputerDialog({ open, list, onClose, onCreate }: {
     if (!validation.ok) return
     setSaving(true)
     try {
-      await onCreate({ ...draft, name: draft.name.trim() })
+      await onCreate({ ...draft, name: draft.name.trim(), person: draft.person?.trim() || null })
     } catch (failure) {
       toast.error(errorMessage(failure))
     } finally {
@@ -142,6 +146,21 @@ function NewComputerDialog({ open, list, onClose, onCreate }: {
             onChange={event => update({ name: event.target.value })}
           />
           {touched && errors.name ? <p className="text-xs text-danger">{errors.name}</p> : <p className="text-xs text-fg-muted">Shown on Home in the iPhone app.</p>}
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="new-computer-person">Whose computer</Label>
+            <Input id="new-computer-person" value={draft.person ?? ''} maxLength={80} placeholder="Sam" onChange={event => update({ person: event.target.value })} />
+            <p className="text-xs text-fg-muted">The person who uses it from their phone. No account needed.</p>
+          </div>
+          {me.tenants.length > 1 ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="new-computer-tenant">Household or team</Label>
+              <Select id="new-computer-tenant" value={draft.tenantId ?? ''} onChange={event => update({ tenantId: event.target.value })}>
+                {me.tenants.map(tenant => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}
+              </Select>
+            </div>
+          ) : null}
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="space-y-1.5">

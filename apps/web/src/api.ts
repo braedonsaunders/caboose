@@ -52,6 +52,10 @@ export interface ComputerSummary extends ComputerStatus {
   id: string
   /** Null for an owner's computer made before the host recorded it. */
   createdAt: string | null
+  /** The tenant the computer belongs to; null on a host that has not been set up. */
+  tenantId: string | null
+  /** The person whose computer it is, who uses it from their phone. */
+  person: string | null
 }
 
 export interface ComputersResponse {
@@ -69,6 +73,42 @@ export interface NewComputer {
   memoryMb: number
   vcpus: number
   idleMs: number
+  /** Required on a host with accounts. */
+  tenantId?: string
+  person?: string | null
+}
+
+/** Limits on what a tenant's computers are given between them; null is no limit. */
+export interface Quotas { memoryMb: number | null; vcpus: number | null; diskGb: number | null }
+
+export interface TenantUsage { computers: number; memoryMb: number; vcpus: number; diskBytes: number | null }
+
+export interface Tenant {
+  id: string
+  name: string
+  quotas: Quotas
+  createdAt: string
+  usage?: TenantUsage
+}
+
+/** Who the console is signed in as: the owner token, or an administrator's account. */
+export interface Me {
+  kind: 'owner' | 'admin'
+  user: { id: string; name: string; email: string } | null
+  /** The owner token and the operator's account see the host and every tenant. */
+  operator: boolean
+  tenants: Tenant[]
+}
+
+export interface Administrator { userId: string; name: string; email: string; operator: boolean; joinedAt: string | null }
+export interface PendingInvite { id: string; email: string; createdAt: string; expiresAt: string }
+export interface InviteDetails { tenantName: string; email: string; expiresAt: string; accountExists: boolean }
+
+export interface SetupInput { name: string; email: string; password: string; tenantName: string; code?: string }
+
+/** The link an invited administrator opens; the token is in the address only, never stored. */
+export function buildInviteLink(origin: string, token: string): string {
+  return `${origin.replace(/\/+$/, '')}/invite?token=${encodeURIComponent(token)}`
 }
 
 /** A phone signed in to a computer with its own token. The host never shows the token again. */
@@ -270,7 +310,8 @@ export class CabooseApiError extends Error {
 
 /** Routes about the host and its computers, never scoped to one computer. */
 function isHostPath(path: string): boolean {
-  return path === '/v1/health' || path === '/v1/host' || path === '/v1/computers' || path.startsWith('/v1/computers/')
+  return path === '/v1/health' || path === '/v1/host' || path === '/v1/computers' || path === '/v1/me'
+    || ['/v1/computers/', '/v1/tenants', '/v1/setup', '/v1/invites/', '/v1/auth/'].some(prefix => path.startsWith(prefix))
 }
 
 export class CabooseClient {
@@ -329,10 +370,9 @@ export class CabooseClient {
         } catch {
           parsed = undefined
         }
-        const message =
-          parsed && typeof parsed === 'object' && 'error' in parsed && typeof (parsed as { error: unknown }).error === 'string'
-            ? (parsed as { error: string }).error
-            : `Request failed (${response.status})`
+        // The host answers { error }; its sign-in routes (Better Auth) answer { message }.
+        const body = parsed && typeof parsed === 'object' ? parsed as { error?: unknown; message?: unknown } : {}
+        const message = typeof body.error === 'string' ? body.error : typeof body.message === 'string' ? body.message : `Request failed (${response.status})`
         throw new CabooseApiError(response.status, message)
       }
 
@@ -381,6 +421,78 @@ export class CabooseClient {
 
   createComputer(input: NewComputer): Promise<ComputerSummary> {
     return this.request<ComputerSummary>('POST', '/v1/computers', { body: input, timeoutMs: 60_000 })
+  }
+
+  /** A computer's person, and (for the operator) its tenant. */
+  updateComputer(id: string, changes: { person?: string | null; tenantId?: string }): Promise<ComputerSummary> {
+    return this.request<ComputerSummary>('PATCH', `/v1/computers/${encodeURIComponent(id)}`, { body: changes, timeoutMs: 20_000 })
+  }
+
+  me(): Promise<Me> {
+    return this.request<Me>('GET', '/v1/me', { timeoutMs: 15_000 })
+  }
+
+  setupStatus(): Promise<{ claimed: boolean; codeRequired: boolean }> {
+    return this.request<{ claimed: boolean; codeRequired: boolean }>('GET', '/v1/setup', { timeoutMs: 15_000 })
+  }
+
+  /** Makes the operator's account and first tenant; the answer signs this browser in. */
+  setUp(input: SetupInput): Promise<{ claimed: true }> {
+    return this.request<{ claimed: true }>('POST', '/v1/setup', { body: input, timeoutMs: 60_000 })
+  }
+
+  signIn(email: string, password: string): Promise<unknown> {
+    return this.request<unknown>('POST', '/v1/auth/sign-in/email', { body: { email, password }, timeoutMs: 30_000 })
+  }
+
+  signOut(): Promise<unknown> {
+    return this.request<unknown>('POST', '/v1/auth/sign-out', { body: {}, timeoutMs: 15_000 })
+  }
+
+  invitation(token: string): Promise<InviteDetails> {
+    return this.request<InviteDetails>('GET', `/v1/invites/${encodeURIComponent(token)}`, { timeoutMs: 15_000 })
+  }
+
+  /** A new administrator gives a name and password; one with an account gives its password. */
+  acceptInvitation(token: string, input: { name?: string; password: string }): Promise<{ accepted: true }> {
+    return this.request<{ accepted: true }>('POST', `/v1/invites/${encodeURIComponent(token)}/accept`, { body: input, timeoutMs: 30_000 })
+  }
+
+  tenants(): Promise<{ tenants: Tenant[] }> {
+    return this.request<{ tenants: Tenant[] }>('GET', '/v1/tenants', { timeoutMs: 20_000 })
+  }
+
+  createTenant(input: { name: string; quotas: Quotas }): Promise<Tenant> {
+    return this.request<Tenant>('POST', '/v1/tenants', { body: input, timeoutMs: 20_000 })
+  }
+
+  updateTenant(id: string, changes: { name?: string; quotas?: Partial<Quotas> }): Promise<Tenant> {
+    return this.request<Tenant>('PATCH', `/v1/tenants/${encodeURIComponent(id)}`, { body: changes, timeoutMs: 20_000 })
+  }
+
+  deleteTenant(id: string): Promise<{ deleted: true }> {
+    return this.request<{ deleted: true }>('DELETE', `/v1/tenants/${encodeURIComponent(id)}`, { timeoutMs: 20_000 })
+  }
+
+  administrators(tenantId: string): Promise<{ administrators: Administrator[] }> {
+    return this.request<{ administrators: Administrator[] }>('GET', `/v1/tenants/${encodeURIComponent(tenantId)}/administrators`, { timeoutMs: 15_000 })
+  }
+
+  removeAdministrator(tenantId: string, userId: string): Promise<{ removed: true }> {
+    return this.request<{ removed: true }>('DELETE', `/v1/tenants/${encodeURIComponent(tenantId)}/administrators/${encodeURIComponent(userId)}`, { timeoutMs: 15_000 })
+  }
+
+  invites(tenantId: string): Promise<{ invites: PendingInvite[] }> {
+    return this.request<{ invites: PendingInvite[] }>('GET', `/v1/tenants/${encodeURIComponent(tenantId)}/invites`, { timeoutMs: 15_000 })
+  }
+
+  /** Makes an invitation; its token is in this answer only, so the link is shown once. */
+  invite(tenantId: string, email: string): Promise<{ invite: PendingInvite; token: string }> {
+    return this.request<{ invite: PendingInvite; token: string }>('POST', `/v1/tenants/${encodeURIComponent(tenantId)}/invites`, { body: { email }, timeoutMs: 15_000 })
+  }
+
+  revokeInvite(tenantId: string, inviteId: string): Promise<{ revoked: true }> {
+    return this.request<{ revoked: true }>('DELETE', `/v1/tenants/${encodeURIComponent(tenantId)}/invites/${encodeURIComponent(inviteId)}`, { timeoutMs: 15_000 })
   }
 
   /** Deletes a computer with its disk; the host waits for work already running on it. */

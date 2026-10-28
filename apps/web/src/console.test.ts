@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildPairingLink, computeSettingsPatch, formatPairingCode, readSessionToken,
+  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildInviteLink, buildPairingLink, computeSettingsPatch, formatPairingCode, readSessionToken,
   validateSettingsInput, willRequireColdRestart, writeSessionToken, type ComputerSettings,
 } from './api.js'
-import { parseRoute, routeHref, sidebarPath } from './navigation.js'
+import { navigationGroups, parseRoute, routeHref, sidebarPath } from './navigation.js'
+import { quotaDraft, quotasFromDraft } from './tenants.js'
 import { availableActions, idleChoices, memoryChoices } from './state.js'
 
 const settings: ComputerSettings = { name: 'Studio', memoryMb: 4096, vcpus: 2, idleMs: 600_000 }
@@ -158,6 +159,41 @@ describe('navigation and actions', () => {
     expect(routeHref({ page: 'computer', id: 'c-0123456789', tab: 'phones' })).toBe('/computers/c-0123456789/phones')
     expect(sidebarPath({ page: 'computer', id: 'owner', tab: 'settings' })).toBe('/computers')
     expect(sidebarPath({ page: 'host' })).toBe('/host')
+  })
+
+  it('knows the pages for people, tenants, setting up and invitations', () => {
+    expect(parseRoute('/people')).toEqual({ page: 'people' })
+    expect(parseRoute('/tenants/')).toEqual({ page: 'tenants' })
+    expect(parseRoute('/setup?code=abc')).toEqual({ page: 'setup' })
+    expect(parseRoute('/invite?token=abc')).toEqual({ page: 'invite' })
+    expect(routeHref({ page: 'tenants' })).toBe('/tenants')
+  })
+
+  it('shows tenants and the host only to the operator', () => {
+    expect(navigationGroups(true).map(group => group.label)).toEqual(['Overview', 'Computers', 'People', 'Tenants', 'Host'])
+    expect(navigationGroups(false).map(group => group.label)).toEqual(['Overview', 'Computers', 'People'])
+  })
+
+  it('never sends account, tenant or invitation routes under a computer', async () => {
+    const seen: string[] = []
+    const client = new CabooseClient(() => '', '', async url => { seen.push(String(url)); return new Response('{}', { status: 200 }) }).forComputer('c-0123456789')
+    await client.me()
+    await client.tenants()
+    await client.invite('11111111-1111-4111-8111-111111111111', 'a@example.com')
+    await client.invitation('tok')
+    await client.signIn('a@example.com', 'pw')
+    await client.updateComputer('c-0123456789', { person: 'Sam' })
+    expect(seen).toEqual([
+      '/v1/me', '/v1/tenants', '/v1/tenants/11111111-1111-4111-8111-111111111111/invites', '/v1/invites/tok', '/v1/auth/sign-in/email', '/v1/computers/c-0123456789',
+    ])
+    expect(buildInviteLink('https://caboose.example.com/', 'a-b_c')).toBe('https://caboose.example.com/invite?token=a-b_c')
+  })
+
+  it('reads quotas as typed, in GiB, with empty for no limit', () => {
+    expect(quotasFromDraft({ memoryGb: '16', vcpus: '', diskGb: ' 200 ' })).toEqual({ ok: true, quotas: { memoryMb: 16384, vcpus: null, diskGb: 200 } })
+    expect(quotasFromDraft({ memoryGb: '1.5', vcpus: '', diskGb: '' })).toMatchObject({ ok: false, error: expect.stringMatching(/whole number/) })
+    expect(quotasFromDraft({ memoryGb: '', vcpus: '0', diskGb: '' })).toMatchObject({ ok: false })
+    expect(quotaDraft({ memoryMb: 8192, vcpus: 4, diskGb: null })).toEqual({ memoryGb: '8', vcpus: '4', diskGb: '' })
   })
 
   it("sends a computer's routes under its id, and host routes as they are", async () => {

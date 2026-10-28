@@ -1,7 +1,7 @@
 import { DashboardMetricCard, DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
 import { Alert, AlertDescription, AlertTitle, Button, PageContainer, PageHeader } from '@braedonsaunders/appkit-ui'
 import { Cpu, HardDrive, MemoryStick, Monitor } from 'lucide-react'
-import { formatMemoryMb } from '../api.js'
+import { formatMemoryMb, type Me } from '../api.js'
 import { ComputersTable } from '../components/ComputersTable.js'
 import { formatBytes } from '../files.js'
 import { fleetTotals, healthProblems, sharePercent, upgradeLabel } from '../host.js'
@@ -11,7 +11,7 @@ import type { HostHandle } from '../useHost.js'
 import { RollingWordmark } from '../brand/Logo.js'
 
 /** The host at a glance: what its computers are given of the machine, and anything that needs attention. */
-export function Overview({ computers, host }: { computers: ComputersHandle; host: HostHandle }) {
+export function Overview({ computers, host, me }: { computers: ComputersHandle; host: HostHandle; me: Me }) {
   const { list, error } = computers
   const { info, health } = host
 
@@ -28,16 +28,20 @@ export function Overview({ computers, host }: { computers: ComputersHandle; host
     )
   }
 
-  const machine = health?.machine
-  const problems = health ? healthProblems(health) : []
+  // Only the operator sees the machine; an administrator sees their tenants against their quotas.
+  const machine = me.operator ? health?.machine : undefined
+  const problems = me.operator && health ? healthProblems(health) : []
   const totals = fleetTotals(list.computers)
+  const quota = !me.operator && me.tenants.length === 1 ? me.tenants[0]!.quotas : null
 
   return (
     <PageContainer>
       <div className="space-y-6">
         <PageHeader
           title="Overview"
-          description={info ? `caboose-host ${info.version}, running computers as ${info.runtime === 'container' ? 'containers' : 'microVMs'}.` : 'This host and the computers it runs.'}
+          description={!me.operator
+            ? `The computers of ${me.tenants.map(tenant => tenant.name).join(', ') || 'your households and teams'}.`
+            : info ? `caboose-host ${info.version}, running computers as ${info.runtime === 'container' ? 'containers' : 'microVMs'}.` : 'This host and the computers it runs.'}
         />
 
         {error ? (
@@ -77,22 +81,22 @@ export function Overview({ computers, host }: { computers: ComputersHandle; host
           <DashboardMetricCard
             label="Memory given"
             value={formatMemoryMb(totals.memoryMb)}
-            detail={machine ? `${sharePercent(totals.memoryMb, machine.memoryMb)}% of ${formatMemoryMb(machine.memoryMb)}` : undefined}
+            detail={machine ? `${sharePercent(totals.memoryMb, machine.memoryMb)}% of ${formatMemoryMb(machine.memoryMb)}` : quota?.memoryMb ? `of a ${formatMemoryMb(quota.memoryMb)} quota` : undefined}
             tone={machine && totals.memoryMb > machine.memoryMb ? 'warning' : undefined}
             icon={<MemoryStick className="size-4" aria-hidden />}
           />
           <DashboardMetricCard
             label="vCPUs given"
             value={totals.vcpus}
-            detail={machine ? `of ${machine.cpus} CPUs on this machine` : undefined}
+            detail={machine ? `of ${machine.cpus} CPUs on this machine` : quota?.vcpus ? `of a ${quota.vcpus} vCPU quota` : undefined}
             icon={<Cpu className="size-4" aria-hidden />}
           />
-          <DashboardMetricCard
+          {me.operator ? <DashboardMetricCard
             label="Disk free"
             value={machine?.disk ? formatBytes(machine.disk.freeBytes) : '—'}
             detail={machine?.disk ? `of ${formatBytes(machine.disk.totalBytes)}` : undefined}
             icon={<HardDrive className="size-4" aria-hidden />}
-          />
+          /> : null}
         </div>
 
         <DashboardPanel
@@ -100,7 +104,7 @@ export function Overview({ computers, host }: { computers: ComputersHandle; host
           icon={<Monitor className="size-4" aria-hidden />}
           actions={<Button size="sm" variant="outline" onClick={() => navigate('/computers')}>Manage</Button>}
         >
-          <ComputersTable computers={list.computers} />
+          <ComputersTable computers={list.computers} tenants={me.tenants} />
         </DashboardPanel>
       </div>
     </PageContainer>
