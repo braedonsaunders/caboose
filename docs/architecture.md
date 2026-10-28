@@ -74,6 +74,9 @@ base swap.
   tools including Git, Neovim, Lazygit, Lazydocker, btop, mise and modern shell tools;
   and the Claude Code, Codex, OpenCode and Gemini CLI agents. Terminal tools and agents
   have desktop launchers. Fonts: Inter, JetBrains Mono and Noto (incl. CJK, emoji).
+- **Agent runner.** `caboose-agentd` (`/opt/caboose/agentd`, Node with the pinned ACP
+  TypeScript SDK) runs any Agent Client Protocol agent for a task; `uv` is installed for
+  agents published as Python packages. See Agents.
 - **Guest agent.** The appkit-desk guest agent (vsock 5252) for exec, jobs,
   observe/a11y and agent input. Agents drive the machine through it; humans drive
   it through Xpra.
@@ -129,7 +132,7 @@ HTTP API (all JSON, all behind `Authorization: Bearer <device token>`):
 | `POST` | `/v1/session/park` | park now (snapshot with memory); otherwise parked on idle |
 | `GET` | `/v1/control` | **WebSocket.** JSON events: `computer.state`, `notification`, `agent.*`, `media.*` |
 | `GET` | `/v1/computer` | management status and persisted computer settings; does not wake or lease the computer |
-| `PATCH` | `/v1/computer/settings` | update any of `name`, `memoryMb`, `vcpus`, `idleMs`; returns management status |
+| `PATCH` | `/v1/computer/settings` | update any of `name`, `memoryMb`, `vcpus`, `idleMs`, `defaultAgent`; returns management status |
 | `POST` | `/v1/computer/restart` | requires `{ "confirm": true }`; cold restart, preserving the disk and discarding memory; returns management status |
 | `POST` | `/v1/files` | `{ name, data (base64), open? }` → `{ path }`: save a file into the computer's `~/Downloads` (see Agents › Files) |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`: open an `http(s)` URL in the default browser on `:100` |
@@ -139,7 +142,7 @@ Management status has this shape (resources are MiB and idle time is millisecond
 ```ts
 {
   state: "parked" | "waking" | "running" | "parking" | "restarting" | "error",
-  settings: { name: string, memoryMb: number, vcpus: number, idleMs: number },
+  settings: { name: string, memoryMb: number, vcpus: number, idleMs: number, defaultAgent: string | null },
   limits: { memoryMb: { min: number, max: number }, vcpus: { min: number, max: number }, idleMs: { min: number, max: number } },
   activeResources: { memoryMb: number, vcpus: number } | null,
   restartRequired: boolean,
@@ -152,6 +155,8 @@ Management status has this shape (resources are MiB and idle time is millisecond
 
 The name is 1–80 characters without control characters, trimmed on save. Memory is
 512–65536 MiB, vCPUs 1–32, and idle time 60000–86400000 ms; numeric values are integers.
+`defaultAgent` is null (the initial value) or the id of an agent in the ACP registry or
+installed in the computer (see Agents); the first agent install sets it when it is null.
 Unknown fields and invalid JSON return 400 without applying any changes. Settings
 are stored atomically in `${CABOOSE_IMAGE_ROOT}/caboose.json` with mode 0600; environment
 values are initial defaults. Name and idle changes apply immediately. CPU and memory
@@ -267,10 +272,12 @@ forking:
 
 ## Agents
 
-Agents are the coding and computer-use CLIs already installed in the computer — Claude
-Code and Codex — signed in once with the owner's own accounts from Caboose's terminal.
-The host holds no model keys. An agent works on its **own seat**, so it never moves the
-owner's pointer or types into the owner's windows.
+An agent is any program that speaks the [Agent Client Protocol](https://agentclientprotocol.com)
+(ACP) and is listed in the public [ACP registry](https://github.com/agentclientprotocol/registry).
+Caboose has no list of its own and no code for any particular agent: it runs whatever the
+registry describes, inside the computer, signed in with the owner's own account. The host
+holds no model keys. An agent works on its **own seat**, so it never moves the owner's
+pointer or types into the owner's windows.
 
 - **Agent seat.** `caboose-xpra-agent.service` runs a second Xpra seamless display `:101`
   (WebSocket `0.0.0.0:14501`, same token file and username as `:100`). GUI apps an agent
@@ -281,68 +288,177 @@ owner's pointer or types into the owner's windows.
   use.
 - **Desktop tools.** `caboose-desktop-mcp` (stdio MCP server, in the image) gives an agent
   `screenshot`, `click`, `type`, `key`, `scroll`, `launch`, `list_windows` and `focus` on
-  `:101`, so a CLI agent can drive GUI apps as well as the shell. Its accessibility tools
+  `:101`, so an agent can drive GUI apps as well as the shell. Its accessibility tools
   come first, because they need no screenshot and no model round trip: `elements` lists
   the focused window's controls (role, name, state, bounds) from the AT-SPI tree, `find`
   searches them by name and role, `click_element` and `set_text` act on one by id, and
   `read_text` returns the window's text. Xpra keeps a seamless window unmapped until a client
   shows it, so before a coordinate tool runs the server asks Xpra to map the seat's hidden
   windows; `click`, `type` and `screenshot` work whether or not anyone is watching the seat.
-  Claude Code and Codex are configured to load it. It also carries `approve`, the
-  permission-prompt tool behind **Ask before acting** (below).
-- **Tasks.** The host starts a task detached (`setsid`), as user `caboose`, in
-  `/home/caboose/Agents/<task-id>/`, with `DISPLAY=:101` and `CABOOSE_TASK_DIR` set to that
-  directory: `claude -p <prompt> --output-format stream-json --verbose` or
-  `codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox <prompt>`.
-  Without approvals Claude runs with `--permission-mode acceptEdits` and the shell, file,
-  web and desktop tools pre-allowed; Codex runs without its own sandbox, since the computer is one.
-  Output is parsed into events; the raw JSONL transcript is kept in the task directory.
-- **Replies.** A finished task (succeeded, failed or cancelled) can be continued with a new
-  prompt. The host records the conversation id from the transcript — Claude's
-  `system`/`init` `session_id`, Codex's `thread.started` `thread_id` — in the task's
-  `session` file and runs `claude -p <prompt> --resume <session_id> …` or
-  `codex exec resume --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox <thread_id> <prompt>`.
-  Each turn appends to the same `transcript.jsonl`; the task keeps its id, `prompt` (the
-  first one) and `startedAt`, goes back to `running`, and `turns` counts the turns. A task
-  that never reported a conversation id (for example, cancelled before the CLI started)
-  cannot be continued.
-- **Ask before acting** (`approvals: "ask"`, Claude Code only; `codex exec` cannot ask, so
-  Codex rejects it). Claude runs with `--permission-prompt-tool mcp__caboose-desktop__approve`
-  and no pre-allowed tools, so every tool use that needs permission asks. The `approve`
-  tool writes `<taskdir>/approvals/<requestId>.json` `{ tool, input, requestedAt }` (long
-  input strings cut for display) and waits — with no time limit; the task's lease keeps
-  the computer awake — for `<taskdir>/approvals/<requestId>.decision` `{ allow, message? }`,
-  then answers Claude with `{ "behavior": "allow", "updatedInput": <input> }` or
-  `{ "behavior": "deny", "message": … }`. Both files are written whole and renamed into
-  place. The host's poll reports requests without a decision; answering writes the decision
-  file as `caboose`. Request ids are UUIDs minted by the tool and validated before use.
-- **Attachments.** Up to 4 files, at most 10 MB decoded together, are written to
-  `<taskdir>/attachments/<name>` (the last path component without control characters or
-  leading dots, at most 120 characters, made unique as `name (2).ext`). The prompt given to
-  the CLI ends with `\n\nAttached files:\n- <absolute path>` per file, so the agent reads them
-  (Claude Code reads PNG and JPEG natively); the task's `prompt` stays as the owner wrote it.
+  Every task gets it as the MCP server `caboose-desktop` in ACP `session/new`.
+
+### The registry
+
+The host fetches `registry.json` (`CABOOSE_AGENT_REGISTRY_URL`, by default
+`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`) when it is first
+needed and again after an hour, revalidating with its ETag. The last good copy is kept in
+memory and in `${CABOOSE_IMAGE_ROOT}/agent-registry.json` (mode 0600); when a fetch fails
+it is served with `registry.error` and the fetch is retried after a minute. Before any
+successful fetch the list is empty and says why.
+
+Each agent is resolved for `linux-x86_64`, preferring a binary the registry pins by
+SHA-256, then `npx`, then `uvx`, then a binary without a checksum:
+
+| Distribution | Started as |
+| --- | --- |
+| `npx` | `npx -y <package> <args>` |
+| `uvx` | `uvx <package> <args>` |
+| `binary` | `<cmd> <args>` inside `~/.local/share/caboose/agents/<id>/<version>/`, after downloading `archive`, checking its `sha256` when given (otherwise HTTPS only), and unpacking it (`.zip`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, or a raw executable) |
+
+with the registry's `env`. Entries without such a distribution, with a command that leaves
+its directory, or with a package name that looks like an option are not offered.
+**Install** prefetches an agent into the computer (the npm or uv cache, or the binary),
+starts it once to learn its sign-in methods, and records the version in
+`~/.local/share/caboose/agents/<id>/installed.json`. A task runs the installed version;
+installing again moves to the registry's current one. An agent that is not installed
+runs the registry's current version, fetched on first use. An installed agent that leaves
+the registry stays listed and runnable.
+
+The owner can give an agent extra environment, such as an API key, in
+`/home/caboose/.config/caboose/agents/<registry id>.env`: `KEY=VALUE` lines, `#` comments
+and blank lines, no shell expansion, one pair of matching quotes around a value removed.
+The file must belong to `caboose` and be closed to group and others (mode 0600), or the
+runner ignores it and logs why. It is applied after the registry's `env`, for tasks,
+installs and sign-ins alike, and its values are never written to transcripts or logs.
+
+### The runner
+
+`caboose-agentd` (`guest/agentd`, installed at `/opt/caboose/agentd`) is the ACP client.
+The host's guest channel carries command arguments, not stdin, so the host never speaks
+ACP itself: it starts one runner per task, detached (`setsid`), as `caboose`, with
+`DISPLAY=:101`, and the two exchange files in the task directory
+`/home/caboose/Agents/<task-id>/`. The file formats are specified in `guest/agentd/README.md`;
+in short:
+
+- The host writes `task.json` `{ agent: <resolved spec>, cwd, approvals, idleMs }`, prompts
+  as `inbox/<turn>.prompt.json`, cancels as `inbox/cancel-<n>.json`, and decisions as
+  `approvals/<requestId>.decision`. The runner writes `transcript.jsonl`,
+  `approvals/<requestId>.json` and `session`; the launch script records `pid` and
+  `exit-code`. Every file is written whole and renamed into place.
+- `initialize` advertises file reads and writes (resolved paths, refused outside
+  `/home/caboose`), no terminals, and terminal sign-in. The `authMethods` an agent returns
+  are kept for the owner (below).
+- Each turn is `session/prompt` with a text block, and each attachment as an `image`
+  block when the agent accepts images and it is a PNG, JPEG, GIF or WebP under 10 MB,
+  otherwise as a `resource_link` to its `file://` path.
+- The transcript is the same for every agent: `user` (a turn began), `session`
+  (`continuity: new | resume | load | recap`), `text` and `thought` (chunks joined per
+  message), `tool` and `tool_update` (title, kind, status), `plan`, `mode`, `permission`,
+  `usage`, and exactly one of `turn_end` (ACP `stopReason` and the turn's last message as
+  `summary`), `turn_failed` or `auth_required` per turn, each with its turn number.
+- After a turn the runner keeps the agent and its session for `CABOOSE_AGENT_IDLE_MS`
+  (10 minutes by default) waiting for a reply, then exits 0. A later reply starts a new
+  runner, which reopens the conversation with `session/resume` if the agent advertises it,
+  else `session/load` (the replayed history is not written again), else `session/new` with
+  a recap of the earlier turns from the transcript at the start of the prompt; that turn's
+  summary says so.
+
+### Tasks
+
+- **Start.** `POST /v1/agent/tasks` names an agent by registry id, or uses the owner's
+  `defaultAgent`. The host resolves it (installed version first), writes the attachments,
+  `task.json` and the first prompt, and starts the runner. The task's `prompt` stays as the
+  owner wrote it.
+- **Ask before acting** (`approvals: "ask"`) works for every agent: each ACP
+  `session/request_permission` becomes `approvals/<requestId>.json`
+  `{ tool, kind, summary, input, options: [{ id, name, kind }], requestedAt }` and waits,
+  with no time limit (the task's lease keeps the computer awake), for the owner's decision
+  `{ allow, message?, optionId? }`: the named option, else the agent's `allow_once`
+  (`allow_always`) or `reject_once` (`reject_always`). Request ids are UUIDs minted by the
+  runner and validated by the host. ACP has no field for a reason, so a denial's `message`
+  is kept in the transcript, not shown to the agent. With `approvals: "auto"` the runner
+  answers `allow_once` (else `allow_always`) itself; agents also keep their own modes and
+  settings.
+- **Replies.** A finished task (succeeded, failed or cancelled) can be continued. If its
+  runner is still waiting, the prompt goes to the same session; otherwise the reply starts
+  a new runner, which takes the prompt from the inbox (a runner that neither takes it nor
+  exits within 20 s is stopped). Each turn appends to the same `transcript.jsonl`; the task
+  keeps its id, `prompt` and `startedAt`, goes back to `running`, and `turns` counts the
+  turns. Output the earlier turn writes after it was cancelled is not shown as the new one.
+- **Cancel** writes a cancel to the inbox (continuing a paused task first). The runner sends
+  `session/cancel`, answers waiting permission requests `cancelled`, and ends the turn with
+  `stopReason: "cancelled"`; an agent that has not stopped after 15 s is terminated, and the
+  next reply starts it again. The host reports the task cancelled at once.
+- **Signed out.** An ACP `auth_required` error (code -32000) from `session/new`, `load`,
+  `resume` or `prompt` fails the task with `summary: "Sign in to <name> first."` and
+  `signIn`, the agent's sign-in methods, so a client can offer them; after signing in, a
+  reply retries.
 - **Polling.** While any task is live the host runs one guest command per second for all
   of them: new transcript bytes from each task's byte offset (1 MiB per tick shared between
-  tasks, read as base64 so offsets stay exact), the exit code, and pending approval
-  requests. A tick with no live task does nothing.
+  tasks, read as base64 so offsets stay exact), the runner's exit code, and pending approval
+  requests. A tick with no live task does nothing. A runner that exits before its turn ends
+  fails the task with the end of its stderr.
+- **Restore.** Each task directory records its agent, prompt, approval mode and turn count,
+  so a restarted host rebuilds the task list from the guest: a task whose last turn ended
+  is finished with that turn's result, one whose runner is still working re-takes the
+  lease, and either can still be replied to. Task directories written before the runner
+  are listed but cannot be continued.
+
+### Signing in
+
+Agents announce their sign-in methods in ACP `initialize`, which the runner records when an
+agent is installed, probed or run. Registry agents offer at least one of two kinds:
+
+- **`agent`:** `POST /v1/agents/:id/sign-in` starts the runner in sign-in mode on the
+  owner's display `:100`, and it calls ACP `authenticate`; the agent opens the computer's
+  browser at its own sign-in page, with its callback on the computer's localhost, and the
+  owner completes it on the phone.
+- **`terminal`:** the runner opens a terminal window on `:100` running the agent's own
+  program with the method's `args` in place of the registry's, and its `env` over the
+  registry's. Exit status 0 is success; the runner then initializes the agent again.
+
+Progress is reported as `signInStatus` in `GET /v1/agents`
+(`~/.local/share/caboose/agents/<id>/sign-in.json`). Credentials stay wherever the agent
+keeps them in the owner's home directory.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/v1/agent/tasks` | `{ prompt, agent?: "claude" \| "codex", approvals?: "ask" \| "auto", attachments?: [{ name, type, data (base64) }] }` → `{ id }` |
+| `GET` | `/v1/agents` | the agents this computer can run (below); never wakes the computer, and shows the last known installed state while it is parked |
+| `POST` | `/v1/agents/:id/install` | → `{ agent }`; prefetch the registry's current version into the computer and learn its sign-in methods; can take minutes. 404 for an id not in the registry, 409 while the computer is not running or when it has no runner, 502 when the install fails (with the reason) |
+| `POST` | `/v1/agents/:id/sign-in` | `{ methodId }` → `{ started: true, method: { id, name, description?, type } }`; start a sign-in on the owner's display. 400 for an unknown method |
+| `POST` | `/v1/agent/tasks` | `{ prompt, agent?: <registry id>, approvals?: "ask" \| "auto", attachments?: [{ name, type, data (base64) }] }` → `{ id }`. `agent` defaults to `defaultAgent` (400 when neither is set); 404 for an id that is not in the registry or installed |
 | `GET` | `/v1/agent/tasks` | recent tasks, newest first (task record below) |
-| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`; continue a finished task's conversation. 409 while the task is running or paused, or when it has no conversation to continue; 404 for an unknown task |
-| `POST` | `/v1/agent/tasks/:id/approvals/:requestId` | `{ allow: boolean, message?: string }` → `{ resolved }`; `resolved: false` when that request is no longer waiting |
-| `POST` | `/v1/agent/tasks/:id/cancel` | stop a running task |
+| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`; continue a finished task's conversation. 409 while the task is running or paused, or for a task from before the runner; 404 for an unknown task |
+| `POST` | `/v1/agent/tasks/:id/approvals/:requestId` | `{ allow: boolean, message?: string, optionId?: string }` → `{ resolved }`; `resolved: false` when that request is no longer waiting |
+| `POST` | `/v1/agent/tasks/:id/cancel` | cancel a running task's turn |
 | `POST` | `/v1/agent/tasks/:id/pause` | stop a running task in place for take-over (`status: "paused"`) |
 | `POST` | `/v1/agent/tasks/:id/resume` | continue a paused task |
 | `GET` | `/v1/display?seat=agent` | **WebSocket.** Relay to the agent seat's Xpra on `:101` |
+
+`GET /v1/agents`:
+
+```ts
+{
+  agents: Array<{
+    id: string, name: string, version: string,   // the registry's current version
+    description: string, icon: string | null, website: string | null, repository: string | null, license: string | null,
+    distribution: "npx" | "uvx" | "binary",
+    installed: { version: string } | null,
+    signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>,  // once known
+    signInStatus?: { methodId: string, status: "running" | "succeeded" | "failed", message?: string, startedAt?: string, finishedAt?: string }
+  }>,                                            // registry order; installed agents no longer in the registry last
+  defaultAgent: string | null,
+  registry: { fetchedAt: string | null, error?: string }
+}
+```
 
 A task record:
 
 ```ts
 {
   id: string,
-  agent: "claude" | "codex",
+  agent: string,                  // registry id
+  agentName?: string,             // the registry's name for it
   prompt: string,                 // the first prompt, as written
   status: "running" | "paused" | "succeeded" | "failed" | "cancelled",
   startedAt: string,              // ISO 8601
@@ -350,28 +466,33 @@ A task record:
   summary?: string,               // the last turn's result; absent while running
   turns: number,                  // 1, plus one per reply
   approvals: "ask" | "auto",
-  pendingApproval?: { id: string, tool: string, summary: string },  // oldest request waiting
-  attachments?: string[]          // absolute guest paths
+  pendingApproval?: { id: string, tool: string, summary: string, options?: Array<{ id: string, name: string, kind: string }> },  // oldest request waiting
+  attachments?: string[],         // absolute guest paths
+  signIn?: Array<{ id: string, name: string, description?: string, type: "agent" | "terminal" }>  // when the agent was signed out
 }
 ```
 
-Prompts are 1–32000 characters after trimming. `message` is at most 2000 characters and
-is shown to Claude when a request is denied. Agent requests answer 400 for invalid input
-and 409 while the computer is not running.
+Prompts are 1–32000 characters after trimming; `message` is at most 2000 characters and
+`optionId` 200. Agent requests answer 400 for invalid input and 409 while the computer is
+not running.
 
-Control-socket events: `agent.task.started { id, agent, prompt }`,
-`agent.task.output { id, kind: "text" | "tool" | "error", text }`,
-`agent.task.paused { id }`, `agent.task.resumed { id }`,
-`agent.task.finished { id, status: "succeeded" | "failed" | "cancelled", summary }`,
+Control-socket events: `agent.task.started { id, agent, agentName?, prompt }`,
+`agent.task.output { id, kind: "text" | "tool" | "error", text }` (each agent message, each
+new tool call by title, and a failed turn's error), `agent.task.paused { id }`,
+`agent.task.resumed { id }`,
+`agent.task.finished { id, status: "succeeded" | "failed" | "cancelled", summary, signIn? }`,
 `agent.task.replied { id, prompt, turn }`,
-`agent.task.approval { id, request: { id, tool, summary } }` (once per request),
-`agent.task.approval.resolved { id, requestId, allow }`.
-A task that finds its CLI signed out fails with `status: "failed"` and a summary telling
-the owner to sign in from Terminal. Tasks keep running while the phone is locked: the
-computer is a server, and the host holds a lease while any task runs, so the computer is
-not parked under a working agent. Each task directory records its agent, prompt, approval
-mode, turn count, conversation id, pid and exit code, so a restarted host rebuilds the
-task list from the guest, re-takes the lease for tasks still running, and can still reply.
+`agent.task.approval { id, request: { id, tool, summary, options? } }` (once per request),
+`agent.task.approval.resolved { id, requestId, allow }`. Tasks keep running while the
+phone is locked: the computer is a server, and the host holds a lease while any task runs,
+so the computer is not parked under a working agent.
+
+**Compatibility with clients written for the two built-in CLIs.** Routes and events keep
+their shapes; fields are only added. `agent` is now a registry id: a request naming
+`"claude"` or `"codex"` runs `claude-acp` or `codex-acp`, and task records carry the
+registry id and `agentName`. Any agent may ask before acting. A denial's `message` no
+longer reaches the agent. A signed-out agent's summary names the agent, and its `signIn`
+methods replace the advice to sign in from Terminal.
 
 ### Screen
 

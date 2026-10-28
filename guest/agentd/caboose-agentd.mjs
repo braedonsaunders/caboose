@@ -10,6 +10,7 @@
 //   caboose-agentd probe <spec base64>    initialize only: learn and record its sign-in methods
 //   caboose-agentd sign-in <spec base64>  run one sign-in method on the owner's display
 //   caboose-agentd state                  print what is installed and known, as JSON
+//   caboose-agentd set-env <id> <json>    change an agent's environment file: { set?, remove? }
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createWriteStream, existsSync, readFileSync } from 'node:fs'
@@ -187,6 +188,51 @@ export async function readEnvFile(id, warn = message => console.error(`caboose-a
     env[key] = value
   }
   return env
+}
+
+const ENV_DIR = join(HOME, '.config', 'caboose', 'agents')
+
+/** The variable names an agent's environment file sets; never their values. */
+export async function envNames(id) {
+  return Object.keys(await readEnvFile(id, () => {})).sort()
+}
+
+/**
+ * Sets and removes variables in an agent's environment file, keeping its other lines and
+ * comments. Values are written in double quotes (the reader removes one pair), so leading
+ * and trailing spaces and quote characters survive. The file is written whole, mode 0600,
+ * and renamed into place. Returns the names it now sets.
+ */
+export async function setEnv(id, changes) {
+  if (!AGENT_ID.test(id ?? '')) throw new Error('invalid agent id')
+  const set = changes?.set ?? {}
+  const remove = changes?.remove ?? []
+  if (typeof set !== 'object' || Array.isArray(set) || !Array.isArray(remove)) throw new Error('changes must be { set?: { NAME: value }, remove?: [NAME] }')
+  for (const [name, value] of Object.entries(set)) {
+    if (!ENV_NAME.test(name)) throw new Error(`invalid variable name: ${name.slice(0, 130)}`)
+    if (typeof value !== 'string' || /[\r\n\0]/.test(value) || value.length > 8192) throw new Error(`${name} must be a single line of at most 8192 characters`)
+  }
+  for (const name of remove) if (typeof name !== 'string' || !ENV_NAME.test(name)) throw new Error('invalid variable name to remove')
+  const path = join(ENV_DIR, `${id}.env`)
+  const lines = await readFile(path, 'utf8').then(text => text.split(/\r?\n/), () => [])
+  const pending = new Map(Object.entries(set))
+  const dropped = new Set(remove)
+  const kept = []
+  for (const line of lines) {
+    const equals = line.indexOf('=')
+    const name = equals > 0 && !line.trim().startsWith('#') ? line.slice(0, equals).trim() : ''
+    if (name && dropped.has(name)) continue
+    if (name && pending.has(name)) { kept.push(`${name}="${pending.get(name)}"`); pending.delete(name); continue }
+    kept.push(line)
+  }
+  while (kept.length && kept.at(-1) === '') kept.pop()
+  for (const [name, value] of pending) kept.push(`${name}="${value}"`)
+  await mkdir(ENV_DIR, { recursive: true, mode: 0o700 })
+  const temporary = `${path}.${randomUUID()}.tmp`
+  await writeFile(temporary, kept.length ? kept.join('\n') + '\n' : '', { mode: 0o600 })
+  await chmod(temporary, 0o600)
+  await rename(temporary, path)
+  return envNames(id)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -965,11 +1011,20 @@ async function state() {
     const installed = await readJson(join(dir, 'installed.json'))
     const auth = await readJson(join(dir, 'auth.json'))
     const signIn = await readJson(join(dir, 'sign-in.json'))
+    const env = await envNames(entry.name)
     agents[entry.name] = {
       ...(installed?.spec ? { installed: { version: installed.version, spec: installed.spec, installedAt: installed.installedAt } } : {}),
+      ...(env.length ? { env } : {}),
       ...(auth ? { authMethods: Array.isArray(auth.authMethods) ? auth.authMethods : [], probedVersion: auth.version, agentInfo: auth.agentInfo ?? null } : {}),
       ...(signIn ? { signInStatus: signIn } : {}),
     }
+  }
+  // An environment file can come before the agent is ever installed or run.
+  for (const file of await readdir(ENV_DIR).catch(() => [])) {
+    const id = file.endsWith('.env') ? file.slice(0, -4) : ''
+    if (!AGENT_ID.test(id) || agents[id]) continue
+    const env = await envNames(id)
+    if (env.length) agents[id] = { env }
   }
   return { runner: VERSION, agents }
 }
@@ -1005,8 +1060,13 @@ async function main(argv) {
   }
   if (mode === 'sign-in') return signIn(decodeSpec(argument))
   if (mode === 'state') return print(await state())
+  if (mode === 'set-env') {
+    let changes
+    try { changes = JSON.parse(argv[2] ?? '') } catch { throw new Error('set-env needs { set?, remove? } as JSON') }
+    return print({ env: await setEnv(argument, changes) })
+  }
   if (mode === '--version') return print({ version: VERSION })
-  throw new Error('usage: caboose-agentd run <dir> | install <spec> | probe <spec> | sign-in <spec> | state')
+  throw new Error('usage: caboose-agentd run <dir> | install <spec> | probe <spec> | sign-in <spec> | state | set-env <id> <json>')
 }
 
 function print(value) { process.stdout.write(JSON.stringify(value) + '\n') }

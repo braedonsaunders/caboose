@@ -7,12 +7,14 @@ owner token, then see and manage the computer.
   and working agents; Wake, Park now and Restart (confirmed first); a restart-required
   notice when saved memory or vCPUs wait on a cold boot; the last lifecycle error; and
   the `caboose://connect` link that signs an iPhone in to this host.
-- **Settings** — name, memory, vCPUs and auto-park, validated against the host's
-  `limits`. Edits made from another device are followed unless there are unsaved
+- **Settings** — name, memory, vCPUs, auto-park and the default agent, validated against
+  the host's `limits`. Edits made from another device are followed unless there are unsaved
   edits here; "Save and restart" applies new resources in one step.
-- **Agents** — start a Claude Code or Codex task (Claude can ask before acting, answered
-  with Approve or Deny on the task), pause, resume or cancel it, and reply to a finished
-  task to continue its conversation.
+- **Agents** — pick any agent from the Agent Client Protocol registry (installed ones
+  first), install or update it, sign in to it on the computer's screen, and start a task
+  that can ask before acting (answered with Approve, the agent's always-allow option, or
+  Deny on the task); pause, resume or cancel it, sign in from a task that found its agent
+  signed out, and reply to a finished task to continue its conversation.
 
 It is built on AppKit (`appkit-ui` for the shell, settings layout, forms, confirm
 dialog and toasts; `appkit-dashboard` for metric cards and panels). It talks only to
