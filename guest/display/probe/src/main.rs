@@ -39,7 +39,9 @@ OPTIONS:
     --window ID            the window --actions are for [default: the first that shows]
     --actions LIST         once a window shows, run `;`-separated actions 300 ms apart:
                            key:KEYSYM[+mod...] (press and release; mods shift, control,
-                           mod1, mod4), text:STRING, tap:X,Y, click:X,Y, wait:MS
+                           mod1, mod4), text:STRING, edit:N:STRING (delete N before,
+                           then commit), copy:STRING (the phone's clipboard), tap:X,Y,
+                           click:X,Y, wait:MS
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -286,6 +288,11 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
             [true, false].map(|pressed| Message::Key(proto::Key { keysym, pressed, mods: mods.clone() })).to_vec()
         }
         "text" => vec![Message::Text(proto::Text { commit: Some(arg.to_owned()), ..Default::default() })],
+        // copy:STRING puts STRING on the computer's clipboard, as copying on the phone does.
+        "copy" => vec![Message::ClientClipboard(proto::Clipboard {
+            mime: "text/plain;charset=utf-8".into(),
+            data: arg.as_bytes().to_vec(),
+        })],
         // edit:N:STRING deletes N grapheme clusters before the cursor and commits STRING,
         // as an autocorrection does.
         "edit" => {
@@ -385,6 +392,7 @@ fn run(args: Args) -> Result<bool, String> {
     let mut next_vsync = Instant::now();
     let mut text_input_events = 0u32;
     let mut videos: BTreeMap<u64, VideoStats> = BTreeMap::new();
+    let mut clipboard: Option<String> = None;
     let mut ping_sent: Option<u64> = None;
     let mut rtt_us: Option<u64> = None;
     let mut bye: Option<proto::ByeReason> = None;
@@ -563,6 +571,7 @@ fn run(args: Args) -> Result<bool, String> {
                     }
                 }
                 Message::TextInput(_) => text_input_events += 1,
+                Message::ServerClipboard(c) => clipboard = Some(String::from_utf8_lossy(&c.data).into_owned()),
                 Message::VideoCreate(c) => {
                     videos.insert(
                         c.id,
@@ -694,7 +703,7 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"bye\":{}}}",
             videos
                 .iter()
                 .map(|(id, v)| format!(
@@ -722,6 +731,7 @@ fn run(args: Args) -> Result<bool, String> {
             cpu_ms.map(|c| format!("{:.1}", c / elapsed / 10.0)).unwrap_or("null".into()),
             cpu_ms.filter(|_| total_frames > 0).map(|c| format!("{:.2}", c / total_frames as f64)).unwrap_or("null".into()),
             rtt_us.map(|r| format!("{:.2}", r as f64 / 1000.0)).unwrap_or("null".into()),
+            clipboard.as_ref().map(|c| format!("{c:?}")).unwrap_or("null".into()),
             bye.map(|b| format!("\"{}\"", b.as_str())).unwrap_or("null".into()),
         );
     } else {
