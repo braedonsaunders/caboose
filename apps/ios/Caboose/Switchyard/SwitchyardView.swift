@@ -37,7 +37,9 @@ struct SwitchyardView: View {
                         YardTile(window: window, yard: yard, rect: rect, focused: yard.layout.focused == id,
                                  keyboard: model.keyboardVisible && keyTarget == id, onAsk: { askingAbout = $0 })
                             .scaleEffect(carried ? (yard.carry?.rect.width ?? rect.width) / max(1, rect.width) : 1, anchor: .top)
-                            .offset(x: carried ? yard.carry!.rect.minX : rect.minX, y: carried ? yard.carry!.rect.minY : rect.minY)
+                            // Scaled about its top centre, so the centre follows the finger.
+                            .offset(x: carried ? yard.carry!.rect.midX - rect.width / 2 : rect.minX,
+                                    y: carried ? yard.carry!.rect.minY : rect.minY)
                             .shadow(color: .black.opacity(carried ? 0.45 : 0), radius: 24, y: 14)
                             .zIndex(carried ? 2 : 0)
                             .transition(.asymmetric(insertion: .scale(scale: 0.92).combined(with: .opacity),
@@ -49,6 +51,8 @@ struct SwitchyardView: View {
                     YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: false,
                                 keyboard: model.keyboardVisible && keyTarget == id) {}
                         .frame(width: proxy.size.width, height: proxy.size.height)
+                        .overlay(alignment: .top) { leaveFullscreenHandle(id) }
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
                         .zIndex(3)
                 }
                 popups(windows, keyTarget: keyTarget)
@@ -80,10 +84,26 @@ struct SwitchyardView: View {
             .clipped()
             .onAppear { yard.resize(to: proxy.size) }
             .onChange(of: proxy.size) { _, size in yard.resize(to: size) }
+            // An app going full screen, or leaving it, is laid out again at once.
+            .onChange(of: yard.fullscreenWindow) { _, _ in yard.apply() }
+            .animation(.smooth(duration: 0.35), value: yard.fullscreenWindow)
         }
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }
+    }
+
+    /// A small tab at the top of a full-screen window takes it back into its tile.
+    private func leaveFullscreenHandle(_ id: Int) -> some View {
+        Capsule()
+            .fill(.white.opacity(0.5))
+            .frame(width: 36, height: 4)
+            .padding(.top, 5)
+            .frame(width: 96, height: 22, alignment: .top)
+            .contentShape(Rectangle())
+            .onTapGesture { yard.leaveFullscreen(id) }
+            .accessibilityLabel("Exit Full Screen")
+            .accessibilityAddTraits(.isButton)
     }
 
     // MARK: Gaps

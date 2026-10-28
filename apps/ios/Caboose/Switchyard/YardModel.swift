@@ -21,6 +21,8 @@ final class YardModel {
     /// A tile being carried by its grabber.
     struct Carry: Equatable {
         let window: Int
+        /// The tile's rect on screen when it was picked up.
+        let origin: CGRect
         /// The tile's rect on screen as it is carried.
         var rect: CGRect
         var drop: YardLayout.Drop?
@@ -51,8 +53,11 @@ final class YardModel {
     /// Dialogs already fitted over their window.
     private var placedDialogs = Set<Int>()
     private var lastLiveApply = Date.distantPast
-    /// Windows that went full screen, and the tile they come back to.
-    private(set) var fullscreenWindow: Int?
+    /// The tiled window that asked to cover the whole screen (a video, a slideshow, a game):
+    /// it covers the yard until it leaves full screen, then has its tile back.
+    var fullscreenWindow: Int? {
+        layout.windows.first { session?.windows[$0]?.isFullscreen == true }
+    }
 
     // MARK: Screen
 
@@ -103,8 +108,6 @@ final class YardModel {
         sent = sent.filter { windows[$0.key] != nil }
         settling = settling.filter { windows[$0.key] != nil }
         placedDialogs.formIntersection(windows.keys)
-        if let fullscreen = fullscreenWindow, windows[fullscreen]?.isFullscreen != true { fullscreenWindow = nil }
-        if fullscreenWindow == nil, let window = tiled.first(where: \.isFullscreen) { fullscreenWindow = window.id }
         if layout != before {
             if let focused = layout.focused, layout.focused != before.focused { reveal(focused) }
             scroll = min(scroll, layout.maximumScroll(in: metrics))
@@ -128,19 +131,8 @@ final class YardModel {
         let scale = pixelsPerPoint
         for (id, tile) in tiles {
             guard let window = session.windows[id] else { continue }
-            if fullscreenWindow == id {
-                let full = CGRect(origin: .zero, size: metrics.size)
-                send(window, CGRect(x: 0, y: 0, width: full.width * scale, height: full.height * scale).integral, session)
-                continue
-            }
-            let target = CGRect(x: tile.minX * scale, y: tile.minY * scale, width: tile.width * scale, height: tile.height * scale).integral
-            // A window that went full screen elsewhere leaves it here.
-            if window.isFullscreen, fullscreenWindow != id {
-                session.configure(window, frame: target, state: ["fullscreen": false])
-                sent[id] = target
-                continue
-            }
-            send(window, target, session)
+            let rect = window.isFullscreen ? CGRect(origin: .zero, size: metrics.size) : tile
+            send(window, CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale).integral, session)
         }
     }
 
@@ -319,11 +311,12 @@ final class YardModel {
     // MARK: Carrying a tile
 
     func carry(_ window: Int, by translation: CGSize) {
-        guard let start = tiles[window] else { return }
         if carry?.window != window {
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             focus(window, animated: false)
         }
+        // Where it was picked up, on screen: the finger stays on the tile as the track scrolls.
+        guard let start = carry?.window == window ? carry?.origin : tiles[window] else { return }
         var rect = start.offsetBy(dx: translation.width, dy: translation.height)
         // Small enough to see where it goes.
         let shrink = min(1, 240 / max(1, rect.width))
@@ -332,7 +325,7 @@ final class YardModel {
         let drop = layout.drop(for: window, at: finger, in: metrics)
         let preview = drop.flatMap { layout.preview(of: $0, for: window, in: metrics) }?.offsetBy(dx: -scroll, dy: 0)
         if drop != carry?.drop, drop != nil { UISelectionFeedbackGenerator().selectionChanged() }
-        carry = Carry(window: window, rect: rect, drop: drop, preview: preview)
+        carry = Carry(window: window, origin: start, rect: rect, drop: drop, preview: preview)
         // Carried to an edge, the track scrolls under it.
         let edge: CGFloat = 36
         if finger.x - scroll < edge { nudge(by: -14) } else if finger.x - scroll > metrics.size.width - edge { nudge(by: 14) }
@@ -395,6 +388,15 @@ final class YardModel {
     func jump(to window: Int) {
         focus(window)
         overviewOpen = false
+    }
+
+    /// Takes a window out of full screen, back into its tile.
+    func leaveFullscreen(_ window: Int) {
+        guard let session, let remote = session.windows[window], let tile = tiles[window] else { return }
+        let scale = pixelsPerPoint
+        let target = CGRect(x: tile.minX * scale, y: tile.minY * scale, width: tile.width * scale, height: tile.height * scale).integral
+        sent[window] = target
+        session.configure(remote, frame: target, state: ["fullscreen": false])
     }
 
     // MARK: Closing
