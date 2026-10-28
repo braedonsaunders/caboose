@@ -357,6 +357,17 @@ impl State {
         w.stream.encoding = false;
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         match done.result {
+            // The relay carries at most 16 MiB per message; a picture that does not fit
+            // is dropped (the CBOR header needs a few dozen bytes of the budget).
+            Ok(encoded) if encoded.data.len() > proto::MAX_PAYLOAD - 256 => {
+                tracing::warn!(
+                    "window {}: {} byte picture exceeds the message limit; dropped",
+                    done.window,
+                    encoded.data.len()
+                );
+                w.stream.need_keyframe = true;
+                w.stream.dirty = true;
+            }
             Ok(encoded) => {
                 w.stream.in_flight.push_back(done.pts_us);
                 self.stats.frames += 1;
