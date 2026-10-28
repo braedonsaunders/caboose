@@ -2,6 +2,7 @@ import {
   AGENTD, AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentUnavailableError, RUNNER_MISSING, rethrowRunnerMissing,
   type AgentGuest, type AgentResolver, type SignInMethod,
 } from './agents.js'
+import { randomUUID } from 'node:crypto'
 import { ownerEnv } from './display.js'
 import type { HomeOwnership } from './home.js'
 import { AGENT_ID, type AgentLaunch, type AgentRegistry, type RegistryAgent } from './registry.js'
@@ -19,13 +20,15 @@ const INSTALL_TIMEOUT_MS = 15 * 60_000
 const PROBE_TIMEOUT_MS = 3 * 60_000
 
 /**
- * A sign-in's progress. `on` says where it runs; on the phone, `url` is the page it opened
- * for the app to show and `terminal` the terminal session a terminal method runs in.
+ * A sign-in's progress. `attempt` names this sign-in among the agent's; `on` says where it
+ * runs; on the phone, `url` is the page it opened for the app to show and `terminal` the
+ * terminal session a terminal method runs in. A runner that predates attempts reports none.
  */
 export interface SignInStatus {
   methodId: string
   status: 'running' | 'succeeded' | 'failed'
   on?: 'phone' | 'display'
+  attempt?: string
   url?: string
   terminal?: string
   message?: string
@@ -99,12 +102,20 @@ export function isLoopbackCallback(value: string): boolean {
   } catch { return false }
 }
 
+const ATTEMPT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+function readAttempt(value: unknown): string {
+  if (typeof value !== 'string' || !ATTEMPT.test(value)) throw new AgentInputError('attempt is required: the one the sign-in started with')
+  return value
+}
+
 function readSignInStatus(value: unknown): SignInStatus | undefined {
   const status = value as Record<string, unknown> | null
   if (!status || typeof status.methodId !== 'string' || !['running', 'succeeded', 'failed'].includes(status.status as string)) return undefined
   return {
     methodId: status.methodId, status: status.status as SignInStatus['status'],
     ...(status.on === 'phone' || status.on === 'display' ? { on: status.on } : {}),
+    ...(typeof status.attempt === 'string' && ATTEMPT.test(status.attempt) ? { attempt: status.attempt } : {}),
     ...(typeof status.url === 'string' && isWebPage(status.url) ? { url: status.url } : {}),
     ...(typeof status.terminal === 'string' && /^[0-9a-f]{32}$/.test(status.terminal) ? { terminal: status.terminal } : {}),
     ...(typeof status.message === 'string' ? { message: status.message.slice(0, 1000) } : {}),
@@ -240,9 +251,11 @@ export class AgentCatalog implements AgentResolver {
    * there and a "terminal" method a terminal window running the agent's login. On the phone
    * nothing opens on the display: the page the sign-in opens is reported as `url` for the app
    * to show, and a terminal method runs in a terminal session reported as `terminal`.
-   * Progress appears in GET /v1/agents as `signInStatus`. A new sign-in replaces a running one.
+   * Progress appears in GET /v1/agents as `signInStatus`. Every start is a new `attempt`
+   * (returned, and in `signInStatus`) that replaces the running one; delivering a callback
+   * and cancelling name the attempt, so they never reach a newer one.
    */
-  async signIn(id: string, input: Record<string, unknown>): Promise<{ started: true; method: SignInMethod }> {
+  async signIn(id: string, input: Record<string, unknown>): Promise<{ started: true; method: SignInMethod; attempt: string }> {
     if (!AGENT_ID.test(id)) throw new AgentNotFoundError('agent not found')
     for (const key of Object.keys(input)) if (key !== 'methodId' && key !== 'on') throw new AgentInputError(`Unknown field: ${key}`)
     const methodId = input.methodId
@@ -263,25 +276,29 @@ export class AgentCatalog implements AgentResolver {
     }
     const method = publicSignIn(this.guestAgents[id]?.authMethods).find(item => item.id === methodId)
     if (!method) throw new AgentInputError(`${launch.name} has no sign-in method "${methodId}"`)
+    const attempt = randomUUID()
     await guest.run(RUNUSER, ['-u', 'caboose', '--', '/usr/bin/env', ...GUEST_ENV, '/bin/sh', '-c', SIGN_IN_SCRIPT, 'sh', AGENTD,
-      encode({ agent: launch, methodId, on, env: envObject(ownerEnv(guest)) })], 30_000).catch(rethrowRunnerMissing)
+      encode({ agent: launch, methodId, on, attempt, env: envObject(ownerEnv(guest)) })], 30_000).catch(rethrowRunnerMissing)
     const state = this.guestAgents[id] ?? (this.guestAgents[id] = {})
-    state.signInStatus = { methodId, status: 'running', on, startedAt: new Date().toISOString() }
-    return { started: true, method }
+    state.signInStatus = { methodId, status: 'running', on, attempt, startedAt: new Date().toISOString() }
+    return { started: true, method, attempt }
   }
 
   /**
-   * Delivers `{ url }`, the address on the computer's loopback that a sign-in on the phone
-   * sent the browser back to (`http://localhost:<port>/…`), to the agent waiting there.
+   * Delivers `{ attempt, url }`: `url` is the address on the computer's loopback that sign-in
+   * `attempt`, on the phone, sent the browser back to (`http://localhost:<port>/…`), and goes
+   * to the agent waiting there only while that attempt is the agent's running sign-in.
    */
   async signInCallback(id: string, input: Record<string, unknown>): Promise<{ delivered: true; status: number }> {
     if (!AGENT_ID.test(id)) throw new AgentNotFoundError('agent not found')
-    for (const key of Object.keys(input)) if (key !== 'url') throw new AgentInputError(`Unknown field: ${key}`)
+    for (const key of Object.keys(input)) if (key !== 'url' && key !== 'attempt') throw new AgentInputError(`Unknown field: ${key}`)
+    const attempt = readAttempt(input.attempt)
     const url = input.url
     if (typeof url !== 'string' || !isLoopbackCallback(url)) throw new AgentInputError('url must be an http://localhost:<port> address')
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
-    const output = await agentd(guest, 'sign-in-callback', id, 60_000, url).catch(error => {
+    // The runner may wait for the sign-in lock, then has 30 seconds to deliver.
+    const output = await agentd(guest, 'sign-in-callback', id, 150_000, attempt, url).catch(error => {
       if (error instanceof AgentConflictError) throw error
       const message = guestMessage(error)
       if (/No sign-in is waiting/.test(message)) throw new AgentConflictError('This sign-in is no longer waiting. Start it again.')
@@ -291,15 +308,20 @@ export class AgentCatalog implements AgentResolver {
     return { delivered: true, status: typeof status === 'number' ? status : 0 }
   }
 
-  /** Stops the agent's running sign-in. Resolves whether one was running. */
-  async cancelSignIn(id: string): Promise<{ cancelled: boolean }> {
+  /**
+   * `{ attempt }`: stops the agent's running sign-in if it is that attempt. A newer attempt is
+   * left running. Resolves whether it was cancelled.
+   */
+  async cancelSignIn(id: string, input: Record<string, unknown>): Promise<{ cancelled: boolean }> {
     if (!AGENT_ID.test(id)) throw new AgentNotFoundError('agent not found')
+    for (const key of Object.keys(input)) if (key !== 'attempt') throw new AgentInputError(`Unknown field: ${key}`)
+    const attempt = readAttempt(input.attempt)
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
-    const output = await agentd(guest, 'sign-in-cancel', id, 20_000)
+    const output = await agentd(guest, 'sign-in-cancel', id, 120_000, attempt)
     const cancelled = (JSON.parse(output) as { cancelled?: unknown }).cancelled === true
     const state = this.guestAgents[id]
-    if (cancelled && state?.signInStatus?.status === 'running') state.signInStatus = { ...state.signInStatus, status: 'failed', message: 'Sign-in cancelled.' }
+    if (cancelled && state?.signInStatus?.attempt === attempt) state.signInStatus = { ...state.signInStatus, status: 'failed', message: 'Sign-in cancelled.' }
     return { cancelled }
   }
 

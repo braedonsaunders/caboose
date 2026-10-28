@@ -17,6 +17,8 @@ struct AgentListing: Decodable, Identifiable, Hashable, Sendable {
         var status: String
         /// "phone" or "display"; absent from a computer whose runner predates signing in on the phone.
         var on: String?
+        /// Which sign-in this is; absent from a runner that predates attempts.
+        var attempt: String?
         /// On the phone: the page the sign-in opened, for the app to show.
         var url: String?
         /// On the phone: the terminal session a terminal method runs in.
@@ -72,22 +74,27 @@ extension HostClient {
         return installed.agent
     }
 
-    /// Starts a sign-in on the phone (its page and terminal come to the app), or on the computer's own screen.
-    func signInAgent(_ id: String, method: String, onPhone: Bool) async throws {
-        struct Started: Decodable { var started: Bool }
-        let _: Started = try await request("POST", "/v1/agents/\(Self.pathComponent(id))/sign-in",
-                                           body: ["methodId": .string(method), "on": .string(onPhone ? "phone" : "display")], timeout: 240)
+    /// Starts a sign-in on the phone (its page and terminal come to the app), or on the computer's
+    /// own screen. Returns its attempt, which a host from before attempts does not send.
+    func signInAgent(_ id: String, method: String, onPhone: Bool) async throws -> String? {
+        struct Started: Decodable { var started: Bool; var attempt: String? }
+        let started: Started = try await request("POST", "/v1/agents/\(Self.pathComponent(id))/sign-in",
+                                                 body: ["methodId": .string(method), "on": .string(onPhone ? "phone" : "display")], timeout: 240)
+        return started.attempt
     }
 
-    /// Hands the agent the address on the computer's loopback that its sign-in page sent the browser back to.
-    func deliverSignInCallback(_ id: String, url: URL) async throws {
+    /// Hands the agent the address on the computer's loopback that sign-in `attempt`'s page sent the browser back to.
+    func deliverSignInCallback(_ id: String, attempt: String, url: URL) async throws {
         struct Delivered: Decodable { var delivered: Bool }
-        let _: Delivered = try await request("POST", "/v1/agents/\(Self.pathComponent(id))/sign-in/callback", body: ["url": .string(url.absoluteString)], timeout: 90)
+        let _: Delivered = try await request("POST", "/v1/agents/\(Self.pathComponent(id))/sign-in/callback",
+                                             body: ["attempt": .string(attempt), "url": .string(url.absoluteString)], timeout: 180)
     }
 
-    func cancelSignIn(_ id: String) async throws {
+    /// Stops sign-in `attempt` if it is still the agent's running one; never a newer one.
+    func cancelSignIn(_ id: String, attempt: String) async throws {
         struct Cancelled: Decodable { var cancelled: Bool }
-        let _: Cancelled = try await request("POST", "/v1/agents/\(Self.pathComponent(id))/sign-in/cancel", timeout: 30)
+        let _: Cancelled = try await request("POST", "/v1/agents/\(Self.pathComponent(id))/sign-in/cancel",
+                                             body: ["attempt": .string(attempt)], timeout: 150)
     }
 
     /// Sets or removes variables, such as an API key, in the agent's environment in the computer.

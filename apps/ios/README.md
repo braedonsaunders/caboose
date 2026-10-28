@@ -205,7 +205,10 @@ ChatGPT or similar login finishes without touching the computer's screen. A sign
 runs in a terminal, such as Claude's, shows that terminal in the sheet to answer its prompts
 (the Terminal tab's view, pinned to that one session). Google accounts refuse to sign in
 inside an app's browser, so use another option the page offers, or **Sign In on Computer's
-Screen** from the sheet's menu. Leaving the sheet before it finishes cancels the sign-in.
+Screen** from the sheet's menu. Each sheet follows only the sign-in attempt it started:
+leaving it before it finishes cancels that attempt, and if a newer sign-in to the same agent
+starts (from another sheet or device), the sheet says so and stops, never touching the newer
+one.
 
 Agents run their GUI apps on the agent seat, a second display of the computer. The app
 connects to it as it does to the owner's display (`/v1/display?seat=agent`, without sound);

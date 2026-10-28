@@ -417,7 +417,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         return json(response, 200, { agent })
       }
       if (agentAction[2] === 'sign-in/callback') return json(response, 200, await leased(() => catalog.signInCallback(id, input)))
-      if (agentAction[2] === 'sign-in/cancel') return json(response, 200, await leased(() => catalog.cancelSignIn(id)))
+      if (agentAction[2] === 'sign-in/cancel') return json(response, 200, await leased(() => catalog.cancelSignIn(id, input)))
       return json(response, 200, await leased(() => catalog.signIn(id, input)))
     }
     const agentEnv = /^\/v1\/agents\/([^/]+)\/env$/.exec(path)

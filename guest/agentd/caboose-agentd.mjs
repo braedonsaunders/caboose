@@ -9,8 +9,8 @@
 //   caboose-agentd install <spec base64>  prefetch an agent, learn its sign-in methods, record it
 //   caboose-agentd probe <spec base64>    initialize only: learn and record its sign-in methods
 //   caboose-agentd sign-in <spec base64>  run one sign-in method, on the phone or the owner's display
-//   caboose-agentd sign-in-callback <id> <url>  deliver a page a sign-in on the phone was sent back to
-//   caboose-agentd sign-in-cancel <id>    stop the agent's running sign-in
+//   caboose-agentd sign-in-callback <id> <attempt> <url>  deliver a page a sign-in on the phone was sent back to
+//   caboose-agentd sign-in-cancel <id> <attempt>  stop the agent's running sign-in if it is that attempt
 //   caboose-agentd state                  print what is installed and known, as JSON
 //   caboose-agentd set-env <id> <json>    change an agent's environment file: { set?, remove? }
 import { spawn } from 'node:child_process'
@@ -1077,28 +1077,55 @@ async function install(spec) {
  * agent's own program with the method's arguments and environment in a terminal. On the
  * phone the terminal is a session of the terminal service that the app attaches to, and any
  * page the sign-in opens is handed to the app rather than a browser here; on the display it
- * is a terminal window and the page opens in the computer's browser. A new sign-in replaces
- * the agent's running one. Progress goes to agents/<id>/sign-in.json, with `pid`, `on`, and
- * on the phone the `url` of the page to show and the `terminal` session.
+ * is a terminal window and the page opens in the computer's browser.
+ *
+ * Each sign-in is one `attempt` (a UUID the host chooses; one is made up when the spec has
+ * none). Starting replaces the agent's running attempt, and every record of progress is
+ * written only while this attempt is still the agent's, all under the agent's sign-in lock;
+ * a runner whose attempt was replaced or cancelled stops. Progress goes to
+ * agents/<id>/sign-in.json, with `attempt`, `pid`, `on`, and on the phone the `url` of the
+ * page to show and the `terminal` session.
  */
-async function signIn({ agent, methodId, env: ownerEnv = {}, on = 'display' }) {
+async function signIn({ agent, methodId, env: ownerEnv = {}, on = 'display', attempt = randomUUID() }) {
   const spec = readSpec(agent)
   if (typeof methodId !== 'string' || !methodId) throw new Error('methodId is required')
   if (on !== 'phone' && on !== 'display') throw new Error('on must be "phone" or "display"')
+  if (typeof attempt !== 'string' || !ATTEMPT.test(attempt)) throw new Error('attempt must be a UUID')
   const dir = join(AGENTS_DIR, spec.id)
-  await mkdir(dir, { recursive: true })
-  await stopSignIn(spec.id, 'Another sign-in started.')
   const status = join(dir, 'sign-in.json')
   const startedAt = new Date().toISOString()
-  const progress = { on, pid: process.pid }
-  const report = (state, extra = {}) => writeJson(status, { methodId, status: state, startedAt, ...progress, ...extra, ...(state !== 'running' ? { finishedAt: new Date().toISOString() } : {}) })
-  await report('running')
+  const progress = { on, attempt, pid: process.pid }
+  const record = (state, extra = {}) => ({ methodId, status: state, startedAt, ...progress, ...extra, ...(state !== 'running' ? { finishedAt: new Date().toISOString() } : {}) })
+  // Replacing the running attempt and recording this one are one step.
+  await withSignInLock(dir, async () => {
+    const current = await readJson(status)
+    await readPause()
+    if (current?.status === 'running') await stopRunner(current)
+    await writeJson(status, record('running'))
+  })
+  /** Records progress while this is still the agent's attempt; resolves false once it is not. */
+  const fenced = (state, extra) => withSignInLock(dir, async () => {
+    const current = await readJson(status)
+    await readPause()
+    if (current?.attempt !== attempt) return false
+    await writeJson(status, record(state, extra))
+    return true
+  })
   const pages = join(dir, 'sign-in.pages')
+  let started
+  let session
+  /** This attempt was replaced or cancelled: leave nothing of it running. */
+  const abandon = async () => {
+    if (session) await terminalRequest(`/hangup?session=${session}`).catch(() => {})
+    await started?.close().catch(() => {})
+    await rm(pages, { force: true })
+    process.exit(1)
+  }
+  const report = async (state, extra) => { if (!await fenced(state, extra)) await abandon() }
   await rm(pages, { force: true })
   const env = on === 'phone' ? await pageCommands(dir, pages) : displayEnv(ownerEnv)
   const unset = on === 'phone' ? DESKTOP_VARS : []
   const watcher = on === 'phone' ? watchPages(pages, url => { progress.url = url; return report('running') }) : undefined
-  let started
   try {
     started = await startAgent(spec, { cwd: HOME, env, unset })
     const method = (started.init.authMethods ?? []).find(item => item?.id === methodId)
@@ -1107,7 +1134,7 @@ async function signIn({ agent, methodId, env: ownerEnv = {}, on = 'display' }) {
       await started.close()
       started = undefined
       const code = on === 'phone'
-        ? await runOnPhone(spec, method, env, dir, session => { progress.terminal = session; return report('running') })
+        ? await runOnPhone(spec, method, env, dir, id => { session = id; progress.terminal = id; return report('running') })
         : await runInTerminal(spec, method, env, dir)
       if (code !== 0) throw new Error(code === null ? 'The sign-in terminal closed before it finished.' : `The sign-in command exited with code ${code}.`)
       // Reinitialize, as the protocol asks after a terminal sign-in, and keep what it reports.
@@ -1122,10 +1149,10 @@ async function signIn({ agent, methodId, env: ownerEnv = {}, on = 'display' }) {
       throw new Error(`Sign-in methods of type "${method.type}" are not supported.`)
     }
     await watcher?.stop()
-    await report('succeeded')
+    if (!await fenced('succeeded')) process.exitCode = 1
   } catch (error) {
     await watcher?.stop()
-    await report('failed', { message: clip(errorMessage(error), 1000) })
+    await fenced('failed', { message: clip(errorMessage(error), 1000) })
     process.exitCode = 1
   } finally {
     await started?.close()
@@ -1134,32 +1161,144 @@ async function signIn({ agent, methodId, env: ownerEnv = {}, on = 'display' }) {
 }
 
 /**
- * Stops the agent's running sign-in, if there is one: signals its runner's process group
- * (which holds the agent), hangs up its terminal session and records it as failed with
- * `message`. Resolves whether one was running.
+ * Cancels the agent's running sign-in if it is attempt `attempt`: stops its runner and
+ * terminal session and records it as failed. A different (newer) attempt is left alone.
+ * Resolves whether it was cancelled.
  */
-async function stopSignIn(id, message) {
+async function cancelSignIn(id, attempt) {
   if (!AGENT_ID.test(id ?? '')) throw new Error('invalid agent id')
+  if (typeof attempt !== 'string' || !ATTEMPT.test(attempt)) throw new Error('attempt must be a UUID')
   const path = join(AGENTS_DIR, id, 'sign-in.json')
-  const current = await readJson(path)
-  if (current?.status !== 'running') return false
+  return withSignInLock(join(AGENTS_DIR, id), async () => {
+    const current = await readJson(path)
+    await readPause()
+    if (current?.status !== 'running' || current.attempt !== attempt) return false
+    await stopRunner(current)
+    const { pid: _pid, ...rest } = current
+    await writeJson(path, { ...rest, status: 'failed', message: 'Sign-in cancelled.', finishedAt: new Date().toISOString() })
+    return true
+  })
+}
+
+/**
+ * Stops a running attempt as recorded: its runner's process group (which holds the agent),
+ * only after checking that the pid is still the runner of that attempt, and its terminal
+ * session. A runner that ignores SIGTERM for three seconds is killed.
+ */
+async function stopRunner(current) {
   const pid = current.pid
-  if (Number.isInteger(pid) && pid > 1 && pid !== process.pid && await isSignInRunner(pid)) {
-    // The runner starts with setsid, so its pid is its process group.
-    try { process.kill(-pid, 'SIGTERM') } catch { try { process.kill(pid, 'SIGTERM') } catch {} }
-    for (let wait = 0; wait < 30 && await isSignInRunner(pid); wait++) await sleep(100)
+  const owns = () => runsAttempt(pid, current.attempt)
+  if (Number.isInteger(pid) && pid > 1 && pid !== process.pid && await owns()) {
+    signalGroup(pid, 'SIGTERM')
+    for (let wait = 0; wait < 30 && await owns(); wait++) await sleep(100)
+    if (await owns()) signalGroup(pid, 'SIGKILL')
   }
-  if (typeof current.terminal === 'string') await terminalRequest(`/hangup?session=${encodeURIComponent(current.terminal)}`).catch(() => {})
-  const { pid: _pid, ...rest } = current
-  await writeJson(path, { ...rest, status: 'failed', message, finishedAt: new Date().toISOString() })
+  if (typeof current.terminal === 'string' && TERMINAL_SESSION.test(current.terminal)) {
+    await terminalRequest(`/hangup?session=${current.terminal}`).catch(() => {})
+  }
+}
+
+function signalGroup(pid, signal) {
+  // The runner starts with setsid, so its pid is its process group.
+  try { process.kill(-pid, signal) } catch { try { process.kill(pid, signal) } catch {} }
+}
+
+/**
+ * Whether `pid` is the sign-in runner of `attempt`, read from its own command line, so a
+ * reused pid, or the runner of another attempt, is never signalled. A record from a runner
+ * that predates attempts has none, and matches a runner started without one.
+ */
+async function runsAttempt(pid, attempt) {
+  const proc = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => undefined)
+  const args = proc !== undefined ? proc.split('\0') : (await exec('ps', ['-o', 'command=', '-p', String(pid)]).catch(() => '')).trim().split(/\s+/)
+  const at = args.indexOf('sign-in')
+  if (at < 1 || !args.slice(0, at).some(arg => arg.includes('caboose-agentd'))) return false
+  try { return (decodeSpec(args[at + 1]).attempt ?? null) === (attempt ?? null) } catch { return false }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The sign-in lock.
+
+const ATTEMPT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const TERMINAL_SESSION = /^[0-9a-f]{32}$/
+const LOCK_WAIT_MS = 90_000
+/** Longer than anything done holding the lock: stopping a runner, or delivering a callback. */
+const LOCK_STALE_MS = 120_000
+/** How long a lock file may stay empty while its creator writes it. */
+const LOCK_WRITE_MS = 5_000
+
+/**
+ * Runs `work` holding the agent's sign-in lock (agents/<id>/sign-in.lock), so starting,
+ * replacing, cancelling, recording progress and delivering a callback never interleave,
+ * across processes. The lock names its holder's pid; one whose holder has died, that was
+ * never written, or that is older than LOCK_STALE_MS is taken over. Taking over goes through
+ * a second lock, so only one process does it, and only while the lock is still the one it
+ * judged stale.
+ */
+async function withSignInLock(dir, work) {
+  await mkdir(dir, { recursive: true })
+  const lock = join(dir, 'sign-in.lock')
+  const token = randomUUID()
+  const deadline = Date.now() + LOCK_WAIT_MS
+  while (!await createLock(lock, { pid: process.pid, token, at: Date.now() })) {
+    const held = await readFile(lock, 'utf8').catch(() => undefined)
+    const info = await stat(lock).catch(() => undefined)
+    if (held !== undefined && info && isStaleLock(held, info.mtimeMs)) await takeOver(lock, held)
+    if (Date.now() > deadline) throw new Error('Another sign-in change for this agent did not finish. Try again.')
+    await sleep(20)
+  }
+  try {
+    return await work()
+  } finally {
+    // Only our own: a lock taken over from us is someone else's now.
+    if ((await readJson(lock))?.token === token) await rm(lock, { force: true })
+  }
+}
+
+/**
+ * Waits `CABOOSE_AGENTD_SIGN_IN_PAUSE_MS` between reading the sign-in state and acting on
+ * it, under the lock, so tests can overlap operations at exactly the point a race would hurt.
+ */
+function readPause() {
+  const ms = Number(process.env.CABOOSE_AGENTD_SIGN_IN_PAUSE_MS)
+  return ms > 0 ? sleep(ms) : undefined
+}
+
+/** Creates `path` exclusively with `holder` in it; false when it exists. */
+async function createLock(path, holder) {
+  let handle
+  try { handle = await open(path, 'wx', 0o600) } catch (error) {
+    if (error.code === 'EEXIST') return false
+    throw error
+  }
+  try { await handle.writeFile(JSON.stringify(holder)); await handle.sync() } finally { await handle.close() }
   return true
 }
 
-/** Whether `pid` is still a sign-in runner, so a reused pid is never signalled. */
-async function isSignInRunner(pid) {
-  const proc = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => undefined)
-  const args = proc !== undefined ? proc.split('\0') : (await exec('ps', ['-o', 'command=', '-p', String(pid)]).catch(() => '')).trim().split(/\s+/)
-  return args.some(arg => arg.includes('caboose-agentd')) && args.includes('sign-in')
+export function isStaleLock(text, modifiedMs, now = Date.now()) {
+  let holder
+  try { holder = JSON.parse(text) } catch { return now - modifiedMs > LOCK_WRITE_MS }
+  if (!Number.isInteger(holder?.pid) || holder.pid < 1 || !isAlive(holder.pid)) return true
+  return !(now - holder.at <= LOCK_STALE_MS)
+}
+
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true } catch (error) { return error.code === 'EPERM' }
+}
+
+async function takeOver(lock, judged) {
+  const guard = `${lock}.takeover`
+  if (!await createLock(guard, { pid: process.pid, at: Date.now() })) {
+    // A process that died taking over leaves this behind; taking over is quick.
+    const info = await stat(guard).catch(() => undefined)
+    if (info && Date.now() - info.mtimeMs > LOCK_WRITE_MS) await rm(guard, { force: true })
+    return
+  }
+  try {
+    if (await readFile(lock, 'utf8').catch(() => undefined) === judged) await rm(lock, { force: true })
+  } finally {
+    await rm(guard, { force: true })
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1315,18 +1454,31 @@ export function loopbackURL(value) {
 /**
  * Delivers the page a sign-in on the phone was sent back to. It belongs to the agent's own
  * server on the computer's loopback, so it is fetched here, following redirects that stay on
- * the loopback. Only while a sign-in for the agent is running. Resolves { status }.
+ * the loopback, within 30 seconds. Only to attempt `attempt` while it is the agent's running
+ * sign-in on the phone, holding the sign-in lock throughout, so the attempt cannot be
+ * replaced or cancelled meanwhile. Resolves { status }.
  */
-async function deliverCallback(id, value) {
+async function deliverCallback(id, attempt, value) {
   if (!AGENT_ID.test(id ?? '')) throw new Error('invalid agent id')
-  const current = await readJson(join(AGENTS_DIR, id, 'sign-in.json'))
-  if (current?.status !== 'running') throw new Error('No sign-in is waiting for this page.')
-  let url = loopbackURL(value)
+  if (typeof attempt !== 'string' || !ATTEMPT.test(attempt)) throw new Error('attempt must be a UUID')
+  const start = loopbackURL(value)
+  return withSignInLock(join(AGENTS_DIR, id), async () => {
+    const current = await readJson(join(AGENTS_DIR, id, 'sign-in.json'))
+    await readPause()
+    if (current?.status !== 'running' || current.attempt !== attempt || current.on !== 'phone') throw new Error('No sign-in is waiting for this page.')
+    return fetchLoopback(start, AbortSignal.timeout(CALLBACK_MS))
+  })
+}
+
+const CALLBACK_MS = 30_000
+
+async function fetchLoopback(first, signal) {
+  let url = first
   let status
   for (let hop = 0; hop < 5; hop++) {
     let response
     try {
-      response = await loopbackFetch(url)
+      response = await loopbackFetch(url, signal)
     } catch (error) {
       // An agent that has its answer often stops its server before its result page is read.
       if (status !== undefined) return { status }
@@ -1344,14 +1496,14 @@ async function deliverCallback(id, value) {
   return { status }
 }
 
-async function loopbackFetch(url) {
+async function loopbackFetch(url, signal) {
   // `localhost` is either loopback address, and a server often listens on only one.
   const hosts = url.hostname === 'localhost' ? ['127.0.0.1', '[::1]'] : [url.hostname]
   let failure
   for (const host of hosts) {
     const target = new URL(url)
     target.hostname = host
-    try { return await fetch(target, { redirect: 'manual', signal: AbortSignal.timeout(30_000) }) } catch (error) { failure = error }
+    try { return await fetch(target, { redirect: 'manual', signal }) } catch (error) { failure = error }
   }
   throw new Error(`Nothing on the computer answered ${url.host}: ${errorMessage(failure?.cause ?? failure)}`)
 }
@@ -1455,8 +1607,8 @@ async function main(argv) {
     return print({ signIn: publicAuthMethods(init.authMethods), agentInfo: init.agentInfo ?? null })
   }
   if (mode === 'sign-in') return signIn(decodeSpec(argument))
-  if (mode === 'sign-in-callback') return print(await deliverCallback(argument, argv[2]))
-  if (mode === 'sign-in-cancel') return print({ cancelled: await stopSignIn(argument, 'Sign-in cancelled.') })
+  if (mode === 'sign-in-callback') return print(await deliverCallback(argument, argv[2], argv[3]))
+  if (mode === 'sign-in-cancel') return print({ cancelled: await cancelSignIn(argument, argv[2]) })
   if (mode === 'state') return print(await state())
   if (mode === 'set-env') {
     let changes
@@ -1464,7 +1616,7 @@ async function main(argv) {
     return print({ env: await setEnv(argument, changes) })
   }
   if (mode === '--version') return print({ version: VERSION })
-  throw new Error('usage: caboose-agentd run <dir> | install <spec> | probe <spec> | sign-in <spec> | sign-in-callback <id> <url> | sign-in-cancel <id> | state | set-env <id> <json>')
+  throw new Error('usage: caboose-agentd run <dir> | install <spec> | probe <spec> | sign-in <spec> | sign-in-callback <id> <attempt> <url> | sign-in-cancel <id> <attempt> | state | set-env <id> <json>')
 }
 
 function print(value) { process.stdout.write(JSON.stringify(value) + '\n') }
