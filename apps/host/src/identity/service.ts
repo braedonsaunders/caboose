@@ -266,7 +266,7 @@ export class Identity {
   }
 
   async person(id: string): Promise<Person> {
-    if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/.test(id)) throw new IdentityNotFoundError('person not found')
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) throw new IdentityNotFoundError('person not found')
     const [row] = await this.db.select().from(people).where(eq(people.id, id))
     if (!row) throw new IdentityNotFoundError('person not found')
     return { ...row, createdAt: row.createdAt.toISOString() }

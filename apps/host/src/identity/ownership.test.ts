@@ -38,6 +38,7 @@ it('rolls back the entire setup if assigning the existing computer fails, then r
 })
 
 it('enforces person membership and referential integrity in the database, including concurrent deletion', async () => {
+  await expect(identity.person('12345678----------------------------')).rejects.toThrow('person not found')
   const owner = registry.get('owner')!
   const other = await identity.createTenant({ name: 'Other' })
   const person = await identity.createPerson(other.id, { name: 'Sam' })
