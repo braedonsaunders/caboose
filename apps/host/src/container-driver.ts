@@ -8,7 +8,7 @@ import type { ComputerResources } from './driver.js'
 import type { App, Controller, Session } from './server.js'
 import type { ComputerSettings } from './settings.js'
 import { fenceBridge } from './network.js'
-import { DISPLAY_ENV_PATH, OWNER_DISPLAYS, parseEnvFile } from './display.js'
+import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 
 /** The computer's own Docker network, so its bridge interface has a known name to fence. */
 export const CONTAINER_NETWORK = 'caboose'
@@ -18,12 +18,12 @@ export const CONTAINER_BRIDGE = 'caboose-br0'
  * The computer as a container instead of a microVM, for hosts whose GPU a container can use
  * but a VM cannot have: WSL2's paravirtual /dev/dxg (any vendor), a Linux NVIDIA GPU through
  * the container toolkit, or Linux render nodes (Intel, AMD). The image reads CABOOSE_GPU to
- * pick its GL driver and Xpra's video encoder; with no GPU it runs on the CPU.
+ * pick its GL driver and caboose-display's video encoder; with no GPU it runs on the CPU.
  *
- * The image provides `caboose-session start | start-agent | ready <display>`, which runs
- * D-Bus, PulseAudio and the Xpra displays as `caboose`, reading the per-wake token from
- * /run/caboose/xpra-token, and `start-display | ready-display` for caboose-display instead
- * of Xpra :100 (`CABOOSE_DISPLAY=caboose`). Displays are published on loopback only.
+ * The image provides `caboose-session start | ready | start-agent | start-files`, which runs
+ * D-Bus and the two caboose-display instances (the owner's display and the agent seat) as
+ * `caboose`, reading the per-wake token from /run/caboose/display-token. Displays are
+ * published on loopback only.
  *
  * Parking freezes the container (cgroup freezer): memory stays in RAM and resume is
  * instant, but unlike a microVM snapshot it does not survive a restart of the host;
@@ -71,9 +71,8 @@ export function createContainerController(config: Config, dependencies: { docker
   let lastError: string | null = null
   const name = config.containerName
   const gpu: GpuKind = config.gpu === 'auto' ? detectGpu(dependencies.exists) : config.gpu
-  const owner = OWNER_DISPLAYS[config.display]
-  /** What an app launched onto the owner's display needs; caboose-display's is read at each wake. */
-  let launchEnv = owner.launchEnv ?? []
+  /** What an app launched onto the owner's display needs; caboose-display's, read at each wake. */
+  let launchEnv: string[] = []
   let displayToken = ''
   let running = false
   let filesPortWarning: string | undefined
@@ -107,7 +106,7 @@ export function createContainerController(config: Config, dependencies: { docker
       '--restart', 'no',
       '--label', `caboose.memory-mb=${size.memoryMb}`, '--label', `caboose.vcpus=${size.vcpus}`,
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
-      '-p', '127.0.0.1:14700:14700', '-p', '127.0.0.1:14500:14500', '-p', '127.0.0.1:14501:14501', '-p', '127.0.0.1:14600:14600',
+      '-p', '127.0.0.1:14700:14700', '-p', `127.0.0.1:${OWNER_DISPLAY_PORT}:${OWNER_DISPLAY_PORT}`, '-p', `127.0.0.1:${AGENT_DISPLAY_PORT}:${AGENT_DISPLAY_PORT}`,
       '-v', `${config.containerHome}:/home/caboose`,
       ...gpuArgs(gpu, dependencies.exists),
       ...config.containerArgs,
@@ -139,8 +138,8 @@ export function createContainerController(config: Config, dependencies: { docker
   const controller: Controller = {
     componentsMode: 'container',
     componentsWarning: () => filesPortWarning,
-    displayUrl: `ws://127.0.0.1:${owner.port}/`,
-    agentDisplayUrl: 'ws://127.0.0.1:14501/',
+    displayUrl: `ws://127.0.0.1:${OWNER_DISPLAY_PORT}/`,
+    agentDisplayUrl: `ws://127.0.0.1:${AGENT_DISPLAY_PORT}/`,
     fileService: () => ({ url: 'http://127.0.0.1:14700', token: displayToken }),
     async ensureAgentSeat() {
       await exec('root', '/usr/local/bin/caboose-session', ['start-agent'], 120_000)
@@ -172,21 +171,15 @@ export function createContainerController(config: Config, dependencies: { docker
 
         if (!displayToken) {
           displayToken = randomBytes(32).toString('hex')
-          // Xpra reads the password file on each connection; never put a newline in it.
-          await exec('root', '/bin/sh', ['-c', 'install -d -m 0755 /run/caboose; printf %s "$1" > /run/caboose/xpra-token; chown caboose:caboose /run/caboose/xpra-token; chmod 0600 /run/caboose/xpra-token', 'sh', displayToken])
+          await exec('root', '/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
         }
         await guardContainerPrinting({ run: (cmd, args, timeout) => exec('root', cmd, args, timeout) }).catch(error => console.error('Container printing guard unavailable:', error))
-        if (config.display === 'caboose-display') {
-          await exec('root', '/usr/local/bin/caboose-session', ['start-display'], 240_000)
-          await exec('root', '/usr/local/bin/caboose-session', ['ready-display'], 240_000)
-          launchEnv = parseEnvFile(await exec('root', '/bin/cat', [DISPLAY_ENV_PATH]))
-          if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
-        } else {
-          await exec('root', '/usr/local/bin/caboose-session', ['start'], 240_000)
-          await exec('root', '/usr/local/bin/caboose-session', ['ready', ':100'], 240_000)
-        }
+        await exec('root', '/usr/local/bin/caboose-session', ['start'], 240_000)
+        await exec('root', '/usr/local/bin/caboose-session', ['ready'], 240_000)
+        launchEnv = parseEnvFile(await exec('root', '/bin/cat', [DISPLAY_ENV_PATH]))
+        if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
         const size = resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }
-        return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: config.display }, computer: { name: settings().name, image: gpu === 'none' ? 'Debian 13' : 'Debian 13 · GPU', ...size } }
+        return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'caboose-display' }, computer: { name: settings().name, image: gpu === 'none' ? 'Debian 13' : 'Debian 13 · GPU', ...size } }
       } catch (error) {
         running = false
         throw error

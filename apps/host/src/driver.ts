@@ -4,7 +4,7 @@ import { access, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createDeskHost, createCloudHypervisorBackend, type DeskHandle, type DeskBackend, type DeskHostOptions } from '@braedonsaunders/appkit-desk'
 import type { Config } from './config.js'
-import { DISPLAY_ENV_PATH, OWNER_DISPLAYS, parseEnvFile } from './display.js'
+import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 import { configureGuest, ensureNetwork, GUEST_ADDRESS, TAP_DEVICE } from './network.js'
 import type { App, Controller, Session } from './server.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
@@ -44,9 +44,8 @@ export function createController(config: Config, dependencies: { backend?: DeskB
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  const owner = OWNER_DISPLAYS[config.display]
-  /** What an app launched onto the owner's display needs; caboose-display's is read at each wake. */
-  let launchEnv = owner.launchEnv ?? []
+  /** What an app launched onto the owner's display needs; caboose-display's, read at each wake. */
+  let launchEnv: string[] = []
   const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs, defaultAgent: null }
   function clearHeartbeat(): void {
     if (heartbeat) clearInterval(heartbeat)
@@ -62,24 +61,18 @@ export function createController(config: Config, dependencies: { backend?: DeskB
     const script = await readFile(new URL('./guest-apps.py', import.meta.url), 'utf8')
     return command('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/env', ...launchEnv, '/usr/bin/python3', '-c', script, action, ...(id ? [id] : []), ...(path ? [path] : [])], 60_000)
   }
+  /** A caboose-display instance is ready once it answers a hello carrying this wake's token (the image's probe). */
   async function startDisplay(service: string, port: number): Promise<void> {
-    // systemd and the listening socket can be ready before Xpra can serve a hello.
-    await command('/bin/sh', ['-c', `systemctl start "$1"; for i in $(seq 1 60); do if systemctl is-active --quiet "$1" && ss -lnt | grep -Eq ":$2[[:space:]]" && timeout 3 runuser -u caboose -- xpra info "$3" >/dev/null 2>&1; then exit 0; fi; sleep 1; done; echo "$1 did not become ready on port $2" >&2; exit 1`, 'sh', service, String(port), port === 14500 ? ':100' : ':101'], 240_000)
-  }
-  /** caboose-display is ready once it answers a hello carrying this wake's token (the image's probe). */
-  async function startCabooseDisplay(): Promise<void> {
-    await command('/bin/sh', ['-c', 'systemctl start caboose-display.service && caboose-display-ready 60'], 240_000)
-    launchEnv = parseEnvFile(await command('/bin/cat', [DISPLAY_ENV_PATH]))
-    if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
+    await command('/bin/sh', ['-c', 'systemctl start "$1" && caboose-display-ready 60 "$2"', 'sh', service, String(port)], 240_000)
   }
   const controller: Controller = {
     componentsMode: 'vm',
-    displayUrl: `ws://${GUEST_ADDRESS}:${owner.port}/`,
-    agentDisplayUrl: `ws://${GUEST_ADDRESS}:14501/`,
+    displayUrl: `ws://${GUEST_ADDRESS}:${OWNER_DISPLAY_PORT}/`,
+    agentDisplayUrl: `ws://${GUEST_ADDRESS}:${AGENT_DISPLAY_PORT}/`,
     fileService: () => ({ url: `http://${GUEST_ADDRESS}:14700`, token: displayToken }),
     async ensureAgentSeat() {
-      // Same per-wake token file and user as the owner's display; started only when wanted.
-      await startDisplay('caboose-xpra-agent.service', 14501)
+      // Same per-wake token and user as the owner's display; started only when wanted.
+      await startDisplay('caboose-display-agent.service', AGENT_DISPLAY_PORT)
     },
     guest() {
       if (!desk) return undefined
@@ -112,16 +105,16 @@ export function createController(config: Config, dependencies: { backend?: DeskB
         }
         await configureGuest(desk)
         displayToken = randomBytes(32).toString('hex')
-        // A password file is read by Xpra on connection; never put a newline in it.
-        await command('/bin/sh', ['-c', `install -d -m 0755 /run/caboose; printf %s "$1" > /run/caboose/xpra-token; chown caboose:caboose /run/caboose/xpra-token; chmod 0600 /run/caboose/xpra-token`, 'sh', displayToken])
-        if (config.display === 'caboose-display') await startCabooseDisplay()
-        else await startDisplay('caboose-xpra.service', 14500)
+        await command('/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
+        await startDisplay('caboose-display.service', OWNER_DISPLAY_PORT)
+        launchEnv = parseEnvFile(await command('/bin/cat', [DISPLAY_ENV_PATH]))
+        if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
         clearHeartbeat()
         heartbeat = setInterval(() => {
           try { desk?.renewLease(APPKIT_LEASE_MS) } catch (error) { console.error('Desk lease renewal failed:', error) }
         }, 20_000)
         heartbeat.unref()
-        return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: config.display }, computer: { name: settings().name, image: 'Debian 13', ...(resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }) } }
+        return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'caboose-display' }, computer: { name: settings().name, image: 'Debian 13', ...(resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }) } }
       } catch (error) {
         await host.suspend(COMPUTER_ID).catch(failure => console.error('Failed to park after wake error:', failure))
         desk = undefined

@@ -67,7 +67,7 @@ export interface SessionInfo {
   display: {
     path: string
     token: string
-    protocol: 'xpra-ws' | 'caboose-display'
+    protocol: 'caboose-display'
   }
   computer: {
     name: string

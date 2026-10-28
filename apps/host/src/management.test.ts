@@ -17,7 +17,7 @@ async function fixture(configure?: (controller: Controller) => void) {
   const defaults = { name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600000, defaultAgent: null }
   const settings = await openSettings(join(root, 'caboose.json'), defaults)
   let active: { memoryMb: number; vcpus: number } | null = null
-  const session = (): Session => ({ state: 'running', display: { path: '/v1/display', token: 'display-secret', protocol: 'xpra-ws' },
+  const session = (): Session => ({ state: 'running', display: { path: '/v1/display', token: 'display-secret', protocol: 'caboose-display' },
     computer: { name: settings.get().name, image: 'Debian 13', ...active! } })
   const controller: Controller = {
     wake: vi.fn(async () => { active ??= { memoryMb: settings.get().memoryMb, vcpus: settings.get().vcpus }; return session() }),

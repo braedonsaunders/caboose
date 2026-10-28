@@ -1,35 +1,37 @@
 import type { AgentGuest } from './agents.js'
-import type { DisplayProtocol } from './config.js'
 
 /**
- * The owner's display server inside the computer, by the protocol the app speaks to it.
- * Xpra serves X display :100 on 14500. caboose-display (docs/display.md) serves 14600 and
- * writes the environment its apps need (its Wayland socket, Xwayland's display and cookie,
- * toolkit and driver hints) to `/run/caboose/display.env` once it is ready; the host reads
- * that at each wake. The agent seat stays Xpra :101 on 14501 either way.
+ * The computer's two Caboose Display instances (docs/display.md). The owner's display serves
+ * WebSocket port 14600; the agent seat, started when an agent task needs it, serves 14601.
+ * Each writes the environment its apps need (its Wayland socket, Xwayland's display and
+ * cookie, toolkit and driver hints) to an env file once it is ready; the host reads the
+ * owner's at each wake, and agent tasks source the seat's when they start.
  */
-export interface OwnerDisplay {
-  port: number
-  /** The launch environment, when it is fixed rather than read from the computer. */
-  launchEnv?: string[]
-}
-
-export const OWNER_DISPLAYS: Record<DisplayProtocol, OwnerDisplay> = {
-  'xpra-ws': { port: 14500, launchEnv: ['DISPLAY=:100'] },
-  'caboose-display': { port: 14600 },
-}
-
+export const OWNER_DISPLAY_PORT = 14600
+export const AGENT_DISPLAY_PORT = 14601
 export const DISPLAY_ENV_PATH = '/run/caboose/display.env'
+export const AGENT_DISPLAY_ENV_PATH = '/run/caboose/agent-display.env'
+/** The per-wake token both instances and the file service check, written by the host. */
+export const DISPLAY_TOKEN_PATH = '/run/caboose/display-token'
 
-/** The owner display's launch environment `guest` reports, or Xpra's when it reports none. */
-export function ownerEnv(guest: AgentGuest): string[] {
-  return guest.ownerEnv?.length ? guest.ownerEnv : OWNER_DISPLAYS['xpra-ws'].launchEnv!
+/** Writes the per-wake token as root, readable only by `caboose`. Never with a trailing newline. */
+export const WRITE_TOKEN_SCRIPT = `install -d -m 0755 /run/caboose; printf %s "$1" > ${DISPLAY_TOKEN_PATH}; chown caboose:caboose ${DISPLAY_TOKEN_PATH}; chmod 0600 ${DISPLAY_TOKEN_PATH}`
+
+export class DisplayNotReadyError extends Error {
+  constructor() { super("the computer's display is not ready") }
 }
 
-/** The X display in a launch environment (Xwayland's under Caboose Display); `:100` when it names none. */
+/** The owner display's launch environment; the display is not ready until it has one. */
+export function ownerEnv(guest: AgentGuest): string[] {
+  if (!guest.ownerEnv?.length) throw new DisplayNotReadyError()
+  return guest.ownerEnv
+}
+
+/** The X display (Xwayland's) in a launch environment. */
 export function x11Display(env: string[]): string {
   const value = env.filter(pair => pair.startsWith('DISPLAY=')).pop()?.slice('DISPLAY='.length)
-  return value || ':100'
+  if (!value) throw new DisplayNotReadyError()
+  return value
 }
 
 /**

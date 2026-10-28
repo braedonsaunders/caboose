@@ -44,7 +44,7 @@ describe('parseWebUrl', () => {
 
 function recordingGuest() {
   const calls: string[][] = []
-  const guest: AgentGuest = { async run(command, args) { calls.push([command, ...args]); return '' } }
+  const guest: AgentGuest = { ownerEnv: ['DISPLAY=:110'], async run(command, args) { calls.push([command, ...args]); return '' } }
   return { guest, calls }
 }
 
@@ -62,6 +62,10 @@ describe('openUrl', () => {
     const env = ['DISPLAY=:110', 'WAYLAND_DISPLAY=wayland-caboose-0']
     await openUrl({ ...guest, ownerEnv: env }, { url: 'https://example.com' })
     expect(calls[0]?.slice(4, 8)).toEqual(['/usr/bin/env', ...env, '/bin/sh'])
-    expect(calls[0]?.join(' ')).not.toContain('DISPLAY=:100')
+  })
+
+  it('refuses while the owner display has not reported its environment', async () => {
+    const { guest } = recordingGuest()
+    await expect(openUrl({ ...guest, ownerEnv: [] }, { url: 'https://example.com' })).rejects.toThrow('display is not ready')
   })
 })

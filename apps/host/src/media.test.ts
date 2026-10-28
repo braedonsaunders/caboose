@@ -194,7 +194,7 @@ describe('media routes', () => {
     close.push(() => new Promise(resolve => upstream.close(() => resolve())))
     let running = false
     const controller: Controller = {
-      wake: vi.fn(async () => { running = true; return { state: 'running', display: { path: '/v1/display', token: 'display', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } } }),
+      wake: vi.fn(async () => { running = true; return { state: 'running', display: { path: '/v1/display', token: 'display', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } } }),
       park: vi.fn(async () => { running = false }), activeResources: () => null, hasSavedState: () => false, stats: () => ({}),
       apps: async () => [], launch: async () => {}, ensureAgentSeat: async () => {},
       displayUrl: `ws://127.0.0.1:${(upstream.address() as AddressInfo).port}`, agentDisplayUrl: 'ws://127.0.0.1:1',

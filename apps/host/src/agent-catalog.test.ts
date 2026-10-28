@@ -26,6 +26,7 @@ function fakeGuest(options: { missing?: boolean; failInstall?: string } = {}) {
   const calls: Array<{ mode: string; argument?: unknown }> = []
   const methods: Record<string, unknown[]> = { 'claude-acp': CLAUDE_METHODS, 'codex-acp': [{ id: 'chat-gpt', name: 'ChatGPT', description: 'Use ChatGPT to authenticate' }] }
   const guest: AgentGuest = {
+    ownerEnv: ['DISPLAY=:110'],
     async run(command, args) {
       if (command === '/bin/sh' && args[1] === HOME_REPAIR_SCRIPT) return '0'
       if (args.includes(DRAIN_NOTIFICATIONS)) return ''
@@ -142,7 +143,7 @@ describe('AgentCatalog', () => {
     const started = await catalog.signIn('codex-acp', { methodId: 'chat-gpt' })
     expect(started).toEqual({ started: true, method: { id: 'chat-gpt', name: 'ChatGPT', description: 'Use ChatGPT to authenticate', type: 'agent' } })
     expect(fake.calls.filter(call => call.mode === 'probe')).toHaveLength(1)
-    expect(fake.calls.at(-1)).toEqual({ mode: 'sign-in', argument: { agent: expect.objectContaining({ id: 'codex-acp', version: '2.3.0' }), methodId: 'chat-gpt', env: { DISPLAY: ':100' } } })
+    expect(fake.calls.at(-1)).toEqual({ mode: 'sign-in', argument: { agent: expect.objectContaining({ id: 'codex-acp', version: '2.3.0' }), methodId: 'chat-gpt', env: { DISPLAY: ':110' } } })
   })
 
   it('starts a sign-in with the launch environment of the display the owner sees', async () => {
@@ -186,7 +187,7 @@ describe('agent routes', () => {
     const fake = fakeGuest()
     let running = false
     const controller: Controller = {
-      wake: vi.fn(async () => { running = true; return { state: 'running', display: { path: '/v1/display', token: 't', protocol: 'xpra-ws' as const }, computer: { name: 'C', image: 'Debian 13', memoryMb: 2048, vcpus: 2 } } }),
+      wake: vi.fn(async () => { running = true; return { state: 'running', display: { path: '/v1/display', token: 't', protocol: 'caboose-display' as const }, computer: { name: 'C', image: 'Debian 13', memoryMb: 2048, vcpus: 2 } } }),
       park: vi.fn(async () => { running = false }), activeResources: () => null, hasSavedState: () => false,
       stats: () => ({}), apps: async () => [], launch: async () => {},
       displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {},

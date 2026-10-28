@@ -44,34 +44,29 @@ describe('createContainerController', () => {
     expect(session.display.token).toMatch(/^[0-9a-f]{64}$/)
     const run = fake.calls.find(call => call[0] === 'run')!
     expect(run).toEqual(expect.arrayContaining(['--device', '/dev/dxg', 'CABOOSE_GPU=wsl', '-v', '/srv/caboose/home:/home/caboose', '--memory', '6144m', '--cpus', '4',
-      '-p', '127.0.0.1:14500:14500', '--security-opt', 'seccomp=unconfined', 'caboose-computer:gpu']))
+      '-p', '127.0.0.1:14600:14600', '-p', '127.0.0.1:14601:14601', '--security-opt', 'seccomp=unconfined', 'caboose-computer:gpu']))
     expect(run.at(-1)).toBe('caboose-computer:gpu')
     const execs = fake.calls.filter(call => call[0] === 'exec').map(call => call.slice(4).join(' '))
-    expect(execs[0]).toContain('/run/caboose/xpra-token')
-    expect(execs).toEqual(expect.arrayContaining(['/usr/local/bin/caboose-session start', '/usr/local/bin/caboose-session ready :100']))
+    expect(execs[0]).toContain('/run/caboose/display-token')
+    expect(execs).toEqual(expect.arrayContaining(['/usr/local/bin/caboose-session start', '/usr/local/bin/caboose-session ready']))
     expect(controller.guest()).toBeDefined()
   })
 
-  it('starts caboose-display instead of Xpra :100 when configured, with its launch environment', async () => {
+  it('launches apps with the owner display\'s launch environment, and starts the agent seat on demand', async () => {
     const fake = fakeDocker('missing')
-    const controller = createContainerController(config({ ...env, CABOOSE_DISPLAY: 'caboose' }), { fence: async () => {}, docker: fake.docker, exists: () => false })
+    const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
     const session = await controller.wake()
     expect(session.display.protocol).toBe('caboose-display')
     expect(controller.displayUrl).toBe('ws://127.0.0.1:14600/')
     expect(fake.calls.find(call => call[0] === 'run')).toEqual(expect.arrayContaining(['-p', '127.0.0.1:14600:14600']))
     const execs = fake.calls.filter(call => call[0] === 'exec').map(call => call.slice(4).join(' '))
-    expect(execs).toEqual(expect.arrayContaining(['/usr/local/bin/caboose-session start-display', '/usr/local/bin/caboose-session ready-display']))
-    expect(execs).not.toContain('/usr/local/bin/caboose-session start')
+    expect(execs).not.toContain('/usr/local/bin/caboose-session start-agent')
     await controller.apps()
     expect(fake.calls.at(-1)).toEqual(expect.arrayContaining(['WAYLAND_DISPLAY=wayland-caboose-0', 'DISPLAY=:110',
       'XAUTHORITY=/run/user/1000/caboose-xauth', 'QT_QPA_PLATFORM=wayland;xcb']))
-  })
-
-  it('reads the display protocol from CABOOSE_DISPLAY, Xpra by default', () => {
-    expect(config(env).display).toBe('xpra-ws')
-    expect(config({ ...env, CABOOSE_DISPLAY: 'xpra' }).display).toBe('xpra-ws')
-    expect(config({ ...env, CABOOSE_DISPLAY: 'caboose' }).display).toBe('caboose-display')
-    expect(() => config({ ...env, CABOOSE_DISPLAY: 'vnc' })).toThrow('CABOOSE_DISPLAY')
+    expect(controller.agentDisplayUrl).toBe('ws://127.0.0.1:14601/')
+    await controller.ensureAgentSeat()
+    expect(fake.calls.at(-1)).toEqual(expect.arrayContaining(['/usr/local/bin/caboose-session', 'start-agent']))
   })
 
   it('parks by freezing and resumes with the same display token', async () => {
