@@ -12,24 +12,44 @@ same pull request as the code that changes the contract.
 
 Caboose provides App Intents to wake or park the computer, launch an installed Linux
 app, open a web URL, start an approval-gated agent task, and open, download or upload
-computer files. App and file entities use the authenticated host APIs. File paths are
-relative to the computer home; uploads create new files and refuse overwrites. The file
-intents require the `/v1/fs` service in the guest. Agent actions return a task link, not
-an eventual result. App shortcuts offer phrases to Siri and Shortcuts.
+computer files. App and file entities use authenticated host APIs. File paths are
+relative to the computer home; uploads create new files and refuse overwrites. Agent
+actions return a task link. App shortcuts offer phrases to Siri and Shortcuts.
 
-The app indexes the current app list with Core Spotlight. Files used through its file
-intents are indexed; an `fs.changed` event invalidates file entries so stale paths are
-not offered. Selecting an indexed entry opens it on the computer. Signing out clears
-Caboose's index. File entity suggestions currently enumerate only the home root.
+File search recursively lists the home through `/v1/fs`, sorts by modification time,
+and suggests the 200 most recent files; a text query searches all files. Unreadable or
+removed directories are skipped; a connection failure during scanning leaves the prior Spotlight index
+intact. The private `.caboose-jobs` staging directory is excluded. On wake and on
+`fs.changed` the app rescans and replaces its 200 recent Spotlight file entries. It
+indexes the current app list on refresh and opens an indexed app or file on selection.
+Signing out removes Caboose's index. Refresh requires an active control connection;
+changes while disconnected are reconciled on the next wake.
 
-The WidgetKit extension reads shared Keychain credentials to fetch computer state and
-the running agent count without waking the computer. Its Home and Lock Screen widget
-refreshes on WidgetKit's schedule; the Control Center power toggle wakes or parks the
-computer. A signed device is needed to verify shared Keychain access and control behavior.
-Craft CLI actions and their host job endpoint, favourite-app and Ask Agent controls,
-and favourite-app launch from the widget are not implemented. The file index currently
-tracks only files used by these shortcuts and is invalidated on any `fs.changed` event.
+The WidgetKit extension uses the shared Keychain to fetch computer state and the running
+agent count without waking it. WidgetKit schedules refreshes. A configurable favourite
+app widget and Control Center control launch the selected app; an Ask Agent control
+opens the Ask bar in Caboose, and a power toggle wakes or parks the computer.
+A signed device is needed to verify shared Keychain access and control behavior.
 
+Craft shortcuts stage input files under `.caboose-jobs/<32 lowercase hex job id>` through
+`/v1/fs`, then call authenticated `POST /v1/catalog/:id/run` with `{ job, inputs,
+format }`. Inputs are numbered `input-0.ext`, etc. The host requires the catalog app to
+be installed and accepts only fixed operations: PhotoCraft `convert` (1–20 images to
+PNG/JPEG/TIFF/WebP), PDFCraft `combine` (2–20 PDFs), LightCraft `render` (one photo to
+PNG/JPEG/TIFF/WebP), and FilmCraft `export` (one `.fcproj` to MP4/MOV). FilmCraft
+projects must have their referenced media available at their original paths in the
+computer; its CLI reports offline media as a failure. The host executes a fixed argument
+vector as `caboose`, holds a computer lease, and returns `{ job, outputs, warnings }`;
+outputs are home-relative staged paths. Failed or interrupted jobs remain for inspection;
+a successful shortcut downloads outputs then moves the job directory to Trash. Warnings
+from the CLI are returned to the shortcut. `/v1/control` broadcasts `job.progress` with
+the generic job shape on start and completion or failure; the host also publishes that
+shape to Live Activities when configured. A run can last up to 57.5 minutes, and the
+guest terminates its process group on timeout. APNs and signed-device delivery remain
+best effort. The operations follow the pinned versions' [PhotoCraft CLI](https://github.com/storytold/photocraft/blob/v0.16.0/book/src/automation/cli.md),
+[PDFCraft CLI](https://github.com/storytold/pdfcraft/blob/v0.14.0/apps/pdfcraft-cli/src/main.rs),
+[LightCraft CLI](https://github.com/storytold/lightcraft/blob/v0.14.0/apps/lightcraft-cli/src/main.rs), and
+[FilmCraft CLI](https://github.com/storytold/filmcraft/blob/v0.13.0/docs/agents.md).
 
 ## Notifications
 

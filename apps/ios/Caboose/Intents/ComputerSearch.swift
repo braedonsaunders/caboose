@@ -27,6 +27,20 @@ enum ComputerSearch {
             CSSearchableItem(uniqueIdentifier: "file:" + path, domainIdentifier: filesDomain, attributeSet: attributes)
         ], completionHandler: nil)
     }
+    static func refreshFiles(credentials: Credentials) async throws {
+        let files = try await computerFiles(HostShortcutFiles(credentials: credentials))
+        try Task.checkCancellation()
+        let index = CSSearchableIndex.default()
+        try await index.deleteSearchableItems(withDomainIdentifiers: [filesDomain])
+        try Task.checkCancellation()
+        let items = files.prefix(200).map { file in
+            let attributes = CSSearchableItemAttributeSet(contentType: .item)
+            attributes.title = (file.path as NSString).lastPathComponent
+            attributes.contentDescription = "Computer file: \(file.path)"
+            return CSSearchableItem(uniqueIdentifier: "file:" + file.path, domainIdentifier: filesDomain, attributeSet: attributes)
+        }
+        try await index.indexSearchableItems(items)
+    }
     static func invalidateFiles() {
         CSSearchableIndex.default().deleteSearchableItems(withDomainIdentifiers: [filesDomain], completionHandler: nil)
     }

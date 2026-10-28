@@ -8,6 +8,9 @@ struct CabooseWidgets: WidgetBundle {
         JobActivityWidget()
         ComputerWidget()
         ComputerPowerControl()
+        FavoriteAppWidget()
+        FavoriteAppControl()
+        AskAgentControl()
     }
 }
 

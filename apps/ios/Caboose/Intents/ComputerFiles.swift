@@ -14,6 +14,7 @@ protocol ShortcutFileClient {
 struct ShortcutFileEntry: Decodable {
     var name: String
     var kind: String
+    var mtime: Double
 }
 
 struct HostShortcutFiles: ShortcutFileClient {
@@ -51,6 +52,15 @@ struct HostShortcutFiles: ShortcutFileClient {
         try FileManager.default.moveItem(at: temporary, to: destination)
         return destination
     }
+    func mkdir(_ path: String, allowExisting: Bool = false) async throws {
+        let (_, response) = try await URLSession.shared.data(for: request("mkdir", path: path, method: "POST"))
+        if allowExisting, (response as? HTTPURLResponse)?.statusCode == 409 { return }
+        try check(response)
+    }
+    func remove(_ path: String) async throws {
+        let (_, response) = try await URLSession.shared.data(for: request("item", path: path, method: "DELETE"))
+        try check(response)
+    }
     func upload(_ path: String, from file: URL) async throws {
         var request = await request("content", path: path, method: "PUT")
         request.setValue("*", forHTTPHeaderField: "If-None-Match")
@@ -64,6 +74,18 @@ private func shortcutFiles() throws -> any ShortcutFileClient {
     return HostShortcutFiles(credentials: credentials)
 }
 
+
+/// Traverse the service's home tree; the service excludes symlinks and special files.
+func computerFiles(_ client: any ShortcutFileClient) async throws -> [RecentFile] {
+    try await RecentFiles.scan { path in
+        do {
+            return try await client.list(path).filter { !(path.isEmpty && $0.name == ".caboose-jobs") }.map { FileListingEntry(name: $0.name, isDirectory: $0.kind == "directory", mtime: $0.mtime) }
+        } catch HostClient.Failure.server(let status, _) where !path.isEmpty && (status == 403 || status == 404) {
+            return [] // A removed or unreadable directory cannot be searched.
+        }
+    }
+}
+
 struct ComputerFileEntity: AppEntity {
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Computer File")
     static var defaultQuery = ComputerFileQuery()
@@ -74,10 +96,10 @@ struct ComputerFileEntity: AppEntity {
 struct ComputerFileQuery: EntityStringQuery {
     func entities(for identifiers: [String]) async throws -> [ComputerFileEntity] { identifiers.map { ComputerFileEntity(id: $0) } }
     func suggestedEntities() async throws -> [ComputerFileEntity] {
-        try await shortcutFiles().list("").filter { $0.kind == "file" }.map { ComputerFileEntity(id: $0.name) }
+        try await computerFiles(shortcutFiles()).prefix(200).map { ComputerFileEntity(id: $0.path) }
     }
     func entities(matching string: String) async throws -> [ComputerFileEntity] {
-        try await suggestedEntities().filter { $0.id.localizedCaseInsensitiveContains(string) }
+        try await computerFiles(shortcutFiles()).filter { $0.path.localizedCaseInsensitiveContains(string) }.map { ComputerFileEntity(id: $0.path) }
     }
 }
 

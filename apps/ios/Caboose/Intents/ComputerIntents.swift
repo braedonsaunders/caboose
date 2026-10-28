@@ -37,6 +37,8 @@ struct OpenLinuxAppIntent: AppIntent {
     static var title: LocalizedStringResource = "Open Linux App"
     static var description = IntentDescription("Open an app on your computer.")
     @Parameter(title: "App") var app: LinuxAppEntity
+    init() {}
+    init(app: LinuxAppEntity?) { if let app { self.app = app } }
     func perform() async throws -> some IntentResult {
         let client = try await intentClient()
         _ = try await client.wake()
@@ -99,5 +101,13 @@ struct CabooseShortcuts: AppShortcutsProvider {
         AppShortcut(intent: ParkComputerIntent(), phrases: ["Park my computer with \(.applicationName)"], shortTitle: "Park Computer", systemImageName: "pause.circle")
         AppShortcut(intent: OpenLinuxAppIntent(), phrases: ["Open a Linux app with \(.applicationName)"], shortTitle: "Open Linux App", systemImageName: "app")
         AppShortcut(intent: AskComputerAgentIntent(), phrases: ["Ask my computer with \(.applicationName)"], shortTitle: "Ask Agent", systemImageName: "sparkles")
+        #if CABOOSE_APP
+        AppShortcut(intent: OpenComputerURLIntent(), phrases: ["Open a website on my computer with \(.applicationName)"], shortTitle: "Open Website", systemImageName: "globe")
+        AppShortcut(intent: OpenComputerFileIntent(), phrases: ["Open a computer file with \(.applicationName)"], shortTitle: "Open File", systemImageName: "doc")
+        AppShortcut(intent: PhotoCraftConvertIntent(), phrases: ["Convert images with \(.applicationName)"], shortTitle: "Convert Images", systemImageName: "photo")
+        AppShortcut(intent: PDFCraftCombineIntent(), phrases: ["Combine PDFs with \(.applicationName)"], shortTitle: "Combine PDFs", systemImageName: "doc.on.doc")
+        AppShortcut(intent: LightCraftRenderIntent(), phrases: ["Develop a photo with \(.applicationName)"], shortTitle: "Develop Photo", systemImageName: "camera")
+        AppShortcut(intent: FilmCraftExportIntent(), phrases: ["Export a film with \(.applicationName)"], shortTitle: "Export Film", systemImageName: "film")
+        #endif
     }
 }

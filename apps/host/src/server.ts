@@ -1,3 +1,4 @@
+import { parseCraftRequest, runCraft } from './craft-jobs.js'
 import { proxyFiles, type FileService } from './fs-proxy.js'
 import { agentJob, parseJob, type ActivityService } from './activities.js'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -93,6 +94,8 @@ export function createCabooseServer(options: {
     broadcast({ type: 'notification', ...event })
     if (options.push) void options.push.desktop(event, foregroundClients.size > 0).catch(error => console.error('Desktop push failed:', error))
   })
+  let craftBusy = 0
+  const craftJobs = new Set<string>()
   const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire())
   const media = new MediaHandoff(() => controller.guest(), broadcast)
   let fileAnchor: string | undefined
@@ -259,7 +262,7 @@ export function createCabooseServer(options: {
         return json(response, 200, managementStatus())
       }
       if (request.method === 'POST' && path === '/v1/computer/restart') {
-        if (appCatalog.busy) throw new ComputerConflictError('An application install is in progress')
+        if (appCatalog.busy || craftBusy) throw new ComputerConflictError('An application operation is in progress')
         const body = await readJson(request)
         if (body.confirm !== true) throw new SettingsInputError('Restart closes apps and discards unsaved work; confirm must be true')
         await computer.restart(async () => {
@@ -276,17 +279,48 @@ export function createCabooseServer(options: {
         return json(response, 200, { ...session, computer: { ...session.computer, name: settings.get().name } })
       }
       if (request.method === 'POST' && path === '/v1/session/park') {
-        if (appCatalog.busy) throw new ComputerConflictError('An application install is in progress')
+        if (appCatalog.busy || craftBusy) throw new ComputerConflictError('An application operation is in progress')
         await computer.park(closeSockets)
         return json(response, 200, { state: computer.state })
       }
       if (request.method === 'GET' && path === '/v1/catalog') return json(response, 200, await appCatalog.list())
+      const craftRun = /^\/v1\/catalog\/([^/]+)\/run$/.exec(path)
+      if (request.method === 'POST' && craftRun?.[1]) {
+        const id = decodeURIComponent(craftRun[1])
+        const input = parseCraftRequest(id, await readJson(request))
+        if (craftJobs.has(input.job)) throw new AgentConflictError('Craft job is already running')
+        if (appCatalog.busy) throw new AgentConflictError('An application install is in progress')
+        craftJobs.add(input.job)
+        craftBusy++
+        try {
+          await computer.wake()
+          return await leased(async () => {
+            const listing = await appCatalog.list()
+            const app = listing.apps.find(item => item.id === id)
+            if (!app?.installedVersion) throw new AgentNotFoundError('Craft app is not installed')
+            const job = { id: input.job, kind: 'craft', title: app.name, status: 'running' as const, detail: 'Processing files' }
+            const publish = (state: typeof job | { id: string; kind: string; title: string; status: 'succeeded' | 'failed'; detail: string }, start: boolean) => {
+              broadcast({ type: 'job.progress', job: state })
+              if (options.activities) void options.activities.job(state, start, false).catch(error => console.error('Craft activity failed:', error))
+            }
+            publish(job, true)
+            try {
+              const { outputs, warnings } = await runCraft(controller.guest(), id, input, true)
+              publish({ ...job, status: 'succeeded', detail: 'Finished' }, false)
+              return json(response, 200, { job: input.job, outputs, warnings })
+            } catch (error) {
+              publish({ ...job, status: 'failed', detail: error instanceof Error ? error.message.slice(0, 500) : 'Failed' }, false)
+              throw error
+            }
+          })
+        } finally { craftBusy--; craftJobs.delete(input.job) }
+      }
       const packInstall = /^\/v1\/catalog\/packs\/([^/]+)\/install$/.exec(path)
-      if (request.method === 'POST' && packInstall?.[1]) { if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
+      if (request.method === 'POST' && packInstall?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
       const appAction = /^\/v1\/catalog\/([^/]+)\/(install|update|rollback)$/.exec(path)
-      if (request.method === 'POST' && appAction?.[1]) { if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
+      if (request.method === 'POST' && appAction?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
       const removeApp = /^\/v1\/catalog\/([^/]+)$/.exec(path)
-      if (request.method === 'DELETE' && removeApp?.[1]) { if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
+      if (request.method === 'DELETE' && removeApp?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
       if (request.method === 'GET' && path === '/v1/apps') {
         return json(response, 200, await computer.run(() => controller.apps()))
       }
