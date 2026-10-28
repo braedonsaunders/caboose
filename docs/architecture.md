@@ -1214,11 +1214,32 @@ window's texture is a blit on one shared Metal queue, which runs command buffers
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-- **Windows.** On iPhone each Linux window is an app card: full screen, with native
-  app-switcher gestures between cards. On the Desktop tab, iPad and external displays the
-  same windows float, resize and stack, with a dock and Launchpad. Transient windows
-  (menus, dialogs, tooltips) are positioned relative to their parent, never as separate
-  cards.
+- **Windows.** A Linux window opened from Home or Apps is an app card: full screen, sized
+  to the phone, and a swipe in from either side edge goes to the next or previous open app
+  in the order they opened. An external display shows the windows floating, resizing and
+  stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
+  Transient windows (menus, dialogs, tooltips) are positioned relative to their parent,
+  never as separate cards.
+- **Switchyard.** Without an external display the Desktop tab tiles the windows on the
+  device's own screen (on iPad, a toolbar choice keeps the floating desktop instead).
+  Windows sit in columns on a horizontal track that scrolls; a column holds one window or
+  a stack (two on an upright phone, three elsewhere). Column widths are ⅓, ½, ⅔ or full,
+  offered only where a tile is at least 320 points wide, so an upright iPhone shows one
+  full-width column, a Duo opened out or a phone on its side two, an iPad three. New
+  windows open beside the focused one and share the screen evenly until it is full, then
+  take columns of their own. Each tile's on-screen rect is that window's Linux geometry
+  (`configure`), so apps lay out at the tile's size and popups land over their tile; a
+  resize stretches the last picture until the new one arrives, and drags send geometry at
+  most about eight times a second. The gaps resize (snapping to the presets, with haptic
+  detents), the grabber at a tile's top carries it to a new column, into a stack or onto
+  another tile, and opens its menu (width, full screen card, ask an agent, redraw,
+  close). The side edges and the rail along the bottom move along the track; the rail
+  opens Overview (every window, tap to go, swipe up to close) and the app launcher.
+  ⌘⌥ with the arrows moves focus, with ⇧ moves the window, and R, F, W, O, A and Return
+  cycle the width, toggle full width, close, open Overview, open an app and open a
+  terminal; ⌘⌥ reaches Linux as Ctrl+Alt, so plain ⌘ stays the apps' Ctrl. The layout
+  and each app's hand-chosen width are kept per computer (window ids survive reconnects
+  and parking). The layout engine is `CabooseKit/Switchyard` and is unit-tested.
 - **Lifecycle.** The display socket closes when the app goes to the background; the
   computer parks on idle and resumes on the next foreground. The last frame of every window
   is cached, so reopening is instant while the stream reconnects.

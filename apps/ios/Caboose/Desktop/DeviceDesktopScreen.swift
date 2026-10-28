@@ -2,8 +2,9 @@ import CabooseKit
 import SwiftUI
 import UIKit
 
-/// The Desktop tab: the computer's whole desktop on this screen, windows side by side with
-/// the dock and Launchpad; or, while a TV shows the desktop, this phone as its trackpad.
+/// The Desktop tab: the computer's whole desktop on this screen, its windows tiled in
+/// Switchyard (or, on an iPad that chooses Free, floating with the dock and Launchpad); or,
+/// while a TV shows the desktop, this phone as its trackpad.
 ///
 /// Its actions sit in the toolbar, so on iPhone Duo they join the tab bar in the vertical bar
 /// on the side, which stays fully shown as on every tab. The desktop fills everything beside
@@ -62,6 +63,16 @@ struct DesktopScreen: View {
             }
             Button("AirPlay", systemImage: model.airPlay.current != nil ? "airplay.audio" : "airplay.video") { showAirPlay = true }
         }
+        if !model.externalDisplayActive, UIDevice.current.userInterfaceIdiom == .pad {
+            ToolbarItem(placement: .topBarTrailing) {
+                @Bindable var model = model
+                Picker("Arrangement", selection: $model.deviceDesktopStyle) {
+                    Label("Tiled", systemImage: "rectangle.split.3x1").tag(AppModel.DeviceDesktopStyle.tiled)
+                    Label("Free", systemImage: "macwindow.on.rectangle").tag(AppModel.DeviceDesktopStyle.free)
+                }
+                .pickerStyle(.menu)
+            }
+        }
         if !model.externalDisplayActive {
             if #available(iOS 27.0, *) {
                 fullScreenItem.visibilityPriority(.low)
@@ -114,9 +125,15 @@ private struct DesktopStage: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack {
-                DesktopView(desktop: model.desktop, fillsScreen: false)
-                DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
+            Group {
+                if model.deviceDesktopStyle == .tiled {
+                    SwitchyardView(yard: model.yard)
+                } else {
+                    ZStack {
+                        DesktopView(desktop: model.desktop, fillsScreen: false)
+                        DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
+                    }
+                }
             }
             .onAppear { model.desktopStageResized(to: proxy.size) }
             .onChange(of: proxy.size) { _, size in model.desktopStageResized(to: size) }

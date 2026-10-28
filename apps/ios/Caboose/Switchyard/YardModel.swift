@@ -1,0 +1,424 @@
+import CabooseKit
+import Observation
+import SwiftUI
+
+/// Switchyard on the device's own screen: the computer's windows tiled in columns on a track
+/// that scrolls sideways, each laid out by Linux at exactly its tile's size.
+///
+/// The layout itself is `YardLayout` (CabooseKit). This model holds where the screen is on
+/// the track, the drags in progress, and the conversation with the display: every tile's
+/// rect, at the screen position it is shown at, becomes that window's Linux geometry, so a
+/// popup an app opens lands over its tile and nothing overlaps on screen.
+@MainActor @Observable
+final class YardModel {
+    private(set) var memory = YardMemory()
+    var layout: YardLayout { memory.layout }
+    private(set) var metrics = YardMetrics(size: CGSize(width: 390, height: 700))
+    /// How far along the track the screen is, in points.
+    private(set) var scroll: CGFloat = 0
+    var pixelsPerPoint: CGFloat = 2
+
+    /// A tile being carried by its grabber.
+    struct Carry: Equatable {
+        let window: Int
+        /// The tile's rect on screen as it is carried.
+        var rect: CGRect
+        var drop: YardLayout.Drop?
+        /// Where it would land, on screen.
+        var preview: CGRect?
+    }
+    private(set) var carry: Carry?
+    /// The gap being dragged, while it is.
+    private(set) var activeHandle: YardLayout.Handle.Kind?
+    var overviewOpen = false
+    var launcherOpen = false
+
+    weak var session: (any DisplaySession)?
+    /// Saves the yard for the computer it belongs to.
+    var storageKey: String? {
+        didSet {
+            guard storageKey != oldValue else { return }
+            memory = YardMemory.decoded(from: storageKey.flatMap { UserDefaults.standard.data(forKey: $0) })
+            scroll = 0
+        }
+    }
+
+    /// The geometry each window was last sent, in Linux pixels, so nothing is sent twice.
+    private var sent: [Int: CGRect] = [:]
+    /// Windows asked for a new size whose picture may not have caught up yet: their last
+    /// picture is stretched over the tile meanwhile.
+    private var settling: [Int: UUID] = [:]
+    /// Dialogs already fitted over their window.
+    private var placedDialogs = Set<Int>()
+    private var lastLiveApply = Date.distantPast
+    /// Windows that went full screen, and the tile they come back to.
+    private(set) var fullscreenWindow: Int?
+
+    // MARK: Screen
+
+    func resize(to size: CGSize) {
+        guard size.width > 0, size.height > 0, size != metrics.size else { return }
+        metrics = YardMetrics(size: size)
+        scroll = layout.focused.map { layout.scroll(revealing: $0, from: scroll, in: metrics) } ?? min(scroll, layout.maximumScroll(in: metrics))
+        apply()
+    }
+
+    /// Each window's tile on screen, scroll applied.
+    var tiles: [Int: CGRect] {
+        layout.frames(in: metrics).mapValues { $0.offsetBy(dx: -scroll, dy: 0) }
+    }
+
+    /// The columns on screen, and one either side so a scroll or a move animates into view.
+    var liveWindows: Set<Int> {
+        let visible = Set(layout.visibleColumns(at: scroll, in: metrics))
+        var live = Set<Int>()
+        for (index, column) in layout.columns.enumerated() where visible.contains(column.id) {
+            for neighbour in max(0, index - 1)...min(layout.columns.count - 1, index + 1) {
+                live.formUnion(layout.columns[neighbour].windows)
+            }
+        }
+        if let carry { live.insert(carry.window) }
+        return live
+    }
+
+    /// Whether a window's picture is stretched to its tile: while its gap is dragged, and
+    /// briefly after each new size.
+    func stretches(_ window: Int) -> Bool { settling[window] != nil || activeHandle != nil }
+
+    // MARK: Windows
+
+    /// Brings the yard in line with the computer's windows: closed ones leave the track, new
+    /// application windows take a column beside the focused one (at the width their app was
+    /// last given), and dialogs are fitted over the window they belong to.
+    func sync(_ windows: [Int: RemoteWindow], appClass: (RemoteWindow) -> String?) {
+        let tiled = windows.values.filter { !$0.isAuxiliary }
+        let before = layout
+        // Tiles make way for a new window, and close over a gone one, in one movement.
+        withAnimation(.smooth(duration: 0.42, extraBounce: 0.06)) {
+            memory.layout.prune(keeping: Set(tiled.map(\.id)), in: metrics)
+            for window in tiled.sorted(by: { $0.raisedAt < $1.raisedAt }) where !layout.contains(window.id) {
+                memory.layout.insert(window.id, width: memory.width(for: appClass(window)), in: metrics)
+            }
+        }
+        sent = sent.filter { windows[$0.key] != nil }
+        settling = settling.filter { windows[$0.key] != nil }
+        placedDialogs.formIntersection(windows.keys)
+        if let fullscreen = fullscreenWindow, windows[fullscreen]?.isFullscreen != true { fullscreenWindow = nil }
+        if fullscreenWindow == nil, let window = tiled.first(where: \.isFullscreen) { fullscreenWindow = window.id }
+        if layout != before {
+            if let focused = layout.focused, layout.focused != before.focused { reveal(focused) }
+            scroll = min(scroll, layout.maximumScroll(in: metrics))
+            save()
+        }
+        for window in windows.values where window.isAuxiliary && !window.isOverrideRedirect && !placedDialogs.contains(window.id) {
+            placedDialogs.insert(window.id)
+            fitDialog(window, parent: window.transientFor.flatMap { windows[$0] })
+        }
+        apply()
+    }
+
+    /// Sends every tile's geometry that changed. During a gap drag it is sent at most a few
+    /// times a second, and stretched pictures cover the gaps between.
+    func apply(live: Bool = false) {
+        guard let session else { return }
+        if live {
+            guard Date().timeIntervalSince(lastLiveApply) > 0.12 else { return }
+            lastLiveApply = Date()
+        }
+        let scale = pixelsPerPoint
+        for (id, tile) in tiles {
+            guard let window = session.windows[id] else { continue }
+            if fullscreenWindow == id {
+                let full = CGRect(origin: .zero, size: metrics.size)
+                send(window, CGRect(x: 0, y: 0, width: full.width * scale, height: full.height * scale).integral, session)
+                continue
+            }
+            let target = CGRect(x: tile.minX * scale, y: tile.minY * scale, width: tile.width * scale, height: tile.height * scale).integral
+            // A window that went full screen elsewhere leaves it here.
+            if window.isFullscreen, fullscreenWindow != id {
+                session.configure(window, frame: target, state: ["fullscreen": false])
+                sent[id] = target
+                continue
+            }
+            send(window, target, session)
+        }
+    }
+
+    private func send(_ window: RemoteWindow, _ target: CGRect, _ session: any DisplaySession) {
+        guard sent[window.id] != target else { return }
+        sent[window.id] = target
+        guard window.frame != target else { return }
+        if window.frame.size != target.size { settle(window.id) }
+        session.configure(window, frame: target)
+    }
+
+    /// Stretches the window's last picture over its new tile until Linux redraws it at that
+    /// size, or for a moment at most: an app that keeps its own size is then shown as it is.
+    private func settle(_ window: Int) {
+        let token = UUID()
+        settling[window] = token
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.2))
+            if self?.settling[window] == token { self?.settling.removeValue(forKey: window) }
+        }
+    }
+
+    /// The display was reconnected or reconfigured: everything is sent afresh.
+    func invalidate() {
+        sent.removeAll()
+        placedDialogs.removeAll()
+    }
+
+    /// A dialog sits centred over its window's tile, made smaller if the screen is.
+    private func fitDialog(_ dialog: RemoteWindow, parent: RemoteWindow?) {
+        guard let session else { return }
+        let scale = pixelsPerPoint
+        let around = parent.flatMap { tiles[$0.id] } ?? CGRect(origin: .zero, size: metrics.size)
+        let margin: CGFloat = 12
+        let width = min(dialog.frame.width / scale, metrics.size.width - 2 * margin)
+        let height = min(dialog.frame.height / scale, metrics.size.height - 2 * margin)
+        var origin = CGPoint(x: around.midX - width / 2, y: around.midY - height / 2)
+        origin.x = min(max(margin, origin.x), metrics.size.width - margin - width)
+        origin.y = min(max(margin, origin.y), metrics.size.height - margin - height)
+        let target = CGRect(x: origin.x * scale, y: origin.y * scale, width: width * scale, height: height * scale).integral
+        if dialog.frame != target { session.configure(dialog, frame: target) }
+        session.focus(dialog)
+    }
+
+    /// The window the keyboard goes to: the focused tile, or a dialog over it.
+    func keyTarget(in windows: [Int: RemoteWindow]) -> Int? {
+        guard let focused = layout.focused else { return nil }
+        let dialogs = windows.values.filter { $0.isAuxiliary && !$0.isOverrideRedirect && ($0.transientFor == focused || $0.transientFor == nil) }
+        return dialogs.max { $0.id < $1.id }?.id ?? focused
+    }
+
+    // MARK: Focus
+
+    /// Focuses a window: the keyboard goes to it, Linux raises it, and the screen moves along
+    /// the track just enough to show its column.
+    func focus(_ window: Int, animated: Bool = true) {
+        guard layout.contains(window) else { return }
+        let changed = layout.focused != window
+        memory.layout.focus(window)
+        if let session, let remote = session.windows[window] { session.focus(remote) }
+        reveal(window, animated: animated)
+        if changed { save() }
+    }
+
+    /// Moves along the track to show a window's column, if it is not already in view.
+    func reveal(_ window: Int, animated: Bool = true) {
+        let target = layout.scroll(revealing: window, from: scroll, in: metrics)
+        guard target != scroll else { return }
+        if animated {
+            withAnimation(.smooth(duration: 0.42, extraBounce: 0.06)) { scroll = target }
+        } else {
+            scroll = target
+        }
+        apply()
+    }
+
+    func moveFocus(_ direction: YardLayout.Direction) {
+        guard let next = layout.window(direction) else { bump(); return }
+        focus(next)
+    }
+
+    func moveFocused(_ direction: YardLayout.Direction) {
+        guard let focused = layout.focused else { return }
+        var changed = false
+        withAnimation(.smooth(duration: 0.4, extraBounce: 0.08)) { changed = memory.layout.moveFocused(direction, in: metrics) }
+        guard changed else { bump(); return }
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        reveal(focused)
+        committed()
+    }
+
+    private func bump() { UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.5) }
+
+    // MARK: Widths
+
+    func cycleWidth() {
+        guard let column = layout.focusedColumnIndex.map({ layout.columns[$0].id }) else { return }
+        withAnimation(.smooth(duration: 0.4, extraBounce: 0.08)) { memory.layout.cycleWidth(column: column, in: metrics) }
+        afterWidthChange()
+    }
+
+    func toggleFullWidth(_ window: Int? = nil) {
+        guard let index = (window ?? layout.focused).flatMap(layout.columnIndex(of:)) else { return }
+        withAnimation(.smooth(duration: 0.4, extraBounce: 0.08)) { memory.layout.toggleFullWidth(column: layout.columns[index].id, in: metrics) }
+        afterWidthChange()
+    }
+
+    func setWidth(_ fraction: CGFloat, of window: Int) {
+        guard let index = layout.columnIndex(of: window) else { return }
+        withAnimation(.smooth(duration: 0.4, extraBounce: 0.08)) { memory.layout.setWidth(fraction, column: layout.columns[index].id, in: metrics) }
+        afterWidthChange()
+    }
+
+    private func afterWidthChange() {
+        UISelectionFeedbackGenerator().selectionChanged()
+        if let focused = layout.focused { reveal(focused) }
+        committed()
+    }
+
+    // MARK: Gap drags
+
+    private var handleStart: (width: CGFloat, split: CGFloat)?
+    private var lastDetent: CGFloat?
+
+    func dragHandle(_ handle: YardLayout.Handle.Kind, translation: CGSize) {
+        if activeHandle != handle {
+            activeHandle = handle
+            lastDetent = nil
+            switch handle {
+            case .width(let column):
+                handleStart = (layout.column(id: column).map { layout.width(of: $0, in: metrics) } ?? 0, 0)
+            case .split:
+                handleStart = (0, 0)
+            }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+        guard let start = handleStart else { return }
+        switch handle {
+        case .width(let column):
+            memory.layout.drag(column: column, toWidth: max(YardMetrics.minimumTile.width, start.width + translation.width), in: metrics)
+            // A tick as the width passes each preset.
+            if let width = layout.column(id: column)?.width,
+               let detent = metrics.presets.first(where: { abs($0 - width) < 0.012 }), detent != lastDetent {
+                lastDetent = detent
+                UISelectionFeedbackGenerator().selectionChanged()
+            }
+        case .split(let column, let position):
+            memory.layout.dragSplit(column: column, below: position, by: translation.height - start.split, in: metrics)
+            handleStart = (start.width, translation.height)
+        }
+        apply(live: true)
+    }
+
+    func endHandle(velocity: CGSize) {
+        guard let handle = activeHandle else { return }
+        withAnimation(.smooth(duration: 0.38, extraBounce: 0.1)) {
+            switch handle {
+            case .width(let column): memory.layout.snapWidth(column: column, velocity: velocity.width, in: metrics)
+            case .split(let column, let position): memory.layout.snapSplit(column: column, below: position, in: metrics)
+            }
+            activeHandle = nil
+        }
+        handleStart = nil
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        if let focused = layout.focused { reveal(focused) }
+        committed()
+    }
+
+    /// The width a column would show while its gap is dragged, as a fraction label.
+    func widthLabel(column: Int) -> String? {
+        guard let width = layout.column(id: column)?.width else { return nil }
+        let names: [(CGFloat, String)] = [(1.0 / 3, "⅓"), (0.5, "½"), (2.0 / 3, "⅔"), (1, "Full")]
+        return names.min { abs($0.0 - width) < abs($1.0 - width) }.map { abs($0.0 - width) < 0.04 ? $0.1 : "\(Int((width * 100).rounded()))%" }
+    }
+
+    // MARK: Carrying a tile
+
+    func carry(_ window: Int, by translation: CGSize) {
+        guard let start = tiles[window] else { return }
+        if carry?.window != window {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            focus(window, animated: false)
+        }
+        var rect = start.offsetBy(dx: translation.width, dy: translation.height)
+        // Small enough to see where it goes.
+        let shrink = min(1, 240 / max(1, rect.width))
+        rect = CGRect(x: rect.midX - rect.width * shrink / 2, y: rect.minY, width: rect.width * shrink, height: rect.height * shrink)
+        let finger = CGPoint(x: start.midX + translation.width + scroll, y: start.minY + 14 + translation.height)
+        let drop = layout.drop(for: window, at: finger, in: metrics)
+        let preview = drop.flatMap { layout.preview(of: $0, for: window, in: metrics) }?.offsetBy(dx: -scroll, dy: 0)
+        if drop != carry?.drop, drop != nil { UISelectionFeedbackGenerator().selectionChanged() }
+        carry = Carry(window: window, rect: rect, drop: drop, preview: preview)
+        // Carried to an edge, the track scrolls under it.
+        let edge: CGFloat = 36
+        if finger.x - scroll < edge { nudge(by: -14) } else if finger.x - scroll > metrics.size.width - edge { nudge(by: 14) }
+    }
+
+    private func nudge(by delta: CGFloat) {
+        let target = min(layout.maximumScroll(in: metrics), max(0, scroll + delta))
+        guard target != scroll else { return }
+        scroll = target
+    }
+
+    func drop() {
+        guard let carry else { return }
+        withAnimation(.smooth(duration: 0.42, extraBounce: 0.1)) {
+            if let drop = carry.drop { memory.layout.move(carry.window, to: drop, in: metrics) }
+            self.carry = nil
+        }
+        UIImpactFeedbackGenerator(style: carry.drop == nil ? .soft : .medium).impactOccurred()
+        reveal(carry.window)
+        committed()
+    }
+
+    // MARK: Scrolling
+
+    private var scrollStart: CGFloat?
+
+    /// Scrubbing the rail or swiping in from an edge: the screen follows, with resistance past
+    /// the ends.
+    func scrub(by delta: CGFloat) {
+        if scrollStart == nil { scrollStart = scroll }
+        guard let start = scrollStart else { return }
+        let maximum = layout.maximumScroll(in: metrics)
+        var target = start + delta
+        if target < 0 { target = -rubber(-target) } else if target > maximum { target = maximum + rubber(target - maximum) }
+        scroll = target
+    }
+
+    func endScrub(velocity: CGFloat) {
+        scrollStart = nil
+        let rest = layout.restingScroll(from: scroll, velocity: velocity, in: metrics)
+        withAnimation(.smooth(duration: 0.45, extraBounce: 0.04)) { scroll = rest }
+        // Focus follows the screen when it leaves the focused column behind.
+        let visible = layout.visibleColumns(at: rest, in: metrics)
+        if let focused = layout.focusedColumnIndex, !visible.contains(layout.columns[focused].id),
+           let first = visible.first.flatMap(layout.column(id:))?.windows.first {
+            memory.layout.focus(first)
+            if let session, let remote = session.windows[first] { session.focus(remote) }
+        }
+        UISelectionFeedbackGenerator().selectionChanged()
+        apply()
+        save()
+    }
+
+    private func rubber(_ overshoot: CGFloat) -> CGFloat {
+        let dimension = metrics.size.width
+        return (1 - 1 / (overshoot * 0.55 / dimension + 1)) * dimension
+    }
+
+    /// Jumps to a column from the rail or the overview.
+    func jump(to window: Int) {
+        focus(window)
+        overviewOpen = false
+    }
+
+    // MARK: Closing
+
+    func close(_ window: Int) {
+        guard let session, let remote = session.windows[window] else { return }
+        session.close(remote)
+    }
+
+    // MARK: Saving
+
+    /// After any change the person made: the new geometry goes to Linux and the layout is kept.
+    private func committed() {
+        apply()
+        save()
+    }
+
+    private(set) var appClassOf: (Int) -> String? = { _ in nil }
+
+    func learnAppClasses(_ lookup: @escaping (Int) -> String?) { appClassOf = lookup }
+
+    private func save() {
+        guard let storageKey else { return }
+        memory.learnWidths(appClass: appClassOf)
+        if let data = memory.encoded() { UserDefaults.standard.set(data, forKey: storageKey) }
+    }
+}

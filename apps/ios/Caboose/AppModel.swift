@@ -261,9 +261,14 @@ final class AppModel {
         session.onOpenURL = { [weak self] url in self?.phone.open(url) }
         session.onNotification = { note in Self.post(note) }
         // A window raised on the desktop stays on the desktop; only the phone's cards follow it.
-        session.onRaise = { [weak self] wid in if self?.desktopActive == false { self?.presentedWindowID = wid } }
+        session.onRaise = { [weak self] wid in
+            guard let self else { return }
+            if self.yardActive { self.yard.focus(wid) } else if !self.desktopActive { self.presentedWindowID = wid }
+        }
         session.cachedFrame = { [weak self] wid in self?.frameCache[wid] }
         self.session = session
+        yard.session = session
+        yard.invalidate()
         session.connect()
         observeSession()
     }
@@ -334,7 +339,9 @@ final class AppModel {
         let current = Set(session.windows.keys)
         let added = current.subtracting(knownWindowIDs)
         knownWindowIDs = current
-        if desktopActive {
+        if yardActive {
+            yard.sync(session.windows) { $0.appClass?.name }
+        } else if desktopActive {
             desktop.sync(with: Array(session.windows.values))
             for (index, window) in appWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
                 placedWindowIDs.insert(window.id)
@@ -452,6 +459,7 @@ final class AppModel {
         desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
         desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
+        prepareYard(size: size)
         presentedWindowID = nil
         keyboardVisible = false
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -462,6 +470,7 @@ final class AppModel {
     func deviceDesktopResized(to size: CGSize) {
         guard deviceDesktopActive, size.width > 0, size.height > 0, size != externalSize else { return }
         externalSize = size
+        yard.resize(to: size)
         desktop.size = size
         desktop.ui = desktopUI(forWidth: size.width)
         reconnectForDisplayChange()
@@ -556,6 +565,7 @@ final class AppModel {
         if let session, session.state == .ready {
             session.reconfigure(displayCapabilities())
             placedWindowIDs.removeAll()
+            yard.invalidate()
             sessionChanged()
             return
         }
@@ -711,9 +721,62 @@ final class AppModel {
 
     /// A dock click on the big screen: show the app's windows if it has any, else launch it.
     func openOnDesktop(_ app: HostClient.App) {
-        let ids = appWindows.filter { matches($0, app) }.map(\.id)
-        if desktop.reveal(ids, session: session) { return }
+        let windows = appWindows.filter { matches($0, app) }
+        if yardActive, let latest = windows.first {
+            yard.focus(latest.id)
+            return
+        }
+        if !yardActive, desktop.reveal(windows.map(\.id), session: session) { return }
         launch(app)
+    }
+
+    // MARK: Switchyard
+
+    /// How the device's own desktop arranges windows. An iPad chooses; an iPhone always tiles.
+    enum DeviceDesktopStyle: String { case tiled, free }
+
+    private var chosenDesktopStyle = DeviceDesktopStyle(rawValue: UserDefaults.standard.string(forKey: "deviceDesktopStyle") ?? "") ?? .tiled
+
+    var deviceDesktopStyle: DeviceDesktopStyle {
+        get { UIDevice.current.userInterfaceIdiom == .pad ? chosenDesktopStyle : .tiled }
+        set {
+            guard UIDevice.current.userInterfaceIdiom == .pad, newValue != chosenDesktopStyle else { return }
+            chosenDesktopStyle = newValue
+            UserDefaults.standard.set(newValue.rawValue, forKey: "deviceDesktopStyle")
+            guard deviceDesktopActive else { return }
+            // The same windows, rearranged: tiled into the yard, or set floating again.
+            placedWindowIDs.removeAll()
+            yard.invalidate()
+            if newValue == .tiled { prepareYard(size: externalSize) }
+            sessionChanged()
+        }
+    }
+
+    /// Switchyard: the computer's windows tiled on the device's own screen.
+    let yard = YardModel()
+    /// The yard is the desktop on this screen: the Desktop tab, no TV, tiled.
+    var yardActive: Bool { deviceDesktopActive && deviceDesktopStyle == .tiled }
+
+    private func prepareYard(size: CGSize) {
+        yard.storageKey = credentials.map { "switchyard." + $0.fileDomainIdentifier }
+        // The same pixels as the floating desktop: 2x, whatever the screen.
+        yard.pixelsPerPoint = desktop.pixelsPerPoint
+        yard.session = session
+        yard.learnAppClasses { [weak self] id in self?.session?.windows[id]?.appClass?.name }
+        yard.resize(to: size)
+    }
+
+    /// Takes a window out of the yard to its full-screen card, where the side edges swipe
+    /// between apps; the yard has it back on the Desktop tab.
+    func openAsCard(_ id: Int) {
+        selectedTab = .home
+        presentedWindowID = id
+    }
+
+    /// ⌘⌥Return: a terminal, as on a Linux desktop.
+    func openTerminalApp() {
+        guard let terminal = partitionedApps.main.first(where: { $0.categories.contains("TerminalEmulator") }) else { return }
+        open(terminal)
     }
 
     /// Opens an app: on the desktop when one is up, else as a full-screen card. A parked or
