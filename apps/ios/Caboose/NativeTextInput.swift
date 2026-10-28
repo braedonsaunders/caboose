@@ -163,8 +163,22 @@ final class NativeEditor: UITextView {
         case .undo: undoManager?.undo()
         case .redo: undoManager?.redo()
         case .unsupported:
-            UIAccessibility.post(notification: .announcement, argument: String(localized: "This keyboard shortcut is unavailable in this field."))
+            announceUnsupportedShortcut()
         }
+    }
+
+    override func deleteBackward() {
+        let active = modifiers.consume()
+        keyBar.show(activeModifiers: modifiers.active)
+        guard active.isEmpty else {
+            announceUnsupportedShortcut()
+            return
+        }
+        super.deleteBackward()
+    }
+
+    private func announceUnsupportedShortcut() {
+        UIAccessibility.post(notification: .announcement, argument: String(localized: "This keyboard shortcut is unavailable in this field."))
     }
 
     private func perform(_ action: KeyBar.Action) {
@@ -189,7 +203,10 @@ final class NativeEditor: UITextView {
             keyBar.show(activeModifiers: modifiers.active)
             guard let selection = selectedTextRange else { return }
             if name == "Escape" { unmarkText(); return }
-            if name == "Tab" { insertText("\t"); return }
+            if name == "Tab" {
+                if active.isEmpty { insertText("\t") } else { announceUnsupportedShortcut() }
+                return
+            }
             let backward = ["Left", "Up", "Home", "Page_Up"].contains(name)
             let origin = backward ? selection.start : selection.end
             let storage: UITextStorageDirection = backward ? .backward : .forward
