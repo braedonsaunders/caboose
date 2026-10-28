@@ -77,7 +77,8 @@ struct HomeView: View {
 
     private var statusLine: String {
         guard let computer = model.computer else { return "Awake" }
-        return "\(computer.image) · \(computer.vcpus) cores · \(computer.memoryMb / 1024) GB"
+        let line = "\(computer.image) · \(computer.vcpus) cores · \(computer.memoryMb / 1024) GB"
+        return model.isRemote ? line + " · Remote" : line
     }
 
     private var openWindows: some View {

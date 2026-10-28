@@ -98,6 +98,7 @@ struct WindowScreen: View {
             .glassEffect(.regular.interactive(), in: .circle)
 
             Menu {
+                Section(model.connectionSummary) {}
                 Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
                 Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
                 Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
@@ -115,7 +116,11 @@ struct WindowScreen: View {
     private func fit(_ window: RemoteWindow, to size: CGSize) {
         guard size.width > 0, size.height > 0, let session = model.session else { return }
         let target = CGRect(x: 0, y: 0, width: size.width * model.pixelsPerPoint, height: size.height * model.pixelsPerPoint).integral
-        if window.frame != target { session.configure(window, frame: target) }
+        // A window that went full screen on the TV keeps the TV's size there; on the phone it
+        // must leave that full screen, or the server keeps it larger than the screen.
+        if window.frame != target {
+            session.configure(window, frame: target, state: window.isFullscreen ? ["fullscreen": false] : [:])
+        }
         session.focus(window)
     }
 

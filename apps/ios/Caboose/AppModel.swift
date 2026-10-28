@@ -63,7 +63,11 @@ final class AppModel {
         agents.onComputer = { [weak self] status in self?.computerStatus = status }
     }
 
-    var host: HostClient? { credentials.map { HostClient(baseURL: $0.hostURL, token: $0.token) } }
+    var host: HostClient? { credentials.map { HostClient(baseURL: activeHostURL ?? $0.hostURL, token: $0.token) } }
+    /// The host address this wake reached — the LAN or the VPN one — chosen at each wake.
+    private(set) var activeHostURL: URL?
+    /// Reached through another of the host's addresses (a VPN, away from home).
+    var isRemote: Bool { activeHostURL != nil && activeHostURL != credentials?.hostURL }
 
     /// Normal application windows, most recently raised first.
     var appWindows: [RemoteWindow] {
@@ -83,6 +87,7 @@ final class AppModel {
     func connect(with credentials: Credentials) {
         credentials.save()
         self.credentials = credentials
+        activeHostURL = nil
         Task { await wake() }
     }
 
@@ -94,6 +99,7 @@ final class AppModel {
         settingsPresented = false
         Credentials.clear()
         credentials = nil
+        activeHostURL = nil
         phase = .needsSetup
     }
 
@@ -102,6 +108,10 @@ final class AppModel {
     /// Wakes the computer and opens the display. `quiet` keeps the current screen in place,
     /// for reconnects the person should not have to notice.
     func wake(quiet: Bool = false) async {
+        if let credentials, credentials.candidates.count > 1 {
+            let reached = await credentials.reachableURL()
+            if reached != activeHostURL { activeHostURL = reached }
+        }
         guard let host else { phase = .needsSetup; return }
         if case .ready = phase, session?.state == .ready { return }
         if !quiet { phase = .waking }
@@ -147,20 +157,7 @@ final class AppModel {
     private func startSession(host: HostClient, display: HostClient.Session.Display) {
         session?.disconnect()
         lastDisplay = display
-        let caps: ClientCapabilities
-        if externalDisplayActive {
-            // The big screen at its own pixels: a real desktop, not a scaled phone.
-            let scale = desktop.pixelsPerPoint
-            // Linux text grows with the desktop's size factor, through the DPI it is told.
-            caps = ClientCapabilities(desktopWidth: Int(externalSize.width * scale), desktopHeight: Int(externalSize.height * scale),
-                                      dpi: Int((96 * scale * desktop.ui).rounded()), refreshRate: 60)
-        } else {
-            let bounds = UIScreen.main.bounds
-            let longSide = max(bounds.width, bounds.height)
-            // A square desktop that fits either orientation, so rotating never strands a window offscreen.
-            caps = ClientCapabilities(desktopWidth: Int(longSide * pixelsPerPoint), desktopHeight: Int(longSide * pixelsPerPoint),
-                                      dpi: Int(96 * pixelsPerPoint), refreshRate: UIScreen.main.maximumFramesPerSecond)
-        }
+        let caps = displayCapabilities()
         placedWindowIDs.removeAll()
         let session = XpraSession(displayURL: host.socketURL(display.path), token: host.token, password: display.token,
                                   capabilities: caps)
@@ -174,6 +171,31 @@ final class AppModel {
         self.session = session
         session.connect()
         observeSession()
+    }
+
+    /// "Typing 85 ms · Ping 4 ms": how responsive the computer is right now.
+    var connectionSummary: String {
+        var parts: [String] = []
+        if let echo = session?.typingEchoMs { parts.append("Typing \(echo) ms") }
+        if let ping = session?.latencyMs { parts.append("Ping \(Int(ping.rounded())) ms") }
+        return parts.isEmpty ? "Connected" : parts.joined(separator: " · ")
+    }
+
+    /// The screen the computer lays windows out for: the big screen at its own pixels when
+    /// one is connected, else the phone.
+    private func displayCapabilities() -> ClientCapabilities {
+        if externalDisplayActive {
+            // The big screen at its own pixels: a real desktop, not a scaled phone.
+            let scale = desktop.pixelsPerPoint
+            // Linux text grows with the desktop's size factor, through the DPI it is told.
+            return ClientCapabilities(desktopWidth: Int(externalSize.width * scale), desktopHeight: Int(externalSize.height * scale),
+                                      dpi: Int((96 * scale * desktop.ui).rounded()), refreshRate: 60)
+        }
+        let bounds = UIScreen.main.bounds
+        let longSide = max(bounds.width, bounds.height)
+        // A square desktop that fits either orientation, so rotating never strands a window offscreen.
+        return ClientCapabilities(desktopWidth: Int(longSide * pixelsPerPoint), desktopHeight: Int(longSide * pixelsPerPoint),
+                                  dpi: Int(96 * pixelsPerPoint), refreshRate: UIScreen.main.maximumFramesPerSecond)
     }
 
     /// Follows the session's state and its windows: new windows from a launch open full screen.
@@ -297,6 +319,13 @@ final class AppModel {
 
     /// The Linux apps keep running; only the display size the server lays them out for changes.
     private func reconnectForDisplayChange() {
+        // A live session changes screens in place: every window stream stays open.
+        if let session, session.state == .ready {
+            session.reconfigure(displayCapabilities())
+            placedWindowIDs.removeAll()
+            sessionChanged()
+            return
+        }
         guard let host, let lastDisplay else { return }
         phase = .connecting
         startSession(host: host, display: lastDisplay)
