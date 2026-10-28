@@ -46,6 +46,8 @@ const SHOWN: Array<{ name: string; fallback: string; only?: Config['runtime'] }>
   { name: 'CABOOSE_IMAGE_ROOT', fallback: '/var/lib/caboose' },
   { name: 'CABOOSE_GUEST_LAN', fallback: 'deny' },
   { name: 'CABOOSE_BIND', fallback: '127.0.0.1' },
+  { name: 'CABOOSE_PUBLIC_URL', fallback: 'none' },
+  { name: 'CABOOSE_MDNS', fallback: 'on' },
   { name: 'CABOOSE_PORT', fallback: '7310' },
   { name: 'CABOOSE_MEMORY_MB', fallback: '6144' },
   { name: 'CABOOSE_VCPUS', fallback: '4' },
