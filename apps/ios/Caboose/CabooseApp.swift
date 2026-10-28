@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct CabooseApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel.shared
     @Environment(\.scenePhase) private var scenePhase
 

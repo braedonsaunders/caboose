@@ -1,6 +1,21 @@
 import SwiftUI
 import UIKit
 
+/// Routes an AirPlay or USB-C display to the desktop. SwiftUI's own app delegate answers
+/// scene configuration for a SwiftUI app, so the plist entry alone can leave the TV
+/// mirroring the phone; claiming the external role here makes it the desktop.
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        if session.role == .windowExternalDisplayNonInteractive {
+            let configuration = UISceneConfiguration(name: "External Display", sessionRole: session.role)
+            configuration.delegateClass = ExternalSceneDelegate.self
+            return configuration
+        }
+        return UISceneConfiguration(name: nil, sessionRole: session.role)
+    }
+}
+
 /// The scene iOS creates for an AirPlay or USB-C display. It shows the desktop; the phone
 /// switches to the trackpad while it is connected.
 final class ExternalSceneDelegate: UIResponder, UIWindowSceneDelegate {

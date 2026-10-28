@@ -29,7 +29,9 @@ public struct ClientCapabilities: Sendable {
     }
 
     /// Encodings Caboose decodes natively: H.264 through VideoToolbox, stills through ImageIO.
-    public static let encodings: [RValue] = ["h264", "jpeg", "png", "png/P", "png/L", "webp", "rgb32", "rgb24", "scroll", "void"]
+    /// No "scroll": Xpra 6.5.5's scroll encoder calls queue_damage_packet without its options
+    /// argument and raises, so every scroll it tried to send as a copy was lost instead.
+    public static let encodings: [RValue] = ["h264", "jpeg", "png", "png/P", "png/L", "webp", "rgb32", "rgb24", "void"]
 
     static let metadataSupported: [RValue] = [
         "fullscreen", "maximized", "iconic", "above", "below", "title", "size-hints", "class-instance",
