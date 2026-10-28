@@ -7,7 +7,7 @@ import type { ComputerResources } from './driver.js'
 import type { App, Controller, Session } from './server.js'
 import type { ComputerSettings } from './settings.js'
 import { fenceBridge } from './network.js'
-import { OWNER_DISPLAYS } from './display.js'
+import { DISPLAY_ENV_PATH, OWNER_DISPLAYS, parseEnvFile } from './display.js'
 
 /** The computer's own Docker network, so its bridge interface has a known name to fence. */
 export const CONTAINER_NETWORK = 'caboose'
@@ -66,6 +66,8 @@ export function createContainerController(config: Config, dependencies: { docker
   const name = config.containerName
   const gpu: GpuKind = config.gpu === 'auto' ? detectGpu(dependencies.exists) : config.gpu
   const owner = OWNER_DISPLAYS[config.display]
+  /** What an app launched onto the owner's display needs; caboose-display's is read at each wake. */
+  let launchEnv = owner.launchEnv ?? []
   let displayToken = ''
   let running = false
 
@@ -113,7 +115,7 @@ export function createContainerController(config: Config, dependencies: { docker
 
   async function guestApps(action: string, id?: string): Promise<string> {
     const script = await readFile(new URL('./guest-apps.py', import.meta.url), 'utf8')
-    return exec('caboose', '/usr/bin/env', [...owner.launchEnv, 'HOME=/home/caboose', '/usr/bin/python3', '-c', script, action, ...(id ? [id] : [])], 60_000)
+    return exec('caboose', '/usr/bin/env', [...launchEnv, 'HOME=/home/caboose', '/usr/bin/python3', '-c', script, action, ...(id ? [id] : [])], 60_000)
   }
 
   /** The size an existing container was created with (survives a host restart). */
@@ -163,6 +165,8 @@ export function createContainerController(config: Config, dependencies: { docker
         if (config.display === 'caboose-display') {
           await exec('root', '/usr/local/bin/caboose-session', ['start-display'], 240_000)
           await exec('root', '/usr/local/bin/caboose-session', ['ready-display'], 240_000)
+          launchEnv = parseEnvFile(await exec('root', '/bin/cat', [DISPLAY_ENV_PATH]))
+          if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
         } else {
           await exec('root', '/usr/local/bin/caboose-session', ['start'], 240_000)
           await exec('root', '/usr/local/bin/caboose-session', ['ready', ':100'], 240_000)

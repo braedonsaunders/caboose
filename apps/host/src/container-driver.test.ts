@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { config } from './config.js'
 import { createContainerController, detectGpu, gpuArgs, type Docker } from './container-driver.js'
+import { DISPLAY_ENV } from './display.test.js'
 
 function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
   let status = initial
@@ -19,6 +20,7 @@ function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited') {
       case 'network': return ''
       case 'exec':
         if (args.includes('list')) return '[]'
+        if (args.includes('/run/caboose/display.env')) return DISPLAY_ENV
         return ''
       default: return ''
     }
@@ -59,7 +61,8 @@ describe('createContainerController', () => {
     expect(execs).toEqual(expect.arrayContaining(['/usr/local/bin/caboose-session start-display', '/usr/local/bin/caboose-session ready-display']))
     expect(execs).not.toContain('/usr/local/bin/caboose-session start')
     await controller.apps()
-    expect(fake.calls.at(-1)).toEqual(expect.arrayContaining(['WAYLAND_DISPLAY=wayland-caboose-0', 'DISPLAY=:110', 'GDK_BACKEND=wayland,x11']))
+    expect(fake.calls.at(-1)).toEqual(expect.arrayContaining(['WAYLAND_DISPLAY=wayland-caboose-0', 'DISPLAY=:110',
+      'XAUTHORITY=/run/user/1000/caboose-xauth', 'QT_QPA_PLATFORM=wayland;xcb']))
   })
 
   it('reads the display protocol from CABOOSE_DISPLAY, Xpra by default', () => {

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import type { DeskBackend } from '@braedonsaunders/appkit-desk'
+import { DISPLAY_ENV } from './display.test.js'
 import { createController } from './driver.js'
 
 it('resumes old resources but cold-restarts with saved settings and preserves the disk', async () => {
@@ -89,7 +90,8 @@ it('serves caboose-display instead of Xpra when the owner display is configured 
           deskId: plan.deskId,
           async request(command) {
             if (command.op === 'exec') commands.push([command.command, ...(command.args ?? [])].join(' '))
-            return { exitCode: 0, signal: null, stdout: '[]', stderr: '', truncated: false }
+            const stdout = command.op === 'exec' && command.command === '/bin/cat' ? DISPLAY_ENV : '[]'
+            return { exitCode: 0, signal: null, stdout, stderr: '', truncated: false }
           },
           subscribe: () => () => {},
           shutdown: async () => {},
@@ -99,15 +101,17 @@ it('serves caboose-display instead of Xpra when the owner display is configured 
     }
     const controller = createController({ token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1,
       vmmPath: process.execPath, runtime: 'microvm', containerImage: '', containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', display: 'caboose-display' },
-    { backend, network: async () => {}, deviceExists: () => true })
+    { backend, network: async () => {}, deviceExists: () => true,
+      snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} } })
     const session = await controller.wake()
     expect(session.display.protocol).toBe('caboose-display')
     expect(controller.displayUrl).toMatch(/:14600\/$/)
-    expect(commands.some(command => command.includes('caboose-display.service') && command.includes('ready-display'))).toBe(true)
+    expect(commands.some(command => command.includes('caboose-display.service') && command.includes('caboose-display-ready 60'))).toBe(true)
     expect(commands.some(command => command.includes('caboose-xpra.service'))).toBe(false)
     await controller.apps()
     expect(commands.at(-1)).toContain('WAYLAND_DISPLAY=wayland-caboose-0')
     expect(commands.at(-1)).toContain('DISPLAY=:110')
+    expect(commands.at(-1)).toContain('XAUTHORITY=/run/user/1000/caboose-xauth')
     await controller.park()
   } finally { await rm(root, { recursive: true, force: true }) }
 })
