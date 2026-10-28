@@ -647,6 +647,45 @@ def check_stalled_client():
                        run, extra=("--client-timeout", "5"))
 
 
+def check_tiles():
+    # Typing 30 characters into Chromium at a phone's size: each keystroke must go as a
+    # few lossless tiles instead of a picture, every tile must decode, the final picture
+    # (frame plus tiles, as the client paints it) must match the one streamed without
+    # tiles, and the server must spend far less on it.
+    typed = "tiles are lossless and cheap ok"
+    actions = ";".join(["maximize", "wait:1500", "tap:590,1278", "wait:600"] + [f"text:{c}" for c in typed]
+                       + ["wait:400"])
+    runs = {}
+    for name, extra in (("tiles", ()), ("pictures", ("--tile-max-px", "0"))):
+        out = tempfile.mkdtemp(prefix="tiles-")
+        def run(proc, token, out=out):
+            r = probe(["--token-file", token, "--duration", "14", "--windows", "1", "--display", "1179x2556@120x3",
+                       "--actions", actions, "--server-pid", str(proc.pid), "--save", out])
+            return r, os.path.join(out, "window-1.png")
+        runs[name] = with_server(CHROMIUM + [f"--app={PAGES}/input.html"], run, extra=extra)
+    (r, picture), (plain, plain_picture) = runs["tiles"], runs["pictures"]
+    w, p = r["windows"][0], plain["windows"][0]
+    if w["tiles"] < len(typed) or w["tile_errors"] or w["decode_errors"]:
+        raise Failed(f"{w['tiles']} tiles for {len(typed)} keystrokes, {w['tile_errors']} bad")
+    if w["frames"] * 3 > p["frames"]:
+        raise Failed(f"{w['frames']} pictures with tiles against {p['frames']} without")
+    match = psnr(picture, plain_picture)
+    if match < 40:
+        raise Failed(f"the picture with tiles differs from the one without ({match:.1f} dB)")
+    cpu, plain_cpu = r["server_cpu_ms"], plain["server_cpu_ms"]
+    if cpu > 0.6 * plain_cpu:
+        raise Failed(f"server CPU {cpu} ms with tiles, {plain_cpu} ms without")
+    # A small animation (250x250 at 60 Hz) changes as little each time, but goes as video.
+    anim = with_server(["weston-simple-shm"], lambda proc, token: probe(
+        ["--token-file", token, "--duration", "4", "--windows", "1"]))["windows"][0]
+    # (Its first updates go as tiles until it shows itself an animation.)
+    if anim["tile_bytes"] > 1_000_000 or anim["fps"] < 50:
+        raise Failed(f"an animation went as {anim['tile_bytes'] // 1000} kB of tiles, {anim['fps']} pictures a second")
+    return (f"{len(typed)} keystrokes at 1179x2556: {w['tiles']} tiles ({w['tile_bytes'] // 1000} kB) and "
+            f"{w['frames']} pictures, against {p['frames']} pictures; server {cpu} ms against {plain_cpu} ms; "
+            f"final pictures match at {match:.1f} dB; an animation stays video ({anim['fps']:.0f} fps, {anim['tile_bytes'] // 1000} kB of tiles at its start)")
+
+
 def check_idle():
     def run(proc, token):
         r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--server-pid", str(proc.pid)])
@@ -685,6 +724,7 @@ CHECKS = [
     ("audio", check_audio),
     ("refine", check_refine),
     ("motion", check_motion),
+    ("tiles", check_tiles),
     ("idle", check_idle),
 ]
 

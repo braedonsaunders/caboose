@@ -10,7 +10,27 @@
 //!   path on WSL2, where clients hand over wl_shm buffers and CUDA reaches the GPU
 //!   through /dev/dxg.
 
-use super::{convert, refine, CpuImage, EncodeError, Encoder, Input, Picture, Pixels, Settings};
+use super::{convert, refine, CpuImage, EncodeError, Encoder, Input, Picture, Pixels, Settings, Tiles};
+
+/// More changed runs than this go into a picture rather than tiles.
+const MAX_TILES: usize = 32;
+/// More updates than this within `TILE_WINDOW_MS` are an animation: pictures, not tiles
+/// (typing reaches about 15 keys a second).
+const MAX_TILE_UPDATES: usize = 7;
+const TILE_WINDOW_MS: u64 = 500;
+
+/// Joins runs that span the same columns in consecutive rows, so a glyph is one tile
+/// rather than one per macroblock row.
+fn merge_columns(runs: &[Rect]) -> Vec<Rect> {
+    let mut out: Vec<Rect> = Vec::with_capacity(runs.len());
+    for r in runs {
+        match out.iter_mut().find(|o| o.x == r.x && o.w == r.w && o.y + o.h == r.y) {
+            Some(o) => o.h += r.h,
+            None => out.push(*r),
+        }
+    }
+    out
+}
 use caboose_display_protocol::Codec;
 use caboose_display_protocol::Rect;
 use ff::format::Pixel;
@@ -69,6 +89,12 @@ pub struct LavcEncoder {
     quiet: Option<refine::Quiet>,
     refine_offset: i32,
     clock: std::time::Instant,
+    /// Software: areas sent as tiles since the last picture. The shadow already holds
+    /// them (it is what the client shows); the next picture must convert and code them.
+    stale: Vec<Rect>,
+    /// When recent updates came (ms on `clock`): a window that updates at animation rates
+    /// gets pictures, which video coding makes far smaller than tiles.
+    updates: std::collections::VecDeque<u64>,
 }
 
 // SAFETY: the libavcodec and libswscale contexts are owned exclusively by this value
@@ -181,6 +207,8 @@ impl LavcEncoder {
             quiet: refines.then(|| refine::Quiet::new(width, height, settings.refine_after_ms as u64)),
             refine_offset: settings.refine_qp as i32 - settings.crf as i32,
             clock: std::time::Instant::now(),
+            stale: Vec::new(),
+            updates: Default::default(),
         })
     }
 
@@ -233,7 +261,7 @@ impl LavcEncoder {
                 let damage = damage.filter(|_| self.shadow.len() == row * h);
                 Ok(match damage {
                     Some(d) => {
-                        let changed = convert::changed_blocks(
+                        let mut changed = convert::changed_blocks(
                             src.data,
                             src.stride,
                             &mut self.shadow,
@@ -242,10 +270,12 @@ impl LavcEncoder {
                             self.height,
                             d,
                         );
+                        changed.append(&mut self.stale);
                         convert::bgrx_to_i420(src.data, src.stride, self.width, self.height, Some(&changed), planes);
                         Some(changed)
                     }
                     None => {
+                        self.stale.clear();
                         convert::bgrx_to_i420(src.data, src.stride, self.width, self.height, None, planes);
                         self.shadow.clear();
                         for r in 0..h {
@@ -256,6 +286,129 @@ impl LavcEncoder {
                 })
             }
         }
+    }
+
+    /// Converts the areas sent as tiles since the last picture from the shadow (what the
+    /// client shows) into the picture, and returns them.
+    fn convert_stale(&mut self) -> Result<Vec<Rect>, EncodeError> {
+        let mut stale = std::mem::take(&mut self.stale);
+        if stale.is_empty() {
+            return Ok(stale);
+        }
+        let row = self.width as usize * 4;
+        let h = self.height as usize;
+        let before = unsafe { (*self.picture.as_ptr()).buf[0] };
+        unsafe {
+            if ff::ffi::av_frame_make_writable(self.picture.as_mut_ptr()) < 0 {
+                return Err(EncodeError("could not make the picture writable".into()));
+            }
+        }
+        let replaced = unsafe { (*self.picture.as_ptr()).buf[0] } != before;
+        let (ys, us, vs) = (self.picture.stride(0), self.picture.stride(1), self.picture.stride(2));
+        // SAFETY: as in `convert`; the shadow is a separate allocation of `row × h` bytes.
+        let (y, u, v) = unsafe {
+            let f = self.picture.as_mut_ptr();
+            (
+                std::slice::from_raw_parts_mut((*f).data[0], ys * h),
+                std::slice::from_raw_parts_mut((*f).data[1], us * h / 2),
+                std::slice::from_raw_parts_mut((*f).data[2], vs * h / 2),
+            )
+        };
+        let planes = convert::I420 { y, y_stride: ys, u, u_stride: us, v, v_stride: vs };
+        if replaced {
+            // The picture lost its content: all of it comes from the shadow.
+            stale = vec![Rect::new(0, 0, self.width as i32, self.height as i32)];
+        }
+        convert::bgrx_to_i420(&self.shadow, row, self.width, self.height, Some(&stale), planes);
+        Ok(stale)
+    }
+
+    /// Runs `f` on the input's pixels at the picture's top-left: an image, part of one,
+    /// or a client's shm buffer read in place.
+    fn with_pixels<R>(
+        &mut self,
+        input: Input<'_>,
+        f: impl FnOnce(&mut Self, &Pixels<'_>) -> Result<R, EncodeError>,
+    ) -> Result<R, EncodeError> {
+        match input {
+            Input::Cpu(image) => {
+                if image.width != self.width || image.height != self.height {
+                    return Err(EncodeError(format!(
+                        "input {}x{} does not match the encoder's {}x{}",
+                        image.width, image.height, self.width, self.height
+                    )));
+                }
+                f(self, &Pixels { data: &image.data, stride: image.stride })
+            }
+            Input::CpuAt(image, x, y) => {
+                if x + self.width > image.width || y + self.height > image.height {
+                    return Err(EncodeError(format!(
+                        "{}x{} at ({x}, {y}) is outside the {}x{} input",
+                        self.width, self.height, image.width, image.height
+                    )));
+                }
+                let start = y as usize * image.stride + x as usize * 4;
+                f(self, &Pixels { data: &image.data[start..], stride: image.stride })
+            }
+            Input::Shm(p) => {
+                let read = smithay::wayland::shm::with_buffer_contents(&p.buffer, |ptr, len, data| {
+                    let (w, h) = (self.width as i32, self.height as i32);
+                    if p.x < 0 || p.y < 0 || p.x + w > data.width || p.y + h > data.height {
+                        return Err(EncodeError("the picture is outside the buffer".into()));
+                    }
+                    let start = data.offset as usize + p.y as usize * data.stride as usize + p.x as usize * 4;
+                    if start > len {
+                        return Err(EncodeError("the buffer is outside its pool".into()));
+                    }
+                    // SAFETY: with_buffer_contents maps `len` bytes of the pool at `ptr`
+                    // for this closure and turns a truncated pool into an error.
+                    let pool = unsafe { std::slice::from_raw_parts(ptr, len) };
+                    f(self, &Pixels { data: &pool[start..], stride: data.stride as usize })
+                });
+                read.map_err(|e| EncodeError(format!("shm buffer: {e:?}")))?
+            }
+        }
+    }
+
+    /// The changed blocks of `damage` as tiles, if they are few and small enough;
+    /// otherwise nothing is taken and the caller encodes a picture.
+    fn take_tiles(&mut self, src: &Pixels<'_>, damage: &[Rect], max_px: u64) -> Result<Option<Tiles>, EncodeError> {
+        let row = self.width as usize * 4;
+        if self.family != Family::Software || self.shadow.len() != row * self.height as usize {
+            return Ok(None);
+        }
+        let now = self.now_ms();
+        while self.updates.front().is_some_and(|t| now >= t + TILE_WINDOW_MS) {
+            self.updates.pop_front();
+        }
+        self.updates.push_back(now);
+        if self.updates.len() > MAX_TILE_UPDATES {
+            return Ok(None);
+        }
+        if src.stride < row || src.data.len() < (self.height as usize - 1) * src.stride + row {
+            return Err(EncodeError("the input is smaller than the picture".into()));
+        }
+        let changed =
+            convert::changed_blocks(src.data, src.stride, &mut self.shadow, row, self.width, self.height, damage);
+        let area: u64 = changed.iter().map(|r| r.w as u64 * r.h as u64).sum();
+        // The shadow now holds these blocks either way, so the next picture codes them.
+        self.stale.extend_from_slice(&changed);
+        if area > max_px || changed.len() > MAX_TILES {
+            return Ok(None);
+        }
+        let tiles = merge_columns(&changed)
+            .iter()
+            .map(|r| {
+                let mut rgb = Vec::with_capacity(r.w as usize * r.h as usize * 3);
+                for y in r.y as usize..(r.y + r.h) as usize {
+                    for px in src.data[y * src.stride + r.x as usize * 4..][..r.w as usize * 4].chunks_exact(4) {
+                        rgb.extend_from_slice(&[px[2], px[1], px[0]]);
+                    }
+                }
+                (*r, rgb)
+            })
+            .collect();
+        Ok(Some(Tiles { tiles, refine_in_ms: self.quiet.as_ref().and_then(|q| q.next_due_ms(now)) }))
     }
 
     /// Tells libx264 which macroblocks changed, so it skips analysing the rest.
@@ -390,44 +543,7 @@ impl Encoder for LavcEncoder {
     fn encode(&mut self, input: Input<'_>, keyframe: bool, damage: Option<&[Rect]>) -> Result<Picture, EncodeError> {
         let damage = if keyframe { None } else { damage };
         let t0 = std::time::Instant::now();
-        let changed = match input {
-            Input::Cpu(image) => {
-                if image.width != self.width || image.height != self.height {
-                    return Err(EncodeError(format!(
-                        "input {}x{} does not match the encoder's {}x{}",
-                        image.width, image.height, self.width, self.height
-                    )));
-                }
-                self.convert(&Pixels { data: &image.data, stride: image.stride }, damage)?
-            }
-            Input::CpuAt(image, x, y) => {
-                if x + self.width > image.width || y + self.height > image.height {
-                    return Err(EncodeError(format!(
-                        "{}x{} at ({x}, {y}) is outside the {}x{} input",
-                        self.width, self.height, image.width, image.height
-                    )));
-                }
-                let start = y as usize * image.stride + x as usize * 4;
-                self.convert(&Pixels { data: &image.data[start..], stride: image.stride }, damage)?
-            }
-            Input::Shm(p) => {
-                let read = smithay::wayland::shm::with_buffer_contents(&p.buffer, |ptr, len, data| {
-                    let (w, h) = (self.width as i32, self.height as i32);
-                    if p.x < 0 || p.y < 0 || p.x + w > data.width || p.y + h > data.height {
-                        return Err(EncodeError("the picture is outside the buffer".into()));
-                    }
-                    let start = data.offset as usize + p.y as usize * data.stride as usize + p.x as usize * 4;
-                    if start > len {
-                        return Err(EncodeError("the buffer is outside its pool".into()));
-                    }
-                    // SAFETY: with_buffer_contents maps `len` bytes of the pool at `ptr`
-                    // for this closure and turns a truncated pool into an error.
-                    let pool = unsafe { std::slice::from_raw_parts(ptr, len) };
-                    self.convert(&Pixels { data: &pool[start..], stride: data.stride as usize }, damage)
-                });
-                read.map_err(|e| EncodeError(format!("shm buffer: {e:?}")))??
-            }
-        };
+        let changed = self.with_pixels(input, |enc, pixels| enc.convert(pixels, damage))?;
         let convert_us = t0.elapsed().as_micros();
         self.clear_side_data();
         // Areas quiet for long enough are sharpened in this picture, which goes out anyway.
@@ -461,17 +577,25 @@ impl Encoder for LavcEncoder {
         Ok(picture)
     }
 
+    fn tiles(&mut self, input: Input<'_>, damage: &[Rect], max_px: u64) -> Result<Option<Tiles>, EncodeError> {
+        self.with_pixels(input, |enc, pixels| enc.take_tiles(pixels, damage, max_px))
+    }
+
     fn refine(&mut self) -> Result<Picture, EncodeError> {
-        let now = self.now_ms();
-        let Some(quiet) = self.quiet.as_mut() else {
+        if self.quiet.is_none() {
             return Err(EncodeError(format!("{} does not refine", self.name())));
-        };
-        let due = quiet.take_due(now);
-        tracing::trace!("sharpening {} px", due.iter().map(|r| (r.w * r.h) as u64).sum::<u64>());
+        }
+        // The client shows tiles newer than the picture, losslessly; this picture
+        // repaints them, so it carries them, as sharp as the rest it sharpens.
+        let stale = self.convert_stale()?;
+        let now = self.now_ms();
+        let mut sharp = self.quiet.as_mut().unwrap().take_due(now);
+        sharp.extend_from_slice(&stale);
+        tracing::trace!("sharpening {} px", sharp.iter().map(|r| (r.w * r.h) as u64).sum::<u64>());
         self.clear_side_data();
         // Everything else is hinted constant: skipped, at no cost.
-        self.hint_changes(&due);
-        self.sharpen(&due);
+        self.hint_changes(&sharp);
+        self.sharpen(&sharp);
         self.send(false)
     }
 }
@@ -537,6 +661,53 @@ mod tests {
         assert!(types.contains(&32) && types.contains(&33) && types.contains(&34), "{types:?}");
         let second = enc.encode(Input::Cpu(&gradient(64, 64, 2)), false, None).unwrap();
         assert!(!second.keyframe);
+    }
+
+    #[test]
+    fn runs_in_the_same_columns_join() {
+        let runs =
+            [Rect::new(16, 0, 32, 16), Rect::new(16, 16, 32, 16), Rect::new(0, 16, 16, 16), Rect::new(16, 48, 32, 16)];
+        assert_eq!(
+            merge_columns(&runs),
+            [Rect::new(16, 0, 32, 32), Rect::new(0, 16, 16, 16), Rect::new(16, 48, 32, 16)]
+        );
+    }
+
+    #[test]
+    fn small_changes_become_tiles_and_the_next_picture_carries_them() {
+        ff::init().unwrap();
+        let settings = Settings { threads: 1, refine_qp: 0, ..Settings::default() };
+        let mut enc = LavcEncoder::new(Family::Software, Codec::H264, 128, 64, &settings).unwrap();
+        let mut image = gradient(128, 64, 0);
+        enc.encode(Input::Cpu(&image), true, None).unwrap();
+        // A glyph: 10x20 pixels changed.
+        for y in 20..40 {
+            image.data[y * image.stride + 40 * 4..][..40].fill(0xff);
+        }
+        let damage = [Rect::new(32, 16, 32, 32)];
+        let t = enc.tiles(Input::Cpu(&image), &damage, 65536).unwrap().unwrap();
+        assert_eq!(t.tiles.len(), 1, "one tile for the glyph's column");
+        let (r, rgb) = &t.tiles[0];
+        // x 40..50 crosses from one macroblock column into the next.
+        assert_eq!((r.x, r.y, r.w, r.h), (32, 16, 32, 32));
+        assert_eq!(rgb.len(), 32 * 32 * 3);
+        assert_eq!(&rgb[(4 * 32 + 8) * 3..][..3], &[0xff, 0xff, 0xff]);
+        // Nothing new changed, but the next picture codes the tiled blocks.
+        let p = enc.encode(Input::Cpu(&image), false, Some(&[])).unwrap();
+        assert_eq!(p.changed.unwrap(), vec![Rect::new(32, 16, 32, 16), Rect::new(32, 32, 32, 16)]);
+        // An animation (many updates in quick succession) gets pictures.
+        let mut tiled = 0;
+        for i in 0..12u8 {
+            image.data[30 * image.stride + 40 * 4] = i;
+            if enc.tiles(Input::Cpu(&image), &damage, 65536).unwrap().is_some() {
+                tiled += 1;
+            } else {
+                enc.encode(Input::Cpu(&image), false, Some(&damage)).unwrap();
+            }
+        }
+        assert!(tiled < 7, "{tiled} of 12 quick updates went as tiles");
+        // A change too big for tiles is left to a picture.
+        assert!(enc.tiles(Input::Cpu(&gradient(128, 64, 9)), &[Rect::new(0, 0, 128, 64)], 1024).unwrap().is_none());
     }
 
     #[test]

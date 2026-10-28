@@ -218,6 +218,10 @@ struct WindowStats {
     resized_without_keyframe: bool,
     last_crop: Option<(i32, i32)>,
     destroyed: bool,
+    tiles: u64,
+    tile_bytes: u64,
+    /// Tiles that did not decode or came before any picture.
+    tile_errors: u64,
 }
 
 /// The `audio` stream as received.
@@ -297,6 +301,20 @@ struct Decoder {
     last: Option<ff::frame::Video>,
     crop: proto::Rect,
     stream: Option<std::fs::File>,
+    /// Tiles painted over `last` since it was decoded (picture pixels, RGB).
+    tiles: Vec<(proto::Rect, Vec<u8>)>,
+}
+
+/// A PNG tile's RGB pixels, if it is an 8-bit RGB PNG of the rectangle's size.
+fn decode_tile(rect: proto::Rect, data: &[u8]) -> Option<Vec<u8>> {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(data)).read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let fits = info.width == rect.w as u32 && info.height == rect.h as u32;
+    (fits && info.color_type == png::ColorType::Rgb && info.bit_depth == png::BitDepth::Eight).then(|| {
+        buf.truncate(info.buffer_size());
+        buf
+    })
 }
 
 fn open_decoder(codec: Codec) -> Result<ff::decoder::Video, ff::Error> {
@@ -312,7 +330,12 @@ fn open_decoder(codec: Codec) -> Result<ff::decoder::Video, ff::Error> {
     ctx.decoder().video()
 }
 
-fn save_png(frame: &ff::frame::Video, crop: proto::Rect, path: &std::path::Path) -> Result<(), String> {
+fn save_png(
+    frame: &ff::frame::Video,
+    crop: proto::Rect,
+    tiles: &[(proto::Rect, Vec<u8>)],
+    path: &std::path::Path,
+) -> Result<(), String> {
     let (w, h) = (frame.width(), frame.height());
     let mut scaler = ff::software::scaling::Context::get(
         frame.format(),
@@ -333,6 +356,22 @@ fn save_png(frame: &ff::frame::Video, crop: proto::Rect, path: &std::path::Path)
     for y in crop.y.max(0) as usize..(crop.y.max(0) as u32 + ch) as usize {
         let start = y * stride + crop.x.max(0) as usize * 3;
         pixels.extend_from_slice(&rgb.data(0)[start..start + cw as usize * 3]);
+    }
+    // Tiles drawn since the picture, in order, as the client shows them.
+    for (r, tile) in tiles {
+        for ty in 0..r.h {
+            let (y, x0) = (r.y + ty - crop.y, r.x - crop.x);
+            if y < 0 || y >= ch as i32 {
+                continue;
+            }
+            for tx in 0..r.w {
+                let x = x0 + tx;
+                if x >= 0 && x < cw as i32 {
+                    let (d, s) = ((y as usize * cw as usize + x as usize) * 3, (ty * r.w + tx) as usize * 3);
+                    pixels[d..d + 3].copy_from_slice(&tile[s..s + 3]);
+                }
+            }
+        }
     }
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), cw, ch);
@@ -582,6 +621,15 @@ fn run(args: Args) -> Result<bool, String> {
                     decoders.remove(&id);
                     windows.entry(id).or_default().destroyed = true;
                 }
+                Message::Tile(t) => {
+                    let s = windows.entry(t.id).or_default();
+                    s.tiles += 1;
+                    s.tile_bytes += t.data.len() as u64;
+                    match (decode_tile(t.rect, &t.data), decoders.get_mut(&t.id)) {
+                        (Some(rgb), Some(d)) if d.last.is_some() => d.tiles.push((t.rect, rgb)),
+                        _ => s.tile_errors += 1,
+                    }
+                }
                 Message::Frame(f) => {
                     let received = monotonic_us();
                     let s = windows.entry(f.id).or_default();
@@ -617,7 +665,10 @@ fn run(args: Args) -> Result<bool, String> {
                             }
                             None => None,
                         };
-                        decoders.insert(f.id, Decoder { codec: f.codec, decoder, last: None, crop: f.crop, stream });
+                        decoders.insert(
+                            f.id,
+                            Decoder { codec: f.codec, decoder, last: None, crop: f.crop, stream, tiles: Vec::new() },
+                        );
                     }
                     let d = decoders.get_mut(&f.id).unwrap();
                     d.crop = f.crop;
@@ -635,6 +686,7 @@ fn run(args: Args) -> Result<bool, String> {
                                 got = true;
                                 s.size = (frame.width(), frame.height());
                                 d.last = Some(frame.clone());
+                                d.tiles.clear();
                             }
                             Err(ff::Error::Other { errno: libc::EAGAIN }) => break,
                             Err(_) => {
@@ -766,7 +818,7 @@ fn run(args: Args) -> Result<bool, String> {
     if let Some(dir) = &args.save {
         for (id, d) in &decoders {
             if let Some(frame) = &d.last {
-                if let Err(e) = save_png(frame, d.crop, &dir.join(format!("window-{id}.png"))) {
+                if let Err(e) = save_png(frame, d.crop, &d.tiles, &dir.join(format!("window-{id}.png"))) {
                     eprintln!("window {id}: cannot save PNG: {e}");
                 }
             }
@@ -788,7 +840,7 @@ fn run(args: Args) -> Result<bool, String> {
     if let Some(f) = args.min_fps {
         ok &= busiest_fps >= f;
     }
-    ok &= windows.values().all(|w| w.decode_errors == 0);
+    ok &= windows.values().all(|w| w.decode_errors == 0 && w.tile_errors == 0);
     ok &= videos.values().all(|v| v.decode_errors == 0);
     ok &= sound.errors == 0;
 
@@ -801,7 +853,7 @@ fn run(args: Args) -> Result<bool, String> {
                     _ => 0.0,
                 };
                 format!(
-                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{}}}",
+                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{}}}",
                     w.title,
                     w.kind,
                     w.parent.map(|p| p.to_string()).unwrap_or("null".into()),
@@ -824,7 +876,10 @@ fn run(args: Args) -> Result<bool, String> {
                     w.decode_errors,
                     w.sizes,
                     !w.resized_without_keyframe,
-                    w.destroyed
+                    w.destroyed,
+                    w.tiles,
+                    w.tile_bytes,
+                    w.tile_errors
                 )
             })
             .collect();

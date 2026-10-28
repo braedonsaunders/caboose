@@ -33,6 +33,9 @@ OPTIONS:
     --refine-qp N          code areas that went quiet once more at this QP, so text
                            sharpens (H.264 software); 0 turns it off [default: 12]
     --refine-after MS      how long an area must be quiet first [default: 300]
+    --tile-max-px N        send changes of at most N pixels as lossless PNG tiles instead
+                           of a picture (software encoders); 0 turns tiles off
+                           [default: 65536]
     --encoder-threads N    threads per software encoder; 0 = 1 up to 2560x1600, 2 above
                            [default: 0]
     --display WxH@HZxS     the display used before a client connects [default: 1920x1080@60x1]
@@ -165,6 +168,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             "--preset" => config.settings.preset = value(&mut args, &arg)?,
             "--refine-qp" => config.settings.refine_qp = number(value(&mut args, &arg)?, &arg)?,
             "--refine-after" => config.settings.refine_after_ms = number(value(&mut args, &arg)?, &arg)?,
+            "--tile-max-px" => config.settings.tile_max_px = number(value(&mut args, &arg)?, &arg)?,
             "--encoder-threads" => config.settings.threads = number(value(&mut args, &arg)?, &arg)?,
             "--display" => {
                 let v = value(&mut args, &arg)?;

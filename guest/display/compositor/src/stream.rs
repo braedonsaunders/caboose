@@ -75,6 +75,26 @@ pub struct Done {
     /// The motion region's picture, when it changed.
     pub motion: Option<(u64, Result<Encoded, String>)>,
     pub ends_motion: Option<u64>,
+    /// Small changes sent as lossless tiles instead of a window picture.
+    pub tiles: Option<TilesDone>,
+}
+
+pub struct TilesDone {
+    /// Picture pixels, and the PNG.
+    pub tiles: Vec<(Rect, Vec<u8>)>,
+    pub refine_in_ms: Option<u64>,
+    pub cpu_us: u64,
+}
+
+/// An RGB rectangle as a PNG, compressed for speed.
+fn png(w: u32, h: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(rgb.len() / 4 + 64);
+    let mut encoder = png::Encoder::new(&mut out, w, h);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    encoder.write_header().and_then(|mut w| w.write_image_data(rgb)).map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 /// Markers in a job's picture, wherever its pixels are.
@@ -173,6 +193,7 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         changed: Vec::new(),
         motion: None,
         ends_motion: job.ends_motion,
+        tiles: None,
     };
     if job.refine && !reuse {
         // The encoder whose picture this sharpens is gone; the window starts over with
@@ -213,7 +234,42 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
             (Some(window), Some(region))
         }
     };
-    let window_needed = job.refine || keyframe || window_damage.as_ref().is_none_or(|d| !d.is_empty());
+    let mut window_needed = job.refine || keyframe || window_damage.as_ref().is_none_or(|d| !d.is_empty());
+    // A small change goes as tiles: a few lossless PNGs cost far less than coding the
+    // whole picture. Not for a picture that ends a motion stream: the client keeps the
+    // stream until a frame repaints its region.
+    let tile_max_px = job.settings.tile_max_px;
+    if let (true, false, false, None, Some(d)) =
+        (window_needed && tile_max_px > 0, job.refine, keyframe, job.ends_motion, window_damage.as_ref())
+    {
+        let cpu0 = thread_cpu_us();
+        let (_, enc) = encoders.window.as_mut().unwrap();
+        let input = match &job.shm {
+            Some(shm) => Input::Shm(shm),
+            None => Input::Cpu(&job.image),
+        };
+        match enc.tiles(input, d, tile_max_px) {
+            Ok(Some(t)) => {
+                let tiles: Result<Vec<_>, String> =
+                    t.tiles.iter().map(|(r, rgb)| png(r.w as u32, r.h as u32, rgb).map(|p| (*r, p))).collect();
+                match tiles {
+                    Ok(tiles) => {
+                        done.changed = tiles.iter().map(|(r, _)| *r).collect();
+                        done.tiles = Some(TilesDone {
+                            tiles,
+                            refine_in_ms: t.refine_in_ms,
+                            cpu_us: thread_cpu_us().saturating_sub(cpu0),
+                        });
+                        window_needed = false;
+                    }
+                    // The pixels are in the shadow and marked for the next picture.
+                    Err(e) => tracing::warn!("window {}: tile: {e}; sending a picture", job.window),
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("window {}: tiles: {e}", job.window),
+        }
+    }
     if window_needed {
         let (_, enc) = encoders.window.as_mut().unwrap();
         let input = match &job.shm {
