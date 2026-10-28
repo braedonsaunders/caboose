@@ -255,3 +255,19 @@ the host. Stdio close cancels pending waits; a timeout reports that an operation
 have completed. The mailbox carries no owner or phone bearer token. All guest agent
 processes share the `caboose` user; the host enforces profile scope independently.
 See [agent routines](../../docs/agent-routines.md#agent-tools-and-durability).
+
+### Model selection
+
+`models <spec base64>` initializes the installed agent and opens a discovery session with
+no MCP servers or prompt. It prints `{ models? }` from ACP session config options
+(`category: model`, `type: select`, including grouped values), or the legacy `models`
+field. The child process closes on success, failure, or the 60-second session timeout.
+An agent without either advertisement returns `{}`.
+
+`task.json.model` is the requested model id. Before each prompt, including after
+new/load/resume, the runner reads `requested-model.json` if present and negotiates the
+selection with `session/set_config_option` (or legacy `session/set_model`). Unadvertised
+ids and unconfirmed config selections fail the turn before prompting. `models.json`
+atomically records `{ requestedModel?, models? }`; `models` transcript events report the
+same state. Config-option notifications update the recorded actual selection. Choices
+and labels come from the agent, never from environment variables or a built-in list.

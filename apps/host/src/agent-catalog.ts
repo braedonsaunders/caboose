@@ -1,3 +1,4 @@
+import { publicModels } from './agent-models.js'
 import {
   AGENTD, AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentUnavailableError, RUNNER_MISSING, rethrowRunnerMissing,
   type AgentGuest, type AgentResolver, type SignInMethod,
@@ -196,6 +197,15 @@ export class AgentCatalog implements AgentResolver {
     const installed = this.guestAgents[id]?.installed?.spec
     if (installed) return installed
     return this.registryLaunch(id)
+  }
+
+  async models(id: string) {
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const launch = await this.launch(id)
+    const result = JSON.parse(await agentd(guest, 'models', encode(launch), PROBE_TIMEOUT_MS))
+    const models = publicModels(result.models)
+    return models ? { models } : {}
   }
 
   private async registryLaunch(id: string): Promise<AgentLaunch> {
