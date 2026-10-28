@@ -600,6 +600,7 @@ class Task {
     this.sessionId = null
     this.recap = false
     this.turn = null
+    this.cancelling = false
     this.waiting = new Map()
     this.log = createWriteStream(join(dir, 'agent.log'), { flags: 'a' })
   }
@@ -673,12 +674,14 @@ class Task {
         this.sessionId = null
       })
     }
-    const caps = this.agent.init.agentCapabilities ?? {}
+    // Requests go to this agent process; if it dies they fail with its exit, not a null reference.
+    const agent = this.agent
+    const caps = agent.init.agentCapabilities ?? {}
     const mcpServers = existsSync(DESKTOP_MCP)
       ? [{ name: 'caboose-desktop', command: process.execPath, args: [DESKTOP_MCP], env: [{ name: 'CABOOSE_AGENT_DISPLAY', value: process.env.DISPLAY || ':101' }] }]
       : []
     const previous = (await readFile(join(this.dir, 'session'), 'utf8').catch(() => '')).trim()
-    const request = (method, params) => Promise.race([this.agent.connection.agent.request(method, params), this.agent.died])
+    const request = (method, params) => Promise.race([agent.connection.agent.request(method, params), agent.died])
     let continuity = 'new'
     let response
     if (previous) {
@@ -708,7 +711,7 @@ class Task {
     }
     this.transcript.write({
       type: 'session', sessionId: this.sessionId, continuity,
-      agent: this.agent.init.agentInfo ?? null,
+      agent: agent.init.agentInfo ?? null,
       modes: response?.modes ?? null,
       configOptions: Array.isArray(response?.configOptions) ? response.configOptions.map(option => ({ id: option.id, name: option.name, currentValue: option.currentValue })) : null,
     })
@@ -724,6 +727,8 @@ class Task {
     const call = { ...known, ...Object.fromEntries(Object.entries(params.toolCall ?? {}).filter(([, value]) => value !== null && value !== undefined)) }
     const options = Array.isArray(params.options) ? params.options : []
     const summary = describeToolCall(call)
+    // Once the owner has cancelled the turn, nothing more is allowed in it.
+    if (this.cancelling) return { outcome: { outcome: 'cancelled' } }
     if (this.approvalMode === 'auto') {
       const option = chooseOption(options, { allow: true }) ?? options[0]
       if (!option) return { outcome: { outcome: 'cancelled' } }
@@ -818,6 +823,7 @@ class Task {
     let cancelled = false
     let watcher
     let agent
+    this.cancelling = false
     try {
       await this.ensureSession()
       agent = this.agent
@@ -833,7 +839,9 @@ class Task {
         for (const name of await this.entries()) {
           if (!name.startsWith('cancel')) continue
           await this.take(name)
+          if (cancelled) continue
           cancelled = true
+          this.cancelling = true
           await this.agent?.connection.agent.notify('session/cancel', { sessionId: this.sessionId }).catch(() => {})
           await this.cancelWaiting()
           // An agent that ignores session/cancel is stopped; a later reply starts it again.
@@ -867,6 +875,9 @@ class Task {
       return true
     } finally {
       clearInterval(watcher)
+      // A request the agent left waiting does not outlive its turn.
+      await this.cancelWaiting()
+      this.cancelling = false
       this.turn = null
     }
   }
