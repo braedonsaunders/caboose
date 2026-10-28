@@ -73,7 +73,7 @@ cp "$repo"/apps/host/src/*.py "$repo/apps/host/dist/"
 find "$repo/apps/host/dist" -name '*.test.js' -delete
 
 echo "Collecting production dependencies"
-( cd "$repo" && pnpm --filter caboose-host deploy --prod --legacy "$work/host" >/dev/null )
+( cd "$repo" && pnpm --filter caboose-host deploy --prod "$work/host" )
 mkdir -p "$root/app/apps/host" "$root/app/apps/web" "$root/app/guest/catalog" "$root/bin"
 cp -R "$work/host/node_modules" "$work/host/package.json" "$root/app/apps/host/"
 cp -R "$repo/apps/host/dist" "$root/app/apps/host/dist"
