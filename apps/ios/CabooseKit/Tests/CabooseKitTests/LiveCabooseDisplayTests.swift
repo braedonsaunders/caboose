@@ -108,12 +108,13 @@ import Testing
         session.touch([TouchPoint(slot: 0, phase: .up, x: centre.x, y: centre.y)], in: page)
         try await until("a touch pointer", timeout: 5) { page.title.hasPrefix("touch|") }
 
-        // The page refocuses its field after every pointerdown; Chromium then enables text-input-v3.
+        // The field fills the page, so the tap lands in it and Chromium enables text-input-v3.
         try await until("text input enabled", timeout: 3) { session.textInput?.enabled == true }
         #expect(session.composesText)
-        // Clear what an earlier run left, a BackSpace per character.
+        // Clear what an earlier run left: a BackSpace per character, and a few more, since the
+        // title (where the page reports its field) loses trailing spaces.
         let backspace = try #require(Keysyms.special["BackSpace"])
-        for _ in 0 ..< page.title.drop(while: { $0 != "|" }).dropFirst().count {
+        for _ in 0 ..< page.title.drop(while: { $0 != "|" }).dropFirst().count + 4 {
             session.key(backspace, pressed: true, in: page)
             session.key(backspace, pressed: false, in: page)
         }
@@ -125,16 +126,16 @@ import Testing
         session.key(backspace, pressed: true, in: page)
         session.key(backspace, pressed: false, in: page)
         try await until("BackSpace", timeout: 3) { page.title == "touch|" }
-        session.edit([.type("caboose ")], in: page)
-        try await until("committed text", timeout: 5) { page.title.hasSuffix("|caboose ") }
-        session.edit([.backspace(1)], in: page)
-        try await until("a deletion", timeout: 5) { page.title.hasSuffix("|caboose") }
+        session.edit([.type("caboose")], in: page)
+        try await until("committed text", timeout: 5) { page.title == "touch|caboose" }
+        session.edit([.backspace(1), .type("e!")], in: page)
+        try await until("a replacement", timeout: 5) { page.title == "touch|caboose!" }
         if session.composesText {
             session.compose("にほ", selection: NSRange(location: 2, length: 0), in: page)
             try await Task.sleep(for: .milliseconds(300))
             print("during preedit: \"\(page.title)\"")
             session.edit([.type("日本")], in: page)
-            try await until("the composition committed", timeout: 5) { page.title.hasSuffix("|caboose日本") }
+            try await until("the composition committed", timeout: 5) { page.title == "touch|caboose!日本" }
         }
         print("text: \"\(page.title)\"")
 
