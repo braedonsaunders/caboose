@@ -128,6 +128,8 @@ HTTP API (all JSON, all behind `Authorization: Bearer <device token>`):
 | `GET` | `/v1/computer` | management status and persisted computer settings; does not wake or lease the computer |
 | `PATCH` | `/v1/computer/settings` | update any of `name`, `memoryMb`, `vcpus`, `idleMs`; returns management status |
 | `POST` | `/v1/computer/restart` | requires `{ "confirm": true }`; cold restart, preserving the disk and discarding memory; returns management status |
+| `POST` | `/v1/files` | `{ name, data (base64), open? }` → `{ path }`: save a file into the computer's `~/Downloads` (see Agents › Files) |
+| `POST` | `/v1/open` | `{ url }` → `{ opened: true }`: open an `http(s)` URL in the default browser on `:100` |
 
 Management status has this shape (resources are MiB and idle time is milliseconds):
 
@@ -247,31 +249,102 @@ owner's pointer or types into the owner's windows.
 - **Desktop tools.** `caboose-desktop-mcp` (stdio MCP server, in the image) gives an agent
   `screenshot`, `click`, `type`, `key`, `scroll`, `launch`, `list_windows` and `focus` on
   `:101`, so a CLI agent can drive GUI apps as well as the shell. Claude Code and Codex
-  are configured to load it.
-- **Tasks.** The host runs a task as a keep-alive desk job, as user `caboose`, in
-  `/home/caboose/Agents/<task-id>/` (or a chosen directory), with `DISPLAY=:101`:
-  `claude -p <prompt> --output-format stream-json` or `codex exec --json <prompt>`.
-  Output is parsed into events; the raw transcript is kept in the task directory.
+  are configured to load it. It also carries `approve`, the permission-prompt tool behind
+  **Ask before acting** (below).
+- **Tasks.** The host starts a task detached (`setsid`), as user `caboose`, in
+  `/home/caboose/Agents/<task-id>/`, with `DISPLAY=:101` and `CABOOSE_TASK_DIR` set to that
+  directory: `claude -p <prompt> --output-format stream-json --verbose` or
+  `codex exec --json --skip-git-repo-check -c sandbox_mode=workspace-write <prompt>`.
+  Without approvals Claude runs with `--permission-mode acceptEdits` and the shell, file,
+  web and desktop tools pre-allowed; Codex always runs in its workspace-write sandbox.
+  Output is parsed into events; the raw JSONL transcript is kept in the task directory.
+- **Replies.** A finished task (succeeded, failed or cancelled) can be continued with a new
+  prompt. The host records the conversation id from the transcript — Claude's
+  `system`/`init` `session_id`, Codex's `thread.started` `thread_id` — in the task's
+  `session` file and runs `claude -p <prompt> --resume <session_id> …` or
+  `codex exec resume --json --skip-git-repo-check -c sandbox_mode=workspace-write <thread_id> <prompt>`.
+  Each turn appends to the same `transcript.jsonl`; the task keeps its id, `prompt` (the
+  first one) and `startedAt`, goes back to `running`, and `turns` counts the turns. A task
+  that never reported a conversation id (for example, cancelled before the CLI started)
+  cannot be continued.
+- **Ask before acting** (`approvals: "ask"`, Claude Code only; `codex exec` cannot ask, so
+  Codex rejects it). Claude runs with `--permission-prompt-tool mcp__caboose-desktop__approve`
+  and no pre-allowed tools, so every tool use that needs permission asks. The `approve`
+  tool writes `<taskdir>/approvals/<requestId>.json` `{ tool, input, requestedAt }` (long
+  input strings cut for display) and waits — with no time limit; the task's lease keeps
+  the computer awake — for `<taskdir>/approvals/<requestId>.decision` `{ allow, message? }`,
+  then answers Claude with `{ "behavior": "allow", "updatedInput": <input> }` or
+  `{ "behavior": "deny", "message": … }`. Both files are written whole and renamed into
+  place. The host's poll reports requests without a decision; answering writes the decision
+  file as `caboose`. Request ids are UUIDs minted by the tool and validated before use.
+- **Attachments.** Up to 4 files, at most 10 MB decoded together, are written to
+  `<taskdir>/attachments/<name>` (the last path component without control characters or
+  leading dots, at most 120 characters, made unique as `name (2).ext`). The prompt given to
+  the CLI ends with `\n\nAttached files:\n- <absolute path>` per file, so the agent reads them
+  (Claude Code reads PNG and JPEG natively); the task's `prompt` stays as the owner wrote it.
+- **Polling.** While any task is live the host runs one guest command per second for all
+  of them: new transcript bytes from each task's byte offset (1 MiB per tick shared between
+  tasks, read as base64 so offsets stay exact), the exit code, and pending approval
+  requests. A tick with no live task does nothing.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/v1/agent/tasks` | `{ prompt, agent: "claude" \| "codex", cwd? }` → `{ id }` |
-| `GET` | `/v1/agent/tasks` | recent tasks: `{ id, agent, prompt, status, startedAt, finishedAt, summary }` |
+| `POST` | `/v1/agent/tasks` | `{ prompt, agent?: "claude" \| "codex", approvals?: "ask" \| "auto", attachments?: [{ name, type, data (base64) }] }` → `{ id }` |
+| `GET` | `/v1/agent/tasks` | recent tasks, newest first (task record below) |
+| `POST` | `/v1/agent/tasks/:id/reply` | `{ prompt }` → `{ task }`; continue a finished task's conversation. 409 while the task is running or paused, or when it has no conversation to continue; 404 for an unknown task |
+| `POST` | `/v1/agent/tasks/:id/approvals/:requestId` | `{ allow: boolean, message?: string }` → `{ resolved }`; `resolved: false` when that request is no longer waiting |
 | `POST` | `/v1/agent/tasks/:id/cancel` | stop a running task |
 | `POST` | `/v1/agent/tasks/:id/pause` | stop a running task in place for take-over (`status: "paused"`) |
 | `POST` | `/v1/agent/tasks/:id/resume` | continue a paused task |
 | `GET` | `/v1/display?seat=agent` | **WebSocket.** Relay to the agent seat's Xpra on `:101` |
 
+A task record:
+
+```ts
+{
+  id: string,
+  agent: "claude" | "codex",
+  prompt: string,                 // the first prompt, as written
+  status: "running" | "paused" | "succeeded" | "failed" | "cancelled",
+  startedAt: string,              // ISO 8601
+  finishedAt?: string,            // absent while running
+  summary?: string,               // the last turn's result; absent while running
+  turns: number,                  // 1, plus one per reply
+  approvals: "ask" | "auto",
+  pendingApproval?: { id: string, tool: string, summary: string },  // oldest request waiting
+  attachments?: string[]          // absolute guest paths
+}
+```
+
+Prompts are 1–32000 characters after trimming. `message` is at most 2000 characters and
+is shown to Claude when a request is denied. Agent requests answer 400 for invalid input
+and 409 while the computer is not running.
+
 Control-socket events: `agent.task.started { id, agent, prompt }`,
 `agent.task.output { id, kind: "text" | "tool" | "error", text }`,
 `agent.task.paused { id }`, `agent.task.resumed { id }`,
-`agent.task.finished { id, status: "succeeded" | "failed" | "cancelled", summary }`.
+`agent.task.finished { id, status: "succeeded" | "failed" | "cancelled", summary }`,
+`agent.task.replied { id, prompt, turn }`,
+`agent.task.approval { id, request: { id, tool, summary } }` (once per request),
+`agent.task.approval.resolved { id, requestId, allow }`.
 A task that finds its CLI signed out fails with `status: "failed"` and a summary telling
 the owner to sign in from Terminal. Tasks keep running while the phone is locked: the
 computer is a server, and the host holds a lease while any task runs, so the computer is
-not parked under a working agent. Each task directory records its agent, prompt, pid
-and exit code, so a restarted host rebuilds the task list from the guest and re-takes the
-lease for tasks still running.
+not parked under a working agent. Each task directory records its agent, prompt, approval
+mode, turn count, conversation id, pid and exit code, so a restarted host rebuilds the
+task list from the guest, re-takes the lease for tasks still running, and can still reply.
+
+### Files
+
+`POST /v1/files` saves `{ name, data }` (at most 50 MB decoded) into
+`/home/caboose/Downloads/`, owned by `caboose`. The name is sanitised as for attachments
+and made unique (`report (2).pdf`); the response is the absolute path. `open: true` then
+opens it with the desktop's default application on the owner's display `:100`
+(`xdg-open`, else `gio open`). `POST /v1/open` opens an `http`/`https` URL the same way;
+other schemes, control characters and spaces are rejected with 400. Both answer 409 while
+the computer is not running. The guest command channel carries arguments, not stdin, so
+file contents travel base64-encoded in chunks of at most 96 KiB per argument and 768 KiB
+per command and are decoded in the guest; no driver needs more than `run(command, args)`.
 
 ## Iteration 1: done means
 

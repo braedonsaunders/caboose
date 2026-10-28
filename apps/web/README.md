@@ -10,7 +10,9 @@ owner token, then see and manage the computer.
 - **Settings** — name, memory, vCPUs and auto-park, validated against the host's
   `limits`. Edits made from another device are followed unless there are unsaved
   edits here; "Save and restart" applies new resources in one step.
-- **Agents** — start a Claude Code or Codex task, and pause, resume or cancel tasks.
+- **Agents** — start a Claude Code or Codex task (Claude can ask before acting, answered
+  with Approve or Deny on the task), pause, resume or cancel it, and reply to a finished
+  task to continue its conversation.
 
 It is built on AppKit (`appkit-ui` for the shell, settings layout, forms, confirm
 dialog and toasts; `appkit-dashboard` for metric cards and panels). It talks only to
