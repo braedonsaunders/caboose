@@ -174,7 +174,8 @@ final class NativeEditor: UITextView {
             if name == "Tab" { insertText("\t"); return }
             let backward = ["Left", "Up", "Home", "Page_Up"].contains(name)
             let origin = backward ? selection.start : selection.end
-            let direction: UITextDirection = backward ? UITextStorageDirection.backward.rawValue : UITextStorageDirection.forward.rawValue
+            let storage: UITextStorageDirection = backward ? .backward : .forward
+            let direction = UITextDirection(rawValue: storage.rawValue)
             let destination: UITextPosition?
             if name == "Home" || name == "End" {
                 destination = modifiers.contains("control") ? (backward ? beginningOfDocument : endOfDocument)
