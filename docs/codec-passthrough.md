@@ -1,12 +1,13 @@
 # Codec passthrough
 
-Layer 1 of [video for every app](display.md#video-for-every-app): the computer ships a
-VA-API driver, `caboose_drv_video.so`, that every Linux player decodes through. It does
-not decode. It rebuilds each picture's compressed bitstream from the VA buffers and sends
-it to caboose-display, which forwards it to the client as a `video` stream (the `video.*`
-messages in [display.md, "Video streams"](display.md#video-streams)). The client decodes
-in hardware and layers the video into the window at the moment the app presents each
-frame. The code and its build, tests and numbers are in [guest/vaapi](../guest/vaapi/README.md).
+Codec passthrough is how [video reaches the client](display.md#video-for-every-app) at
+its original quality. The computer ships a VA-API driver, `caboose_drv_video.so`, that
+players decode through as through any hardware decoder. It does not decode. It rebuilds
+each picture's compressed bitstream from the VA buffers and sends it to caboose-display,
+which forwards it to the client as a `passthrough` video stream (the `video.*` messages in
+[display.md, "Video streams"](display.md#video-streams)). The client decodes in hardware
+and layers the video into the window at the moment the app presents each frame. The code,
+its build and its tests are in [guest/vaapi](../guest/vaapi/README.md).
 
 This document is the contract between the driver and caboose-display: the socket, the
 placeholder marker, how a stream is bound to a window, and how a stream falls back.
@@ -14,9 +15,11 @@ placeholder marker, how a stream is bound to a window, and how a stream falls ba
 ## The driver
 
 Apps load it with `LIBVA_DRIVER_NAME=caboose`. caboose-display sets that variable in the
-sessions it runs, with `GST_VA_ALL_DRIVERS=1` (GStreamer's `va` plugin otherwise accepts
-only drivers on its allow-list); nothing else should, because the driver refuses to
-initialise when no compositor is listening (see [Fallback](#fallback)).
+launch environment it writes, with `GST_VA_ALL_DRIVERS=1` (GStreamer's `va` plugin
+otherwise accepts only drivers on its allow-list) and `CABOOSE_VIDEO_SOCKET`, when the
+driver is installed where libva looks and its socket is listening. Nothing else should
+set it, because the driver refuses to initialise when no compositor is listening (see
+[Fallback](#fallback)).
 
 It advertises VLD decoding of H.264 (Constrained Baseline, Main, High, High 10), HEVC
 (Main, Main 10), VP9 (profiles 0 and 2) and AV1 (Main), up to 8192 x 8192. What each codec
@@ -45,7 +48,9 @@ and the display aspect ratio.
 
 The driver connects at `vaInitialize` to `$CABOOSE_VIDEO_SOCKET`, by default
 `$XDG_RUNTIME_DIR/caboose-video.sock`, a Unix stream socket that caboose-display listens
-on. SO_PEERCRED gives the compositor the app's pid, to match it to its Wayland client.
+on. Each caboose-display instance has its own socket: the owner's display uses the
+default, and the agent seat `$XDG_RUNTIME_DIR/caboose-video-agent.sock` (set by its unit,
+or by `caboose-session` in the container). SO_PEERCRED gives the compositor the app's pid, to match it to its Wayland client.
 Connecting at initialisation means the connection exists before Chromium's GPU sandbox
 engages.
 
@@ -69,7 +74,7 @@ Compositor to driver:
 | Type | Message | Payload |
 | --- | --- | --- |
 | `0x81` | `ACCEPT` | `u32 stream`, `u8 tag` (0-63, unique among the compositor's live streams), `u8 mode` (0 passthrough, 1 decode locally) |
-| `0x82` | `DECODE` | `u32 stream`, `u8 reason`: decode this stream locally from now on |
+| `0x82` | `DECODE` | `u32 stream`, `u8 reason` (0 the client cannot decode the codec, 1 no marker tag is free, 2 the client keeps failing to decode it): decode this stream locally from now on |
 | `0x83` | `REPLAY` | `u32 stream`: send again from the last key frame |
 
 `seq` counts the stream's pictures from 0 in decode order, one per `vaEndPicture` (an
@@ -79,12 +84,16 @@ app did not show the picture when it decoded it; the data still makes a decoder 
 so the client can hold it until it is presented, which may be never), `0x04` replay (sent
 in answer to `REPLAY`; the original was already sent). `CLOSE` reasons: 0 the app
 destroyed its decoder, 1 the app read pixels back, 2 the compositor sent `DECODE`, 3 the
-bitstream cannot be rebuilt (the app decodes it in software), 4 no `ACCEPT` in time. After
-any `CLOSE` but reason 0 the stream continues in the app as ordinary decoded video.
+bitstream cannot be rebuilt (the app decodes it in software), 4 no `ACCEPT` in time or the
+socket failed. After any `CLOSE` but reason 0 the stream continues in the app as ordinary
+decoded video.
 
 The driver waits up to one second for `ACCEPT` when the app creates a decoder. With no
 answer it decodes that stream locally and sends `CLOSE` with reason 4. A write that blocks
 for two seconds, or a closed socket, switches every stream to local decoding.
+caboose-display answers `OPEN` with `ACCEPT` mode 1 when the connected client does not
+list the codec in `video_decoders`, with `DECODE` reason 1 when all 64 tags are in use,
+and otherwise with `ACCEPT` mode 0 and a free tag.
 
 ## The marker
 
@@ -116,42 +125,42 @@ two to agree.
 
 ## Binding and presentation
 
-caboose-display binds a stream to a window in one of two ways:
+caboose-display binds a stream to a window by its pixels. The app composites the
+decoded surface into its own window (Chromium, Firefox, mpv `--vo=gpu`, X11 players
+through Xwayland), and the compositor runs the detector over the damaged parts of the
+window buffers of the player's process family while a stream is open. The rectangle and
+clip come from the tags; the H.264 1080p padding rows (1920 x 1088 coded), and anything
+else the app crops, show up as the clip. A stream is bound to one rectangle in one window
+at a time, and is unbound when its marker has been missing from three consecutive
+scans of that window.
 
-1. **Exact.** A `wl_buffer` whose dmabuf has the `(st_dev, st_ino)` of an announced surface
-   is that surface: the overlay path of mpv `--vo=dmabuf-wayland`, GStreamer's
-   `waylandsink`, and Firefox and Chromium when they delegate video to a subsurface. The
-   rectangle is the subsurface; the frame shown is the last `FRAME` for that surface.
-   *Not used yet:* caboose-display's pixman renderer offers only linear RGB dmabuf formats,
-   so applications never present an NV12 decode surface to it, and every stream is bound by
-   its pixels until a GPU renderer lands.
-2. **Pixels.** Everything composited by the app itself (Chromium, Firefox, mpv `--vo=gpu`,
-   X11 players through Xwayland): the compositor runs the detector over the damaged parts
-   of window buffers. The rectangle and clip come from the tags; the H.264 1080p padding
-   rows (1920 x 1088 coded), and anything else the app crops, show up as the clip.
+`SURFACE` names a decode surface's dmabuf so that a compositor can recognise a
+`wl_buffer` that is the surface itself (a video subsurface: mpv `--vo=dmabuf-wayland`,
+GStreamer's `waylandsink`). caboose-display's pixman renderer offers only linear RGB
+dmabuf formats, so applications do not present NV12 decode surfaces to it; it receives
+`SURFACE` and binds by pixels.
 
-Either way, the moment the compositor sees a picture on screen is its presentation time,
+The moment the compositor sees a picture on screen is its presentation time,
 `video.present { id, seq, pts_us }` on the server clock. The app has already scheduled that
 moment against its audio clock, so the client stays in sync by presenting video and audio
-with the same delay. Clients should treat window pixels that equal the expected marker as
-transparent and draw the window over the video, so controls and subtitles the app draws on
-top of the video stay on top.
+with the same delay. The client draws the video above the window picture, within the
+clip (see [display.md, "Video streams"](display.md#video-streams)), so controls or
+subtitles the app draws over the video area are hidden while the stream is shown.
 
 ## Fallback
 
 A stream falls back to local decoding: the driver decodes its own rebuilt bitstream with
 libavcodec into the app's surfaces, so the app has an ordinary decoder and the compositor
-sees ordinary video, served by layer 2 (a video subsurface) or layer 3 (detected motion).
+sees ordinary video, which stays in the window picture or becomes a detected `motion`
+stream.
 The switch happens:
 
 - **When the app reads pixels back** through VA: `vaGetImage`, or mapping a `vaDeriveImage`
   image of a surface that holds a marker (FFmpeg's `hwdownload`, mpv `--hwdec=vaapi-copy`,
   thumbnailers). Reason 1.
-- **When the compositor sends `DECODE`:** the client cannot decode the codec or profile, no
-  marker tag is free (64 live streams), or the client keeps reporting decode errors (three
-  `video.keyframe` requests within 10 s). Reason 2. Recognising marker modules the
-  compositor cannot bind (the app transformed the video: WebGL, CSS filters, canvas
-  effects) is not implemented yet; such a video shows its marker in the window picture.
+- **When the compositor sends `DECODE`:** a newly connected client cannot decode the
+  codec, no marker tag is free (64 live streams), or the client keeps reporting decode
+  errors (three `video.keyframe` requests within 10 s). Reason 2.
 
 A bitstream the driver cannot rebuild (H.264 `pic_order_cnt_type` 1, slice groups, 4:2:2
 and 4:4:4, and the per-codec cases in [guest/vaapi](../guest/vaapi/README.md)) cannot be
@@ -172,9 +181,9 @@ debugging.
 
 - **Pixels read through the GPU are not seen.** A page that draws a video into a canvas and
   reads it with `getImageData`, or uploads it to WebGL, gets the marker, not the picture;
-  only VA-level readback is detectable. The compositor catches the visible cases (the
-  marker on screen transformed) and sends `DECODE`; a canvas that copies the video
-  unchanged shows a second, valid marker, which the client fills with the same video.
+  only VA-level readback is detectable. The compositor does not detect a marker the app
+  has transformed (WebGL, CSS filters, canvas effects), so such a video shows its marker
+  in the window picture.
 - **Protected content.** The driver does not advertise VA protected sessions, so
   hardware-DRM (Widevine L1 style) playback never reaches it. Decrypt-only CDMs, such as
   Chromium's Widevine L3 on Linux, hand the decoder clear bitstream, which is passed
@@ -195,4 +204,4 @@ debugging.
 - **Imported surfaces must be linear.** Apps that allocate their own buffers (Chromium on
   some GPUs) and hand tiled ones to `vaCreateSurfaces` are refused, and decode in software.
 - **Chromium needs a DRM render node** to open VA at all, so on hosts without one (`none`,
-  WSL) Chromium's video takes layers 2 and 3.
+  WSL) Chromium's video stays in the window picture or becomes a `motion` stream.

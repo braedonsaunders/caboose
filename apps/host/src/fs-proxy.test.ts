@@ -21,7 +21,7 @@ it('wakes, authenticates and streams a range through the guest relay', async () 
   cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
   let wakes = 0
   const controller: Controller = {
-    wake: async () => { wakes++; return { state: 'running', display: { path: '/v1/display', token: '', protocol: 'xpra-ws' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } } },
+    wake: async () => { wakes++; return { state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } } },
     park: async () => {}, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined,
     activeResources: () => null, hasSavedState: () => false,
     fileService: () => ({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'wake-token' }),
@@ -50,7 +50,7 @@ it('signals control clients when the guest change anchor advances', async () => 
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
   cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
   const controller: Controller = {
-    wake: async () => ({ state: 'running', display: { path: '/v1/display', token: '', protocol: 'xpra-ws' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+    wake: async () => ({ state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
     park: async () => {}, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined,
     activeResources: () => null, hasSavedState: () => false,
     fileService: () => ({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'wake-token' }),

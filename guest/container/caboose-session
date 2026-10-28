@@ -3,116 +3,98 @@ set -euo pipefail
 # The session runs as root; everything it starts for the owner runs as caboose with this
 # home. Root's own commands keep root's HOME, so nothing root writes lands in the owner's.
 CABOOSE_HOME=/home/caboose
+TOKEN=/run/caboose/display-token
 # Accessibility trees for a11y.py: Chromium and Electron, Firefox, Qt.
 export ACCESSIBILITY_ENABLED=1 GNOME_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 case ${CABOOSE_GPU:-none} in
-  wsl)
-    export GALLIUM_DRIVER=d3d12 XPRA_PYCUDA_WSL=1
-    unset MESA_D3D12_DEFAULT_ADAPTER_NAME
-    if [ -x /usr/lib/wsl/lib/nvidia-smi ] && /usr/lib/wsl/lib/nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
-      export XPRA_NVIDIA_HARDWARE=1 XPRA_NVENC_PRESET=P1 XPRA_NVENC_TUNING=low-latency
-    else
-      unset XPRA_NVIDIA_HARDWARE XPRA_NVENC_PRESET XPRA_NVENC_TUNING
-    fi ;;
-  nvidia)
-    unset GALLIUM_DRIVER MESA_D3D12_DEFAULT_ADAPTER_NAME XPRA_PYCUDA_WSL XPRA_NVIDIA_HARDWARE LIBVA_DRIVER_NAME
-    export XPRA_NVENC_PRESET=P1 XPRA_NVENC_TUNING=low-latency ;;
-  dri|none)
-    unset GALLIUM_DRIVER MESA_D3D12_DEFAULT_ADAPTER_NAME XPRA_PYCUDA_WSL XPRA_NVIDIA_HARDWARE XPRA_NVENC_PRESET XPRA_NVENC_TUNING LIBVA_DRIVER_NAME ;;
+  wsl) export GALLIUM_DRIVER=d3d12; unset MESA_D3D12_DEFAULT_ADAPTER_NAME ;;
+  nvidia|dri|none) unset GALLIUM_DRIVER MESA_D3D12_DEFAULT_ADAPTER_NAME LIBVA_DRIVER_NAME ;;
   *) echo "Unsupported CABOOSE_GPU: ${CABOOSE_GPU}" >&2; exit 2 ;;
 esac
 export XDG_RUNTIME_DIR=/run/user/1000
 install -d -o caboose -g caboose -m 0700 "$XDG_RUNTIME_DIR"
 install -d -m 0755 /run/dbus
 if [ ! -S /run/dbus/system_bus_socket ]; then dbus-daemon --system --fork; fi
-if [ ! -S "$XDG_RUNTIME_DIR/bus" ]; then
-  runuser -u caboose -- dbus-daemon --session --address="unix:path=$XDG_RUNTIME_DIR/bus" --fork
-fi
-# One monitor per session bus; it does not own the notification service.
-start_notifications() {
-  local pidfile="$XDG_RUNTIME_DIR/caboose-notifications.pid"
-  if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then return; fi
-  runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-    DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" \
-    /bin/sh -c 'echo $$ > "$XDG_RUNTIME_DIR/caboose-notifications.pid"; exec python3 /opt/caboose/notifications/monitor.py' \
-    >>"$CABOOSE_HOME/.cache/caboose-notifications.log" 2>&1 < /dev/null &
-}
 install -d -o caboose -g caboose -m 0700 "$CABOOSE_HOME/.cache"
-[ ! -f /opt/caboose/notifications/monitor.py ] || start_notifications
-# Start the display's accessibility bus before any app, so every app on it joins that bus
-# (see guest/desktop-mcp/README.md). Safe to repeat; an app still runs without it.
+
+# Each seat has its own session bus, so the agents' notifications never reach the owner.
+session_bus() {
+  local bus=$1
+  if [ ! -S "$bus" ]; then runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork; fi
+}
+
+# Starts the seat's accessibility bus before any app, so every app on its Xwayland joins that
+# bus (see guest/desktop-mcp/README.md). Safe to repeat; an app still runs without it.
 a11y_bus() {
-  runuser -u caboose -- env HOME="$CABOOSE_HOME" DISPLAY="$1" python3 /opt/caboose/a11y.py bus --display "$1" --wait 30 >/dev/null ||
-    echo "No accessibility bus for $1" >&2
+  local envfile=$1 bus=$2
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" /bin/sh -c 'set -a; . "$0"; exec python3 /opt/caboose/a11y.py bus --display "$DISPLAY" --wait 30' "$envfile" >/dev/null ||
+    echo "No accessibility bus for the display in $envfile" >&2
 }
+
+# A caboose-display instance (docs/display.md). Its launch environment goes to ENVFILE once
+# it is ready, and video passthrough uses VIDEO_SOCKET; extra arguments select the instance
+# (port, sockets, X display).
 start_display() {
-  local display=$1 port=$2 speaker=$3
-  if runuser -u caboose -- env DISPLAY="$display" xpra info "$display" >/dev/null 2>&1; then a11y_bus "$display"; return; fi
-  # Each seat has its own session bus, so agent notifications never reach the owner.
-  local bus="$XDG_RUNTIME_DIR/bus"
-  if [ "$display" = :101 ]; then
-    bus="$XDG_RUNTIME_DIR/agent-bus"
-    if [ ! -S "$bus" ]; then runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork; fi
-  fi
-  # Xpra's packaged config switches GTK's accessibility bridge off for the apps it starts.
+  local name=$1 port=$2 bus=$3 envfile=$4 video_socket=$5; shift 5
+  if caboose-display-probe --check --url "ws://127.0.0.1:$port/" --token-file "$TOKEN" >/dev/null 2>&1; then return; fi
+  install -d -m 0755 /run/caboose
+  install -o caboose -g caboose -m 0644 /dev/null "$envfile"
+  local libs=
+  if [ "${CABOOSE_GPU:-none}" = wsl ]; then libs=/usr/lib/wsl/lib; fi
+  local log="$CABOOSE_HOME/.cache/$name.log"
+  # The redirect below is opened by this root shell, so the log must already be caboose's.
+  touch "$log" && chown caboose:caboose "$log"
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" LD_LIBRARY_PATH="$libs" CABOOSE_VIDEO_SOCKET="$video_socket" \
+    setsid caboose-display --env-file "$envfile" "$@" >>"$log" 2>&1 < /dev/null &
+}
+
+notification_endpoint() {
+  local name=$1 bus=$2
+  [ -f "$3" ] || return 0
+  local pidfile="$XDG_RUNTIME_DIR/$name.pid" log="$CABOOSE_HOME/.cache/$name.log"
+  if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then return; fi
+  touch "$log" && chown caboose:caboose "$log"
   runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
-    xpra seamless "$display" --daemon=yes --bind-ws="0.0.0.0:$port" \
-    --ws-auth=file:filename=/run/caboose/xpra-token --html=off --clipboard=on \
-    --dbus-launch=no --notifications=on --file-transfer=on --mdns=off --printing=off --webcam=off \
-    --speaker="$speaker" --microphone=off --env=NO_AT_BRIDGE=0 --start-env=GTK_A11Y=atspi
-  a11y_bus "$display"
+    /bin/sh -c 'echo $$ > "$0"; exec python3 "$1"' "$pidfile" "$3" >>"$log" 2>&1 < /dev/null &
 }
-ready() {
-  local display=$1
-  for _ in $(seq 1 120); do
-    if runuser -u caboose -- env DISPLAY="$display" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" xpra info "$display" >/dev/null 2>&1; then return; fi
-    sleep 1
-  done
-  echo "Xpra $display did not become ready" >&2; return 1
-}
-# Caboose Display (docs/display.md): the owner seat as a Wayland compositor with
-# Xwayland, streaming each window on WebSocket port 14600. Launchers read the
-# application environment from /run/caboose/display.env once it is ready.
-start_caboose_display() {
-  # Caboose Display does not provide Xpra's notification D-Bus service.
-  local notification_pid="$XDG_RUNTIME_DIR/caboose-notification-daemon.pid"
-  if ! [ -f "$notification_pid" ] || ! kill -0 "$(cat "$notification_pid")" 2>/dev/null; then
-    runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" \
-      /bin/sh -c 'echo $$ > "$XDG_RUNTIME_DIR/caboose-notification-daemon.pid"; exec python3 /opt/caboose/notifications/daemon.py' \
-      >>"$CABOOSE_HOME/.cache/caboose-notification-daemon.log" 2>&1 < /dev/null &
-  fi
-  if caboose-display-probe --check --token-file /run/caboose/xpra-token >/dev/null 2>&1; then return; fi
+
+start_owner() {
+  local bus="$XDG_RUNTIME_DIR/bus"
+  session_bus "$bus"
+  # The monitor records the owner's notifications; the endpoint owns the D-Bus name.
+  notification_endpoint caboose-notifications "$bus" /opt/caboose/notifications/monitor.py
+  notification_endpoint caboose-notification-daemon "$bus" /opt/caboose/notifications/daemon.py
   # The VA-API passthrough driver exports decode surfaces through /dev/udmabuf (passed in
   # on hosts with a render node); this container's node is the session user's to use.
   if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi
-  install -d -m 0755 /run/caboose
-  install -o caboose -g caboose -m 0644 /dev/null /run/caboose/display.env
-  local log=$CABOOSE_HOME/.cache/caboose-display.log
-  runuser -u caboose -- install -d -m 0700 "$CABOOSE_HOME/.cache"
-  # The redirect below is opened by this root shell, so the log must already be caboose's.
-  touch "$log" && chown caboose:caboose "$log"
-  local libs=
-  if [ "${CABOOSE_GPU:-none}" = wsl ]; then libs=/usr/lib/wsl/lib; fi
-  runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-    DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" LD_LIBRARY_PATH="$libs" \
-    setsid caboose-display --env-file /run/caboose/display.env >>"$log" 2>&1 < /dev/null &
+  start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock"
 }
+
+start_agent() {
+  local bus="$XDG_RUNTIME_DIR/agent-bus"
+  session_bus "$bus"
+  notification_endpoint caboose-agent-notification-daemon "$bus" /opt/caboose/notifications/daemon.py
+  # Agents drive apps with X11 tools, so the seat's apps run on Xwayland alone; no sound.
+  start_display caboose-display-agent 14601 "$bus" /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/caboose-video-agent.sock" \
+    --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --x11-only --no-audio
+}
+
 start_printing() {
   [ -x /usr/local/libexec/caboose-phone-printer-setup ] && command -v lpstat >/dev/null && [ -x /usr/sbin/cupsd ] || return 0
   if ! lpstat -r 2>/dev/null | grep -q 'scheduler is running'; then /usr/sbin/cupsd; fi
-  [ ! -x /usr/local/libexec/caboose-phone-printer-setup ] || /usr/local/libexec/caboose-phone-printer-setup
+  /usr/local/libexec/caboose-phone-printer-setup
 }
+
 case ${1:-} in
-  start) start_printing || echo "Printing unavailable" >&2; start_display :100 14500 on ;;
+  start) start_printing || echo "Printing unavailable" >&2; start_owner ;;
+  ready) caboose-display-ready 120 14600 && a11y_bus /run/caboose/display.env "$XDG_RUNTIME_DIR/bus" ;;
+  start-agent) start_agent; caboose-display-ready 120 14601 && a11y_bus /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/agent-bus" ;;
   start-files)
     start-stop-daemon --start --oknodo --background --make-pidfile --pidfile /run/caboose/files.pid \
       --chuid caboose:caboose --exec /usr/bin/python3 -- /opt/caboose/files/caboose-files.py
     for _ in $(seq 1 60); do ss -lnt | grep -Eq ':14700[[:space:]]' && exit 0; sleep 1; done
     echo 'File service did not become ready' >&2; exit 1
     ;;
-  start-agent) start_display :101 14501 off; ready :101 ;;
-  ready) ready "${2:?display required}" ;;
-  start-display) start_printing || echo "Printing unavailable" >&2; start_caboose_display ;;
-  ready-display) caboose-display-ready 120 ;;
-  *) echo 'Usage: caboose-session start | start-agent | ready DISPLAY | start-display | ready-display' >&2; exit 2 ;;
+  *) echo 'Usage: caboose-session start | ready | start-agent | start-files' >&2; exit 2 ;;
 esac

@@ -255,7 +255,7 @@ struct AgentWindowScreen: View {
 }
 
 struct AgentSeatCanvas: UIViewRepresentable {
-    let seat: XpraSession
+    let seat: CabooseDisplaySession
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
     let interactive: Bool

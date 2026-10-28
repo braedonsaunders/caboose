@@ -1,20 +1,47 @@
 # Guest notifications
 
-The owner session's monitor observes `org.freedesktop.Notifications.Notify` calls on its
-D-Bus session and writes private, bounded JSON records to
-`/home/caboose/.cache/caboose/notifications`. The host drains them while the guest runs.
-The agent seat has a separate session bus. For Caboose Display, `daemon.py` owns the
-notification name; Xpra provides that endpoint when it is the owner display.
+Desktop notifications from the owner's apps, for the phone. Each display seat has its own
+D-Bus session bus and its own `org.freedesktop.Notifications` endpoint; only the owner's
+notifications are recorded. caboose-host drains the records while the computer runs and sends
+them as `notification` events on `/v1/control` and, with APNs configured, as pushes
+(`docs/architecture.md` § Notifications).
 
-Both guest image builds install this directory. On a Debian guest with the `caboose`
-user, systemd, `dbus-user-session`, `python3-gi` and `libnotify-bin`, run `sudo sh
-install.sh`, enable `caboose-notifications.service`, and enable lingering for `caboose`.
-The image build and `guest/display/install.sh` do this already. The agent-seat bus is
-started by `caboose-xpra-agent.service`; the Caboose Display endpoint is started by
-`caboose-display.service`. The container session script starts their counterparts.
+| File | What |
+| --- | --- |
+| `daemon.py` | The `org.freedesktop.Notifications` endpoint on a seat's session bus. It accepts every notification so that apps never wait on a missing server. |
+| `monitor.py` | Watches `Notify` calls on the owner's session bus and writes private, bounded JSON records (`id`, `app`, `summary`, `body`, `created`) to `/home/caboose/.cache/caboose/notifications`. |
+| `caboose-notifications.service` | The owner's monitor (enabled at boot). |
+| `caboose-notification-daemon.service` | The owner's endpoint on `/run/user/1000/bus`, required by `caboose-display.service`. |
+| `caboose-agent-bus.service` | The agent seat's session bus, `/run/user/1000/agent-bus`. |
+| `caboose-agent-notification-daemon.service` | The agent seat's endpoint, required by `caboose-display-agent.service`. Its notifications go nowhere. |
+| `install.sh` | Installs the two scripts in `/opt/caboose/notifications` and the units. |
 
-Run `./check-container.sh` from a checkout with Docker to exercise the monitor and
-separate session buses in an ephemeral Debian container. With the owner display running,
-run `sudo bash check.sh` inside the guest to send a notification and check the queue;
-the host's concurrent drain can consume it before the check sees it. End-to-end APNs
-and presentation need a registered device and the host's `check-push.mjs`.
+## Install
+
+The microVM image and `guest/display/install.sh` run `install.sh`, enable
+`caboose-notifications.service` and enable lingering for `caboose`, so its user manager and
+session bus run at boot. On another Debian guest with the `caboose` user, systemd,
+`dbus-user-session`, `python3-gi` and `libnotify-bin`, do the same as root:
+
+```sh
+sh guest/notifications/install.sh
+systemctl enable caboose-notifications.service
+mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/caboose
+```
+
+The container image installs the scripts; `caboose-session start` and `start-agent` start the
+same buses, monitor and endpoints as processes (see `guest/container/README.md`).
+
+## Test
+
+- `./check-container.sh`, from a checkout with Docker, runs `daemon.py` and `monitor.py` on
+  a session bus in a disposable Debian 13 container, sends an owner notification and an agent
+  notification on a separate bus (`check-agent-bus.sh`), and checks that the owner's is
+  recorded and the agent's is not. It needs no VM or APNs credentials.
+- `sudo bash check.sh`, inside a running computer with the owner's display up, sends a
+  notification on the owner's bus and waits for its record in the queue. The host drains the
+  queue every second while the computer runs and can consume the record before the check
+  sees it.
+
+Delivery to a device needs a registered device and the host's `check-push.mjs`
+([`apps/host`](../../apps/host/README.md#real-host-checks)).

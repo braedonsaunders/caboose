@@ -25,7 +25,7 @@ open class RemoteTextInputView: UIView, UITextInput {
 
     /// Override to true when the remote side has a preedit (composition) of its own: marked
     /// text then arrives through `sendPreedit` instead of being typed, and is committed as a
-    /// `.type` edit. Off for Xpra.
+    /// `.type` edit. Off: marked text is typed live and retyped as it changes.
     open var sendsMarkedTextAsPreedit: Bool { false }
 
     /// The composition in progress and its selection, in UTF-16 units of `text`; called after

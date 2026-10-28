@@ -189,7 +189,7 @@ describe('AgentTasks', () => {
     const { fake, events, release, tasks } = setup()
     const task = await tasks.start({ prompt: 'Run the tests', agent: 'stand-in' })
     expect(task).toMatchObject({ status: 'running', turns: 1, approvals: 'auto', agent: 'stand-in', agentName: 'Stand-in' })
-    expect(fake.calls.some(call => call.join(' ').includes('caboose-xpra-agent.service'))).toBe(true)
+    expect(fake.calls.some(call => call.join(' ').includes('caboose-display-agent.service'))).toBe(true)
     const state = fake.task(task.id)
     expect(JSON.parse(state.files.get('task.json')!)).toEqual({
       agent: { id: 'stand-in', name: 'Stand-in', version: '1.0.0', distribution: 'npx', package: '@example/stand-in@1.0.0', args: [], env: {} },
@@ -199,6 +199,7 @@ describe('AgentTasks', () => {
     const start = fake.calls.find(call => fake.scriptOf(call)?.includes('> task.json'))!
     expect(fake.scriptOf(start)).toContain('setsid sh -c \'node /opt/caboose/agentd/caboose-agentd.mjs run "$PWD"')
     expect(fake.scriptOf(start)).toContain('DISPLAY=:101')
+    expect(fake.scriptOf(start)).toContain('. /run/caboose/agent-display.env')
     fake.append(task.id, user(1))
     fake.append(task.id, { type: 'session', sessionId: 's1', continuity: 'new' })
     fake.append(task.id, { type: 'text', text: 'Running pnpm test.' })

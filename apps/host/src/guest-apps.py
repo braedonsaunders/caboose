@@ -37,21 +37,9 @@ def read(path):
     except (OSError, ValueError, KeyError, configparser.Error):
         return None
 
-def xpra_pulse_server():
-    """Xpra runs a PulseAudio server per display and forwards it to the phone; apps must be
-    pointed at it, or their sound plays to nothing. Under caboose-display there is none."""
-    display = os.environ.get('DISPLAY', ':100').lstrip(':').split('.')[0]
-    for root in (f'/run/user/{os.getuid()}/xpra', '/tmp/xpra'):
-        socket = pathlib.Path(root, display, 'pulse', 'native')
-        if socket.exists():
-            return f'unix:{socket}'
-    return None
-
 if sys.argv[1] == 'launch':
     if os.environ.get('CABOOSE_GPU') == 'wsl':
         os.environ.setdefault('GALLIUM_DRIVER', 'd3d12')
-    if 'PULSE_SERVER' not in os.environ and (pulse := xpra_pulse_server()):
-        os.environ['PULSE_SERVER'] = pulse
     # Craft's winit GUI must use X11, including Caboose Display's Xwayland DISPLAY.
     # Keep the driver's DISPLAY and XAUTHORITY; only remove Wayland selection hints.
     craft = {'photocraft', 'lightcraft', 'filmcraft', 'vectorcraft', 'pdfcraft',

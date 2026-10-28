@@ -9,7 +9,8 @@ stream cannot be passed through, the driver decodes it itself with libavcodec.
 
 The contract with caboose-display (socket, marker, binding, fallback, limits) is
 [docs/codec-passthrough.md](../../docs/codec-passthrough.md); the design it serves is
-"Video, for every app" in [docs/display.md](../../docs/display.md).
+"Video, for every app" in [docs/display.md](../../docs/display.md). The driver is
+written in C and links libva, libdrm, libavcodec and libavutil.
 
 ## Layout
 
@@ -17,7 +18,7 @@ The contract with caboose-display (socket, marker, binding, fallback, limits) is
 | --- | --- |
 | `src/driver.c` | libva entry point and objects; streams, the key-frame buffer, the switch to local decoding |
 | `src/surface.c` | Surface memory (memfd, exported through `/dev/udmabuf`), imported dmabufs, export descriptors |
-| `src/marker.c` | The marker painter and the reference detector that caboose-display links |
+| `src/marker.c` | The marker painter and the reference detector (caboose-display carries a Rust port, `guest/display/compositor/src/video/marker.rs`) |
 | `src/sink.c`, `src/proto.h` | The video socket |
 | `src/h264.c`, `src/hevc.c`, `src/vp9.c`, `src/av1.c` | Bitstream rebuilders, one per codec; each file's header says what it rebuilds and what it refuses |
 | `src/local.c` | Local decoding (the fallback) with libavcodec |
@@ -41,17 +42,20 @@ guest/vaapi/scripts/dev.sh make            # build/caboose_drv_video.so and the 
 `dev.sh` runs as the calling user with this directory at `/src`, passes `/dev/udmabuf`
 through when the host has it, caps the container at 4 CPUs and 4 GiB
 (`CABOOSE_VAAPI_CPUS`, `CABOOSE_VAAPI_MEMORY`), and with `CABOOSE_VAAPI_DRI=1` passes the
-render nodes through. `make BUILD=dir` builds elsewhere. The driver links libva, libdrm,
-libavcodec and libavutil.
+render nodes through. `make BUILD=dir` builds elsewhere.
 
 ## Run
 
 `make install` puts `caboose_drv_video.so` next to the system's VA drivers (libva's
 `driverdir`, `/usr/lib/x86_64-linux-gnu/dri` on Debian; `DESTDIR` is honoured), or point
 `LIBVA_DRIVERS_PATH` at the build directory. caboose-display sets
-`LIBVA_DRIVER_NAME=caboose` (and `GST_VA_ALL_DRIVERS=1`, for GStreamer) in the sessions it
-runs (only when the driver is installed and its socket is listening); both guest images
-build and install the driver together with caboose-display. Without a listening
+`LIBVA_DRIVER_NAME=caboose`, `GST_VA_ALL_DRIVERS=1` (for GStreamer) and
+`CABOOSE_VIDEO_SOCKET` in the launch environment it writes, only when the driver is
+installed and its socket is listening. Each caboose-display instance has its own socket,
+so a player talks to the display it runs on. Both guest images build the driver with
+caboose-display and install it in `/usr/lib/x86_64-linux-gnu/dri`; the microVM image also
+loads the `udmabuf` module and gives the `caboose` group access to `/dev/udmabuf`, and the
+container gets `/dev/udmabuf` on `nvidia` and `dri` hosts that have it. Without a listening
 compositor the driver does not initialise, and players decode in software as they would
 without a hardware decoder.
 
@@ -100,27 +104,25 @@ GL renderer, `cbva-capture serve` as the compositor, and
   in VA memory; and H.264 readback (frames downloaded to system memory) bit-exact through
   local decoding.
 
-Results on the development machine (AMD Radeon HD 7450, Mesa r600, Debian 13 container,
-2026-10-28):
+The round trips cover:
 
-| Check | Result |
-| --- | --- |
-| Unit tests | pass |
-| H.264 round trips: CBP, Main/CABAC, High 8x8, 1080p (1088 coded), 4 slices, weighted prediction, JVT scaling lists, B-pyramid with 8 refs, interlaced (MBAFF; x264 cannot make field pictures, so PAFF is untested), High 10, open GOP | 11/11 bit-exact, passthrough and readback |
-| HEVC round trips (x265): default, closed and open GOP with CRA/RASL, Main 10, slices + WPP, 1080p, no WPP, scaling lists, lossless, a tools mix (transform skip, SAO off, AMP, QP offsets), odd size (crop), 6 refs + 8-frame pyramid, weighted prediction, temporal layers, PPS changes, SPS-indexed RPS (two-pass `multi-pass-opt-rps`) | 17/17 |
-| HEVC JCT-VC conformance bitstreams (run by hand: tiles, dependent slices, list modification, PCM, long-term refs, EOS) | 53/62 exact; 4 change resolution and match once their contexts' streams are joined; 1 needs a crop; 3 (and a spliced stream) output extra pictures `no_output_of_prior_pics_flag` would have dropped; RPS_D differs in 5 of 68 frames in libavcodec only (see hevc.c) |
-| VP9 round trips: profile 0 two-pass with alt-refs (6 hidden frames shown later), realtime (3 hidden frames never shown), 2 tile columns, profile 2 10-bit | 4/4 |
-| AV1 round trips (libaom, SVT-AV1, rav1e): alt-refs, forward key frames, realtime + cyclic AQ, tiles (uniform and not), 10-bit, film grain (two encoders), screen content, intra block copy, error resilience, global motion, 128x128 superblocks + quantizer matrices + delta-q, lossless, superres, switch frames, reference scaling | 19/19 |
-| mpv 0.40, Chromium 156 (sandboxed and not), GStreamer 1.26 | 12/12 end-to-end checks |
-| Reference: the same ffmpeg decode on the Mesa r600 VA driver | identical VA call sequence and statuses; r600's own decode is bit-exact with software, as is the driver's local decode |
+- **H.264:** Constrained Baseline, Main with CABAC, High with 8x8 transforms, 1080p (1088
+  coded), 4 slices, weighted prediction, JVT scaling lists, a B-pyramid with 8 references,
+  interlaced MBAFF, High 10, and open GOP. x264 cannot produce field pictures, so PAFF is
+  not covered.
+- **HEVC** (x265): default, closed and open GOP with CRA/RASL, Main 10, slices with WPP,
+  1080p, no WPP, scaling lists, lossless, a tools mix (transform skip, SAO off, AMP, QP
+  offsets), an odd size (crop), 6 references with an 8-frame pyramid, weighted prediction,
+  temporal layers, PPS changes, and SPS-indexed RPS (two-pass `multi-pass-opt-rps`).
+- **VP9:** profile 0 two-pass with alt-refs (hidden frames shown later), realtime (hidden
+  frames never shown), 2 tile columns, and profile 2 10-bit.
+- **AV1** (libaom, SVT-AV1, rav1e): alt-refs, forward key frames, realtime with cyclic AQ,
+  uniform and non-uniform tiles, 10-bit, film grain from two encoders, screen content,
+  intra block copy, error resilience, global motion, 128x128 superblocks with quantizer
+  matrices and delta-q, lossless, superres, switch frames, and reference scaling.
 
-Driver cost, `ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -f null` against software
-decode of the same 10 s H.264 clips (testsrc2, x264 veryfast, 20 Mb/s, 4 CPUs):
-
-| Clip | Software decode, CPU per frame | Through the driver, CPU per frame | Forwarded bytes vs source |
-| --- | --- | --- | --- |
-| 1920 x 1080 | 9.7 ms | 0.3 ms (demuxing excluded) | +0.02 % (in-band parameter sets) |
-| 3840 x 2160 | 20 ms | 1.0 ms, mostly allocating and marking 20 4K surfaces once | +0.02 % |
+For 10 s H.264 test clips at 20 Mb/s, the forwarded bitstream is about 0.02% larger than
+the source: the parameter sets sent in band.
 
 ## Limits
 
@@ -138,6 +140,13 @@ Bitstreams refused per codec (the app then decodes in software):
 - VP9: none beyond the profiles advertised (0 and 2).
 - AV1: profiles 1 and 2 (4:4:4, 4:2:2, 12-bit), monochrome, large-scale tile, reference
   slots changed in a way the stream does not explain.
+
+Against the JCT-VC HEVC conformance bitstreams (run by hand, not part of `make check`:
+tiles, dependent slices, list modification, PCM, long-term references, EOS), 53 of 62
+pass through exactly. Of the rest, 4 change resolution and match once their contexts'
+streams are joined; 1 needs a crop; 3 (and a spliced stream) output extra pictures that
+`no_output_of_prior_pics_flag` would have dropped; and RPS_D differs in 5 of 68 frames,
+in libavcodec only (see `src/hevc.c`).
 
 Behaviours to know:
 

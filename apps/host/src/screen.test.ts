@@ -16,10 +16,10 @@ describe('screen', () => {
 
   it('runs as caboose on the owner display and passes through why a window is empty', async () => {
     const runs: string[][] = []
-    const guest = { run: async (command: string, args: string[]) => { runs.push([command, ...args]); return '0\n{"window":{"title":"","app":""},"elements":[],"note":"No window is open on this display."}' } }
+    const guest = { ownerEnv: ['DISPLAY=:110'], run: async (command: string, args: string[]) => { runs.push([command, ...args]); return '0\n{"window":{"title":"","app":""},"elements":[],"note":"No window is open on this display."}' } }
     expect(await screenElements(guest)).toEqual({ window: { title: '', app: '' }, elements: [], note: 'No window is open on this display.' })
     expect(runs[0]!.slice(0, 4)).toEqual(['/usr/sbin/runuser', '-u', 'caboose', '--'])
-    expect(runs[0]!.slice(4)).toEqual(['/usr/bin/env', 'DISPLAY=:100', '/bin/sh', '-c', ON_DISPLAY, 'sh', ':100', '/usr/bin/python3', '/opt/caboose/a11y.py', 'elements', '--display', ':100'])
+    expect(runs[0]!.slice(4)).toEqual(['/usr/bin/env', 'DISPLAY=:110', '/bin/sh', '-c', ON_DISPLAY, 'sh', ':110', '/usr/bin/python3', '/opt/caboose/a11y.py', 'elements', '--display', ':110'])
     await screenType(guest, { text: '-rf is just text' })
     expect(runs[1]!.slice(-3)).toEqual(['4', '--', '-rf is just text'])
     await screenKeys(guest, { keys: 'ctrl+shift+T Enter' })
@@ -37,7 +37,7 @@ describe('screen', () => {
   })
 
   it('validates actions and maps a vanished element to its own error', async () => {
-    const guest = (answer: string) => ({ run: async () => answer })
+    const guest = (answer: string) => ({ ownerEnv: ['DISPLAY=:110'], run: async () => answer })
     await expect(screenAct(guest('0\n{"ok":true}'), { element: 'a b', action: 'press' })).rejects.toThrow('element must be')
     await expect(screenAct(guest('0\n{"ok":true}'), { element: '0.1', action: 'hover' })).rejects.toThrow('action must be')
     await expect(screenAct(guest('0\n{"ok":true}'), { element: '0.1', action: 'set-text' })).rejects.toThrow('set-text needs text')

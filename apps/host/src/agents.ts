@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto'
 import type { HomeOwnership } from './home.js'
 import { decodeBase64, sanitizeFileName, uniqueName, writeGuestFile } from './files.js'
 import type { AgentLaunch } from './registry.js'
+import { AGENT_DISPLAY_ENV_PATH } from './display.js'
 
 /**
  * Agent tasks: any Agent Client Protocol (ACP) agent from the registry, run inside the
- * owner's computer as user `caboose` on the agent seat (DISPLAY=:101) by the guest's runner,
+ * owner's computer as user `caboose` on the agent seat (its own Caboose Display, X display
+ * :101, environment in /run/caboose/agent-display.env) by the guest's runner,
  * caboose-agentd. Each task lives in /home/caboose/Agents/<id>/: the host writes task.json
  * and prompts into inbox/, the runner writes an agent-neutral transcript.jsonl and approval
  * requests, and the host tails them into control-socket events. A task outlives a host
@@ -63,9 +65,9 @@ export interface AgentGuest {
   /** Runs a command in the guest as root; resolves stdout, rejects on non-zero exit. */
   run(command: string, args: string[], timeoutMs?: number): Promise<string>
   /**
-   * What a GUI started on the owner's display needs, as `KEY=value` pairs: `DISPLAY=:100`
-   * under Xpra, caboose-display's launch environment under Caboose Display. A guest that
-   * does not say is Xpra's (see ownerEnv in display.ts).
+   * What a GUI started on the owner's display needs, as `KEY=value` pairs: caboose-display's
+   * launch environment (its Wayland socket, Xwayland's display and cookie, toolkit hints),
+   * read from /run/caboose/display.env at each wake. Empty until the display is ready.
    */
   ownerEnv?: string[]
 }
@@ -112,6 +114,8 @@ const DEFAULT_IDLE_MS = 10 * 60_000
 const LEGACY_AGENTS: Readonly<Record<string, string>> = { claude: 'claude-acp', codex: 'codex-acp' }
 
 const LAUNCH = [
+  // The seat's launch environment (Xwayland :101, its cookie, X11 toolkit backends), when it is up.
+  `if [ -r ${AGENT_DISPLAY_ENV_PATH} ]; then set -a; . ${AGENT_DISPLAY_ENV_PATH}; set +a; fi`,
   'export HOME=/home/caboose DISPLAY=:101 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/agent-bus PATH=/home/caboose/.local/bin:/usr/local/bin:/usr/bin:/bin CABOOSE_TASK_DIR="$PWD"',
   `[ -f ${AGENTD} ] || { echo "${RUNNER_MISSING}" >&2; exit 1; }`,
   'rm -f exit-code',
@@ -449,7 +453,7 @@ export class AgentTasks {
   private async prepareSeat(guest: AgentGuest): Promise<void> {
     await this.home?.ensure(guest)
     if (this.ensureSeat) await this.ensureSeat().catch(error => console.error('Agent seat did not start:', error))
-    else await guest.run('/bin/sh', ['-c', 'systemctl start caboose-xpra-agent.service || true'], 30_000)
+    else await guest.run('/bin/sh', ['-c', 'systemctl start caboose-display-agent.service || true'], 30_000)
   }
 
   /**

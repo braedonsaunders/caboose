@@ -360,13 +360,13 @@ describe('sign-in', () => {
 
   it('signs in with a terminal method on the owner display', async () => {
     const box = await sandbox({ auth: true })
-    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-terminal' })
+    await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-terminal', env: { DISPLAY: ':110' } })
     expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-terminal', status: 'succeeded' })
     expect(await readFile(join(box.state, 'signed-in'), 'utf8')).toBe('terminal')
-    expect((await readFile(join(box.root, 'terminal.log'), 'utf8')).trim()).toBe(':100 none 1')
+    expect((await readFile(join(box.root, 'terminal.log'), 'utf8')).trim()).toBe(':110 none 1')
   })
 
-  it('opens the terminal with the launch environment the host sends, as on Caboose Display', async () => {
+  it('opens the terminal with the full launch environment the host sends', async () => {
     const box = await sandbox({ auth: true })
     await run(box, 'sign-in', { agent: AGENT, methodId: 'stand-in-terminal', env: { WAYLAND_DISPLAY: 'wayland-caboose-0', DISPLAY: ':110', 'bad name': 'x' } })
     expect(await signInState(box)).toMatchObject({ methodId: 'stand-in-terminal', status: 'succeeded' })

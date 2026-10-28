@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Config, DisplayProtocol, GpuKind } from './config.js'
+import type { Config, GpuKind } from './config.js'
 import { detectGpu } from './container-driver.js'
 
 /** One deployment setting as the host read it at startup. Values are never secrets. */
@@ -19,7 +19,6 @@ export interface HostInfo {
   /** The Node.js version the host runs on. */
   node: string
   runtime: Config['runtime']
-  display: DisplayProtocol
   /** The GPU the computer is given: the container's, or null for a microVM, which has none. */
   gpu: GpuKind | null
   /** What the computer boots from: the container image, or the microVM's golden image. */
@@ -37,7 +36,6 @@ const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.
  */
 const SHOWN: Array<{ name: string; fallback: string; only?: Config['runtime'] }> = [
   { name: 'CABOOSE_RUNTIME', fallback: 'microvm' },
-  { name: 'CABOOSE_DISPLAY', fallback: 'xpra' },
   { name: 'CABOOSE_GPU', fallback: 'auto', only: 'container' },
   { name: 'CABOOSE_CONTAINER_IMAGE', fallback: 'caboose-computer:latest', only: 'container' },
   { name: 'CABOOSE_CONTAINER_NAME', fallback: 'caboose-owner', only: 'container' },
@@ -59,7 +57,6 @@ export function describeHost(config: Config, env: NodeJS.ProcessEnv, options: { 
     version: VERSION,
     node: process.version,
     runtime: config.runtime,
-    display: config.display,
     gpu: container ? (config.gpu === 'auto' ? detectGpu(options.exists) : config.gpu) : null,
     image: container ? config.containerImage : `Debian 13 golden image (${join(config.imageRoot, 'base.raw')})`,
     push: options.push,

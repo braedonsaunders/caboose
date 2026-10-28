@@ -1,7 +1,7 @@
 //! The computer's sound, for the phone.
 //!
 //! The compositor runs its own PulseAudio server on a private socket
-//! (`$XDG_RUNTIME_DIR/caboose-display/pulse/native`), whose only sink is a null sink named
+//! (`pulse/native` in the instance's directory, `Config::instance_dir`), whose only sink is a null sink named
 //! `caboose`, so it is every application's default output. Launched applications get
 //! `PULSE_SERVER` pointing at it. While a client that plays Opus is connected, `parec`
 //! records the sink's monitor; each 20 ms of 48 kHz stereo is encoded with libopus on a
@@ -60,10 +60,10 @@ impl Drop for Audio {
 }
 
 impl Audio {
-    /// Starts PulseAudio with the null sink. `None` (logged) if PulseAudio or parec is not
-    /// installed or does not come up.
-    pub fn start(runtime_dir: &Path) -> Option<Self> {
-        let dir = runtime_dir.join("caboose-display").join("pulse");
+    /// Starts PulseAudio with the null sink, its socket under the instance's private
+    /// directory. `None` (logged) if PulseAudio or parec is not installed or does not come up.
+    pub fn start(instance_dir: &Path) -> Option<Self> {
+        let dir = instance_dir.join("pulse");
         if let Err(e) = std::fs::create_dir_all(&dir) {
             tracing::warn!("no audio: {}: {e}", dir.display());
             return None;

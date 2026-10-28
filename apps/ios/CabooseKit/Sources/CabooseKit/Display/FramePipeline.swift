@@ -160,3 +160,22 @@ final class FramePipelineRegistry: @unchecked Sendable {
         return all
     }
 }
+
+/// Counts of applied pictures by codec, for diagnostics and tests.
+public final class DrawStatistics: @unchecked Sendable {
+    public static let shared = DrawStatistics()
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+    private var failures: [String: Int] = [:]
+
+    func record(_ coding: String, failed: Bool) {
+        lock.lock()
+        if failed { failures[coding, default: 0] += 1 } else { counts[coding, default: 0] += 1 }
+        lock.unlock()
+    }
+
+    public var snapshot: (applied: [String: Int], failed: [String: Int]) {
+        lock.lock(); defer { lock.unlock() }
+        return (counts, failures)
+    }
+}

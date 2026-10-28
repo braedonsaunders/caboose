@@ -1,329 +1,329 @@
 # caboose-host
 
-Work in progress: the host has been checked against a Caboose guest on a KVM
-host, but the wider product and deployment configurations are still being tested.
+The server half of Caboose. `caboose-host` is a TypeScript service on Node 22 that runs on
+a Linux machine, owns one computer (a Debian 13 guest), and gives the iOS app and the web
+console one authenticated API for it. It wakes the computer on demand, parks it when idle,
+relays the computer's two Caboose Display instances over WebSocket, and runs apps, agent
+tasks, file operations and catalog installs inside it. The HTTP contract is in
+[`docs/architecture.md`](../../docs/architecture.md); the display protocol it relays is in
+[`docs/display.md`](../../docs/display.md).
 
-Install Node 22 and pnpm, then from the repository root run `pnpm install`,
-`pnpm --filter caboose-host typecheck`, and `pnpm --filter caboose-host test`.
+## Layout
 
-The environment variables are listed in `.env.example`. The host needs access
-to KVM, a Cloud Hypervisor binary, and a Caboose image containing `base.raw`,
-`vmlinux`, and `initrd`. Networking creates a named TAP and configures IPv4
-forwarding, masquerading and filter rules; it requires root or passwordless
-sudo for `ip`, `iptables` and `sysctl`. The guest can access networks reachable
-from the host. Use a dedicated trusted host and network namespace. HTTPS/WSS
-must be provided by a trusted reverse proxy before traffic crosses a network;
-the host service itself serves unencrypted HTTP/WebSocket.
+| Path | What |
+| --- | --- |
+| `src/index.ts`, `src/config.ts` | Startup and the environment it reads. |
+| `src/server.ts`, `src/lifecycle.ts` | The HTTP and WebSocket API, the owner token check, and the wake/lease/park state machine. |
+| `src/driver.ts` | The microVM runtime: Cloud Hypervisor through `@braedonsaunders/appkit-desk`, parked with a memory snapshot. |
+| `src/container-driver.ts` | The container runtime: the computer as a Docker container, parked by freezing it. |
+| `src/display.ts` | Display ports, the per-wake token, and the launch environment each display writes. |
+| `src/network.ts` | The guest's TAP device, NAT and network fence. |
+| `src/agents.ts`, `src/registry.ts`, `src/agent-catalog.ts` | Agent tasks, the Agent Client Protocol registry, and agent install and sign-in. |
+| `src/fs-proxy.ts`, `src/files.ts` | `/v1/fs` and `/v1/files`, through the guest's file service. |
+| `src/screen.ts` | `/v1/screen/*`, the owner's display through its accessibility tree. |
+| `src/app-catalog*.ts`, `src/craft-jobs.ts` | The optional application catalog and Craft CLI jobs. |
+| `src/media.ts`, `src/phone.ts`, `src/desktop-notifications.ts` | Media handoff, iOS handoff, and desktop notifications from the guest. |
+| `src/push.ts`, `src/apns.ts`, `src/activities.ts` | APNs push and Live Activities. |
+| `src/guest-*.py` | Python run inside the guest: listing and launching apps, catalog operations, Craft jobs. |
+| `scripts/` | Real-host checks, the Docker entrypoint and `setup-disks.sh`. |
+| `systemd/caboose-host.service` | A user-service unit for running from a checkout. |
+| `Dockerfile` | The self-hosting image (host, web console and Cloud Hypervisor). |
 
-## Computer management
+## Requirements
 
-The web console and iOS Settings use the same authenticated API:
-`GET /v1/computer`, `PATCH /v1/computer/settings`, and
-`POST /v1/computer/restart`. Status polling never wakes or leases the computer.
-The full response and request contract is in `../../docs/architecture.md`.
+- Node 22 and pnpm.
+- For the microVM runtime (the default): amd64 Linux with `/dev/kvm`, a Cloud Hypervisor
+  binary, and a guest image (`base.raw`, `vmlinux`, `initrd`) built by
+  [`guest/image`](../../guest/image/README.md). The disk root should be on XFS with reflink or
+  on Btrfs; `scripts/setup-disks.sh` prepares one.
+- For the container runtime: Docker and an image built from
+  [`guest/container`](../../guest/container/README.md).
+- Root, or passwordless `sudo` for `ip`, `iptables` and `sysctl`. The host creates the TAP
+  device `caboose0` (microVM) or the Docker network `caboose` with bridge `caboose-br0`
+  (container), and installs its forwarding, NAT and fence rules.
 
-Name, memory, CPUs and idle timeout are stored in `caboose.json` under
-`CABOOSE_IMAGE_ROOT`. Saves use an atomic rename and mode 0600. Environment values
-are defaults when no saved value exists; saved settings override them on startup.
-Invalid or unreadable settings fail startup rather than silently reverting. Back
-up this file with the disks. Do not edit it while the host is running.
+The host serves plain HTTP and WebSocket. Put HTTPS/WSS in front of it with a trusted
+reverse proxy before traffic crosses a network.
 
-Name and idle timeout changes apply immediately. CPU and memory changes take effect
-on a cold restart; resuming a saved-memory snapshot retains its previous resources.
-The response reports `activeResources` and `restartRequired`, including while the
-machine is parked. An older snapshot without resource metadata has unknown active
-resources until restarted. Applied resources are saved beside the disk as
-`overlays/owner.resources.json`.
+## Build and test
 
-Restart requires JSON `{ "confirm": true }`, closes client connections and ends
-agent tasks, discards open application memory, and boots the existing disk. Save
-documents first. It does not restart the Linux host or delete the computer disk.
-The HTTP response waits for the computer's display to be ready; allow 300 seconds.
-Concurrent restart requests return 409. Park instead preserves application memory.
-Restart attempts a short disk flush, but an unresponsive guest can still be
-restarted. If the flush fails, the result retains a warning in `lastError`; as with
-a power interruption, the filesystem may need journal recovery and unsaved writes
-can be lost.
-
-The host serves the compiled `apps/web/dist` at its root, or the directory selected
-by `CABOOSE_WEB_ROOT`. Static assets and SPA routes are public; every `/v1` request
-requires the owner bearer token. Missing web assets return 404. The Docker image
-builds and includes the web app; a host-only checkout can still use the API without it.
-Do not point `CABOOSE_WEB_ROOT` at a source or data directory.
-
-Run the management contract check against a real host (Node 22+):
+From the repository root:
 
 ```sh
-export CABOOSE_URL=https://computer.example.com
-# Supply CABOOSE_OWNER_TOKEN through your private environment.
-node apps/host/scripts/check-management.mjs
-node apps/host/scripts/check-management.mjs --write
-# This discards the guest's unsaved application state:
-node apps/host/scripts/check-management.mjs --restart
+pnpm install
+pnpm --filter caboose-host typecheck
+pnpm --filter caboose-host test
 ```
 
-The default check is read-only; `--write` saves the existing name unchanged;
-`--restart` verifies a real cold boot and applied resources. For a device check,
-open Chromium, save a document, change CPU/RAM in Settings, verify the pending
-restart banner, and restart. Confirm the disk document remains, the old open
-applications are gone, and the display reconnects with the new resources. These
-real-machine checks require the built guest and are separate from unit tests.
+The unit tests cover the API, lifecycle, both runtimes with faked backends, agents, files,
+catalog, push and the guest scripts. `scripts/display-client.test.mjs` replays the Caboose
+Display Protocol vectors in `guest/display/vectors` through `scripts/display-client.mjs`, the
+client the real-host checks use, so it encodes every canonical message byte for byte and
+decodes it back. `src/fs-logic.test.ts` runs `guest/files/test_logic.py` and needs `python3`.
 
-## Agents and files
+## Run
 
-Agents (`/v1/agents`, install and sign-in), agent tasks (`/v1/agent/tasks`), replies,
-approvals, attachments, `POST /v1/files` and `POST /v1/open` are specified in
-`../../docs/architecture.md` § Agents. Agents come from the Agent Client Protocol registry
-(`src/registry.ts`; `CABOOSE_AGENT_REGISTRY_URL` selects a mirror), cached in
-`${CABOOSE_IMAGE_ROOT}/agent-registry.json`, and run in the computer by `caboose-agentd`
-(`guest/agentd`); the host has no code for any particular agent. `CABOOSE_AGENT_IDLE_MS`
-sets how long an agent stays running after a turn, waiting for a reply. Agent attachment contents use base64 argument chunks on the guest command channel.
-Shared files and `/v1/fs` use the guest's authenticated TCP file service, installed in both
-images; streaming requests wake the computer and hold a lease until the transfer finishes.
-The full route, precondition, Trash and change-feed contract is in `../../docs/architecture.md` § Files.
-Existing computers receive the service through the automatic components upgrade described below.
-
-With Node 22 and a real computer, the file check creates a temporary directory, uploads,
-lists, downloads a byte range, moves and trashes its files and the directory:
+From a checkout, with the variables below in the environment:
 
 ```sh
-export CABOOSE_URL=https://computer.example.com
-# Supply CABOOSE_OWNER_TOKEN through your private environment.
-node apps/host/scripts/check-fs.mjs
+pnpm --filter caboose-web build      # the console the host serves at /
+CABOOSE_OWNER_TOKEN=… pnpm --filter caboose-host start
 ```
 
-The guest-service check runs its Linux inotify and filesystem operations in an ephemeral
-Python container: `docker run --rm -v "$PWD/guest/files:/checks:ro" python:3.13-slim python3 /checks/check-service.py`.
-`guest().ownerEnv` is what a GUI on the owner's display needs (sign-in, opening files and URLs,
-the screen routes): `DISPLAY=:100` under Xpra, or the launch environment Caboose Display
-writes at each wake.
+`systemd/caboose-host.service` runs the same thing as a user service. Put the variables from
+`.env.example` in `~/.config/caboose/host.env` (mode 0600), together with `CABOOSE_HOST_DIR`
+(the absolute path of `apps/host`) and `CABOOSE_NODE` (the absolute path of the Node
+executable). A user service needs a running user systemd manager, access to `/dev/kvm`, and
+the non-interactive privileges above.
 
-The owner-screen routes (`/v1/screen/*`, § Screen) are in `src/screen.ts`: they run the
-guest's accessibility helper `/opt/caboose/a11y.py` (see `guest/desktop-mcp`) and `xdotool`
-as `caboose` with the owner display's launch environment (Xpra's `:100`, or Xwayland's under
-Caboose Display; X11 windows only there). `guest/desktop-mcp/check-a11y.sh` runs that helper in real Xvfb and
-Xpra sessions under Docker.
+### Self-host with Docker
 
-The guest scripts behind these routes (task start, the batched poll, replies, approval
-decisions, cancel, restore after a host restart, sign-in, attachments and Downloads) run
-for real in a Debian 13 container, where the real `caboose-agentd`, installed by its own
-`install.sh`, drives a stand-in ACP agent: the same session continuing, a new runner
-reloading a session or recapping it, a signed-out agent signed in through
-`authenticate`. This needs only Docker (and network for the image build):
-
-```sh
-apps/host/scripts/check-agent-shell.sh
-```
-
-Against a real host, the agent check saves a file to `~/Downloads`, lists the registry,
-and runs a task with the given agent (default: the computer's default agent) that asks
-before acting with an attachment, approves it through the API, and replies. The agent must
-be signed in; `--install` installs it first. `--open` also opens https://example.com on
-the owner's display. It starts real agent runs on the owner's account.
-
-```sh
-export CABOOSE_URL=https://computer.example.com
-# Supply CABOOSE_OWNER_TOKEN through your private environment.
-node apps/host/scripts/check-agents.mjs [--agent <registry id>] [--install] [--open]
-```
-
-## Media handoff
-
-`src/media.ts` reads the video playing in the computer's Chromium from the guest's
-`/home/caboose/.cache/caboose/media.json` (written by `guest/media-handoff`) about once a
-second, only while the computer is already running and a display client is connected,
-and broadcasts `media.playing` / `media.stopped` on the control socket. `GET /v1/media`
-returns the current state (null unless running; it never wakes or leases the computer).
-`POST /v1/media/:id/control` with `{ "action": "pause" }` or
-`{ "action": "play", "position": 42.5 }` writes a command for the guest as user `caboose`
-and returns `{ "sent": true }`, or 409 while the computer is not running. The contract is
-in `../../docs/architecture.md` § Media handoff. Unit tests fake the guest; check a real
-guest with `guest/media-handoff/check.sh`, then play a video in Chromium and watch
-`GET /v1/media` while the app is connected.
-
-The unverified user-service template is `systemd/caboose-host.service`. Set
-`CABOOSE_HOST_DIR` to the absolute path of `apps/host` and `CABOOSE_NODE` to
-the absolute Node executable in `~/.config/caboose/host.env`, in addition to the
-variables in `.env.example`; set the file mode to 0600. A user service also
-needs a running user systemd manager, KVM group access, and non-interactive
-privileges for the network setup. `CABOOSE_BIND=0.0.0.0` listens on every IPv4
-interface; the service does not terminate TLS.
-
-The guest is fenced: it can open no connection to the host, and it reaches only the
-public internet, not private, link-local (cloud metadata), CGNAT or Tailscale
-addresses. Set `CABOOSE_GUEST_LAN=allow` to let a self-hosted computer reach your LAN.
-
-`CABOOSE_DISPLAY` picks the owner's display server. `xpra` (the default) runs Xpra
-on display `:100` and relays guest port 14500. `caboose` runs caboose-display instead
-(docs/display.md): the microVM's `caboose-display.service`, ready once
-`caboose-display-ready 60` has a hello answered, or `caboose-session start-display` and
-`ready-display` in a container. The relay then targets guest port 14600, `/v1/session`
-returns `protocol: "caboose-display"`, and apps launch with the environment
-caboose-display writes to `/run/caboose/display.env` (its Wayland socket, Xwayland's display
-and cookie, toolkit hints), read at every wake. The agent seat stays Xpra `:101` either
-way. The image must include caboose-display.
-
-`CABOOSE_OWNER_TOKEN=... apps/host/scripts/e2e.sh` uses the local Xpra client
-to authenticate an Xpra hello over the relay, parks, resumes, and repeats.
-Set `CABOOSE_URL` when testing a different host. The local Xpra client must
-support the rencodeplus packet encoder and lz4 compressor. The check also
-verifies that the app list contains PNG icons.
-
-## Self-host with Docker
-
-On an amd64 Linux machine, install Docker and Compose, enable hardware
-virtualization and make `/dev/kvm` available. Docker must be able to run
-privileged containers. Allow space for the golden image, overlays and memory
-snapshots; the default sparse XFS volume has a 400 GiB maximum and grows on
-use. State is under `/data/caboose` by default, including `disks.xfs.img` when
-the underlying filesystem is not XFS or Btrfs. Set `CABOOSE_STATE_DIR` in
-`deploy/.env` to use a different absolute path. If using a loop image, its
-filesystem is mounted inside the container at `/data/caboose/disks`, not on
-the host. Back up the entire state directory while the container is stopped.
-Do not run multiple containers against the same state directory.
-
-Create `deploy/.env` with mode 0600 containing a long random owner token:
+`deploy/compose.yaml` builds `apps/host/Dockerfile` and runs the microVM runtime. Use an
+amd64 Linux machine with Docker and Compose, hardware virtualisation and `/dev/kvm`; Docker
+must be able to run privileged containers. Create `deploy/.env` with mode 0600 and a long
+random owner token:
 
 ```sh
 umask 077
 printf 'CABOOSE_OWNER_TOKEN=%s\n' "$(openssl rand -hex 32)" > deploy/.env
-```
-
-Then start from the repository root:
-
-```sh
 docker compose -f deploy/compose.yaml up -d --build
 ```
 
-The Docker build compiles both `caboose-host` and `caboose-web` from the workspace
-lockfile. It packages the console at `/app/apps/web/dist`, which the host serves
-by default; no separate web server or port is needed. Open `http://localhost:7310`
-on the server, or your HTTPS proxy URL, and enter the owner token. The console
-keeps the token in browser session storage; the token is supplied only at runtime,
-never during the image build. For a source checkout, build the console with
-`pnpm --filter caboose-web build` before starting the host.
+The image builds `caboose-host` and `caboose-web` from the workspace lockfile, serves the
+console at `/` on the same port as the API, and pins Cloud Hypervisor to the amd64 v54.0
+static release (checked by SHA-256). The token is supplied only at runtime, never during the
+build. Open `http://localhost:7310` on the server, or your HTTPS proxy, and enter the token;
+the console keeps it in the tab's session storage.
 
-The service listens on host loopback port 7310 by default. Set
-`CABOOSE_PUBLISH_ADDRESS` in `deploy/.env` to a specific host address (or
-`0.0.0.0` for all interfaces) when a trusted reverse proxy or network needs
-access. HTTP carries the bearer token in cleartext: use HTTPS/WSS at a trusted
-proxy for network access. The container is privileged for KVM, loop mounts,
-and TAP networking; only run it on a trusted host. Its private Docker network
-namespace contains its TAP, forwarding and NAT rules, while Docker itself
-manages the published port on the host. The guest can reach networks available
-to the container. Cloud Hypervisor is pinned to the amd64 v54.0 static release.
+State lives in `/data/caboose` on the host (`CABOOSE_STATE_DIR` in `deploy/.env` changes it)
+and the computer's disks in `/data/caboose/disks` inside the container. When the state
+directory is not on XFS or Btrfs, the entrypoint creates a sparse XFS image,
+`disks.xfs.img`, with a 400 GiB maximum (`CABOOSE_DISK_SIZE`) that grows on use, and
+loop-mounts it inside the container. Back up the whole state directory while the container
+is stopped, and never run two containers against the same state directory.
 
-The service can start and report health before a guest image is installed, but
-cannot wake a computer until `base.raw`, `vmlinux`, and `initrd` are present in
-its disk root. Once the Caboose image builder is available, copy its output
-into the mounted disk root (for example, `docker cp base.raw
-$(docker compose -f deploy/compose.yaml ps -q caboose-host):/data/caboose/disks/base.raw`,
-and likewise for the kernel and initrd). The container deployment has not yet
-been verified end to end. `apps/host/scripts/check-container.sh` checks the real
-container's network namespace, TAP/NAT, KVM access, reflinks, authenticated
-health and bundled console (HTML, compiled assets, SPA routing and API auth).
-The `e2e.sh` check above requires the Xpra client and a built guest;
-its first wake is cold only if no saved snapshot exists.
+The service publishes host loopback port 7310. Set `CABOOSE_PUBLISH_ADDRESS` in
+`deploy/.env` to a specific address, or `0.0.0.0`, when a trusted reverse proxy or network
+needs to reach it. HTTP carries the bearer token in cleartext. The container is privileged
+for KVM, loop mounts and TAP networking; run it only on a trusted host. Its TAP, forwarding
+and NAT rules live in the container's own network namespace.
 
-To rotate the token, replace `CABOOSE_OWNER_TOKEN` in `deploy/.env` with a new
-random value, then run `docker compose -f deploy/compose.yaml up -d` to
-recreate the service. Update every client; the old token stops working. Keep
-this file private and never commit it. The token is also visible to Docker
-administrators through container configuration.
-
-## APNs
-
-Set all of `CABOOSE_APNS_KEY_PATH` (a private P-256 .p8 file),
-`CABOOSE_APNS_KEY_ID`, `CABOOSE_APNS_TEAM_ID`, and `CABOOSE_APNS_TOPIC` to enable
-the host APNs provider. Keep the key and environment private. Devices are stored
-in `push-devices.json` under `CABOOSE_IMAGE_ROOT` with mode 0600. The API and
-current limitations are described in `../../docs/architecture.md` § Notifications.
-The iOS app registers its device and Live Activity tokens after pairing.
-
-On a host with real credentials and at least one registered device, run
-`node apps/host/scripts/check-push.mjs [device-index]` from the repository root.
-It sends a test alert to the indexed registered device (default 0); APNs acceptance
-is not proof of device delivery, so check the device too. The index does not print
-tokens.
-
-Live Activity registrations are kept in `activities.json` in the same directory. Agent
-task events update them; other job producers may publish the generic job shape through
-`POST /v1/jobs/activity` as documented in the architecture contract. The sender uses the
-app topic with `.push-type.liveactivity` appended.
-
-## Application catalog
-
-The pinned catalog in `guest/catalog` is served at `GET /v1/catalog`. Install, update,
-rollback and removal are asynchronous; watch `catalog.progress` and `catalog.changed`
-on `/v1/control`. The guest downloads and verifies release packages before APT runs.
-Only one catalog operation runs at a time. An interrupted operation is reported by the
-next catalog listing; inspect its error and retry. Debian package installs use the signed
-Debian 13 repositories. Rollback is available only when an earlier release package was
-cached. The container runtime retains its writable layer across a Caboose cold restart.
-
-With an Xpra owner display and a deployed computer, verify PhotoCraft's guest download,
-installation, launch and software rendering (close any existing PhotoCraft window first):
+The service starts and reports health before a guest image is installed, but cannot wake a
+computer until `base.raw`, `vmlinux` and `initrd` are in its disk root. Build them straight
+into the running container with `CABOOSE_HOST_CONTAINER` (see
+[`guest/image`](../../guest/image/README.md)), or copy them in:
 
 ```sh
-export CABOOSE_URL=https://computer.example.com
-# Supply CABOOSE_OWNER_TOKEN in the private environment. Requires a local Xpra client.
-node apps/host/scripts/check-catalog.mjs
+docker cp base.raw "$(docker compose -f deploy/compose.yaml ps -q caboose-host)":/data/caboose/disks/base.raw
 ```
 
-The check wakes the computer, installs PhotoCraft if needed, and leaves the window open.
-It requires a new Xpra window and is separate from the host unit tests.
+To rotate the token, replace `CABOOSE_OWNER_TOKEN` in `deploy/.env` and run
+`docker compose -f deploy/compose.yaml up -d`; every client needs the new token. Docker
+administrators can read the token from the container's configuration.
+
+## Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CABOOSE_OWNER_TOKEN` | required | The bearer token for every `/v1` request. |
+| `CABOOSE_BIND` | `127.0.0.1` | Listen address (`0.0.0.0` for every IPv4 interface). |
+| `CABOOSE_PORT` | `7310` | Listen port. |
+| `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Guest image, overlays, snapshots and the host's state files. |
+| `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The computer's size until saved settings exist. |
+| `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, until saved settings exist. |
+| `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor (microVM). |
+| `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container`. |
+| `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` | The computer's image (container). |
+| `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The computer's container name (container). |
+| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume name or absolute host path for `/home/caboose` (container). |
+| `CABOOSE_CONTAINER_ARGS` | empty | Extra `docker run` arguments, whitespace-separated (container). |
+| `CABOOSE_GPU` | `auto` | `wsl`, `nvidia`, `dri` or `none`; `auto` detects `/dev/dxg`, then NVIDIA, then `/dev/dri/renderD128` (container). |
+| `CABOOSE_GUEST_LAN` | `deny` | `allow` lets the computer reach private networks. |
+| `CABOOSE_WEB_ROOT` | `apps/web/dist` | The built console. Do not point it at a source or data directory. |
+| `CABOOSE_AGENT_REGISTRY_URL` | the public ACP registry | An http(s) URL of a registry mirror. |
+| `CABOOSE_AGENT_IDLE_MS` | `600000` | How long an agent stays running after a turn, waiting for a reply. |
+| `CABOOSE_APNS_KEY_PATH`, `CABOOSE_APNS_KEY_ID`, `CABOOSE_APNS_TEAM_ID`, `CABOOSE_APNS_TOPIC` | unset | APNs; all four together. |
+
+Invalid values stop the host at startup. `GET /v1/host` reports the version, runtime, GPU,
+image and the non-secret settings the host started with.
+
+The computer's name, memory, CPUs, idle timeout and default agent are saved in
+`caboose.json` under `CABOOSE_IMAGE_ROOT` (atomic rename, mode 0600); saved values override
+the environment. Invalid or unreadable settings stop startup rather than reverting. Back the
+file up with the disks and do not edit it while the host runs. The agent registry cache
+(`agent-registry.json`), push devices (`push-devices.json`) and Live Activities
+(`activities.json`) live beside it.
+
+## Runtimes
+
+**microVM** (default). The computer is a Cloud Hypervisor microVM managed by appkit-desk.
+Its disk is a reflink copy-on-write overlay of `base.raw` (`overlays/owner.raw`); parking
+writes a memory snapshot (`overlays/owner.snapshot`), so a parked computer survives a host
+restart. Commands run in the guest over vsock through the guest agent. The guest has address
+`192.0.2.2` on the TAP device `caboose0`.
+
+**Container** (`CABOOSE_RUNTIME=container`). For a GPU a container can use but a VM cannot:
+WSL2's `/dev/dxg`, an NVIDIA GPU through the NVIDIA container toolkit, or Linux render nodes.
+The host runs the image on its own Docker network with public DNS, publishes the displays
+(14600, 14601) and the file service (14700) on loopback only, mounts the home volume, passes
+the GPU (`/dev/udmabuf` too, when the host has it), and drives the computer with
+`docker exec` and the image's `caboose-session start | ready | start-agent | start-files`.
+Parking freezes the container (`docker pause`): memory stays in RAM and waking is immediate,
+but a Docker or host restart loses the running session and the next wake starts fresh with
+the home intact. A cold restart stops and starts the same container, so installed packages
+and the catalog's rollback cache survive; removing the container discards them.
+
+The computer is fenced in both runtimes: it can open no connection to the host and reaches
+only the public internet, not private, link-local (cloud metadata), CGNAT or Tailscale
+addresses. `CABOOSE_GUEST_LAN=allow` lets a self-hosted computer reach your LAN.
+
+## Displays
+
+The host writes a random token to `/run/caboose/display-token` in the guest (mode 0600,
+owner `caboose`): the microVM gets a new one at every wake, a container when it is created,
+restarted, or first woken by a newly started host. At each wake the host then starts the
+file service and the owner's display
+(`caboose-display.service` in the microVM, `caboose-session start` and `ready` in a
+container) and waits until it answers a hello carrying the token
+(`caboose-display-ready`). It then reads the launch environment the display wrote to
+`/run/caboose/display.env` (its Wayland socket, Xwayland's `DISPLAY` and `XAUTHORITY`,
+toolkit hints, `PULSE_SERVER`); apps, sign-in windows, opened files and the screen routes are
+started with it.
+
+`POST /v1/session` returns `{ state, display: { path: "/v1/display", token, protocol:
+"caboose-display" }, computer }`. `/v1/display` is a WebSocket (subprotocol `binary`) that
+relays bytes to the owner's display on guest port 14600; `/v1/display?seat=agent` relays to
+the agent seat on port 14601, starting `caboose-display-agent.service` (or
+`caboose-session start-agent`) first if it is not running. The host does not parse the
+stream. Every open WebSocket holds a lease that keeps the computer awake.
+
+## Computer management
+
+The web console and the iOS app use `GET /v1/computer`, `PATCH /v1/computer/settings` and
+`POST /v1/computer/restart`. Status never wakes or leases the computer. Name and idle
+timeout changes apply immediately. CPU and memory changes apply on a cold restart; resuming
+a memory snapshot keeps its previous resources. The response reports `activeResources` and
+`restartRequired`, also while parked; the microVM records applied resources in
+`overlays/owner.resources.json`.
+
+Restart requires `{ "confirm": true }`. It closes client connections, ends agent tasks,
+discards open application memory and boots the existing disk; it does not restart the Linux
+host or delete the disk. The response waits for the display to be ready; allow 300 seconds.
+Concurrent restarts return 409. The host attempts a short disk flush first; an unresponsive
+guest is restarted anyway and the failure is kept in `lastError`, and, as after a power
+loss, unsaved writes can be lost. Park instead keeps application memory.
+
+The host serves the built console at `/`. Static assets and console routes are public; every
+`/v1` request needs the owner token. Missing assets return 404.
+
+## Agents, files and the screen
+
+Agents (`/v1/agents`), agent tasks (`/v1/agent/tasks`), replies, approvals, attachments,
+`POST /v1/files` and `POST /v1/open` are specified in `docs/architecture.md` § Agents. Agents
+come from the Agent Client Protocol registry and run in the computer through
+[`caboose-agentd`](../../guest/agentd/README.md); the host has no code for any particular
+agent. A task starts the agent seat if needed and runs as `caboose` with the seat's launch environment
+(`/run/caboose/agent-display.env`, Xwayland `:101`) and the seat's D-Bus session bus
+`/run/user/1000/agent-bus`. New tasks offer installed catalog MCP commands to the agent;
+`craftMcp: false` in `POST /v1/agent/tasks` turns them off for that task and its replies.
+The list is captured when the task is created.
+
+`/v1/fs` and shared files go through the guest's file service
+([`guest/files`](../../guest/files/README.md), port 14700, authenticated with the per-wake
+token). Streaming requests wake the computer and hold a lease until the transfer finishes.
+The route, precondition, Trash and change-feed contract is in `docs/architecture.md` § Files.
+
+`/v1/screen/elements`, `act`, `type` and `keys` (`src/screen.ts`, `docs/architecture.md`
+§ Screen) read and drive the owner's display. They run `/opt/caboose/a11y.py`
+([`guest/desktop-mcp`](../../guest/desktop-mcp/README.md)) and `xdotool` as `caboose` with
+the owner display's launch environment, on its Xwayland. They reach X11 windows; native
+Wayland windows on the owner's display are not exposed to them.
+
+## Media handoff
+
+`src/media.ts` reads the video playing in the computer's Chromium from
+`/home/caboose/.cache/caboose/media.json` (written by
+[`guest/media-handoff`](../../guest/media-handoff/README.md)) about once a second, only
+while the computer is running and a display client is connected, and broadcasts
+`media.playing` and `media.stopped` on `/v1/control`. `GET /v1/media` returns the current
+state (null unless running; it never wakes or leases the computer).
+`POST /v1/media/:id/control` with `{ "action": "pause" }` or
+`{ "action": "play", "position": 42.5 }` writes a command for the guest as `caboose` and
+returns `{ "sent": true }`, or 409 while the computer is not running. The contract is in
+`docs/architecture.md` § Media handoff.
+
+## Notifications and Live Activities
+
+Desktop notifications from the owner's session (see
+[`guest/notifications`](../../guest/notifications/README.md)) are drained from the guest
+while it runs and sent as `notification` events and, with APNs configured, as pushes.
+
+Set all four `CABOOSE_APNS_*` variables (the key is a private P-256 `.p8` file) to enable
+APNs. Devices are stored in `push-devices.json` and Live Activity registrations in
+`activities.json`, both under `CABOOSE_IMAGE_ROOT` with mode 0600. Agent task events update
+Live Activities; other producers can publish the generic job shape through
+`POST /v1/jobs/activity`. The sender uses the app topic with `.push-type.liveactivity`
+appended. The API and its limits are in `docs/architecture.md` § Notifications.
+
+## Catalog and Craft jobs
+
+The pinned catalog in [`guest/catalog`](../../guest/catalog/README.md) is served at
+`GET /v1/catalog`. Install, update, rollback and removal are asynchronous; watch
+`catalog.progress` and `catalog.changed` on `/v1/control`. The guest downloads and verifies
+release packages before APT runs, and Debian packages come from the signed Debian 13
+repositories. One catalog operation runs at a time; an interrupted one is reported by the
+next listing. Rollback is available only when an earlier release package is cached.
+
+Craft jobs run a fixed list of installed catalog CLI operations, as `caboose`, on files
+staged in `~/.caboose-jobs/<job>` through `/v1/fs`. The contract, formats, progress events
+and retention are in `docs/architecture.md` § Shortcuts and Spotlight.
 
 ## iOS handoff
 
-The host relays validated guest `phone.open`, `phone.share`, and `phone.print` events
-only to owner-authenticated `/v1/control?phone=1` sockets, and only polls while one is
-connected. `GET /v1/phone/files/:id` reads a staged file through the guest command
-channel; it does not accept arbitrary guest paths or wake the computer. See
-`../../docs/architecture.md` § iOS weave for the schema, limits and delivery semantics,
-and `../../guest/phone/README.md` for the guest-side CUPS and command check.
+The host relays validated guest `phone.open`, `phone.share` and `phone.print` events only to
+owner-authenticated `/v1/control?phone=1` sockets, and polls the guest only while one is
+connected. `GET /v1/phone/files/:id` reads a staged file through the guest command channel;
+it accepts no arbitrary guest path and never wakes the computer. The schema and delivery
+rules are in `docs/architecture.md` § Phone handoff; the guest side is
+[`guest/phone`](../../guest/phone/README.md).
 
 ## Guest components
 
-Existing computers receive component updates after wake; status and failures appear in
-`GET /v1/computer` and `computer.upgrade` events. Old containers without port 14700
-mapped must be recreated for Files; preserve the home and back up the writable layer.
-Run `guest/components/check-container.sh` for the disposable guest check. With
-`CABOOSE_URL` and `CABOOSE_OWNER_TOKEN` set, run `node apps/host/scripts/check-upgrade.mjs`
-for the real-host check; it wakes the computer and exercises Files. See
-`guest/components/README.md` for prerequisites and retry behavior.
+After each wake the host compares the guest components it bundles (`guest/components`) with
+the version marker in the computer, and installs them when they differ. Progress and
+failures appear as `upgrade` in `GET /v1/computer` and as `computer.upgrade` events; a
+failure is retried on the next wake. A container created without the port 14700 mapping must
+be recreated to enable Files; keep its home volume. `guest/components/README.md` has the
+disposable-guest check, and `check-upgrade.mjs` (below) the real-host one.
 
-## Catalog tools for agents
+## Real-host checks
 
-New agent tasks offer installed catalog MCP commands through ACP. Send `craftMcp: false`
-in `POST /v1/agent/tasks` to turn them off for that task and its replies. The installed
-list is captured at task creation; apps installed later are available to a new task. The
-iOS Ask bar menu also provides a switch for tasks started in the app. See the Agents section of the
-architecture for the app list and agent compatibility.
+These run against a deployed host with a built guest, are separate from the unit tests, and
+change the computer as described. Except for `check-push.mjs`, each reads
+`CABOOSE_OWNER_TOKEN` and `CABOOSE_URL` from the environment; keep the token in your private
+environment, not in shell history. `check-fs.mjs`, `check-craft.mjs` and `check-open-app.sh`
+require `CABOOSE_URL`; the others default to `http://127.0.0.1:7310`. Run them from the repository root with Node 22.
 
-To verify launching a specific application with a real file, set `CABOOSE_URL`,
-`CABOOSE_OWNER_TOKEN`, `CABOOSE_CHECK_FILE` (a compatible local document) and
-`CABOOSE_CHECK_APP` (an installed desktop entry ID), then run
-`apps/host/scripts/check-open-app.sh`. Check the owner display for the document; the
-script leaves its test copy in a uniquely named folder in the computer's home.
+| Command | What it checks |
+| --- | --- |
+| `CABOOSE_OWNER_TOKEN=… apps/host/scripts/e2e.sh` | Wakes the computer (cold only without a snapshot), says an authenticated hello to the owner's display and the agent seat through the relay with `scripts/display-client.mjs` and requires an encoder it decodes, checks the app list has PNG icons and the core apps, launches the Xfce terminal, parks, resumes, says hello again, checks `/v1/health` has no desk error, and parks. |
+| `node apps/host/scripts/check-lineup.mjs` | Opens Mousepad, btop and OpenCode and requires a new window for each on the owner's display. Leaves them open and does not park. |
+| `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft if needed, launches it and requires a new window. Close any PhotoCraft window first. |
+| `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |
+| `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
+| `node apps/host/scripts/check-fs.mjs` | Creates a temporary directory, uploads, lists, downloads a byte range, moves, and trashes its files and the directory. |
+| `node apps/host/scripts/check-agents.mjs [--agent <id>] [--install] [--open]` | Saves a file to `~/Downloads`, lists the registry, and runs a real task with the given agent (default: the computer's default agent) that asks before acting with an attachment, approves it through the API, and replies. The agent must be signed in; `--install` installs it first; `--open` also opens https://example.com on the owner's display. |
+| `node apps/host/scripts/check-craft.mjs <app> <files…>` | Runs a Craft job (`photocraft`, `pdfcraft`, `lightcraft`, `filmcraft`) on the given files, checks the output signature and moves the job directory to Trash. FilmCraft media must already be on the computer at the paths in the project. Failed jobs remain for inspection. |
+| `apps/host/scripts/check-open-app.sh` | With `CABOOSE_CHECK_FILE` (a local document) and `CABOOSE_CHECK_APP` (an installed desktop entry id): uploads the file and opens it with that app. Check the owner's display; the test copy stays in a uniquely named folder in the home. |
+| `node apps/host/scripts/check-push.mjs [device-index]` | Run on the host with its `CABOOSE_APNS_*` variables and `CABOOSE_IMAGE_ROOT`: sends a test alert to a device from `push-devices.json` (default index 0) without printing tokens. APNs acceptance is not proof of delivery; check the device. |
+| `apps/host/scripts/check-container.sh` | Against the running Compose service on Linux: the container's own network namespace, TAP and NAT, KVM access, the reflink disk root, authenticated health, and the bundled console (HTML, compiled assets, SPA fallback, API authentication). |
 
-## Craft jobs
+`apps/host/scripts/check-agent-shell.sh` needs only Docker (and network for its image build):
+it runs the host's agent and file guest scripts (task start, the batched poll, replies,
+approvals, cancel, restore after a host restart, sign-in, attachments and Downloads) in a
+Debian 13 container where the real `caboose-agentd`, installed by its own `install.sh`,
+drives a stand-in ACP agent.
 
-The host runs a fixed list of installed catalog CLI operations against files staged in
-`~/.caboose-jobs/<job>` through `/v1/fs`. The HTTP contract, accepted formats, progress
-events, Live Activities, warnings and retention are in `docs/architecture.md` under
-Shortcuts and Spotlight. The guest executes the CLI as `caboose`, not root.
-
-On a paired real host with the requested app installed and Node 22+, run:
-
-```sh
-export CABOOSE_URL=https://computer.example.com
-# Set CABOOSE_OWNER_TOKEN in the private environment.
-node apps/host/scripts/check-craft.mjs photocraft /path/to/example.jpg
-node apps/host/scripts/check-craft.mjs pdfcraft /path/to/one.pdf /path/to/two.pdf
-node apps/host/scripts/check-craft.mjs lightcraft /path/to/example.jpg
-node apps/host/scripts/check-craft.mjs filmcraft /path/to/project.fcproj
-```
-
-Each check wakes the computer, uploads its fixtures, validates the output signature
-and moves the staged job directory to Trash. FilmCraft media must already be present
-at the paths in the project on the computer. Failed jobs remain for inspection.
+`guest/desktop-mcp/check-a11y.sh` covers the accessibility helper behind the screen routes,
+`guest/media-handoff/check.sh` the media handoff guest, and `guest/files/check-service.py`
+the file service; see their READMEs.

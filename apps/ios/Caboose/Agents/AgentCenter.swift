@@ -72,7 +72,7 @@ final class AgentCenter {
     private var host: HostClient?
 
     /// The agent seat: a second display where agents run GUI apps without touching yours.
-    private(set) var seat: XpraSession?
+    private(set) var seat: CabooseDisplaySession?
 
     func attach(host: HostClient) {
         self.host = host
@@ -256,8 +256,8 @@ final class AgentCenter {
         for task in tasks where task.status == "paused" { try? await host.holdAgentTask(task.id, paused: false) }
     }
 
-    /// Remembers how to reach the agent seat. The seat's display server only starts once an
-    /// agent is in use, so a computer nobody delegates to never runs a second Xpra.
+    /// Remembers how to reach the agent seat. The seat's display only starts once an agent is
+    /// in use, so a computer nobody delegates to never runs a second display.
     func prepareSeat(displayToken: String, capabilities: ClientCapabilities) {
         seatToken = (displayToken, capabilities)
         if !tasks.isEmpty { openSeatIfNeeded() }
@@ -274,7 +274,7 @@ final class AgentCenter {
         guard let host, seat == nil else { return }
         var url = URLComponents(url: host.socketURL("/v1/display"), resolvingAgainstBaseURL: false)!
         url.queryItems = [URLQueryItem(name: "seat", value: "agent")]
-        let session = XpraSession(displayURL: url.url!, token: host.token, password: displayToken, capabilities: capabilities)
+        let session = CabooseDisplaySession(displayURL: url.url!, token: host.token, password: displayToken, capabilities: capabilities)
         session.playsAudio = false // one stream of sound: the owner's display
         seat = session
         session.connect()

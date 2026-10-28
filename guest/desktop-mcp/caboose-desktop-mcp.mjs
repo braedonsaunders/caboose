@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// caboose-desktop-mcp — lets an agent see and drive GUI apps on the agent seat, display :101,
-// so it never touches the owner's display. An MCP server over stdio (newline-delimited
+// caboose-desktop-mcp — lets an agent see and drive GUI apps on the agent seat (its own
+// Caboose Display, whose apps run on Xwayland :101), so it never touches the owner's display. An MCP server over stdio (newline-delimited
 // JSON-RPC 2.0), with no dependencies beyond node: and what the image has: a11y.py beside
 // this file (the accessibility tree, through python3 and AT-SPI), and the X tools xdotool,
 // wmctrl and ImageMagick's import. caboose-agentd gives it to every ACP agent in session/new,
@@ -20,7 +20,7 @@ const PROTOCOL = '2025-06-18'
 // Installed side by side: /opt/caboose/desktop-mcp.mjs and /opt/caboose/a11y.py.
 const A11Y = fileURLToPath(new URL('./a11y.py', import.meta.url))
 // What a launched app needs to build its accessibility tree: GTK's bridge must not be
-// switched off (Xpra's own config does that for its children), Chromium and Electron read
+// switched off (NO_AT_BRIDGE, GTK_A11Y=none), Chromium and Electron read
 // ACCESSIBILITY_ENABLED, Firefox GNOME_ACCESSIBILITY, Qt QT_LINUX_ACCESSIBILITY_ALWAYS_ON.
 const launchEnv = { ...env, ACCESSIBILITY_ENABLED: '1', GNOME_ACCESSIBILITY: '1', QT_LINUX_ACCESSIBILITY_ALWAYS_ON: '1' }
 delete launchEnv.NO_AT_BRIDGE
@@ -144,31 +144,15 @@ async function xdotool(...args) {
   await run('xdotool', args, { env, timeout: 15_000 })
 }
 
-/**
- * Xpra's seamless server keeps each window in an unmapped "corral" until a client shows it,
- * so while nobody watches the agent seat, pointer and keyboard input and screenshots reach
- * nothing. Before a coordinate tool runs, ask Xpra to map every managed window that is not
- * viewable. A watched seat's windows are already viewable and are left alone.
- */
-async function reveal() {
-  const { stdout } = await run('xprop', ['-root', '-notype', '_NET_CLIENT_LIST'], { env, timeout: 5_000 }).catch(() => ({ stdout: '' }))
-  for (const xid of stdout.match(/0x[0-9a-f]+/gi) ?? []) {
-    const info = await run('xwininfo', ['-id', xid], { env, timeout: 5_000 }).catch(() => ({ stdout: '' }))
-    if (!/Map State: IsUnviewable/.test(info.stdout)) continue
-    await run('xpra', ['control', DISPLAY, 'map', String(Number.parseInt(xid, 16))], { env, timeout: 10_000 })
-      .catch(error => console.error(`caboose-desktop-mcp: could not show window ${xid}: ${error.message}`))
-  }
-}
-
 async function capture(xid) {
   const { stdout } = await run('import', ['-window', xid, 'png:-'], { env, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: 20_000 })
   return Buffer.from(stdout)
 }
 
 /**
- * The agent display as one image in screen coordinates. Xpra redirects every window off
- * screen (Composite) and its root is a large empty canvas, so capturing the root shows
- * nothing; instead each viewable window is captured and laid out where it is, bottom to top.
+ * The agent display as one image in screen coordinates. Xwayland runs rootless, so its root
+ * window has no picture of its own; instead each viewable window is captured and laid out
+ * where it is, bottom to top.
  */
 async function captureSeat() {
   const { stdout } = await run('xprop', ['-root', '-notype', '_NET_CLIENT_LIST_STACKING'], { env, timeout: 5_000 }).catch(() => ({ stdout: '' }))
@@ -208,14 +192,12 @@ const handlers = {
   },
   read_text: () => a11y('text', {}),
   async screenshot({ window }) {
-    await reveal()
     if (window !== undefined && !/^(0x[0-9a-f]+|\d+)$/i.test(String(window))) throw new Error('window must be an id from list_windows')
     const png = window !== undefined ? await capture(String(window)) : await captureSeat()
     if (!png) return [{ type: 'text', text: 'No windows are open on the agent display.' }]
     return [{ type: 'image', data: png.toString('base64'), mimeType: 'image/png' }]
   },
   async list_windows() {
-    await reveal()
     const { stdout } = await run('wmctrl', ['-lG'], { env, timeout: 10_000 })
     const windows = stdout.trim().split('\n').filter(Boolean).map(line => {
       const [id, desktop, x, y, w, h, , ...title] = line.trim().split(/\s+/)
@@ -224,36 +206,30 @@ const handlers = {
     return [{ type: 'text', text: JSON.stringify(windows, null, 2) }]
   },
   async focus({ window }) {
-    await reveal()
     if (!/^(0x[0-9a-f]+|\d+)$/i.test(String(window))) throw new Error('window must be an id from list_windows')
     await run('wmctrl', ['-ia', String(window)], { env, timeout: 10_000 })
     return [{ type: 'text', text: `Focused ${window}.` }]
   },
   async click({ x, y, button = 1, count = 1 }) {
-    await reveal()
     await xdotool('mousemove', '--sync', int(x, 'x'), int(y, 'y'), 'click', '--repeat', int(count, 'count'), int(button, 'button'))
     return [{ type: 'text', text: `Clicked button ${button} at ${x},${y}.` }]
   },
   async drag({ x1, y1, x2, y2 }) {
-    await reveal()
     await xdotool('mousemove', '--sync', int(x1, 'x1'), int(y1, 'y1'), 'mousedown', '1',
       'mousemove', '--sync', int(x2, 'x2'), int(y2, 'y2'), 'mouseup', '1')
     return [{ type: 'text', text: `Dragged from ${x1},${y1} to ${x2},${y2}.` }]
   },
   async type({ text }) {
     if (typeof text !== 'string') throw new Error('text must be a string')
-    await reveal()
     await xdotool('type', '--delay', '8', '--', text)
     return [{ type: 'text', text: `Typed ${text.length} characters.` }]
   },
   async key({ combo }) {
     if (typeof combo !== 'string' || !/^[A-Za-z0-9_+]+$/.test(combo)) throw new Error('combo must look like "ctrl+s" or "Return"')
-    await reveal()
     await xdotool('key', '--', combo)
     return [{ type: 'text', text: `Pressed ${combo}.` }]
   },
   async scroll({ x, y, dx = 0, dy = 0 }) {
-    await reveal()
     await xdotool('mousemove', '--sync', int(x, 'x'), int(y, 'y'))
     const steps = []
     if (dy) steps.push('click', '--repeat', String(Math.min(50, Math.abs(dy))), dy > 0 ? '5' : '4')

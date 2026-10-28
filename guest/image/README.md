@@ -1,162 +1,179 @@
 # Caboose guest image
 
-Build on an amd64 Linux machine with Docker, `/dev/loop-control`, network access,
-space for a 16 GiB raw image and a reflink-capable target filesystem. The builder
-is privileged because it creates and mounts a loop device and chroots into the
-image. It uses debootstrap to produce a clean Debian 13 system; no host sudo or
-libguestfs appliance is required. Docker's storage and the output directory
-should be on a filesystem with sufficient free space.
+The computer's golden image for the microVM runtime: a Debian 13 (trixie, amd64) system that
+`caboose-host` boots with Cloud Hypervisor. The builder produces three files, `base.raw`,
+`vmlinux` and `initrd`; the host clones `base.raw` copy-on-write for the computer's disk and
+boots it with `root=/dev/vda3 rw`. The container runtime uses
+[`guest/container`](../container/README.md) instead, with the same app lineup and guest
+components.
+
+## Layout
+
+| Path | What |
+| --- | --- |
+| `build.sh` | Builds the builder image and runs it. Entry point. |
+| `Dockerfile` | The builder: a first stage compiles Caboose Display and the VA-API passthrough driver; the second has debootstrap and copies the guest components. |
+| `build-inside.sh` | Inside the builder: partitions and formats the raw disk, runs debootstrap, chroots into `configure-guest.sh`, and extracts the kernel and initrd. |
+| `configure-guest.sh` | Inside the chroot: packages, the `caboose` user, every guest component, theme, fonts and boot configuration. |
+| `apps.sh` | The app lineup installer, shared with the container image and usable on a running computer. |
+| `check-audio.sh` | A check for a running computer's sound. |
+
+## Build
+
+Build on an amd64 Linux machine with Docker, `/dev/loop-control`, network access, space for a
+16 GiB raw image, and a reflink-capable target filesystem (XFS with reflink, or Btrfs).
+The builder runs privileged because it creates and mounts a loop device and chroots into the
+image; it needs no host `sudo` or libguestfs. Docker's storage and the output directory need
+enough free space.
 
 ```sh
 OUT_DIR=/data/caboose/disks ./guest/image/build.sh
 ```
 
-This creates `base.raw`, `vmlinux`, and `initrd`. It refuses to overwrite any of
-them; build into an empty directory. On failure it unmounts the guest and retains
-the `.build.*` work directory for diagnosis; a retry builds a fresh image.
-The disk has an ext4 root on partition 3,
-matching the host's `root=/dev/vda3`. The root mounts with `noatime`;
-`/home/caboose/.cache` is a 512 MiB tmpfs, shared by application caches and
-cleared on a fresh boot. Keep base and overlays on XFS with reflink
-or Btrfs. Existing overlays and snapshots continue to refer to their previous
-base; do not replace a base underneath an existing computer. Back up and retire
-that computer explicitly before deploying a different base.
+`OUT_DIR` defaults to `/data/caboose/disks`. The build refuses to overwrite `base.raw`,
+`vmlinux` or `initrd`; build into an empty directory. On failure it unmounts the image and
+keeps the `.build.*` work directory in the output directory for diagnosis; a retry builds a
+fresh image.
 
-If the host container mounted the disk filesystem in its own mount namespace
-(as with `deploy/compose.yaml` on an ext4 host), use:
+When the host runs under `deploy/compose.yaml` and its disk filesystem is mounted only inside
+the container (a loop-mounted XFS image on an ext4 host), build into the container instead:
 
 ```sh
 CABOOSE_HOST_CONTAINER=deploy-caboose-host-1 ./guest/image/build.sh
 ```
 
-This stages the build in `/data/caboose/build` and copies it through the
-container into the mounted filesystem. Both the staging directory and the
-container's image paths must be empty, and the container must have no overlays.
-The staging files remain available for inspection after installation.
+This stages the build in `/data/caboose/build` and copies it through the container into
+`/data/caboose/disks`. The container's image files must not exist and its `overlays`
+directory must be empty. The staged files remain for inspection.
 
-The builder installs Xpra 6.5.5 from its upstream repository, pinned with APT,
-the desktop MCP server and its accessibility helper from `guest/desktop-mcp` (which also
-switches on the apps' accessibility trees), the agent runner from `guest/agentd` (with the
-ACP SDK it pins), and the Bunkhouse guest agent
-at a pinned source revision with appkit-desk
-0.6.0. The agent listens on vsock port 5252. Xpra starts only when the host has
-written its per-wake password; it does not run automatically at boot. A separate `caboose-xpra-agent.service`
-provides display `:101` on port `14501` with the same token when explicitly
-started by the host on demand. Both units pass Xpra `--env=NO_AT_BRIDGE=0
---start-env=GTK_A11Y=atspi` and the accessibility environment, and start each display's
-accessibility bus as it comes up (`a11y.py bus`, see `guest/desktop-mcp/README.md`). Debian OS packages follow their signed
-repositories at build time; the app installer pins its external releases.
+The disk is GPT with an ext4 root (label `caboose`) on partition 3, mounted with `noatime`.
+`/home/caboose/.cache` is a 512 MiB tmpfs, shared by application caches and cleared at every
+cold boot. Keep the base and overlays on XFS with reflink or on Btrfs. A computer's overlay
+and snapshot refer to the base they were made from: do not replace a base underneath an
+existing computer. A new base reaches new computers only; update an existing one from inside
+it (see [Updating a running computer](#updating-a-running-computer)).
 
-The image also carries [Caboose Display](../display/README.md) (`caboose-display`,
-`caboose-display-probe`, `caboose-display-ready`, built in the builder's first stage) and
-`caboose-display.service`, which is installed but not enabled: Xpra stays the default.
-A host that selects Caboose Display writes the token, starts `caboose-display.service`
-instead of `caboose-xpra.service`, and waits for `caboose-display-ready 60`. The service
-serves WebSocket port `14600`, runs Xwayland on `:110`, and writes the environment for
-launched applications to `/run/caboose/display.env`. The codec passthrough VA-API driver
-(guest/vaapi) is installed with it; the image loads the `udmabuf` module at boot and gives
-`/dev/udmabuf` to the `caboose` group for the driver's decode surfaces (on kernels without
-the module, GL players fall back to decoding locally).
+## What the image contains
+
+- **System.** Debian 13 from its signed repositories, the `linux-image-cloud-amd64` kernel,
+  systemd, D-Bus with a user session, the `caboose` user (uid 1000, passwordless `sudo`,
+  lingering enabled so its user manager runs at boot), Node 22 from NodeSource and VS Code
+  from Microsoft's repository.
+- **Guest agent.** The appkit-desk guest agent from Bunkhouse at a pinned revision, with the
+  appkit-desk 0.6.0 protocol files, on vsock port 5252 (`desk-guest-agent.service`,
+  `desk-vsock-bridge.service`). The host runs every guest command through it. It runs as root
+  with root's home; commands for the owner are started with `runuser -u caboose`.
+- **Caboose Display** ([`guest/display`](../display/README.md)): `caboose-display`,
+  `caboose-display-probe` and `caboose-display-ready` in `/usr/local/bin`, Xwayland, and two
+  units the host starts (they are not enabled):
+
+  | Unit | Port | Wayland socket | Xwayland | Launch environment |
+  | --- | --- | --- | --- | --- |
+  | `caboose-display.service` (owner's display) | 14600 | `wayland-caboose-0` | `:110` | `/run/caboose/display.env` |
+  | `caboose-display-agent.service` (agent seat) | 14601 | `wayland-caboose-agent` | `:101` | `/run/caboose/agent-display.env` |
+
+  Both run as `caboose` and check the per-wake token the host writes to
+  `/run/caboose/display-token` before starting them; `caboose-display-ready [TIMEOUT] [PORT]`
+  waits until an instance answers a hello made with it. The owner's display runs its own
+  PulseAudio, and its launch environment gives apps `PULSE_SERVER`, the Wayland socket,
+  Xwayland's `DISPLAY` and `XAUTHORITY`, and toolkit hints that prefer Wayland and fall back
+  to X11. The agent seat runs `--x11-only --no-audio`: its apps run on Xwayland alone so
+  agents' X11 tools can drive them, it plays no sound, and it has its own D-Bus session bus
+  (`/run/user/1000/agent-bus`). Each instance keeps its X authority, Xwayland shim and
+  PulseAudio socket under `/run/user/1000/caboose-display/<wayland socket>/`. As each display
+  becomes ready, its unit starts that display's accessibility bus (`a11y.py bus`).
+- **Video passthrough.** The Caboose VA-API driver ([`guest/vaapi`](../vaapi/README.md)) in
+  `/usr/lib/x86_64-linux-gnu/dri/caboose_drv_video.so`. The image loads the `udmabuf` module
+  at boot and gives `/dev/udmabuf` to the `caboose` group for the driver's decode surfaces; on
+  a kernel without the module, GL players decode locally.
+- **Guest components**, each installed by its own `install.sh` or files:
+  - [`guest/desktop-mcp`](../desktop-mcp/README.md): the agents' desktop MCP server and
+    `/opt/caboose/a11y.py`, with apps' accessibility trees switched on;
+  - [`guest/agentd`](../agentd/README.md): the agent runner in `/opt/caboose/agentd`;
+  - [`guest/files`](../files/README.md): the file service and `caboose-files.service`
+    (installed, started by the host at each wake);
+  - [`guest/notifications`](../notifications/README.md): the owner's notification monitor
+    (`caboose-notifications.service`, enabled) and the notification endpoints and agent bus
+    the display units require;
+  - [`guest/phone`](../phone/README.md): `caboose-open`, `caboose-share`, Thunar's **Share to
+    iPhone** action and the `iPhone` CUPS queue (`cups.service` and
+    `caboose-phone-printer.service`, enabled).
+- **Appearance.** WhiteSur GTK, icon and cursor themes at pinned commits (dark), Inter and
+  JetBrains Mono as the default fonts with Noto CJK and colour emoji as fallbacks, and
+  `QT_QPA_PLATFORMTHEME=gtk3`.
+
+The builder does not copy [`guest/media-handoff`](../media-handoff/README.md), so images
+built by `build.sh` do not include media handoff; install it on a running computer with
+`guest/media-handoff/install.sh` (see [Updating a running computer](#updating-a-running-computer)).
 
 ## Apps
 
-The image includes Mesa Vulkan and OpenGL software drivers for applications that need
-software rendering. Optional applications are installed from the host catalog. Existing
-computers retain their current packages when the base lineup changes.
+`apps.sh` installs the lineup in a Debian 13 amd64 guest or chroot. It is idempotent, and
+the image builder, the container image and a running computer all use it. Debian packages
+come from the signed repositories; OpenCode, mise, Lazydocker, uv and Obsidian are pinned to
+upstream release assets with checked SHA-256 hashes; the npm agents are pinned by version
+and registry integrity. Obsidian is proprietary software.
 
-`apps.sh` is the same idempotent installer used by the image builder and existing
-Debian 13 amd64 computers. To upgrade an existing guest, copy it into the guest and
-run `sudo bash apps.sh`. It does not reboot the computer. Debian packages come
-from its signed APT repositories; OpenCode, mise, Lazydocker and Obsidian are pinned
-to upstream release assets with checked SHA-256 hashes, and npm agent versions and
-their registry integrity values are pinned. Obsidian is proprietary software.
-These agent CLIs are for the owner's own terminal and need the owner's account or
-credentials. Agent tasks are not limited to them: the host runs any agent in the Agent
-Client Protocol registry through `caboose-agentd` (`guest/agentd`), installing it into the
-home directory on demand. `apps.sh` adds `uv`/`uvx` (pinned, checksum-verified) for agents
-published as Python packages and `bzip2` for agents shipped as `.tar.bz2`.
-
-| Category | Caboose lineup |
+| Category | Lineup |
 | --- | --- |
 | Browsers and writing | Chromium, Firefox ESR, Obsidian, LibreOffice, Mousepad |
-| Desktop tools | Thunar, Evince, KeePassXC, File Roller; optional applications are in the catalog |
-| Development | VS Code, Neovim, Git, GitHub CLI, Docker, Lazygit, Lazydocker, btop, tmux, mise |
-| Shell | ripgrep, fd, bat, eza, fzf, zoxide, jq, ncdu, htop, fastfetch, yt-dlp, tealdeer, ffmpeg, ImageMagick |
+| Desktop tools | Xfce Terminal, Thunar, Evince, KeePassXC, File Roller, mpv |
+| Development | VS Code, Neovim, Git, GitHub CLI, delta, Docker and Compose, Lazygit, Lazydocker, btop, tmux, mise, Node 22, uv |
+| Shell | ripgrep, fd, bat, eza, fzf, zoxide, jq, tree, ncdu, htop, fastfetch, yt-dlp, tealdeer, ffmpeg, ImageMagick |
 | Agents | Claude Code, Codex, OpenCode, Gemini CLI |
-| Fonts and appearance | Inter, JetBrains Mono, Noto CJK and emoji; WhiteSur and Adwaita from the image |
+| Rendering | Mesa Vulkan and OpenGL software drivers |
+| Fonts | Inter, JetBrains Mono, Noto (core, CJK, colour emoji) |
 
-Lazygit, Lazydocker, btop, Neovim and the four agents have terminal desktop
-launchers in the Home grid. Docker runs inside the guest; it does not control
-the host's Docker daemon. Membership in the guest's `docker` group grants root
-access inside the guest. As with other guest apps, changes to group membership
-take effect on a new login. The launcher icons include OpenCode's upstream mark
-and recolored [Simple Icons](https://github.com/simple-icons/simple-icons) marks
-(CC0); Neovim, btop and the terminal use their installed application icons.
+Optional applications are installed from the host's catalog ([`guest/catalog`](../catalog/README.md)).
 
-To verify a Craft application and Mesa rendering on a deployed host, run
-`node apps/host/scripts/check-catalog.mjs` with the environment described in
-`apps/host/README.md`. The check installs PhotoCraft and requires a new window.
+Lazygit, Lazydocker, btop, Neovim and the four agents have desktop launchers that open them in
+Xfce Terminal, so they appear in the app's Home grid. The launcher icons are OpenCode's
+upstream mark and recoloured [Simple Icons](https://github.com/simple-icons/simple-icons)
+marks (CC0), fetched at pinned commits with checked hashes; Neovim, btop and Codex use
+installed icons. The agent CLIs are for the owner's own terminal and need the owner's
+account or credentials. Agent tasks are not limited to them: the host runs any agent in the
+Agent Client Protocol registry through [`caboose-agentd`](../agentd/README.md), installing it
+into the home directory on demand; `uv`/`uvx` and `bzip2` are there for agents published as
+Python packages and `.tar.bz2` archives.
 
-To check a running computer from the host, install a local Xpra client with
-rencodeplus and lz4 support and run:
+Docker runs inside the guest and does not control the host's Docker daemon. `caboose` is in
+the guest's `docker` group, which grants root inside the guest; group changes take effect on
+a new login.
+
+## Updating a running computer
+
+A computer keeps its own disk, so packages and components change from inside it. From a
+checkout copied into the computer, as root:
 
 ```sh
-CABOOSE_OWNER_TOKEN=... node apps/host/scripts/check-lineup.mjs
+bash guest/image/apps.sh                   # the app lineup; also installs media handoff from the checkout
+sh guest/desktop-mcp/install.sh
+sh guest/agentd/install.sh
+sh guest/media-handoff/install.sh
 ```
 
-The check authenticates through the display relay, verifies PNG icons and opens
-Mousepad, btop and OpenCode, then requires a new Xpra window for each. It
-leaves those windows open and does not park or restart the computer. Agents can
-show a sign-in screen until configured. The check needs free capacity for three
-windows; close prior instances before rerunning if an app reuses its window.
+None of these reboots the computer. The file service, notifications and phone handoff are
+updated by the host itself through [`guest/components`](../components/README.md);
+[`guest/display`](../display/README.md) describes updating Caboose Display.
 
-For comparison, Omarchy's [default package list](https://github.com/omacom/omarchy/blob/83f040099f80a95f1983435e20fd2f631c2f8dee/install/omarchy-base.packages)
-includes foot, Neovim, Lazygit, btop, Docker, mise, fzf, ripgrep, zoxide, eza,
-bat, fd, Chromium, Obsidian, LibreOffice, LocalSend, Evince, mpv, Pinta, Noto
-and JetBrains Mono; its [agent launchers](https://omarchy.org/manual/ai/) install
-Claude, Codex, OpenCode and many others lazily. Omarchy's hardware, Wayland,
-screen-recording and local gaming utilities do not suit the microVM. LocalSend
-is omitted because the default guest network fence blocks LAN discovery; the
-Xpra file-transfer path is intended for moving files instead. Pinta is not in
-Debian 13's repositories; GIMP and other editors are available in the catalog. This image does not
-claim to install Omarchy's optional commercial apps or all its lazy agents.
+## Checks
 
-To exercise KVM, the agent, Xpra authentication through the relay, the app
-list, terminal launch and memory snapshots, run `apps/host/scripts/e2e.sh` against a deployed
-host as described in `apps/host/README.md`. This check wakes and parks the owner
-computer, so run it only when that lifecycle change is appropriate.
+`check-audio.sh`, run as root inside a running computer, checks that the owner's display is
+active, that its launch environment names a `PULSE_SERVER` that `pactl info` reaches, and,
+when the agent seat is running, that the seat's launch environment has no `PULSE_SERVER`. It
+plays nothing and restarts nothing. Hearing sound needs a client connected with sound on.
 
-The owner seat enables speaker audio and disables microphone forwarding. The
-guest installs PulseAudio and GStreamer’s MP3 and PulseAudio plugins. With the
-computer running, `sudo bash guest/image/check-audio.sh` checks the service,
-PulseAudio, plugins, shell routing and Xpra's advertised MP3 encoder; when a phone has requested
-audio, it also prints its speaker state and packet count. Hearing audio still
-requires a client connected with speaker playback enabled.
-Login and interactive Bash shells on `:100` discover Xpra's PulseAudio server
-from its X11 root property; an explicitly configured `PULSE_SERVER` is preserved,
-and the separate `:101` agent seat is not redirected to the owner's speaker.
+Against a deployed host (see [`apps/host`](../../apps/host/README.md#real-host-checks)):
 
-## File service
+- `apps/host/scripts/e2e.sh` wakes the computer, says hello to both displays through the
+  relay, checks the app list and its icons, launches the terminal, parks and resumes. It
+  changes the computer's lifecycle, so run it only when that is acceptable.
+- `node apps/host/scripts/check-lineup.mjs` opens Mousepad, btop and OpenCode and requires a
+  new window for each. It leaves them open and does not park; close earlier instances first
+  if an app reuses its window. Agents can show a sign-in screen until configured.
+- `node apps/host/scripts/check-catalog.mjs` installs PhotoCraft from the catalog and
+  requires a new window, which exercises Mesa software rendering.
 
-The image installs `guest/files/caboose-files.py` and `caboose-files.service`; the host starts
-it as `caboose` after writing the per-wake display token. It listens on guest port 14700 and
-serves home-confined file operations and inotify changes. See `docs/architecture.md` § Files
-and `apps/host/README.md` for the API and real-host check. The host upgrades existing disks automatically using `guest/components`; see the host README for checks.
-## Desktop notifications
-
-The owner session's D-Bus notification monitor writes a bounded private queue under
-`~/.cache/caboose/notifications`; the host drains it while the computer runs. The owner and agent seats use separate D-Bus session buses, so agent notifications do not enter the owner queue. The monitor needs the
-owner's user bus and `python3-gi`. To check a running guest with the owner display up,
-run `sudo bash guest/notifications/check.sh` inside it; the check sends a notification
-and waits for its queue record. APNs delivery needs the separate host and device check.
-
-`guest/notifications/check-container.sh` exercises the actual monitor and separate buses in
-a disposable Debian container without a VM or APNs credentials.
-
-## iOS handoff and printing
-
-The image installs the commands, desktop handlers and iPhone CUPS queue described in
-[`guest/phone/README.md`](../phone/README.md), including the scripted guest check. The
-queue uses the same handoff for Xpra and Caboose Display.
-
-Both builders install Caboose plumbing with `guest/components/install.sh`; the host uses the same installer to update existing guests. See `guest/components/README.md`.
+The components have their own checks: `guest/desktop-mcp/check-a11y.sh` (Docker),
+`guest/notifications/check.sh` and `check-container.sh`, `guest/phone/check.sh`,
+`guest/media-handoff/check.sh`, and `guest/files/check-service.py`.

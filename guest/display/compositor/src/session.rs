@@ -191,7 +191,7 @@ impl State {
             }
             Message::ClientClipboard(c) => self.clipboard_from_phone(c),
             Message::Pencil(_) => {
-                // Not implemented yet; the features are absent from hello.
+                // Pencil input is not supported; `pencil` is absent from the hello's features.
             }
             other => tracing::debug!("connection {conn}: ignoring {}", other.name()),
         }

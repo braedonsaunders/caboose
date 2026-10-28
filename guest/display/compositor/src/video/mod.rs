@@ -1,6 +1,6 @@
 //! Video streams layered into windows (docs/display.md, "Video, for every app").
 //!
-//! Layer 1, codec passthrough: the Caboose VA-API driver (guest/vaapi) does not decode.
+//! Codec passthrough: the Caboose VA-API driver (guest/vaapi) does not decode.
 //! It hands each access unit to the compositor over the video socket ([`ipc`]) and fills
 //! the application's decode surfaces with a marker ([`marker`]) instead of pixels. The
 //! compositor finds the marker in the window pictures the application composes, which
@@ -8,9 +8,8 @@
 //! frame the application is showing (`video.present`). The client decodes the stream
 //! itself and draws it there.
 //!
-//! The driver's exact path (a wl_buffer that *is* a decode surface, by its dmabuf device
-//! and inode) needs a renderer that imports NV12 dmabufs; with the pixman renderer
-//! those buffers are never offered, so every stream is bound through the marker.
+//! The pixman renderer imports no NV12 dmabufs, so every stream is bound through the
+//! marker.
 
 pub mod ipc;
 pub mod marker;

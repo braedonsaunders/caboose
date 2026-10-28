@@ -4,13 +4,13 @@ import ImageIO
 import Observation
 import QuartzCore
 
-/// One connection to caboose-display, the computer's own GPU display server, over the
-/// Caboose Display Protocol (docs/display.md).
+/// One connection to caboose-display, the computer's display server, over the Caboose
+/// Display Protocol (docs/display.md).
 ///
-/// Every Linux window arrives as its own video stream, decoded in hardware into the same
-/// `RemoteWindow` and `WindowSurface` the Xpra client fills, so the app shows either alike.
-/// Pictures go straight from the socket's queue to their window's decode queue; everything
-/// else is handled on the main actor.
+/// Every Linux window arrives as its own video stream, decoded in hardware into the
+/// `RemoteWindow` and `WindowSurface` the app's views draw. Pictures go straight from the
+/// socket's queue to their window's decode queue; everything else is handled on the main
+/// actor.
 @MainActor @Observable
 public final class CabooseDisplaySession: DisplaySession {
     public private(set) var state: DisplaySessionState = .idle
@@ -639,7 +639,7 @@ private final class Incoming: @unchecked Sendable {
 }
 
 extension DisplayInfo {
-    /// The screen the server lays windows out for, as the Xpra client describes it too.
+    /// The screen the server lays windows out for.
     public init(_ capabilities: ClientCapabilities, id: Int = 0) {
         self.init(id: id, width: capabilities.desktopWidth, height: capabilities.desktopHeight,
                   scale: Double(capabilities.dpi) / 96, refreshHz: Double(capabilities.refreshRate), hdr: false)

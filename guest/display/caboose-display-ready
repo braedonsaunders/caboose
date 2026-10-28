@@ -1,12 +1,16 @@
 #!/bin/sh
-# Exits 0 once caboose-display on 127.0.0.1:14600 answers a hello made with the
-# per-wake token; otherwise keeps trying for TIMEOUT seconds (default 60).
+# Exits 0 once a caboose-display instance answers a hello made with the per-wake token;
+# otherwise keeps trying for TIMEOUT seconds (default 60). PORT selects the instance:
+# 14600 is the owner's display, 14601 the agent seat.
+#
+#   caboose-display-ready [TIMEOUT] [PORT]
 timeout=${1:-60}
-token=/run/caboose/xpra-token
+port=${2:-14600}
+token=/run/caboose/display-token
 i=0
 while [ "$i" -lt "$timeout" ]; do
-  if [ -r "$token" ] && caboose-display-probe --check --token-file "$token" >/dev/null 2>&1; then exit 0; fi
+  if [ -r "$token" ] && caboose-display-probe --check --url "ws://127.0.0.1:$port/" --token-file "$token" >/dev/null 2>&1; then exit 0; fi
   i=$((i + 1)); sleep 1
 done
-echo 'caboose-display did not become ready' >&2
+echo "caboose-display on port $port did not become ready" >&2
 exit 1

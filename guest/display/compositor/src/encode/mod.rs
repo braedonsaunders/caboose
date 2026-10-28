@@ -4,10 +4,6 @@
 //! start-up by [`Encoders::probe`], which opens each candidate and encodes a test
 //! picture: NVENC (h264/hevc/av1_nvenc through libavcodec, from system memory) and the
 //! software encoders (libx264, libx265), which always work.
-//!
-//! The zero-copy encoders of docs/display.md (dmabuf → NVENC through CUDA external
-//! memory, dmabuf → VA-API) need a GPU renderer that composes windows into dmabufs;
-//! they are new [`Input`] kinds and [`Backend`]s behind this same trait.
 
 pub mod convert;
 pub mod lavc;

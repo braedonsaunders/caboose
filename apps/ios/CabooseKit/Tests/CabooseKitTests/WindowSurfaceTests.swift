@@ -38,15 +38,6 @@ import Testing
         #expect(pixel(image, 1, 1) == [0, 0, 0, 0])
     }
 
-    @Test func scrollFollowsTheUploadBeforeIt() throws {
-        let surface = WindowSurface()
-        surface.resize(width: 4, height: 8)
-        fill(surface, x: 0, y: 0, width: 4, height: 2, bgra: [1, 2, 3, 255])
-        surface.scroll([(x: 0, y: 0, width: 4, height: 2, dx: 0, dy: 4)])
-        let image = try #require(surface.snapshot())
-        #expect(pixel(image, 1, 5) == [1, 2, 3, 255])
-    }
-
     @Test func resizeKeepsTheOverlap() throws {
         let surface = WindowSurface()
         surface.resize(width: 4, height: 4)

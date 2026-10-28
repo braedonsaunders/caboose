@@ -1,4 +1,4 @@
-//! Video layer 3: finding the part of a window that updates at video rates.
+//! Motion streams: finding the part of a window that updates at video rates.
 //!
 //! Fed with the macroblocks that really changed in each picture of a window, the
 //! [`Tracker`] reports a region once it has been a dense, stable rectangle that changes

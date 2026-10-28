@@ -5,8 +5,8 @@ import Testing
 
 /// Connects to a real computer running caboose-display, through caboose-host exactly as the
 /// app does: wake, the relayed display, the hello with the wake token, the windows, and
-/// pictures decoded in hardware while vsync ticks at 120 Hz. The host must run with
-/// `CABOOSE_DISPLAY=caboose` and have a window open (a terminal is enough):
+/// pictures decoded in hardware while vsync ticks at 120 Hz. The computer must have a window
+/// open (a terminal is enough):
 ///
 ///     CABOOSE_HOST_URL=http://host:7310 CABOOSE_HOST_TOKEN=… swift test --filter LiveCabooseDisplay
 ///
@@ -45,7 +45,6 @@ import Testing
         let (body, _) = try await URLSession.shared.data(for: request)
         let wake = try JSONSerialization.jsonObject(with: body) as? [String: Any]
         let display = try #require(wake?["display"] as? [String: Any])
-        try #require(display["protocol"] as? String == "caboose-display", "the host serves \(display["protocol"] ?? "?"); set CABOOSE_DISPLAY=caboose")
         let password = try #require(display["token"] as? String)
         var socket = URLComponents(url: host.appendingPathComponent("v1/display"), resolvingAgainstBaseURL: false)!
         socket.scheme = host.scheme == "https" ? "wss" : "ws"

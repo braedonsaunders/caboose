@@ -4,10 +4,10 @@ import {
   Alert, AlertDescription, AlertTitle, Badge, PageContainer, PageHeader, Spinner,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@braedonsaunders/appkit-ui'
-import { Activity, Cpu, HardDrive, MonitorPlay, Server, SlidersHorizontal } from 'lucide-react'
+import { Activity, Cpu, HardDrive, Server, SlidersHorizontal } from 'lucide-react'
 import { CabooseApiError, type CabooseClient } from '../api.js'
 import { errorMessage, useVisibleInterval } from '../components/common.js'
-import { displayLabel, gpuLabel, healthFacts, runtimeLabel, upgradeLabel, type HealthStatus, type HostInfo } from '../host.js'
+import { gpuLabel, healthFacts, runtimeLabel, upgradeLabel, type HealthStatus, type HostInfo } from '../host.js'
 import { stateLabel, stateTone } from '../state.js'
 import type { ComputerHandle } from '../useComputer.js'
 
@@ -64,10 +64,9 @@ export function System({ client, computer, onUnauthorized }: { client: CabooseCl
           </Alert>
         ) : null}
 
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-3">
           <DashboardMetricCard label="caboose-host" value={host ? host.version : '—'} detail={host ? `Node ${host.node.replace(/^v/, '')}` : undefined} icon={<Server className="size-4" aria-hidden />} />
           <DashboardMetricCard label="Runtime" value={host ? runtimeLabel(host.runtime) : '—'} detail={host ? (host.runtime === 'container' ? 'Docker, frozen when parked' : 'Cloud Hypervisor, parked with memory') : undefined} icon={<HardDrive className="size-4" aria-hidden />} />
-          <DashboardMetricCard label="Display" value={host ? displayLabel(host.display) : '—'} detail={host ? host.display : undefined} icon={<MonitorPlay className="size-4" aria-hidden />} />
           <DashboardMetricCard label="GPU" value={host ? gpuLabel(host.gpu) : '—'} icon={<Cpu className="size-4" aria-hidden />} />
         </div>
 

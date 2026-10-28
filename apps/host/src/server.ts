@@ -16,6 +16,7 @@ import { AgentRegistry } from './registry.js'
 import { PhoneHandoff, readPhoneFile } from './phone.js'
 import { SettingsInputError, type SettingsStore } from './settings.js'
 import type { DisplayProtocol } from './config.js'
+import { DisplayNotReadyError } from './display.js'
 import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
 import { DesktopNotifications } from './desktop-notifications.js'
@@ -32,9 +33,9 @@ export interface Controller extends ComputerDriver<Session> {
   stats(): unknown
   apps(): Promise<App[]>
   launch(id: string, path?: string): Promise<void>
-  /** The owner's display in the guest: Xpra's WebSocket, or caboose-display's. */
+  /** The owner's display in the guest: caboose-display's WebSocket. */
   displayUrl: string
-  /** The agent seat's Xpra (display :101). */
+  /** The agent seat's caboose-display, started on demand by ensureAgentSeat. */
   agentDisplayUrl: string
   ensureAgentSeat(): Promise<void>
   /** Root command runner in the running computer, or undefined while parked. */
@@ -469,14 +470,14 @@ export function createCabooseServer(options: {
     })().catch(error => {
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError) return json(response, 404, { error: error.message })
-      if (error instanceof AgentUnavailableError || error instanceof AgentConflictError || error instanceof ComputerConflictError) return json(response, 409, { error: error.message })
+      if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError) return json(response, 409, { error: error.message })
       if (error instanceof AgentOperationError) return json(response, 502, { error: error.message })
       console.error('Caboose request failed:', error)
       if (!response.headersSent) json(response, 500, { error: 'computer operation failed' })
       else response.destroy()
     })
   })
-  /** Byte relay between a client and a guest Xpra, with backpressure in both directions. */
+  /** Byte relay between a client and a guest caboose-display, with backpressure in both directions. */
   function relay(client: WebSocket, upstreamUrl: string): void {
     const upstream = new WebSocket(upstreamUrl, 'binary', { maxPayload: 16 * 1024 * 1024, handshakeTimeout: 10_000 })
     // Pause the sender until the destination flushes, bounding queued data.

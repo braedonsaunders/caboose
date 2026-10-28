@@ -5,7 +5,7 @@ import { ownerEnv, x11Display } from './display.js'
  * The owner's display through its accessibility tree, for the iPhone's on-device agent and
  * the web console: list the focused window's controls, act on one, type, press a shortcut.
  * Everything runs as `caboose` with the owner display's launch environment, on its X display
- * (Xpra's :100, or Xwayland's under Caboose Display), through /opt/caboose/a11y.py (see
+ * (Caboose Display's Xwayland), through /opt/caboose/a11y.py (see
  * guest/desktop-mcp) and xdotool. See docs/architecture.md § Screen.
  */
 const A11Y = '/opt/caboose/a11y.py'

@@ -1,5 +1,7 @@
 #!/usr/bin/python3
-"""Notification endpoint for Caboose Display, where Xpra is not the D-Bus server."""
+"""The org.freedesktop.Notifications endpoint on a seat's session bus: it accepts every
+notification so that apps never wait on a missing server. The owner's are recorded by
+monitor.py, which watches the same bus; the agent seat's go nowhere."""
 from gi.repository import Gio, GLib
 xml = '''<node><interface name="org.freedesktop.Notifications">
 <method name="GetServerInformation"><arg type="s" direction="out"/><arg type="s" direction="out"/><arg type="s" direction="out"/><arg type="s" direction="out"/></method>

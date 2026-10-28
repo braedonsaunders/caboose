@@ -1,21 +1,50 @@
 # Guest file service
 
-`caboose-files.py` is a private Python 3 service for the Caboose host, running as
-`caboose` on port 14700. It reads `/run/caboose/xpra-token` for every request; the host
-writes that file before starting the service. It opens path components through directory
-file descriptors without following links. Its `/changes` endpoint uses Linux inotify and a
-bounded, per-process journal. See `../../docs/architecture.md` § Files for the protocol.
+`caboose-files.py` is the computer's private file service: a Python 3 HTTP server, with no
+packages beyond the standard library, that runs as `caboose` on port 14700 and serves
+home-confined file operations for caboose-host's `/v1/fs` routes and shared files. The
+protocol is in [`docs/architecture.md`](../../docs/architecture.md) § Files.
 
-Both image builders and the host's automatic existing-guest upgrade install it through
-`guest/components`. Never publish port 14700 to the network: it is a private host-to-guest
-transport. Old containers without a port mapping must be recreated for Files; preserve the
-home volume and back up the writable layer first.
+- **Authentication.** Every request must carry `Authorization: Bearer <token>`, where the
+  token is the one the host writes to `/run/caboose/display-token`. The file is read on
+  every request, so a new token takes effect at once.
+- **Confinement.** Paths are relative to the home directory. Every path component is opened
+  through directory file descriptors with `O_NOFOLLOW`, so a symbolic link never leads
+  outside the home.
+- **Changes.** `/changes` reports changes from Linux inotify through a bounded, per-process
+  journal.
 
-From the repository root, run the Linux service check with Docker:
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CABOOSE_FILES_ROOT` | `/home/caboose` | The directory served. |
+| `CABOOSE_FILES_TOKEN_FILE` | `/run/caboose/display-token` | The token file. |
+| `CABOOSE_FILES_PORT` | `14700` | The listening port. |
 
-```sh
-docker run --rm -v "$PWD/guest/files:/checks:ro" python:3.13-slim python3 /checks/check-service.py
-```
+The service listens on every interface inside the computer. Only the host reaches it: in the
+microVM through the guest's private TAP address, in the container runtime on a port published
+on the host's loopback only. Never publish port 14700 to a network.
 
-The host's `scripts/check-fs.mjs` additionally checks an actual paired computer through the
-public API. See `../../apps/host/README.md` for its environment and effects.
+## Install and run
+
+Both guest images install the service as `/opt/caboose/files/caboose-files.py`. The host
+starts it at each wake after writing the token: `caboose-files.service` in the microVM
+(installed, not enabled), `caboose-session start-files` in the container.
+
+The service is part of the guest components bundle (`guest/components`), so the host
+updates it in existing computers at wake. A container created without the port 14700
+mapping must be recreated to enable it; the home volume is kept. Never publish port 14700
+to the network: it is a private host-to-guest transport.
+
+## Test
+
+- `test_logic.py` unit-tests path validation, byte ranges, versions and change anchors. The
+  host's test suite runs it (`src/fs-logic.test.ts`), or run `python3 guest/files/test_logic.py`.
+- `check-service.py` runs the real service in Linux, including inotify and dirfd confinement.
+  From the repository root, with Docker:
+
+  ```sh
+  docker run --rm -v "$PWD/guest/files:/checks:ro" python:3.13-slim python3 /checks/check-service.py
+  ```
+
+- `apps/host/scripts/check-fs.mjs` checks a paired computer through the public API (see
+  [`apps/host`](../../apps/host/README.md#real-host-checks)).

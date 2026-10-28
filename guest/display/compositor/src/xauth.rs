@@ -44,11 +44,13 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join(name)).find(|p| p.is_file()))
 }
 
-/// Writes the cookie and the shim link under `runtime_dir/caboose-display/`.
-pub fn prepare(runtime_dir: &Path, number: u32) -> std::io::Result<Prepared> {
-    let dir = runtime_dir.join("caboose-display");
-    std::fs::create_dir_all(&dir)?;
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+/// Writes the cookie and the shim link under `dir`, the instance's private directory
+/// (see `Config::instance_dir`), which is made owner-only along with its parent.
+pub fn prepare(dir: &Path, number: u32) -> std::io::Result<Prepared> {
+    std::fs::create_dir_all(dir)?;
+    for d in [Some(dir), dir.parent()].into_iter().flatten() {
+        std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))?;
+    }
     let mut cookie = [0u8; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut cookie)?;
     let authority = dir.join("Xauthority");

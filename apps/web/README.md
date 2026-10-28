@@ -1,7 +1,7 @@
 # Caboose console
 
-The web console a self-hosted `caboose-host` serves on its own port: sign in with the
-owner token, then see and manage the computer.
+The web console for a self-hosted computer. `caboose-host` serves the built console at `/`
+on the same port as its API: sign in with the owner token, then see and manage the computer.
 
 - **Overview** — state, the resources the computer is running with, connected screens
   and working agents; Wake, Park now and Restart (confirmed first); a restart-required
@@ -17,17 +17,17 @@ owner token, then see and manage the computer.
 - **Files** — browse the computer's home folder (hidden files on request), download a file,
   upload into the folder you are in (a taken name becomes "name (2)", nothing is replaced),
   create a folder, rename, move to the Trash, or open an item on the computer's screen. The
-  folder is in the address (`/files?path=…`), so back and forward work. Every file request
-  wakes a parked computer, so a parked one is woken only when you ask.
+  folder is in the address (`/files?path=…`), so back and forward work. File requests wake a
+  parked computer, so a parked one is woken only when you ask.
 - **Devices** — the phones registered for push notifications, by a fingerprint of their
   token, with the kinds each one enabled (approvals, tasks, desktop) and whether it uses
   APNs development or production; remove one. When the host has no APNs key it says how to
   configure one.
-- **System** — the host version, runtime, display protocol, GPU, image, push and Live
-  Activities configuration, health from `/v1/health`, the guest-components upgrade where the
-  host reports one, the last lifecycle error, and the non-secret `CABOOSE_*` variables it
-  started with. These are read-only: they change by editing the host's environment and
-  restarting it, which the page explains.
+- **System** — the host version, runtime, GPU, image, push and Live Activities
+  configuration, health from `/v1/health`, the last lifecycle error, the state of a guest
+  component update, and the non-secret
+  `CABOOSE_*` variables the host started with (`GET /v1/host`). These are read-only: they
+  change by editing the host's environment and restarting it, which the page explains.
 - **Agents** — pick any agent from the Agent Client Protocol registry (installed ones
   first), install or update it, sign in to it on the computer's screen or give it an API key
   (its environment in the computer; names are shown, values never), and start a task
@@ -35,19 +35,19 @@ owner token, then see and manage the computer.
   Deny on the task); pause, resume or cancel it, sign in from a task that found its agent
   signed out, and reply to a finished task to continue its conversation.
 
-It is built on AppKit (`appkit-ui` for the shell, settings layout, forms, tables, progress,
-confirm and prompt dialogs and toasts; `appkit-dashboard` for metric cards and panels). It talks only to
-the documented `/v1` API (see `docs/architecture.md`): the token lives in session
-storage for the tab and is sent as `Authorization: Bearer`, never in a URL. Status and
-tasks are polled over HTTP, which holds no lease, so an open console never keeps the
-computer awake.
+The console is React on Vite, built on AppKit: `appkit-ui` for the shell, settings layout,
+forms, tables, progress, confirm and prompt dialogs and toasts, and `appkit-dashboard` for
+metric cards and panels. It talks only to the documented `/v1` API
+([`docs/architecture.md`](../../docs/architecture.md)). The token lives in the tab's session
+storage and is sent as `Authorization: Bearer`, never in a URL. Status and tasks are polled
+over HTTP, which holds no lease, so an open console never keeps the computer awake.
 
-Not in the console yet: upload progress for a single large file (the browser's `fetch`
-reports none; the page shows which file is uploading), choosing which app opens a file
-(`/v1/fs/open` accepts an `app`, the console uses the default handler), naming a phone (the
-host stores only its token), Live Activity registrations, and media handoff. A download is
-held in the browser's memory before it is saved, because the token goes in a header and a
-plain link cannot carry it.
+Limitations: a single large upload shows which file is uploading but not its progress (the
+browser's `fetch` reports none); opening a file always uses the computer's default handler,
+although `/v1/fs/open` accepts an `app`; phones are listed by fingerprint only, since the
+host stores no name for them; Live Activity registrations and media handoff are not shown.
+A download is held in the browser's memory before it is saved, because the token goes in a
+header and a plain link cannot carry it.
 
 ## Brand
 
@@ -56,14 +56,16 @@ wordmarks and app icon in `.github/assets`, `public/favicon.svg`, and the consol
 `<Wordmark>` component (`src/brand/Logo.tsx`), which renders the same SVG in the current
 text colour. The sign-in page draws the wordmark in. The wordmark in the sidebar has its
 hubs lit while the computer is up and unlit while it is parked. Loading states roll it.
-The app icon and favicon are one of its wheels on navy. `brand.test.ts` holds the checked-in files to the generator's output; after
-changing `brand.ts`, regenerate them with `pnpm --filter caboose-web test -u`, then
-render the iOS icon with `apps/ios/scripts/render-app-icon.sh`. The iOS app draws the same
-geometry natively in `apps/ios/Caboose/Brand/CabooseBrand.swift`; keep the two in step.
+The app icon and favicon are one of its wheels on navy. `brand.test.ts` holds the checked-in
+files to the generator's output; after changing `brand.ts`, regenerate them with
+`pnpm --filter caboose-web test -u`, then render the iOS icon with
+`apps/ios/scripts/render-app-icon.sh`. The iOS app draws the same geometry natively in
+`apps/ios/Caboose/Brand/CabooseBrand.swift`; keep the two in step.
 
 ## Develop
 
-From the repository root, `pnpm install`, then run a host (see `apps/host/README.md`) and:
+From the repository root, `pnpm install`, then run a host (see
+[`apps/host/README.md`](../host/README.md)) and:
 
 ```sh
 pnpm --filter caboose-web dev        # Vite on :5173, proxying /v1 to CABOOSE_API_URL (default http://127.0.0.1:7310)
@@ -77,6 +79,8 @@ pnpm --filter caboose-web test
 pnpm --filter caboose-web build      # apps/web/dist, which caboose-host serves (CABOOSE_WEB_ROOT)
 ```
 
-To check the real thing without a VM, start the host on any machine with the built
-console and open it: `GET /v1/computer` and every page work while the computer is
-parked; Wake, Park and Restart need a host with KVM and a guest image.
+The unit tests cover settings validation, the session token and API client, agent tasks,
+navigation, the catalog and file helpers, host descriptions and the brand output. To try the built console against a real host, start `caboose-host` on any
+machine and open it: sign-in, `GET /v1/computer` and every page work while the computer is
+parked; Wake, Park and Restart need a host that can run the computer (KVM and a guest image,
+or the container runtime).

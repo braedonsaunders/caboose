@@ -23,9 +23,9 @@ public struct TypingBuffer: Equatable, Sendable {
     public private(set) var text = ""
     public private(set) var selection = NSRange(location: 0, length: 0)
     public private(set) var marked: NSRange?
-    /// Off (Xpra): marked text is typed live and retyped as it changes. On (a protocol with
-    /// a preedit, like Caboose Display's text input): marked text stays local, edits leave
-    /// it out, and it reaches the remote app as one `.type` when it is committed.
+    /// Off: marked text is typed live and retyped as it changes (an app without text input).
+    /// On (an app with Caboose Display's text input, which has a preedit): marked text stays
+    /// local, edits leave it out, and it reaches the remote app as one `.type` when committed.
     public var marksAsPreedit = false
 
     public init(marksAsPreedit: Bool = false) {

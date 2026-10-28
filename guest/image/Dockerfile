@@ -1,4 +1,4 @@
-# Caboose Display (guest/display), built for the guest; installed but not enabled.
+# Caboose Display (guest/display) and the VA-API passthrough driver (guest/vaapi), built for the guest.
 FROM debian:trixie-slim AS display
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,7 +15,7 @@ RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
 
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eatmydata util-linux fdisk e2fsprogs ca-certificates curl && rm -rf /var/lib/apt/lists/*
-COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/caboose-xpra.service image/caboose-xpra-agent.service /builder/
+COPY image/build-inside.sh image/configure-guest.sh image/apps.sh /builder/
 COPY components /builder/components
 COPY files /builder/files
 COPY desktop-mcp /builder/desktop-mcp
@@ -23,6 +23,6 @@ COPY notifications /builder/notifications
 
 COPY phone /builder/phone
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /out/vaapi/caboose_drv_video.so /builder/display/
-COPY display/caboose-display-ready display/systemd/caboose-display.service /builder/display/
+COPY display/caboose-display-ready display/systemd/caboose-display.service display/systemd/caboose-display-agent.service /builder/display/
 COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /builder/agentd/
 ENTRYPOINT ["/builder/build-inside.sh"]

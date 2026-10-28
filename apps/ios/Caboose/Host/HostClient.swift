@@ -4,13 +4,8 @@ import Foundation
 struct HostClient: Sendable {
     struct Session: Decodable, Sendable {
         struct Display: Decodable, Sendable {
-            /// The display protocols the host serves; anything else is treated as Xpra.
-            static let xpra = "xpra-ws"
-            static let cabooseDisplay = "caboose-display"
-
             var path: String
             var token: String
-            var `protocol`: String
         }
         struct Computer: Decodable, Sendable {
             var name: String

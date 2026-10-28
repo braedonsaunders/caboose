@@ -22,7 +22,7 @@ it('authenticates routes and relays binary websocket messages while holding a le
   await once(upstream, 'listening')
   close.push(() => new Promise(resolve => upstream.close(() => resolve())))
   upstream.on('connection', socket => socket.on('message', (data, binary) => socket.send(data, { binary })))
-  const wake = vi.fn(async () => ({ state: 'running', display: { path: '/v1/display', token: 'display', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }))
+  const wake = vi.fn(async () => ({ state: 'running', display: { path: '/v1/display', token: 'display', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }))
   const park = vi.fn(async () => {})
   const controller: Controller = { wake, park, activeResources: () => null, hasSavedState: () => false, stats: () => ({ ok: true }), apps: async () => [], launch: async () => {}, displayUrl: `ws://127.0.0.1:${(upstream.address() as AddressInfo).port}`, agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 50, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
@@ -57,12 +57,12 @@ it('routes agent replies, approvals, files and links with the right status codes
   close.push(() => new Promise(resolve => fileServer.close(() => resolve())))
   const runs: string[][] = []
   const launch = vi.fn(async (_id: string, _path?: string) => {})
-  const guest = { run: async (command: string, args: string[]) => {
+  const guest = { ownerEnv: ['DISPLAY=:110'], run: async (command: string, args: string[]) => {
     runs.push([command, ...args])
     if (command === '/usr/bin/python3' && args[2] === 'list') return '{}'
     return args[5]?.includes('while [ -e "$target" ]') ? '/home/caboose/Downloads/a.txt' : ''
   } }
-  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
     park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch,
     displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest,
     fileService: () => ({ url: `http://127.0.0.1:${(fileServer.address() as AddressInfo).port}`, token: 'test' }) }
@@ -148,7 +148,7 @@ it('lists push devices only when push is configured, and describes the host when
   expect((await get('/v1/devices/push')).status).toBe(503)
   expect((await get('/v1/host', false)).status).toBe(401)
   const described = await (await get('/v1/host')).json()
-  expect(described).toMatchObject({ runtime: 'container', display: 'xpra-ws', gpu: 'none', image: 'caboose-computer:latest', push: false })
+  expect(described).toMatchObject({ runtime: 'container', gpu: 'none', image: 'caboose-computer:latest', push: false })
   expect(JSON.stringify(described)).not.toContain('owner-secret-token')
 })
 
@@ -159,7 +159,7 @@ it('routes Live Activity registrations and distinguishes foreground app sockets'
   const store = await ActivityStore.open(join(root, 'activities.json'))
   const send = vi.fn(async () => ({ status: 200 }))
   const activities = new ActivityService(store, send, 'example.app')
-  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'x', protocol: 'xpra-ws' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined }
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'x', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const app = createCabooseServer({ token: 'owner', settings, controller, activities })
   app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
@@ -190,7 +190,7 @@ it('serves the catalog and serializes authenticated application operations', asy
   let finish!: () => void
   const gate = new Promise<void>(resolve => { finish = resolve })
   const guest = { run: async (_command: string, args: string[]) => { if (args[2] === 'list') return '{}'; await gate; return '' } }
-  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const app = createCabooseServer({ token: 'owner', settings, controller })
   app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening'); close.push(() => app.shutdown())
@@ -218,7 +218,7 @@ it('relays phone events only to authenticated phone controls and serves staged f
     if (args.includes('read')) return 'YWJj'
     return ''
   }) }
-  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
     park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {},
     displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
@@ -256,7 +256,7 @@ it('runs only a whitelisted installed Craft app and publishes job progress', asy
     if (args[0] === '-c' && args[1]?.includes('Run one host-whitelisted')) { await gate; return JSON.stringify({ outputs: [`.caboose-jobs/${job}/output-0.png`] }) }
     return ''
   }) }
-  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'xpra-ws' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => guest }
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => guest }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const app = createCabooseServer({ token: 'owner', settings, controller })
   app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')

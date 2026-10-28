@@ -7,8 +7,8 @@ const TAP = 'caboose0'
 const HOST = '192.0.2.1'
 export const GUEST_ADDRESS = '192.0.2.2'
 
-// Bunkhouse's TAP setup is being upstreamed into appkit-desk. Keep this seam
-// small so the package's network implementation can replace it once published.
+// Host networking for the microVM: a TAP device, the guest's address, and the fence that
+// keeps it to the public internet. Commands run as root, or through `sudo -n`.
 async function privileged(command: string, args: string[]): Promise<void> {
   const executable = process.getuid?.() === 0 ? command : 'sudo'
   const arguments_ = executable === 'sudo' ? ['-n', command, ...args] : args
