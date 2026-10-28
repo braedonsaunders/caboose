@@ -37,6 +37,11 @@ chmod +x /opt/desk-agent/atspi-dump.py
 cp /tmp/package/{events,guest-agent,protocol}.js /opt/desk-agent/appkit-desk/
 sed 's@HOME=/home/agent@HOME=/home/caboose@' /tmp/desk-guest-agent.service > /etc/systemd/system/desk-guest-agent.service
 cp /tmp/desk-vsock-bridge.service /tmp/caboose-xpra.service /tmp/caboose-xpra-agent.service /etc/systemd/system/
+# Caboose Display: installed, not enabled. The host starts caboose-display.service
+# instead of caboose-xpra.service when it selects Caboose Display.
+apt-get install -y --no-install-recommends xwayland
+install -m 0755 /tmp/caboose-display/caboose-display /tmp/caboose-display/caboose-display-probe /tmp/caboose-display/caboose-display-ready /usr/local/bin/
+install -m 0644 /tmp/caboose-display/caboose-display.service /etc/systemd/system/
 systemctl disable xpra-server.socket xpra-server.service
 systemctl enable desk-guest-agent.service desk-vsock-bridge.service
 systemctl set-default multi-user.target
