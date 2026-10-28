@@ -1162,6 +1162,19 @@ specified in `guest/agentd/README.md`; in short:
   replayed history is not written again), else `session/new` with a recap of the earlier
   turns at the start of the prompt; that turn's summary says so.
 
+### Persistent routine scheduler
+
+The host's `AgentRoutines` module stores per-computer routine definitions, recurrence
+cursors and bounded run history in a private durable file. It uses AppKit recurrence for
+IANA timezone schedules. Cursor advancement and a stable task UUID with its exact launch
+snapshot are reserved atomically before waking the computer. The runtime adapter acquires
+the existing computer lease, restores and looks up that UUID, then revalidates the routine
+and profile before idempotent task admission. Paused, deleted, archived or edited records
+cannot admit stale reserved work. One outstanding run per routine is allowed; overlap
+is skipped. Missed runs use explicit skip with delivery grace or coalesce policies, with
+no archive/restore backlog. See [the scheduler contract](agent-routines.md) for the adapter,
+delayed-execution policies, persistence/recovery requirements and focused tests.
+
 ### Tasks
 
 - **Start.** `POST /v1/agent/tasks` names an agent by registry id, or uses the owner's
