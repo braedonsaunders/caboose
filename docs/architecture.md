@@ -1386,8 +1386,9 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
   most about eight times a second. The gaps resize (snapping to the presets, with haptic
   detents). The grabber at a tile's top carries it to a new column, into a stack or onto
   another tile; a tap gives the tile the keyboard, and a double tap opens the same
-  full-screen app card as Apps. The visible Full Screen button, the grabber's menu and
-  accessibility action, and ⌘⌥F also open that card. The card keeps Desktop selected
+  full-screen app card as Apps. The Desktop toolbar's trailing Full Screen menu opens
+  the focused app as that card; the grabber's menu and accessibility action, and ⌘⌥F
+  also open it. The card keeps Desktop selected
   underneath; dismissing it restores the tile layout. Only the presented card sends window
   geometry while it is up. Its measured content area, including changes to its controls,
   rotation and folding, replaces the guest display size; the complete picture fits while
@@ -1444,8 +1445,8 @@ Pinned and recent apps are kept on the phone per computer.
   and clipped to its measured content viewport; folding, rotation and tab changes report
   that viewport again. Home's Open, Pinned and Recent rows receive the measured column
   width and clip within it; recent file names and paths truncate within the same column.
-  Full Screen hides the bars and gives the desktop the whole display; a handle at the
-  top brings them back. No screen disables the vertical bar.
+  The Desktop toolbar's Full Screen menu also offers Hide Desktop Bars, giving the
+  desktop the whole display; a handle at the top brings the bars back. No screen disables the vertical bar.
 - **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. Home's
   AirPlay control remembers the AirPlay output the computer's sound last played on (from the
   audio session's route) and, on a tap, switches the session to long-form video routing and

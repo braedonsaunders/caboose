@@ -10,8 +10,10 @@ Switchyard (Desktop tab, no external display):
    stack two tiles. The complete Chrome tab strip, address bar and refresh button
    remain visible during resizing and after it settles. Thunar fits its tile.
 2. Double-tap the grabber: the same full-screen app card as Apps opens, with its
-   window menu, keyboard and close controls. Repeat with the visible Full Screen
-   button, grabber menu, VoiceOver Full Screen action and Command-Option-F.
+   window menu, keyboard and close controls. Focus a different tile, then use the
+   right-side toolbar's Full Screen menu -> Open App Full Screen: that app opens.
+   There is no separate Full Screen button centered above the tile. Repeat with
+   the grabber menu, VoiceOver Full Screen action and Command-Option-F.
    Double-tap browser content: the browser receives it. Drag the grabber and long
    press it: carrying and its menu still work. Close the card: Desktop remains
    selected and its tile layout returns, without an amber border around Chrome.
@@ -36,6 +38,9 @@ Switchyard (Desktop tab, no external display):
    The app fills the height beside the bar, with no content under either side's
    safe area. Switch App lists the current title and every open app; select one,
    then edge-swipe back. Back returns to the originating tab without closing Linux.
+   From Desktop's trailing Full Screen menu, Hide Desktop Bars expands the whole
+   desktop; its handle restores the sidebar. Card Full Screen is in the trailing
+   Window Options menu, never a centered floating button.
    On an ordinary iPhone, repeat upright and landscape with large accessibility
    text: the compact horizontal toolbar and all four icon controls stay usable,
    clear of the sensor housing, home indicator and app content.

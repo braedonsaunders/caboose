@@ -100,7 +100,19 @@ struct DesktopScreen: View {
 
     private var fullScreenItem: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { fullScreen = true }
+            Menu {
+                if model.yardActive, let window = model.window(model.yard.layout.focused) {
+                    Section(window.title.isEmpty ? "Window" : window.title) {
+                        Button("Open App Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") {
+                            model.show(windowID: window.id)
+                        }
+                    }
+                }
+                Button("Hide Desktop Bars", systemImage: "rectangle.expand.vertical") { fullScreen = true }
+            } label: {
+                Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+            .labelStyle(.iconOnly)
         }
     }
 

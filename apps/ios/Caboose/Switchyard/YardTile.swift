@@ -80,14 +80,6 @@ struct YardGrabber: View {
                 .accessibilityAction { yard.focus(window.id) }
                 .accessibilityAction(named: "Full Screen") { openCard() }
 
-            Button(action: openCard) {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .frame(width: 32, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Full Screen")
-            .accessibilityHint("Opens this window as an app card")
-
             Menu { menuContent } label: {
                 Image(systemName: "ellipsis")
                     .frame(width: 32, height: 28)
