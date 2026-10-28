@@ -60,6 +60,11 @@ final class FramePipeline: @unchecked Sendable {
     /// Runs `body` after everything queued so far; for tests.
     func flush() { queue.sync {} }
 
+    /// Calls `body` with the surface's generation once every picture queued so far is applied.
+    func whenApplied(_ body: @escaping @Sendable (UInt64) -> Void) {
+        queue.async { [surface] in body(surface.generation) }
+    }
+
     func frame(_ frame: EncodedFrame) {
         queue.async { [self] in
             let start = DispatchTime.now().uptimeNanoseconds

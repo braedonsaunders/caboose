@@ -174,7 +174,12 @@ Protocol instead of Xpra; the screens are the same. What changes:
   to its `clip`, in `z` order over the window's picture. Frames come in decode order and
   are decoded in hardware as they arrive, in the decoder's own format. A live surface is
   shown as each picture decodes; an app's own stream keeps its pictures by `seq` and shows
-  each when `video.present` says the app is showing it. HDR streams (PQ, HLG) are shown
+  each when `video.present` says the app is showing it. A region of any window that
+  updates at video rates (a canvas, a game, a player the server cannot see into) arrives
+  the same way as a `motion` stream, and the window's own picture leaves that region out
+  while it plays. When it ends, the server repaints the region into the window and then
+  destroys the stream; the stream's layer stays until the window view has shown that
+  repaint, so the stale pixels underneath never flash. HDR streams (PQ, HLG) are shown
   with the screen's extended dynamic range. Home's thumbnails leave video to the window's
   own screen.
 - **Sound.** The hello asks for Opus (`audio_decoders`), and the computer's sound arrives

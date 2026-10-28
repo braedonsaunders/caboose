@@ -33,6 +33,10 @@ public final class RemoteWindow: Identifiable {
     public internal(set) var videos: [RemoteVideo] = []
     /// Bumped whenever a video comes, goes or moves, so a view knows to lay them out again.
     public internal(set) var videoLayout = 0
+    /// Ended videos whose region the window's own picture has not repainted on screen yet, by
+    /// their container: the surface generation that repaints it. A view keeps showing each
+    /// such video until it has presented that generation, so the stale pixels under it never show.
+    public internal(set) var retiringVideos: [ObjectIdentifier: UInt64] = [:]
     public nonisolated let surface: WindowSurface
     var resizeCounter = 0
 

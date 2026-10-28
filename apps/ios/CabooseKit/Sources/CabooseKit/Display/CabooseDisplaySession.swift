@@ -102,7 +102,9 @@ public final class CabooseDisplaySession: DisplaySession {
         let clock = MediaClock()
         sound = playsAudio ? SoundPlayer(clock: clock) : nil
         let incoming = Incoming(pipelines: pipelines, videos: videos, clock: clock, sound: sound, echo: echo,
-                                makeDecoder: makeDecoder) { message in
+                                makeDecoder: makeDecoder, retire: { [weak self] id, generation in
+            Task { @MainActor in if self?.stream === stream { self?.retireVideo(id, after: generation) } }
+        }) { message in
             stream.send(DisplayFraming.encode(message.frame))
         }
         stream.open { [weak self] event in
@@ -205,7 +207,7 @@ public final class CabooseDisplaySession: DisplaySession {
                 fail(Self.describe(bye: reason))
             case .videoCreate(let fields): addVideo(fields.id)
             case .videoUpdate(let fields): updateVideo(fields)
-            case .videoDestroy(let id): removeVideo(id)
+            case .videoDestroy(let id): retireVideo(id, after: 0)
             case .frame, .tile, .videoFrame, .videoPresent, .audio, .unknown, .malformed:
                 continue // pictures were routed on the socket's queue; sound and unknown types are not used yet
             }
@@ -297,14 +299,27 @@ public final class CabooseDisplaySession: DisplaySession {
         window.videoLayout &+= 1
     }
 
-    private func removeVideo(_ id: Int) {
+    /// The server ended a video. It painted the region back into the window first, so the
+    /// video stays on screen until the window's picture `generation` has been shown (a second
+    /// at most, for a window no view is showing).
+    func retireVideo(_ id: Int, after generation: UInt64) {
         guard let video = videos.remove(id) else { return }
         video.close()
-        if let window = windows[video.window] {
-            window.videos.removeAll { $0.id == id }
-            window.videoLayout &+= 1
+        guard let window = windows[video.window] else { return }
+        window.videos.removeAll { $0.id == id }
+        let container = ObjectIdentifier(video.container)
+        if generation > 0 {
+            window.retiringVideos[container] = generation
+            Task { @MainActor [weak window] in
+                try? await Task.sleep(for: .seconds(1))
+                guard let window, window.retiringVideos.removeValue(forKey: container) != nil else { return }
+                window.videoLayout &+= 1
+            }
         }
+        window.videoLayout &+= 1
     }
+
+    private func removeVideo(_ id: Int) { retireVideo(id, after: 0) }
 
     private func apply(_ fields: WindowFields, to window: RemoteWindow) {
         if let title = fields.title { window.title = title }
@@ -550,11 +565,14 @@ private final class Incoming: @unchecked Sendable {
     private let clock: MediaClock
     private let sound: SoundPlayer?
     private let echo: EchoMeter
+    private let retire: @Sendable (Int, UInt64) -> Void
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private let send: @Sendable (ClientMessage) -> Void
 
     init(pipelines: FramePipelineRegistry, videos: VideoRegistry, clock: MediaClock, sound: SoundPlayer?, echo: EchoMeter,
-         makeDecoder: @escaping (DisplayCodec) -> PictureDecoder, send: @escaping @Sendable (ClientMessage) -> Void) {
+         makeDecoder: @escaping (DisplayCodec) -> PictureDecoder, retire: @escaping @Sendable (Int, UInt64) -> Void,
+         send: @escaping @Sendable (ClientMessage) -> Void) {
+        self.retire = retire
         self.pipelines = pipelines
         self.videos = videos
         self.clock = clock
@@ -582,6 +600,15 @@ private final class Incoming: @unchecked Sendable {
                 videos[id]?.present(seq: seq, at: pts)
             case .audio(let packet):
                 sound?.play(packet)
+            case .videoDestroy(let id):
+                // The server repainted the region into the window just before; the video goes once
+                // that picture is applied (and the view has shown it), never before.
+                guard let window = videos[id]?.window, let pipeline = pipelines[window] else {
+                    retire(id, 0)
+                    continue
+                }
+                let retire = retire
+                pipeline.whenApplied { generation in retire(id, generation) }
             case .videoCreate(let fields):
                 // Made here, like a window's pipeline, because its first picture follows at once.
                 if videos[fields.id] == nil, let video = RemoteVideo(fields, clock: clock, send: send) { videos[fields.id] = video }
