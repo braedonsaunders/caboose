@@ -45,7 +45,16 @@ struct ComputerSettingsView: View {
                 }
             }
             .confirmationDialog("Restart your computer?", isPresented: $confirmRestart, titleVisibility: .visible) {
-                Button("Restart", role: .destructive) { Task { await model.restartComputer() } }
+                Button(changes.isEmpty ? "Restart" : "Save and Restart", role: .destructive) {
+                    Task {
+                        // Restarting is how new memory and cores apply, so unsaved edits go first.
+                        if !changes.isEmpty {
+                            await save()
+                            guard saveError == nil else { return }
+                        }
+                        await model.restartComputer()
+                    }
+                }
             } message: {
                 Text("Open apps close and unsaved work in them is lost. Your files and installed apps are kept.")
             }
@@ -56,9 +65,9 @@ struct ComputerSettingsView: View {
             }
         }
         .task { await load() }
-        .onChange(of: model.computerStatus?.settings) { _, settings in
+        .onChange(of: model.computerStatus?.settings) { previous, settings in
             // Another device changed the settings; follow it unless there are unsaved edits here.
-            if let settings, changes.isEmpty { draft = settings }
+            if let settings, draft == nil || draft == previous { draft = settings }
         }
     }
 
@@ -194,10 +203,12 @@ struct ComputerSettingsView: View {
     }
 
     private func load() async {
+        let baseline = model.computerStatus?.settings
         do {
             try await model.refreshComputer()
             loadError = nil
-            if changes.isEmpty || draft == nil { draft = model.computerStatus?.settings }
+            // Keep edits in progress; otherwise show what the host has now.
+            if draft == nil || draft == baseline { draft = model.computerStatus?.settings }
         } catch {
             loadError = error.localizedDescription
         }
