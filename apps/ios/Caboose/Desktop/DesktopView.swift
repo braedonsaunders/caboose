@@ -26,7 +26,7 @@ struct DesktopView: View {
                         .transition(.opacity)
                 }
                 if let session = model.session {
-                    ForEach(desktop.stacking.compactMap { session.windows[$0] }.filter { desktop.isVisible($0.id) }) { window in
+                    ForEach(desktop.shownWindows.compactMap { session.windows[$0] }) { window in
                         DesktopWindow(window: window, desktop: desktop, icon: model.icon(for: window))
                     }
                 }
@@ -40,6 +40,8 @@ struct DesktopView: View {
                         .padding(.bottom, desktop.dockBottomInset)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
+                QuickSwitchStrip(height: desktop.workArea.height)
+                    .frame(width: desktop.size.width, height: desktop.workArea.height)
                 if desktop.showsCursor {
                     Cursor(hit: desktop.hovered, ui: desktop.ui)
                         .position(desktop.cursor)
@@ -312,6 +314,12 @@ struct DesktopKeyCommands: View {
             key("Close Window", "w") { front { $1.close($0) } }
             key("Launchpad", "a") { withAnimation(.smooth(duration: 0.3)) { desktop.launchpadOpen.toggle() } }
             key("New Terminal", .return) { model.openTerminalApp() }
+            QuickSwitchKeys(recent: { model.appWindows.map(\.id) }) {
+                QuickSwitcher.Desktop(
+                    preview: { desktop.peek = $0 },
+                    commit: { desktop.peek = nil; desktop.activate($0, session: model.session) },
+                    cancel: { desktop.peek = nil })
+            }
         }
         .frame(width: 0, height: 0)
         .opacity(0)

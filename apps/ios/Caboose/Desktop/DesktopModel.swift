@@ -190,6 +190,24 @@ final class DesktopModel {
         if minimized.remove(id) != nil { keepMinimized(id, false) }
     }
 
+    /// The window ⌥Tab has selected: shown in front of the others, even from the dock,
+    /// until the switch lands on it or is cancelled. Stacking itself does not change.
+    var peek: Int?
+
+    /// The windows to draw, back to front.
+    var shownWindows: [Int] {
+        var shown = stacking.filter { isVisible($0) && $0 != peek }
+        if let peek, stacking.contains(peek) { shown.append(peek) }
+        return shown
+    }
+
+    /// Brings a window forward and gives it the keyboard.
+    func activate(_ id: Int, session: (any DisplaySession)?) {
+        guard let session else { return }
+        raise(id)
+        focus(id, session)
+    }
+
     func minimize(_ id: Int) {
         minimized.insert(id)
         keepMinimized(id, true)

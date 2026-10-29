@@ -1584,6 +1584,16 @@ the app card, and a detached view releases its layers.
   ⌘⌥ with the arrows brings the nearest window that way forward, with ⇧ snaps the front
   window left or right, maximizes it (↑) or restores it (↓); F zooms, M minimizes, W closes,
   A opens Launchpad and Return a terminal.
+- **Quick Switch.** On both desktops, ⌥Tab (iPadOS keeps ⌘Tab for itself; Alt+Tab is the
+  Linux habit) opens a glass strip of the windows' app icons down the leading edge, most
+  recently used first, with the window before the current one selected, its app and title
+  beside it. Tab moves on, ⇧Tab back, both wrapping; the desktop shows the selection as it
+  moves (Switchyard slides to its column, the floating desktop draws it in front, even from
+  the dock) without giving it the keyboard. Letting go of ⌥, seen through Game Controller's
+  keyboard, goes to it; Escape stays. A tap on a window in the strip goes to it. The order is
+  taken when the strip opens and windows that close leave it; a strip too long for the screen
+  shrinks its icons, then shows the windows around the selection (`CabooseKit/Shell/QuickSwitch`).
+  Where ⌥ cannot be observed, each press goes straight to the selected window.
   Launchpad pages through the available apps, with its controls above the dock.
   An external display scene supplies its current size and scale to the shared desktop;
   changes reconfigure the display without transferring geometry ownership to an app card.

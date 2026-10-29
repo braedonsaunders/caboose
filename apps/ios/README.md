@@ -92,7 +92,7 @@ its offset, is replaced by a second connection, exits, and checks the closes tha
 
 ## Checking Switchyard on a device
 
-The layout and work-area geometry are unit-tested (`swift test --filter 'SwitchyardTests|DesktopGeometryTests|FreeDesktopLayoutTests|WindowTitleBarTests'`).
+The layout and work-area geometry are unit-tested (`swift test --filter 'SwitchyardTests|DesktopGeometryTests|FreeDesktopLayoutTests|WindowTitleBarTests|QuickSwitchTests'`).
 Run `sh scripts/check-desktop.sh` for the real-device checks, including external-display
 maximizing, browser controls and app-card toolbars on Duo and ordinary iPhones. The gestures
 and picture need a device with the computer awake. On the Desktop tab, with three apps open:
@@ -125,6 +125,11 @@ and picture need a device with the computer awake. On the Desktop tab, with thre
    Under a finger, Close, Minimize and Zoom show their symbols and each takes a tap at the
    bar's full height. ⌘⌥←/→/↑/↓ bring the nearest window forward; ⌘⌥⇧←/→ snap, ⌘⌥⇧↑
    maximizes, ⌘⌥⇧↓ restores.
+7. With a hardware keyboard and three windows, on Tiled, Free and a TV: ⌥Tab and let go
+   returns to the previous window. Hold ⌥ and press Tab repeatedly: the strip on the
+   leading edge moves its selection with the app and title beside it, and the desktop shows
+   each window; ⇧ goes back; letting go of ⌥ lands there; Escape stays. Tap a window in the
+   open strip. Close a window while the strip is open: it leaves the strip.
 
 ## How it renders
 

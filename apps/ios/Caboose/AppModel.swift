@@ -831,6 +831,8 @@ final class AppModel {
 
     /// Switchyard: the computer's windows tiled on the device's own screen.
     let yard = YardModel()
+    /// ⌥Tab's strip of recent windows, on whichever desktop is up.
+    let quickSwitch = QuickSwitcher()
     /// The yard is the desktop on this screen: the Desktop tab, no TV, tiled.
     var yardActive: Bool { deviceDesktopActive && deviceDesktopStyle == .tiled }
 
