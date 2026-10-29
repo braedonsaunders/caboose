@@ -1524,7 +1524,8 @@ the latest 200 job states are stored in `activities.json`.
 Caboose Display (`guest/display`, Rust and Smithay) is a headless Wayland compositor with
 Xwayland. It composites nothing: each toplevel and popup is its own stream, and the phone
 or TV places them as native surfaces. It encodes each window's changes (H.264, HEVC or AV1,
-with lossless PNG tiles for small changes and a sharpening pass once content is still),
+with lossless PNG tiles for small changes, scrolls as copies within the client's picture
+plus tiles, and a sharpening pass once content is still),
 paces frames on the client's vsync, carries clipboard text, named cursors, touch,
 text-input-v3 and the keyboard, and sends sound as Opus on the same clock as video. Video an
 application decodes through the Caboose VA-API driver reaches the client as its own

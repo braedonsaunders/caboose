@@ -72,6 +72,68 @@ import Testing
         #expect(images[1]?.width == 4)
     }
 
+    /// Rows of distinct colours: row `y` is `[y * 10, 0, 0, 255]`.
+    private func rows(_ surface: WindowSurface, width: Int, height: Int) {
+        for y in 0 ..< height { fill(surface, x: 0, y: y, width: width, height: 1, bgra: [UInt8(y * 10), 0, 0, 255]) }
+    }
+
+    /// A scroll's copy overlaps itself; it lands as if read from the picture before it, in both
+    /// directions, and leaves the rows it does not reach alone.
+    @Test func anOverlappingCopyMovesPixelsAsIfFromASnapshot() throws {
+        let surface = WindowSurface()
+        surface.resize(width: 8, height: 8)
+        rows(surface, width: 8, height: 8)
+        // Up by two rows: rows 2...7 land on 0...5; rows 6 and 7 stay.
+        surface.copy(source: CGRect(x: 0, y: 2, width: 8, height: 6), to: CGPoint(x: 0, y: 0))
+        let up = try #require(surface.snapshot())
+        for y in 0 ..< 6 { #expect(pixel(up, 3, y) == [UInt8((y + 2) * 10), 0, 0, 255], "row \(y)") }
+        #expect(pixel(up, 3, 6) == [60, 0, 0, 255] && pixel(up, 3, 7) == [70, 0, 0, 255])
+
+        rows(surface, width: 8, height: 8)
+        // Down by three rows and right by one column.
+        surface.copy(source: CGRect(x: 0, y: 0, width: 7, height: 5), to: CGPoint(x: 1, y: 3))
+        let down = try #require(surface.snapshot())
+        for y in 3 ..< 8 { #expect(pixel(down, 4, y) == [UInt8((y - 3) * 10), 0, 0, 255], "row \(y)") }
+        for y in 0 ..< 3 { #expect(pixel(down, 4, y) == [UInt8(y * 10), 0, 0, 255], "row \(y)") }
+        #expect(pixel(down, 0, 5) == [50, 0, 0, 255], "column 0 is outside the destination")
+    }
+
+    /// Copies, uploads and copies again land in the order they were made, through one
+    /// scratch texture.
+    @Test func copiesAndUploadsLandInOrder() throws {
+        let surface = WindowSurface()
+        surface.resize(width: 4, height: 8)
+        rows(surface, width: 4, height: 8)
+        surface.copy(source: CGRect(x: 0, y: 1, width: 4, height: 7), to: .zero)
+        fill(surface, x: 0, y: 7, width: 4, height: 1, bgra: [200, 0, 0, 255])
+        surface.copy(source: CGRect(x: 0, y: 1, width: 4, height: 7), to: .zero)
+        let image = try #require(surface.snapshot())
+        #expect(pixel(image, 0, 0) == [20, 0, 0, 255])
+        #expect(pixel(image, 0, 5) == [70, 0, 0, 255])
+        #expect(pixel(image, 0, 6) == [200, 0, 0, 255], "the row uploaded between the copies moved with the second")
+        #expect(pixel(image, 0, 7) == [200, 0, 0, 255])
+    }
+
+    /// Both rectangles of a copy lose the same rows and columns at the texture's edges.
+    @Test func copiesAreClippedToTheTexture() {
+        typealias Region = WindowSurface.CopyRegion
+        func region(_ source: CGRect, to destination: CGPoint) -> Region? {
+            Region(source: source, destination: destination, textureWidth: 100, textureHeight: 100)
+        }
+        #expect(region(CGRect(x: 0, y: 18, width: 100, height: 82), to: .zero)
+            == Region(sourceX: 0, sourceY: 18, destinationX: 0, destinationY: 0, width: 100, height: 82))
+        // A destination above the texture: the rows that would land outside it are not read.
+        #expect(region(CGRect(x: 0, y: 10, width: 50, height: 40), to: CGPoint(x: 0, y: -5))
+            == Region(sourceX: 0, sourceY: 15, destinationX: 0, destinationY: 0, width: 50, height: 35))
+        // A source past the right edge, and a source left of the texture.
+        #expect(region(CGRect(x: 90, y: 0, width: 20, height: 10), to: CGPoint(x: 70, y: 0))
+            == Region(sourceX: 90, sourceY: 0, destinationX: 70, destinationY: 0, width: 10, height: 10))
+        #expect(region(CGRect(x: -4, y: 0, width: 20, height: 10), to: CGPoint(x: 10, y: 0))
+            == Region(sourceX: 0, sourceY: 0, destinationX: 14, destinationY: 0, width: 16, height: 10))
+        #expect(region(CGRect(x: 0, y: 0, width: 10, height: 10), to: CGPoint(x: 100, y: 0)) == nil)
+        #expect(region(.zero, to: .zero) == nil)
+    }
+
     @Test func resizeKeepsTheOverlap() throws {
         let surface = WindowSurface()
         surface.resize(width: 4, height: 4)

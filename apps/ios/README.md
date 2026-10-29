@@ -198,7 +198,10 @@ Each Linux window is its own stream: HEVC, AV1 where the device decodes it in ha
 (A17 Pro and M3 or later), or H.264. VideoToolbox decodes into IOSurface-backed pixel
 buffers that are copied into the window's BGRA Metal texture on the GPU, with the
 encoder's padding cropped off and scaled when the window's pixels differ, so video never
-touches the CPU. Lossless PNG and WebP tiles repaint static text. The window view presents
+touches the CPU. Lossless PNG and WebP tiles repaint static text. A scroll arrives as a
+`frame.copy`, a GPU blit within the window's texture through a scratch texture (a blit
+between overlapping parts of one texture is undefined), followed by tiles for what it does
+not reproduce, such as the rows it exposes. The window view presents
 its texture into a `CAMetalLayer` only when a picture changed it.
 
 - **Acknowledgements.** Every frame is acknowledged with its decode time. A failed one is

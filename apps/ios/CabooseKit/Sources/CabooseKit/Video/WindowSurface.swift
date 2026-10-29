@@ -37,6 +37,8 @@ public final class WindowSurface: @unchecked Sendable {
     private let renderer = SurfaceRenderer.shared
     private let lock = NSLock()
     private var backing: MTLTexture?
+    /// Where copies stage their pixels (see `copy(source:to:)`); under `lock`.
+    private var scratchTexture: MTLTexture?
     public private(set) var pixelSize: CGSize = .zero
     /// Incremented by every applied draw; presenters redraw when it changes.
     public private(set) var generation: UInt64 = 0
@@ -87,6 +89,62 @@ public final class WindowSurface: @unchecked Sendable {
         blit.endEncoding()
         commands.commit()
         bump()
+    }
+
+    /// A copy within the texture, clipped to it: the `width` × `height` pixels at
+    /// (`sourceX`, `sourceY`) are written at (`destinationX`, `destinationY`).
+    struct CopyRegion: Equatable {
+        var sourceX: Int
+        var sourceY: Int
+        var destinationX: Int
+        var destinationY: Int
+        var width: Int
+        var height: Int
+    }
+
+    /// Moves the pixels of `source` so its top-left pixel lands at `destination` (a scroll,
+    /// `frame.copy`), as if read from a copy of the picture taken first. Source and
+    /// destination usually overlap, and a blit between overlapping regions of one texture is
+    /// undefined, so the pixels go through a scratch texture: two blits in separate encoders
+    /// of one command buffer on the shared queue, ordered after every write before them and
+    /// before every write after (the tiles that complete the copy).
+    public func copy(source: CGRect, to destination: CGPoint) {
+        guard let texture,
+              let region = CopyRegion(source: source, destination: destination, textureWidth: texture.width, textureHeight: texture.height),
+              let scratch = staging(width: region.width, height: region.height, like: texture),
+              let commands = renderer.queue.makeCommandBuffer()
+        else { return }
+        let size = MTLSize(width: region.width, height: region.height, depth: 1)
+        guard let out = commands.makeBlitCommandEncoder() else { return }
+        out.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: region.sourceX, y: region.sourceY, z: 0),
+                 sourceSize: size, to: scratch, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
+        out.endEncoding()
+        guard let back = commands.makeBlitCommandEncoder() else { return }
+        back.copy(from: scratch, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(), sourceSize: size,
+                  to: texture, destinationSlice: 0, destinationLevel: 0,
+                  destinationOrigin: MTLOrigin(x: region.destinationX, y: region.destinationY, z: 0))
+        back.endEncoding()
+        commands.commit()
+        bump()
+    }
+
+    /// The scratch texture for copies, at least `width` × `height`, kept between scrolls.
+    /// The shared queue runs command buffers in order, so a scroll never overwrites it while
+    /// the one before still reads it.
+    private func staging(width: Int, height: Int, like texture: MTLTexture) -> MTLTexture? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let scratchTexture, scratchTexture.width >= width, scratchTexture.height >= height,
+           scratchTexture.pixelFormat == texture.pixelFormat {
+            return scratchTexture
+        }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: texture.pixelFormat, width: max(width, scratchTexture?.width ?? 0),
+            height: max(height, scratchTexture?.height ?? 0), mipmapped: false)
+        descriptor.usage = [.shaderRead]
+        descriptor.storageMode = .private
+        scratchTexture = renderer.device.makeTexture(descriptor: descriptor)
+        return scratchTexture
     }
 
     /// Draws a decoded image (png/jpeg/webp) into a region.
@@ -289,5 +347,28 @@ public final class WindowSurface: @unchecked Sendable {
         let x1 = min(texture.width, x + width), y1 = min(texture.height, y + height)
         guard x1 > x0, y1 > y0 else { return nil }
         return MTLRegionMake2D(x0, y0, x1 - x0, y1 - y0)
+    }
+}
+
+extension WindowSurface.CopyRegion {
+    /// `source` (a whole number of pixels) moved so its top-left pixel lands at `destination`,
+    /// in a `textureWidth` × `textureHeight` texture. Both rectangles lose the same rows and
+    /// columns, so only pixels read from inside the texture are written, and only inside it;
+    /// nil when none are.
+    init?(source: CGRect, destination: CGPoint, textureWidth: Int, textureHeight: Int) {
+        let source = source.integral
+        var sx = Int(source.minX), sy = Int(source.minY), w = Int(source.width), h = Int(source.height)
+        var dx = Int(destination.x.rounded()), dy = Int(destination.y.rounded())
+        let left = max(0, -sx, -dx), top = max(0, -sy, -dy)
+        sx += left
+        dx += left
+        w -= left
+        sy += top
+        dy += top
+        h -= top
+        w = min(w, textureWidth - sx, textureWidth - dx)
+        h = min(h, textureHeight - sy, textureHeight - dy)
+        guard w > 0, h > 0 else { return nil }
+        self.init(sourceX: sx, sourceY: sy, destinationX: dx, destinationY: dy, width: w, height: h)
     }
 }

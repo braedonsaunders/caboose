@@ -303,7 +303,7 @@ public final class CabooseDisplaySession: DisplaySession {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
-                    scaledMotion: true, webview: runsGames))
+                    scaledMotion: true, webview: runsGames, copy: true))
     }
 
     // MARK: Server messages
@@ -1036,6 +1036,8 @@ private final class Incoming: @unchecked Sendable {
                 pipeline.frame(picture)
             case .tile(let tile):
                 pipelines[tile.window]?.tile(tile)
+            case .frameCopy(let copy):
+                pipelines[copy.window]?.copy(copy)
             case .videoFrame(let frame):
                 videos[frame.video]?.frame(frame)
             case .videoPresent(let id, let seq, let pts):

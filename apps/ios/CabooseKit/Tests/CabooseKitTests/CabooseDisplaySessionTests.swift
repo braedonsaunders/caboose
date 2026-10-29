@@ -117,6 +117,7 @@ final class FakeDecoder: PictureDecoder {
         #expect(sent.first?.body["decoders"]?.array?.compactMap(\.string) == ["hevc", "h264"])
         #expect(sent.first?.body["displays"]?.array?.first?["width"]?.int == 2000)
         #expect(sent.first?.body["displays"]?.array?.first?["refresh_hz"] == .double(120))
+        #expect(sent.first?.body["copy"] == .bool(true), "the client applies frame.copy")
     }
 
     @Test func byeClosesWithAReason() async throws {

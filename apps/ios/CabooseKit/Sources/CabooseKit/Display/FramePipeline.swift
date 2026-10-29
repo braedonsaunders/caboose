@@ -27,7 +27,8 @@ final class FramePipeline: @unchecked Sendable {
     private var lastKeyframeRequest: UInt64 = 0
     private var showsLivePicture = false
     /// How the window's picture maps into the window: the last frame's `crop` (picture pixels)
-    /// and `rect` (window pixels). Tiles are in picture pixels and go through the same mapping.
+    /// and `rect` (window pixels). Tiles and copies are in picture pixels and go through the
+    /// same mapping.
     private var placement: (crop: CGRect, rect: CGRect)?
 
     init(windowID: Int, width: Int, height: Int, metrics: ConnectionMetrics? = nil,
@@ -174,6 +175,19 @@ final class FramePipeline: @unchecked Sendable {
             surface.upload(image: image, into: Self.window(tile.rect, placement: placement))
             showsLivePicture = true
             DrawStatistics.shared.record("tile-\(tile.format)", failed: false)
+        }
+    }
+
+    /// A scroll (`frame.copy`): part of the window's picture moved within it, in picture
+    /// pixels through the same mapping as tiles. It is applied in order with frames and
+    /// tiles; the tiles that complete it follow it on this queue.
+    func copy(_ copy: FrameCopy) {
+        queue.async { [self] in
+            guard !isRetired else { return }
+            let source = Self.window(copy.source, placement: placement)
+            let destination = Self.window(CGRect(origin: copy.destination, size: copy.source.size), placement: placement).origin
+            surface.copy(source: source, to: destination)
+            DrawStatistics.shared.record("copy", failed: false)
         }
     }
 }

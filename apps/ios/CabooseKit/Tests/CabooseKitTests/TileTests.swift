@@ -39,6 +39,36 @@ import Testing
         return Array(data[offset ..< offset + 4]) // BGRA
     }
 
+    /// A scroll arrives as a frame.copy and the tiles that complete it: the copy moves what the
+    /// window shows, and the tile after it lands on top of the moved pixels.
+    @Test func aCopyMovesThePictureAndItsTilesLandAfterIt() throws {
+        let pipeline = FramePipeline(windowID: 7, width: 8, height: 8, makeDecoder: { _ in FakeDecoder() }) { _ in }
+        // Row y shows blue y * 10.
+        for y in 0 ..< 8 {
+            let row: [UInt8] = (0 ..< 8).flatMap { _ in [UInt8(y * 10), 0, 0, 255] }
+            row.withUnsafeBytes { pipeline.surface.upload(bgra: $0.baseAddress!, rowBytes: 32, x: 0, y: y, width: 8, height: 1) }
+        }
+        var parser = DisplayFrameParser()
+        let red = try Self.png(width: 8, height: 2, red: 255, green: 0, blue: 0)
+        let messages = try parser.append(
+            DisplayFraming.encode(DisplayFrame(type: DisplayProtocol.ServerType.frameCopy.rawValue, body: [
+                "id": 7, "src": [0, 2, 8, 6], "dst": [0, 0],
+            ]))
+            + DisplayFraming.encode(DisplayFrame(type: DisplayProtocol.ServerType.tile.rawValue, body: [
+                "id": 7, "rect": [0, 6, 8, 2], "format": "png", "data": .bytes(red),
+            ]))
+        ).map(ServerMessage.init)
+        guard messages.count == 2, case .frameCopy(let copy) = messages[0], case .tile(let tile) = messages[1] else {
+            Issue.record("\(messages)"); return
+        }
+        pipeline.copy(copy)
+        pipeline.tile(tile)
+        pipeline.flush()
+        let painted = try #require(pipeline.surface.snapshot())
+        for y in 0 ..< 6 { #expect(pixel(painted, 5, y) == [UInt8((y + 2) * 10), 0, 0, 255], "row \(y) moved up two rows") }
+        #expect(pixel(painted, 5, 6) == [0, 0, 255, 255] && pixel(painted, 5, 7) == [0, 0, 255, 255], "the exposed rows are the tile's")
+    }
+
     @Test func aTileOnAScaledWindowLandsWhereItsPixelsAreShownAndAFrameRepaintsIt() throws {
         let decoder = FakeDecoder()
         let pipeline = FramePipeline(windowID: 7, width: 16, height: 16, makeDecoder: { _ in decoder }) { _ in }
