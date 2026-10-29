@@ -1,0 +1,45 @@
+name: Check consumer installers
+
+on:
+  pull_request:
+    paths:
+      - 'apps/macos/**'
+      - 'apps/windows/**'
+      - 'deploy/macos/**'
+      - 'deploy/windows/**'
+      - 'apps/host/scripts/bundle.sh'
+      - '.github/workflows/check-installers.yml'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installers-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mac:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test --package-path apps/macos --disable-sandbox -j 2
+      - run: bash apps/macos/scripts/build.sh "$RUNNER_TEMP/menu"
+      - name: Validate packaging scripts
+        run: bash -n apps/host/scripts/bundle.sh deploy/macos/install.sh deploy/macos/package-dmg.sh
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --manifest-path apps/windows/Cargo.toml --check
+      - name: Build the embedded supervisor
+        run: |
+          cargo build --manifest-path apps/windows/Cargo.toml --bin caboose-agent --locked
+          "CABOOSE_AGENT_PATH=$((Resolve-Path apps/windows/target/debug/caboose-agent.exe).Path)" >> $env:GITHUB_ENV
+      - run: cargo test --manifest-path apps/windows/Cargo.toml --locked
+      - run: cargo check --manifest-path apps/windows/Cargo.toml --all-targets --locked
+      - run: pwsh -NoProfile -File deploy/windows/setup-wsl.tests.ps1
+      - run: pwsh -NoProfile -File deploy/windows/start-wsl.tests.ps1
