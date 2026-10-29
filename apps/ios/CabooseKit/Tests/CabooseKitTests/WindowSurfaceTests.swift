@@ -142,5 +142,15 @@ import Testing
         let image = try #require(surface.snapshot())
         #expect(image.width == 6)
         #expect(pixel(image, 3, 1) == [7, 7, 7, 255])
+        #expect(pixel(image, 5, 1) == [0, 0, 0, 0])
+    }
+
+    @Test func aNewSurfaceIsTransparentBeforeItsFirstPicture() throws {
+        let surface = WindowSurface()
+        surface.resize(width: 16, height: 16)
+        let image = try #require(surface.snapshot())
+        for y in 0 ..< 16 { for x in 0 ..< 16 {
+            #expect(pixel(image, x, y) == [0, 0, 0, 0])
+        } }
     }
 }

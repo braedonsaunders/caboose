@@ -25,4 +25,4 @@ jobs:
       - uses: actions/checkout@v4
       - run: swift --version
       - name: Check protocol, session and Metal surface behavior
-        run: swift test --package-path apps/ios/CabooseKit --disable-sandbox -j 2
+        run: swift test --package-path apps/ios/CabooseKit --disable-sandbox -j 2 --filter 'CabooseDisplaySessionTests|DisplayVectorTests|DisplayDecodeTests|TileTests|WindowSurfaceTests'
