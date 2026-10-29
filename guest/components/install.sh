@@ -60,6 +60,8 @@ if [[ "$mode" = *container ]]; then
   install -Dm755 "$root/container/caboose-session" /usr/local/bin/caboose-session
   install -Dm755 "$root/components/container-services.sh" /usr/local/libexec/caboose-components-services
 else
+  install -Dm644 "$root/components/caboose-workloads.slice" /etc/systemd/system/caboose-workloads.slice
+  install -Dm755 "$root/components/caboose-owner-run" /usr/local/libexec/caboose-owner-run
   install -Dm755 "$root/components/caboose-vsock-services.py" /opt/caboose/vsock/caboose-vsock-services.py
   install -Dm644 "$root/components/caboose-vsock-services.service" /etc/systemd/system/caboose-vsock-services.service
   mkdir -p /var/lib/systemd/linger

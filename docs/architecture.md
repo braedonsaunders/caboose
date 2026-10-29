@@ -170,6 +170,10 @@ replaces its script atomically and reuses dependencies whose exact versions alre
 An active runner finishes with the code it loaded; the next runner uses the installed code.
 The bundle does not include Caboose Display or its units, which come with the image.
 
+VM images place Caboose owner service units in `caboose-workloads.slice` and install
+`caboose-owner-run`, which enters a scope in that slice before switching to the owner.
+Other owner processes can still run outside that slice.
+
 ### Owner credential store
 
 The host holds a random nonempty per-computer keyring password in `keyring-secret` in that

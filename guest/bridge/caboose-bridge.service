@@ -5,6 +5,7 @@ After=user@1000.service caboose-display.service
 PartOf=caboose-display.service
 
 [Service]
+Slice=caboose-workloads.slice
 User=caboose
 Group=caboose
 Environment=HOME=/home/caboose
