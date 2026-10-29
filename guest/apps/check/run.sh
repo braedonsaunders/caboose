@@ -40,6 +40,7 @@ py() { python3 -c "import json, sys; d = json.load(open(sys.argv[1])); r = ($1);
 yes() { [[ $1 == yes ]]; }
 wait_file() { for _ in $(seq 1 300); do [[ -s $1 ]] && return 0; sleep 0.1; done; return 1; }
 running() { pgrep -f "^caboose-check-sleeper-$1" >/dev/null; }
+wait_exit() { for _ in $(seq 1 100); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done; return 1; }
 gone() { for _ in $(seq 1 60); do running "$1" || return 0; sleep 0.1; done; return 1; }
 sleep 1
 
@@ -81,6 +82,7 @@ check 'files round trip' yes "$(py "d['files'] == {'a': 1}" "$probe")"
 check 'files outside the home refused' yes "$(py "'must be inside' in d['outside']" "$probe")"
 check 'spawn streams output and exit' yes "$(py "d['stream'] == {'code': 0, 'signal': None, 'out': 'one\\ntwo\\n'}" "$probe")"
 check 'script navigation away refused' yes "$(py "d['stayed']" "$probe")"
+check 'classic script and UTF-8 in a page without meta charset' yes "$(py "d['frameTitle'] == 'Grüße ✓'" "$probe")"
 check 'frame request ignored' test ! -e "$files/frame-mark"
 check 'console log written' test -f "$home/.local/share/caboose/apps/runtime-check/console.log"
 check 'sleeper of load 1 running' running 1
@@ -95,8 +97,9 @@ check 'new page program running' running 2
 echo '== single instance, shutdown, restart'
 as_user python3 "$runtime" run runtime-check >>"$home/run.log" 2>&1
 check 'second launch hands over to the first' kill -0 "$app_pid"
-kill "$app_pid"
-wait "$app_pid" 2>/dev/null
+# runuser does not forward signals: TERM the runtime itself, as a session ending would.
+pkill -TERM -f '^python3 [^ ]*caboose-app run runtime-check'
+check 'quits on SIGTERM' wait_exit "$app_pid"
 app_pid=
 check 'programs end with the app' gone 2
 as_user python3 "$runtime" run runtime-check >>"$home/run.log" 2>&1 &

@@ -24,6 +24,7 @@ const remote = document.createElement('iframe')
 remote.src = 'https://example.com/'
 document.body.append(remote)
 await sleep(1500)
+results.frameTitle = window.__frameTitle ?? null
 results.ran = { inline: !!window.__inline, data: !!window.__data, blob: !!window.__blob, eval: !!window.__eval, function: !!window.__function }
 
 // The bridge.

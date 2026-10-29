@@ -463,6 +463,7 @@ def run(ident):
         headers.append('Cache-Control', 'no-store')
         headers.append('X-Content-Type-Options', 'nosniff')
         if path is None:
+            sys.stderr.write(f'{ident}: not found: {uri}\n')
             body = GLib.Bytes.new(b'Not found')
             response = WebKit2.URISchemeResponse.new(Gio.MemoryInputStream.new_from_bytes(body), body.get_size())
             response.set_status(404, 'Not Found')
@@ -477,8 +478,10 @@ def run(ident):
                 stream, length = Gio.File.new_for_path(path).read(None), os.path.getsize(path)
             response = WebKit2.URISchemeResponse.new(stream, length)
             response.set_status(200, 'OK')
-            # WebKit takes the charset from the content type.
-            response.set_content_type(kind)
+            # The response's MIME type is used as given, so it is the bare type; the charset
+            # reaches WebKit through the Content-Type header, which it parses.
+            response.set_content_type(kind.split(';')[0])
+            headers.replace('Content-Type', kind)
         response.set_http_headers(headers)
         request.finish_with_response(response)
 
