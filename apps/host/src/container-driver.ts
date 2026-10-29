@@ -22,17 +22,18 @@ const FILES_PORT = 14700
  * Where a container computer lives on the host. Slot 0 is the owner's computer and keeps the
  * names and loopback ports a host had before it ran several. Every other computer gets its own
  * container, home volume and bridge network (Docker isolates bridge networks from each other),
- * and loopback ports from 20000 + 10 × slot.
+ * and legacy loopback ports from 20000 + 10 × slot for slots 1–63. Later slots use Docker-assigned ports.
  */
 export function containerPlacement(config: Pick<Config, 'containerName' | 'containerHome'>, identity: ComputerIdentity) {
   if (identity.slot === 0) {
     return { name: config.containerName, home: config.containerHome, network: CONTAINER_NETWORK, bridge: CONTAINER_BRIDGE, ports: { display: OWNER_DISPLAY_PORT, agent: AGENT_DISPLAY_PORT, files: FILES_PORT, terminal: TERMINAL_PORT } }
   }
-  const base = 20_000 + identity.slot * 10
+  // Existing mappings are immutable. New slots ask Docker to allocate loopback ports.
+  const base = identity.slot < 64 ? 20_000 + identity.slot * 10 : 0
   return {
     name: `caboose-${identity.id}`, home: `${config.containerHome}-${identity.id}`,
     network: `caboose-${identity.slot}`, bridge: `caboose-br${identity.slot}`,
-    ports: { display: base, agent: base + 1, files: base + 2, terminal: base + 3 },
+    ports: base ? { display: base, agent: base + 1, files: base + 2, terminal: base + 3 } : { display: 0, agent: 0, files: 0, terminal: 0 },
   }
 }
 
@@ -146,7 +147,7 @@ export function createContainerController(config: Config, dependencies: { docker
       '--restart', 'no',
       '--label', `caboose.memory-mb=${size.memoryMb}`, '--label', `caboose.vcpus=${size.vcpus}`,
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
-      '-p', `127.0.0.1:${place.ports.files}:${FILES_PORT}`, '-p', `127.0.0.1:${place.ports.terminal}:${TERMINAL_PORT}`, '-p', `127.0.0.1:${place.ports.display}:${OWNER_DISPLAY_PORT}`, '-p', `127.0.0.1:${place.ports.agent}:${AGENT_DISPLAY_PORT}`,
+      ...([['files', FILES_PORT], ['terminal', TERMINAL_PORT], ['display', OWNER_DISPLAY_PORT], ['agent', AGENT_DISPLAY_PORT]] as const).flatMap(([key, port]) => ['-p', `127.0.0.1:${place.ports[key] || ''}:${port}`]),
       '-v', `${place.home}:/home/caboose`,
       // Shared runtimes: written only by the host's builder, never by a computer.
       '-v', `${DEPOT_VOLUME}:/var/lib/caboose/depot:ro`,
@@ -206,8 +207,8 @@ export function createContainerController(config: Config, dependencies: { docker
   const controller: Controller = {
     componentsMode: 'container',
     componentsWarning: () => filesPortWarning,
-    displayUrl: `ws://127.0.0.1:${place.ports.display}/`,
-    agentDisplayUrl: `ws://127.0.0.1:${place.ports.agent}/`,
+    get displayUrl() { return `ws://127.0.0.1:${place.ports.display}/` },
+    get agentDisplayUrl() { return `ws://127.0.0.1:${place.ports.agent}/` },
     fileService: () => ({ url: `http://127.0.0.1:${place.ports.files}`, token: displayToken }),
     terminalService: () => ({ url: terminalUrl, token: displayToken }),
     async ensureAgentSeat() {
@@ -235,6 +236,15 @@ export function createContainerController(config: Config, dependencies: { docker
       }
       running = true
       try {
+        if (dependencies.identity && dependencies.identity.slot >= 64) {
+          for (const [key, port] of ([['files', FILES_PORT], ['terminal', TERMINAL_PORT], ['display', OWNER_DISPLAY_PORT], ['agent', AGENT_DISPLAY_PORT]] as const)) {
+            const mapping = await docker(['port', name, `${port}/tcp`], 15_000)
+            const match = /^127\.0\.0\.1:(\d+)$/m.exec(mapping.trim())
+            const value = match ? Number(match[1]) : 0
+            if (!Number.isInteger(value) || value < 1 || value > 65535) throw new Error(`Container ${name} has no loopback mapping for ${port}`)
+            place.ports[key] = value
+          }
+        }
         const mapping = await docker(['port', name, `${FILES_PORT}/tcp`], 15_000).catch(() => '')
         filesPortWarning = mapping.split(/\r?\n/).some(line => line.trim() === `127.0.0.1:${place.ports.files}`) ? undefined : 'Recreate the container to enable Files.'
         terminalUrl = await terminalAddress()

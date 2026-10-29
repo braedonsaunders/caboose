@@ -11,6 +11,34 @@ import type { App, Controller, Session } from './server.js'
 import { guestLaunch } from './guest-apps.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
 
+/** Verify the Files service through vsock before choosing it for this guest. */
+export async function probeServiceVsock(desk: DeskHandle, timeoutMs = 2_000): Promise<boolean> {
+  let expired = false
+  let stream: Awaited<ReturnType<DeskHandle['connect']>> | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<boolean>(resolve => {
+    timer = setTimeout(() => { expired = true; stream?.destroy(); resolve(false) }, timeoutMs)
+  })
+  const probe = (async () => {
+    try {
+      stream = await desk.connect(14700, { transport: 'vsock' })
+      if (expired) { stream.destroy(); return false }
+      return await new Promise<boolean>(resolve => {
+        let header = ''
+        stream!.on('error', () => resolve(false))
+        stream!.on('close', () => resolve(false))
+        stream!.on('data', (chunk: Buffer) => {
+          header += chunk.toString('latin1')
+          if (header.includes('\n') || header.length > 1024) resolve(/^HTTP\/1\.[01] [1-5]\d\d[ \r\n]/.test(header))
+        })
+        stream!.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')
+      })
+    } catch { return false }
+  })()
+  try { return await Promise.race([probe, timeout]) }
+  finally { if (timer) clearTimeout(timer); stream?.destroy() }
+}
+
 export interface ComputerResources { memoryMb: number; vcpus: number }
 
 /** Which computer a controller drives: its id names its disk, and its slot its network. */
@@ -51,7 +79,7 @@ export function createDeskPool(config: Config, dependencies: DeskPoolDependencie
   const nativeMac = usesVirtualization(dependencies)
   const backend = dependencies.backend ?? (nativeMac
     ? createVirtualizationBackend({ helperPath: config.vmmPath, connectTimeoutMs: 120_000 })
-    : createCloudHypervisorBackend({ connectTimeoutMs: 120_000 }))
+    : createCloudHypervisorBackend({ connectTimeoutMs: 120_000, serviceVsock: true }))
   return createDeskHost({
     imageRoot: config.imageRoot, vmmPath: config.vmmPath,
     // Images may be downloaded after pool creation; don't let AppKit's eager existence
@@ -83,14 +111,16 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   const host = dependencies.desks ?? createDeskPool(config, dependencies)
   let desk: DeskHandle | undefined
   let heartbeat: ReturnType<typeof setInterval> | undefined
+  let serviceVsock = false
   const relays = new Map<number, Awaited<ReturnType<typeof listenDeskPort>>>()
   async function closeRelays(): Promise<void> {
     const open = [...relays.values()]
     relays.clear()
+    serviceVsock = false
     await Promise.all(open.map(relay => relay.close()))
   }
   function endpoint(port: number, scheme: 'http' | 'ws'): string {
-    if (!nativeMac) return `${scheme}://${address.guest}:${port}${scheme === 'ws' ? '/' : ''}`
+    if (!nativeMac && !serviceVsock) return `${scheme}://${address.guest}:${port}${scheme === 'ws' ? '/' : ''}`
     const relay = relays.get(port)
     if (!relay) throw new Error('Computer is not running')
     return `${scheme}://${relay.host}:${relay.port}${scheme === 'ws' ? '/' : ''}`
@@ -169,7 +199,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       if (!nativeMac) await (dependencies.network ?? (() => ensureNetwork(slot)))()
       const restoring = existsSync(snapshotPath)
       const wasResident = Boolean(desk)
-      desk = await host.start({ deskId: id, baseImage: join(config.imageRoot, 'base.raw'), overlayPath, memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS, ...(nativeMac ? {} : { network: { tapDevice: address.tap } }) })
+      desk = await host.start({ deskId: id, baseImage: join(config.imageRoot, 'base.raw'), overlayPath, memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS, ...(nativeMac ? {} : { network: { tapDevice: address.tap, guestAddress: address.guest } }) })
       try {
         if (restoring && host.stats().lastError?.includes('could not resume from its snapshot')) {
           throw new Error(host.stats().lastError ?? 'Snapshot restore failed')
@@ -179,9 +209,10 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
           await writePrivateJson(resourcesPath, resources)
         }
         await configureGuest(desk, slot, nativeMac ? { host: '10.0.2.2', guest: '10.0.2.15', prefix: 24 } : undefined)
-        if (nativeMac && !relays.size) {
+        if (!nativeMac && !relays.size) serviceVsock = await probeServiceVsock(desk)
+        if ((nativeMac || serviceVsock) && !relays.size) {
           for (const port of [OWNER_DISPLAY_PORT, AGENT_DISPLAY_PORT, 14700, TERMINAL_PORT]) {
-            relays.set(port, await listenDeskPort(desk, port))
+            relays.set(port, await listenDeskPort(nativeMac ? desk : { connect: (target) => desk!.connect(target, { transport: 'vsock' }) }, port))
           }
         }
         displayToken = randomBytes(32).toString('hex')

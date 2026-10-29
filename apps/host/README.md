@@ -272,8 +272,9 @@ The owner token manages every computer through `/v1/computers` (list, make, dele
 reaches any one under `/v1/computers/<id>/…`; the routes without an id serve the owner's
 computer, as they always have. Each computer has its own disk, settings, lifecycle, agents,
 catalog, notifications and phones, and its own network slot: a microVM on slot *n* gets TAP
-`caboose<n>` and `192.0.2.(4n+2)`, a container its own container, home, bridge network and
-loopback ports from 20000 + 10 × *n*. The owner's computer is slot 0 with the names and
+`caboose<n>` and a persistent /30: slots 0–63 use `192.0.2.0/24`, later slots use
+`198.18.0.0/15`. A container has its own home and bridge; slots 1–63 retain loopback ports
+from 20000 + 10 × *n*, and later slots use Docker-assigned loopback ports. The owner's computer is slot 0 with the names and
 addresses below, and cannot be deleted. Deleting another computer removes its disk, files,
 network and phones.
 

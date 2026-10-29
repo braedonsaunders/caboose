@@ -10,13 +10,17 @@ const exec = promisify(execFile)
  * computer, so a host from before several computers keeps `caboose0`, 192.0.2.1 and .2.
  */
 export const COMPUTERS_SUBNET = '192.0.2.0/24'
-export const MAX_SLOTS = 64
+export const EXPANDED_SUBNET = '198.18.0.0/15'
+export const MAX_SLOTS = 64 + 32768
 
 export interface NetworkSlot { tap: string; host: string; guest: string }
 
 export function networkSlot(slot: number): NetworkSlot {
   if (!Number.isSafeInteger(slot) || slot < 0 || slot >= MAX_SLOTS) throw new Error(`Network slot must be an integer from 0 to ${MAX_SLOTS - 1}`)
-  return { tap: `caboose${slot}`, host: `192.0.2.${slot * 4 + 1}`, guest: `192.0.2.${slot * 4 + 2}` }
+  if (slot < 64) return { tap: `caboose${slot}`, host: `192.0.2.${slot * 4 + 1}`, guest: `192.0.2.${slot * 4 + 2}` }
+  const offset = (slot - 64) * 4
+  const prefix = `198.${18 + Math.floor(offset / 65536)}.${Math.floor(offset / 256) % 256}`
+  return { tap: `caboose${slot}`, host: `${prefix}.${offset % 256 + 1}`, guest: `${prefix}.${offset % 256 + 2}` }
 }
 
 // Host networking for the microVMs: a TAP device per computer, its guest's address, and the
@@ -59,6 +63,7 @@ export function fenceRules(guestLan: boolean): { input: string[][]; forward: str
       established,
       // Other computers are other people's machines: allowing the LAN never opens them.
       reject(COMPUTERS_SUBNET),
+      reject(EXPANDED_SUBNET),
       ...(guestLan ? [] : FENCED_RANGES.map(reject)),
       ['-j', 'RETURN'],
     ],
@@ -72,6 +77,12 @@ export function fenceRules(guestLan: boolean): { input: string[][]; forward: str
  */
 async function ownChain(chain: string, from: 'INPUT' | 'FORWARD' | 'DOCKER-USER', rules: string[][], device: string): Promise<void> {
   const created = await exists('iptables', ['-N', chain])
+  // Add the expanded inter-computer fence before checking existing rules; never
+  // flush a live chain while migrating from the legacy allow-LAN policy.
+  const expanded = ['-d', EXPANDED_SUBNET, '-j', 'REJECT', '--reject-with', 'icmp-net-prohibited']
+  if (!created && from !== 'INPUT' && !await exists('iptables', ['-C', chain, ...expanded])) {
+    await privileged('iptables', ['-I', chain, '2', ...expanded])
+  }
   let current = !created
   if (current) {
     for (const args of rules) if (!await exists('iptables', ['-C', chain, ...args])) { current = false; break }

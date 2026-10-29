@@ -188,6 +188,22 @@ describe('container settings and restart', () => {
 })
 
 describe('container network fence', () => {
+  it('uses Docker-assigned loopback ports for new slots and rediscovers them after park', async () => {
+    const fake = fakeDocker('missing')
+    const docker: Docker = async (args, timeout) => {
+      if (args[0] === 'port') return `127.0.0.1:${({ '14600/tcp': 41000, '14601/tcp': 41001, '14700/tcp': 41002, '14701/tcp': 41003 } as Record<string, number>)[args[2]!]}\n`
+      return fake.docker(args, timeout)
+    }
+    const controller = createContainerController(settings, { identity: { id: 'c-0123456789', slot: 64 }, docker, exists: () => false, fence: async () => {} })
+    await controller.wake()
+    expect(fake.calls.find(call => call[0] === 'run')).toEqual(expect.arrayContaining(['127.0.0.1::14600', '127.0.0.1::14700']))
+    expect(controller.displayUrl).toBe('ws://127.0.0.1:41000/')
+    expect(controller.fileService?.().url).toBe('http://127.0.0.1:41002')
+    await controller.park()
+    await controller.wake()
+    expect(controller.terminalService?.().url).toBe('http://127.0.0.1:41003')
+  })
+
   it('puts the computer on its own fenced network with public DNS before it starts', async () => {
     const fake = fakeDocker('missing')
     const fenced: string[] = []

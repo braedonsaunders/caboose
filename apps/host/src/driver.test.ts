@@ -170,3 +170,47 @@ it('runs another computer on its own disk and network, and deletes both with it'
     expect(controller.activeResources()).toBeNull()
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+it('probes Files over vsock and falls back when the guest does not support it', async () => {
+  const { Duplex } = await import('node:stream')
+  const { probeServiceVsock } = await import('./driver.js')
+  const calls: unknown[] = []
+  let socket: InstanceType<typeof Duplex> | undefined
+  const desk = { connect: async (port: number, options: unknown) => {
+    calls.push([port, options])
+    socket = new Duplex({ read() {}, write(_chunk, _encoding, done) { this.push('HTTP/1.1 401 Unauthorized\r\n\r\n'); done() } })
+    return socket
+  } } as unknown as import('@braedonsaunders/appkit-desk').DeskHandle
+  expect(await probeServiceVsock(desk)).toBe(true)
+  expect(calls).toEqual([[14700, { transport: 'vsock' }]])
+  expect(socket?.destroyed).toBe(true)
+  const old = { connect: async () => { throw new Error('unavailable') } } as unknown as import('@braedonsaunders/appkit-desk').DeskHandle
+  expect(await probeServiceVsock(old)).toBe(false)
+  const hanging = { connect: async () => new Promise(() => {}) } as unknown as import('@braedonsaunders/appkit-desk').DeskHandle
+  expect(await probeServiceVsock(hanging, 10)).toBe(false)
+})
+
+it('selects vsock for a guest that answers the service probe and closes relays on park', async () => {
+  const { Duplex } = await import('node:stream')
+  const root = await mkdtemp(join(tmpdir(), 'caboose-vsock-'))
+  try {
+    for (const file of ['base.raw', 'vmlinux', 'initrd']) await writeFile(join(root, file), '')
+    const ports: number[] = []
+    const backend: DeskBackend = { async boot(plan) { return {
+      deskId: plan.deskId,
+      async request(command) { return { exitCode: 0, signal: null, stdout: command.op === 'exec' && command.command === '/bin/cat' ? DISPLAY_ENV : '', stderr: '', truncated: false } },
+      connect: async port => { ports.push(port); return new Duplex({ read() {}, write(_chunk, _encoding, done) { this.push('HTTP/1.1 401 Unauthorized\r\n\r\n'); done() } }) },
+      subscribe: () => () => {}, shutdown: async () => {}, park: async () => {},
+    } } }
+    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false }
+    const controller = createController(config, { backend, network: async () => {}, deviceExists: () => true,
+      snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} } })
+    await controller.wake()
+    expect(ports).toEqual([14700])
+    expect(controller.displayUrl).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/$/)
+    const endpoint = controller.displayUrl
+    await controller.park()
+    expect(controller.displayUrl).toBe('ws://192.0.2.2:14600/')
+    await expect(fetch(endpoint.replace('ws:', 'http:'))).rejects.toThrow()
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
