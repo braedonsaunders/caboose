@@ -133,8 +133,79 @@ def _appliance_directory(work, prefix, guard):
             shutil.rmtree(directory)
 
 
+# Read-only phases never need to grow a disk-sized COW file. Enforce a fixed
+# per-file limit as well as reserving space for cache/COW/log/transfer artifacts.
+_READONLY_LIMIT = 4 * 1024 ** 3
+_MAX_TREE_BYTES = 1024 ** 4
+_MAX_TREE_ENTRIES = 1_000_000
+# Xattrs are measured separately (aggregate xattrs need not fit in one block).
+# Per pathname allow 16 KiB for names, inodes, block rounding and directories,
+# in addition to the directory's measured size. Hardlinks count repeatedly.
+_ENTRY_ALLOWANCE = 16 * 1024
+_MAX_XATTR_DUMP = 16 * 1024 ** 2
+
+
+def _pack_preflight():
+    return ('set -eu; for p in usr opt tmp; do test -d /sysroot/$p && test ! -L /sysroot/$p || exit 1; done; '
+            'for p in var var/lib var/lib/caboose; do test ! -L /sysroot/$p || exit 1; done; '
+            'test ! -e /sysroot/var/lib/caboose/system-overlay; test ! -L /sysroot/var/lib/caboose/system-overlay; '
+            'test ! -e /sysroot/.caboose-system; test ! -L /sysroot/.caboose-system')
+
+
+def _measurement_script():
+    # No filenames cross the protocol. find does not follow symlinks, and walks
+    # subvolumes too, just as cp -a does. A failed/truncated find cannot produce
+    # a successful measurement (do not hide its exit status behind a pipeline).
+    return (_pack_preflight() + '; '
+            '(ulimit -f 32768; find /sysroot/usr /sysroot/opt -printf "%s\\n" > /tmp/caboose-sizes); '
+            'export LD_LIBRARY_PATH=/tmp/caboose-libs; '
+            '(ulimit -f 32768; /tmp/caboose-getfattr --absolute-names -R -P -h -d -m - -e hex '
+            '/sysroot/usr /sysroot/opt > /tmp/caboose-xattrs); '
+            'xattrs=$(wc -c < /tmp/caboose-xattrs); test "$xattrs" -le 16777216; '
+            "/tmp/caboose-awk -v xattrs=\"$xattrs\" 'BEGIN { total=0; count=0; bad=0 } "
+            '$0 !~ /^[0-9]+$/ { bad=1; exit 1 } '
+            '{ total += $1; count++; if (total > 1099511627776 || count > 1000000) { bad=1; exit 1 } } '
+            'END { if (bad || count < 2) exit 1; printf "CABOOSE_TREE_V1 %.0f %.0f %.0f\\n", total, count, xattrs }'
+            "' /tmp/caboose-sizes")
+
+
+def _measured_scratch(result):
+    match = re.fullmatch(r'CABOOSE_TREE_V1 ([0-9]{1,13}) ([0-9]{1,7}) ([0-9]{1,8})\n{1,2}', result)
+    if not match:
+        raise ApplianceError('Invalid appliance tree measurement')
+    logical, entries, xattrs = map(int, match.groups())
+    if (logical > _MAX_TREE_BYTES or not 2 <= entries <= _MAX_TREE_ENTRIES
+            or xattrs > _MAX_XATTR_DUMP):
+        raise ApplianceError('Appliance tree measurement exceeds limits')
+    # One expanded staging tree plus an uncompressed-sized EROFS image, with
+    # generous per-entry metadata in both and fixed filesystem/tool headroom.
+    scratch = 2 * (logical + xattrs + entries * _ENTRY_ALLOWANCE) + _READONLY_LIMIT
+    if scratch > _MAX_TREE_BYTES:
+        raise ApplianceError('Measured appliance scratch exceeds limits')
+    return scratch
+
+
+def _measure_tree(clone, work, fish, awk, getfattr, libs, timeout, guard):
+    _require_space(work, 4 * _READONLY_LIMIT)
+    with _appliance_directory(work, '.migration-measure-', guard) as directory:
+        args = _disk_commands(fish, clone, True) + [
+            'debug', 'sh', 'mkdir -p /tmp/caboose-libs', ':',
+            'debug-upload', str(awk), '/tmp/caboose-awk', '493', ':',
+            'debug-upload', str(getfattr), '/tmp/caboose-getfattr', '493', ':']
+        for name, path in sorted(libs.items()):
+            args += ['debug-upload', str(path), f'/tmp/caboose-libs/{name}', '493', ':']
+        script = directory / 'measure.sh'
+        script.write_text('#!/bin/sh\n' + _measurement_script() + '\n')
+        args += ['debug-upload', str(script), '/tmp/caboose-measure.sh', '493', ':',
+                 'debug', 'sh', 'sh /tmp/caboose-measure.sh', ':', 'shutdown']
+        result = _guestfish(args, _environment(directory), directory / 'measure.log',
+                            min(timeout, 600), _READONLY_LIMIT, guard)
+        return _measured_scratch(result)
+
+
 def pack_system_image(clone, output, work, *, guestfish='/usr/bin/guestfish',
-                      mkfs='/usr/bin/mkfs.erofs', fsck='/usr/bin/fsck.erofs', awk='/usr/bin/awk', timeout=3600, guard=None):
+                      mkfs='/usr/bin/mkfs.erofs', fsck='/usr/bin/fsck.erofs', awk='/usr/bin/awk',
+                      getfattr='/usr/bin/getfattr', timeout=3600, guard=None):
     """Pack usr and opt from a read-only clone. This function never runs guest code."""
     clone = Path(clone)
     if clone.is_symlink():
@@ -149,25 +220,36 @@ def pack_system_image(clone, output, work, *, guestfish='/usr/bin/guestfish',
         raise ApplianceError('Output must be a new path in the private work directory')
     if not clone.is_file() or clone.is_symlink():
         raise ApplianceError('Clone must be a regular file')
-    size = clone.stat().st_size
+    identity = clone.stat()
+    source_identity = (identity.st_dev, identity.st_ino, identity.st_size, identity.st_mtime_ns, identity.st_ctime_ns)
+    size = identity.st_size
     if size <= 0 or size > 1024 ** 4:
         raise ApplianceError('Unsupported clone size')
-    scratch_size = size * 2 + 1024 ** 3
-    space = os.statvfs(work)
-    # Account for scratch, transfer, log, and the read-only disk's COW overlay.
-    if space.f_bavail * space.f_frsize < scratch_size * 4 + 1024 ** 3:
-        raise ApplianceError('Insufficient free space for bounded appliance output')
+    _require_space(work, 4 * _READONLY_LIMIT)
     trusted_executable('/usr/bin/prlimit')
     fish = trusted_executable(guestfish)
     mkfs = trusted_executable(mkfs)
     fsck = trusted_executable(fsck)
     awk = trusted_executable(awk)
+    getfattr = trusted_executable(getfattr)
     libs = dependencies(mkfs)
-    for tool in (fsck, awk):
+    for tool in (fsck, awk, getfattr):
         for name, path in dependencies(tool).items():
             if name in libs and libs[name] != path:
                 raise ApplianceError(f'Conflicting tool library: {name}')
             libs[name] = path
+    if not _guard_quiescent(guard):
+        raise ApplianceError('Source measurement requires a quiescent appliance guard')
+    scratch_size = _measure_tree(clone, work, fish, awk, getfattr, libs, timeout, guard)
+    measured = clone.stat()
+    if (clone.is_symlink() or source_identity !=
+            (measured.st_dev, measured.st_ino, measured.st_size, measured.st_mtime_ns, measured.st_ctime_ns)):
+        raise ApplianceError('Source clone changed during tree measurement')
+    if not _guard_quiescent(guard):
+        raise ApplianceError('Source measurement did not leave a quiescent appliance guard')
+    # Scratch, transferred output, bounded log and read-only COW/cache files
+    # coexist. Keep the conservative four-artifact reservation and file caps.
+    _require_space(work, scratch_size * 4 + _READONLY_LIMIT)
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(('LIBGUESTFS_', 'LD_')) and k not in ('TMPDIR', 'TMP', 'TEMP')}
     env['LIBGUESTFS_BACKEND'] = 'direct'
@@ -182,7 +264,7 @@ def pack_system_image(clone, output, work, *, guestfish='/usr/bin/guestfish',
                     'add-drive', str(scratch), 'format:raw', ':',
                     'set-network', 'false', ':', 'set-memsize', '1024', ':', 'run', ':',
                     'debug', 'sh', _mount_root_script(True), ':',
-                    'debug', 'sh', 'set -eu; for p in usr opt tmp; do test -d /sysroot/$p && test ! -L /sysroot/$p || exit 1; done; for p in var var/lib var/lib/caboose; do test ! -L /sysroot/$p || exit 1; done; test ! -e /sysroot/var/lib/caboose/system-overlay; test ! -L /sysroot/var/lib/caboose/system-overlay; test ! -e /sysroot/.caboose-system; test ! -L /sysroot/.caboose-system', ':',
+                    'debug', 'sh', _pack_preflight(), ':',
                     'mkfs', 'ext4', '/dev/sdb', ':', 'mount', '/dev/sdb', '/tmp', ':' , 'debug', 'sh', 'mkdir -p /tmp/caboose-libs', ':',
                     'debug-upload', str(mkfs), '/tmp/caboose-mkfs', '493', ':',
                     'debug-upload', str(fsck), '/tmp/caboose-fsck', '493', ':',
@@ -192,7 +274,7 @@ def pack_system_image(clone, output, work, *, guestfish='/usr/bin/guestfish',
         # Refuse links crossing the packed trees: an EROFS lower cannot share
         # an inode with files left on the writable root. Check within the VM.
         script = ('set -eu; export LD_LIBRARY_PATH=/tmp/caboose-libs; '
-                  'find /sysroot/usr /sysroot/opt -xdev ! -type d -links +1 -printf "%D:%i %n\\n" > /tmp/caboose-links; '
+                  'find /sysroot/usr /sysroot/opt ! -type d -links +1 -printf "%D:%i %n\\n" > /tmp/caboose-links; '
                   'sort /tmp/caboose-links > /tmp/caboose-links-sorted; '
                   "/tmp/caboose-awk '{ count[$1]++; links[$1]=$2 } END { for (i in count) if (count[i] != links[i]) exit 1 }' /tmp/caboose-links-sorted; "
                   'mkdir /sysroot/tmp/stage; '
@@ -237,7 +319,7 @@ def _environment(directory):
 def _mount_root_script(readonly):
     """Use appliance tools only, with filesystem-specific replay/compression options."""
     ext4 = 'ro,noload' if readonly else 'rw'
-    btrfs = 'ro,nologreplay' if readonly else 'rw,compress-force=zstd:1'
+    btrfs = 'ro,rescue=nologreplay' if readonly else 'rw,compress-force=zstd:1'
     return ('set -eu; fs=$(blkid -p -s TYPE -o value /dev/sda3); '
             f'case "$fs" in ext4) opts={ext4};; btrfs) opts={btrfs};; '
             '*) echo "unsupported root filesystem" >&2; exit 1;; esac; '
@@ -273,7 +355,7 @@ def matching_kernel(clone, kernel, work, *, guestfish='/usr/bin/guestfish', time
     size = clone.stat().st_size
     if size <= 0 or size > 1024 ** 4:
         raise ApplianceError('Unsupported clone size')
-    _require_space(work, 2 * size + 2 * 1024 ** 3)
+    _require_space(work, 4 * _READONLY_LIMIT)
     digest = hashlib.sha256()
     with kernel.open('rb') as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b''):
@@ -299,7 +381,7 @@ def matching_kernel(clone, kernel, work, *, guestfish='/usr/bin/guestfish', time
             'debug-upload', str(script_file), '/tmp/caboose-kernel.sh', '493', ':',
             'debug', 'sh', 'sh /tmp/caboose-kernel.sh', ':', 'shutdown']
         result = _guestfish(args, _environment(directory), directory / 'appliance.log', timeout,
-                            clone.stat().st_size + 1024 ** 3, guard)
+                            _READONLY_LIMIT, guard)
     matches = []
     for line in result.splitlines():
         match = re.fullmatch(r'([0-9a-f]{64})  /sysroot/boot/vmlinuz-([0-9][A-Za-z0-9._+~-]*)', line)

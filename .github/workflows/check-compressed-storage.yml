@@ -26,7 +26,7 @@ jobs:
       - name: Install disposable storage check tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y btrfs-progs erofs-utils xfsprogs libguestfs-tools python3-guestfs
+          sudo apt-get install -y btrfs-progs erofs-utils xfsprogs libguestfs-tools python3-guestfs attr
       - name: Check compression and loop discard
         run: |
           sudo timeout --kill-after=10s 180s guest/image/check-compressed-storage.sh
@@ -48,4 +48,6 @@ jobs:
           mkdir "$work/mount"
           loop=$(sudo losetup --find --show "$work/xfs.raw")
           sudo mount "$loop" "$work/mount"
-          sudo apps/host/scripts/check-parked-appliance.sh "$work/mount"
+          sudo bash apps/host/scripts/check-parked-appliance.sh "$work/mount"
+      - name: Check measured migration packing through real appliances
+        run: sudo /usr/bin/python3 apps/host/scripts/tests/check-compressed-migration.py --work "$RUNNER_TEMP"

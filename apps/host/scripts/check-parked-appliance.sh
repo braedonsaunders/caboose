@@ -30,9 +30,9 @@ for filesystem in ext4 btrfs; do
   # Exercise the production RPC reader, including filesystem detection and
   # explicit no-replay mount options, rather than guestfish's default mount.
   printf '%s\n' '{"id":1,"command":"pread","args":["/check","0","20"]}' |
-    timeout --kill-after=10s 180s python3 "$here/../src/parked-files-appliance.py" \
+    timeout --kill-after=10s 180s /usr/bin/python3 "$here/../src/parked-files-appliance.py" \
       "$work/$filesystem.clone.raw" > "$work/$filesystem.result"
-  python3 - "$work/$filesystem.result" "$work/files/check" <<'CHECK'
+  /usr/bin/python3 - "$work/$filesystem.result" "$work/files/check" <<'CHECK'
 import base64
 import json
 from pathlib import Path
