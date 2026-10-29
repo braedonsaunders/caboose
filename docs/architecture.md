@@ -1795,6 +1795,14 @@ repeated lines removed and clipped to a few lines, opens on tap.
 | Terminal | A native terminal, present when the app is built with it |
 
 `caboose://home`, `desktop`, `agents`, `apps` and `terminal` select a tab;
+Home's live window tiles open on tap and offer Close in their context menu and VoiceOver
+custom actions. An upward drag shows close progress and closes on release after 64 points
+with vertical travel exceeding horizontal travel by a factor of 1.5. Horizontal and
+downward starts yield to scrolling; short or sideways releases cancel. The gesture sends
+one normal display close request, leaving unsaved-change handling to the application and
+keeping the tile until the server removes the window. Releasing a close drag does not
+open the window. A changed session, connection generation or window cancels the drag.
+
 `caboose://task/<id>` opens a task and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 

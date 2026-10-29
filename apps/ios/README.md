@@ -342,6 +342,15 @@ parks, kept in Caches per computer, and forgotten once the running computer has 
 They are pictures only: a tap turns the computer on, and the live windows take their place
 once it is back. The toolbar has AirPlay beside the Computer pair.
 
+Swipe a live preview upward to close it. The preview lifts with the finger, shows its
+progress, and gives a light haptic at “Release to close.” Release after 64 points of
+predominantly upward travel to send one normal close request. Short, downward or sideways
+swipes cancel; horizontal scrolling, tap to open, context-menu Close and VoiceOver's Close
+action remain available. Unsaved-change dialogs belong to the application, and its tile
+stays until the window closes. Reduce Motion keeps the directional cue without moving or
+scaling the preview.
+
+
 Ask opens windows, apps and the home's files by name (every word must start a word of the
 name, ignoring case and accents; windows first, then apps, then files) and, with an agent
 available, hands what was typed to the default agent as a new chat. Return takes the first
@@ -447,6 +456,17 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   and a tap opens each full screen. Background the app, then park from Computer settings on
   return: the strip shows the dimmed pictures; tap one and the computer wakes, and the live
   windows replace them. Close every app and leave: the pictures do not come back.
+  On disposable test windows, scroll the strip left and right from a tile, tap to open,
+  and long-press for Open/Close. Swipe down, diagonally sideways, and up less than 64 points:
+  each cancels without closing or opening. Swipe up beyond the cue, retreat, then release:
+  it cancels. Release above the threshold: exactly one close request, no navigation, and
+  the tile remains until the server removes it. Repeat with a disposable unsaved document:
+  the app asks to save; use Cancel and verify the tile can be opened and swiped again.
+  Disconnect/reconnect, switch computers, or remove the window during a drag: release
+  must not affect the replacement window. Check VoiceOver's Close action, Reduce Motion,
+  and cancellation by an interrupted touch. Run these checks only on a designated test
+  session; never discard an owner's unsaved document. Pure threshold and one-shot tests:
+  `cd apps/ios/CabooseKit && swift test --filter UpwardDismissalTests`.
   Start an agent task, leave the app until it ends, and come back: it is under Since You
   Left. In Ask, type part of an app's, window's and file's name, open each, and send a
   request to the default agent.

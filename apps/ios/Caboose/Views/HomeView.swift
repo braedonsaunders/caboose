@@ -1,5 +1,6 @@
 import CabooseKit
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// The app's front door, Today: the computer and what it is doing; its windows, live, or as
@@ -297,6 +298,12 @@ struct OnScreenStrip: View {
 struct LiveWindowTile: View {
     static let cornerRadius: CGFloat = 18
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dismissal = UpwardDismissal()
+    @State private var dragTarget: CloseTarget?
+    @State private var progress: CGFloat = 0
+    @State private var panInFlight = false
+    @State private var suppressOpenUntil = Date.distantPast
     let window: RemoteWindow
     let height: CGFloat
     var width: CGFloat? = nil
@@ -304,7 +311,7 @@ struct LiveWindowTile: View {
     var body: some View {
         let size = HomeToday.previewSize(window: window.frame.size, height: height, maximumWidth: width ?? 320)
         let previewWidth = size.width
-        Button { model.show(windowID: window.id) } label: {
+        Button(action: openWindow) label: {
             VStack(alignment: .leading, spacing: 8) {
                 RemoteWindowPreview(window: window, width: previewWidth)
                     .frame(width: previewWidth, height: size.height, alignment: .topLeading)
@@ -315,15 +322,135 @@ struct LiveWindowTile: View {
                     .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
                 TileLabel(icon: model.icon(for: window), app: model.appName(for: window), title: window.title, width: size.width)
             }
+            .scaleEffect(reduceMotion ? 1 : 1 - progress * 0.035)
+            .offset(y: reduceMotion ? 0 : -progress * 24)
+            .overlay(alignment: .bottom) {
+                if progress > 0 {
+                    Label(progress == 1 ? "Release to close" : "Swipe up to close",
+                          systemImage: progress == 1 ? "xmark.circle.fill" : "arrow.up")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(progress == 1 ? Color.red : Color.black.opacity(0.85), in: Capsule())
+                        .offset(y: -24)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
             .contentShape(.rect)
         }
         .buttonStyle(TilePress())
+        .gesture(WindowClosePan { state, translation in
+            switch state {
+            case .began:
+                panInFlight = true
+                suppressOpenUntil = .distantFuture
+                guard closeTarget.ready else { return }
+                dragTarget = closeTarget
+                dismissal.begin(translation)
+                updateFeedback(translation)
+            case .changed:
+                guard dragTarget == closeTarget else { cancelDrag(); return }
+                updateFeedback(translation)
+            case .ended:
+                let target = dragTarget
+                let shouldClose = dismissal.finish(translation)
+                cancelDrag(endTouch: true)
+                if shouldClose, target == closeTarget { closeWindow() }
+            case .cancelled, .failed:
+                cancelDrag(endTouch: true)
+            default: break
+            }
+        })
+        .onChange(of: closeTarget) { _, _ in cancelDrag() }
+        .onDisappear { cancelDrag(endTouch: true) }
         .contextMenu {
-            Button("Open", systemImage: "arrow.up.left.and.arrow.down.right") { model.show(windowID: window.id) }
-            Button("Close", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
+            Button("Open", systemImage: "arrow.up.left.and.arrow.down.right") { openWindow() }
+            Button("Close", systemImage: "xmark", role: .destructive) { closeWindow() }
         }
         .accessibilityLabel("\(model.appName(for: window)), \(window.title)")
-        .accessibilityHint("Opens full screen")
+        .accessibilityHint("Opens full screen. Swipe up to close.")
+        .accessibilityAction(named: "Close") { closeWindow() }
+    }
+
+    // IDs can be reused after a reconnect. Bind a drag to the actual session and window,
+    // plus its connection generation, rather than sending to whichever ID exists later.
+    private struct CloseTarget: Equatable {
+        var session: ObjectIdentifier?
+        var window: ObjectIdentifier
+        var epoch: String?
+        var announcements: Int
+        var connections: Int?
+        var ready: Bool
+    }
+
+    private var closeTarget: CloseTarget {
+        let session = model.session
+        return CloseTarget(session: session.map { ObjectIdentifier($0) },
+                           window: ObjectIdentifier(window), epoch: session?.epoch,
+                           announcements: session?.windowsAnnounced ?? 0,
+                           connections: (session as? CabooseDisplaySession)?.connections,
+                           ready: model.phase == .ready && session?.state == .ready
+                               && session?.windows[window.id] === window)
+    }
+
+    private func openWindow() {
+        guard !panInFlight, Date() >= suppressOpenUntil, closeTarget.ready else { return }
+        model.show(windowID: window.id)
+    }
+
+    private func closeWindow() {
+        guard closeTarget.ready else { return }
+        // The app decides whether to show an unsaved-change dialog. Keep its tile until
+        // the server removes the window; closing never implies opening or force quitting.
+        model.session?.close(window)
+    }
+
+    private func updateFeedback(_ translation: CGPoint) {
+        guard dismissal.isActive else { return }
+        let next = UpwardDismissal.progress(translation)
+        if progress < 1, next == 1 { UISelectionFeedbackGenerator().selectionChanged() }
+        progress = next
+    }
+
+    private func cancelDrag(endTouch: Bool = false) {
+        if endTouch { panInFlight = false }
+        dismissal.cancel()
+        dragTarget = nil
+        // UIKit cancels the Button's touch when the pan wins. Also fence SwiftUI's
+        // release action, whose ordering can differ from the recognizer callback.
+        suppressOpenUntil = panInFlight ? .distantFuture : Date().addingTimeInterval(0.35)
+        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) {
+            progress = 0
+        }
+    }
+}
+
+/// A pan that fails before recognition for horizontal or downward motion. Unlike a
+/// SwiftUI DragGesture it can yield the touch to the strip's native scroll recognizer.
+private struct WindowClosePan: UIGestureRecognizerRepresentable {
+    let action: (UIGestureRecognizer.State, CGPoint) -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.maximumNumberOfTouches = 1
+        pan.cancelsTouchesInView = true
+        pan.delegate = context.coordinator
+        return pan
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        // Window coordinates remain stable while the preview moves under the finger.
+        action(recognizer.state, recognizer.translation(in: recognizer.view?.window))
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            return UpwardDismissal.isUpward(pan.translation(in: pan.view?.window))
+        }
     }
 }
 
