@@ -614,3 +614,5 @@ pnpm --filter caboose-host exec tsx -e "import {writeFileSync} from 'node:fs'; i
 docker run --rm --init --network none --memory 128m --cpus 1 -v "$PWD/apps/host/scripts/check-agent-delete.mjs:/check.mjs:ro" -v /tmp/caboose-delete-task-code.js:/delete-task.js:ro node:22-bookworm-slim node /check.mjs /delete-task.js
 rm /tmp/caboose-delete-task-code.js
 ```
+
+Parked Files requires Linux `python3-guestfs`, a libguestfs appliance kernel readable by the host user, and KVM access. Each supported request starts one network-disabled, read-only appliance; all metadata and bounded content chunks share that appliance. Names outside the supported ASCII subset, non-owner paths, ancestor ACLs, unsupported MIME tables and oversized directories fall back to wake. Guest MIME tables are parsed as literal data; no program from the computer executes in the reader.

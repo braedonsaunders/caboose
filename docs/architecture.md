@@ -2500,7 +2500,7 @@ The extension enumerates its home through `/v1/fs`, downloads on demand, and upl
 across moves, signals the working set when the app receives `fs.changed`, and
 re-enumerates after an expired anchor. The system generates previews for downloaded files;
 there are no server-side thumbnails. On an opted-in supported Linux microVM, Files can
-read a sealed parked view through a read-only libguestfs appliance. Unsupported paths,
+read a sealed parked view through one network-disabled, read-only libguestfs appliance per request. Metadata and bounded content chunks share that appliance. The reader parses the guest Python MIME tables as literal data without executing guest code. Unsupported paths,
 metadata, change feeds and all mutations wake the computer. An unreachable host is
 reported to Files as unreachable.
 
