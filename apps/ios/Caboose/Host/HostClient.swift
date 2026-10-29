@@ -41,6 +41,13 @@ struct HostClient: Sendable {
 
     /// `GET /v1/computer`: the computer's settings and what it is running with now.
     struct ComputerStatus: Decodable, Equatable, Sendable {
+        struct Size: Decodable, Equatable, Identifiable, Sendable {
+            var id: String
+            var name: String
+            var memoryMb: Int
+            var vcpus: Int
+            var available: Bool
+        }
         struct Settings: Codable, Equatable, Sendable {
             var name: String
             var memoryMb: Int
@@ -80,6 +87,7 @@ struct HostClient: Sendable {
         }
         var state: String
         var settings: Settings
+        var sizes: [Size]?
         var activeResources: Resources?
         var restartRequired: Bool
         var clients: Clients

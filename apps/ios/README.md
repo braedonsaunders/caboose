@@ -836,3 +836,6 @@ opening message. Repeat with Reduce Motion, reconnect, and a running minimized a
 
 Desktop imports copy one file at a time; they do not establish Open in Place synchronization.
 Items use file-type icons and name ordering; manual placement and file previews are absent.
+
+Computer settings offer the sizes provided by the host and custom CPU and memory.
+GPU access uses the host GPU and is shared; availability reflects host configuration.

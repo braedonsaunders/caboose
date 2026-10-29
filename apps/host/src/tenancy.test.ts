@@ -139,6 +139,7 @@ describe('a host with accounts and tenants', () => {
     const sam = await (await operator('/v1/computers', { method: 'POST', body: { name: 'Sam', tenantId: family, person: 'Sam', memoryMb: 2048, vcpus: 2 } })).json()
     expect(sam).toMatchObject({ tenantId: family, person: 'Sam', settings: { memoryMb: 2048 } })
     const over = await operator('/v1/computers', { method: 'POST', body: { name: 'Alex', person: 'Alex', tenantId: family, memoryMb: 4096, vcpus: 2 } })
+    expect((await operator('/v1/computers', { method: 'POST', body: { name: 'Preset', person: 'Preset', tenantId: family, size: 'standard' } })).status).toBe(409)
     expect(over.status).toBe(409)
     expect((await over.json()).error).toMatch(/6144 MiB.*quota is 4096/)
     expect((await operator(`/v1/computers/${sam.id}/computer/settings`, { method: 'PATCH', body: { vcpus: 6 } })).status).toBe(409)

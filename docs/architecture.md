@@ -772,6 +772,17 @@ valid for seven days, kept as a SHA-256. A new administrator chooses a name and 
 someone with an account confirms it with their password. A tenant keeps at least one
 administrator.
 
+Computer status includes `sizes`, the host's preset catalog: Micro (2 vCPUs, 2048 MiB),
+Standard (4 vCPUs, 4096 MiB), and GPU (8 vCPUs, 8192 MiB). Creation and settings
+accept `size` (`micro`, `standard` or `gpu`) instead of `memoryMb` and `vcpus`; combining
+them is rejected. GPU is available only when the host uses the container runtime with GPU
+access enabled. This reports the host configuration, not verified hardware availability or a
+dedicated GPU: container GPU access is shared. Existing and custom resource settings remain
+valid. Presets pass through the same settings limits and tenant quota checks as custom values;
+preset requests also reject a size larger than the host's total memory or CPU count when
+the host reports its resources. These checks do not reserve capacity or guarantee free memory;
+resource changes take effect at the next cold restart.
+
 **Quotas** are `memoryMb`, `vcpus` and `diskGb`, each null for no limit. Memory and vCPUs
 count what the tenant's computers are set to be given; disk counts what their microVM disks
 and parked memory use on the host (a container's disk is not measured). Memory and vCPUs are

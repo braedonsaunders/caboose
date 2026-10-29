@@ -540,3 +540,7 @@ or environment variables. See `guest/agentd/README.md` for persistence and ACP n
 the Desktop directory cannot be a symlink, and publication never overwrites an existing item.
 The copy includes `X-Caboose-AppId` for the native app's installed-ID launch route.
 Run `pnpm test -- src/guest-apps.test.ts` for copy, collision, traversal and symlink checks.
+
+Computer creation and settings accept the `micro`, `standard`, and `gpu` size presets;
+see [the architecture](../../docs/architecture.md) for resources and GPU availability.
+Custom CPU and memory settings remain available.

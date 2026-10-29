@@ -27,7 +27,10 @@ export interface ComputerResources {
   vcpus: number
 }
 
+export interface ComputerSize { id: string; name: string; memoryMb: number; vcpus: number; available: boolean }
+
 export interface ComputerStatus {
+  sizes?: ComputerSize[]
   state: ComputerState
   settings: ComputerSettings
   limits?: ComputerLimits
@@ -74,6 +77,7 @@ export interface NewComputer {
   memoryMb: number
   vcpus: number
   idleMs: number
+  size?: string
   /** Required on a host with accounts. */
   tenantId?: string
   personId?: string | null
@@ -535,7 +539,7 @@ export class CabooseClient {
     return this.request<ComputerStatus>('GET', '/v1/computer', { timeoutMs: 20_000 })
   }
 
-  updateSettings(patch: Partial<ComputerSettings>): Promise<ComputerStatus> {
+  updateSettings(patch: Partial<ComputerSettings> & { size?: string }): Promise<ComputerStatus> {
     return this.request<ComputerStatus>('PATCH', '/v1/computer/settings', { body: patch, timeoutMs: 20_000 })
   }
 
