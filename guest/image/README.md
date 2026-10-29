@@ -60,6 +60,16 @@ it (see [Updating a running computer](#updating-a-running-computer)).
 
 ## What the image contains
 
+`bash guest/image/check-arm64-boot.sh /path/to/split-image` boots the built arm64
+split image with QEMU software emulation and virtio MMIO block devices. It checks
+the EROFS lower, writable `/usr` and `/opt` overlays, cloud-kernel selection,
+Python execution, a clean dpkg audit and the package exclusion configuration.
+Inputs remain unchanged: root writes go to QEMU's temporary snapshot. The check
+has a five-minute deadline, no guest networking, and requires Linux with
+`qemu-system-aarch64`, `cpio`, `timeout` and `unmkinitramfs`. It runs in the hosted split-image
+workflow; it does not establish Virtualization.framework or Cloud Hypervisor
+lifecycle compatibility.
+
 - **System.** Debian 13 from its signed repositories, the `linux-image-cloud-amd64` or
   `linux-image-cloud-arm64` kernel (Debian's virtual-machine flavour, without sound, DRM or
   `uinput` drivers), systemd, D-Bus with a user session, the `caboose` user (uid 1000, passwordless `sudo`,

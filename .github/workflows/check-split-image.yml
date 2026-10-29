@@ -62,3 +62,8 @@ jobs:
           sudo test -x "$lower/usr/bin/python3"
           sudo test -d "$lower/opt"
           echo 'Split image and initramfs inspected successfully.'
+      - name: Boot the arm64 cloud kernel and writable system overlays
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo apt-get install -y qemu-system-arm cpio
+          bash guest/image/check-arm64-boot.sh "$RUNNER_TEMP/split-image"
