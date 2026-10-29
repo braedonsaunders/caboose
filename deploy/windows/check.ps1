@@ -39,9 +39,9 @@ $rule = Get-NetFirewallHyperVRule -Name (Get-RuleName $hostPort) -ErrorAction Si
 if ($rule -and "$($rule.Enabled)" -eq 'True' -and "$($rule.Action)" -eq 'Allow') { Pass "the Hyper-V firewall lets TCP $hostPort into WSL ($($rule.Profiles))" }
 else { Fail "no enabled Hyper-V firewall rule allows TCP $hostPort into WSL" }
 
-$proxies = Get-PortProxies $hostPort
+$proxies = @(& (New-WindowsSystem).GetProxies $hostPort)
 if ($proxies.Count -eq 0) { Pass "no portproxy rule forwards $hostPort" }
-else { Fail "a portproxy rule still forwards $hostPort ($($proxies[0].ListenAddress) -> $($proxies[0].ConnectAddress))" }
+else { Fail "a portproxy rule still forwards $hostPort ($(Format-Proxy $proxies[0]))" }
 
 # Unauthenticated, the host answers 401: that it answers at all is the check.
 try {

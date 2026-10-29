@@ -25,8 +25,11 @@ caboose-host. `setup-wsl.ps1`:
   port on Windows before WSL sees it;
 - warns about other portproxy rules: they forward into WSL's NAT address, which mirrored
   networking does not have. Pass their ports to `-Port` to publish those services the same way;
-- records what it changed in `%ProgramData%\Caboose\wsl-networking.json`, so `-Revert`
-  restores it.
+- records each original in `%ProgramData%\Caboose\wsl-networking.json` before it changes
+  it: the networking mode, each firewall rule as it was (or that it did not exist), and each
+  portproxy rule. The file is replaced atomically, and later runs keep the first run's
+  originals. `-Revert` restores them one at a time, removing each from the file once it is
+  back, so an interrupted apply or revert finishes when it is run again.
 
 WSL reads its networking mode when it starts. `-Restart` runs `wsl --shutdown`, which stops
 every running distribution (and anything attached with `wsl --mount`), then starts the
@@ -34,7 +37,8 @@ distribution again; without it, the change applies at the next WSL start.
 
 ## Requirements
 
-- Windows 11 22H2 (build 22621) or later.
+- Windows 11 22H2 (build 22621) or later. Windows 10 has no mirrored networking; there a
+  phone reaches WSL only through a forwarder, with the input delay described above.
 - WSL 2.0 or later, from the Microsoft Store (`wsl --update`).
 - An elevated PowerShell, run as the Windows user who runs WSL.
 
@@ -53,9 +57,10 @@ Then install Caboose inside the distribution:
 curl -fsSL https://raw.githubusercontent.com/braedonsaunders/caboose/main/deploy/linux/install.sh | sudo bash -s -- --runtime container
 ```
 
-The Linux installer prints the PC's own addresses and a pairing QR code. In a WSL
-distribution that still uses NAT networking it prints no pairing link and shows the
-command above instead.
+With mirrored networking the Linux installer prints the PC's own addresses and a pairing QR
+code. Under NAT networking, or when it cannot tell the mode (WSL older than 2.0 has no
+`wslinfo`), it says that the distribution's own addresses are reachable only from Windows
+and shows the command above; a configured `CABOOSE_PUBLIC_URL` still leads the pairing link.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
@@ -63,14 +68,16 @@ command above instead.
 | `-Profiles <names>` | `Any` | The firewall profiles the ports are open on: `Domain`, `Private`, `Public`. |
 | `-Distro <name>` | the default distribution | The distribution to start after `-Restart`. |
 | `-Restart` | | Restart WSL now. |
-| `-Revert` | | Restore the networking mode, firewall rules and portproxy rules from before. A restored portproxy rule keeps its old target, and WSL can give Linux another NAT address when it starts. |
+| `-Revert` | | Restore the networking mode, the firewall rules (a rule that existed gets its own enabled state, action and profiles back; one the script made is removed) and the portproxy rules. A `.wslconfig` the script created is removed. A restored portproxy rule keeps its old target, and WSL can give Linux another NAT address when it starts. |
 | `-WhatIf` | | Print every change and make none. |
 
 ## Checks
 
-`setup-wsl.tests.ps1` tests the script's pure logic (editing `.wslconfig`, reading netsh's
-portproxy table). It needs no administrator or WSL, and runs in Windows PowerShell 5.1 or
-in `pwsh` on any system:
+`setup-wsl.tests.ps1` tests the script's logic: editing `.wslconfig`, reading netsh's
+portproxy table, and applying and reverting against a machine in memory, including runs
+interrupted after the `.wslconfig` write, after the firewall rule and after each portproxy
+deletion, and a firewall rule that existed before. It needs no administrator or WSL, and
+runs in Windows PowerShell 5.1 or in `pwsh` on any system:
 
 ```sh
 pwsh -NoProfile -File deploy/windows/setup-wsl.tests.ps1
