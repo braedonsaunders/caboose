@@ -38,6 +38,8 @@ pub struct Prepared {
     pub env: Vec<(OsString, OsString)>,
     /// The Xauthority file applications use.
     pub authority: PathBuf,
+    /// The cookie in it, for the compositor's own X connections.
+    pub cookie: [u8; 16],
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -82,6 +84,7 @@ pub fn prepare(dir: &Path, number: u32) -> std::io::Result<Prepared> {
             (AUTH_ENV.into(), authority.clone().into_os_string()),
         ],
         authority,
+        cookie,
     })
 }
 

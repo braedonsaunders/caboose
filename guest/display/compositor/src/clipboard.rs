@@ -35,6 +35,9 @@ const GNOME_FILES: &str = "x-special/gnome-copied-files";
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long an application has to take what it pastes.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// The most of an X11 copy read directly (not through Smithay), and for how long.
+pub const X11_LIMIT: usize = types::MAX_BYTES;
+pub const X11_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Who provides a selection the compositor owns.
 #[derive(Debug, Clone)]
@@ -233,6 +236,11 @@ pub struct Sink {
 }
 
 impl Sink {
+    /// The most this representation may be.
+    pub fn limit(&self) -> usize {
+        self.wanted.limit
+    }
+
     /// Reads from the pipe's read end on a thread.
     fn read_from(self, read: OwnedFd) {
         std::thread::spawn(move || {
@@ -319,6 +327,17 @@ impl State {
                 sink.failed();
                 continue;
             };
+            if !crate::x11sel::smithay_transfers(&mime) {
+                // Smithay's window manager cannot transfer this type; read it directly.
+                match self.x11.clone() {
+                    Some(access) => {
+                        crate::x11sel::copy_into(access, mime, write, sink.limit(), READ_TIMEOUT);
+                        sink.read_from(read);
+                    }
+                    None => sink.failed(),
+                }
+                continue;
+            }
             let handle = self.handle.clone();
             match self.xwm.as_mut().map(|xwm| xwm.send_selection(SelectionTarget::Clipboard, mime, write, handle)) {
                 Some(Ok(())) => sink.read_from(read),

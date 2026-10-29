@@ -196,6 +196,8 @@ pub struct State {
     pub videos: crate::video::server::Videos,
     pub control: crate::control::Control,
     pub clipboard: crate::clipboard::Clipboard,
+    /// How the compositor reaches its Xwayland as a client, once it runs.
+    pub x11: Option<crate::x11sel::Access>,
     /// The compositor's PulseAudio, when it runs.
     pub audio: Option<crate::audio::Audio>,
     pub audio_tx: smithay::reexports::calloop::channel::Sender<crate::audio::Packet>,
@@ -755,6 +757,19 @@ impl SelectionHandler for State {
         match owner {
             crate::clipboard::Owner::Phone(offer) => offer.send(&mime_type, fd),
             crate::clipboard::Owner::X11 => {
+                // Smithay's window manager transfers text; other types are read directly.
+                if ty == SelectionTarget::Clipboard && !crate::x11sel::smithay_transfers(&mime_type) {
+                    if let Some(access) = self.x11.clone() {
+                        crate::x11sel::copy_into(
+                            access,
+                            mime_type,
+                            fd,
+                            crate::clipboard::X11_LIMIT,
+                            crate::clipboard::X11_TIMEOUT,
+                        );
+                    }
+                    return;
+                }
                 let handle = self.handle.clone();
                 if let Some(xwm) = self.xwm.as_mut() {
                     if let Err(e) = xwm.send_selection(ty, mime_type, fd, handle) {

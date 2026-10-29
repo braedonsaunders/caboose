@@ -19,6 +19,7 @@ mod text_input;
 mod transfers;
 mod video;
 mod windows;
+mod x11sel;
 mod xauth;
 mod xwm;
 
@@ -377,6 +378,7 @@ fn run(config: Config) -> Result<(), String> {
         videos: Default::default(),
         control: Default::default(),
         clipboard: clipboard::Clipboard::new(clip_tx),
+        x11: None,
         audio: None,
         audio_tx,
         generation: 0,
@@ -444,7 +446,7 @@ fn run(config: Config) -> Result<(), String> {
             std::process::Stdio::inherit(),
             |_| (),
         ) {
-            Ok((x, client)) => Some((x, client, prepared.authority)),
+            Ok((x, client)) => Some((x, client, prepared.authority, prepared.cookie)),
             Err(e) => {
                 tracing::error!("cannot start Xwayland on :{number}: {e}; continuing without X11");
                 None
@@ -452,13 +454,14 @@ fn run(config: Config) -> Result<(), String> {
         }
     });
     match spawned {
-        Some((xwayland, client, authority)) => {
+        Some((xwayland, client, authority, cookie)) => {
             handle
                 .insert_source(xwayland, move |event, _, state: &mut State| match event {
                     XWaylandEvent::Ready { x11_socket, display_number } => {
                         match X11Wm::start_wm(state.handle.clone(), x11_socket, client.clone()) {
                             Ok(wm) => {
                                 state.xwm = Some(wm);
+                                state.x11 = Some(x11sel::Access { display: display_number, cookie });
                                 ready(state, Some(display_number), Some(&authority));
                             }
                             Err(e) => {

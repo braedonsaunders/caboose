@@ -382,11 +382,12 @@ def check_clipboard_bridge():
     return with_server(["sh", "-c", script], run)
 
 
-def png(width, height, rgb):
-    """A solid-colour RGB PNG."""
+def png(width, height, rgb=None):
+    """An RGB PNG: one colour, or noise (which does not compress) without one."""
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-    rows = b"".join(b"\0" + bytes(rgb) * width for _ in range(height))
+    row = (lambda: bytes(rgb) * width) if rgb else (lambda: os.urandom(3 * width))
+    rows = b"".join(b"\0" + row() for _ in range(height))
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
@@ -434,6 +435,60 @@ def check_clipboard_image_wayland():
 
 def check_clipboard_image_x11():
     return clipboard_image("xclip -i -selection clipboard -t image/png {}", "xclip -o -selection clipboard -t image/png")
+
+
+def check_clipboard_x11_large():
+    # X11 owners that send big images incrementally (INCR) or vanish. A 6 MiB PNG, which
+    # xclip sends in INCR pieces, reaches the phone byte for byte. A 13 MiB one is over
+    # the clipboard's limit: nothing reaches the phone and the next copy still does. An
+    # owner killed right after copying leaves nothing, and does not stall the next copy.
+    work = tempfile.mkdtemp()
+    big, huge, out = (os.path.join(work, n) for n in ("big.png", "huge.png", "step"))
+    open(big, "wb").write(png(1450, 1450))
+    open(huge, "wb").write(png(2100, 2100))
+    def step(name, cmd):
+        return f"{cmd}; echo {name} > {out}; while [ \"$(cat {out})\" = {name} ]; do sleep 0.2; done"
+    script = ("xterm & sleep 2; "
+              + step("big", f"xclip -i -selection clipboard -t image/png {big}") + "; "
+              + step("huge", f"xclip -i -selection clipboard -t image/png {huge}") + "; "
+              + step("text", "printf 'after huge' | xclip -i -selection clipboard") + "; "
+              + step("gone", f"xclip -i -selection clipboard -t image/png {big} & p=$!; sleep 0.3; kill $p") + "; "
+              + "printf 'after gone' | xclip -i -selection clipboard; echo done > " + out + "; exec sleep 60")
+    def advance(expect):
+        # The script writes each step's name and waits until it is replaced with "next".
+        for _ in range(300):
+            if os.path.exists(out) and open(out).read().strip() == expect:
+                return
+            time.sleep(0.1)
+        raise Failed(f"the script never reached {expect!r}")
+    def connect(token):
+        return probe(["--token-file", token, "--duration", "4", "--windows", "1", *IMAGE_TYPES], timeout=60)
+    def run(proc, token):
+        advance("big")
+        r = connect(token)
+        want = {"mime": "image/png", "bytes": os.path.getsize(big), "fnv1a": fnv1a(open(big, "rb").read())}
+        if r["clipboard_entries"] != [want]:
+            raise Failed(f"the INCR image arrived as {r['clipboard_entries']}, not {want}")
+        open(out, "w").write("next")
+        advance("huge")
+        r = connect(token)
+        if any(e["mime"] == "image/png" and e["bytes"] > 12 * 1024 * 1024 for e in r["clipboard_entries"]):
+            raise Failed("an image over the limit reached the phone")
+        open(out, "w").write("next")
+        advance("text")
+        r = connect(token)
+        if r["clipboard"] != "after huge":
+            raise Failed(f"after the oversized image the phone got {r['clipboard']!r}")
+        open(out, "w").write("next")
+        advance("gone")
+        open(out, "w").write("next")
+        advance("done")
+        r = connect(token)
+        if r["clipboard"] != "after gone":
+            raise Failed(f"after the owner vanished the phone got {r['clipboard']!r}")
+        return ("a 6 MiB X11 image sent by INCR arrives byte for byte; a 13 MiB one is refused and the next copy "
+                "arrives; an owner that vanishes does not stall the next copy")
+    return with_server(["sh", "-c", script], run)
 
 
 def check_clipboard_files():
@@ -812,6 +867,7 @@ CHECKS = [
     ("clipboard-bridge", check_clipboard_bridge),
     ("clipboard-image-wayland", check_clipboard_image_wayland),
     ("clipboard-image-x11", check_clipboard_image_x11),
+    ("clipboard-x11-large", check_clipboard_x11_large),
     ("clipboard-files", check_clipboard_files),
     ("audio", check_audio),
     ("refine", check_refine),

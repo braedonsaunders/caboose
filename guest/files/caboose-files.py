@@ -394,12 +394,17 @@ class Handler(BaseHTTPRequestHandler):
                 finally: os.close(srcfd)
                 return self.reply(200, file_stat(target))
             self.reply(404, {'error': 'not found'})
-        except (ValueError, TypeError, json.JSONDecodeError): self.close_connection = True; self.reply(400, {'error': 'invalid request'})
-        except FileNotFoundError: self.reply(404, {'error': 'not found'})
-        except (PermissionError, NotADirectoryError): self.reply(403, {'error': 'access denied'})
-        except FileExistsError: self.reply(409, {'error': 'already exists'})
+        except (ValueError, TypeError, json.JSONDecodeError): self.fail(400, 'invalid request')
+        except FileNotFoundError: self.fail(404, 'not found')
+        except (PermissionError, NotADirectoryError): self.fail(403, 'access denied')
+        except FileExistsError: self.fail(409, 'already exists')
         except BrokenPipeError: pass
-        except OSError: self.close_connection = True; self.reply(500, {'error': 'filesystem error'})
+        except OSError: self.fail(500, 'filesystem error')
+    def fail(self, status, error):
+        # The peer may already be gone (an upload cut short); there is no one to tell.
+        self.close_connection = True
+        try: self.reply(status, {'error': error})
+        except OSError: pass
     def transfer(self, ident, name):
         """Streams one file of a transfer into place, within the per-file limit and the
         area's quota, without holding it in memory; an interrupted upload leaves nothing."""

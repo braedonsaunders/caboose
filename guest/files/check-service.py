@@ -65,12 +65,12 @@ with tempfile.TemporaryDirectory() as root:
         os.unlink(os.path.join(home, '.cache'))
         assert request('PUT', f'/transfer?id={transfer}&name=../a', b'x')[0] == 400
         assert request('PUT', '/transfer?id=NOTHEX&name=a', b'x')[0] == 400
-        status, _, body = request('PUT', f'/transfer?id={transfer}&name=photo 1.png', b'png-bytes')
+        status, _, body = request('PUT', f'/transfer?id={transfer}&name=photo%201.png', b'png-bytes')
         assert status == 201, (status, body)
         assert json.loads(body) == {'path': f'.cache/caboose/transfers/{transfer}/photo 1.png', 'size': 9}
         area = os.path.join(home, '.cache/caboose/transfers')
         assert os.stat(area).st_mode & 0o777 == 0o700 and os.stat(os.path.join(area, transfer)).st_mode & 0o777 == 0o700
-        assert request('PUT', f'/transfer?id={transfer}&name=photo 1.png', b'again')[0] == 409
+        assert request('PUT', f'/transfer?id={transfer}&name=photo%201.png', b'again')[0] == 409
         service.TRANSFER_FILE_MAX = 4
         assert request('PUT', f'/transfer?id={transfer}&name=big', b'12345')[0] == 413
         service.TRANSFER_FILE_MAX = 512 * 1024 * 1024; service.TRANSFER_QUOTA = 12
@@ -85,10 +85,13 @@ with tempfile.TemporaryDirectory() as root:
             if sorted(os.listdir(os.path.join(area, transfer))) == ['photo 1.png']: break
             time.sleep(.02)
         assert sorted(os.listdir(os.path.join(area, transfer))) == ['photo 1.png']
+        stale = 'a' * 32
+        assert request('PUT', f'/transfer?id={stale}&name=old', b'o')[0] == 201
         old = time.time() - 2 * service.TRANSFER_TTL
-        os.utime(os.path.join(area, transfer), (old, old))
+        os.utime(os.path.join(area, stale), (old, old))
         assert request('PUT', f'/transfer?id={"f" * 32}&name=new', b'n')[0] == 201
-        assert not os.path.exists(os.path.join(area, transfer)), 'an expired transfer was kept'
+        assert not os.path.exists(os.path.join(area, stale)), 'an expired transfer was kept'
+        assert os.path.exists(os.path.join(area, transfer)), 'a current transfer was removed'
         assert request('DELETE', f'/transfer?id={"f" * 32}')[0] == 200
         assert request('DELETE', f'/transfer?id={"f" * 32}')[0] == 404
         print('guest file service checks passed')
