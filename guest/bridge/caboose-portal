@@ -44,7 +44,12 @@ REQUEST_XML = f'<node><interface name="{REQUEST}"><method name="Close"/></interf
 
 
 def address():
-    return os.environ.get('DBUS_STARTER_ADDRESS') or os.environ.get('DBUS_SESSION_BUS_ADDRESS', '')
+    """This bus's address without its guid (D-Bus activation appends one)."""
+    raw = os.environ.get('DBUS_STARTER_ADDRESS') or os.environ.get('DBUS_SESSION_BUS_ADDRESS', '')
+    first = raw.split(';', 1)[0]
+    transport, _, keys = first.partition(':')
+    kept = [k for k in keys.split(',') if k and not k.startswith('guid=')]
+    return f"{transport}:{','.join(kept)}"
 
 
 class Portal:
