@@ -172,17 +172,17 @@ struct DesktopPanelButton: View {
             presented.toggle()
         } label: {
             Image(systemName: "slider.horizontal.3")
-                .frame(width: 48, height: 48)
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 44, height: 44)
                 .contentShape(.circle)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Desktop controls and navigation")
-        .glassEffect(.regular.interactive(), in: .circle)
         .accessibilityHint("Opens desktop controls and app navigation")
         .popover(isPresented: $presented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
             ScrollView { panel }
                 .scrollBounceBehavior(.basedOnSize)
-                .frame(width: 288, height: 240)
+                .frame(width: 72, height: 512)
                 // Even a narrow phone keeps the panel anchored and dismissible, rather
                 // than adapting it into a full-screen presentation.
                 .presentationCompactAdaptation(.popover)
@@ -192,21 +192,17 @@ struct DesktopPanelButton: View {
     }
 
     private var panel: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Text("Desktop").font(.headline)
-                Spacer()
-                Button("Close", systemImage: "xmark") { presented = false }
-                    .labelStyle(.iconOnly)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .accessibilityLabel("Close desktop controls")
-            }
-            DesktopRailControls(compact: true)
-            Divider()
-            ShellTabButtons(axis: .horizontal, showsTitles: true)
+        VStack(spacing: 4) {
+            DesktopRailControls()
+            Divider().frame(width: 32).padding(.vertical, 4)
+            ShellTabButtons(axis: .vertical, iconsOnly: true)
+            Button("Close desktop controls", systemImage: "chevron.down") { presented = false }
+                .labelStyle(.iconOnly)
+                .frame(width: 56, height: 44)
+                .buttonStyle(.plain)
         }
-        .padding(16)
-        .frame(width: 288)
+        .padding(.vertical, 8)
+        .frame(width: 72)
         .accessibilityAction(.escape) { presented = false }
     }
 }
@@ -218,6 +214,7 @@ private struct DesktopStage: View {
     @Environment(AppModel.self) private var model
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
     @Environment(\.laptopInputOwned) private var laptopInputOwned
+    @Environment(\.portraitDesktopChrome) private var portraitDesktop
     let fullScreen: Bool
 
     var body: some View {
@@ -227,10 +224,17 @@ private struct DesktopStage: View {
                     SwitchyardView(yard: model.yard)
                 } else {
                     ZStack {
-                        DesktopView(desktop: model.desktop, fillsScreen: false)
+                        DesktopView(desktop: model.desktop, fillsScreen: false, showsDock: !portraitDesktop)
                         DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
                         DesktopKeyCommands(desktop: model.desktop)
+                        if portraitDesktop, !model.desktop.detachedChrome,
+                           let session = model.session, model.desktop.fullscreenWindow(in: session.windows) == nil {
+                            Dock(desktop: model.desktop, interactive: true)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                .padding(.bottom, model.desktop.dockBottomInset)
+                        }
                     }
+                    .coordinateSpace(name: "desktop")
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)

@@ -1745,10 +1745,10 @@ where the system draws a vertical bar, and on iPad, the tabs are the system's. O
 the system's tab bar is hidden and the tabs sit at the bottom right
 (`HomeToday.tabPlacement`): a cluster beside the tab's own bottom control (Home's Ask) when
 the screen is under 600 points wide, else a sidebar on the trailing edge with the tabs at
-its foot. Portrait Desktop overrides both system and custom tab placement: one button
-above the dock opens an upward, button-anchored 288-by-240-point scrollable popover with
-Desktop controls and app navigation. Close and the accessibility escape action dismiss
-it. The same compact popover fits a portrait phone. No navigation bar, native tab rail,
+its foot. Portrait Desktop overrides both system and custom tab placement: the far-right icon
+in the dock opens an upward, button-anchored 72-point-wide vertical strip of icons for
+Desktop controls and app navigation. The strip scrolls within 512 points; Close, outside
+tap and the accessibility escape action dismiss it. The same strip fits a portrait phone. No navigation bar, native tab rail,
 or custom sidebar reserves a strip; the closed panel leaves the full available desktop
 viewport and bottom dock. Window bounds determine portrait, so showing the keyboard does
 not switch chrome. Landscape keeps its native bar where available or its custom sidebar;

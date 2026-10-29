@@ -8,6 +8,7 @@ struct DesktopView: View {
     let desktop: DesktopModel
     /// A TV's desktop covers the whole screen; the phone's stays inside the bars.
     var fillsScreen = true
+    var showsDock = true
 
     var body: some View {
         GeometryReader { proxy in
@@ -34,7 +35,7 @@ struct DesktopView: View {
                     Launchpad(desktop: desktop)
                         .transition(.opacity.combined(with: .scale(scale: 1.04)))
                 }
-                if !desktop.detachedChrome, let session = model.session, desktop.fullscreenWindow(in: session.windows) == nil {
+                if showsDock, !desktop.detachedChrome, let session = model.session, desktop.fullscreenWindow(in: session.windows) == nil {
                     Dock(desktop: desktop)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                         .padding(.bottom, desktop.dockBottomInset)
@@ -150,6 +151,7 @@ struct RemoteWindowSurface: UIViewRepresentable {
 
 struct Dock: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.portraitDesktopChrome) private var portraitDesktop
     let desktop: DesktopModel
     var compact = false
     var coordinateSpace = "desktop"
@@ -164,7 +166,7 @@ struct Dock: View {
         let ui = desktop.ui
         HStack(spacing: 10 * ui) {
             // As many as fit: a phone held upright has room for fewer than a TV.
-            let fit = max(3, Int((desktop.size.width - 120 * ui) / (62 * ui)))
+            let fit = max(3, Int((desktop.size.width - (portraitDesktop ? 174 : 120) * ui) / (62 * ui)))
             ForEach(model.dockApps.prefix(fit)) { app in
                 let hot = desktop.hovered == .dock(app.id)
                 VStack(spacing: 3 * ui) {
@@ -203,6 +205,7 @@ struct Dock: View {
                 .padding(.bottom, 7 * ui)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.launchpadButtonFrame = $0 }
                 .onTapGesture { if interactive { desktop.launchpadOpen.toggle() } }
+            if portraitDesktop { DesktopPanelButton() }
         }
         .padding(.horizontal, 12 * ui)
         .padding(.vertical, 8 * ui)

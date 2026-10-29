@@ -10,6 +10,7 @@ import SwiftUI
 /// it, or let go anywhere else to stay.
 struct YardDock: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.portraitDesktopChrome) private var portraitDesktop
     let yard: YardModel
     let width: CGFloat
 
@@ -22,7 +23,7 @@ struct YardDock: View {
         let visible = Set(yard.layout.visibleColumns(at: yard.scroll, in: yard.metrics))
         let focusedColumn = yard.layout.focusedColumnIndex.map { columns[$0].id }
         // As many apps as fit beside the cars and the two buttons.
-        let fixed = CGFloat(columns.count) * (car + 4) + 2 * 34 + 48
+        let fixed = CGFloat(columns.count) * (car + 4) + 2 * 34 + 48 + (portraitDesktop ? 54 : 0)
         let apps = Array(model.dockApps.prefix(max(2, Int((width - 32 - fixed) / (icon + 10)))))
         HStack(spacing: 10) {
             ForEach(apps) { app in
@@ -66,6 +67,7 @@ struct YardDock: View {
             Divider().frame(height: 34).overlay(.white.opacity(0.3))
             OverviewControl(yard: yard, enabled: !columns.isEmpty)
             button("All Apps", "square.grid.3x3.fill") { withAnimation(.smooth(duration: 0.3)) { yard.launcherOpen = true } }
+            if portraitDesktop { DesktopPanelButton() }
         }
         .padding(.horizontal, 12)
         .frame(height: Self.height)

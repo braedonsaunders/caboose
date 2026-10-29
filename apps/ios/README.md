@@ -534,10 +534,10 @@ Trackpad Gestures guide with the mappings and platform limitations. With a conne
 monitor, the phone shows window previews above its keyboard/trackpad and leaves the monitor's
 workspace intact. Book posture and compact screens keep the ordinary layout in Automatic.
 
-In Tablet mode, portrait Desktop has one compact button above the bottom dock. Its
-upward, anchored popover combines desktop controls and app navigation, with Close and
-VoiceOver escape to dismiss. The panel scrolls within 288 × 240 points, including on a
-phone; it never becomes a full-height rail or reserves desktop space. Native toolbar and
+In Tablet mode, portrait Desktop has a controls icon at the far-right end of the bottom dock. Its
+upward, anchored strip shows desktop controls and app navigation as a single vertical
+column of icons, with Close and VoiceOver escape to dismiss. The strip is 72 points wide
+and scrolls within 512 points, including on a phone; it never becomes a full-height rail or reserves desktop space. Native toolbar and
 tabs are hidden on this path, including iPad system tabs and Duo's native rail.
 Landscape keeps the native rail where available and otherwise the custom rail. Laptop
 keeps its bottom-half controls. Window bounds select portrait independently of the keyboard.

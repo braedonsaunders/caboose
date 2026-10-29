@@ -7,13 +7,14 @@ Open Chromium, Thunar and a terminal on a signed device paired to a real compute
 Portrait/landscape shell (Tablet mode, no external display):
 1. Keep the actual Desktop tab open with Chrome focused. Rotate the opened Duo
    landscape -> portrait -> landscape, with native rail on either side. Portrait
-   has only a compact button above the dock: no full-height rail, top toolbar or
+   has only a controls icon inside the far-right end of the dock: no full-height rail, top toolbar or
    system tabs. Landscape restores the existing controls. Repeat on iPad (Tiled
    and Free), including its system-tab configuration, and a closed portrait phone.
    Chrome uses the full available viewport with its tab/address bars intact; the
    dock remains at the bottom. No vacant strip remains where the rail was.
 2. Open the portrait panel: it points to its button and grows upward, with controls
-   and Home/Desktop/Agents/Apps/Terminal together. It stays compact on phone and iPad.
+   and Home/Desktop/Agents/Apps/Terminal in one skinny vertical icon column. No square
+   dashboard or detached floating trigger appears. It stays narrow on phone and iPad.
    Close it using Close, outside tap, and VoiceOver escape. Test large accessibility
    text and scrolling. Opening/closing it must not resize Chrome or move the dock.
    Try Keyboard, Screen Layout, AirPlay, Wallpaper, Computer, and lifecycle controls.

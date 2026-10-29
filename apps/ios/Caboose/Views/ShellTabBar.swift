@@ -21,11 +21,9 @@ struct ShellTabChrome: ViewModifier {
             content
                 .toolbarVisibility(.hidden, for: .tabBar)
                 .overlay(alignment: .bottomTrailing) {
-                    if !immersive {
-                        DesktopPanelButton()
-                            .padding(.trailing, 12)
-                            // Above the dock, including when it spans the phone's width.
-                            .padding(.bottom, 80)
+                    // A ready local desktop owns this button in its dock.
+                    if !immersive && (model.phase != .ready || model.externalDisplayActive) {
+                        DesktopPanelButton().padding(12)
                     }
                 }
         } else {
@@ -99,6 +97,7 @@ struct ShellTabButtons: View {
     @Namespace private var plate
     let axis: Axis
     var showsTitles = false
+    var iconsOnly = false
 
     private var tabs: [(tab: ShellTab, title: String, symbol: String)] {
         var tabs: [(tab: ShellTab, title: String, symbol: String)] = [
@@ -133,12 +132,12 @@ struct ShellTabButtons: View {
                     .font(.system(size: 19, weight: selected ? .semibold : .regular))
                     .symbolVariant(selected ? .fill : .none)
                     .frame(height: 24)
-                if axis == .vertical || showsTitles {
+                if !iconsOnly && (axis == .vertical || showsTitles) {
                     Text(title).font(.system(size: 10, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
                 }
             }
             .foregroundStyle(selected ? Brand.amber : .white.opacity(0.72))
-            .frame(width: axis == .horizontal ? 44 : 56, height: axis == .horizontal && !showsTitles ? 42 : 54)
+            .frame(width: axis == .horizontal ? 44 : 56, height: iconsOnly ? 44 : (axis == .horizontal && !showsTitles ? 42 : 54))
             .background {
                 if selected {
                     Capsule().fill(.white.opacity(0.12)).matchedGeometryEffect(id: "plate", in: plate)
