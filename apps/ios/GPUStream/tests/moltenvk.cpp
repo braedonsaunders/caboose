@@ -26,14 +26,14 @@ int main()
                 auto create = reinterpret_cast<PFN_vkCreateInstance>(GetInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance"));
                 VkApplicationInfo app{ VK_STRUCTURE_TYPE_APPLICATION_INFO };
                 app.apiVersion = VK_API_VERSION_1_1;
-                const char* extensions[] = { VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME };
                 VkInstanceCreateInfo info{ VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
                 info.pApplicationInfo = &app;
-                info.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
-                info.enabledExtensionCount = 1;
-                info.ppEnabledExtensionNames = extensions;
+                // Direct MoltenVK dispatch has no Vulkan loader portability-enumeration
+                // extension. A minimal instance requests only the API version.
                 VkInstance instance = VK_NULL_HANDLE;
-                assert(create(&info, nullptr, &instance) == VK_SUCCESS);
+                const auto result = create(&info, nullptr, &instance);
+                if (result != VK_SUCCESS) { std::cerr << "vkCreateInstance failed: " << result << '\n'; }
+                assert(result == VK_SUCCESS);
                 auto enumerate = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(GetInstanceProcAddr(instance, "vkEnumeratePhysicalDevices"));
                 assert(enumerate == reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(vkGetInstanceProcAddr(instance, "vkEnumeratePhysicalDevices")));
                 uint32_t count = 0;

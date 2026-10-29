@@ -35,16 +35,16 @@ jobs:
       - name: Record source and toolchain
         run: |
           bash apps/ios/GPUStream/tests/check_pipeline.sh
-          mkdir -p .gpu-check-logs
-          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > .gpu-check-logs/requested-source.txt
-          git rev-parse HEAD > .gpu-check-logs/source.txt
-          git rev-parse 'HEAD^{tree}' > .gpu-check-logs/source-tree.txt
-          test "$(cat .gpu-check-logs/requested-source.txt)" = "$(cat .gpu-check-logs/source.txt)"
-          xcodebuild -version > .gpu-check-logs/toolchain.txt
-          swift --version >> .gpu-check-logs/toolchain.txt
+          mkdir -p gpu-check-logs
+          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > gpu-check-logs/requested-source.txt
+          git rev-parse HEAD > gpu-check-logs/source.txt
+          git rev-parse 'HEAD^{tree}' > gpu-check-logs/source-tree.txt
+          test "$(cat gpu-check-logs/requested-source.txt)" = "$(cat gpu-check-logs/source.txt)"
+          xcodebuild -version > gpu-check-logs/toolchain.txt
+          swift --version >> gpu-check-logs/toolchain.txt
       - name: Check the full Swift suite without the native player
         working-directory: apps/ios/CabooseKit
-        run: swift test --jobs 1 2>&1 | tee ../../../.gpu-check-logs/swift-pure.log
+        run: swift test --jobs 1 2>&1 | tee ../../../gpu-check-logs/swift-pure.log
       - name: Bound retained logs
         if: always()
         run: python3 apps/ios/GPUStream/tests/bound_logs.py
@@ -52,8 +52,9 @@ jobs:
         if: always()
         with:
           name: gpu-stream-swift-pure-${{ github.sha }}
-          path: .gpu-check-logs/*
+          path: gpu-check-logs/*
           retention-days: 7
+          if-no-files-found: error
   replay:
     runs-on: macos-15
     timeout-minutes: 90
@@ -67,23 +68,23 @@ jobs:
       - name: Verify toolchain and synthetic fixture
         run: |
           bash apps/ios/GPUStream/tests/check_pipeline.sh
-          mkdir -p .gpu-check-logs
-          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > .gpu-check-logs/requested-source.txt
-          git rev-parse HEAD > .gpu-check-logs/source.txt
-          git rev-parse 'HEAD^{tree}' > .gpu-check-logs/source-tree.txt
-          test "$(cat .gpu-check-logs/requested-source.txt)" = "$(cat .gpu-check-logs/source.txt)"
+          mkdir -p gpu-check-logs
+          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > gpu-check-logs/requested-source.txt
+          git rev-parse HEAD > gpu-check-logs/source.txt
+          git rev-parse 'HEAD^{tree}' > gpu-check-logs/source-tree.txt
+          test "$(cat gpu-check-logs/requested-source.txt)" = "$(cat gpu-check-logs/source.txt)"
           test "$(uname -m)" = arm64
-          xcodebuild -version | tee .gpu-check-logs/toolchain.txt
-          swift --version | tee -a .gpu-check-logs/toolchain.txt
+          xcodebuild -version | tee gpu-check-logs/toolchain.txt
+          swift --version | tee -a gpu-check-logs/toolchain.txt
           echo '90db2232be2940106b852eb8af5959872c1d2d2cc69dedccc57d981bcbaae123  apps/ios/GPUStream/tests/fixtures/vkcube.gfxr' | shasum -a 256 -c -
-          shasum -a 256 apps/ios/GPUStream/tests/fixtures/vkcube.gfxr > .gpu-check-logs/fixture.sha256
-          python3 apps/ios/GPUStream/tests/check_fixture.py | tee .gpu-check-logs/fixture.log
+          shasum -a 256 apps/ios/GPUStream/tests/fixtures/vkcube.gfxr > gpu-check-logs/fixture.sha256
+          python3 apps/ios/GPUStream/tests/check_fixture.py | tee gpu-check-logs/fixture.log
       - name: Build the exact native player source
         run: |
           command -v ninja >/dev/null || brew install ninja
-          sh apps/ios/scripts/build-gpu-stream.sh macos 2>&1 | tee .gpu-check-logs/build.log
+          sh apps/ios/scripts/build-gpu-stream.sh macos 2>&1 | tee gpu-check-logs/build.log
           shasum -a 256 apps/ios/build/gpu-stream/lib/macos/libCabooseGPUStream.a \
-            apps/ios/CabooseKit/Frameworks/CabooseGPUStream.xcframework/macos-arm64/libCabooseGPUStream.a > .gpu-check-logs/rebuilt-library.sha256
+            apps/ios/CabooseKit/Frameworks/CabooseGPUStream.xcframework/macos-arm64/libCabooseGPUStream.a | tee gpu-check-logs/rebuilt-library.sha256
       - name: Check actual MoltenVK proc lookup and instance concurrency
         run: |
           xcrun clang++ -std=c++20 -pthread \
@@ -94,15 +95,15 @@ jobs:
             -framework Foundation -framework Metal -framework QuartzCore \
             -framework IOSurface -framework AppKit -framework IOKit \
             -framework CoreGraphics -lz -o apps/ios/build/gpu-stream/check-moltenvk
-          MVK_CONFIG_PERFORMANCE_TRACKING=1 MVK_CONFIG_ACTIVITY_PERFORMANCE_LOGGING_STYLE=3 apps/ios/build/gpu-stream/check-moltenvk 2>&1 | tee .gpu-check-logs/moltenvk.log
+          MVK_CONFIG_PERFORMANCE_TRACKING=1 MVK_CONFIG_ACTIVITY_PERFORMANCE_LOGGING_STYLE=3 apps/ios/build/gpu-stream/check-moltenvk 2>&1 | tee gpu-check-logs/moltenvk.log
       - name: Replay, resume, file-prefix and concurrent captures
         working-directory: apps/ios/CabooseKit
         env:
           CABOOSE_GPU_CAPTURE: ${{ github.workspace }}/apps/ios/GPUStream/tests/fixtures/vkcube.gfxr
           CABOOSE_GPU_CAPTURE_FRAMES: '300'
         run: |
-          swift test --jobs 1 --list-tests 2>&1 | tee ../../../.gpu-check-logs/native-tests.log | grep 'twoCapturesReplayConcurrentlyWithIndependentState'
-          swift test --jobs 1 --filter GPUStream 2>&1 | tee ../../../.gpu-check-logs/replay.log
+          swift test --jobs 1 --list-tests 2>&1 | tee ../../../gpu-check-logs/native-tests.log | grep 'twoCapturesReplayConcurrentlyWithIndependentState'
+          swift test --jobs 1 --filter GPUStream 2>&1 | tee ../../../gpu-check-logs/replay.log
       - name: Bound retained logs
         if: always()
         run: python3 apps/ios/GPUStream/tests/bound_logs.py
@@ -110,8 +111,9 @@ jobs:
         if: always()
         with:
           name: gpu-stream-replay-${{ github.sha }}
-          path: .gpu-check-logs/*
+          path: gpu-check-logs/*
           retention-days: 7
+          if-no-files-found: error
   relay:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -122,18 +124,18 @@ jobs:
       - name: Record source
         run: |
           bash apps/ios/GPUStream/tests/check_pipeline.sh
-          mkdir -p .gpu-check-logs
-          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > .gpu-check-logs/requested-source.txt
-          git rev-parse HEAD > .gpu-check-logs/source.txt
-          git rev-parse 'HEAD^{tree}' > .gpu-check-logs/source-tree.txt
-          test "$(cat .gpu-check-logs/requested-source.txt)" = "$(cat .gpu-check-logs/source.txt)"
+          mkdir -p gpu-check-logs
+          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > gpu-check-logs/requested-source.txt
+          git rev-parse HEAD > gpu-check-logs/source.txt
+          git rev-parse 'HEAD^{tree}' > gpu-check-logs/source-tree.txt
+          test "$(cat gpu-check-logs/requested-source.txt)" = "$(cat gpu-check-logs/source.txt)"
       - name: Build the display test environment
-        run: docker build -t caboose-display-dev guest/display 2>&1 | tee .gpu-check-logs/build.log
+        run: docker build -t caboose-display-dev guest/display 2>&1 | tee gpu-check-logs/build.log
       - name: Check protocol and relay
         env:
           CABOOSE_DISPLAY_CPUS: '2'
           CABOOSE_DISPLAY_MEMORY: 4g
-        run: guest/display/scripts/dev.sh cargo test --workspace 2>&1 | tee .gpu-check-logs/relay.log
+        run: guest/display/scripts/dev.sh cargo test --workspace 2>&1 | tee gpu-check-logs/relay.log
       - name: Bound retained logs
         if: always()
         run: python3 apps/ios/GPUStream/tests/bound_logs.py
@@ -141,5 +143,6 @@ jobs:
         if: always()
         with:
           name: gpu-stream-relay-${{ github.sha }}
-          path: .gpu-check-logs/*
+          path: gpu-check-logs/*
           retention-days: 7
+          if-no-files-found: error

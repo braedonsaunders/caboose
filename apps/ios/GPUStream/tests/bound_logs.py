@@ -3,7 +3,7 @@
 from pathlib import Path
 
 limit = 2 * 1024 * 1024
-for log in Path('.gpu-check-logs').glob('*.log'):
+for log in Path('gpu-check-logs').glob('*.log'):
     if log.stat().st_size > limit:
         with log.open('rb') as stream:
             prefix = b'[earlier output omitted; see hosted job log]\n'
