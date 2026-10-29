@@ -130,8 +130,9 @@ describe('tenants, administrators and invitations', () => {
     // The owner joins too, with the password they already have.
     const second = await identity.invite(team.id, { email: 'owner@example.com' }, sam!.userId)
     expect((await identity.inspectInvite(second.token)).accountExists).toBe(true)
-    await expect(identity.acceptInvite(second.token, { password: 'not it at all' })).rejects.toThrow(/not the password/)
-    await identity.acceptInvite(second.token, { password: 'correct horse' })
+    await expect(identity.acceptInvite(second.token, { password: 'not it at all' })).rejects.toThrow(/Sign in/)
+    const ownerSession = await identity.signIn('owner@example.com', 'correct horse', new Headers())
+    await identity.acceptInvite(second.token, {}, new Headers({ cookie: cookieFrom(ownerSession) }))
     expect((await identity.administrators(team.id)).map(admin => admin.email)).toEqual(['sam@example.com', 'owner@example.com'])
 
     const revoked = await identity.invite(team.id, { email: 'late@example.com' }, null)

@@ -84,8 +84,11 @@ export async function tenancyRoute(context: TenancyContext, request: IncomingMes
   if (invite?.[1]) {
     if (method === 'GET' && !invite[2]) return json(response, 200, await identity.inspectInvite(invite[1]))
     if (method === 'POST' && invite[2]) {
-      const accepted = await identity.acceptInvite(invite[1], await readJson(request))
-      passCookies(await identity.signIn(accepted.email, accepted.password, webHeaders(request)), response)
+      const origin = request.headers.origin
+      const protocol = request.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http'
+      if (origin && origin !== `${protocol}://${request.headers.host}`) return json(response, 403, { error: 'Invitation acceptance requires the same origin' })
+      const accepted = await identity.acceptInvite(invite[1], await readJson(request), webHeaders(request))
+      if (accepted.password) passCookies(await identity.signIn(accepted.email, accepted.password, webHeaders(request)), response)
       return json(response, 200, { accepted: true })
     }
     return json(response, 404, { error: 'not found' })
@@ -225,5 +228,5 @@ export class SignInThrottle {
 
 /** The routes that try a password or a one-time secret. */
 export function isSignInAttempt(method: string | undefined, path: string): boolean {
-  return method === 'POST' && (path.startsWith('/v1/auth/sign-in/') || path === '/v1/auth/change-password' || path === '/v1/setup' || /^\/v1\/invites\/[^/]+\/accept$/.test(path))
+  return method === 'POST' && (path.startsWith('/v1/auth/sign-in/') || path === '/v1/auth/change-password' || path.startsWith('/v1/auth/two-factor/') || path === '/v1/auth/request-password-reset' || path === '/v1/auth/reset-password' || path === '/v1/setup' || /^\/v1\/invites\/[^/]+\/accept$/.test(path))
 }
