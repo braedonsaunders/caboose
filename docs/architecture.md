@@ -1637,7 +1637,8 @@ the app card, and a detached view releases its layers.
   rotation and folding, replaces the guest display size; the complete picture fits while
   the app redraws. A long press on the title or the options button opens the tile's menu
   (full screen, width, ask an agent, redraw, close). Holding a dock icon opens Open, Pin/Unpin and per-window Close
-  actions; tapping it focuses its existing desktop window. An app asking for full screen covers the desktop
+  actions (`DockMenu`), as a menu with the tap as its primary action, so the hold itself
+  presents it; tapping it focuses its existing desktop window or opens the app. An app asking for full screen covers the desktop
   edge to edge: the bars, dock, status bar and home indicator step aside, and a pull down
   from the small tab at its top edge shrinks it back into its tile. The app is told when
   it is pulled back. Menus and

@@ -92,7 +92,7 @@ its offset, is replaced by a second connection, exits, and checks the closes tha
 
 ## Checking Switchyard on a device
 
-The layout and work-area geometry are unit-tested (`swift test --filter 'SwitchyardTests|DesktopGeometryTests|FreeDesktopLayoutTests|WindowTitleBarTests|QuickSwitchTests'`).
+The layout and work-area geometry are unit-tested (`swift test --filter 'SwitchyardTests|DesktopGeometryTests|FreeDesktopLayoutTests|WindowTitleBarTests|QuickSwitchTests|DockMenuTests'`).
 Run `sh scripts/check-desktop.sh` for the real-device checks, including external-display
 maximizing, browser controls and app-card toolbars on Duo and ordinary iPhones. The gestures
 and picture need a device with the computer awake. On the Desktop tab, with three apps open:
@@ -139,6 +139,11 @@ and picture need a device with the computer awake. On the Desktop tab, with thre
    the same holding Launchpad. On a TV, two-finger tap Launchpad on the phone's trackpad,
    then tap a row or Stay Here. While a strip is open, background the app, open a card, or
    lose the connection: the strip closes and nothing moves.
+9. On a Duo (tiled, opened and folded), an upright iPhone and an iPad: tap a dock app; it
+   opens or goes to its window. Hold a dock app: a menu offers Open, Pin or Unpin, and Close
+   for each of its windows by title; each does what it says, for a running app and for a
+   pinned one that is not running. A swipe up on the dock still opens Overview. On iPad Free
+   and a TV, hold (or secondary-click) a dock app for the same actions.
 
 ## How it renders
 

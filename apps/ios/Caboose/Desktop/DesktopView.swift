@@ -176,7 +176,7 @@ struct Dock: View {
                 }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.dockFrames[app.id] = $0 }
                 .popover(isPresented: Binding(get: { desktop.contextDockID == app.id }, set: { if !$0 { desktop.contextDockID = nil } })) {
-                    VStack(alignment: .leading, spacing: 16) { DockAppActions(app: app) }
+                    VStack(alignment: .leading, spacing: 16) { DockAppActions(app: app) { desktop.contextDockID = nil } }
                         .padding(20)
                         .presentationCompactAdaptation(.popover)
                 }

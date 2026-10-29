@@ -26,7 +26,10 @@ struct YardDock: View {
         let apps = Array(model.dockApps.prefix(max(2, Int((width - 32 - fixed) / (icon + 10)))))
         HStack(spacing: 10) {
             ForEach(apps) { app in
-                Button { model.openOnDesktop(app) } label: {
+                // A tap goes to the app; holding it offers Open, Pin and Close. A menu with a
+                // primary action shows on the hold itself, so neither the dock's swipe nor the
+                // system's bottom edge can take the press from it.
+                Menu { DockAppActions(app: app) } label: {
                     VStack(spacing: 3) {
                         Group {
                             if let image = model.appIcons[app.id] {
@@ -41,10 +44,13 @@ struct YardDock: View {
                             .frame(width: 4, height: 4)
                     }
                     .contentShape(Rectangle())
+                } primaryAction: {
+                    model.openOnDesktop(app)
                 }
+                .menuIndicator(.hidden)
                 .buttonStyle(.plain)
                 .accessibilityLabel(app.name)
-                .contextMenu { DockAppActions(app: app) }
+                .accessibilityHint("Hold for Open, Pin and Close.")
             }
             if !columns.isEmpty {
                 Divider().frame(height: 34).overlay(.white.opacity(0.3))
@@ -207,16 +213,28 @@ private struct Car: View {
     }
 }
 
-/// The same actions for a held dock icon in tiled and free desktops.
+/// The same actions for a held dock icon in tiled and free desktops (`DockMenu`).
 struct DockAppActions: View {
     @Environment(AppModel.self) private var model
     let app: HostClient.App
+    /// After an action, for a menu that does not close itself.
+    var done: () -> Void = {}
+
     var body: some View {
-        Button("Open", systemImage: "arrow.up.forward.app") { model.openOnDesktop(app) }
-        Button(model.pinnedApps.contains(where: { $0.id == app.id }) ? "Unpin" : "Pin", systemImage: "pin") { model.togglePin(app) }
-        ForEach(model.appWindows.filter { model.matches($0, app) }) { window in
-            Button("Close \(window.title.isEmpty ? app.name : window.title)", systemImage: "xmark", role: .destructive) {
-                model.session?.close(window)
+        let windows = model.appWindows.filter { model.matches($0, app) }
+        let actions = DockMenu.actions(appName: app.name, pinned: model.pinnedApps.contains { $0.id == app.id },
+                                       windows: windows.map { DockMenu.Window(id: $0.id, title: $0.title) })
+        ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+            switch action {
+            case .open:
+                Button(action.title, systemImage: "arrow.up.forward.app") { model.openOnDesktop(app); done() }
+            case .pin, .unpin:
+                Button(action.title, systemImage: action == .pin ? "pin" : "pin.slash") { model.togglePin(app); done() }
+            case .close(let id, _):
+                Button(action.title, systemImage: "xmark", role: .destructive) {
+                    if let window = model.session?.windows[id] { model.session?.close(window) }
+                    done()
+                }
             }
         }
     }
