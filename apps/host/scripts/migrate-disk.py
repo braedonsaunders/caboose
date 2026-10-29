@@ -241,7 +241,7 @@ def migrate(tx, root, mkfs, fsck):
     if present(tx.binding) or present(tx.staged) or present(tx.journal):
         raise RuntimeError('Migration artifacts or system binding already exist')
     archive_previous_rollback(tx, root)
-    for program in ('/usr/bin/cp', '/usr/bin/guestfish', '/usr/bin/prlimit', '/usr/bin/awk', mkfs, fsck):
+    for program in ('/usr/bin/cp', '/usr/bin/guestfish', '/usr/bin/prlimit', '/usr/bin/awk', '/usr/bin/getfattr', mkfs, fsck):
         trusted_executable(program)
     kernel = root / 'vmlinux'
     identity(kernel)

@@ -46,7 +46,7 @@ RUN cargo build --release --locked && cp target/release/caboose-disk /caboose-di
 FROM node:22-bookworm-slim
 ARG TARGETARCH
 RUN case "$TARGETARCH" in amd64) kernel=linux-image-amd64; qemu=qemu-system-x86 ;; arm64) kernel=linux-image-arm64; qemu=qemu-system-arm ;; *) exit 1 ;; esac && \
-    apt-get update && apt-get install -y --no-install-recommends iproute2 iptables procps qemu-utils xfsprogs util-linux python3 python3-guestfs erofs-utils guestfish supermin "$qemu" "$kernel" && rm -rf /var/lib/apt/lists/*
+    apt-get update && apt-get install -y --no-install-recommends iproute2 iptables procps qemu-utils xfsprogs util-linux python3 python3-guestfs erofs-utils btrfs-progs attr guestfish supermin "$qemu" "$kernel" && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=vmm /desk-vmm /usr/local/lib/desk-vmm
 RUN ln -s /usr/local/lib/desk-vmm/cloud-hypervisor /usr/local/bin/cloud-hypervisor
