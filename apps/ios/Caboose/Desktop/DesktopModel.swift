@@ -28,7 +28,9 @@ final class DesktopModel {
     /// seen from: title bars, the dock, the cursor and (through the DPI it asks Linux for)
     /// the apps' own text all grow by it, so a 4K TV across a room reads like a laptop.
     var ui: CGFloat = 1
-    var titleBarHeight: CGFloat { 30 * ui }
+    /// Every window's title bar: its controls' places for drawing and for hit-testing.
+    var titleBar: WindowTitleBar { WindowTitleBar(ui: ui, touch: directTouch) }
+    var titleBarHeight: CGFloat { titleBar.height }
     var dockHeight: CGFloat { 76 * ui }
     var dockBottomInset: CGFloat { 10 * ui }
     var maximizedFrame: CGRect {
@@ -128,13 +130,13 @@ final class DesktopModel {
                 let local = CGPoint(x: (point.x - content.minX) * pixelsPerPoint, y: (point.y - content.minY) * pixelsPerPoint)
                 return .content(id, local)
             }
-            // The traffic lights as DesktopWindow draws them: 12-point circles 8 apart after a
-            // 12-point inset, all scaled by `ui`; each takes half the gap on either side.
-            let x = (point.x - chrome.minX) / ui
-            if x < 28 { return .close(id) }
-            if x < 48 { return .minimize(id) }
-            if x < 68 { return .zoom(id) }
-            return .titleBar(id)
+            // The controls answer where DesktopWindow draws them, across the bar's height.
+            switch titleBar.control(at: CGPoint(x: point.x - chrome.minX, y: point.y - chrome.minY)) {
+            case .close: return .close(id)
+            case .minimize: return .minimize(id)
+            case .zoom: return .zoom(id)
+            case nil: return .titleBar(id)
+            }
         }
         return .none
     }

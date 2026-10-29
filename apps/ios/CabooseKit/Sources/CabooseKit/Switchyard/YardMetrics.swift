@@ -32,6 +32,18 @@ public struct YardMetrics: Equatable, Sendable {
 
     public var columnHeight: CGFloat { max(0, size.height - 2 * gap) }
 
+    /// The title bar at the top of every tile: Close and Full Screen, then the title. A tiled
+    /// window has no minimized state, so there is no Minimize.
+    public static let titleBar = WindowTitleBar(touch: true, controls: [.close, .zoom])
+    public var titleBar: WindowTitleBar { Self.titleBar }
+
+    /// The part of a tile the window itself fills, below its title bar. This, not the tile,
+    /// is the window's Linux geometry and where its input and popups are placed.
+    public func content(ofTile tile: CGRect) -> CGRect {
+        let bar = min(titleBar.height, tile.height)
+        return CGRect(x: tile.minX, y: tile.minY + bar, width: tile.width, height: tile.height - bar)
+    }
+
     /// How many windows a column stacks: two on a phone held upright, three elsewhere.
     public var maxStack: Int { size.height < 500 || size.width < 500 ? 2 : 3 }
 

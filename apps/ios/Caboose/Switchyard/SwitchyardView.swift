@@ -5,7 +5,7 @@ import SwiftUI
 /// in columns along a track.
 ///
 /// The windows keep every touch on them. The yard's own gestures live where the apps have
-/// nothing: the gaps between tiles resize them, the grabber at the top of a tile carries it,
+/// nothing: the gaps between tiles resize them, the title bar at the top of a tile carries it,
 /// the screen's side edges and the dock's column cars move along the track, and ⌘⌥ with the
 /// arrows, R, F, W, O, A and Return does all of it from a keyboard. The dock is always there.
 struct SwitchyardView: View {
@@ -129,7 +129,8 @@ struct SwitchyardView: View {
 
     private func coverFrame(_ id: Int, screen: CGSize) -> CGRect {
         let full = CGRect(origin: .zero, size: screen)
-        let tile = yard.tiles[id] ?? full
+        // It settles into the window's place in its tile, below the tile's title bar.
+        let tile = yard.contents[id] ?? full
         let p = yard.coverProgress
         return CGRect(x: tile.minX * p, y: tile.minY * p,
                       width: full.width + (tile.width - full.width) * p,
@@ -241,9 +242,9 @@ struct SwitchyardView: View {
     private func popupFrames(_ windows: [Int: RemoteWindow], size: CGSize) -> [Int: CGRect] {
         var roots: [Int: CGRect] = [:]
         for window in windows.values where !window.isAuxiliary {
-            guard let tile = yard.tiles[window.id] else { continue }
+            guard let tile = yard.tiles[window.id], let content = yard.contents[window.id] else { continue }
             let covering = yard.coverWindow == window.id
-            let container = covering ? coverFrame(window.id, screen: size) : tile
+            let container = covering ? coverFrame(window.id, screen: size) : content
             let natural = CGSize(width: window.frame.width / yard.pixelsPerPoint,
                                  height: window.frame.height / yard.pixelsPerPoint)
             let surface = DesktopGeometry.surfaceFrame(natural: natural, available: container.size,
@@ -252,7 +253,7 @@ struct SwitchyardView: View {
             if !covering, let carry = yard.carry, carry.window == window.id {
                 let factor = carry.rect.width / max(1, tile.width)
                 shown = CGRect(x: carry.rect.minX + surface.minX * factor,
-                               y: carry.rect.minY + surface.minY * factor,
+                               y: carry.rect.minY + (content.minY - tile.minY + surface.minY) * factor,
                                width: surface.width * factor, height: surface.height * factor)
             }
             roots[window.id] = shown

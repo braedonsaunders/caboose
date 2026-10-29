@@ -98,15 +98,18 @@ maximizing, browser controls and app-card toolbars on Duo and ordinary iPhones. 
 and picture need a device with the computer awake. On the Desktop tab, with three apps open:
 
 1. Upright iPhone: one full-width column; the side edges and the dock's cars move between
-   columns, and the lit car follows. Drag a grabber to the bottom quarter of another tile: they stack.
+   columns, and the lit car follows. Drag a title bar to the bottom quarter of another tile: they stack.
 2. Open a Duo, or turn a large phone on its side: two halves. Drag the gap: it ticks at ½ and ⅔ and settles
    on release; the apps redraw at the new width without a seam.
 3. iPad: thirds, the Tiled/Free choice in the toolbar, and ⌘⌥←/→, ⌘⌥⇧←/→, ⌘⌥R, ⌘⌥O on a
    hardware keyboard (hold ⌘ to see them listed). Plain ⌘C still copies in the app.
 4. Open a menu and a dialog in a tile: both appear over that tile. Park and wake: the same
    columns come back.
-5. Tap a tile to focus it, then use the trailing toolbar's Full Screen control; double-tap
-   the grabber, use its menu, or press ⌘⌥F: the same app card as
+5. Every tile has a title bar above its app, with red Close and green Full Screen at its
+   leading edge: the app's own top row (tabs, menus, address bar) is whole below it, and
+   a menu opened from that row lands where it was tapped. Tap a tile to focus it, then use
+   the trailing toolbar's Full Screen control; double-tap the title, press the green
+   button, use the ••• menu, or press ⌘⌥F: the same app card as
    Apps opens. Close the card: Desktop and its tile layout return. Rotate/fold while
    the card is up, hide/show its controls, then dismiss: both card and desktop fit their
    available viewport. Browser content keeps its own double taps. Two fingers tapped on a

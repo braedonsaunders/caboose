@@ -338,4 +338,18 @@ struct SwitchyardTests {
         layout.insert(9, in: pad)
         #expect(Set(layout.columns.map(\.id)).count == layout.columns.count)
     }
+
+    // MARK: Title bars
+
+    @Test func aTileIsItsTitleBarAndTheWindowBelowIt() {
+        let tile = CGRect(x: 10, y: 4, width: 400, height: 300)
+        let content = pad.content(ofTile: tile)
+        let bar = YardMetrics.titleBar.height
+        #expect(content == CGRect(x: 10, y: 4 + bar, width: 400, height: 300 - bar))
+        // Reserved once: the bar and the window together are exactly the tile.
+        #expect(content.maxY == tile.maxY && content.minY - tile.minY == bar)
+        // A tile shorter than its bar leaves the window no height rather than a negative one.
+        #expect(pad.content(ofTile: CGRect(x: 0, y: 0, width: 300, height: 20)).height == 0)
+        #expect(YardMetrics.titleBar.controls == [.close, .zoom])
+    }
 }

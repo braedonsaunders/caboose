@@ -65,24 +65,34 @@ struct DesktopWindow: View {
     let desktop: DesktopModel
     let icon: UIImage?
 
+    private var hoveredControl: WindowTitleBar.Control? {
+        switch desktop.hovered {
+        case .close(window.id): .close
+        case .minimize(window.id): .minimize
+        case .zoom(window.id): .zoom
+        default: nil
+        }
+    }
+
     var body: some View {
         let chrome = desktop.chromeRect(window)
         VStack(spacing: 0) {
             if !window.isAuxiliary && !window.isFullscreen {
                 let ui = desktop.ui
-                HStack(spacing: 8 * ui) {
-                    TrafficLight(color: .red, symbol: "xmark", hot: desktop.hovered == .close(window.id), ui: ui)
-                    TrafficLight(color: .yellow, symbol: "minus", hot: desktop.hovered == .minimize(window.id), ui: ui)
-                    TrafficLight(color: .green, symbol: "arrow.up.left.and.arrow.down.right", hot: desktop.hovered == .zoom(window.id), ui: ui)
+                let bar = desktop.titleBar
+                HStack(spacing: 0) {
+                    // Under a finger the symbols always show; a pointer shows them on hover.
+                    WindowControls(bar: bar, hovered: hoveredControl, showsSymbols: desktop.directTouch && !desktop.pointerHovering)
                     Spacer(minLength: 8 * ui)
-                    if let icon { Image(uiImage: icon).resizable().frame(width: 15 * ui, height: 15 * ui) }
+                    if let icon { Image(uiImage: icon).resizable().frame(width: 15 * ui, height: 15 * ui).padding(.trailing, 6 * ui) }
                     Text(window.title.isEmpty ? "Window" : window.title)
                         .font(.system(size: 13 * ui, weight: .semibold))
                         .lineLimit(1)
-                    Spacer(minLength: 60 * ui)
+                    Spacer(minLength: 8 * ui)
+                    // Balances the controls, so the title is centred on the window.
+                    Color.clear.frame(width: bar.controlsWidth)
                 }
-                .padding(.horizontal, 12 * ui)
-                .frame(height: desktop.titleBarHeight)
+                .frame(height: bar.height)
                 .background(.regularMaterial)
             }
             RemoteWindowSurface(window: window, pixelsPerPoint: desktop.pixelsPerPoint)
@@ -100,22 +110,6 @@ struct DesktopWindow: View {
         .onAppear {
             if window.isFullscreen && !model.windowCardOwnsGeometry { desktop.applyFullscreen(window, session: model.session) }
         }
-    }
-}
-
-struct TrafficLight: View {
-    let color: Color
-    let symbol: String
-    let hot: Bool
-    var ui: CGFloat = 1
-
-    var body: some View {
-        Circle()
-            .fill(color.gradient)
-            .frame(width: 12 * ui, height: 12 * ui)
-            .overlay {
-                if hot { Image(systemName: symbol).font(.system(size: 7 * ui, weight: .black)).foregroundStyle(.black.opacity(0.6)) }
-            }
     }
 }
 

@@ -1564,7 +1564,11 @@ the app card, and a detached view releases its layers.
   keyboard. Dismissing the keyboard, leaving the view and Return in a non-code app cancel
   the pending request.
   An external display shows the windows floating, resizing and
-  stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
+  stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free. Each
+  window there has a title bar above it with Close, Minimize and Zoom at its leading edge,
+  drawn and hit-tested from one `WindowTitleBar`: Mac-sized circles in a Mac-sized bar under
+  a pointer, which show their symbols on hover; under touch, the same circles further apart
+  in a bar at least 32 points tall, with their symbols always shown.
   Launchpad pages through the available apps, with its controls above the dock.
   An external display scene supplies its current size and scale to the shared desktop;
   changes reconfigure the display without transferring geometry ownership to an app card.
@@ -1581,21 +1585,23 @@ the app card, and a detached view releases its layers.
   offered only where a tile is at least 280 points wide and two halves fit, so an upright
   iPhone shows one full-width column, a Duo opened out or a large phone on its side two,
   an iPad three. New windows open beside the focused one and share the screen evenly until
-  it is full, then take columns of their own. Each tile's on-screen rect is that window's Linux geometry
-  (`configure`), so apps lay out at the tile's size and popups land over their tile; a
+  it is full, then take columns of their own. A tile is a title bar above its window: Close and
+  Full Screen as small coloured circles at its leading edge, each answering across its slice of
+  the bar's full height, the title, and an options button; there is no Minimize, because a tiled
+  window has no minimized state. The bar never covers the app. The tile's rect below the bar is
+  that window's Linux geometry (`configure`, from `YardMetrics.content(ofTile:)`), so apps lay out
+  at that size and its input, dialogs and popups are placed by it; a
   resize stretches the entire last picture without cropping until the new one arrives, and drags send geometry at
   most about eight times a second. The gaps resize (snapping to the presets, with haptic
-  detents). The grabber at a tile's top carries it to a new column, into a stack or onto
+  detents). Dragging a tile's title carries it to a new column, into a stack or onto
   another tile; a tap gives the tile the keyboard, and a double tap opens the same
-  full-screen app card as Apps. The Desktop toolbar's trailing Full Screen control opens
-  the focused app as that card; the grabber's menu and accessibility action, and ⌘⌥F
-  also open it. The card keeps Desktop selected
+  full-screen app card as Apps. The green button, the Desktop toolbar's trailing Full
+  Screen control, the tile's menu and accessibility action, and ⌘⌥F open the same card. The card keeps Desktop selected
   underneath; dismissing it restores the tile layout. Only the presented card sends window
   geometry while it is up. Its measured content area, including changes to its controls,
   rotation and folding, replaces the guest display size; the complete picture fits while
-  the app redraws. A long press or the options button opens the tile's menu (full screen,
-  width, ask an agent, redraw, close). Every tile also has a visible Close Window button
-  at its top-right edge. Holding a dock icon opens Open, Pin/Unpin and per-window Close
+  the app redraws. A long press on the title or the options button opens the tile's menu
+  (full screen, width, ask an agent, redraw, close). Holding a dock icon opens Open, Pin/Unpin and per-window Close
   actions; tapping it focuses its existing desktop window. An app asking for full screen covers the desktop
   edge to edge: the bars, dock, status bar and home indicator step aside, and a pull down
   from the small tab at its top edge shrinks it back into its tile. The app is told when

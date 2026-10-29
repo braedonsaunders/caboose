@@ -18,7 +18,7 @@ final class YardModel {
     private(set) var scroll: CGFloat = 0
     var pixelsPerPoint: CGFloat = 2
 
-    /// A tile being carried by its grabber.
+    /// A tile being carried by its title bar.
     struct Carry: Equatable {
         let window: Int
         /// The tile's rect on screen when it was picked up.
@@ -60,7 +60,7 @@ final class YardModel {
     var fullscreenWindow: Int? {
         layout.windows.first { session?.windows[$0]?.isFullscreen == true }
     }
-    /// The window zoomed to the whole screen by a double-tap on its grabber, ⌘⌥F or its menu.
+    /// The window zoomed to the whole screen, edge to edge, until it is pulled back.
     private(set) var zoomed: Int?
     /// The window covering the whole screen, edge to edge with no bars, until it is pulled
     /// back into its tile: zoomed, or full screen at the app's own request.
@@ -85,6 +85,12 @@ final class YardModel {
     /// Each window's tile on screen, scroll applied.
     var tiles: [Int: CGRect] {
         layout.frames(in: metrics).mapValues { $0.offsetBy(dx: -scroll, dy: 0) }
+    }
+
+    /// Where each window itself is on screen: its tile below the tile's title bar. This is
+    /// the window's Linux geometry, and where its input, dialogs and popups are placed.
+    var contents: [Int: CGRect] {
+        tiles.mapValues { metrics.content(ofTile: $0) }
     }
 
     /// The columns on screen, and one either side so a scroll or a move animates into view.
@@ -148,9 +154,9 @@ final class YardModel {
         }
         let scale = pixelsPerPoint
         let cover = coverWindow
-        for (id, tile) in tiles {
+        for (id, content) in contents {
             guard let window = session.windows[id] else { continue }
-            let rect = id == cover && screenSize != .zero ? CGRect(origin: .zero, size: screenSize) : tile
+            let rect = id == cover && screenSize != .zero ? CGRect(origin: .zero, size: screenSize) : content
             send(window, CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale).integral, session)
         }
     }
@@ -186,7 +192,7 @@ final class YardModel {
         let scale = pixelsPerPoint
         let available = coverWindow == nil || screenSize == .zero ? metrics.size : screenSize
         let bounds = CGRect(origin: .zero, size: available)
-        let around = parent.flatMap { $0.id == coverWindow ? bounds : tiles[$0.id] } ?? bounds
+        let around = parent.flatMap { $0.id == coverWindow ? bounds : contents[$0.id] } ?? bounds
         let margin: CGFloat = 12
         let width = min(dialog.frame.width / scale, max(1, available.width - 2 * margin))
         let height = min(dialog.frame.height / scale, max(1, available.height - 2 * margin))
@@ -431,7 +437,7 @@ final class YardModel {
 
     /// Available from every tile, even if the app has not reported its fullscreen state.
     func exitAppFullscreen(_ window: Int) {
-        guard let session, let remote = session.windows[window], let tile = tiles[window] else { return }
+        guard let session, let remote = session.windows[window], let tile = contents[window] else { return }
         let scale = pixelsPerPoint
         let target = CGRect(x: tile.minX * scale, y: tile.minY * scale,
                             width: tile.width * scale, height: tile.height * scale).integral
@@ -467,7 +473,7 @@ final class YardModel {
             guard let self else { return }
             self.zoomed = nil
             self.coverProgress = 0
-            if let session = self.session, let remote = session.windows[window], remote.isFullscreen, let tile = self.tiles[window] {
+            if let session = self.session, let remote = session.windows[window], remote.isFullscreen, let tile = self.contents[window] {
                 // The app asked for full screen; it is told it has left it.
                 let scale = self.pixelsPerPoint
                 let target = CGRect(x: tile.minX * scale, y: tile.minY * scale, width: tile.width * scale, height: tile.height * scale).integral
