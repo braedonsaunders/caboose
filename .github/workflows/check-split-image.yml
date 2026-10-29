@@ -29,7 +29,7 @@ jobs:
       - name: Install image inspection tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y erofs-utils initramfs-tools-core
+          sudo apt-get install -y erofs-utils btrfs-progs e2fsprogs initramfs-tools-core qemu-system-x86 qemu-system-arm
       - name: Make room for the disposable build
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - name: Build the split image
@@ -55,10 +55,12 @@ jobs:
           mkdir -p "$root" "$lower"
           cleanup() { sudo umount "$lower" 2>/dev/null || true; sudo umount "$root" 2>/dev/null || true; }
           trap cleanup EXIT
-          sudo mount -t ext4 -o ro,loop,offset=3145728 "$IMAGE_DIR/base.raw" "$root"
+          sudo mount -t btrfs -o ro,nologreplay,loop,offset=3145728 "$IMAGE_DIR/base.raw" "$root"
           sudo mount -t erofs -o ro,loop "$IMAGE_DIR/system.erofs" "$lower"
           sudo test -f "$root/etc/caboose-split-system"
           test -z "$(sudo find "$root/usr" "$root/opt" -mindepth 1 -print -quit)"
           sudo test -x "$lower/usr/bin/python3"
           sudo test -d "$lower/opt"
           echo 'Split image and initramfs inspected successfully.'
+      - name: Boot the compressed image with disposable writes
+        run: guest/image/check-compressed-boot.sh "${{ runner.temp }}/split-image" "${{ matrix.arch }}"

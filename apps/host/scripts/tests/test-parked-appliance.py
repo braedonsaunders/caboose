@@ -3,6 +3,7 @@ import inspect
 import mimetypes
 from pathlib import Path
 import unittest
+from unittest.mock import Mock
 
 spec = importlib.util.spec_from_file_location('appliance', Path(__file__).resolve().parents[2] / 'src/parked-files-appliance.py')
 module = importlib.util.module_from_spec(spec)
@@ -15,6 +16,28 @@ class Files:
     def filesize(self, path): return len(self.files[path])
     def read_file(self, path): return self.files[path]
     def is_file(self, path): return path in self.files
+
+class MountTests(unittest.TestCase):
+    def test_supported_roots_disable_replay(self):
+        for root in ('/dev/sda', '/dev/sda3'):
+            for filesystem, options in (('ext4', 'ro,noload'), ('btrfs', 'ro,nologreplay')):
+                with self.subTest(root=root, filesystem=filesystem):
+                    g = Mock()
+                    g.list_filesystems.return_value = {root: filesystem, '/dev/sda1': 'vfat'}
+                    module.mount_root(g)
+                    g.mount_options.assert_called_once_with(options, root, '/')
+                    g.mount_ro.assert_not_called()
+
+    def test_unknown_root_fails_without_mounting(self):
+        for filesystems in ({}, {'/dev/sda': 'xfs'}, {'/dev/sda3': 'xfs', '/dev/sda': 'ext4'},
+                            {'/dev/sda1': 'btrfs'}):
+            with self.subTest(filesystems=filesystems):
+                g = Mock()
+                g.list_filesystems.return_value = filesystems
+                with self.assertRaisesRegex(ValueError, 'unsupported root'):
+                    module.mount_root(g)
+                g.mount_options.assert_not_called()
+
 
 class MimeTests(unittest.TestCase):
     def test_guest_default_and_system_override_parity(self):

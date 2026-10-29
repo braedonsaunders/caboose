@@ -2,6 +2,8 @@
 import hashlib
 import importlib.util
 import json
+import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -22,6 +24,45 @@ class ApplianceTests(unittest.TestCase):
         self.clone.write_bytes(b'guest image')
         self.output = self.root / 'system.erofs'
 
+    def run_mount_script(self, filesystem, readonly):
+        # Execute the actual generated appliance shell with harmless tool
+        # substitutes. Verify selection and fail-closed behavior, not just text.
+        bindir = self.root / 'bin'
+        bindir.mkdir(exist_ok=True)
+        probe = bindir / 'blkid'
+        probe.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_FILESYSTEM"\n')
+        mount = bindir / 'mount'
+        mount.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+        probe.chmod(0o700)
+        mount.chmod(0o700)
+        return subprocess.run(['/bin/sh', '-c', m._mount_root_script(readonly)],
+                              env={**os.environ, 'PATH': str(bindir), 'TEST_FILESYSTEM': filesystem},
+                              capture_output=True, text=True, timeout=5)
+
+    def test_mounts_both_filesystems_with_correct_replay_and_compression(self):
+        for filesystem, readonly, options in (
+                ('ext4', True, 'ro,noload'), ('btrfs', True, 'ro,nologreplay'),
+                ('ext4', False, 'rw'), ('btrfs', False, 'rw,compress-force=zstd:1')):
+            with self.subTest(filesystem=filesystem, readonly=readonly):
+                result = self.run_mount_script(filesystem, readonly)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(),
+                                 ['-t', filesystem, '-o', options, '/dev/sda3', '/sysroot'])
+
+    def test_unknown_filesystem_never_mounts(self):
+        for filesystem in ('', 'xfs', 'ext4\nbtrfs', '$(touch bad)'):
+            with self.subTest(filesystem=filesystem):
+                result = self.run_mount_script(filesystem, False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, '')
+
+    def test_discard_is_only_enabled_for_writable_reclaim(self):
+        for readonly in (True, False):
+            args = m._disk_commands('/guestfish', self.clone, readonly)
+            self.assertNotIn('discard:enable', args)
+        with self.assertRaisesRegex(m.ApplianceError, 'read-only'):
+            m._disk_commands('/guestfish', self.clone, True, discard=True)
+
     def test_appliance_launch_requires_durable_guard(self):
         with self.assertRaisesRegex(m.ApplianceError, 'durable preparation guard'):
             m._guestfish(['/guestfish'], {}, self.root / 'log', 1, 1024, None)
@@ -41,8 +82,10 @@ class ApplianceTests(unittest.TestCase):
 
     def test_pack_uses_readonly_clone_and_network_disabled_vm(self):
         calls = []
+        scripts = []
         def guestfish(args, env, log, timeout, size_limit, guard):
             calls.append((args, env))
+            scripts.append(next(log.parent.glob('pack.sh')).read_text())
             self.output.write_bytes(b'image')
         with patch.object(m, 'trusted_executable', side_effect=lambda p: Path(p)), \
              patch.object(m, 'dependencies', return_value={}), patch.object(m, '_guestfish', guestfish):
@@ -55,6 +98,8 @@ class ApplianceTests(unittest.TestCase):
         self.assertIn('download', args)
         self.assertTrue(any('/sysroot/var/lib/caboose/system-overlay' in arg for arg in args))
         self.assertEqual(self.output.read_bytes(), b'image')
+        self.assertIn('-zlz4hc,12 -C65536 -E noinline_data', scripts[0])
+        self.assertIn('/tmp/caboose-fsck /sysroot/tmp/system.erofs', scripts[0])
 
     def test_failure_removes_only_partial_output(self):
         def fail(*args):
@@ -131,6 +176,11 @@ class ApplianceTests(unittest.TestCase):
         args = calls[0]
         self.assertNotIn('sh', [arg for i, arg in enumerate(args) if i == 0 or args[i - 1] != 'debug'])
         self.assertIn('rm-rf', args)
+        self.assertIn('discard:enable', args)
+        trim = args.index('fstrim')
+        self.assertEqual(args[trim - 2:trim + 5], ['sync', ':', 'fstrim', '/', ':', 'sync', ':'])
+        self.assertGreater(trim, args.index('rm-rf'))
+        self.assertLess(trim, args.index('shutdown'))
         self.assertEqual(args[args.index('set-network') + 1], 'false')
 
     def test_hooks_use_only_independent_clone_and_fresh_readonly_download(self):

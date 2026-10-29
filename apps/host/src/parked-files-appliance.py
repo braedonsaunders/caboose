@@ -110,6 +110,20 @@ def dispatch(g, request, mime):
     raise ValueError('unsupported operation')
 
 
+def mount_root(g):
+    filesystems = g.list_filesystems()
+    # A partitioned image must use its root partition; do not fall back to a
+    # different volume when that partition has an unsupported filesystem.
+    root = '/dev/sda3' if '/dev/sda3' in filesystems else '/dev/sda'
+    options = {'ext4': 'ro,noload', 'btrfs': 'ro,nologreplay'}
+    filesystem = filesystems.get(root)
+    if filesystem not in options:
+        raise ValueError('unsupported root filesystem')
+    # Read-only attachment alone uses a disposable COW overlay. Suppress replay
+    # as well so the parked view reflects the frozen disk, not recovered state.
+    g.mount_options(options[filesystem], root, '/')
+
+
 def main():
     import guestfs
     image = sys.argv[1]
@@ -126,13 +140,7 @@ def main():
         g.set_memsize(256)
         g.add_drive_opts(image, readonly=True, format='raw')
         g.launch()
-        filesystems = g.list_filesystems()
-        # Caboose images have a root partition; the whole-disk form is used
-        # by the small capability fixture. Never auto-mount other filesystems.
-        root = '/dev/sda3' if filesystems.get('/dev/sda3') == 'ext4' else '/dev/sda'
-        if filesystems.get(root) != 'ext4':
-            raise ValueError('unsupported root filesystem')
-        g.mount_ro(root, '/')
+        mount_root(g)
         print(json.dumps({'ready': True}), flush=True)
         mime = {}
         while True:

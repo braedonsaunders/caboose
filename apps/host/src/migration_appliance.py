@@ -181,7 +181,7 @@ def pack_system_image(clone, output, work, *, guestfish='/usr/bin/guestfish',
         commands = [str(fish), 'add-drive', str(clone), 'readonly:true', 'format:raw', ':',
                     'add-drive', str(scratch), 'format:raw', ':',
                     'set-network', 'false', ':', 'set-memsize', '1024', ':', 'run', ':',
-                    'mount-options', 'ro', '/dev/sda3', '/', ':',
+                    'debug', 'sh', _mount_root_script(True), ':',
                     'debug', 'sh', 'set -eu; for p in usr opt tmp; do test -d /sysroot/$p && test ! -L /sysroot/$p || exit 1; done; for p in var var/lib var/lib/caboose; do test ! -L /sysroot/$p || exit 1; done; test ! -e /sysroot/var/lib/caboose/system-overlay; test ! -L /sysroot/var/lib/caboose/system-overlay; test ! -e /sysroot/.caboose-system; test ! -L /sysroot/.caboose-system', ':',
                     'mkfs', 'ext4', '/dev/sdb', ':', 'mount', '/dev/sdb', '/tmp', ':' , 'debug', 'sh', 'mkdir -p /tmp/caboose-libs', ':',
                     'debug-upload', str(mkfs), '/tmp/caboose-mkfs', '493', ':',
@@ -198,7 +198,7 @@ def pack_system_image(clone, output, work, *, guestfish='/usr/bin/guestfish',
                   'mkdir /sysroot/tmp/stage; '
                   'cp -a --preserve=all /sysroot/usr /sysroot/opt /sysroot/tmp/stage/; '
                   'export LD_LIBRARY_PATH=/tmp/caboose-libs; '
-                  '/tmp/caboose-mkfs -E noinline_data /sysroot/tmp/system.erofs /sysroot/tmp/stage '
+                  '/tmp/caboose-mkfs -zlz4hc,12 -C65536 -E noinline_data /sysroot/tmp/system.erofs /sysroot/tmp/stage '
                   '>/sysroot/tmp/mkfs.log 2>&1 || { tail -c 16384 /sysroot/tmp/mkfs.log; exit 1; }; '
                   '/tmp/caboose-fsck /sysroot/tmp/system.erofs')
         script_file = directory / 'pack.sh'
@@ -234,12 +234,26 @@ def _environment(directory):
     return env
 
 
-def _disk_commands(fish, disk, readonly):
+def _mount_root_script(readonly):
+    """Use appliance tools only, with filesystem-specific replay/compression options."""
+    ext4 = 'ro,noload' if readonly else 'rw'
+    btrfs = 'ro,nologreplay' if readonly else 'rw,compress-force=zstd:1'
+    return ('set -eu; fs=$(blkid -p -s TYPE -o value /dev/sda3); '
+            f'case "$fs" in ext4) opts={ext4};; btrfs) opts={btrfs};; '
+            '*) echo "unsupported root filesystem" >&2; exit 1;; esac; '
+            'mount -t "$fs" -o "$opts" /dev/sda3 /sysroot')
+
+
+def _disk_commands(fish, disk, readonly, *, discard=False):
     args = [str(fish), 'add-drive', str(disk)]
     if readonly:
         args.append('readonly:true')
+    if discard:
+        if readonly:
+            raise ApplianceError('Cannot reclaim a read-only disk')
+        args.append('discard:enable')
     return args + ['format:raw', ':', 'set-network', 'false', ':', 'set-memsize', '1024', ':',
-                   'run', ':', 'mount-options', 'ro' if readonly else 'rw', '/dev/sda3', '/', ':']
+                   'run', ':', 'debug', 'sh', _mount_root_script(readonly), ':']
 
 
 def _require_space(work, required):
@@ -416,7 +430,7 @@ def prepare_system_disk(staged_clone, kernel_version, hook, initrd, work, *,
              f'test $(stat -c %h /sysroot{initrd_path}) -eq 1')
     with _appliance_directory(work, '.migration-layout-', guard) as directory:
         directory = Path(directory)
-        args = _disk_commands(fish, staged_clone, False) + [
+        args = _disk_commands(fish, staged_clone, False, discard=True) + [
             'debug', 'sh', check, ':', 'mkdir-p', '/etc/initramfs-tools/scripts/local-bottom', ':',
             'upload', str(hook.resolve()), '/etc/initramfs-tools/scripts/local-bottom/caboose-system', ':',
             'chmod', '0755', '/etc/initramfs-tools/scripts/local-bottom/caboose-system', ':',
@@ -424,5 +438,7 @@ def prepare_system_disk(staged_clone, kernel_version, hook, initrd, work, *,
             'upload', str(initrd.resolve()), initrd_path, ':',
             'touch', '/etc/caboose-split-system', ':',
             'rm-rf', '/usr', ':', 'rm-rf', '/opt', ':', 'mkdir', '/usr', ':', 'mkdir', '/opt', ':',
-            'sync', ':', 'shutdown']
+            # Both ext4 and Btrfs reclaim through filesystem-owned free-space
+            # maps. Never zero-fill Btrfs free space (compression defeats it).
+            'sync', ':', 'fstrim', '/', ':', 'sync', ':', 'shutdown']
         _guestfish(args, _environment(directory), directory / 'appliance.log', timeout, size + 1024 ** 3, guard)

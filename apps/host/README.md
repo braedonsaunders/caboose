@@ -563,7 +563,7 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
 | `node apps/host/scripts/check-terminal.mjs` | Opens a terminal through `/v1/terminal` (waking the computer), checks the login shell's environment, resizes, lists the session, detaches, reattaches from its offset and receives what was written meanwhile, then exits the shell with a code. A failed check hangs the session up. |
 | `node apps/host/scripts/check-fs.mjs` | Creates a temporary directory, uploads, lists, downloads a byte range, moves, and trashes its files and the directory. |
-| `bash apps/host/scripts/check-parked-appliance.sh <reflink-directory>` | Checks reflink and read-only libguestfs appliance access using a disposable ext4 image; it does not exercise parked Files access. |
+| `bash apps/host/scripts/check-parked-appliance.sh <reflink-directory>` | Checks reflink and read-only libguestfs appliance access using disposable ext4 and Btrfs images through the production appliance reader; verifies unchanged disk bytes. It does not exercise the host HTTP API. |
 | `node apps/host/scripts/check-storage.mjs` | On a disposable Linux microVM host started with `CABOOSE_SHARED_STORAGE=on`, `CABOOSE_SHARED_STORAGE_DELAY_MS=5000` and `CABOOSE_PARKED_FILES=on` (`CABOOSE_DISPOSABLE_CHECK=yes`, `CABOOSE_URL`, `CABOOSE_OWNER_TOKEN`): makes two throwaway computers, checks the same data in both becomes shared storage and reads back unchanged, wakes one during a pass, then backs one up as a phone does (every chunk checked against its hash), changes it and restores it by uploading every chunk, and deletes both. |
 | `node apps/host/scripts/check-parked-files.mjs` | On a dedicated disposable computer, checks parked list/stat/range and version failure, cancelled reads, change-feed fallback, and mutation after wake and thaw. Set `CABOOSE_DISPOSABLE_CHECK=yes`, `CABOOSE_URL`, and `CABOOSE_OWNER_TOKEN`. |
 | `node apps/host/scripts/check-agents.mjs [--agent <id>] [--install] [--open]` | Saves a file to `~/Downloads`, lists the registry, and runs a real task with the given agent (default: the computer's default agent) that asks before acting with an attachment, approves it through the API, and replies. The agent must be signed in; `--install` installs it first; `--open` also opens https://example.com on the owner's display. |
@@ -647,6 +647,11 @@ refuses to start while an `overlays/*.migration.json` journal exists. Run
 with disposable processes. The lock cannot fence VMMs started by older hosts.
 
 ### Migrate a legacy microVM disk
+
+The appliance accepts ext4 and Btrfs roots. Migration keeps the root filesystem and
+reclaims deleted system files with discard on its staged clone. Its conservative
+scratch-space reservation uses logical disk size: a 60 GiB source requires at least
+485 GiB free during packing, even when sparse or compressed.
 
 On the Linux machine that owns the image root, stop the host and make sure the
 computer is cold-stopped. Local snapshots, cold snapshot pointers and incomplete

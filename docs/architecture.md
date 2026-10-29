@@ -72,19 +72,28 @@ computer's disk is a reflink copy-on-write clone of the base: it costs no space 
 and the owner's installs and home persist. A clone is independent of the base once made,
 so a new base image reaches new computers only.
 
+New golden images have a 60 GiB sparse disk with a Btrfs root on partition 3, mounted
+with `compress-force=zstd:1,discard=async,noatime`. Existing ext4 computers and
+snapshots keep their filesystem. Compression savings depend on the data; neither
+a 3:1 ratio nor a 20 GiB physical limit is guaranteed. Host disk usage counts allocated
+blocks (including snapshots); tenant admission quotas do not enforce a write-time
+physical cap. Async discard requests reclamation from the block device; host space
+recovery depends on the runtime and backing filesystem honoring discard.
+
 A Linux host can opt new computers into a split image using `CABOOSE_SPLIT_IMAGE`.
 Its `base.raw`, `vmlinux`, `initrd` and `system.erofs` form one retained version. The
 host records the absolute directory and file hashes per computer before creating its
 disk; on wake it checks the system image, kernel and initramfs, and checks the base before
 creating a disk. Initramfs mounts the EROFS image read-only and
 mounts writable overlays for `/usr` and `/opt`, whose upper and work directories live on
-the computer's ext4 disk. Package and component updates persist there. Existing disks
+the computer's writable root disk. Package and component updates persist there. Existing disks
 and snapshots remain on their original image when the setting changes. An operator can
 explicitly migrate a cold-stopped legacy disk using the offline Linux migration tool. The
 tool retains the original disk and kernel, uses a crash-recovery journal, refuses parked
 memory, and holds host and Cloud Hypervisor-compatible disk locks. Guest filesystems and
 initramfs hooks run only in isolated appliances, using separate clones. Rollback requires
 explicit acknowledgement that writes since migration will be lost.
+The system image uses LZ4HC level 12 compression with 64 KiB physical clusters.
 The device uses read-only virtio-block; this does not establish DAX or a RAM saving.
 
 The image contains:
