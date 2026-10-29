@@ -39,7 +39,7 @@ for the QR code) with apt, dnf, pacman or zypper.
 The host listens on every address on port 7310 by default, so a phone on the same network
 reaches it. In WSL on Windows that needs mirrored networking, which
 [deploy/windows](../windows/README.md) sets up; under WSL's default NAT networking the
-installer prints the command for it instead of a pairing link. Traffic is plain HTTP on that network. To use Caboose away from home, use
+installer says so and prints the command for it. Traffic is plain HTTP on that network. To use Caboose away from home, use
 Tailscale or a server with a domain and HTTPS (`--domain`, [deploy/server](../server)).
 Never forward the port from your router.
 
