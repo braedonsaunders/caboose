@@ -81,8 +81,11 @@ public final class RemoteGame: Identifiable {
     /// Asks the computer to run the game instead (`game.decline`), with why. Called once, after
     /// the saves still on their way are written (for up to `declineSaveWait`).
     public var onDecline: ((String) -> Void)?
-    /// Whether `game.decline` went to the computer; the session sends it once.
-    var isDeclineSent = false
+    /// Whether the saves a decline waits for are written, so the computer may be asked.
+    public private(set) var isDeclineReady = false
+    /// The connection (`CabooseDisplaySession.connections`) `game.decline` went out on; the
+    /// session sends it once per connection that announced the game.
+    var declineSentOn: Int?
     /// How long, after asking, the computer has to take the game back (`game.destroy`).
     var declineAnswerTime: Duration = .seconds(10)
     /// How long a decline waits for the saves still on their way, in seconds.
@@ -150,6 +153,7 @@ public final class RemoteGame: Identifiable {
             guard let self else { return }
             await flushSaves(within: declineSaveWait)
             guard !isEnded else { return }
+            isDeclineReady = true
             onDecline?(reason)
             try? await Task.sleep(for: declineAnswerTime)
             guard !isEnded, state == .declined else { return }

@@ -254,11 +254,105 @@ import Testing
         try await helpers.until("game") { session.windows[7]?.game != nil }
         let game = try #require(session.windows[7]?.game)
         _ = resume.streams.last.take()
-        session.declineGame(game, reason: "the page is not cross-origin isolated")
+        game.decline("the page is not cross-origin isolated")
+        try await helpers.until("ready") { game.isDeclineReady }
         session.declineGame(game, reason: "again")
+        // The same game announced again on this connection does not ask twice.
+        resume.streams.last.server([(.gameCreate, self.game(1, window: 7))])
+        try await Task.sleep(for: .milliseconds(30))
         let sent = declines(resume.streams.last.take())
         #expect(sent.map { $0.body["id"]?.int } == [1])
         #expect(sent.first?.body["reason"] == "the page is not cross-origin isolated")
+        session.disconnect()
+    }
+
+    /// A decline sent on a connection that went before the computer answered is sent again on
+    /// the next connection that announces the game, once.
+    @Test func aDeclineTheConnectionLostIsSentAgainOnTheNext() async throws {
+        let session = makeSession()
+        session.connect()
+        try await resume.handshake(session, epoch: "e1", windows: [7])
+        resume.streams.last.server([(.gameCreate, game(1, window: 7))])
+        try await helpers.until("game") { session.windows[7]?.game != nil }
+        let game = try #require(session.windows[7]?.game)
+        game.decline("the page is not cross-origin isolated")
+        var first: [DisplayFrame] = []
+        try await helpers.until("first decline") {
+            first += declines(resume.streams.last.take())
+            return !first.isEmpty
+        }
+        try await resume.dropAndResume(session)
+        let marker = try #require(try await resume.handshake(session, epoch: "e1", windows: [7]))
+        resume.streams.last.server([(.gameCreate, self.game(1, window: 7)), (.pong, ["t_us": CBOR(marker)])])
+        var again: [DisplayFrame] = []
+        try await helpers.until("decline again") {
+            again += declines(resume.streams.last.take())
+            return !again.isEmpty
+        }
+        resume.streams.last.server([(.gameCreate, self.game(1, window: 7))])
+        try await Task.sleep(for: .milliseconds(30))
+        again += declines(resume.streams.last.take())
+        #expect(again.map { $0.body["id"]?.int } == [1])
+        session.disconnect()
+    }
+
+    /// While the saves a decline waits for are still being written, nothing is asked, even on a
+    /// new connection that announces the game; the decline goes once they are.
+    @Test func aDeclineWaitsForItsSavesAcrossAReconnect() async throws {
+        let session = makeSession()
+        session.connect()
+        try await resume.handshake(session, epoch: "e1", windows: [7])
+        resume.streams.last.server([(.gameCreate, game(1, window: 7))])
+        try await helpers.until("game") { session.windows[7]?.game != nil }
+        let game = try #require(session.windows[7]?.game)
+        game.declineSaveWait = 30
+        var release: CheckedContinuation<Void, Never>?
+        game.savesFlusher = { await withCheckedContinuation { release = $0 } }
+        game.decline("the page is not cross-origin isolated")
+        try await helpers.until("flushing") { release != nil }
+        try await resume.dropAndResume(session)
+        let marker = try #require(try await resume.handshake(session, epoch: "e1", windows: [7]))
+        resume.streams.last.server([(.gameCreate, self.game(1, window: 7)), (.pong, ["t_us": CBOR(marker)])])
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(declines(resume.streams.last.take()).isEmpty)
+        #expect(!game.isDeclineReady)
+        release?.resume()
+        var sent: [DisplayFrame] = []
+        try await helpers.until("decline") {
+            sent += declines(resume.streams.last.take())
+            return !sent.isEmpty
+        }
+        #expect(sent.map { $0.body["id"]?.int } == [1])
+        session.disconnect()
+    }
+
+    /// Saves written after a new connection's hello but before it announces the game send
+    /// nothing until the announcement.
+    @Test func aDeclineWaitsForTheGameToBeAnnouncedAgain() async throws {
+        let session = makeSession()
+        session.connect()
+        try await resume.handshake(session, epoch: "e1", windows: [7])
+        resume.streams.last.server([(.gameCreate, game(1, window: 7))])
+        try await helpers.until("game") { session.windows[7]?.game != nil }
+        let game = try #require(session.windows[7]?.game)
+        game.declineSaveWait = 30
+        var release: CheckedContinuation<Void, Never>?
+        game.savesFlusher = { await withCheckedContinuation { release = $0 } }
+        game.decline("the page is not cross-origin isolated")
+        try await helpers.until("flushing") { release != nil }
+        try await resume.dropAndResume(session)
+        let marker = try #require(try await resume.handshake(session, epoch: "e1", windows: [7]))
+        release?.resume()
+        try await helpers.until("ready") { game.isDeclineReady }
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(declines(resume.streams.last.take()).isEmpty) // hello, but no game.create yet
+        resume.streams.last.server([(.gameCreate, self.game(1, window: 7)), (.pong, ["t_us": CBOR(marker)])])
+        var sent: [DisplayFrame] = []
+        try await helpers.until("decline") {
+            sent += declines(resume.streams.last.take())
+            return !sent.isEmpty
+        }
+        #expect(sent.map { $0.body["id"]?.int } == [1])
         session.disconnect()
     }
 
@@ -277,7 +371,8 @@ import Testing
 
         let second = try #require(session.windows[7]?.game)
         session.disconnect()
-        session.declineGame(second, reason: "gone")
+        second.decline("gone")
+        try await Task.sleep(for: .milliseconds(30))
         #expect(declines(resume.streams.last.take()).isEmpty)
     }
 

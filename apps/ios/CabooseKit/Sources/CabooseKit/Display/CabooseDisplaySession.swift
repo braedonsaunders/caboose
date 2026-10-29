@@ -586,8 +586,9 @@ public final class CabooseDisplaySession: DisplaySession {
         guard runsGames, let window = windows[descriptor.window] else { return }
         announcedGames.insert(descriptor.id)
         if let game = window.game, game.id == descriptor.id {
-            // Declined while no connection could say so: this one does.
-            if let reason = game.declineReason { declineGame(game, reason: reason) }
+            // Declined (its saves written) while no connection could say so, or said on a
+            // connection that went before the computer answered: this one says it.
+            if game.isDeclineReady, let reason = game.declineReason { declineGame(game, reason: reason) }
             return
         }
         endGame(of: window)
@@ -599,13 +600,16 @@ public final class CabooseDisplaySession: DisplaySession {
         window.game = game
     }
 
-    /// Asks the computer to run `game` itself (`game.decline`): only while it is its window's
-    /// game on the current, ready connection, and once per game. A game declined while the
-    /// connection is down says so when the same server announces it again.
+    /// Asks the computer to run `game` itself (`game.decline`): only once its saves are
+    /// written, while it is its window's game, announced on the current ready connection, and
+    /// once per connection. A game declined while the connection is down, or whose decline
+    /// the computer never answered before the connection went, says so again when the same
+    /// server announces it on the next connection.
     func declineGame(_ game: RemoteGame, reason: String) {
-        guard !game.isDeclineSent, !game.isEnded, stream != nil, case .ready = state,
+        guard game.isDeclineReady, game.declineSentOn != connections, !game.isEnded, stream != nil,
+              case .ready = state, announcedGames.contains(game.id),
               let window = windows[game.descriptor.window], window.game === game else { return }
-        game.isDeclineSent = true
+        game.declineSentOn = connections
         send(.gameDecline(id: game.id, reason: reason))
     }
 
