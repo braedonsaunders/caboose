@@ -30,30 +30,30 @@ let created = false
 try {
   await call('/v1/session', { method: 'POST' })
   await call(file('mkdir', prefix), { method: 'POST' }); created = true
-  await call(file('content', `${prefix}/note`), { method: 'PUT', headers: { 'if-none-match': '*' }, body: payload })
-  const before = await readStat(`${prefix}/note`)
+  await call(file('content', `${prefix}/note.txt`), { method: 'PUT', headers: { 'if-none-match': '*' }, body: payload })
+  const before = await readStat(`${prefix}/note.txt`)
   await park()
   const listing = await (await call(file('list', prefix))).json()
-  assert(listing.items.some(item => item.name === 'note' && item.etag === before.etag), 'parked list differs from running guest')
+  assert(listing.items.some(item => item.name === 'note.txt' && item.etag === before.etag), 'parked list differs from running guest')
   await expectState('parked')
-  const stat = await readStat(`${prefix}/note`)
+  const stat = await readStat(`${prefix}/note.txt`)
   assert.deepEqual(stat, before, 'parked stat differs from guest stat')
   await expectState('parked')
-  const response = await call(file('content', `${prefix}/note`), { headers: { range: 'bytes=2-8', 'if-match': before.etag } })
+  const response = await call(file('content', `${prefix}/note.txt`), { headers: { range: 'bytes=2-8', 'if-match': before.etag } })
   assert.equal(response.status, 206)
   assert.equal(response.headers.get('content-range'), `bytes 2-8/${payload.length}`)
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload.subarray(2, 9))
   await expectState('parked')
-  const mismatch = await fetch(base + file('content', `${prefix}/note`), { headers: { ...headers, 'if-match': '"definitely-not-the-version"' }, signal: AbortSignal.timeout(timeout) })
+  const mismatch = await fetch(base + file('content', `${prefix}/note.txt`), { headers: { ...headers, 'if-match': '"definitely-not-the-version"' }, signal: AbortSignal.timeout(timeout) })
   assert.equal(mismatch.status, 412, 'a stale conditional read must fail')
   await mismatch.arrayBuffer()
   await expectState('parked')
 
   // A cancelled reader must not strand the lifecycle queue or corrupt its view.
   const abort = new AbortController()
-  const cancelled = fetch(base + file('content', `${prefix}/note`), { headers, signal: abort.signal }).catch(() => undefined)
+  const cancelled = fetch(base + file('content', `${prefix}/note.txt`), { headers, signal: abort.signal }).catch(() => undefined)
   abort.abort(); await cancelled
-  assert.deepEqual(await readStat(`${prefix}/note`), before)
+  assert.deepEqual(await readStat(`${prefix}/note.txt`), before)
   await expectState('parked')
 
   // Unsupported change-feed and mutation operations must wake and thaw safely.
@@ -61,9 +61,9 @@ try {
   await expectState('running')
   await park()
   const edited = Buffer.from('edited after thaw\n')
-  await call(file('content', `${prefix}/note`), { method: 'PUT', headers: { 'if-match': before.etag }, body: edited })
+  await call(file('content', `${prefix}/note.txt`), { method: 'PUT', headers: { 'if-match': before.etag }, body: edited })
   await expectState('running')
-  assert.deepEqual(Buffer.from(await (await call(file('content', `${prefix}/note`))).arrayBuffer()), edited)
+  assert.deepEqual(Buffer.from(await (await call(file('content', `${prefix}/note.txt`))).arrayBuffer()), edited)
   console.log('Parked list/stat/range, cancellation, change fallback and mutation thaw passed')
 } finally {
   if (created) await call(file('item', prefix), { method: 'DELETE' }).catch(error => console.error('Could not move check directory to Trash:', error.message))

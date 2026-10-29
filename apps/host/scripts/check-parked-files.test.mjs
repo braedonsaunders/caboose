@@ -19,7 +19,7 @@ async function runCheck(mode) {
       state = 'running'; const chunks = []; for await (const chunk of req) chunks.push(chunk); content = Buffer.concat(chunks); version = version === 'v1' ? 'v2' : 'v3'; return res.end('{}')
     }
     if (mode === 'unexpected-wake' && state === 'parked') state = 'running'
-    const item = { name: 'note', etag: version, size: content.length }
+    const item = { name: 'note.txt', etag: version, size: content.length }
     if (path === '/v1/fs/stat') return res.end(JSON.stringify(item))
     if (path === '/v1/fs/list') return res.end(JSON.stringify({ items: [item] }))
     if (path === '/v1/fs/content') {
