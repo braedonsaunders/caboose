@@ -150,14 +150,16 @@ private struct ClusterGlass: ViewModifier {
     }
 }
 
-/// Whether the software keyboard covers part of the phone's own window, so the cluster can go
-/// under it as the system's tab bar does. The keyboard's frame is taken in the coordinates of
-/// the screen it is on and measured against the app's window on that screen; a hardware
-/// keyboard's short shortcuts bar does not count.
+/// Whether the software keyboard covers part of the shell's own window, so the cluster can go
+/// under it as the system's tab bar does. The shell's window is the one `ShellWindowProbe`
+/// sits in, never whichever window is key, which may be the external display's desktop. The
+/// keyboard's frame is taken in its screen's coordinates and measured against that window; a
+/// keyboard on another screen, or a hardware keyboard's short shortcuts bar, does not count.
 @MainActor @Observable
 final class SoftwareKeyboard {
     static let shared = SoftwareKeyboard()
     private(set) var visible = false
+    @ObservationIgnored weak var window: UIWindow?
 
     private init() {
         let center = NotificationCenter.default
@@ -167,23 +169,34 @@ final class SoftwareKeyboard {
                 let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
                 let screen = note.object as? UIScreen
                 MainActor.assumeIsolated {
-                    SoftwareKeyboard.shared.visible = !hiding && SoftwareKeyboard.covered(by: frame, on: screen) > 120
+                    let keyboard = SoftwareKeyboard.shared
+                    keyboard.visible = !hiding && keyboard.covered(by: frame, on: screen) > 120
                 }
             }
         }
     }
 
-    /// How many points of the app's window on `screen` the keyboard's `frame` covers.
-    private static func covered(by frame: CGRect?, on screen: UIScreen?) -> CGFloat {
-        guard let frame, !frame.isEmpty else { return 0 }
-        let windows = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter { screen == nil || $0.screen === screen }
-            .compactMap(\.keyWindow)
-        guard let window = windows.first else { return 0 }
+    /// How many points of the shell's window the keyboard's `frame` on `screen` covers.
+    private func covered(by frame: CGRect?, on screen: UIScreen?) -> CGFloat {
+        guard let frame, !frame.isEmpty, let window else { return 0 }
+        if let screen, screen !== window.screen { return 0 }
         let local = window.convert(frame, from: window.screen.coordinateSpace)
         let overlap = local.intersection(window.bounds)
         return overlap.isNull ? 0 : overlap.height
+    }
+}
+
+/// Tells `SoftwareKeyboard` which window is the shell's: the one this invisible view is in.
+struct ShellWindowProbe: UIViewRepresentable {
+    func makeUIView(context: Context) -> Probe { Probe() }
+    func updateUIView(_ view: Probe, context: Context) {}
+
+    final class Probe: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            isUserInteractionEnabled = false
+            if let window { SoftwareKeyboard.shared.window = window }
+        }
     }
 }
 

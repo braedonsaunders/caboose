@@ -37,6 +37,7 @@ struct MainTabs: View {
             }
         }
         .environment(\.shellTabPlacement, placement)
+        .background { ShellWindowProbe().allowsHitTesting(false).accessibilityHidden(true) }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .tint(Brand.amber)
         .onChange(of: model.selectedTab) { _, _ in model.updateDeviceDesktop() }
