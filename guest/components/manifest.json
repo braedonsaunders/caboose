@@ -48,5 +48,12 @@
   "game/games/powder-toy/icon-license.txt",
   "gpu/install.sh",
   "gpu/caboose-gpu-run",
-  "gpu/profile.json"
+  "gpu/profile.json",
+  "apps/install.sh",
+  "apps/caboose-app",
+  "apps/appcore.py",
+  "apps/page.js",
+  "apps/world.js",
+  "apps/guide.md",
+  "apps/apps-mcp.mjs"
 ]

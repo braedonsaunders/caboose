@@ -17,6 +17,12 @@ From the repository root, `python3 guest/components/test_install.py` checks depe
 detection and APT failures with isolated shell fixtures. It needs Bash and Python 3, runs
 without root, Docker or network access, and stops before the first system-file write.
 
+`python3 guest/components/test_staging.py` checks that every file in `manifest.json` is
+staged where each builder runs the installer: the host image's `/app/guest` (for updating
+computers), the container image's `/tmp/bundle`, and the VM image's `/builder` directories
+that `guest/image/build-inside.sh` moves to `/tmp` and removes afterwards. Add a component's
+files to all three when you add them to the manifest.
+
 `pnpm install` then `guest/components/check-container.sh` starts
 a disposable Debian guest without components, upgrades it over the same exec transport,
 checks services (including terminal authentication and ownership), the runnable agent runner,

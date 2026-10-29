@@ -45,7 +45,7 @@ COPY --from=host-deps /src/apps/host/package.json ./apps/host/package.json
 COPY --from=host-build /src/apps/host/dist ./apps/host/dist
 # The identity database's own migrations, beside AppKit's in node_modules.
 COPY apps/host/migrations ./apps/host/migrations
-COPY guest/agentd/caboose-agentd.mjs guest/agentd/package.json guest/agentd/install.sh ./guest/agentd/
+COPY guest/agentd/caboose-agentd.mjs guest/agentd/agent-tools.mjs guest/agentd/package.json guest/agentd/install.sh ./guest/agentd/
 COPY guest/components ./guest/components
 COPY guest/files ./guest/files
 COPY guest/phone ./guest/phone
@@ -53,6 +53,9 @@ COPY guest/notifications ./guest/notifications
 COPY guest/terminal ./guest/terminal
 COPY guest/bridge ./guest/bridge
 COPY guest/flatpak ./guest/flatpak
+COPY guest/game ./guest/game
+COPY guest/gpu/install.sh guest/gpu/caboose-gpu-run guest/gpu/profile.json ./guest/gpu/
+COPY guest/apps/install.sh guest/apps/caboose-app guest/apps/appcore.py guest/apps/page.js guest/apps/world.js guest/apps/guide.md guest/apps/apps-mcp.mjs ./guest/apps/
 COPY guest/container/caboose-seccomp.json ./guest/container/caboose-seccomp.json
 COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
 COPY guest/catalog/icons ./guest/catalog/icons

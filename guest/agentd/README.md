@@ -128,7 +128,9 @@ a turn (including the history an agent replays on `session/load`) are not writte
   `WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
   `DBUS_SESSION_BUS_ADDRESS`, `GDK_BACKEND`, `QT_QPA_PLATFORM`, `MOZ_ENABLE_WAYLAND`,
   `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`, `GALLIUM_DRIVER`, `LIBVA_DRIVER_NAME`,
-  `GST_VA_ALL_DRIVERS` and `CABOOSE_VIDEO_SOCKET`. The host also snapshots installed catalog MCP commands into
+  `GST_VA_ALL_DRIVERS` and `CABOOSE_VIDEO_SOCKET`. When `/opt/caboose/apps/apps-mcp.mjs`
+  exists (`CABOOSE_APPS_MCP` overrides the path), `caboose-apps` (see `guest/apps`) follows
+  with the same environment, for making agent apps. The host also snapshots installed catalog MCP commands into
   `task.json` and the runner passes them, with `caboose-desktop`, to new, load and resume
   requests. `craftMcp: false` on task creation disables them for that
   task, including replies. See the Agents section of the architecture for the app list.
@@ -282,4 +284,6 @@ The runner supplies Caboose presentation guidance with each prompt: downloadable
 links, image previews, and complete self-contained `inline-html` widgets with responsive,
 accessible controls. Widgets have no network or file access; data comes from the agent’s
 computer tools. `window.Caboose.compose(message)` proposes a native follow-up for the owner
-to review and send, and cannot execute a tool itself.
+to review and send, and cannot execute a tool itself. When the owner asks for an app, or
+for something they will come back to, the guidance points the agent to a Caboose app
+(`guest/apps`) instead of a widget.

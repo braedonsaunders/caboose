@@ -52,9 +52,9 @@ COPY image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv /tmp/
 RUN bash /tmp/apps.sh && rm /tmp/apps.sh /tmp/desktop-apps.sh /tmp/desktop-apps.tsv
 COPY desktop-mcp /tmp/desktop-mcp
 RUN /tmp/desktop-mcp/install.sh
-COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /tmp/agentd/
+COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/package.json agentd/install.sh /tmp/agentd/
 RUN /tmp/agentd/install.sh && rm -rf /tmp/agentd
-COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /tmp/bundle/agentd/
+COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/package.json agentd/install.sh /tmp/bundle/agentd/
 COPY components /tmp/bundle/components
 COPY files /tmp/bundle/files
 COPY terminal /tmp/bundle/terminal
@@ -64,6 +64,7 @@ COPY bridge /tmp/bundle/bridge
 COPY flatpak /tmp/bundle/flatpak
 COPY game /tmp/bundle/game
 COPY gpu /tmp/bundle/gpu
+COPY apps/install.sh apps/caboose-app apps/appcore.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /tmp/bundle/apps/
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff

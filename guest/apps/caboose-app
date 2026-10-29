@@ -1,0 +1,693 @@
+#!/usr/bin/python3
+"""caboose-app: run, check and publish agent apps.
+
+    caboose-app run ID            open the app in its own window on this display
+    caboose-app check ID          validate ~/Apps/ID/app.json and its files
+    caboose-app publish ID        validate, then list it in the Apps screen
+    caboose-app list              every app under ~/Apps, with its state
+    caboose-app remove ID [--purge]
+                                  take it off the Apps screen; --purge deletes its
+                                  files and data as well
+    caboose-app guide             how to write an app
+
+Every command but run prints one JSON object. The format and the bridge are in guide.md
+beside this program; the rules it enforces are in appcore.py.
+"""
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+import appcore as apps  # noqa: E402
+
+HOME = os.environ.get('HOME') or os.path.expanduser('~')
+SHUTDOWN_GRACE_S = 2.0
+SIGNALS = {'TERM': signal.SIGTERM, 'KILL': signal.SIGKILL, 'INT': signal.SIGINT, 'HUP': signal.SIGHUP}
+
+
+def answer(value, code=0):
+    print(json.dumps(value, indent=2))
+    sys.exit(code)
+
+
+class Children:
+    """The processes this app started, each the leader of its own process group. Only these
+    groups are ever signalled, and shutdown waits a bounded time before SIGKILL."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.running = {}  # key -> (Popen, generation)
+
+    def count(self):
+        with self.lock:
+            return sum(1 for proc, _ in self.running.values() if proc.poll() is None)
+
+    def add(self, key, proc, generation):
+        with self.lock:
+            self.running[key] = (proc, generation)
+
+    def get(self, key):
+        with self.lock:
+            entry = self.running.get(key)
+        return entry[0] if entry else None
+
+    def forget(self, key):
+        with self.lock:
+            self.running.pop(key, None)
+
+    @staticmethod
+    def signal(proc, sig):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def stop(self, generation=None):
+        """Ends every process (or one page generation's), TERM then KILL after the grace."""
+        with self.lock:
+            chosen = [(key, proc) for key, (proc, gen) in self.running.items() if generation is None or gen == generation]
+        for _, proc in chosen:
+            self.signal(proc, signal.SIGTERM)
+        deadline = time.monotonic() + SHUTDOWN_GRACE_S
+        for _, proc in chosen:
+            try:
+                proc.wait(max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                pass
+            # The leader may be gone while others in its group still run.
+            self.signal(proc, signal.SIGKILL)
+        for key, proc in chosen:
+            try:
+                proc.wait(1)
+            except subprocess.TimeoutExpired:
+                pass
+            self.forget(key)
+
+
+def collect(stream, limit, sink):
+    """Reads a pipe to its end, keeping at most limit bytes."""
+    kept = 0
+    try:
+        while True:
+            chunk = stream.read1(65536)
+            if not chunk:
+                break
+            if kept < limit:
+                sink.append(chunk[:limit - kept])
+            kept += len(chunk)
+    finally:
+        stream.close()
+    return kept > limit
+
+
+def run(ident):
+    import gi
+    gi.require_version('Gtk', '3.0')
+    gi.require_version('Gdk', '3.0')
+    gi.require_version('WebKit2', '4.1')
+    gi.require_version('JavaScriptCore', '4.1')
+    gi.require_version('Soup', '3.0')
+    from gi.repository import Gdk, Gio, GLib, Gtk, JavaScriptCore, Soup, WebKit2
+    import base64
+
+    places = apps.Places(HOME)
+    app_dir = places.app(ident)
+    status = apps.check(places, ident)
+    if not status['ok']:
+        sys.stderr.write(f'{ident}: ' + '; '.join(status['errors']) + '\n')
+        sys.exit(1)
+    manifest = status['manifest']
+    # The page's console messages and errors, and this runtime's, go to the app's log when
+    # nobody reads the terminal, so the agent that made the app can see what went wrong.
+    log = places.log(ident)
+    if not os.isatty(1):
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        os.dup2(fd, 1)
+        os.dup2(fd, 2)
+        os.close(fd)
+        sys.stdout = os.fdopen(1, 'w', buffering=1, closefd=False)
+        sys.stderr = os.fdopen(2, 'w', buffering=1, closefd=False)
+    # Capabilities are read once, at start. A live-reloaded manifest cannot widen them.
+    capabilities = frozenset(manifest['capabilities'])
+    app_id = apps.application_id(ident)
+    files_dir = places.files(ident)
+    os.makedirs(files_dir, mode=0o700, exist_ok=True)
+    icon = os.path.join(app_dir, manifest['icon']) if manifest['icon'] else os.path.join(places.app_data(ident), 'icon.svg')
+    info = {'id': ident, 'name': manifest['name'], 'version': manifest['version'], 'dir': app_dir,
+            'dataDir': files_dir, 'capabilities': sorted(capabilities)}
+
+    # The app_id Wayland and X11 report is the desktop entry's name, so the window carries
+    # the entry's icon and title wherever Caboose shows it.
+    GLib.set_prgname(app_id)
+    Gdk.set_program_class(app_id)
+    GLib.set_application_name(manifest['name'])
+    # Without a GPU the shared-memory renderer is the one that draws on every compositor.
+    if not any(name.startswith('renderD') for name in (os.listdir('/dev/dri') if os.path.isdir('/dev/dri') else [])):
+        os.environ.setdefault('WEBKIT_DISABLE_DMABUF_RENDERER', '1')
+
+    with open(os.path.join(HERE, 'page.js'), encoding='utf-8') as handle:
+        page_script = handle.read().replace('__CABOOSE_APP__', json.dumps(info))
+    with open(os.path.join(HERE, 'world.js'), encoding='utf-8') as handle:
+        world_script = handle.read()
+    WORLD = 'caboose'
+
+    children = Children()
+    writers = {}  # spawn key -> the lock that serializes its input
+    state = {'generation': 0, 'document': None, 'view': None, 'window': None, 'reload': None, 'monitors': {}}
+
+    def event(payload):
+        view = state['view']
+        if view is None:
+            return False
+        script = f'__cabooseEvent({json.dumps(json.dumps(payload))})'
+        view.evaluate_javascript(script, -1, WORLD, None, None, None)
+        return False
+
+    def in_main(fn, *args):
+        GLib.idle_add(lambda: (fn(*args), False)[1])
+
+    def resolve(path):
+        return apps.split_path(path, HOME, files_dir)
+
+    def directory(path):
+        if path is None:
+            return files_dir
+        root, parts = resolve(path)
+        target = os.path.join(root, *parts)
+        if not os.path.isdir(target):
+            raise apps.AppError(f'cwd {path} is not a directory')
+        return target
+
+    def environment(env):
+        merged = dict(os.environ)
+        merged.update(apps.check_env(env))
+        return merged
+
+    def start(argv, params, stdin_pipe):
+        if children.count() >= apps.MAX_RUNNING:
+            raise apps.AppError(f'At most {apps.MAX_RUNNING} programs run at once for an app')
+        try:
+            return subprocess.Popen(apps.check_argv(argv), cwd=directory(params.get('cwd')),
+                                    env=environment(params.get('env')),
+                                    stdin=subprocess.PIPE if stdin_pipe else subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    start_new_session=True, close_fds=True)
+        except FileNotFoundError:
+            raise apps.AppError(f'{argv[0]} was not found') from None
+        except PermissionError:
+            raise apps.AppError(f'{argv[0]} is not executable') from None
+
+    # Bridge methods. Each takes params and either returns a value, or returns a callable
+    # that a worker thread runs (its result or AppError is the reply).
+
+    def do_exec(params):
+        stdin = params.get('stdin')
+        if stdin is not None and (not isinstance(stdin, str) or len(stdin) > apps.MAX_STDIN):
+            raise apps.AppError(f'stdin must be a string of at most {apps.MAX_STDIN} characters')
+        encoding = params.get('encoding', 'utf8')
+        if encoding not in ('utf8', 'base64'):
+            raise apps.AppError('encoding must be "utf8" or "base64"')
+        timeout = apps.check_timeout(params.get('timeoutMs')) / 1000
+        proc = start(params.get('argv'), params, stdin is not None)
+        deadline = time.monotonic() + timeout
+        key = f'exec:{proc.pid}'
+        children.add(key, proc, state['generation'])
+
+        def work():
+            out, err, truncated = [], [], [False, False]
+
+            def read(index, stream, sink):
+                truncated[index] = collect(stream, apps.MAX_OUTPUT, sink)
+            readers = [threading.Thread(target=read, args=(0, proc.stdout, out)),
+                       threading.Thread(target=read, args=(1, proc.stderr, err))]
+            for reader in readers:
+                reader.start()
+            # Input and the program share one deadline: a program that never reads a
+            # large input times out like any other.
+            timed_out = stdin is not None and apps.feed(proc.stdin, stdin.encode(), deadline) == 'timeout'
+            if not timed_out:
+                try:
+                    proc.wait(max(0.0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+            if timed_out:
+                Children.signal(proc, signal.SIGKILL)
+                proc.wait()
+            # A background grandchild may hold the pipes; it is part of the group.
+            for reader in readers:
+                reader.join(5)
+                if reader.is_alive():
+                    Children.signal(proc, signal.SIGKILL)
+                    reader.join()
+            children.forget(key)
+            code = proc.returncode
+            encode = (lambda data: base64.b64encode(data).decode()) if encoding == 'base64' else \
+                (lambda data: data.decode('utf-8', 'replace'))
+            return {'code': code if code >= 0 else None, 'signal': signal.Signals(-code).name[3:] if code < 0 else None,
+                    'stdout': encode(b''.join(out)), 'stderr': encode(b''.join(err)),
+                    'truncated': any(truncated), 'timedOut': timed_out}
+        return work
+
+    def do_spawn(params):
+        key = params.get('key')
+        if not isinstance(key, str) or not 1 <= len(key) <= 64 or children.get(f'spawn:{key}'):
+            raise apps.AppError('key must be a new string of at most 64 characters')
+        proc = start(params.get('argv'), params, True)
+        generation = state['generation']
+        children.add(f'spawn:{key}', proc, generation)
+
+        def pump(stream, kind):
+            import codecs
+            decoder = codecs.getincrementaldecoder('utf-8')('replace')
+            try:
+                while True:
+                    chunk = stream.read1(65536)
+                    text = decoder.decode(chunk, final=not chunk)
+                    if text and state['generation'] == generation:
+                        in_main(event, {'key': key, 'type': kind, 'data': text})
+                    if not chunk:
+                        break
+            finally:
+                stream.close()
+
+        def watch():
+            pumps = [threading.Thread(target=pump, args=(proc.stdout, 'stdout'), daemon=True),
+                     threading.Thread(target=pump, args=(proc.stderr, 'stderr'), daemon=True)]
+            for thread in pumps:
+                thread.start()
+            code = proc.wait()
+            for thread in pumps:
+                thread.join(5)
+            children.forget(f'spawn:{key}')
+            writers.pop(key, None)
+            if state['generation'] == generation:
+                in_main(event, {'key': key, 'type': 'exit', 'code': code if code >= 0 else None,
+                                'signal': signal.Signals(-code).name[3:] if code < 0 else None})
+        threading.Thread(target=watch, daemon=True).start()
+        return {'pid': proc.pid}
+
+    def process(params):
+        key = params.get('key')
+        proc = children.get(f'spawn:{key}') if isinstance(key, str) else None
+        if proc is None or proc.poll() is not None:
+            raise apps.AppError('That process is not running')
+        return proc
+
+    def do_write(params):
+        data = params.get('data')
+        if not isinstance(data, str) or len(data) > apps.MAX_STDIN:
+            raise apps.AppError('data must be a string')
+        proc = process(params)
+        lock = writers.setdefault(params['key'], threading.Lock())
+
+        def work():
+            # One write at a time per process, so concurrent writes never interleave.
+            with lock:
+                try:
+                    outcome = apps.feed(proc.stdin, data.encode(), time.monotonic() + apps.WRITE_TIMEOUT_S, close=False)
+                except ValueError:
+                    outcome = 'closed'
+            if outcome == 'closed':
+                raise apps.AppError('The process no longer reads its input')
+            if outcome == 'timeout':
+                raise apps.AppError(f'The process did not read its input within {apps.WRITE_TIMEOUT_S} seconds')
+            return True
+        return work
+
+    def do_close_stdin(params):
+        try:
+            process(params).stdin.close()
+        except BrokenPipeError:
+            pass
+        return True
+
+    def do_kill(params):
+        sig = SIGNALS.get(params.get('signal', 'TERM'))
+        if sig is None:
+            raise apps.AppError(f'signal must be one of {", ".join(SIGNALS)}')
+        Children.signal(process(params), sig)
+        return True
+
+    def files_op(fn):
+        def method(params):
+            root, parts = resolve(params.get('path'))
+            return lambda: fn(root, parts, params)
+        return method
+
+    def read(root, parts, _):
+        return base64.b64encode(apps.read_file(root, parts)).decode()
+
+    def write(root, parts, params):
+        data = params.get('data')
+        if not isinstance(data, str):
+            raise apps.AppError('data must be base64 text')
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except ValueError:
+            raise apps.AppError('data must be base64 text') from None
+        return apps.write_file(root, parts, raw)
+
+    def do_notify(params):
+        title = params.get('title')
+        body = params.get('body', '')
+        if not isinstance(title, str) or not title.strip() or len(title) > 200:
+            raise apps.AppError('title must be a non-empty string of at most 200 characters')
+        if not isinstance(body, str) or len(body) > 2000:
+            raise apps.AppError('body must be a string of at most 2000 characters')
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        hints = {'desktop-entry': GLib.Variant('s', app_id)}
+        bus.call('org.freedesktop.Notifications', '/org/freedesktop/Notifications',
+                 'org.freedesktop.Notifications', 'Notify',
+                 GLib.Variant('(susssasa{sv}i)', (manifest['name'], 0, icon, title.strip(), body, [], hints, -1)),
+                 GLib.VariantType('(u)'), Gio.DBusCallFlags.NONE, 5000, None, None)
+        return True
+
+    def do_open(params):
+        target = params.get('target')
+        if not isinstance(target, str) or not target:
+            raise apps.AppError('target must be a URL or a path')
+        url = apps.external_url(target)
+        if url is None:
+            if '://' in target or target.lower().startswith(('javascript:', 'data:', 'file:')):
+                raise apps.AppError('Only web, mail and phone links, and files in the home, can be opened')
+            root, parts = resolve(target)
+            path = os.path.join(root, *parts)
+            if not os.path.exists(path):
+                raise apps.AppError(f'{target} does not exist')
+            url = Gio.File.new_for_path(path).get_uri()
+        Gio.AppInfo.launch_default_for_uri(url, None)
+        return True
+
+    METHODS = {
+        'exec': ('exec', do_exec),
+        'spawn': ('exec', do_spawn),
+        'process.write': ('exec', do_write),
+        'process.closeStdin': ('exec', do_close_stdin),
+        'process.kill': ('exec', do_kill),
+        'files.read': ('files', files_op(read)),
+        'files.write': ('files', files_op(write)),
+        'files.list': ('files', files_op(lambda root, parts, _: apps.list_dir(root, parts))),
+        'files.stat': ('files', files_op(lambda root, parts, _: apps.stat_path(root, parts))),
+        'files.mkdir': ('files', files_op(lambda root, parts, _: (apps.make_dir(root, parts), True)[1])),
+        'files.remove': ('files', files_op(lambda root, parts, params: (apps.remove_path(root, parts, params.get('recursive') is True), True)[1])),
+        'notify': ('notify', do_notify),
+        'open': ('open', do_open),
+    }
+
+    def failure(error):
+        if isinstance(error, apps.AppError):
+            return str(error)
+        if isinstance(error, FileNotFoundError):
+            return 'No such file or directory'
+        if isinstance(error, OSError):
+            return error.strerror or str(error)
+        return f'{type(error).__name__}: {error}'
+
+    def admitted(token):
+        """True for a request from the document the view shows now. Script messages and
+        load events arrive in the order the page process sent them, so after a commit the
+        first token seen is the new document's, and any other token is refused."""
+        view = state['view']
+        if view is None or not apps.is_app_url(view.get_uri() or '', ident):
+            return False
+        if not isinstance(token, str) or len(token) != 32:
+            return False
+        if state['document'] is None:
+            state['document'] = token
+        return token == state['document']
+
+    def on_message(_manager, value, reply):
+        context = value.get_context()
+
+        def send(result):
+            reply.return_value(JavaScriptCore.Value.new_string(context, json.dumps(result)))
+
+        try:
+            request = json.loads(value.to_string())
+            if not isinstance(request, dict):
+                raise apps.AppError('Malformed request')
+            if not admitted(request.get('document')):
+                raise apps.AppError('This page has been replaced')
+            method, params = request.get('method'), request.get('params')
+            if method not in METHODS or not isinstance(params, dict):
+                raise apps.AppError(f'Unknown method {str(method)[:60]}')
+            capability, handler = METHODS[method]
+            if capability not in capabilities:
+                raise apps.AppError(f'This app does not declare the "{capability}" capability in app.json; '
+                                    'add it and start the app again')
+            result = handler(params)
+        except Exception as error:  # every failure is the caller's rejection
+            send({'ok': False, 'error': failure(error)})
+            return True
+        if not callable(result):
+            send({'ok': True, 'value': result})
+            return True
+
+        def work():
+            try:
+                outcome = {'ok': True, 'value': result()}
+            except Exception as error:
+                outcome = {'ok': False, 'error': failure(error)}
+            in_main(send, outcome)
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def serve(request):
+        uri = request.get_uri()
+        path = apps.resource_path(app_dir, ident, uri, manifest['entry'])
+        headers = Soup.MessageHeaders.new(Soup.MessageHeadersType.RESPONSE)
+        headers.append('Content-Security-Policy', apps.CSP)
+        headers.append('Cache-Control', 'no-store')
+        headers.append('X-Content-Type-Options', 'nosniff')
+        if path is None:
+            sys.stderr.write(f'{ident}: not found: {uri}\n')
+            body = GLib.Bytes.new(b'Not found')
+            response = WebKit2.URISchemeResponse.new(Gio.MemoryInputStream.new_from_bytes(body), body.get_size())
+            response.set_status(404, 'Not Found')
+            response.set_content_type('text/plain')
+        else:
+            kind = apps.content_type(path)
+            if kind.startswith('text/html'):
+                with open(path, 'rb') as handle:
+                    body = GLib.Bytes.new(apps.with_csp(handle.read()))
+                stream, length = Gio.MemoryInputStream.new_from_bytes(body), body.get_size()
+            else:
+                stream, length = Gio.File.new_for_path(path).read(None), os.path.getsize(path)
+            response = WebKit2.URISchemeResponse.new(stream, length)
+            response.set_status(200, 'OK')
+            # The response's MIME type is used as given, so it is the bare type; the charset
+            # reaches WebKit through the Content-Type header, which it parses.
+            response.set_content_type(kind.split(';')[0])
+            headers.replace('Content-Type', kind)
+        response.set_http_headers(headers)
+        request.finish_with_response(response)
+
+    def on_policy(view, decision, kind):
+        types = WebKit2.PolicyDecisionType
+        if kind == types.RESPONSE:
+            if not decision.is_mime_type_supported():
+                decision.ignore()
+                return True
+            return False
+        action = decision.get_navigation_action()
+        uri = action.get_request().get_uri()
+        if apps.is_app_url(uri, ident) or uri in ('about:blank', 'about:srcdoc') or \
+                uri.startswith(f'blob:{apps.SCHEME}://{ident}/'):
+            if kind == types.NEW_WINDOW_ACTION:
+                decision.ignore()
+                view.load_uri(uri)
+                return True
+            return False
+        decision.ignore()
+        # The default handler opens a web, mail or phone link the person chose; redirects and
+        # script-initiated navigations open nothing.
+        url = apps.external_url(uri)
+        if url and action.is_user_gesture() and not action.is_redirect():
+            try:
+                Gio.AppInfo.launch_default_for_uri(url, None)
+            except GLib.Error as error:
+                sys.stderr.write(f'{ident}: could not open {url}: {error.message}\n')
+        return True
+
+    def on_permission(_view, request):
+        # Camera, microphone, location and web notifications are not offered; apps notify
+        # through caboose.notify.
+        request.deny()
+        return True
+
+    def on_load(view, load_event):
+        if load_event == WebKit2.LoadEvent.COMMITTED:
+            # The new document has replaced the old one: the old one's programs end, its
+            # token is no longer admitted, and nothing it asked for is repeated.
+            previous = state['generation']
+            state['generation'] += 1
+            state['document'] = None
+            threading.Thread(target=children.stop, args=(previous,), daemon=True).start()
+
+    def schedule_reload():
+        if state['reload'] is not None:
+            GLib.source_remove(state['reload'])
+
+        def fire():
+            state['reload'] = None
+            if state['view'] is not None:
+                state['view'].reload_bypass_cache()
+            return False
+        state['reload'] = GLib.timeout_add(300, fire)
+
+    def watch(path, depth=0):
+        if path in state['monitors'] or len(state['monitors']) >= 2000 or depth > 12:
+            return
+        try:
+            monitor = Gio.File.new_for_path(path).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
+        except GLib.Error:
+            return
+        monitor.connect('changed', on_change)
+        state['monitors'][path] = monitor
+        try:
+            names = os.listdir(path)
+        except OSError:
+            return
+        for name in names:
+            child = os.path.join(path, name)
+            if not name.startswith('.') and name != 'node_modules' and os.path.isdir(child) and not os.path.islink(child):
+                watch(child, depth + 1)
+
+    def on_change(_monitor, file, _other, change):
+        path = file.get_path() or ''
+        name = os.path.basename(path)
+        if name.startswith('.') or '/node_modules/' in path:
+            return
+        if change == Gio.FileMonitorEvent.CREATED and os.path.isdir(path) and not os.path.islink(path):
+            watch(path)
+        if change in (Gio.FileMonitorEvent.CHANGES_DONE_HINT, Gio.FileMonitorEvent.CREATED, Gio.FileMonitorEvent.DELETED,
+                      Gio.FileMonitorEvent.MOVED_IN, Gio.FileMonitorEvent.MOVED_OUT, Gio.FileMonitorEvent.RENAMED):
+            if name == apps.MANIFEST:
+                changed = apps.check(places, ident)
+                if changed['ok'] and frozenset(changed['manifest']['capabilities']) != capabilities:
+                    sys.stderr.write(f'{ident}: capabilities changed in {apps.MANIFEST}; they apply when the app is next started\n')
+            schedule_reload()
+
+    def on_crash(view, _reason):
+        # Reload a page whose renderer died, but not one that dies again at once.
+        now = time.monotonic()
+        if now - state.get('crashed', -60) > 10:
+            view.reload()
+        state['crashed'] = now
+
+    def build(application):
+        # Each run of the app starts a fresh log. A second launch, which only raises this
+        # window, does not get here.
+        if not os.isatty(1):
+            os.ftruncate(1, 0)
+        manager = WebKit2.WebsiteDataManager(base_data_directory=places.web(ident),
+                                             base_cache_directory=places.web_cache(ident))
+        manager.get_cookie_manager().set_persistent_storage(os.path.join(places.web(ident), 'cookies.sqlite'),
+                                                             WebKit2.CookiePersistentStorage.SQLITE)
+        context = WebKit2.WebContext(website_data_manager=manager)
+        security = context.get_security_manager()
+        security.register_uri_scheme_as_secure(apps.SCHEME)
+        security.register_uri_scheme_as_cors_enabled(apps.SCHEME)
+        context.register_uri_scheme(apps.SCHEME, serve)
+
+        content = WebKit2.UserContentManager()
+        content.register_script_message_handler_with_reply('caboose', WORLD)
+        content.connect('script-message-with-reply-received::caboose', on_message)
+        content.add_script(WebKit2.UserScript.new_for_world(
+            world_script, WebKit2.UserContentInjectedFrames.TOP_FRAME,
+            WebKit2.UserScriptInjectionTime.START, WORLD, None, None))
+        content.add_script(WebKit2.UserScript.new(
+            page_script, WebKit2.UserContentInjectedFrames.TOP_FRAME,
+            WebKit2.UserScriptInjectionTime.START, None, None))
+
+        view = WebKit2.WebView(web_context=context, user_content_manager=content)
+        settings = view.get_settings()
+        settings.set_enable_developer_extras(os.environ.get('CABOOSE_APP_INSPECTOR') == '1')
+        settings.set_allow_file_access_from_file_urls(False)
+        settings.set_allow_universal_access_from_file_urls(False)
+        settings.set_javascript_can_access_clipboard(True)
+        settings.set_media_playback_requires_user_gesture(False)
+        settings.set_enable_webgl(True)
+        settings.set_enable_write_console_messages_to_stdout(True)
+        background = manifest['window'].get('background')
+        if background:
+            rgba = Gdk.RGBA()
+            rgba.parse(background)
+            view.set_background_color(rgba)
+        view.connect('decide-policy', on_policy)
+        view.connect('permission-request', on_permission)
+        view.connect('load-changed', on_load)
+        view.connect('notify::title', lambda v, _p: window.set_title(v.get_title() or manifest['name']))
+        view.connect('web-process-terminated', on_crash)
+
+        window = Gtk.ApplicationWindow(application=application, title=manifest['name'])
+        size = manifest['window']
+        window.set_default_size(size['width'], size['height'])
+        if 'minWidth' in size or 'minHeight' in size:
+            window.set_size_request(size.get('minWidth', -1), size.get('minHeight', -1))
+        try:
+            window.set_icon_from_file(icon)
+        except GLib.Error:
+            pass
+        window.add(view)
+        window.show_all()
+        state['view'], state['window'] = view, window
+        watch(app_dir)
+        view.load_uri(apps.app_url(ident))
+        view.grab_focus()
+
+    flags = getattr(Gio.ApplicationFlags, 'DEFAULT_FLAGS', Gio.ApplicationFlags.FLAGS_NONE)
+    application = Gtk.Application(application_id=app_id, flags=flags)
+
+    def activate(application):
+        if state['window'] is not None:
+            state['window'].present()
+        else:
+            build(application)
+
+    def shutdown(_application):
+        state['view'] = None
+        children.stop()
+
+    application.connect('activate', activate)
+    application.connect('shutdown', shutdown)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, lambda: (application.quit(), False)[1])
+    sys.exit(application.run([sys.argv[0]]))
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ('-h', '--help', 'help'):
+        print(__doc__.strip())
+        return
+    command, rest = argv[1], argv[2:]
+    places = apps.Places(HOME)
+    try:
+        if command == 'guide' and not rest:
+            with open(os.path.join(HERE, 'guide.md'), encoding='utf-8') as handle:
+                sys.stdout.write(handle.read())
+            return
+        if command == 'list' and not rest:
+            answer({'apps': apps.list_apps(places)})
+        if command in ('run', 'check', 'publish') and len(rest) == 1:
+            ident = apps.check_id(rest[0])
+            if command == 'run':
+                run(ident)
+            result = apps.check(places, ident) if command == 'check' else apps.publish(places, ident)
+            answer(result, 0 if result['ok'] else 1)
+        if command == 'remove' and len(rest) in (1, 2) and (len(rest) == 1 or rest[1] == '--purge'):
+            answer(apps.remove(places, apps.check_id(rest[0]), purge=len(rest) == 2))
+    except apps.AppError as error:
+        answer({'ok': False, 'errors': [str(error)]}, 1)
+    sys.stderr.write(__doc__.strip() + '\n')
+    sys.exit(2)
+
+
+if __name__ == '__main__':
+    main(sys.argv)
