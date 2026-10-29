@@ -21,7 +21,7 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 ```sh
 brew install xcodegen
 cd apps/ios
-cp Caboose/Config/Local.xcconfig.example Caboose/Config/Local.xcconfig   # optional: pre-fill your host
+cp Caboose/Config/Local.xcconfig.example Caboose/Config/Local.xcconfig   # optional: pre-fill your host in Debug builds
 xcodegen generate
 open Caboose.xcodeproj
 ```
