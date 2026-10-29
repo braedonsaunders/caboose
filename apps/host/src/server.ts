@@ -1359,6 +1359,9 @@ export function createCabooseServer(options: ComputerPieces & {
       const routed = target(path, principal)
       if (routed === 'forbidden') return json(response, 403, { error: 'forbidden' })
       if (!routed) return json(response, 404, { error: 'computer not found' })
+      // Handlers that read the request's own URL (the files relay, parked Files) see the
+      // computer's path, as a phone's request would carry it.
+      if (routed.path !== path) request.url = routed.path + new URL(request.url ?? '/', 'http://localhost').search
       if (await routed.runtime.handle(request, response, routed.path, principal) === NOT_FOUND) return json(response, 404, { error: 'not found' })
     })().catch(error => {
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })

@@ -17,10 +17,10 @@ const MiB = 1024 * 1024
 const sha = data => createHash('sha256').update(data).digest('hex')
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-async function call(path, { method = 'GET', body, raw, bearer = token, expect = [200], timeout = 600_000 } = {}) {
+async function call(path, { method = 'GET', body, raw, headers = {}, bearer = token, expect = [200], timeout = 600_000 } = {}) {
   const response = await fetch(base + path, {
     method, signal: AbortSignal.timeout(timeout),
-    headers: { authorization: `Bearer ${bearer}`, ...(raw ? { 'content-type': 'application/octet-stream' } : body === undefined ? {} : { 'content-type': 'application/json' }) },
+    headers: { authorization: `Bearer ${bearer}`, ...headers, ...(raw ? { 'content-type': 'application/octet-stream' } : body === undefined ? {} : { 'content-type': 'application/json' }) },
     ...(raw ? { body: raw } : body === undefined ? {} : { body: JSON.stringify(body) }),
   })
   const bytes = Buffer.from(await response.arrayBuffer())
@@ -40,11 +40,23 @@ async function until(what, check, ms = 600_000) {
 }
 const health = () => call('/v1/health')
 async function write(id, path, data) {
-  await call(scoped(id, file('content', path)), { method: 'PUT', raw: data, expect: [200, 201, 204] })
+  // The file service creates with If-None-Match and replaces only the version it names.
+  const existing = await fetch(base + scoped(id, file('stat', path)), { headers: { authorization: `Bearer ${token}` } })
+  const precondition = existing.ok ? { 'if-match': (await existing.json()).etag } : { 'if-none-match': '*' }
+  if (!existing.ok) await existing.arrayBuffer()
+  await call(scoped(id, file('content', path)), { method: 'PUT', raw: data, headers: precondition, expect: [200, 201, 204] })
 }
 async function read(id, path) { return call(scoped(id, file('content', path))) }
 async function park(id) { await call(scoped(id, '/v1/session/park'), { method: 'POST' }) }
-async function wake(id) { await call(scoped(id, '/v1/session'), { method: 'POST' }) }
+async function wake(id) {
+  await call(scoped(id, '/v1/session'), { method: 'POST' })
+  // Guest component updates run after a wake; files are written once they finish.
+  await until('the guest components to be current', async () => {
+    const upgrade = (await call(scoped(id, '/v1/computer'))).upgrade
+    if (upgrade?.state === 'failed') throw new Error(`Component update failed: ${upgrade.message}`)
+    return !upgrade || upgrade.state === 'succeeded'
+  })
+}
 
 let tenant
 const made = []
@@ -63,7 +75,7 @@ try {
   for (const id of made) {
     await wake(id)
     await write(id, 'storage-check.bin', shared)
-    await call(scoped(id, '/v1/session/park'), { method: 'POST' })
+    await park(id)
   }
   const after = await until('both disks to be passed', async () => {
     const status = (await health()).sharedStorage
