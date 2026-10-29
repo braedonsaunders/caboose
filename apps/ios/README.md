@@ -305,6 +305,22 @@ A simulator or macOS report describes that host's GPU, not the phone. The report
 feature query, not a rendering test or a complete Khronos profile. Game compatibility
 still requires a real replay with the reported features.
 
+The signed Debug app has an opt-in launch diagnostic. With the rebuilt GPU framework
+installed, launch it with `CABOOSE_GPU_CAPABILITIES=1` in the app's environment:
+
+```sh
+xcrun devicectl device process launch --device "$DEVICE" --terminate-existing \
+  --environment-variables '{"CABOOSE_GPU_CAPABILITIES":"1"}' com.braedonsaunders.caboose
+xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer \
+  --domain-identifier com.braedonsaunders.caboose \
+  --source Library/Caches/CabooseDiagnostics/gpu-capabilities.json \
+  --destination /tmp/caboose-phone-gpu-capabilities.json
+```
+
+Wait for the background query to finish before copying. Each requested run removes the
+previous report first, so a failed query cannot leave old evidence in its place. The
+hook is absent from Release builds and does nothing on an ordinary launch.
+
 - **One stream at a time.** GFXReconstruct's decoder keeps process-wide state, so one player
   replays at a time; a player started while another replays waits until that one stops.
 - **Compression.** Streams are uncompressed or zlib-compressed; LZ4 and Zstd blocks end the
