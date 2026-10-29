@@ -3,7 +3,7 @@ import { mkdir, open, unlink } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 export interface FreezeBranch { path: string; frozen: boolean }
-export type ParkedFreezeIntent = { version: 1; id: string } | { version: 2; id: string; branches: FreezeBranch[] }
+export type ParkedFreezeIntent = { version: 1; id: string } | { version: 2; id: string; branches: FreezeBranch[]; homeDevice?: number }
 const MAX_INTENT_BYTES = 128 * 1024
 
 function validateBranches(value: unknown): FreezeBranch[] {
@@ -27,9 +27,10 @@ async function syncDirectory(path: string): Promise<void> {
 export class ParkedFilesJournal {
   constructor(private readonly path: string) {}
 
-  async begin(branches?: FreezeBranch[]): Promise<ParkedFreezeIntent> {
+  async begin(branches?: FreezeBranch[], homeDevice?: number): Promise<ParkedFreezeIntent> {
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })
-    const intent: ParkedFreezeIntent = branches === undefined ? { version: 1, id: randomUUID() } : { version: 2, id: randomUUID(), branches: validateBranches(branches) }
+    if (homeDevice !== undefined && (!Number.isSafeInteger(homeDevice) || homeDevice < 0 || branches === undefined)) throw new Error('Invalid parked Files recovery intent')
+    const intent: ParkedFreezeIntent = branches === undefined ? { version: 1, id: randomUUID() } : { version: 2, id: randomUUID(), branches: validateBranches(branches), ...(homeDevice === undefined ? {} : { homeDevice }) }
     const file = await open(this.path, 'wx', 0o600)
     try { await file.writeFile(JSON.stringify(intent) + '\n'); await file.sync() }
     finally { await file.close() }
@@ -53,7 +54,10 @@ export class ParkedFilesJournal {
     const record = value as Record<string, unknown>
     if (typeof record.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(record.id)) throw new Error('Invalid parked Files recovery intent')
     if (record.version === 1 && Object.keys(record).sort().join(',') === 'id,version') return { version: 1, id: record.id }
-    if (record.version === 2 && Object.keys(record).sort().join(',') === 'branches,id,version') return { version: 2, id: record.id, branches: validateBranches(record.branches) }
+    if (record.version === 2 && ['branches,id,version', 'branches,homeDevice,id,version'].includes(Object.keys(record).sort().join(','))) {
+      if (record.homeDevice !== undefined && (typeof record.homeDevice !== 'number' || !Number.isSafeInteger(record.homeDevice) || record.homeDevice < 0)) throw new Error('Invalid parked Files recovery intent')
+      return { version: 2, id: record.id, branches: validateBranches(record.branches), ...(record.homeDevice === undefined ? {} : { homeDevice: record.homeDevice as number }) }
+    }
     throw new Error('Invalid parked Files recovery intent')
   }
 

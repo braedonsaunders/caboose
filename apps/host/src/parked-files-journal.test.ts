@@ -38,8 +38,9 @@ it('persists exact branch state and rejects overlapping or unsafe paths', async 
       await expect(journal.begin(branches)).rejects.toThrow('Invalid')
     }
     const branches = [{ path: '/system.slice/a.service', frozen: false }, { path: '/user.slice', frozen: true }]
-    const intent = await journal.begin(branches)
-    expect(await journal.read()).toEqual({ version: 2, id: intent.id, branches })
+    await expect(journal.begin(branches, -1)).rejects.toThrow('Invalid')
+    const intent = await journal.begin(branches, 64769)
+    expect(await journal.read()).toEqual({ version: 2, id: intent.id, branches, homeDevice: 64769 })
     await journal.clear(intent.id)
   } finally { await rm(root, { recursive: true, force: true }) }
 })

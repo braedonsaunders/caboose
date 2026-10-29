@@ -215,7 +215,7 @@ def prepare(root='/sys/fs/cgroup', proc='/proc'):
     nodes = cgroup_tree(root)
     trusted = recovery_ancestry(proc)
     check_control_plane(trusted, proc)
-    return branch_states(nodes, trusted, root)
+    return {'branches': branch_states(nodes, trusted, root), 'homeDevice': os.stat('/home/caboose').st_dev}
 
 
 def freeze(recorded, root='/sys/fs/cgroup', proc='/proc'):
