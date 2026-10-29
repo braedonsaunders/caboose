@@ -19,8 +19,8 @@ RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
 FROM debian:trixie-slim AS gpu
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates git cmake ninja-build g++ python3 pkg-config \
-      libx11-dev libx11-xcb-dev libxcb1-dev libxrandr-dev libwayland-dev wayland-protocols && \
+      ca-certificates git cmake ninja-build g++ python3 python3-venv libpython3-dev pkg-config \
+      libx11-dev libx11-xcb-dev libxcb1-dev libxcb-keysyms1-dev libxrandr-dev libwayland-dev wayland-protocols && \
     rm -rf /var/lib/apt/lists/*
 COPY gpu /gpu
 ARG GPU_BUILD_JOBS=2

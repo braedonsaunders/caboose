@@ -370,7 +370,9 @@ impl State {
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         for id in self.windows.parent_first() {
             let Some(w) = self.windows.get(id) else { continue };
-            let mapped = w.surface.wl_surface().is_some_and(|s| Self::is_mapped(&s));
+            // A Vulkan application whose stream the client renders never presents here, so its
+            // X11 window is shown once X maps it, without a buffer (docs/gpu-stream.md).
+            let mapped = w.surface.wl_surface().is_some_and(|s| Self::is_mapped(&s)) || self.streams_unbuffered(id);
             let parent_announced = w.parent.is_none_or(|p| self.windows.get(p).is_some_and(|p| p.announced.is_some()));
             if !mapped || !parent_announced {
                 if w.announced.is_some() {

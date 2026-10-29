@@ -17,7 +17,7 @@ calls it makes. The design, the relay in caboose-display and the protocol are in
 guest/gpu/build.sh /usr/local/lib/caboose-gpu
 ```
 
-needs git, cmake, ninja, a C++17 compiler, python3 and the X11, XCB and Wayland development
+needs git, cmake, ninja, a C++17 compiler, python3 with venv and its shared library (the profiles layer's build installs its Python requirements and freezes a tool with PyInstaller) and the X11, XCB (with xcb-keysyms) and Wayland development
 headers, and fetches, at the commits of Vulkan SDK 1.4.363.0:
 
 - the Khronos mock ICD from Vulkan-Tools, a Vulkan driver that accepts every call and
@@ -47,12 +47,23 @@ connected client renders Vulkan streams, the command runs unchanged.
 
 ## Checking
 
-`caboose-display-probe --gpu-save DIR` takes streams like a client and writes each to
-`DIR/gpu-<id>.gfxr`; `gfxrecon-replay` from the same Vulkan SDK replays it on any GPU, for
+```sh
+guest/display/scripts/dev.sh cargo build
+guest/gpu/check.sh            # in the display's dev container; leaves guest/gpu/out/gpu-check.gfxr
+```
+
+builds the driver and layers into `guest/gpu/out/caboose-gpu` the first time (the container
+gets the build dependencies, Vulkan's loader and `vkcube`), starts a private caboose-display,
+and runs `vkcube --use_staging` under `caboose-gpu-run` while `caboose-display-probe
+--gpu-save` takes its stream like a client. It checks that the probe gets `gpu.create` for the
+window, that the window sends no pictures, and that the saved stream is a GFXReconstruct
+capture. `CABOOSE_DISPLAY_CPUS`, `CABOOSE_DISPLAY_MEMORY` (default 2 and 3g) and
+`CABOOSE_GPU_JOBS` (default 2) bound it. `bash guest/gpu/check.sh --here` runs the same steps
+as root on a computer with everything installed.
+
+The saved stream replays on any GPU with `gfxrecon-replay` from Vulkan SDK 1.4.363.0, for
 example on a Mac with MoltenVK:
 
 ```sh
-caboose-display-probe --gpu-save /tmp/streams --duration 20 --json &
-caboose-gpu-run -- vkcube --wsi xcb --c 300
-gfxrecon-replay --remove-unsupported -m rebind /tmp/streams/gpu-1.gfxr
+gfxrecon-replay --remove-unsupported -m rebind guest/gpu/out/gpu-check.gfxr
 ```

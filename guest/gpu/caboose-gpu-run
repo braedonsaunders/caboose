@@ -162,6 +162,7 @@ def main(argv):
         pass
     if not isinstance(mode, dict) or mode.get('mode') != 'handoff':
         # No client renders it: the application runs here, on this computer's own driver.
+        print(f'caboose-gpu-run: no client renders Vulkan streams ({mode!r}); running {name} here', file=sys.stderr)
         sock.close()
         fifo.unlink(missing_ok=True)
         os.execvp(command[0], command)
@@ -169,6 +170,7 @@ def main(argv):
     # and its end tells caboose-display the stream is over.
     sock.settimeout(None)
     os.set_inheritable(sock.fileno(), True)
+    print(f'caboose-gpu-run: {name} renders on the client', file=sys.stderr)
     os.execvpe(command[0], command, stream_env(fifo))
 
 

@@ -38,9 +38,11 @@ stream is over.
 
 caboose-display opens the FIFO for reading and writing, so it never sees end of file between
 writes, and binds the stream to the first top-level window whose process is the launcher's
-(the Wayland client's pid, or an X11 window's `_NET_WM_PID`). It reads the FIFO only while a
-client renders the stream, so with none connected the application waits in its next Vulkan
-call. Everything read is appended to a spool in `~/.cache/caboose/gpu-streams/`.
+(the Wayland client's pid, or an X11 window's `_NET_WM_PID`, else its X client's pid through
+the XRes extension). The window is shown once X maps it, although the driver never gives it a
+buffer. The FIFO is read while a client that renders streams is connected, from before the
+window exists (an application uploads much of its data first); with none connected the
+application waits in its next Vulkan call. Everything read is appended to a spool in `~/.cache/caboose/gpu-streams/`.
 
 A client whose hello says `gpu: true` gets `gpu.create { id, window }` after the window's
 `window.create`, then the stream from its first byte as `gpu.data { id, offset, data }`, and
@@ -64,5 +66,8 @@ While a client renders a window's stream, the window sends no pictures.
 - **The client's GPU.** Without a profile the application sees a device that supports
   everything; it may choose formats or features the client cannot render (desktop BC texture
   compression on an iPhone, geometry shaders on any Apple GPU).
+- **Linear images.** An application that writes pixels straight into a linearly tiled image
+  lays them out for the driver here, whose row pitch is not the client's; those images show
+  wrong on the client. Uploads through a buffer (what games and engines do) are unaffected.
 - **The whole stream is kept.** A spool grows for as long as the application runs, and a
   client that connects later replays all of it before the current frame.

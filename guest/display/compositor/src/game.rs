@@ -415,6 +415,7 @@ impl State {
             }
         }
         self.update_game_mode(conn);
+        self.pump_gpu_stream(conn);
     }
 
     /// Binds a launcher that said hello to the first toplevel its process made.
@@ -433,8 +434,9 @@ impl State {
                     .ok()
                     .and_then(|c| c.get_credentials(&dh).ok())
                     .map(|c| c.pid as u32),
-                // A Vulkan application through Xwayland names itself with _NET_WM_PID.
-                crate::windows::Surface::X11(x) if w.parent.is_none() => x.pid(),
+                // An X11 window's process: _NET_WM_PID, else the X server's own record (XRes),
+                // for applications that never set the property.
+                crate::windows::Surface::X11(x) if w.parent.is_none() => x.pid().or_else(|| x.get_client_pid().ok()),
                 _ => None,
             };
             owner == Some(pid) && !taken.contains(&w.id)
@@ -537,8 +539,13 @@ impl State {
         for conn in conns {
             if let Some(l) = self.games.launchers.get_mut(&conn) {
                 l.announced = false;
+                if let Some(gpu) = l.gpu.as_mut() {
+                    gpu.sent = 0;
+                    gpu.acked = 0;
+                }
             }
             self.update_game_mode(conn);
+            self.pump_gpu_stream(conn);
         }
     }
 
@@ -681,15 +688,16 @@ impl State {
         self.pump_gpu_stream(conn);
     }
 
-    /// Sends the client what it has room for, and reads from the application only while the
-    /// client is close enough behind.
+    /// Sends the client what it has room for, and reads from the application while a client
+    /// renders streams and is close enough behind. Reading starts before the window is bound:
+    /// an application writes much of its stream (its first uploads) before it maps its window.
     fn pump_gpu_stream(&mut self, conn: u64) {
         let takes = self.client_takes(conn);
         let session = self.session.as_ref().map(|s| s.conn);
         let Some(l) = self.games.launchers.get_mut(&conn) else { return };
-        let (Some((id, _)), announced) = (l.bound, l.announced) else { return };
+        let (bound, announced) = (l.bound, l.announced);
         let Some(gpu) = l.gpu.as_mut() else { return };
-        if let (true, true, Some(session)) = (takes, announced, session) {
+        if let (true, true, Some(session), Some((id, _))) = (takes, announced, session, bound) {
             while gpu.sent < gpu.length && gpu.sent - gpu.acked < GPU_WINDOW {
                 let n = (gpu.length - gpu.sent).min(GPU_CHUNK as u64) as usize;
                 let mut data = vec![0u8; n];
@@ -701,7 +709,7 @@ impl State {
                 self.net.send(session, &message);
             }
         }
-        let should_read = takes && announced && gpu.length - gpu.acked < GPU_BACKLOG;
+        let should_read = takes && gpu.length - gpu.acked < GPU_BACKLOG;
         if should_read != gpu.reading {
             if let Some(token) = gpu.token.as_ref() {
                 let toggled = if should_read { self.handle.enable(token) } else { self.handle.disable(token) };
@@ -710,6 +718,13 @@ impl State {
                 }
             }
         }
+    }
+
+    /// The window's application streams its Vulkan calls and X has mapped its window: it is
+    /// shown although it has no buffer, because it never presents one here.
+    pub fn streams_unbuffered(&self, window: u64) -> bool {
+        let gpu = self.games.of_window(window).is_some_and(|c| self.games.launchers[&c].gpu.is_some());
+        gpu && matches!(self.windows.get(window).map(|w| &w.surface), Some(crate::windows::Surface::X11(x)) if x.is_mapped())
     }
 
     /// The client consumed a stream up to `offset`.

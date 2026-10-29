@@ -3,7 +3,7 @@
 #   OUT/icd.json, OUT/libVkICD_mock_icd.so          the driver that renders nothing
 #   OUT/layers/VkLayer_gfxreconstruct.{json,so}     the capture layer that writes the stream
 #   OUT/layers/VkLayer_khronos_profiles.{json,so}   the layer that shows the client's GPU
-# Needs git, cmake, ninja, a C++17 compiler, python3, and the X11/XCB/Wayland development
+# Needs git, cmake, ninja, a C++17 compiler, python3, and the X11/XCB/xcb-keysyms/Wayland development
 # headers; downloads the sources and their pinned dependencies.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -24,10 +24,11 @@ fetch profiles https://github.com/KhronosGroup/Vulkan-Profiles.git fce885d30ebaf
 git -C "$work/gfxr" submodule update -q --init --depth 1
 
 cmake -S "$work/tools" -B "$work/tools/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DUPDATE_DEPS=ON \
-  -DBUILD_ICD=ON -DBUILD_CUBE=OFF -DBUILD_VULKANINFO=OFF >/dev/null
+  -DBUILD_ICD=ON -DBUILD_CUBE=OFF -DBUILD_VULKANINFO=OFF \
+  -DBUILD_WSI_XCB_SUPPORT=ON -DBUILD_WSI_XLIB_SUPPORT=ON -DBUILD_WSI_WAYLAND_SUPPORT=ON >/dev/null
 ninja -C "$work/tools/build" -j "$jobs" VkICD_mock_icd
 cmake -S "$work/gfxr" -B "$work/gfxr/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_LAUNCHER_AND_INTERCEPTOR=OFF -DGFXRECON_ENABLE_OPENXR=OFF -DLZ4_OPTIONAL=ON -DZSTD_OPTIONAL=ON -DZLIB_OPTIONAL=ON >/dev/null
+  -DBUILD_LAUNCHER_AND_INTERCEPTOR=OFF -DGFXRECON_ENABLE_OPENXR=OFF -DLZ4_OPTIONAL=ON >/dev/null
 ninja -C "$work/gfxr/build" -j "$jobs" VkLayer_gfxreconstruct
 cmake -S "$work/profiles" -B "$work/profiles/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DUPDATE_DEPS=ON \
   -DBUILD_TESTS=OFF >/dev/null
