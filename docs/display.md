@@ -202,9 +202,10 @@ preference order, and its `features`; then sends `window.create` for every live 
 followed by a keyframe of each.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`clipboard-types`, `cursor-named`, `tiles`, `audio`, `xwayland`, `video`. A feature is
-listed only when the server implements it. caboose-display always lists `vsync`, `ack`,
-`touch`, `text-input-v3`, `cursor-named`, `clipboard` and `clipboard-types`; `xwayland` when Xwayland runs; `video`
+`clipboard-types`, `drop`, `drag`, `cursor-named`, `tiles`, `audio`, `xwayland`, `video`.
+A feature is listed only when the server implements it. caboose-display always lists
+`vsync`, `ack`, `touch`, `text-input-v3`, `cursor-named`, `clipboard`, `clipboard-types`,
+`drop` and `drag`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
 plays sound; and `tiles` unless tiles are turned off. It does not list `pencil`.
 
@@ -253,6 +254,11 @@ Server → client (`0x01`–`0x7F`):
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …) |
 | `0x30` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` (see "Clipboard") |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
+| `0x32` | `drop.status` | `accepted: bool` (see "Drag and drop") |
+| `0x33` | `drop.result` | `ok: bool`, `reason?: "rejected"\|"cancelled"\|"timeout"\|"invalid"` |
+| `0x34` | `drag.start` | `mimes: [mime]` |
+| `0x35` | `drag.end` | `taken: bool` |
+| `0x36` | `drag.data` | as `clipboard` |
 | `0x40` | `audio` | `codec: "opus"`, `pts_us`, `channels?: uint` (1 or 2, absent = 2), `data: bytes` |
 | `0x7E` | `pong` | `t_us` (echoed from `ping`) |
 | `0x7F` | `bye` | `reason: "auth"\|"version"\|"shutdown"\|"protocol"\|"replaced"` (another client took over the display) |
@@ -276,6 +282,11 @@ Client → server (`0x81`–`0xFF`):
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
 | `0xA0` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` |
+| `0xA1` | `drop.enter` | `id`, `x`, `y`, `mimes: [mime]` |
+| `0xA2` | `drop.motion` | `id`, `x`, `y` |
+| `0xA3` | `drop.leave` | (empty map) |
+| `0xA4` | `drop.perform` | as `clipboard` |
+| `0xA5` | `drag.take` | (empty map) |
 | `0xFE` | `ping` | `t_us`, answered by `pong` for round-trip time |
 
 A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: float, hdr: bool }`.
@@ -338,6 +349,52 @@ current copy right after `hello`. The types are:
   otherwise. It offers applications the text in every text type above, the images in
   their own types, and files as `text/uri-list` and `x-special/gnome-copied-files`
   (`copy`), and gives an application that pastes thirty seconds to read.
+
+### Drag and drop
+
+The clipboard's types, limits and checks apply to everything dragged either way; a
+drop's or a drag's content has the shape of a `clipboard` message.
+
+**A drop from the client** (`drop`). While the client drags something over a window,
+it sends `drop.enter` with the window, the window-local position and the types it can
+deliver, then `drop.motion` as it moves, over the same window or another. The server
+drags the same types over the application at that point: a Wayland window gets a
+compositor-owned Wayland drag, an X11 window an XDND (version 3 to 5) drag from the
+server's own X client, with the copy action only. `drop.status` reports whether the
+application under the point accepts it, whenever that changes and after every change of
+window (as not accepted until the application says otherwise). When the user lets go,
+the client prepares the content (it uploads files to the transfer area first) and sends
+`drop.perform` with it: the types are a subset of those it entered with, and its files
+must be in the transfer area. Only then is the drag released, on the application under
+the last position, which then reads the content. `drop.result` ends the drop: `ok`, or
+`rejected` (nothing there accepted it), `cancelled` (no drop was in progress), `timeout`
+(the application did not finish within 30 s, or the drop hovered 15 minutes without a
+`drop.motion`) or `invalid` (the content failed the checks). `drop.leave` ends a drop
+without a result.
+
+Applications read a drag's data as it enters, and many decide from it whether to
+accept, but the client can deliver the content only once the user has let go. So
+`drop.status` while hovering reflects what the application says without the content, and
+on `drop.perform` the server enters the application again with the content ready: a
+Wayland drag leaves and re-enters the surface, an XDND drag re-enters if the window asked
+for data early. The server releases the drag once the application accepts, has been sent
+all it asked for, and has had 0.6 s to read it, moving the drag over it meanwhile; an
+application that does not accept within 3 s (XDND: 2 s of renewed positions) rejects the
+drop. Chromium on Wayland sometimes hands a dropped text to its page empty (one drop in
+five in the `drop-wayland` check); files and X11 targets do not show this. While a drop is in progress the server ignores the client's `pointer`
+messages, which would move the drag.
+
+**A drag to the client** (`drag`). When a Wayland application starts dragging something
+in a type the client takes (text, or one its hello lists in `clipboard_types`), the
+server sends `drag.start` with those types. If the user releases it on the client's
+own drop target, the client sends `drag.take` before the release. The server moves the
+drag off every window, reads the content from the application as it reads a copy, and
+holds the client's `touch`, `pointer` and `key` messages until it is read (five seconds
+at most). It sends `drag.data` and then applies the held input, so the release ends the
+drag over no window: the application sees a drag that was not dropped, and removes
+nothing. `drag.end` says the application's drag ended and whether the client took it.
+Drags started by X11 applications stay within X11 (Xwayland and its window manager do
+not hand them to Wayland), so the client is not told of them.
 
 ### Audio
 
