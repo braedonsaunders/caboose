@@ -41,6 +41,16 @@ struct LaptopLayoutTests {
         #expect(LaptopLayout.comboTrackpadHeight(-1) == 0)
         #expect(LaptopLayout.comboTrackpadHeight(.infinity) == 0)
     }
+    @Test func eachInputSharesTheControlsItsWay() {
+        #expect(LaptopLayout.trackpadHeight(.trackpad, available: 360) == 360)
+        #expect(LaptopLayout.trackpadHeight(.combo, available: 360) == 120)
+        // Keyboard mode is Laptop's own keyboard filling the lower half, header included.
+        #expect(LaptopLayout.trackpadHeight(.keyboard, available: 360) == 0)
+        #expect(LaptopLayout.trackpadHeight(.trackpad, available: -5) == 0)
+        #expect(LaptopLayout.trackpadHeight(.trackpad, available: .infinity) == 0)
+        #expect(LaptopLayout.Input.keyboard.showsKeyboard && LaptopLayout.Input.combo.showsKeyboard)
+        #expect(!LaptopLayout.Input.trackpad.showsKeyboard)
+    }
     @Test func manualFlatModeHasSameSplitAfterKeyboardRoundTrip() {
         let first = LaptopLayout.frames(size: size, division: nil, keyboard: 0)
         _ = LaptopLayout.frames(size: size, division: nil, keyboard: 350)

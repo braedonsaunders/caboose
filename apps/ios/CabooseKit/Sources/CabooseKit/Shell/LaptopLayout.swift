@@ -13,6 +13,9 @@ public enum LaptopLayout {
         public var symbol: String {
             switch self { case .keyboard: "keyboard"; case .trackpad: "hand.draw"; case .combo: "rectangle.split.2x1" }
         }
+        /// Whether Laptop's own keyboard and its header show; the system keyboard never does
+        /// unless asked for.
+        public var showsKeyboard: Bool { self == .keyboard || self == .combo }
     }
     public enum Mode: String, CaseIterable, Sendable { case automatic, tablet, laptop }
     public struct Frames: Equatable, Sendable {
@@ -36,6 +39,17 @@ public enum LaptopLayout {
     /// including their shared shortcut header. Neither panel invokes the system keyboard.
     public static func comboTrackpadHeight(_ availableHeight: CGFloat) -> CGFloat {
         availableHeight.isFinite ? max(0, availableHeight) / 3 : 0
+    }
+
+    /// The trackpad's share of the controls: all of them, the upper third beside the keyboard,
+    /// or none while the keyboard has them to itself.
+    public static func trackpadHeight(_ input: Input, available: CGFloat) -> CGFloat {
+        guard available.isFinite else { return 0 }
+        switch input {
+        case .trackpad: return max(0, available)
+        case .combo: return comboTrackpadHeight(available)
+        case .keyboard: return 0
+        }
     }
 
     public static func frames(size: CGSize, division: CGRect?, keyboard: CGFloat) -> Frames {

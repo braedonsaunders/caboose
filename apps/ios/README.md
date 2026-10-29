@@ -664,12 +664,16 @@ Desktop and full-screen app cards offer Screen Layout → Automatic, Tablet or L
 Automatic uses a partially folded horizontal hinge on iOS 27.1 and later. Laptop also
 works as a manual split on a sufficiently tall flat screen. The upper area shows the
 app/desktop without the system toolbar. The lower-right control rail offers Keyboard,
-Trackpad or Combo, window switching, settings, power and navigation. Keyboard
-uses the native keyboard. Opening a window from the Laptop desktop focuses it in that
-workspace; there is no separate Full Screen route or Exit App Full Screen action. Combo uses a full-width trackpad across the upper third of the
-lower panel, then a custom keyboard and shared shortcut header in the lower two-thirds.
-Its globe button opens the native keyboard for languages, emoji and dictation. Hide Keyboard
-returns to the trackpad. The dock becomes a thin, full-width taskbar at the top of the lower half; controls stay below
+Trackpad or Keyboard & Trackpad from one input button, whose icon is the same in every mode,
+then window switching, settings, power and navigation. Opening a window from the Laptop
+desktop focuses it in that workspace; there is no separate Full Screen route or Exit App Full
+Screen action. Keyboard fills the lower panel with Laptop's own keyboard under the shared
+shortcut header; Keyboard & Trackpad puts a full-width trackpad across the upper third and
+the same keyboard and header in the lower two-thirds. Neither opens the system keyboard: a
+text field the trackpad focuses opens Keyboard & Trackpad. The keyboard's globe button opens
+the system keyboard for languages, emoji and dictation, without the shortcut header (which
+would land above the hinge) and with a button above it that returns to Laptop's keyboard.
+Hide Keyboard returns to the trackpad. The dock becomes a thin, full-width taskbar at the top of the lower half; controls stay below
 the hinge. The upper desktop hides Caboose title bars and gives their space to the app;
 app-owned chrome remains. Its pointer reaches both the app and relocated dock. Tablet
 mode retains its saved arrangement. One-finger movement, tap/double-tap, two-finger

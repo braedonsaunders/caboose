@@ -31,6 +31,9 @@ struct LaptopContainer<Content: View>: View {
     @State private var layoutActive = false
     @AppStorage("caboose.laptop.mode") private var mode = LaptopLayout.Mode.automatic.rawValue
     @State private var geometry = LaptopGeometry()
+    /// The system keyboard, which only the custom keyboard's globe key opens, for emoji,
+    /// dictation and other languages. It covers the controls while it shows.
+    @State private var systemKeyboard = false
     let isCard: Bool
     let content: (Bool) -> Content
     var activeChanged: (Bool) -> Void
@@ -57,7 +60,8 @@ struct LaptopContainer<Content: View>: View {
                                 .frame(maxWidth: .infinity).frame(height: 44)
                         }
                     LaptopControls(compact: frames.controls.height < 280, isCard: isCard,
-                                   enabled: scenePhase == .active && (isCard ? model.presentedWindowID != nil : model.presentedWindowID == nil && model.selectedTab == .desktop))
+                                   enabled: scenePhase == .active && (isCard ? model.presentedWindowID != nil : model.presentedWindowID == nil && model.selectedTab == .desktop),
+                                   systemKeyboard: $systemKeyboard)
                     }
                         .frame(width: frames.controls.width, height: max(1, frames.controls.height))
                         .clipped()
@@ -75,9 +79,27 @@ struct LaptopContainer<Content: View>: View {
                 updatePointerArea(active: active, frames: frames)
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            .overlay(alignment: .bottomTrailing) {
+                // The system keyboard has no header of its own here, so that nothing of it
+                // lands on the other side of the fold; this brings Laptop's keyboard back.
+                if active && systemKeyboard {
+                    Button("Laptop Keyboard", systemImage: "keyboard.chevron.compact.down") {
+                        systemKeyboard = false
+                        model.keyboardVisible = false
+                    }
+                    .labelStyle(.iconOnly)
+                    .font(.title3)
+                    .frame(width: 52, height: 44)
+                    .glassEffect(.regular.interactive(), in: .capsule)
+                    .padding(.trailing, 12)
+                    .padding(.bottom, max(0, proxy.size.height - frames.screen.maxY) + 8)
+                    .accessibilityHint("Closes the system keyboard")
+                }
+            }
             .background { LaptopGeometryProbe { geometry = $0 }.allowsHitTesting(false) }
             .onChange(of: active, initial: true) { _, value in
                 layoutActive = value
+                systemKeyboard = false
                 activeChanged(value)
                 if !isCard { model.setLaptopDesktop(value) }
                 updatePointerArea(active: value, frames: frames)
@@ -117,6 +139,7 @@ private struct LaptopControls: View {
     let compact: Bool
     let isCard: Bool
     let enabled: Bool
+    @Binding var systemKeyboard: Bool
 
     private var desktop: DesktopModel? { isCard ? nil : model.desktop }
     private var target: RemoteWindow? {
@@ -128,14 +151,17 @@ private struct LaptopControls: View {
         HStack(spacing: 0) {
             GeometryReader { proxy in
                 VStack(spacing: 0) {
+                    // Keyboard mode keeps the trackpad mounted at no height: it is the
+                    // responder the keyboard types through.
                     trackpad
-                        .frame(height: input == .combo ? LaptopLayout.comboTrackpadHeight(proxy.size.height) : proxy.size.height)
-                    if input == .combo {
+                        .frame(height: LaptopLayout.trackpadHeight(input, available: proxy.size.height))
+                        .clipped()
+                    if input.showsKeyboard {
                         VStack(spacing: 0) {
-                            LaptopKeyHeader(surface: surface).frame(height: 48)
+                            LaptopKeyHeader(surface: surface).frame(maxWidth: .infinity).frame(height: 48)
                             LaptopComboKeyboard(onText: { surface.insertText($0) },
                                                 onKey: { surface.performKeyboardAction(.key($0)) },
-                                                onNativeKeyboard: { choose(.keyboard) })
+                                                onSystemKeyboard: openSystemKeyboard)
                         }
                         .background(Color(uiColor: .systemGray5))
                     }
@@ -144,21 +170,30 @@ private struct LaptopControls: View {
             Divider()
             rail.frame(width: 56)
         }
-        .background(input == .combo ? Color(uiColor: .systemGray5) : Color(white: 0.14))
+        .background(input.showsKeyboard ? Color(uiColor: .systemGray5) : Color(white: 0.14))
         .allowsHitTesting(enabled)
         .sheet(isPresented: $gestureHelp) { TrackpadGestureGuide() }
         .onChange(of: model.keyboardVisible) { _, visible in
-            if input == .combo {
-                if visible { model.keyboardVisible = false }
-            } else if !visible && input == .keyboard { input = .trackpad }
-            else if visible && input == .trackpad { input = .keyboard }
+            if systemKeyboard {
+                if !visible { closeSystemKeyboard() }
+                return
+            }
+            guard visible else { return }
+            // A text field wants the keyboard: Laptop's own answers, beside the trackpad
+            // that focused the field. The system keyboard never opens by itself here.
+            model.keyboardVisible = false
+            if input == .trackpad { choose(.combo) }
+        }
+        .onChange(of: systemKeyboard) { _, open in
+            if !open { closeSystemKeyboard() }
         }
     }
 
     private var trackpad: some View {
-        Trackpad(desktop: desktop, target: target, keyboardVisible: input == .keyboard && model.keyboardVisible,
+        Trackpad(desktop: desktop, target: target, keyboardVisible: systemKeyboard && model.keyboardVisible,
                  enabled: enabled, pointerEnabled: input != .keyboard,
-                 sharedSurface: surface, inlineControls: input == .combo,
+                 sharedSurface: surface, inlineControls: input.showsKeyboard && !systemKeyboard,
+                 bareSystemKeyboard: systemKeyboard,
                  dismissInline: { choose(.trackpad) })
             .background(Color(white: 0.12))
             .overlay {
@@ -187,11 +222,13 @@ private struct LaptopControls: View {
                     windowSwitcher
                     computerActions
                     navigationActions
-                } label: { Image(systemName: "slider.horizontal.3").frame(width: 48, height: 44) }
-                .accessibilityLabel("Laptop controls: \(input.title)")
+                } label: { Image(systemName: Self.inputSymbol).frame(width: 48, height: 44) }
+                .accessibilityLabel("Laptop controls")
+                .accessibilityValue(input.title)
             } else {
-                Menu { inputChoices } label: { Image(systemName: input.symbol).frame(width: 48, height: 44) }
-                    .accessibilityLabel("Input: \(input.title)")
+                Menu { inputChoices } label: { Image(systemName: Self.inputSymbol).frame(width: 48, height: 44) }
+                    .accessibilityLabel("Input")
+                    .accessibilityValue(input.title)
                 windowSwitcher
                 Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
                     .frame(width: 48, height: 44)
@@ -205,10 +242,16 @@ private struct LaptopControls: View {
         .buttonStyle(.plain)
     }
 
+    /// The input menu's one icon, the same in every mode; the menu marks the current mode.
+    private static let inputSymbol = "switch.2"
+
     @ViewBuilder private var inputChoices: some View {
-        Button("Keyboard", systemImage: "keyboard") { choose(.keyboard) }
-        Button("Trackpad", systemImage: "hand.draw") { choose(.trackpad) }
-        Button("Keyboard & Trackpad", systemImage: "rectangle.split.2x1") { choose(.combo) }
+        Picker("Input", selection: Binding(get: { input }, set: { choose($0) })) {
+            ForEach([LaptopLayout.Input.keyboard, .trackpad, .combo], id: \.self) { choice in
+                Label(choice.title, systemImage: choice.symbol).tag(choice)
+            }
+        }
+        .pickerStyle(.inline)
         Divider()
         Button("Trackpad Gestures", systemImage: "hand.draw") { gestureHelp = true }
     }
@@ -246,9 +289,23 @@ private struct LaptopControls: View {
 
     private func choose(_ value: LaptopLayout.Input) {
         surface.endInteraction()
-        surface.inlineKeyboardControls = value == .combo
+        systemKeyboard = false
+        surface.inlineKeyboardControls = value.showsKeyboard
         input = value
-        model.keyboardVisible = value == .keyboard
+        model.keyboardVisible = false
+    }
+
+    /// The globe key: the system keyboard, for what Laptop's keyboard does not type.
+    private func openSystemKeyboard() {
+        systemKeyboard = true
+        surface.inlineKeyboardControls = false
+        model.keyboardVisible = true
+    }
+
+    private func closeSystemKeyboard() {
+        systemKeyboard = false
+        surface.inlineKeyboardControls = input.showsKeyboard
+        if model.keyboardVisible { model.keyboardVisible = false }
     }
     private func leave(_ tab: ShellTab) {
         model.keyboardVisible = false
@@ -358,8 +415,29 @@ struct LaptopGeometryProbe: UIViewRepresentable {
     }
 }
 
+/// The text input's key bar, laid out at the width SwiftUI gives it. The bar is the same view
+/// the system keyboard shows as its accessory elsewhere, so a host view owns its frame here.
 private struct LaptopKeyHeader: UIViewRepresentable {
     let surface: TrackpadSurface
-    func makeUIView(context: Context) -> KeyBar { surface.keyboardControls }
-    func updateUIView(_ view: KeyBar, context: Context) {}
+    func makeUIView(context: Context) -> Host { Host() }
+    func updateUIView(_ host: Host, context: Context) { host.bar = surface.keyboardControls }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: Host, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? uiView.bounds.width, height: 48)
+    }
+
+    final class Host: UIView {
+        var bar: KeyBar? {
+            didSet { if bar !== oldValue { setNeedsLayout() } }
+        }
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            guard let bar else { return }
+            if bar.superview !== self {
+                bar.removeFromSuperview()
+                bar.translatesAutoresizingMaskIntoConstraints = true
+                addSubview(bar)
+            }
+            bar.frame = bounds
+        }
+    }
 }

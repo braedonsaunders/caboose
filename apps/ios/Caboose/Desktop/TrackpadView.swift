@@ -70,6 +70,8 @@ struct Trackpad: UIViewRepresentable {
     var pointerEnabled = true
     var sharedSurface: TrackpadSurface? = nil
     var inlineControls = false
+    /// Laptop's system keyboard: shown without the key bar, which would land across the fold.
+    var bareSystemKeyboard = false
     var dismissInline: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> TrackpadSurface {
@@ -87,6 +89,7 @@ struct Trackpad: UIViewRepresentable {
         view.model = model
         view.target = target
         view.inlineKeyboardControls = inlineControls
+        view.bareSystemKeyboard = bareSystemKeyboard
         view.dismissInline = dismissInline
         view.wantsKeyboard = (keyboardVisible || inlineControls) && enabled
         if view.autocorrectChoice == nil {
@@ -113,6 +116,16 @@ final class TrackpadSurface: RemoteTextInputView {
     weak var model: AppModel?
     var dismissInline: (() -> Void)?
     var wantsKeyboard = false
+    var bareSystemKeyboard = false {
+        didSet { if bareSystemKeyboard != oldValue, isFirstResponder { reloadInputViews() } }
+    }
+
+    override var inputAccessoryView: UIView? {
+        guard bareSystemKeyboard else { return super.inputAccessoryView }
+        inputAssistantItem.leadingBarButtonGroups = []
+        inputAssistantItem.trailingBarButtonGroups = []
+        return nil
+    }
     private let pointerClicks = PointerClickDriver()
     var inputEnabled = true
     var pointerEnabled = true
@@ -401,7 +414,8 @@ final class TrackpadSurface: RemoteTextInputView {
     override func insertText(_ text: String) {
         let modified = hasStickyModifiers
         super.insertText(text)
-        if !modified, (text == "\n" || text == "\r" || text == "\r\n"), !RemoteWindowView.isCodeApp(focusedWindow) {
+        // Laptop's keyboard is a mode, not a keyboard that comes and goes with a field.
+        if !modified, !inlineKeyboardControls, (text == "\n" || text == "\r" || text == "\r\n"), !RemoteWindowView.isCodeApp(focusedWindow) {
             dismissKeyboard()
         }
     }

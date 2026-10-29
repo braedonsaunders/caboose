@@ -1,11 +1,12 @@
 import SwiftUI
 import UIKit
 
-/// A compact, focus-free keyboard for the lower two thirds of the laptop control panel.
+/// Laptop's own keyboard: the lower two thirds of the controls beside the trackpad, or all of
+/// them in Keyboard mode. It never takes focus; the globe key opens the system keyboard.
 struct LaptopComboKeyboard: View {
     var onText: (String) -> Void
     var onKey: (String) -> Void
-    var onNativeKeyboard: () -> Void
+    var onSystemKeyboard: () -> Void
 
     @State private var page: Page = .letters
     @State private var shift = false
@@ -35,11 +36,11 @@ struct LaptopComboKeyboard: View {
                         page = page == .letters ? .numbers : .letters
                     }
                     .frame(width: unit * 1.4)
-                    Button(action: onNativeKeyboard) {
+                    Button(action: onSystemKeyboard) {
                         Image(systemName: "globe")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .accessibilityLabel("Open full keyboard")
+                    .accessibilityLabel("Open system keyboard")
                     .accessibilityHint("Use emoji, dictation, or another language")
                     .frame(width: unit * 1.1)
                     key("space", label: "Space") { type(" ") }

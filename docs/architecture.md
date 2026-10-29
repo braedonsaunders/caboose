@@ -1754,14 +1754,15 @@ the app card, and a detached view releases its layers.
   compact viewports keep the ordinary layout. The system keyboard's measured intersection
   with that view takes precedence over the fold, so it cannot cover the upper app. The
   lower panel owns the existing `RemoteTextInputView`/`KeyBar`, with Keyboard, Trackpad
-  and Combo choices. Its trailing rail contains window switching, settings,
+  and Keyboard & Trackpad choices behind one input button. Its trailing rail contains window switching, settings,
   power and navigation; the system-wide bars are hidden while Laptop is active. Opening
   a window from the Laptop desktop focuses it there, without a separate full-screen card
-  or Full Screen/Exit App Full Screen controls. The
-  native keyboard occupies the lower edge; controls never move above the hinge. Combo
-  uses a full-width trackpad in the upper third of the lower panel and a custom keyboard
-  with the shared shortcut header in its lower two thirds. Its globe button opens the
-  native keyboard for other languages, emoji and dictation. The dock becomes a thin, full-width taskbar at the top of
+  or Full Screen/Exit App Full Screen controls. Controls never move above the hinge.
+  Keyboard fills the lower panel with a custom keyboard under the shared shortcut header;
+  Keyboard & Trackpad uses a full-width trackpad in the upper third of the lower panel and
+  the same keyboard and header in its lower two thirds. The system keyboard opens only from
+  the custom keyboard's globe button, for other languages, emoji and dictation, without the
+  shortcut header and with a floating button that returns to the custom keyboard. The dock becomes a thin, full-width taskbar at the top of
   the lower half. Caboose title bars are hidden above the hinge; app-owned chrome remains
   part of the guest surface. Pointer hit testing includes the relocated dock, with separate
   saved Laptop positions, without changing the tablet arrangement. App cards target their current
