@@ -109,7 +109,7 @@ struct PointerClickDriverTests {
             }
             defer { timeout.cancel() }
             await withTaskCancellationHandler {
-                try await clock.finish(task)
+                await task.value
             } onCancel: {
                 Task { @MainActor [weak self] in self?.abort() }
             }
