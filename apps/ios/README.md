@@ -960,6 +960,15 @@ hosts the production Laptop upper panel and checks the content/hinge boundaries 
 pixels across content appearing and disappearing. The measured hinge stays black throughout
 Laptop mode regardless of app fullscreen state; a keyboard-shortened viewport does not
 expand that matte.
+`DockOverflowTests` renders the production tiled, floating and compact Laptop docks with
+solid test icons. It checks that launch motion keeps the full icon height, including a
+hover-enlarged floating icon, while horizontally scrolled apps remain inside their viewport.
+The glass is confined to the dock background; the tiled icon viewport reserves the six-point
+bounce above its resting content without changing the dock's layout or horizontal clipping.
+For device QA, launch an app in each dock, hover the launching icon on a free desktop,
+and scroll a crowded tiled dock: icons stay whole and never cover Overview or All Apps.
+Laptop's rail and hinge boundary remain fixed.
+
 Attached-window conversion is checked with an offset probe and a changing probe viewport. The
 compositor regression `cargo test -p caboose-display empty_client_announcement_retains_default_and_previous_output`
 in `guest/display` checks both default and retained output identity for empty announcements.

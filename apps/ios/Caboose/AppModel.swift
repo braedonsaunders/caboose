@@ -1104,7 +1104,7 @@ final class AppModel {
         }
     }
 
-    private func applyApps(_ list: [HostClient.App]) {
+    func applyApps(_ list: [HostClient.App]) {
         apps = list.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         var icons: [String: UIImage] = [:]
         for app in list {

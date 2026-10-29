@@ -283,7 +283,10 @@ struct Dock: View {
         }
         .padding(.horizontal, 12 * ui)
         .padding(.vertical, 8 * ui)
-        .glassEffect(.regular, in: .surface(cornerRadius: 22 * ui))
+        // Glass shapes the background, not the elevated/launching icons.
+        .background {
+            Color.clear.glassEffect(.regular, in: .surface(cornerRadius: 22 * ui))
+        }
     }
 
     /// A continuous, thin strip below the hinge, never a floating capsule over content.

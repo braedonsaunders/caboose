@@ -51,9 +51,13 @@ struct YardDock: View {
                         .accessibilityHint("Hold for Open, Pin and Close.")
                     }
                 }
+                // Extend only the vertical viewport. Horizontal scroll clipping still
+                // keeps offscreen apps out of the fixed dock controls.
+                .padding(.top, DockLaunchFeedback.maximumLift)
             }
             .scrollIndicators(.hidden)
-            .frame(width: appWidth, height: icon + 7)
+            .frame(width: appWidth, height: icon + 7 + DockLaunchFeedback.maximumLift)
+            .padding(.top, -DockLaunchFeedback.maximumLift)
             Divider().frame(height: 34).overlay(.white.opacity(0.3))
             OverviewControl(yard: yard, enabled: true)
             button("All Apps", "square.grid.3x3.fill") { withAnimation(.smooth(duration: 0.3)) { yard.launcherOpen = true } }
@@ -61,7 +65,9 @@ struct YardDock: View {
         }
         .padding(.horizontal, 12)
         .frame(height: Self.height)
-        .glassEffect(.regular, in: ConcentricRectangle(cornerRadius: 22))
+        .background {
+            Color.clear.glassEffect(.regular, in: ConcentricRectangle(cornerRadius: 22))
+        }
         .simultaneousGesture(
             DragGesture(minimumDistance: 20).onEnded { value in
                 guard value.translation.height < -30, abs(value.translation.height) > abs(value.translation.width), !columns.isEmpty else { return }
