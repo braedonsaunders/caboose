@@ -359,6 +359,13 @@ Requests are queued in `/home/caboose/.cache/caboose/phone/queue` and files are 
 in `phone/files/<id>`, private to the owner. Files are limited to 10 MiB, the queue to 100
 pending requests, and both expire after 24 hours. See [Phone handoff](#phone-handoff).
 
+**Native bridge.** `guest/bridge` answers Linux applications' desktop portal and MPRIS
+calls from the phone: the FileChooser and Settings portals (`caboose-portal`, with
+`xdg-desktop-portal-gtk` for the rest and as the fallback without a phone), and
+`caboose-bridge`, the host's commands and the owner seat's daemon for Now Playing and the
+appearance. GeoClue's static source serves a shared location. See
+[native-bridge.md](native-bridge.md).
+
 **Media handoff.** `guest/media-handoff` installs a Chromium extension, ID
 `cklinclacpchpdgickgonlhnldfmkhbh` (fixed by the public key in its manifest), and its native
 messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
@@ -732,6 +739,8 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | `agent.task.*` | see [Agents](#tasks) | Agent task activity |
 | `media.playing`, `media.stopped` | see [Media handoff](#media-handoff) | |
 | `phone.open`, `phone.share`, `phone.print` | see [Phone handoff](#phone-handoff) | Only to sockets opened with `?phone=1` |
+| `bridge.request`, `bridge.cancel` | see [native bridge](native-bridge.md#host) | A Linux application's file request, and its withdrawal. Only to sockets opened with `?phone=1` |
+| `now-playing.changed`, `now-playing.stopped` | see [native bridge](native-bridge.md#now-playing-relay) | The computer's media player for Now Playing, while a display client is connected |
 
 ### Management
 
@@ -1025,6 +1034,12 @@ browser closed, another video replaced it, or the computer stopped running).
 The handoff on the phone: on `media.playing`, offer the video; to hand off, play it natively
 from `position`, then `POST …/control { action: "pause" }`; when the phone stops,
 `POST …/control { action: "play", position: <phone position> }`.
+
+### Native bridge
+
+File requests from the computer's portal, the phone's appearance and location, and the
+computer's Now Playing, relayed with the routes `/v1/bridge/*` and `/v1/now-playing*` and
+the control events above. The contract is [native-bridge.md](native-bridge.md#host).
 
 ### Desktop notifications
 
@@ -2118,6 +2133,15 @@ app group and a Keychain access group.
   `GET /v1/phone/files/:id` (behind the `PhoneFileDownloading` protocol), then presents the
   share sheet or the AirPrint dialog, and deletes its temporary copy when the sheet
   finishes.
+
+### Native bridge on the phone
+
+Linux file dialogs open the iOS document picker (Open) or a native sheet browsing the
+computer (Save, Choose Folder); a picked file outside the computer is copied to it and kept
+in sync like [an opened document](#open-in-place). The computer follows the phone's
+appearance, its media appears in Now Playing, and, when the owner turns it on, it gets the
+phone's location while Caboose is open. Computer settings has the switches. See
+[native-bridge.md](native-bridge.md#app).
 
 ## 7. Security model
 
