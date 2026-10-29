@@ -36,7 +36,9 @@ public struct ScrollPhysics {
 
     /// A pause before lifting stops the fling. UIKit pans may supply their measured
     /// release velocity; raw touch surfaces use the filtered sample velocity.
-    public mutating func end(at time: TimeInterval, velocity measured: CGPoint? = nil, coast: Bool = true) {
+    public mutating func end(at time: TimeInterval, velocity measured: CGPoint? = nil, coast: Bool = true, remainingContacts: Int = 0) {
+        // A partial lift cancels the sequence, including movement awaiting a frame.
+        guard remainingContacts == 0 else { cancel(); return }
         guard tracking else { return }
         tracking = false
         if let measured, measured.x.isFinite, measured.y.isFinite { velocity = measured }

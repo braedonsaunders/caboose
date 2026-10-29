@@ -519,7 +519,8 @@ final class DesktopTouchSurface: RemoteTextInputView {
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         if scrolling {
-            scrollDriver.end(at: event?.timestamp ?? ProcessInfo.processInfo.systemUptime)
+            scrollDriver.end(at: event?.timestamp ?? ProcessInfo.processInfo.systemUptime,
+                             remainingContacts: live(event).count)
             scrolling = false
             scrollSuppressed = true
         }

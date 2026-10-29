@@ -102,6 +102,27 @@ struct ScrollPhysicsTests {
         #expect(!physics.isCoasting)
     }
 
+    @Test func partialLiftDiscardsPendingMovementAndCannotFling() {
+        var physics = ScrollPhysics()
+        physics.begin(at: 0)
+        physics.append(CGPoint(x: 0, y: 30), at: 0.02)
+        physics.end(at: 0.03, remainingContacts: 1)
+        #expect(!physics.isCoasting)
+        #expect(!physics.needsFrame)
+        let afterPartialLift = physics.frame(elapsed: 0.016)
+        #expect(afterPartialLift == .zero)
+        physics.append(CGPoint(x: 0, y: 30), at: 0.04)
+        physics.end(at: 0.05)
+        #expect(!physics.needsFrame)
+
+        physics.begin(at: 1)
+        physics.append(CGPoint(x: 0, y: 30), at: 1.02)
+        physics.end(at: 1.03, remainingContacts: 0)
+        #expect(physics.isCoasting)
+        let afterLastLift = physics.frame(elapsed: 0.016)
+        #expect(afterLastLift.y > 30)
+    }
+
     @Test func reversedMovementReversesFlingAndRejectsInvalidSamples() {
         var physics = ScrollPhysics()
         physics.begin(at: 0)
