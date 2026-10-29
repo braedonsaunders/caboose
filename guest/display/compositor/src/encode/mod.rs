@@ -83,6 +83,10 @@ impl From<ffmpeg_next::Error> for EncodeError {
 
 /// A video encoder for one stream at one size. A size change makes a new encoder.
 pub trait Encoder: Send {
+    /// Keep this region at its last base-picture pixels, even when an encode reads
+    /// the complete input (a keyframe or a replaced backing buffer). The original
+    /// input remains available to the region's independent video encoder.
+    fn exclude(&mut self, region: Option<Rect>);
     fn codec(&self) -> Codec;
     /// Short name for logs and `--list-encoders`, e.g. `libx264`.
     fn name(&self) -> &'static str;

@@ -216,6 +216,9 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         fresh = true;
     }
     done.hits = job.detect.then(|| detect(&job));
+    if !job.refine {
+        encoders.window.as_mut().unwrap().1.exclude(job.motion.as_ref().map(|m| m.rect));
+    }
     let keyframe = job.keyframe || fresh;
     let damage = if fresh { None } else { job.damage.clone() };
     let full = Rect::new(0, 0, size.0 as i32, size.1 as i32);
@@ -285,7 +288,8 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         done.result = Some(result);
     }
     match &job.motion {
-        None => encoders.motion = None,
+        None if !job.refine => encoders.motion = None,
+        None => {}
         Some(m) => {
             let matches = encoders.motion.as_ref().is_some_and(|(id, r, _)| *id == m.id && *r == m.rect);
             let mut motion_fresh = false;
@@ -375,6 +379,8 @@ pub struct Stream {
     pub refine_at_us: Option<u64>,
     /// The visible part of the last picture submitted.
     pub crop: Rect,
+    /// Window-pixel placement of the last submitted picture.
+    pub rect: Rect,
     /// The window's motion region and its stream, while it has one.
     pub motion: Option<MotionStream>,
     /// Watches for a motion region, at the picture size it was made for.
@@ -395,6 +401,29 @@ pub struct MotionStream {
 }
 
 impl Stream {
+    /// Retire only after a successful base frame has restored the region. Keeping
+    /// the stream here also keeps failed repaint attempts retryable.
+    pub fn end_motion(&mut self) {
+        if let Some(m) = self.motion.as_mut() {
+            m.ending = true;
+            self.dirty = true;
+        }
+    }
+
+    pub fn motion_repainted(&mut self, id: u64, sent: bool) -> bool {
+        if !self.motion.as_ref().is_some_and(|m| m.id == id && m.ending) {
+            return false;
+        }
+        if sent {
+            self.motion = None;
+            true
+        } else {
+            self.dirty = true;
+            self.need_keyframe = true;
+            false
+        }
+    }
+
     pub fn mark_dirty(&mut self, now_us: u64) {
         self.commit_us = now_us;
         self.dirty = true;
@@ -501,12 +530,10 @@ impl Stream {
         if let Some(m) = self.motion.as_mut().filter(|_| job.motion.is_some()) {
             m.need_keyframe = false;
         }
-        if job.ends_motion.is_some() {
-            self.motion = None;
-        }
         // The answer says when to sharpen next.
         self.refine_at_us = None;
         self.crop = job.crop;
+        self.rect = job.rect;
         if let Err(e) = worker.tx.send(job) {
             // The worker exited; recover the image and try again on the next tick.
             self.worker = None;
@@ -520,6 +547,61 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motion_retirement_waits_for_a_successful_repaint() {
+        let mut s = Stream {
+            motion: Some(MotionStream {
+                id: 7,
+                rect: Rect::new(0, 0, 16, 16),
+                next_seq: 0,
+                in_flight: Default::default(),
+                need_keyframe: false,
+                ending: false,
+            }),
+            ..Default::default()
+        };
+        s.end_motion();
+        assert!(s.dirty && s.motion.as_ref().unwrap().ending);
+        assert!(!s.motion_repainted(8, true), "another stream cannot retire this one");
+        s.dirty = false;
+        assert!(!s.motion_repainted(7, false));
+        assert!(s.motion.is_some() && s.dirty && s.need_keyframe, "failed repaint must retry");
+        assert!(s.motion_repainted(7, true));
+        assert!(s.motion.is_none());
+    }
+
+    #[test]
+    fn refining_the_base_preserves_the_motion_encoder_and_its_reference_frames() {
+        ffmpeg_next::init().unwrap();
+        let mut encoders = Encoders::default();
+        let job = |image, motion, refine| Job {
+            window: 1,
+            generation: 1,
+            pts_us: 1,
+            image,
+            shm: None,
+            detect: false,
+            keyframe: false,
+            refine,
+            damage: None,
+            rect: Rect::new(0, 0, 128, 96),
+            crop: Rect::new(0, 0, 128, 96),
+            backend: Backend::Software(caboose_display_protocol::Codec::H264),
+            settings: Settings { threads: 1, refine_after_ms: 0, tile_max_px: 0, ..Settings::default() },
+            motion,
+            ends_motion: None,
+        };
+        let motion = || Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false });
+        let first = work(job(CpuImage::new(128, 96), motion(), false), &mut encoders);
+        assert!(first.motion.unwrap().1.unwrap().keyframe);
+        let sharp = work(job(first.image, None, true), &mut encoders);
+        assert!(sharp.result.unwrap().is_ok());
+        assert!(sharp.motion.is_none());
+        assert!(encoders.motion.is_some(), "refinement is not stream cessation");
+        let next = work(job(sharp.image, motion(), false), &mut encoders);
+        assert!(!next.motion.unwrap().1.unwrap().keyframe, "motion references survive base refinement");
+    }
 
     #[test]
     fn acks_release_in_order_and_ignore_unknown_pts() {

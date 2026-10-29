@@ -363,7 +363,6 @@ impl State {
     pub fn render_streams(&mut self) {
         let Some(session) = self.session.as_ref().filter(|s| s.ready) else { return };
         let backend = session.backend.clone();
-        let session_conn = session.conn;
         let generation = self.generation;
         let align = backend.alignment();
         let now_us = self.now_us();
@@ -414,9 +413,11 @@ impl State {
                 w.stream.need_keyframe = true;
                 // The keyframe repaints everything; a motion region is found afresh.
                 w.stream.tracker = None;
-                if let Some(m) = w.stream.motion.take() {
-                    self.net.send(session_conn, &Message::VideoDestroy { id: m.id });
-                }
+                w.stream.end_motion();
+            }
+            if w.stream.rect != rect || w.stream.crop != Rect::new(0, 0, pic_w, pic_h) {
+                w.stream.end_motion();
+                w.stream.tracker = None;
             }
             // A motion stream that ends: this picture puts its region back.
             let ending = w.stream.motion.as_ref().filter(|m| m.ending).map(|m| (m.id, m.rect));
@@ -585,6 +586,7 @@ impl State {
         w.stream.encoding = false;
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         let mut refined = false;
+        let mut frame_sent = false;
         match done.result {
             None => {}
             // The relay carries at most 16 MiB per message; a picture that does not fit
@@ -630,6 +632,7 @@ impl State {
                     data: encoded.data,
                 });
                 self.net.send(conn, &message);
+                frame_sent = true;
             }
             Some(Err(e)) => {
                 tracing::warn!("window {}: encode failed: {e}", done.window);
@@ -684,8 +687,10 @@ impl State {
         }
         if let Some(id) = done.ends_motion {
             // After the window picture that repaints its region.
-            self.net.send(conn, &Message::VideoDestroy { id });
-            tracing::debug!("window {}: motion stream {id} ended", done.window);
+            if w.stream.motion_repainted(id, frame_sent) {
+                self.net.send(conn, &Message::VideoDestroy { id });
+                tracing::debug!("window {}: motion stream {id} ended", done.window);
+            }
         }
         if let Some(hits) = &done.hits {
             self.on_video_hits(done.window, hits, done.rect, done.crop, done.pts_us);
@@ -707,6 +712,10 @@ impl State {
     /// stream on what it decides.
     fn watch_motion(&mut self, window: u64, changed: &[Rect], rect: Rect, crop: Rect, now_ms: u64) {
         if !self.motion_possible(window) {
+            if let Some(w) = self.windows.get_mut(window) {
+                w.stream.end_motion();
+                w.stream.tracker = None;
+            }
             return;
         }
         let Some(conn) = self.session.as_ref().map(|s| s.conn) else { return };
@@ -750,10 +759,7 @@ impl State {
                 });
             }
             Some(crate::motion::Change::Stop) => {
-                if let Some(m) = w.stream.motion.as_mut() {
-                    m.ending = true;
-                    w.stream.dirty = true;
-                }
+                w.stream.end_motion();
             }
             _ => {}
         }
