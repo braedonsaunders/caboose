@@ -87,6 +87,7 @@ final class TerminalModel {
 
     /// The screen went away or the app went to the background: detach, leaving the shell running.
     func hide() {
+        view.resignFirstResponder()
         visible = false
         disconnect()
     }

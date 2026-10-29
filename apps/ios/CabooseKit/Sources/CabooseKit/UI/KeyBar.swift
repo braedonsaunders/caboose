@@ -64,12 +64,12 @@ public final class KeyBar: UIInputView, UIInputViewAudioFeedback {
 
     public override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: 48) }
 
-    /// The wide system keyboard has a built-in shortcut row within its own surface.
-    /// Using that row keeps controls out of the hinge's displaced accessory region.
+    /// iPad supplies a native shortcut row. A wide iPhone (including an opened foldable)
+    /// still needs the attached shared header; width alone does not imply that row exists.
     public func accessory(for view: UIView) -> UIView? {
         let item = view.inputAssistantItem
-        let wide = (view.window?.bounds.width ?? view.bounds.width) >= 600
-        if wide {
+        let nativeRow = view.traitCollection.userInterfaceIdiom == .pad
+        if nativeRow {
             if assistant !== item || item.trailingBarButtonGroups.isEmpty {
                 assistant = item
                 installAssistant(item)

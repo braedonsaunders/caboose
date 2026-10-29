@@ -1851,6 +1851,17 @@ there is no separate dockless Laptop app-card workspace.
 
 ### Input
 
+Terminal opens with the software keyboard hidden; tapping its grid focuses input.
+With a hardware keyboard it accepts typing without an extra tap. Its Laptop layout uses
+the shared fold measurements, puts the terminal above the hinge and a typing deck below:
+the shared KeyBar, compact keyboard, native keyboard option and session/navigation controls.
+It has no trackpad or mouse modes. The terminal remains mounted through shell placement
+changes, and session menus are anchored to their own buttons. Tab content retains one
+structural identity across shell placements; the system tab bar is explicitly restored
+when its placement returns. Selecting Desktop from another tab exits a covering window
+and restores its dock.
+
+
 - **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap or stationary
   half-second hold cancels
   the touch sequence and sends a right-click with a brief amber ring and haptic. Xwayland windows get pointer
@@ -1896,9 +1907,9 @@ there is no separate dockless Laptop app-card workspace.
 - **Keyboard accessory.** Remote app cards, tiled and free desktops, the external-display
   trackpad, Terminal, the Agents composer and app-owned native form fields use
   CabooseKit’s shared `KeyBar` accessory: one 48-point row of plain keys on the system
-  keyboard surface. At window widths of at least 600 points, native inputs instead install
-  the same actions in UIKit’s built-in keyboard shortcut row, avoiding a detached accessory
-  above a fold. Combo embeds the shared row directly above its custom keys.
+  keyboard surface. iPad inputs install the same actions in UIKit’s built-in shortcut row.
+  iPhone inputs, including an opened Duo, retain the attached header regardless of width.
+  Combo and the Terminal Laptop deck embed the shared row directly above their custom keys.
   Hide Keyboard stays fixed at the right edge. A controls menu selects
   Keys, Move or Symbols; each group shows four keys on compact keyboards and six from
   378 points wide, without horizontal scrolling. The menu also exposes every key and the

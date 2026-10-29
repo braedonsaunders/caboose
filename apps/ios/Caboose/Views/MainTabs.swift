@@ -19,8 +19,9 @@ struct MainTabs: View {
                                                hasVerticalBar: barEdge != nil, width: width)
         let portraitDesktop = DesktopChrome.usesCompactPanel(size: windowSize)
         let placement: HomeToday.TabPlacement = portraitDesktop && windowSize.width >= 600 ? .sidebar : systemPlacement
-        let desktopHidesBars = model.selectedTab == .desktop &&
-            (portraitDesktop || model.laptopDesktopActive || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil))
+        let desktopHidesBars = (model.selectedTab == .desktop &&
+            (portraitDesktop || model.laptopDesktopActive || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil))) ||
+            (model.selectedTab == .terminal && model.terminalLaptopActive)
         TabView(selection: $model.selectedTab) {
             Tab("Home", systemImage: "house", value: ShellTab.home) {
                 HomeScreen().modifier(ShellTabChrome(placement: placement, tab: .home))
@@ -47,7 +48,12 @@ struct MainTabs: View {
         .background { ShellWindowProbe(sizeChanged: { windowSize = $0 }).allowsHitTesting(false).accessibilityHidden(true) }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .tint(Brand.amber)
-        .onChange(of: model.selectedTab) { _, _ in model.updateDeviceDesktop() }
+        .onChange(of: model.selectedTab) { old, tab in
+            model.updateDeviceDesktop()
+            if tab == .desktop, old != .desktop, let cover = model.yard.coverWindow {
+                model.yard.exitAppFullscreen(cover)
+            }
+        }
         // Home's strip shows the windows as they were while the computer rests: their
         // pictures are kept as the app leaves the screen, and as the computer parks.
         .onChange(of: scenePhase) { _, phase in

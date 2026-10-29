@@ -283,13 +283,13 @@ struct LaptopExternalOverview: View {
     }
 }
 
-private struct LaptopGeometry: Equatable {
+struct LaptopGeometry: Equatable {
     var division: CGRect?
     var partiallyOpen = false
     var keyboard: CGFloat = 0
 }
 
-private struct LaptopGeometryProbe: UIViewRepresentable {
+struct LaptopGeometryProbe: UIViewRepresentable {
     let changed: (LaptopGeometry) -> Void
     func makeUIView(context: Context) -> Probe { Probe(changed: changed) }
     func updateUIView(_ view: Probe, context: Context) { view.changed = changed; view.measure() }

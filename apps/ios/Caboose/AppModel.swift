@@ -1081,6 +1081,7 @@ final class AppModel {
 
     /// Laptop has a whole-desktop pointer, including native title bars and the dock.
     /// This temporary arrangement never changes the owner's saved tablet preference.
+    var terminalLaptopActive = false
     var laptopDesktopActive = false
     private var laptopNeedsInitialFit = false
 

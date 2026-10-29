@@ -16,43 +16,34 @@ struct ShellTabChrome: ViewModifier {
         self.tab = tab
     }
 
-    @ViewBuilder func body(content: Content) -> some View {
-        if tab == .desktop && portraitDesktop {
+    func body(content: Content) -> some View {
+        let panel = tab == .desktop && portraitDesktop
+        let sidebar = !panel && placement == .sidebar
+        let cluster = !panel && placement == .cluster
+        return GeometryReader { proxy in
+            // The content has one structural identity through every fold/rotation.
+            // Replacing it per placement can strand long-lived UIKit input views.
             content
-                .toolbarVisibility(.hidden, for: .tabBar)
+                .environment(\.shellWallpaperWidth, proxy.size.width)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.trailing, sidebar && !immersive ? 76 : 0)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if cluster && !hidden {
+                        HStack(alignment: .bottom, spacing: 10) {
+                            if tab == .home { HomeAskField().frame(maxWidth: .infinity) }
+                            else { Spacer(minLength: 0) }
+                            ShellTabButtons(axis: .horizontal)
+                        }
+                        .padding(.horizontal, 16).padding(.bottom, 6)
+                    }
+                }
                 .overlay(alignment: .bottomTrailing) {
-                    // A ready local desktop owns this button in its dock.
-                    if !immersive && (model.phase != .ready || model.externalDisplayActive) {
+                    if panel && !immersive && (model.phase != .ready || model.externalDisplayActive) {
                         DesktopPanelButton().padding(12)
                     }
                 }
-        } else {
-            switch placement {
-            case .system:
-                content
-            case .cluster:
-                content
-                    .toolbarVisibility(.hidden, for: .tabBar)
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        if !hidden {
-                            HStack(alignment: .bottom, spacing: 10) {
-                                if tab == .home { HomeAskField().frame(maxWidth: .infinity) } else { Spacer(minLength: 0) }
-                                ShellTabButtons(axis: .horizontal)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 6)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                        }
-                    }
-                    .animation(.snappy, value: hidden)
-            case .sidebar:
-                GeometryReader { proxy in
-                    content
-                        .environment(\.shellWallpaperWidth, proxy.size.width)
-                        .frame(width: max(0, proxy.size.width - (immersive ? 0 : 76)), height: proxy.size.height)
-                        .frame(width: proxy.size.width, alignment: .leading)
-                        .overlayPreferenceValue(ShellRailActionsKey.self) { actions in
-                            if !immersive {
+                .overlayPreferenceValue(ShellRailActionsKey.self) { actions in
+                            if sidebar && !immersive {
                                 ScrollView(.vertical) {
                                   VStack(spacing: 24) {
                                     VStack(spacing: 8) {
@@ -82,11 +73,8 @@ struct ShellTabChrome: ViewModifier {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                             }
                         }
-                }
-                .background { ShellBackground() }
-                .toolbarVisibility(.hidden, for: .tabBar, .navigationBar)
-                .animation(.snappy, value: immersive)
-            }
+                .background { if sidebar { ShellBackground() } }
+                .toolbarVisibility(panel || placement != .system || immersive ? .hidden : .visible, for: .tabBar)
         }
     }
 
@@ -96,7 +84,8 @@ struct ShellTabChrome: ViewModifier {
 
     /// The same test the Desktop uses to hide its own bars.
     private var immersive: Bool {
-        tab == .desktop && (model.laptopDesktopActive || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil))
+        (tab == .desktop && (model.laptopDesktopActive || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil))) ||
+        (tab == .terminal && model.terminalLaptopActive)
     }
 }
 

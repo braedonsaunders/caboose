@@ -602,3 +602,17 @@ above it, matching the native side toolbar. Page actions and power are in its ov
 There is no empty full-height glass, black background strip, or duplicate top toolbar. Page content, Ask, composers
 and the terminal fit beside it. Rotate to landscape and back, then show and hide the
 keyboard; the rail stays reachable above it and no second tab bar appears.
+
+Terminal fold and keyboard checks:
+- Open Terminal on the closed Duo and inner display in both orientations: the software
+  keyboard starts hidden, the prompt remains visible, and Home/Desktop/Agents/Apps tabs
+  remain reachable. Tap the prompt to type; Hide stays at the header’s top right.
+- Rotate landscape → portrait → landscape with the keyboard open and closed: the same
+  shell output remains visible, with no blank wallpaper replacing the grid.
+- Bend into Laptop: output occupies the upper screen; the lower screen has Sessions,
+  navigation, shared shortcut keys and compact typing keys, with no mouse or trackpad.
+  Check Ctrl+C, Tab completion, arrows, Return and Backspace; the globe opens the native
+  keyboard for dictation/languages. Hide and Show Keyboard work; flattening restores tabs.
+- Open Sessions from both the sidebar and Laptop deck: the popup points to that button.
+- Leave a full-screen desktop app for Terminal, then select Desktop again: its dock
+  and navigation return. Full Screen remains an explicit action inside the desktop.
