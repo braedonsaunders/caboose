@@ -33,6 +33,7 @@ jobs:
           xcodebuild -version
           swift --version
           echo '90db2232be2940106b852eb8af5959872c1d2d2cc69dedccc57d981bcbaae123  apps/ios/GPUStream/tests/fixtures/vkcube.gfxr' | shasum -a 256 -c -
+          python3 apps/ios/GPUStream/tests/check_fixture.py
       - name: Check Swift without the native player
         working-directory: apps/ios/CabooseKit
         run: swift test --jobs 1
