@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 module = Path(__file__).resolve().parents[2] / 'src/migration_transaction.py'
 spec = importlib.util.spec_from_file_location('migration_transaction', module)
@@ -33,6 +34,33 @@ class TransactionTests(unittest.TestCase):
                         raise RuntimeError('power loss')
                 with self.assertRaises(RuntimeError):
                     tx.publish(self.binding, crash)
+                tx.recover()
+                self.assertEqual(tx.disk.read_bytes(), b'original')
+                self.assertFalse(tx.binding.exists())
+                self.assertFalse(tx.journal.exists())
+
+    def test_recover_after_each_filesystem_mutation(self):
+        for operation in ('original-link', 'disk-replace', 'binding-link'):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as root:
+                (Path(root) / 'overlays').mkdir()
+                tx = m.Transaction(root, 'owner')
+                tx.disk.write_bytes(b'original')
+                tx.staged.write_bytes(b'migrated')
+                real_link, real_replace = m.os.link, m.os.replace
+                def link(source, destination, *args, **kwargs):
+                    result = real_link(source, destination, *args, **kwargs)
+                    if (operation == 'original-link' and destination == tx.original or
+                        operation == 'binding-link' and destination == tx.binding):
+                        raise RuntimeError('power loss after link')
+                    return result
+                def replace(source, destination, *args, **kwargs):
+                    result = real_replace(source, destination, *args, **kwargs)
+                    if operation == 'disk-replace' and destination == tx.disk:
+                        raise RuntimeError('power loss after replace')
+                    return result
+                with patch.object(m.os, 'link', link), patch.object(m.os, 'replace', replace):
+                    with self.assertRaisesRegex(RuntimeError, 'power loss'):
+                        tx.publish(self.binding)
                 tx.recover()
                 self.assertEqual(tx.disk.read_bytes(), b'original')
                 self.assertFalse(tx.binding.exists())
