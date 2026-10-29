@@ -372,9 +372,19 @@ catalog and Debian's AppStream metadata. Library searches Debian applications, f
 
 The wallpaper lies behind every tab and the desktop, here and on a TV: the brand gradient,
 wallpapers that change every quarter hour, one wallpaper, or a picture of your own from
-Photos. The wallpapers are twelve scenes drawn on the device (`Desktop/Wallpapers.swift`),
-rendered once per screen size and cached; nothing is downloaded. Choose it in Computer settings, from the Desktop's overflow menu, or with a long
-press on Home's background.
+Photos. Rotation uses the 67 curated Unsplash photographs served by Lorem Picsum, with
+photographer credits in the picker (`Desktop/Wallpapers.swift`). Photos download on demand
+at up to 4K and remain cached for offline use; a failed download keeps the current picture.
+Twelve generated scenes are also selectable and render on the device. Custom photos remain
+in Application Support. Choose the background in Computer settings, from the Desktop's
+overflow menu, or with a long press on Home's background.
+
+Wallpaper check on a device: choose Rotating and then Next Wallpaper; both show real photos.
+Choose a photograph, relaunch offline and confirm it reappears. Choose a generated scene and
+relaunch offline; it remains selected. Import Your Photo, relaunch and confirm it remains.
+Restore Rotating from a generated scene and confirm a photograph replaces it when online.
+Check the picker credits and confirm the wallpaper stays aligned behind the shell capsules
+in portrait, landscape and on an external display.
 
 The same sheet shows the progress and any failure of a guest component update the host
 runs at wake. A container created without the Files port mapping shows that it must be

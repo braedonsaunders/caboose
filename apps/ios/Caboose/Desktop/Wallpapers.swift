@@ -1,16 +1,40 @@
 import CabooseKit
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import ImageIO
 import Observation
 import SwiftUI
 import UIKit
 
-/// A wallpaper the phone draws itself: a named scene of layered gradients under soft,
-/// large-scale light, the same every time from its id, at whatever size a screen needs.
-/// Nothing is fetched, so the background is there with or without a network.
+/// A curated Unsplash photograph served by Lorem Picsum, or an on-device gradient scene.
 struct Wallpaper: Hashable, Identifiable {
     let id: Int
     let name: String
+    let author: String?
+
+    init(id: Int, author: String) {
+        self.id = id
+        self.name = author
+        self.author = author
+        self.stops = []
+        self.accent = Tint(red: 0, green: 0, blue: 0)
+        self.angle = 0
+    }
+
+    init(id: Int, name: String, stops: [Tint], accent: Tint, angle: Double) {
+        self.id = id
+        self.name = name
+        self.author = nil
+        self.stops = stops
+        self.accent = accent
+        self.angle = angle
+    }
+
+    var isPhotograph: Bool { author != nil }
+
+    func url(width: Int, height: Int) -> URL {
+        URL(string: "https://picsum.photos/id/\(id)/\(width)/\(height)")!
+    }
     /// The base gradient's colours, in order along `angle`.
     let stops: [Tint]
     /// The colour of the glows laid over the base and of the light across it.
@@ -33,13 +57,84 @@ struct Wallpaper: Hashable, Identifiable {
         }
     }
 
-    static func scene(_ id: Int) -> Wallpaper? { library.first { $0.id == id } }
+    static func scene(_ id: Int) -> Wallpaper? { (library + generated).first { $0.id == id } }
 }
 
 extension Wallpaper {
+    /// The original curated landscapes, coasts, mountains and night skies (Unsplash License).
+    static let library: [Wallpaper] = [
+        Wallpaper(id: 29, author: "Go Wild"),
+        Wallpaper(id: 110, author: "Kenneth Thewissen"),
+        Wallpaper(id: 128, author: "Matteo Minelli"),
+        Wallpaper(id: 184, author: "Tim de Groot"),
+        Wallpaper(id: 218, author: "Monika Majkowska"),
+        Wallpaper(id: 231, author: "Aleksandra Boguslawska"),
+        Wallpaper(id: 235, author: "Paul E. Harrer"),
+        Wallpaper(id: 287, author: "Aleksandra Boguslawska"),
+        Wallpaper(id: 323, author: "Paweł Wojciechowski"),
+        Wallpaper(id: 327, author: "Ryan Schroeder"),
+        Wallpaper(id: 374, author: "Ma. Alejandra"),
+        Wallpaper(id: 381, author: "Nick West"),
+        Wallpaper(id: 386, author: "Topich"),
+        Wallpaper(id: 392, author: "Chris Brignola"),
+        Wallpaper(id: 412, author: "Samuel Rohl"),
+        Wallpaper(id: 426, author: "Ales Krivec"),
+        Wallpaper(id: 434, author: "Ales Krivec"),
+        Wallpaper(id: 450, author: "Tanvi Malik"),
+        Wallpaper(id: 465, author: "Paula Vermeulen"),
+        Wallpaper(id: 477, author: "Jasper van der Meij"),
+        Wallpaper(id: 482, author: "Danny Froese"),
+        Wallpaper(id: 507, author: "Jeff Sheldon"),
+        Wallpaper(id: 509, author: "Jeff Sheldon"),
+        Wallpaper(id: 511, author: "Jeff Sheldon"),
+        Wallpaper(id: 523, author: "Harman Abiwardani"),
+        Wallpaper(id: 525, author: "Luca Zanon"),
+        Wallpaper(id: 547, author: "Tomasz Paciorek"),
+        Wallpaper(id: 558, author: "Ales Krivec"),
+        Wallpaper(id: 563, author: "Bec Brown"),
+        Wallpaper(id: 667, author: "Joshua Sortino"),
+        Wallpaper(id: 676, author: "Drew Patrick Miller"),
+        Wallpaper(id: 678, author: "Samuel Zeller"),
+        Wallpaper(id: 684, author: "Lee Roylland"),
+        Wallpaper(id: 688, author: "Benjamin Sloth Lindgreen"),
+        Wallpaper(id: 693, author: "Rob Bye"),
+        Wallpaper(id: 702, author: "Dominik Schröder"),
+        Wallpaper(id: 715, author: "Leah Tardivel"),
+        Wallpaper(id: 724, author: "Nelly Volkovich"),
+        Wallpaper(id: 830, author: "Luca Zanon"),
+        Wallpaper(id: 866, author: "Samuel Zeller"),
+        Wallpaper(id: 867, author: "Stefanus Martanto Setyo Husodo"),
+        Wallpaper(id: 871, author: "Stefan Kunze"),
+        Wallpaper(id: 872, author: "Brandon Lam"),
+        Wallpaper(id: 894, author: "Paula Porto"),
+        Wallpaper(id: 896, author: "Jenna Beekhuis"),
+        Wallpaper(id: 903, author: "Greg Rakozy"),
+        Wallpaper(id: 905, author: "Caitlin Wynne"),
+        Wallpaper(id: 906, author: "Andras Toth"),
+        Wallpaper(id: 910, author: "Sudarshan Bhat"),
+        Wallpaper(id: 916, author: "Larry Chen"),
+        Wallpaper(id: 974, author: "Greg Rakozy"),
+        Wallpaper(id: 980, author: "Ales Krivec"),
+        Wallpaper(id: 984, author: "Sylvain Guiheneuc"),
+        Wallpaper(id: 987, author: "Sebastien Gabriel"),
+        Wallpaper(id: 1015, author: "Alexey Topolyanskiy"),
+        Wallpaper(id: 1016, author: "Philippe Wuyts"),
+        Wallpaper(id: 1018, author: "Andrew Ridley"),
+        Wallpaper(id: 1022, author: "Vashishtha Jogi"),
+        Wallpaper(id: 1035, author: "Jared Erondu"),
+        Wallpaper(id: 1036, author: "Wolfgang Lutz"),
+        Wallpaper(id: 1039, author: "Andrew Coelho"),
+        Wallpaper(id: 1040, author: "Rachel Davis"),
+        Wallpaper(id: 1043, author: "Christian Joudrey"),
+        Wallpaper(id: 1050, author: "Joseph Barrientos"),
+        Wallpaper(id: 1052, author: "Annie Spratt"),
+        Wallpaper(id: 1057, author: "Stefan Kunze"),
+        Wallpaper(id: 1064, author: "Olivier Miche"),
+    ]
+
     /// Twelve scenes, mid to dark in tone with soft highlights, so glass controls stay legible
     /// over them in light and dark appearance alike.
-    static let library: [Wallpaper] = [
+    static let generated: [Wallpaper] = [
         Wallpaper(id: 1, name: "Dawn", stops: [Tint(red: 0.16, green: 0.14, blue: 0.32), Tint(red: 0.52, green: 0.30, blue: 0.44), Tint(red: 0.88, green: 0.56, blue: 0.46)],
                   accent: Tint(red: 0.98, green: 0.78, blue: 0.46), angle: 262),
         Wallpaper(id: 2, name: "Harbour", stops: [Tint(red: 0.08, green: 0.16, blue: 0.28), Tint(red: 0.14, green: 0.36, blue: 0.46), Tint(red: 0.22, green: 0.50, blue: 0.54)],
@@ -77,7 +172,7 @@ enum WallpaperRenderer {
 
     static func render(_ wallpaper: Wallpaper, size: CGSize) -> CGImage? {
         let width = Int(size.width.rounded()), height = Int(size.height.rounded())
-        guard width > 0, height > 0, let base = gradients(of: wallpaper, width: width, height: height) else { return nil }
+        guard !wallpaper.isPhotograph, width > 0, height > 0, let base = gradients(of: wallpaper, width: width, height: height) else { return nil }
         let extent = CGRect(x: 0, y: 0, width: width, height: height)
         var random = SeededGenerator(seed: wallpaper.id)
         var image = CIImage(cgImage: base)
@@ -199,8 +294,9 @@ struct SeededGenerator {
 
 /// The background of the app and the computer's desktop, the same on the phone and on a TV:
 /// the brand gradient, wallpapers that change every quarter hour, one wallpaper, or the
-/// owner's own picture (`BackgroundChoice`). Wallpapers are drawn at the display's own pixel
-/// size and kept on the phone, and the last one shows again at launch before anything loads.
+/// owner's own picture (`BackgroundChoice`). Photographs are fetched and scenes are drawn
+/// at the display's pixel size (up to 4K) and kept on the phone. The last one shows again
+/// at launch before anything loads.
 @MainActor @Observable
 final class WallpaperStore {
     static let shared = WallpaperStore()
@@ -213,7 +309,7 @@ final class WallpaperStore {
     private var pixelSize = CGSize(width: 3840, height: 2160)
     private var rotation: Timer?
     private var loading: Task<Void, Never>?
-    /// Small renderings for the picker, kept once drawn.
+    /// Small previews for the picker, kept once fetched or drawn.
     @ObservationIgnored private var thumbnails: [Int: UIImage] = [:]
     @ObservationIgnored private var thumbnailRenders: [Int: Task<UIImage?, Never>] = [:]
     private static let lastKey = "caboose.wallpaper.last"
@@ -238,11 +334,13 @@ final class WallpaperStore {
     }
 
     /// Starts showing the background for a display of this many pixels. A new size keeps the
-    /// wallpaper and draws it at that size.
+    /// wallpaper and loads it at that size.
     func show(pixelSize size: CGSize) {
-        guard size.width > 0, size.height > 0 else { return }
-        let changed = size != pixelSize
-        pixelSize = size
+        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
+        let factor = min(1, 3840 / max(size.width, size.height))
+        let bounded = CGSize(width: max(1, (size.width * factor).rounded()), height: max(1, (size.height * factor).rounded()))
+        let changed = bounded != pixelSize
+        pixelSize = bounded
         switch choice {
         case .gradient, .custom:
             break
@@ -251,7 +349,7 @@ final class WallpaperStore {
             guard let wallpaper = Wallpaper.scene(id) else { next(); break }
             if current?.id != id || image == nil || changed { load(wallpaper) }
         case .rotating:
-            if image == nil || current == nil { next() } else if changed, let current { load(current) }
+            if image == nil || current?.isPhotograph != true { next() } else if changed, let current { load(current) }
         }
         scheduleRotation()
     }
@@ -306,11 +404,11 @@ final class WallpaperStore {
         load(pick)
     }
 
-    /// A small rendering of a wallpaper for the picker, drawn once and kept.
+    /// A small preview for the picker, fetched or drawn once and kept.
     func thumbnail(_ wallpaper: Wallpaper, size: CGSize) async -> UIImage? {
         if let image = thumbnails[wallpaper.id] { return image }
-        let render = thumbnailRenders[wallpaper.id] ?? Task.detached(priority: .userInitiated) {
-            WallpaperRenderer.render(wallpaper, size: size).map { UIImage(cgImage: $0) }
+        let render = thumbnailRenders[wallpaper.id] ?? Task {
+            await Self.load(wallpaper, width: Int(size.width), height: Int(size.height))
         }
         thumbnailRenders[wallpaper.id] = render
         let image = await render.value
@@ -350,13 +448,18 @@ final class WallpaperStore {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Background/custom.jpg")
     }
 
-    private static func fileName(_ wallpaper: Wallpaper, width: Int, height: Int) -> String { "scene-\(wallpaper.id)-\(width)x\(height).jpg" }
+    private static func fileName(_ wallpaper: Wallpaper, width: Int, height: Int) -> String {
+        "\(wallpaper.isPhotograph ? "" : "scene-")\(wallpaper.id)-\(width)x\(height).jpg"
+    }
 
-    /// The wallpaper at this size from the cache, else drawn now and kept there.
+    /// The wallpaper at this size from the cache, else fetched or drawn and kept there.
     private static func load(_ wallpaper: Wallpaper, width: Int, height: Int) async -> UIImage? {
         let caches = cacheDirectory
         let file = caches.appendingPathComponent(fileName(wallpaper, width: width, height: height))
         if let data = try? Data(contentsOf: file), let image = UIImage(data: data) { return await image.byPreparingForDisplay() }
+        if wallpaper.isPhotograph {
+            return await fetchPhotograph(wallpaper, width: width, height: height, file: file)
+        }
         return await Task.detached(priority: .userInitiated) { () -> UIImage? in
             guard let drawn = WallpaperRenderer.render(wallpaper, size: CGSize(width: width, height: height)) else { return nil }
             let image = UIImage(cgImage: drawn)
@@ -366,6 +469,51 @@ final class WallpaperStore {
             }
             return await image.byPreparingForDisplay()
         }.value
+    }
+
+    /// Bound both transfer size and decode size, including responses without Content-Length.
+    nonisolated private static func fetchPhotograph(_ wallpaper: Wallpaper, width: Int, height: Int, file: URL) async -> UIImage? {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 30
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        do {
+            let (bytes, response) = try await session.bytes(from: wallpaper.url(width: width, height: height))
+            let limit = 12 * 1024 * 1024
+            guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+                  response.url?.scheme == "https",
+                  response.mimeType?.hasPrefix("image/") == true,
+                  response.expectedContentLength <= Int64(limit) else { return nil }
+            var data = Data()
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < limit else { return nil }
+                data.append(byte)
+            }
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  CGImageSourceGetStatus(source) == .statusComplete,
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let sourceWidth = properties[kCGImagePropertyPixelWidth] as? Int,
+                  let sourceHeight = properties[kCGImagePropertyPixelHeight] as? Int,
+                  sourceWidth > 0, sourceHeight > 0, sourceWidth <= 16384, sourceHeight <= 16384,
+                  sourceWidth * sourceHeight <= 40_000_000,
+                  let decoded = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: min(3840, max(width, height)),
+                    kCGImageSourceShouldCacheImmediately: true,
+                  ] as CFDictionary) else { return nil }
+            try Task.checkCancellation()
+            let image = UIImage(cgImage: decoded)
+            if let jpeg = image.jpegData(compressionQuality: 0.9) {
+                try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? jpeg.write(to: file, options: .atomic)
+            }
+            return await image.byPreparingForDisplay()
+        } catch {
+            return nil
+        }
     }
 }
 

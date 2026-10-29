@@ -19,7 +19,7 @@ struct BackgroundPicker: View {
                         Backdrop()
                     } action: { store.choose(.gradient) }
                     option("Rotating", selected: store.choice == .rotating) {
-                        thumbnail(store.current ?? Wallpaper.library[0])
+                        thumbnail(store.current.flatMap { $0.isPhotograph ? $0 : nil } ?? Wallpaper.library[0])
                             .overlay(alignment: .bottomTrailing) {
                                 Image(systemName: "arrow.triangle.2.circlepath")
                                     .font(.caption.weight(.bold))
@@ -43,9 +43,22 @@ struct BackgroundPicker: View {
                     .buttonStyle(.plain)
                 }
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Wallpapers").font(.title3.weight(.bold))
+                    Text("Photographs").font(.title3.weight(.bold))
                     LazyVGrid(columns: columns, spacing: 12) {
                         ForEach(Wallpaper.library) { wallpaper in
+                            option(wallpaper.name, selected: store.choice == .photo(wallpaper.id)) {
+                                thumbnail(wallpaper)
+                            } action: { store.choose(.photo(wallpaper.id)) }
+                        }
+                    }
+                    Text("Photographs from Unsplash, through Lorem Picsum.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Generated Scenes").font(.title3.weight(.bold))
+                    LazyVGrid(columns: columns, spacing: 12) {
+                        ForEach(Wallpaper.generated) { wallpaper in
                             option(wallpaper.name, selected: store.choice == .photo(wallpaper.id)) {
                                 thumbnail(wallpaper)
                             } action: { store.choose(.photo(wallpaper.id)) }
@@ -110,7 +123,7 @@ struct BackgroundPicker: View {
     }
 }
 
-/// A small rendering of one wallpaper, drawn off the main thread the first time it is shown.
+/// A cached preview of one photograph or generated scene.
 private struct WallpaperThumbnail: View {
     let wallpaper: Wallpaper
     @State private var image: UIImage?
