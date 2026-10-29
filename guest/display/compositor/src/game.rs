@@ -428,9 +428,11 @@ impl State {
         let window = self.windows.find(|w| {
             use smithay::reexports::wayland_server::Resource;
             let owner = match &w.surface {
-                crate::windows::Surface::Toplevel(t) => {
-                    dh.get_client(t.wl_surface().id()).ok().and_then(|c| c.get_credentials(&dh).ok()).map(|c| c.pid as u32)
-                }
+                crate::windows::Surface::Toplevel(t) => dh
+                    .get_client(t.wl_surface().id())
+                    .ok()
+                    .and_then(|c| c.get_credentials(&dh).ok())
+                    .map(|c| c.pid as u32),
                 // A Vulkan application through Xwayland names itself with _NET_WM_PID.
                 crate::windows::Surface::X11(x) if w.parent.is_none() => x.pid(),
                 _ => None,
@@ -760,7 +762,10 @@ mod tests {
         ));
         let h = Hello::parse(&hello(with), None).unwrap();
         let Kind::Game { saves, .. } = h.kind else { panic!("a game") };
-        assert_eq!(saves, Some(vec![proto::GameSave { mount: "/powder".into(), path: ".local/share/The Powder Toy".into() }]));
+        assert_eq!(
+            saves,
+            Some(vec![proto::GameSave { mount: "/powder".into(), path: ".local/share/The Powder Toy".into() }])
+        );
     }
 
     #[test]
@@ -794,7 +799,12 @@ mod tests {
         };
         let h = Hello::parse(&gpu("/run/user/1000/caboose-gpu/4242.gfxr"), Some(dir)).unwrap();
         assert_eq!(h.kind, Kind::Gpu { stream: dir.join("4242.gfxr") });
-        for bad in ["/tmp/4242.gfxr", "/run/user/1000/caboose-gpu/../x.gfxr", "/run/user/1000/caboose-gpu/a/b.gfxr", "/run/user/1000/caboose-gpu/x"] {
+        for bad in [
+            "/tmp/4242.gfxr",
+            "/run/user/1000/caboose-gpu/../x.gfxr",
+            "/run/user/1000/caboose-gpu/a/b.gfxr",
+            "/run/user/1000/caboose-gpu/x",
+        ] {
             assert_eq!(Hello::parse(&gpu(bad), Some(dir)), None, "{bad}");
         }
         assert_eq!(Hello::parse(&gpu("/run/user/1000/caboose-gpu/4242.gfxr"), None), None);

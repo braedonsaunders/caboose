@@ -1068,7 +1068,9 @@ impl Message {
             }),
             GAME_DESTROY => Message::GameDestroy { id: f.u64("id")? },
             GPU_CREATE => Message::GpuCreate { id: f.u64("id")?, window: f.u64("window")? },
-            GPU_DATA => Message::GpuData(GpuData { id: f.u64("id")?, offset: f.u64("offset")?, data: f.bytes("data")? }),
+            GPU_DATA => {
+                Message::GpuData(GpuData { id: f.u64("id")?, offset: f.u64("offset")?, data: f.bytes("data")? })
+            }
             GPU_DESTROY => Message::GpuDestroy { id: f.u64("id")? },
             GPU_ACK => Message::GpuAck { id: f.u64("id")?, offset: f.u64("offset")? },
             VIDEO_ACK => Message::VideoAck { id: f.u64("id")?, seq: f.u64("seq")? },

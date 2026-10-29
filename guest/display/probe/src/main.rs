@@ -1059,7 +1059,12 @@ fn run(args: Args) -> Result<bool, String> {
             );
         }
         for (id, g) in &gpus {
-            println!("gpu {id}: window {}, {} bytes{}", g.window, g.bytes, if g.destroyed { ", destroyed" } else { "" });
+            println!(
+                "gpu {id}: window {}, {} bytes{}",
+                g.window,
+                g.bytes,
+                if g.destroyed { ", destroyed" } else { "" }
+            );
         }
         for (id, g) in &games {
             println!(
