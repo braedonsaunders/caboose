@@ -101,9 +101,12 @@ for slice in $slices; do
   build=$work/build-$slice
   echo "Building $slice"
   # shellcheck disable=SC2086
+  # An iOS toolchain looks for packages only in the SDK; the header-only JSON library is
+  # GFXReconstruct's own copy.
   cmake -S "$ios/GPUStream" -B "$build" -G Ninja -Wno-dev --log-level=WARNING \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 $platform \
-    -DGFXRECON_SOURCE_DIR="$source" -DMOLTENVK_LIBRARY="$moltenvk/$slice/libMoltenVK.a" >/dev/null
+    -DGFXRECON_SOURCE_DIR="$source" -DMOLTENVK_LIBRARY="$moltenvk/$slice/libMoltenVK.a" \
+    -Dnlohmann_json_DIR="$source/external/nlohmann-json/share/cmake/nlohmann_json" >/dev/null
   cmake --build "$build" --parallel "$JOBS"
   mkdir -p "$work/lib/$slice"
   cp "$build/libCabooseGPUStream.a" "$work/lib/$slice/libCabooseGPUStream.a"

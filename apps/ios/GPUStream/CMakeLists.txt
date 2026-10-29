@@ -30,6 +30,9 @@ if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
     # but CMake still requires the library to be found.
     set(APPKIT_LIBRARY "-framework UIKit" CACHE STRING "Stands in for AppKit in GFXReconstruct's unused application target")
 endif ()
+# GFXReconstruct's tools are configured but never built; on iOS CMake would otherwise make
+# each executable a bundle, which their install rules do not describe.
+set(CMAKE_MACOSX_BUNDLE OFF)
 add_subdirectory("${GFXRECON_SOURCE_DIR}" gfxreconstruct EXCLUDE_FROM_ALL)
 
 # GFXReconstruct's application layer, with layer_window.mm in place of its AppKit
