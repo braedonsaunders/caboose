@@ -91,6 +91,9 @@ class Transaction:
         # Exact bytes are needed for recovery's ownership check.
         fd, name = tempfile.mkstemp(prefix='.migration-binding-', dir=self.dir)
         try:
+            owner = os.stat(self.disk)
+            os.fchown(fd, owner.st_uid, owner.st_gid)
+            os.fchmod(fd, 0o600)
             with os.fdopen(fd, 'wb') as f:
                 f.write(binding_bytes)
                 f.flush()
@@ -143,3 +146,82 @@ class Transaction:
             sync_dir(self.dir)
         self.journal.unlink()
         sync_dir(self.dir)
+
+
+def rollback(tx, acknowledge, checkpoint=lambda phase: None):
+    """Journal an acknowledged rollback; retain the migrated disk for inspection."""
+    if not acknowledge:
+        raise ValueError('Rollback requires explicit acknowledgement of migrated writes')
+    if tx.journal.exists() or not tx.original.exists() or not tx.binding.exists():
+        raise ValueError('No completed migration to roll back, or recovery is required')
+    original, current = identity(tx.original), identity(tx.disk)
+    if original == current:
+        raise ValueError('Computer already uses the retained original')
+    retired = tx.dir / f'.{tx.computer}.migration-retired.raw'
+    if retired.exists() or tx.temp.exists():
+        raise ValueError('Rollback artifacts already exist')
+    identity(tx.binding)
+    binding = tx.binding.read_bytes()
+    journal = {'version': 1, 'computer': tx.computer, 'operation': 'rollback',
+               'original': original, 'current': current,
+               'binding_sha256': digest_bytes(binding), 'phase': 'retain-current'}
+    atomic_json(tx.journal, journal)
+    checkpoint('retain-current')
+    finish_rollback(tx, journal, checkpoint)
+
+
+def finish_rollback(tx, journal, checkpoint=lambda phase: None):
+    if (journal.get('version') != 1 or journal.get('computer') != tx.computer or
+        journal.get('operation') != 'rollback' or journal.get('phase') not in
+        ('retain-current', 'restore-original', 'remove-binding')):
+        raise ValueError('Invalid rollback journal')
+    original, current = journal.get('original'), journal.get('current')
+    if not all(isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) and x >= 0 for x in v) for v in (original, current)):
+        raise ValueError('Invalid rollback disk identities')
+    binding_hash = journal.get('binding_sha256')
+    if not isinstance(binding_hash, str) or not re.fullmatch('[0-9a-f]{64}', binding_hash):
+        raise ValueError('Invalid rollback binding hash')
+    retired = tx.dir / f'.{tx.computer}.migration-retired.raw'
+    if identity(tx.original) != original or identity(tx.disk) not in (original, current):
+        raise ValueError('Disk identity changed during rollback')
+    if tx.binding.exists():
+        identity(tx.binding)
+        if digest_bytes(tx.binding.read_bytes()) != binding_hash:
+            raise ValueError('Binding changed during rollback')
+    if retired.exists() and identity(retired) != current:
+        raise ValueError('Retired disk identity changed')
+    if not retired.exists():
+        if identity(tx.disk) != current:
+            raise ValueError('Retired disk is missing')
+        os.link(tx.disk, retired, follow_symlinks=False)
+        sync_dir(tx.dir)
+    journal['phase'] = 'restore-original'
+    atomic_json(tx.journal, journal)
+    checkpoint('restore-original')
+    if identity(tx.disk) != original:
+        if tx.temp.exists() and identity(tx.temp) != original:
+            raise ValueError('Unexpected rollback file')
+        if not tx.temp.exists():
+            os.link(tx.original, tx.temp, follow_symlinks=False)
+            sync_dir(tx.dir)
+        os.replace(tx.temp, tx.disk)
+        sync_dir(tx.dir)
+    journal['phase'] = 'remove-binding'
+    atomic_json(tx.journal, journal)
+    checkpoint('remove-binding')
+    if tx.binding.exists():
+        tx.binding.unlink()
+        sync_dir(tx.dir)
+    tx.journal.unlink()
+    sync_dir(tx.dir)
+
+
+def recover(tx):
+    """Recover an interrupted publication or acknowledged rollback."""
+    journal = json.loads(tx.journal.read_text())
+    if journal.get('operation') == 'publish':
+        tx.recover()
+    elif journal.get('operation') == 'rollback':
+        finish_rollback(tx, journal)
+    else:
+        raise ValueError('Invalid migration journal')
