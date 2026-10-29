@@ -1,0 +1,8 @@
+{
+  "name": "gpu-create",
+  "description": "Window 7's pictures are a Vulkan stream the client renders.",
+  "messages": [
+    {"direction": "server", "type": "gpu.create", "type_id": 25, "fields": {"id": 1, "window": 7}}
+  ],
+  "hex": "190d000000a2626964016677696e646f7707"
+}

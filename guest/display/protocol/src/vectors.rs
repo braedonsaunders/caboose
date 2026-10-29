@@ -403,6 +403,14 @@ pub fn all(media: &Media) -> Vec<Vector> {
             }),
         ),
         one("game-destroy", "", Message::GameDestroy { id: 1 }),
+        one("gpu-create", "Window 7's pictures are a Vulkan stream the client renders.", Message::GpuCreate { id: 1, window: 7 }),
+        one(
+            "gpu-data",
+            "The first bytes of stream 1: a GFXReconstruct file header (fourcc GFXR, format 0.0, no options).",
+            Message::GpuData(GpuData { id: 1, offset: 0, data: b"GFXR\0\0\0\0\0\0\0\0\0\0\0\0".to_vec() }),
+        ),
+        one("gpu-destroy", "", Message::GpuDestroy { id: 1 }),
+        one("gpu-ack", "The client has consumed stream 1 up to byte 65536.", Message::GpuAck { id: 1, offset: 65536 }),
         one("video-keyframe", "", Message::VideoKeyframe { id: 1 }),
         one(
             "audio-opus-stereo",
@@ -427,6 +435,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 video_decoders: None,
                 audio_decoders: None,
                 wasm: false,
+                gpu: false,
             }),
         ),
         one(
@@ -440,6 +449,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: None,
                 wasm: false,
+                gpu: false,
             }),
         ),
         one(
@@ -453,6 +463,21 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: Some(vec!["opus".into()]),
                 wasm: false,
+                gpu: false,
+            }),
+        ),
+        one(
+            "client-hello-gpu",
+            "client-hello-audio from a client that also renders Vulkan streams.",
+            Message::ClientHello(ClientHello {
+                version: 0,
+                token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264],
+                displays: vec![phone()],
+                video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
+                audio_decoders: Some(vec!["opus".into()]),
+                wasm: false,
+                gpu: true,
             }),
         ),
         one(
@@ -466,6 +491,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: Some(vec!["opus".into()]),
                 wasm: true,
+                gpu: false,
             }),
         ),
         one("vsync", "", Message::Vsync { display: 1, t_us: 5_000_008_333 }),

@@ -283,6 +283,8 @@ pub struct ClientHello {
     pub audio_decoders: Option<Vec<String>>,
     /// The client runs games handed off to it (docs/game-handoff.md). Sent only when true.
     pub wasm: bool,
+    /// The client renders Vulkan streams itself (docs/gpu-stream.md). Sent only when true.
+    pub gpu: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -357,6 +359,14 @@ pub struct GameCreate {
     pub entry: String,
     /// Absent when the game saves nothing.
     pub saves: Option<Vec<GameSave>>,
+}
+
+/// `gpu.data` (0x1A): the next bytes of a Vulkan stream, at `offset` from its start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuData {
+    pub id: u64,
+    pub offset: u64,
+    pub data: Vec<u8>,
 }
 
 /// `configure` (0x84).
@@ -485,6 +495,15 @@ pub enum Message {
     GameDestroy {
         id: u64,
     },
+    /// The window's pictures are a Vulkan stream the client renders.
+    GpuCreate {
+        id: u64,
+        window: u64,
+    },
+    GpuData(GpuData),
+    GpuDestroy {
+        id: u64,
+    },
     Pong {
         t_us: u64,
     },
@@ -527,6 +546,11 @@ pub enum Message {
     VideoKeyframe {
         id: u64,
     },
+    /// The client has consumed a stream up to `offset`.
+    GpuAck {
+        id: u64,
+        offset: u64,
+    },
     Ping {
         t_us: u64,
     },
@@ -546,6 +570,9 @@ pub mod type_id {
     pub const VIDEO_PRESENT: u8 = 0x16;
     pub const GAME_CREATE: u8 = 0x17;
     pub const GAME_DESTROY: u8 = 0x18;
+    pub const GPU_CREATE: u8 = 0x19;
+    pub const GPU_DATA: u8 = 0x1A;
+    pub const GPU_DESTROY: u8 = 0x1B;
     pub const CURSOR: u8 = 0x20;
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
@@ -568,6 +595,7 @@ pub mod type_id {
     pub const POINTER: u8 = 0x92;
     pub const KEY: u8 = 0x93;
     pub const TEXT: u8 = 0x94;
+    pub const GPU_ACK: u8 = 0x96;
     pub const CLIENT_CLIPBOARD: u8 = 0xA0;
     pub const PING: u8 = 0xFE;
 }
@@ -628,6 +656,9 @@ impl Message {
             Message::VideoPresent { .. } => VIDEO_PRESENT,
             Message::GameCreate(_) => GAME_CREATE,
             Message::GameDestroy { .. } => GAME_DESTROY,
+            Message::GpuCreate { .. } => GPU_CREATE,
+            Message::GpuData(_) => GPU_DATA,
+            Message::GpuDestroy { .. } => GPU_DESTROY,
             Message::Pong { .. } => PONG,
             Message::Bye { .. } => BYE,
             Message::ClientHello(_) => CLIENT_HELLO,
@@ -645,6 +676,7 @@ impl Message {
             Message::ClientClipboard(_) => CLIENT_CLIPBOARD,
             Message::VideoAck { .. } => VIDEO_ACK,
             Message::VideoKeyframe { .. } => VIDEO_KEYFRAME,
+            Message::GpuAck { .. } => GPU_ACK,
             Message::Ping { .. } => PING,
         }
     }
@@ -698,7 +730,13 @@ impl Message {
             | Message::RequestKeyframe { id }
             | Message::VideoDestroy { id }
             | Message::GameDestroy { id }
+            | Message::GpuDestroy { id }
             | Message::VideoKeyframe { id } => MapBuilder::new().put("id", *id).build(),
+            Message::GpuCreate { id, window } => MapBuilder::new().put("id", *id).put("window", *window).build(),
+            Message::GpuData(m) => {
+                MapBuilder::new().put("id", m.id).put("offset", m.offset).put("data", m.data.clone()).build()
+            }
+            Message::GpuAck { id, offset } => MapBuilder::new().put("id", *id).put("offset", *offset).build(),
             Message::GameCreate(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("window", m.window)
@@ -808,6 +846,7 @@ impl Message {
                 .opt("video_decoders", m.video_decoders.as_deref().map(codecs_value))
                 .opt("audio_decoders", m.audio_decoders.clone())
                 .opt("wasm", m.wasm.then_some(true))
+                .opt("gpu", m.gpu.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -1028,6 +1067,10 @@ impl Message {
                 },
             }),
             GAME_DESTROY => Message::GameDestroy { id: f.u64("id")? },
+            GPU_CREATE => Message::GpuCreate { id: f.u64("id")?, window: f.u64("window")? },
+            GPU_DATA => Message::GpuData(GpuData { id: f.u64("id")?, offset: f.u64("offset")?, data: f.bytes("data")? }),
+            GPU_DESTROY => Message::GpuDestroy { id: f.u64("id")? },
+            GPU_ACK => Message::GpuAck { id: f.u64("id")?, offset: f.u64("offset")? },
             VIDEO_ACK => Message::VideoAck { id: f.u64("id")?, seq: f.u64("seq")? },
             VIDEO_KEYFRAME => Message::VideoKeyframe { id: f.u64("id")? },
             PONG => Message::Pong { t_us: f.u64("t_us")? },
@@ -1046,6 +1089,7 @@ impl Message {
                     Some(_) => Some(f.strings("audio_decoders")?),
                 },
                 wasm: f.opt_bool("wasm")?.unwrap_or(false),
+                gpu: f.opt_bool("gpu")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -1137,6 +1181,10 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         VIDEO_KEYFRAME => "video.keyframe",
         GAME_CREATE => "game.create",
         GAME_DESTROY => "game.destroy",
+        GPU_CREATE => "gpu.create",
+        GPU_DATA => "gpu.data",
+        GPU_DESTROY => "gpu.destroy",
+        GPU_ACK => "gpu.ack",
         CURSOR => "cursor",
         CURSOR_NAMED => "cursor.named",
         TEXT_INPUT => "text_input",
