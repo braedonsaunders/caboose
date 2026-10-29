@@ -101,6 +101,8 @@ final class AppModel {
     /// The connection and server epoch `placedWindowIDs` were placed for.
     private var placedConnection = 0
     private var placedEpoch: String?
+    private var announcedSession: ObjectIdentifier?
+    private var announcedGeneration = 0
 
     /// Which gathering of frames the cache belongs to, so pictures still arriving from the GPU
     /// after the cache was cleared or gathered again are dropped.
@@ -580,6 +582,18 @@ final class AppModel {
         guard let session else { return }
         switch session.state {
         case .ready:
+            // Id-keyed placements belong to this compositor lifetime, not just its host.
+            yard.enter(epoch: session.epoch)
+            desktop.enter(epoch: session.epoch)
+            let identity = ObjectIdentifier(session)
+            if announcedSession != identity {
+                announcedSession = identity
+                announcedGeneration = 0
+            }
+            if session.windowsAnnounced > announcedGeneration {
+                announcedGeneration = session.windowsAnnounced
+                desktop.windowsAnnounced(Set(session.windows.keys))
+            }
             if link.status != .live { link.connected() }
             if phase != .ready { phase = .ready }
             // A resumed connection to the same server epoch has the same windows where they
