@@ -89,7 +89,7 @@ final class AppModel {
 
     private var launchStartedAt: Date?
     private var knownWindowIDs = Set<Int>()
-    private var pasteboardChangeCount = UIPasteboard.general.changeCount
+    private let pasteboard = PasteboardBridge()
     private var observingWindows = false
 
     init() {
@@ -306,8 +306,7 @@ final class AppModel {
         placedWindowIDs.removeAll()
         let url = host.socketURL(display.path)
         let session: any DisplaySession = CabooseDisplaySession(displayURL: url, token: host.token, password: display.token, capabilities: caps)
-        session.onClipboardText = { text in UIPasteboard.general.string = text }
-        session.clipboardProvider = { UIPasteboard.general.string }
+        pasteboard.attach(session, host: host)
         session.onBell = { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
         session.onOpenURL = { [weak self] url in self?.phone.open(url) }
         session.onNotification = { note in Self.post(note) }
@@ -985,10 +984,7 @@ final class AppModel {
     // MARK: Clipboard and notifications
 
     private func offerPasteboardIfChanged() {
-        let count = UIPasteboard.general.changeCount
-        guard count != pasteboardChangeCount else { return }
-        pasteboardChangeCount = count
-        if UIPasteboard.general.hasStrings, let text = UIPasteboard.general.string { session?.offerClipboard(text) }
+        pasteboard.offerIfChanged(to: session, host: host)
     }
 
     static func requestNotificationPermission() {

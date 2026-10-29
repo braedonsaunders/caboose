@@ -798,6 +798,8 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
 | `POST` | `/v1/fs/move?path=…` | `{ destination }`: move or rename |
 | `DELETE` | `/v1/fs/item?path=…` | Move an item to the freedesktop home Trash |
 | `GET` | `/v1/fs/changes?anchor=…` | The change journal since `anchor` |
+| `PUT` | `/v1/fs/transfer?id=…&name=…` | Stream a file into the transfer area, `.cache/caboose/transfers/<id>/<name>` (known length, at most 512 MiB) → 201 `{ path, size }` |
+| `DELETE` | `/v1/fs/transfer?id=…` | Remove a transfer |
 | `POST` | `/v1/fs/open` | **Wakes.** `{ path, app? }` → `{ opened: true }`: open a home-relative item on the owner's display, with its default handler or with the desktop entry `app` (`*.desktop`) |
 | `POST` | `/v1/files` | **Wakes.** `{ name, data (base64), open? }` → `{ path }`: save into `~/Downloads` under a unique name (`name (2).ext`, …) and optionally open it |
 
@@ -825,6 +827,13 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   that pairs the old and new path.
 - While the computer runs and at least one control socket is connected, the host polls the
   journal every second and broadcasts `fs.changed { anchor }` when something changed.
+- The transfer area holds files the phone hands to Linux applications through the
+  clipboard ([display.md § Clipboard](display.md#clipboard)). `id` is 32 lowercase hex
+  digits chosen by the client and `name` one path component. The levels below `.cache`
+  must belong to `caboose`, the area and each transfer are private, an existing name is
+  never replaced (409), a transfer holds at most 64 files (409), the area at most 2 GiB
+  (507), and transfers are removed a day after their last upload. The display server
+  offers applications only files that are in the area.
 - `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.
@@ -1091,7 +1100,7 @@ Caboose Display (`guest/display`, Rust and Smithay) is a headless Wayland compos
 Xwayland. It composites nothing: each toplevel and popup is its own stream, and the phone
 or TV places them as native surfaces. It encodes each window's changes (H.264, HEVC or AV1,
 with lossless PNG tiles for small changes and a sharpening pass once content is still),
-paces frames on the client's vsync, carries clipboard text, named cursors, touch,
+paces frames on the client's vsync, carries the clipboard (text, images and files), named cursors, touch,
 text-input-v3 and the keyboard, and sends sound as Opus on the same clock as video. Video an
 application decodes through the Caboose VA-API driver reaches the client as its own
 compressed stream, layered into the window when the application presents each frame.
@@ -1919,6 +1928,15 @@ app group and a Keychain access group.
   not necessarily the window it was dropped on. Transfer failures are shown on the phone.
   Dropping a file into a specific Linux application, and dragging out of Linux, are not
   supported.
+- **Clipboard.** The app's hello asks for images and files as well as text. A copy on the
+  computer replaces the pasteboard with its text and image; files it names under the
+  computer's home (at most 256 MB together) are downloaded through `/v1/fs` first and put
+  on the pasteboard as files with their names, and files outside the home are reported,
+  not copied. When the app becomes active after a copy on the phone, it sends the text,
+  the image (PNG or JPEG as copied, otherwise converted to JPEG, or PNG when it has
+  transparency) and the files, which it uploads to the transfer area first (at most 512 MB
+  each and 1 GB together; an image too large for the clipboard goes as a file). The app's
+  own pasteboard writes are not sent back. Failures are shown in an alert.
 - **Phone handoff.** The app opens its foreground control socket with `?phone=1`. It
   prompts before opening a URL, sharing or printing, never acts silently, and defers
   prompts while inactive. After the owner agrees it downloads a staged file with
