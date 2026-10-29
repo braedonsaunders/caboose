@@ -42,7 +42,7 @@ describe('cold-tier controller integration', () => {
       await source.archive()
       const wake = vi.fn(async () => { expect(await readFile(join(snapshot, 'memory-ranges'), 'utf8')).toBe('memory'); return {} as Session })
       const original = { wake, hasSavedState: () => false } as unknown as Controller
-      const wrapped = tieredController(original, snapshot, { snapshot, store, key, delayMs: 60_000 })
+      const wrapped = tieredController(original, snapshot, { store, key, delayMs: 60_000 })
       const lifecycle = new ComputerLifecycle(wrapped.controller, 60_000)
       wrapped.attach(lifecycle)
       await lifecycle.wake()
@@ -63,7 +63,7 @@ describe('cold-tier controller integration', () => {
         return {} as Session
       })
       const original = { wake: async () => ({} as Session), restart, hasSavedState: () => false } as unknown as Controller
-      const wrapped = tieredController(original, snapshot, { snapshot, store, key, delayMs: 60_000 })
+      const wrapped = tieredController(original, snapshot, { store, key, delayMs: 60_000 })
       const lifecycle = new ComputerLifecycle(wrapped.controller, 60_000)
       wrapped.attach(lifecycle)
       await lifecycle.restart()

@@ -5,7 +5,6 @@ import { SnapshotTier } from './snapshot-tier.js'
 import type { Controller, Session } from './server.js'
 
 export interface SnapshotTierOptions {
-  snapshot: string
   store: SnapshotObjectStore
   key: Uint8Array
   /** Time a computer remains parked before tiering. */
