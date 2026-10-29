@@ -24,7 +24,7 @@ case $bundle in
 esac
 host=$work/caboose-host
 for path in bin/caboose-host bin/caboose-setup-disks node/bin/node app/apps/host/dist/index.js app/apps/web/dist/index.html \
-  app/guest/components/manifest.json app/guest/catalog/catalog.json app/apps/host/migrations/meta/_journal.json VERSION defaults.env; do
+  app/guest/components/manifest.json app/guest/catalog/catalog.json app/guest/container/caboose-seccomp.json app/apps/host/dist/depot-builder.py app/apps/host/migrations/meta/_journal.json VERSION defaults.env; do
   [[ -e $host/$path ]] || { echo "FAIL: the bundle lacks $path" >&2; exit 1; }
 done
 missing=$(cd "$host/app/guest" && "$host/node/bin/node" -e '

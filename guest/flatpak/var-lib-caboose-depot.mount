@@ -1,0 +1,18 @@
+[Unit]
+Description=Caboose shared Flatpak runtimes
+Documentation=https://github.com/braedonsaunders/caboose/blob/main/docs/architecture.md
+ConditionVirtualization=vm
+# The host shares its runtime depot as the virtio-fs tag caboose-depot; a host without one
+# leaves the directory empty and the mount fails without delaying the boot.
+DefaultDependencies=no
+After=local-fs-pre.target
+Before=local-fs.target
+
+[Mount]
+What=caboose-depot
+Where=/var/lib/caboose/depot
+Type=virtiofs
+Options=ro,nodev,nosuid,nofail
+
+[Install]
+WantedBy=local-fs.target

@@ -7,7 +7,9 @@ import re
 import shutil
 import sys
 
-ROOTS = [pathlib.Path.home() / '.local/share/applications', pathlib.Path('/usr/local/share/applications'), pathlib.Path('/usr/share/applications')]
+# Flatpak exports the desktop entries and icons of the system installation's apps.
+FLATPAK = pathlib.Path('/var/lib/flatpak/exports/share')
+ROOTS = [pathlib.Path.home() / '.local/share/applications', pathlib.Path('/usr/local/share/applications'), FLATPAK / 'applications', pathlib.Path('/usr/share/applications')]
 
 def entries():
     found = {}
@@ -129,6 +131,8 @@ else:
     theme = Gtk.IconTheme.get_default()
     if theme is None:
         raise SystemExit(f"No GTK icon theme available on display {os.environ.get('WAYLAND_DISPLAY') or os.environ.get('DISPLAY', ':100')}")
+    if (FLATPAK / 'icons').is_dir():
+        theme.append_search_path(str(FLATPAK / 'icons'))
     apps = []
     start = int(sys.argv[2])
     for ident, path in entries().items():

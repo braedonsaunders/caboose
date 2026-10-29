@@ -5,7 +5,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 mode=${1:?expected image-vm, image-container, vm or container}
 case "$mode" in image-vm|image-container|vm|container) ;; *) exit 2;; esac
 export DEBIAN_FRONTEND=noninteractive
-packages=(appstream gir1.2-appstream-1.0 cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1 xdg-desktop-portal xdg-desktop-portal-gtk geoclue-2.0)
+packages=(appstream gir1.2-appstream-1.0 cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1 xdg-desktop-portal xdg-desktop-portal-gtk geoclue-2.0 flatpak gir1.2-flatpak-1.0)
 missing=()
 for pkg in "${packages[@]}"; do
   [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || :)" = installed ] || missing+=("$pkg")
@@ -43,6 +43,7 @@ install -Dm644 "$root/terminal/caboose-terminal.service" /etc/systemd/system/cab
 sh "$root/notifications/install.sh"
 bash "$root/phone/install.sh"
 sh "$root/bridge/install.sh"
+sh "$root/flatpak/install.sh"
 sh "$root/agentd/install.sh"
 install -d -m 0755 /usr/local/share/caboose
 if [[ "$mode" = *container ]]; then
@@ -50,7 +51,7 @@ if [[ "$mode" = *container ]]; then
 else
   mkdir -p /var/lib/systemd/linger
   touch /var/lib/systemd/linger/caboose
-  systemctl enable caboose-files.service caboose-terminal.service caboose-notifications.service cups.service caboose-phone-printer.service caboose-bridge.service
+  systemctl enable caboose-files.service caboose-terminal.service caboose-notifications.service cups.service caboose-phone-printer.service caboose-bridge.service var-lib-caboose-depot.mount
 fi
 if [[ "$mode" = vm ]]; then
   systemctl daemon-reload
@@ -58,6 +59,8 @@ if [[ "$mode" = vm ]]; then
   systemctl restart caboose-files.service
   systemctl restart caboose-terminal.service
   systemctl start cups.service
+  # Only a host that shares its runtime depot gives the computer the caboose-depot tag.
+  systemctl start var-lib-caboose-depot.mount 2>/dev/null || :
   systemctl restart caboose-phone-printer.service
   # The bridge runs with the owner's display; restart it only where that display is up.
   if systemctl is-active --quiet caboose-display.service; then systemctl restart caboose-bridge.service; fi

@@ -6,7 +6,7 @@
 #
 #   CABOOSE_VAAPI_DRI=1 scripts/dev.sh tests/e2e.sh
 #   CABOOSE_VAAPI_DRI=1 CBVA_SANDBOX=1 \
-#     CABOOSE_VAAPI_DOCKER_ARGS="--security-opt seccomp=$PWD/../container/chromium-seccomp.json" \
+#     CABOOSE_VAAPI_DOCKER_ARGS="--security-opt seccomp=$PWD/../container/caboose-seccomp.json" \
 #     scripts/dev.sh tests/e2e.sh            # Chromium with its sandbox on
 #
 # Needs a render node whose GL driver imports dmabufs (any Mesa GPU driver;
