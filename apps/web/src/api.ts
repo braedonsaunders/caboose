@@ -1,3 +1,4 @@
+import type { RecoveryStatus } from './recovery.js'
 import type { Capacity } from '../../../packages/capacity/types.js'
 import type { RecoveryStatus } from './recovery.js'
 import type { CatalogOperation, CatalogPage, CatalogResponse, CatalogStorefront, DiscoverQuery } from './catalog.js'

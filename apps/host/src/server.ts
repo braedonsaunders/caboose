@@ -1,3 +1,4 @@
+import { recoveryRoute } from './recovery.js'
 import { CapacitySampler, capacityFor } from './capacity.js'
 import { recoveryRoute } from './recovery.js'
 import { AccountSocketFence } from './identity/socket-fence.js'
