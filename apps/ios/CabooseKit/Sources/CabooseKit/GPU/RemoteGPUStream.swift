@@ -10,15 +10,12 @@ import Foundation
 /// stream the device holds the start of takes that from there and asks the computer for the
 /// rest (`gpu.seek`).
 ///
-/// The device replays one stream at a time. A stream announced while another plays waits,
-/// saying so in its window, and starts when that one ends; its bytes wait in its feed, and
-/// the computer holds its application back meanwhile.
+/// Every stream replays as soon as it is announced, on its own replay thread, alongside any
+/// other the device is drawing.
 @MainActor
 public final class RemoteGPUStream: Identifiable {
     public enum Status: Equatable, Sendable {
         case playing
-        /// Waiting for the stream drawing window `behind` to end.
-        case waiting(behind: Int)
         /// Over; `reason` is why, when the computer ended it early.
         case ended(reason: String?)
     }
@@ -59,11 +56,6 @@ public final class RemoteGPUStream: Identifiable {
     public let view = GPUStreamView()
     #endif
 
-    /// The streams this device replays, the one playing first. Weak: a stream let go without
-    /// `end()` (its session dropped) gives up its place on the next look.
-    private static var line: [Weak] = []
-    private struct Weak { weak var stream: RemoteGPUStream? }
-
     /// Whether this build can replay GPU streams (`gpu` in the hello).
     public nonisolated static var isSupported: Bool {
         #if canImport(UIKit) && canImport(CabooseGPUStream)
@@ -89,36 +81,11 @@ public final class RemoteGPUStream: Identifiable {
         self.cache = cache
         self.acknowledge = acknowledge
         self.seek = seek
-        status = .waiting(behind: window)
-        Self.line.append(Weak(stream: self))
-        Self.advance()
-        if case .waiting = status { show(status) }
-    }
-
-    deinit {
-        // Its place in line goes with it; the next stream starts.
-        Task { @MainActor in RemoteGPUStream.advance() }
-    }
-
-    /// The streams still in line, the one playing first.
-    static var waitingLine: [RemoteGPUStream] {
-        line.removeAll { $0.stream == nil }
-        return line.compactMap(\.stream)
-    }
-
-    /// Lets the first stream in line play, and tells the others whom they wait for.
-    static func advance() {
-        let streams = waitingLine
-        guard let first = streams.first else { return }
-        if first.status != .playing { first.play() }
-        for stream in streams.dropFirst() where stream.status != .waiting(behind: first.window) {
-            stream.status = .waiting(behind: first.window)
-            stream.show(stream.status)
-        }
+        status = .playing
+        play()
     }
 
     private func play() {
-        status = .playing
         playback += 1
         show(status)
         #if canImport(UIKit) && canImport(CabooseGPUStream)
@@ -183,8 +150,8 @@ public final class RemoteGPUStream: Identifiable {
     /// The connection went: keeps the replay for the next one, when it can. Bytes received and
     /// not yet taken by the replay are dropped; once the replay has taken the chunk it was
     /// being handed, `suspension` says how far it got. Returns false for a stream that cannot
-    /// be kept (waiting its turn, ended, unnamed by the computer, or with no running replay),
-    /// which the caller ends.
+    /// be kept (ended, unnamed by the computer, or with no running replay), which the caller
+    /// ends.
     func suspend() -> Bool {
         guard status == .playing, nonce != nil, suspension == nil else { return false }
         #if canImport(UIKit) && canImport(CabooseGPUStream)
@@ -241,9 +208,8 @@ public final class RemoteGPUStream: Identifiable {
         cache?.discard()
     }
 
-    /// The replay `playback` stopped on its own with `failure`: the stream ends, says why,
-    /// and gives up its place. An event from a replay that is no longer this stream's own does
-    /// nothing.
+    /// The replay `playback` stopped on its own with `failure`: the stream ends and says why.
+    /// An event from a replay that is no longer this stream's own does nothing.
     func replayEnded(playback: Int, failure: String) {
         guard playback == self.playback, status == .playing else { return }
         // Replayed again, the same bytes would fail the same way.
@@ -254,8 +220,8 @@ public final class RemoteGPUStream: Identifiable {
     /// The current replay, for `replayEnded(playback:failure:)`.
     var currentPlayback: Int { playback }
 
-    /// Stops the replay and lets the next stream in line play. With a `reason` the stream
-    /// stays in its window saying why; without one its last frame stays until the view goes.
+    /// Stops the replay. With a `reason` the stream stays in its window saying why; without one
+    /// its last frame stays until the view goes.
     func end(reason: String? = nil) {
         if case .ended = status { return }
         status = .ended(reason: reason)
@@ -265,8 +231,6 @@ public final class RemoteGPUStream: Identifiable {
         view.stop()
         #endif
         show(status)
-        Self.line.removeAll { $0.stream == nil || $0.stream === self }
-        Self.advance()
     }
 
     /// What the window says over the stream, if anything.
@@ -274,8 +238,6 @@ public final class RemoteGPUStream: Identifiable {
         switch status {
         case .playing, .ended(reason: nil):
             nil
-        case .waiting:
-            "Waiting: this device draws one GPU-streamed app at a time. Close the other one to draw this app here."
         case .ended(reason: "spool-limit"):
             "This app's GPU stream grew past what the computer keeps for one app, so it can't be drawn here any more. Close the app and open it again."
         case .ended(reason: .some(let reason)) where reason.hasPrefix("replay: "):

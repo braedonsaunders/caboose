@@ -1,8 +1,11 @@
 // The GPU stream player: GFXReconstruct's FileProcessor and VulkanReplayConsumer on a
 // thread of their own, reading the fed bytes through a FIFO and presenting into the
-// host's CAMetalLayer through MoltenVK.
+// host's CAMetalLayer through MoltenVK. Players replay at once, each on its own thread: the
+// decoder's state is per thread (patches/0003-per-thread-decode-state.patch), and MoltenVK's
+// unlocked process-wide initialization is serialized (moltenvk.h).
 #include "caboose_gpu_stream.h"
 #include "layer_window.h"
+#include "moltenvk.h"
 
 #include "application/application.h"
 #include "decode/file_processor.h"
@@ -37,16 +40,9 @@
 #error "Compile this with -fobjc-arc"
 #endif
 
-// MoltenVK, linked into the same image. GFXReconstruct is built with VK_NO_PROTOTYPES.
-extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* name);
-
 using namespace gfxrecon;
 
 namespace {
-
-// Decoding uses process-wide state (decode::DecodeAllocator), so one stream replays at a time:
-// a replay thread holds this while it runs.
-std::mutex replay_mutex;
 
 // Some capture streams make deep pNext chains that recurse while decoding; give the replay
 // the stack a main thread would have.
@@ -237,8 +233,7 @@ void cgpu_player::Replay()
 {
     InitializeLoggingOnce();
 
-    std::lock_guard<std::mutex> one_at_a_time(replay_mutex);
-    bool                        cancelled = false;
+    bool cancelled = false;
     {
         std::lock_guard<std::mutex> lock(state_mutex);
         cancelled      = stop_requested.load();
@@ -273,7 +268,7 @@ void cgpu_player::Replay()
         decode::VulkanDecoder            decoder;
         decode::VulkanReplayOptions      options = MakeReplayOptions(stream_path);
         decode::VulkanReplayConsumer     consumer(application, options);
-        consumer.SetInstanceProcAddr(vkGetInstanceProcAddr);
+        consumer.SetInstanceProcAddr(caboose::gpu_stream::GetInstanceProcAddr);
         consumer.SetFpsInfo(&fps_info);
         decoder.AddConsumer(&consumer);
         file_processor.AddDecoder(&decoder);

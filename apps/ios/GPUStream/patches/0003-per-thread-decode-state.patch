@@ -1,0 +1,158 @@
+Per-thread decode state, so that replays of different files can run on different threads at once:
+the decode allocator, the common object info table, the feature structs device creation chains in,
+the placeholder swapchain handle counter and the log-once flags.
+
+diff --git a/framework/decode/common_object_info_table.cpp b/framework/decode/common_object_info_table.cpp
+--- a/framework/decode/common_object_info_table.cpp
++++ b/framework/decode/common_object_info_table.cpp
+@@ -26,8 +26,8 @@
+ GFXRECON_BEGIN_NAMESPACE(gfxrecon)
+ GFXRECON_BEGIN_NAMESPACE(decode)
+ 
+-CommonObjectInfoTable* CommonObjectInfoTable::singleton_          = nullptr;
+-uint32_t               CommonObjectInfoTable::singleton_refcount_ = 0;
++thread_local CommonObjectInfoTable* CommonObjectInfoTable::singleton_          = nullptr;
++thread_local uint32_t               CommonObjectInfoTable::singleton_refcount_ = 0;
+ 
+ CommonObjectInfoTable* CommonObjectInfoTable::GetSingleton()
+ {
+diff --git a/framework/decode/common_object_info_table.h b/framework/decode/common_object_info_table.h
+--- a/framework/decode/common_object_info_table.h
++++ b/framework/decode/common_object_info_table.h
+@@ -49,8 +49,10 @@
+     static void                   ReleaseSingleton();
+ 
+   private:
+-    static CommonObjectInfoTable* singleton_;
+-    static uint32_t               singleton_refcount_;
++    // One table per thread: a replay consumer gets and releases it on the thread that replays its file, so consumers
++    // replaying different files on different threads do not share capture handle ids.
++    static thread_local CommonObjectInfoTable* singleton_;
++    static thread_local uint32_t               singleton_refcount_;
+ };
+ 
+ GFXRECON_END_NAMESPACE(decode)
+diff --git a/framework/decode/decode_allocator.cpp b/framework/decode/decode_allocator.cpp
+--- a/framework/decode/decode_allocator.cpp
++++ b/framework/decode/decode_allocator.cpp
+@@ -26,7 +26,7 @@
+ GFXRECON_BEGIN_NAMESPACE(gfxrecon)
+ GFXRECON_BEGIN_NAMESPACE(decode)
+ 
+-DecodeAllocator* DecodeAllocator::instance_{ nullptr };
++thread_local DecodeAllocator* DecodeAllocator::instance_{ nullptr };
+ 
+ void DecodeAllocator::Begin()
+ {
+diff --git a/framework/decode/decode_allocator.h b/framework/decode/decode_allocator.h
+--- a/framework/decode/decode_allocator.h
++++ b/framework/decode/decode_allocator.h
+@@ -62,8 +62,10 @@
+     DecodeAllocator() : allocator_(kAllocatorBlockSize), can_allocate_(false), end_can_clear_(true) {}
+ 
+   private:
+-    static const size_t     kAllocatorBlockSize{ 64 * 1024 };
+-    static DecodeAllocator* instance_;
++    static const size_t kAllocatorBlockSize{ 64 * 1024 };
++    // One allocator per thread: every Begin, Allocate and End of a decode happens on the thread that processes the
++    // file, so threads that each process their own file do not share (or clear) each other's allocations.
++    static thread_local DecodeAllocator* instance_;
+ 
+     util::MonotonicAllocator allocator_;
+     bool                     can_allocate_;
+diff --git a/framework/decode/vulkan_replay_consumer_base.cpp b/framework/decode/vulkan_replay_consumer_base.cpp
+--- a/framework/decode/vulkan_replay_consumer_base.cpp
++++ b/framework/decode/vulkan_replay_consumer_base.cpp
+@@ -70,6 +70,7 @@
+ #include "Vulkan-Utility-Libraries/vk_format_utils.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <chrono>
+ #include <limits>
+ #include <numeric>
+@@ -8969,9 +8970,8 @@
+ 
+         // Set fax handle data to find uncreated swapchain later.
+         // Possible colision of handles from driver, but should not occur starting with uint max.
+-        static format::HandleId dummy_handle = std::numeric_limits<uint64_t>::max();
+-        (*replay_swapchain)                  = format::FromHandleId<VkSwapchainKHR>(dummy_handle);
+-        --dummy_handle;
++        static std::atomic<format::HandleId> dummy_handle{ std::numeric_limits<uint64_t>::max() };
++        (*replay_swapchain) = format::FromHandleId<VkSwapchainKHR>(dummy_handle.fetch_sub(1));
+ 
+         swapchain_info->surface    = VK_NULL_HANDLE;
+         swapchain_info->surface_id = format::kNullHandleId;
+diff --git a/framework/graphics/vulkan_device_util.cpp b/framework/graphics/vulkan_device_util.cpp
+--- a/framework/graphics/vulkan_device_util.cpp
++++ b/framework/graphics/vulkan_device_util.cpp
+@@ -470,7 +470,8 @@
+     if (!vulkan_1_1_features_found && !sampler_ycbcr_conversion_features_found)
+     {
+         // If the app is not requesting any Vulkan 1.1 feature or sampler YCbCr conversion feature, inject our own.
+-        static VkPhysicalDeviceSamplerYcbcrConversionFeatures sampler_ycbcr_conversion_features = {
++        // Thread-local: the create info chain points at it until vkCreateDevice returns on this thread.
++        static thread_local VkPhysicalDeviceSamplerYcbcrConversionFeatures sampler_ycbcr_conversion_features = {
+             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES
+         };
+         sampler_ycbcr_conversion_features.pNext = nullptr;
+@@ -488,7 +489,7 @@
+                                                                              create_info->enabledExtensionCount,
+                                                                              VK_KHR_MAINTENANCE_10_EXTENSION_NAME))
+     {
+-        static VkPhysicalDeviceMaintenance10FeaturesKHR feature_maintenance10 = {
++        static thread_local VkPhysicalDeviceMaintenance10FeaturesKHR feature_maintenance10 = {
+             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_10_FEATURES_KHR
+         };
+         feature_maintenance10.pNext = nullptr;
+@@ -508,7 +509,7 @@
+                                                      create_info->enabledExtensionCount,
+                                                      VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME))
+     {
+-        static VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features = {
++        static thread_local VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features = {
+             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES
+         };
+         dynamic_rendering_features.pNext = nullptr;
+@@ -527,7 +528,7 @@
+                                                      create_info->enabledExtensionCount,
+                                                      VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME))
+     {
+-        static VkPhysicalDeviceTimelineSemaphoreFeatures timeline_semaphore_features = {
++        static thread_local VkPhysicalDeviceTimelineSemaphoreFeatures timeline_semaphore_features = {
+             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES
+         };
+         timeline_semaphore_features.pNext = nullptr;
+diff --git a/framework/util/logging.h b/framework/util/logging.h
+--- a/framework/util/logging.h
++++ b/framework/util/logging.h
+@@ -29,6 +29,7 @@
+ #include "util/platform.h"
+ 
+ #include <array>
++#include <atomic>
+ #include <functional>
+ #include <memory>
+ 
+@@ -309,14 +310,13 @@
+                                         ##__VA_ARGS__);                                  \
+     }
+ 
+-#define GFXRECON_LOG_ONCE(X)         \
+-    {                                \
+-        static bool log_once = true; \
+-        if (log_once)                \
+-        {                            \
+-            X;                       \
+-            log_once = false;        \
+-        }                            \
++#define GFXRECON_LOG_ONCE(X)                       \
++    {                                              \
++        static std::atomic<bool> log_once{ true }; \
++        if (log_once.exchange(false))              \
++        {                                          \
++            X;                                     \
++        }                                          \
+     }
+ 
+ // clang-format off

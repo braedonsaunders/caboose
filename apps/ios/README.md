@@ -288,7 +288,7 @@ there; without it CabooseKit builds without `GPUStreamPlayer` and `GPUStreamView
 plays GPU streams. Ship the two licences with the app's acknowledgements.
 
 With the xcframework built, `swift test --filter GPUStreamPlayer` checks the player's ends
-(an empty stream, bytes that are not a capture, stopping, one replay at a time, the offset a
+(an empty stream, bytes that are not a capture, stopping, independent replay lifetimes, the offset a
 replay reports when what it has not taken is dropped). Replay a real capture through MoltenVK
 into a layer on no screen with
 
@@ -304,8 +304,8 @@ of `vkcube --use_staging` against the Khronos mock driver (`GFXRECON_CAPTURE_FIL
 `GFXRECON_CAPTURE_COMPRESSION_TYPE=NONE`, `VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_gfxreconstruct`)
 has 300 frames.
 
-- **One stream at a time.** GFXReconstruct's decoder keeps process-wide state, so one player
-  replays at a time; a player started while another replays waits until that one stops.
+Each player uses a separate replay thread, Vulkan instance and device. See
+[the native ownership audit](GPUStream/README.md) for the pinned dependencies and checks.
 - **Compression.** Streams are uncompressed or zlib-compressed; LZ4 and Zstd blocks end the
   replay with an error.
 - **Fatal replay errors.** A Vulkan call that cannot be replayed ends the replay with

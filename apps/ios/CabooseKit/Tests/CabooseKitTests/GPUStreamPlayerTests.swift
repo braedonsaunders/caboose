@@ -64,15 +64,15 @@ struct GPUStreamPlayerTests {
         #expect(player.consumedBytes == 0)
     }
 
-    @Test func aSecondPlayerWaitsForTheFirst() async {
+    @Test func aSecondPlayerRunsWhileTheFirstWaitsForBytes() async {
         let first = GPUStreamPlayer(layer: CAMetalLayer())
         let second = GPUStreamPlayer(layer: CAMetalLayer())
+        defer { first.stop(); second.stop() }
         second.finish()
-        try? await Task.sleep(for: .milliseconds(200))
-        #expect(second.state == .running)
+        #expect(await second.waitUntilEnded() == .failed("The stream does not start with a GFXReconstruct file header"))
+        #expect(first.state == .running)
         first.stop()
         #expect(await first.waitUntilEnded() == .finished)
-        #expect(await second.waitUntilEnded() == .failed("The stream does not start with a GFXReconstruct file header"))
     }
 
     private func discardPending(_ player: GPUStreamPlayer) async -> UInt64? {
@@ -109,6 +109,39 @@ struct GPUStreamPlayerTests {
 
     /// The resume path: bytes handed over but not taken are dropped, and feeding the stream again
     /// from the offset the replay accepted replays every frame.
+    /// The second real replay finishes while the first is stalled midway through the same
+    /// capture, exercising independent decoder allocations and captured Vulkan handle ids.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CABOOSE_GPU_CAPTURE"] != nil))
+    func twoCapturesReplayConcurrentlyWithIndependentState() async throws {
+        let capture = try #require(Self.capture)
+        let (frames, rendered) = AsyncStream.makeStream(of: UInt64.self)
+        let first = GPUStreamPlayer(layer: CAMetalLayer(), queue: DispatchQueue(label: "first-capture")) { event in
+            if case .frame(let count) = event { rendered.yield(count) }
+            if case .ended = event { rendered.finish() }
+        }
+        let second = GPUStreamPlayer(layer: CAMetalLayer(), queue: DispatchQueue(label: "second-capture"))
+        defer { first.stop(); second.stop() }
+        let half = capture.count / 2
+        for chunk in Self.chunks(of: capture.prefix(half)) { first.feed(chunk) }
+        var iterator = frames.makeAsyncIterator()
+        #expect(try #require(await iterator.next()) > 0)
+        let accepted = try #require(await discardPending(first))
+        #expect(accepted > 0)
+        #expect(first.state == .running)
+        for chunk in Self.chunks(of: capture) { second.feed(chunk) }
+        second.finish()
+        #expect(await second.waitUntilEnded() == .finished)
+        #expect(second.framesRendered > 0)
+        #expect(first.state == .running)
+        for chunk in Self.chunks(of: capture.dropFirst(Int(accepted))) { first.feed(chunk) }
+        first.finish()
+        #expect(await first.waitUntilEnded() == .finished)
+        #expect(first.framesRendered == second.framesRendered)
+        if let expected = ProcessInfo.processInfo.environment["CABOOSE_GPU_CAPTURE_FRAMES"].flatMap(UInt64.init) {
+            #expect(first.framesRendered == expected)
+        }
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["CABOOSE_GPU_CAPTURE"] != nil))
     func aReplayContinuesFromWhatItAccepted() async throws {
         let capture = try #require(Self.capture)

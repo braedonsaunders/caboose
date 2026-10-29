@@ -11,8 +11,7 @@ import QuartzCore
 /// each replayed frame, each fed chunk the replay has taken (its running byte total, which is
 /// the offset a `gpu.ack` reports), and the end.
 ///
-/// GFXReconstruct's decoder keeps process-wide state, so one player replays at a time: a
-/// player started while another is replaying waits for that one to stop.
+/// Players replay concurrently on independent threads with per-thread decoder state.
 public final class GPUStreamPlayer: @unchecked Sendable {
     public enum State: Equatable, Sendable {
         case running

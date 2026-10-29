@@ -78,7 +78,7 @@ replay stands instead of replaying it from its first byte.
   waits for the replay to take the chunk it is being handed. The replay's *accepted offset* is
   then exact: every byte before it went into this replay (`cgpu_player_feed` returned for it),
   and none after. A replay that failed or was stopped cannot continue and is not kept; nor is a
-  stream waiting for its turn, or one from a server that named no nonce.
+  stream from a server that named no nonce.
 - **The claim.** The next `hello` lists each kept replay whose accepted offset is settled in
   `gpu_resume { epoch, streams: [{ id, nonce, offset }] }`, with the epoch of the server hello
   the replays came from. A replay still taking its last chunk when the hello is sent is not
@@ -159,5 +159,5 @@ connection could say so stays until one of these, or eviction, removes it.
 - **A new replay replays everything.** A replay that starts again, from the device's copy or
   from the spool, replays and presents every frame from the stream's start before the current
   one. The device's copy saves the transfer, not the time.
-- **One stream at a time on a device.** The client replays one stream; a second stream's
-  window says it waits, and its application is held back until the first stream ends.
+- **Device resources.** Streams use separate replay threads, Vulkan instances and devices.
+  Their GPU and memory costs accumulate on the client.

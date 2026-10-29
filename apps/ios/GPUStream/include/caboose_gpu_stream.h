@@ -9,9 +9,7 @@
  * types, and presents go through a virtual swapchain copied into the layer's swapchain.
  *
  * Every function is safe to call from any thread. One thread at a time may feed a player.
- * GFXReconstruct's decoder keeps process-wide state, so one player replays at a time: a
- * player started while another is replaying waits, holding back its feeds, until that one
- * stops.
+ * Players replay at once, each on its own thread with its own Vulkan instance and device.
  */
 #ifndef CABOOSE_GPU_STREAM_H
 #define CABOOSE_GPU_STREAM_H

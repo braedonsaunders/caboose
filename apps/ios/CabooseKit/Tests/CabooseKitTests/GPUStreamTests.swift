@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import CabooseKit
 
-/// The socket side of a GPU stream and the device's one-stream-at-a-time line
+/// The socket side of GPU streams and their independent replay lifetimes
 /// (docs/gpu-stream.md).
 @Suite(.serialized) struct GPUStreamTests {
     /// Records deliveries, and how many were in progress at once.
@@ -153,12 +153,12 @@ import Testing
         #expect(R.claims(epoch: "5f3a9c01d2e4b678", streams: [(id: 2, nonce: nil, offset: 5)]) == nil)
     }
 
-    @Test @MainActor func aSecondStreamWaitsForTheFirstAndThenPlays() {
+    @Test @MainActor func streamsPlayAndEndIndependently() {
         let first = RemoteGPUStream(id: 1, window: 7, feed: GPUStreamFeed()) { _ in }
         let second = RemoteGPUStream(id: 2, window: 9, feed: GPUStreamFeed()) { _ in }
         #expect(first.status == .playing)
-        #expect(second.status == .waiting(behind: 7))
-        #expect(RemoteGPUStream.message(for: second.status) != nil)
+        #expect(second.status == .playing)
+        #expect(RemoteGPUStream.message(for: second.status) == nil)
         first.end()
         #expect(second.status == .playing)
         #expect(RemoteGPUStream.message(for: second.status) == nil)
@@ -170,9 +170,9 @@ import Testing
         #expect(second.status == .ended(reason: "spool-limit"))
     }
 
-    /// A replay that fails on its own ends its stream visibly and lets the next one play; an
+    /// A replay that fails on its own ends visibly without affecting another stream; an
     /// event from an earlier replay of the stream changes nothing.
-    @Test @MainActor func aFailedReplayEndsVisiblyAndFreesTheDevice() {
+    @Test @MainActor func aFailedReplayDoesNotAffectAnotherStream() {
         let first = RemoteGPUStream(id: 1, window: 7, feed: GPUStreamFeed()) { _ in }
         let second = RemoteGPUStream(id: 2, window: 9, feed: GPUStreamFeed()) { _ in }
         first.replayEnded(playback: first.currentPlayback - 1, failure: "stale")
@@ -182,19 +182,16 @@ import Testing
         #expect(RemoteGPUStream.message(for: first.status)?.contains("VK_ERROR_DEVICE_LOST") == true)
         #expect(second.status == .playing)
         second.end()
-        #expect(RemoteGPUStream.waitingLine.isEmpty)
     }
 
-    /// A stream let go without `end()` (its session dropped) holds no place in line.
-    @Test @MainActor func aStreamLetGoGivesUpItsPlace() {
+    /// Releasing a stream has no scheduling effect on other windows.
+    @Test @MainActor func releasingOneStreamLeavesAnotherPlaying() {
         var first: RemoteGPUStream? = RemoteGPUStream(id: 1, window: 7, feed: GPUStreamFeed()) { _ in }
+        weak var released = first
         let second = RemoteGPUStream(id: 2, window: 9, feed: GPUStreamFeed()) { _ in }
-        #expect(second.status == .waiting(behind: 7))
-        #expect(first != nil)
         first = nil
-        RemoteGPUStream.advance()
+        #expect(released == nil)
         #expect(second.status == .playing)
         second.end()
-        #expect(RemoteGPUStream.waitingLine.isEmpty)
     }
 }
