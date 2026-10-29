@@ -13,7 +13,7 @@ const originalPath = process.env.PATH
 afterEach(() => { process.env.PATH = originalPath })
 
 
-async function fakeAppliance(path: string, acl = false) {
+async function fakeAppliance(path: string, acl = false, ancestorMode = 0o40755, ancestorUid = 0) {
   await writeFile(path, `#!${process.execPath}
 const fs = require('node:fs');
 fs.appendFileSync(__filename + '.starts', 'start\\n');
@@ -27,7 +27,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   else if(command==='readdir') result=JSON.stringify([{ino:2,ftyp:'d',name:'.'},{ino:12,ftyp:'r',name:'note.txt'}]);
   else if(command==='lstatns') {
     const file=args[0].endsWith('/note.txt'), owner=args[0].startsWith('/home/caboose');
-    result='st_ino: '+(file?12:2)+'\\nst_mode: '+(file?33188:16877)+'\\nst_uid: '+(owner?1000:0)+'\\nst_size: '+(file?4:4096)+'\\nst_mtime_sec: 1\\nst_mtime_nsec: 0\\nst_ctime_sec: 1\\nst_ctime_nsec: 0\\n';
+    result='st_ino: '+(file?12:2)+'\\nst_mode: '+(file?33188:owner?16877:${ancestorMode})+'\\nst_uid: '+(owner?1000:${ancestorUid})+'\\nst_size: '+(file?4:4096)+'\\nst_mtime_sec: 1\\nst_mtime_nsec: 0\\nst_ctime_sec: 1\\nst_ctime_nsec: 0\\n';
   } else process.exit(1);
   process.stdout.write(JSON.stringify({id,result})+'\\n');
 });
@@ -99,6 +99,21 @@ it('refuses a non-owner ancestor with an access ACL despite other execute', asyn
   const root = await mkdtemp(join(tmpdir(), 'parked-reader-acl-'))
   const fake = join(root, 'timeout')
   await fakeAppliance(fake, true)
+  process.env.PATH = root + ':' + originalPath
+  const app = createServer((req, res) => { void serveParkedFiles({ id: 'id', homeDevice: 123, directory: root, image: '/disk' }, req, res).then(served => { if (!served) { res.writeHead(409); res.end('wake') } }) })
+  app.listen(0, '127.0.0.1'); await once(app, 'listening')
+  try {
+    expect((await fetch(`http://127.0.0.1:${(app.address() as AddressInfo).port}/v1/fs/stat?path=note.txt`)).status).toBe(409)
+  } finally { app.closeAllConnections(); await new Promise<void>(resolve => app.close(() => resolve())); await rm(root, { recursive: true, force: true }) }
+})
+
+it.each([
+  { mode: 0o40655, uid: 1000, denied: 'owner' },
+  { mode: 0o40745, uid: 0, denied: 'group' },
+])('falls back when the ancestor $denied class denies traversal despite other execute', async ({ mode, uid }) => {
+  const root = await mkdtemp(join(tmpdir(), 'parked-reader-mode-'))
+  const fake = join(root, 'timeout')
+  await fakeAppliance(fake, false, mode, uid)
   process.env.PATH = root + ':' + originalPath
   const app = createServer((req, res) => { void serveParkedFiles({ id: 'id', homeDevice: 123, directory: root, image: '/disk' }, req, res).then(served => { if (!served) { res.writeHead(409); res.end('wake') } }) })
   app.listen(0, '127.0.0.1'); await once(app, 'listening')

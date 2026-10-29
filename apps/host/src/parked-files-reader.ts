@@ -79,13 +79,15 @@ async function streamContent(appliance: ParkedAppliance, path: string, start: nu
 
 async function checked(appliance: ParkedAppliance, parts: string[], deadline: number): Promise<Stat> {
   const root = parseStat(await fish(appliance, 'lstatns', ['/'], deadline))
-  if ((root.mode & 0o170000) !== 0o040000 || !(root.mode & 0o001)) throw new ParkedReaderUnsupported()
+  if ((root.mode & 0o170000) !== 0o040000 || (root.mode & 0o111) !== 0o111) throw new ParkedReaderUnsupported()
+  // Guest group membership is unknown. A matching owner/group class can deny
+  // traversal even when other-execute is set, so every class must allow it.
   // A named-user ACL can deny traversal even when the other-execute bit is set.
   // Reject all xattrs on non-owner ancestors rather than guessing ACL semantics.
   if ((await fish(appliance, 'lgetxattrs', ['/'], deadline)).trim()) throw new ParkedReaderUnsupported()
   // /home must be a real directory, not a symlink to an unrelated subtree.
   const homeParent = parseStat(await fish(appliance, 'lstatns', ['/home'], deadline))
-  if ((homeParent.mode & 0o170000) !== 0o040000 || !(homeParent.mode & 0o001)) throw new ParkedReaderUnsupported()
+  if ((homeParent.mode & 0o170000) !== 0o040000 || (homeParent.mode & 0o111) !== 0o111) throw new ParkedReaderUnsupported()
   if ((await fish(appliance, 'lgetxattrs', ['/home'], deadline)).trim()) throw new ParkedReaderUnsupported()
   let path = ROOT
   let current = parseStat(await fish(appliance, 'lstatns', [path], deadline))
