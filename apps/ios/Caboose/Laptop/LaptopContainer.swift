@@ -182,7 +182,6 @@ private struct LaptopControls: View {
                 Menu {
                     inputChoices
                     Divider()
-                    fullScreen
                     windowSwitcher
                     computerActions
                     navigationActions
@@ -191,7 +190,6 @@ private struct LaptopControls: View {
             } else {
                 Menu { inputChoices } label: { Image(systemName: input.symbol).frame(width: 48, height: 44) }
                     .accessibilityLabel("Input: \(input.title)")
-                fullScreen
                 windowSwitcher
                 Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
                     .frame(width: 48, height: 44)
@@ -222,28 +220,14 @@ private struct LaptopControls: View {
     }
 
     @ViewBuilder private var navigationActions: some View {
-        if let window = target ?? model.session.flatMap({ model.desktop.frontWindow(in: $0.windows) }) {
-            Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
-                model.session?.exitFullscreen(window, frame: window.frame)
-            }
-        }
         LaptopModeMenu()
         Button("Wallpaper", systemImage: "photo") { model.wallpaperPickerPresented = true }
         Divider()
+        if isCard { Button("Desktop", systemImage: "macwindow") { leave(.desktop) } }
         Button("Home", systemImage: "house") { leave(.home) }
         Button("Agents", systemImage: "sparkles") { leave(.agents) }
         Button("Apps", systemImage: "square.grid.2x2") { leave(.apps) }
         if TerminalSlot.isFilled { Button("Terminal", systemImage: "apple.terminal") { leave(.terminal) } }
-    }
-
-    private var fullScreen: some View {
-        Button(isCard ? "Back to Desktop" : "Open App Full Screen",
-               systemImage: isCard ? "macwindow.on.rectangle" : "arrow.up.left.and.arrow.down.right") {
-            if isCard { model.presentedWindowID = nil }
-            else if let id = model.desktop.stacking.reversed().first(where: { model.desktop.isVisible($0) && model.session?.windows[$0]?.isAuxiliary == false }) {
-                model.show(windowID: id)
-            }
-        }.frame(width: 48, height: 44)
     }
 
     private var windowSwitcher: some View {

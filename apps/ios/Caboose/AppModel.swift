@@ -955,8 +955,14 @@ final class AppModel {
         }
     }
 
-    /// Shows a window as a full-screen card, leaving the phone's desktop first if it is up.
+    /// Laptop keeps one workspace; other layouts present the selected window as an app card.
     func show(windowID: Int) {
+        if laptopDesktopActive {
+            presentedWindowID = nil
+            desktop.activate(windowID, session: session)
+            selectedTab = .desktop
+            return
+        }
         presentedWindowID = windowID
     }
 

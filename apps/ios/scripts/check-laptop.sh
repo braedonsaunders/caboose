@@ -9,7 +9,9 @@ Laptop layout — signed app on the paired physical Duo:
    fold: ordinary layout. Close the phone: compact desktop with no lower panel.
 2. Choose Screen Layout -> Laptop while flat. It splits without requiring a fold.
    Choose Tablet while folded: it stays tablet. Restore Automatic. Repeat in an
-   app card opened from Apps, and from a Desktop window's green button.
+   app card opened from Apps. In Laptop Desktop, opening a window keeps the same
+   workspace: no Full Screen button or Exit App Full Screen menu item, no duplicate
+   card controls. In Tablet, the green button still opens the native app card.
 3. Tablet: check the full title bar and whole dock, with no top/bottom clipping.
    Laptop: no system sidebar or toolbar spans the upper half. All shell controls
    stay in the lower-right rail. The app fills the upper viewport without Caboose

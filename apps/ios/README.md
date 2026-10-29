@@ -507,8 +507,9 @@ Desktop and full-screen app cards offer Screen Layout → Automatic, Tablet or L
 Automatic uses a partially folded horizontal hinge on iOS 27.1 and later. Laptop also
 works as a manual split on a sufficiently tall flat screen. The upper area shows the
 app/desktop without the system toolbar. The lower-right control rail offers Keyboard,
-Trackpad or Combo, window switching, full screen, settings, power and navigation. Keyboard
-uses the native keyboard. Combo uses a full-width trackpad across the upper third of the
+Trackpad or Combo, window switching, settings, power and navigation. Keyboard
+uses the native keyboard. Opening a window from the Laptop desktop focuses it in that
+workspace; there is no separate Full Screen route or Exit App Full Screen action. Combo uses a full-width trackpad across the upper third of the
 lower panel, then a custom keyboard and shared shortcut header in the lower two-thirds.
 Its globe button opens the native keyboard for languages, emoji and dictation. Hide Keyboard
 returns to the trackpad. The dock becomes a thin, full-width taskbar at the top of the lower half; controls stay below

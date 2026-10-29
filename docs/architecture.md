@@ -1591,8 +1591,10 @@ the app card, and a detached view releases its layers.
   compact viewports keep the ordinary layout. The system keyboard's measured intersection
   with that view takes precedence over the fold, so it cannot cover the upper app. The
   lower panel owns the existing `RemoteTextInputView`/`KeyBar`, with Keyboard, Trackpad
-  and Combo choices. Its trailing rail contains window switching, full screen, settings,
-  power and navigation; the system-wide bars are hidden while Laptop is active. The
+  and Combo choices. Its trailing rail contains window switching, settings,
+  power and navigation; the system-wide bars are hidden while Laptop is active. Opening
+  a window from the Laptop desktop focuses it there, without a separate full-screen card
+  or Full Screen/Exit App Full Screen controls. The
   native keyboard occupies the lower edge; controls never move above the hinge. Combo
   uses a full-width trackpad in the upper third of the lower panel and a custom keyboard
   with the shared shortcut header in its lower two thirds. Its globe button opens the
