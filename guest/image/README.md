@@ -76,7 +76,7 @@ it (see [Updating a running computer](#updating-a-running-computer)).
 
   Both run as `caboose` and check the per-wake token the host writes to
   `/run/caboose/display-token` before starting them; `caboose-display-ready [TIMEOUT] [PORT]`
-  waits until an instance answers a hello made with it. The owner's display runs its own
+  waits until an instance answers a hello made with it and has written its launch environment. The owner's display runs its own
   PulseAudio, and its launch environment gives apps `PULSE_SERVER`, the Wayland socket,
   Xwayland's `DISPLAY` and `XAUTHORITY`, and toolkit hints that prefer Wayland and fall back
   to X11. The agent seat runs `--no-audio`: its apps run the same way, it plays no sound, and

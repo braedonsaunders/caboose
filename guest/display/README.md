@@ -322,9 +322,12 @@ passthrough driver. Neither enables a unit at boot; the host starts the displays
   and `caboose-session start-agent` the agent seat, with the same arguments, as
   `caboose`; `caboose-session ready` waits for the owner's display.
 
-`caboose-display-ready [TIMEOUT] [PORT]` exits 0 once the instance on `PORT` (default
-`14600`; `14601` for the agent seat) answers a hello made with the token in
-`/run/caboose/display-token`, and fails after `TIMEOUT` seconds (default 60).
+`caboose-display-ready [TIMEOUT] [PORT] [ENV_FILE]` exits 0 once the instance on `PORT`
+(default `14600`; `14601` for the agent seat) answers a hello made with the token in
+`/run/caboose/display-token` and has written its launch environment (`ENV_FILE`, by default
+`/run/caboose/display.env`, or `/run/caboose/agent-display.env` for `14601`), and fails after
+`TIMEOUT` seconds (default 60). The hello answers before Xwayland is up, and the launch
+environment is written once it is.
 
 On a Debian 13 system with the release binaries built, `install.sh [TARGET_DIR]`
 installs the runtime libraries, the binaries, both units (not enabled), the readiness

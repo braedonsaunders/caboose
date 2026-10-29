@@ -1,15 +1,22 @@
 #!/bin/sh
-# Exits 0 once a caboose-display instance answers a hello made with the per-wake token;
-# otherwise keeps trying for TIMEOUT seconds (default 60). PORT selects the instance:
-# 14600 is the owner's display, 14601 the agent seat.
+# Exits 0 once a caboose-display instance answers a hello made with the per-wake token and
+# has written its launch environment; otherwise keeps trying for TIMEOUT seconds (default
+# 60). The hello answers before Xwayland is up, and the environment is written only after,
+# so launchers must wait for both. PORT selects the instance: 14600 is the owner's display
+# (/run/caboose/display.env), 14601 the agent seat (/run/caboose/agent-display.env);
+# ENV_FILE names another instance's file.
 #
-#   caboose-display-ready [TIMEOUT] [PORT]
+#   caboose-display-ready [TIMEOUT] [PORT] [ENV_FILE]
 timeout=${1:-60}
 port=${2:-14600}
+case $port in
+  14601) env_file=${3:-/run/caboose/agent-display.env} ;;
+  *) env_file=${3:-/run/caboose/display.env} ;;
+esac
 token=/run/caboose/display-token
 i=0
 while [ "$i" -lt "$timeout" ]; do
-  if [ -r "$token" ] && caboose-display-probe --check --url "ws://127.0.0.1:$port/" --token-file "$token" >/dev/null 2>&1; then exit 0; fi
+  if [ -s "$env_file" ] && [ -r "$token" ] && caboose-display-probe --check --url "ws://127.0.0.1:$port/" --token-file "$token" >/dev/null 2>&1; then exit 0; fi
   i=$((i + 1)); sleep 1
 done
 echo "caboose-display on port $port did not become ready" >&2
