@@ -7,7 +7,8 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 
 | Path | What |
 | --- | --- |
-| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame`, the `caboose-game://` scheme handler and its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. |
+| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame`, the `caboose-game://` scheme handler and its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). |
+| `GPUStream/` | The GPU stream player's native side: a C API (`include/caboose_gpu_stream.h`) over GFXReconstruct's Vulkan replay, the CMake project that builds it with MoltenVK, and the patches applied to GFXReconstruct. See [GPU streams](#gpu-streams). CabooseKit's `GPU/GPUStreamPlayer` and `UI/GPUStreamView` wrap it. |
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
 | `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, SwiftTerm's view in the Caboose look and the key row above the keyboard. |
 | `Caboose/Switchyard/` | The Desktop tab's tiling on the device's own screen: tiles, gaps, grabber, dock, Overview, launcher and ⌘⌥ keys, over the `CabooseKit/Switchyard` layout. |
@@ -197,6 +198,68 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   it, this one gets `bye { reason: "replaced" }`, says it is showing on another device, and
   does not reconnect on its own; Show Here takes it back. A ping every 5 s keeps the server
   from closing the session as idle.
+
+## GPU streams
+
+A window whose application renders through Vulkan can arrive as a GPU stream instead of
+video ([docs/gpu-stream.md](../../docs/gpu-stream.md)): the GFXReconstruct capture of its
+Vulkan calls, which the device replays on its own GPU. `GPUStreamPlayer` takes the stream's
+bytes in order and reports each frame, the bytes it has taken (the offset `gpu.ack`
+reports) and how the replay ended; `GPUStreamView` is the `CAMetalLayer` it presents into.
+
+The player is [GFXReconstruct](https://github.com/LunarG/gfxreconstruct) (MIT), tag
+`vulkan-sdk-1.4.363.0` (capture format 1.0.5, the capture layer the computer runs), and
+[MoltenVK](https://github.com/KhronosGroup/MoltenVK) (Apache-2.0) 1.4.2, the MoltenVK of the
+same SDK. It replays the way `gfxrecon-replay --remove-unsupported -m rebind` does:
+extensions and features the device lacks are removed, memory is rebound to the device's
+memory types, and presents go through GFXReconstruct's virtual swapchain into the layer.
+`GPUStream/src/player.mm` runs GFXReconstruct's `FileProcessor` and `VulkanReplayConsumer`
+on a thread with an 8 MiB stack, reading the fed bytes from a FIFO in the app's temporary
+directory, so a stream that arrives faster than it replays waits in the feed.
+`GPUStream/src/layer_window.mm` is GFXReconstruct's `MetalContext` with windows that are
+layers: the first live surface presents into the view's layer, and further surfaces the
+application makes at the same time render into layers that are not shown. GFXReconstruct
+finds MoltenVK through `GPUStream/patches/0001-replay-instance-proc-addr.patch`, which lets
+replay use a `vkGetInstanceProcAddr` linked into the app instead of loading a Vulkan library.
+
+The native code is a build product, not checked in (it is about 40 MB per platform):
+
+```sh
+sh scripts/build-gpu-stream.sh                    # macos, ios and ios-simulator slices
+sh scripts/build-gpu-stream.sh macos              # just the one swift test uses
+```
+
+It fetches GFXReconstruct by commit and the MoltenVK release by SHA-256, builds with at most
+`JOBS` (default 4) compiles at a time, and writes
+`CabooseKit/Frameworks/CabooseGPUStream.xcframework` (arm64 macOS, iOS and iOS simulator)
+and both licences in `CabooseKit/Frameworks/Licenses`. It needs Xcode (set `DEVELOPER_DIR`
+if `xcode-select` points at the Command Line Tools), CMake 3.24 or later and Ninja. A first
+build takes about 20 minutes per slice. `Package.swift` links the xcframework when it is
+there; without it CabooseKit builds without `GPUStreamPlayer` and `GPUStreamView`
+(`#if canImport(CabooseGPUStream)`), so build it before `xcodegen generate` for an app that
+plays GPU streams. Ship the two licences with the app's acknowledgements.
+
+With the xcframework built, `swift test --filter GPUStreamPlayer` checks the player's ends
+(an empty stream, bytes that are not a capture, stopping, one replay at a time). Replay a
+real capture through MoltenVK into a layer on no screen with
+
+```sh
+CABOOSE_GPU_CAPTURE=~/cube.gfxr CABOOSE_GPU_CAPTURE_FRAMES=300 swift test --filter GPUStreamPlayer
+```
+
+which requires every frame to replay without an error and prints the frame rate. A capture
+of `vkcube --use_staging` against the Khronos mock driver (`GFXRECON_CAPTURE_FILE=cube.gfxr`,
+`GFXRECON_CAPTURE_COMPRESSION_TYPE=NONE`, `VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_gfxreconstruct`)
+has 300 frames.
+
+- **One stream at a time.** GFXReconstruct's decoder keeps process-wide state, so one player
+  replays at a time; a player started while another replays waits until that one stops.
+- **Compression.** Streams are uncompressed or zlib-compressed; LZ4 and Zstd blocks end the
+  replay with an error.
+- **Fatal replay errors.** A Vulkan call that cannot be replayed ends the replay with
+  GFXReconstruct's message. A few of GFXReconstruct's checks abort the process instead (no
+  usable surface extension at all, for example); MoltenVK always provides
+  `VK_EXT_metal_surface`.
 
 ## How input works
 

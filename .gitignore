@@ -13,3 +13,4 @@ guest/image/out/
 .build/
 apps/ios/Caboose/Config/Local.xcconfig
 __pycache__/
+apps/ios/CabooseKit/Frameworks/
