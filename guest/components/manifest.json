@@ -1,5 +1,7 @@
 [
   "components/install.sh",
+  "template/caboose-template.py",
+  "template/caboose-template.target",
   "components/caboose-vsock-services.py",
   "components/caboose-vsock-services.service",
   "components/container-services.sh",

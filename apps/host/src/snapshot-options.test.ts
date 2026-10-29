@@ -14,3 +14,16 @@ it('refuses Cloud Hypervisor flags on unsupported runtimes', async () => {
   const backend = { hypervisor: 'virtualization' as const, async boot() { throw new Error('unused') } }
   expect(() => createDeskPool(config({ CABOOSE_VM_FREE_PAGE_REPORTING: 'on' }), { backend })).toThrow('unavailable on macOS')
 })
+
+it('selects explicit restore modes and rejects incompatible combinations', () => {
+  expect(config({}).vmRestoreMode).toBe('copy')
+  expect(config({ CABOOSE_VM_COW: 'on' }).vmRestoreMode).toBe('copyonwrite')
+  expect(config({ CABOOSE_VM_RESTORE_MODE: 'copy' }).vmRestoreMode).toBe('copy')
+  expect(config({ CABOOSE_VM_RESTORE_MODE: 'copyonwrite' })).toMatchObject({ vmRestoreMode: 'copyonwrite', vmCow: true })
+  expect(config({ CABOOSE_VM_RESTORE_MODE: 'ondemand' })).toMatchObject({ vmRestoreMode: 'ondemand', vmCow: false })
+  expect(() => config({ CABOOSE_VM_RESTORE_MODE: 'lazy' })).toThrow('CABOOSE_VM_RESTORE_MODE')
+  expect(() => config({ CABOOSE_VM_COW: 'on', CABOOSE_VM_RESTORE_MODE: 'ondemand' })).toThrow('conflicts')
+  expect(() => config({ CABOOSE_VM_TEMPLATE: 'on', CABOOSE_VM_RESTORE_MODE: 'ondemand' })).toThrow('cannot be combined')
+  expect(() => config({ CABOOSE_VM_DEPOT: '/depot', CABOOSE_VM_RESTORE_MODE: 'ondemand' })).toThrow('cannot be combined')
+  expect(() => config({ CABOOSE_RUNTIME: 'container', CABOOSE_VM_RESTORE_MODE: 'ondemand' })).toThrow('microVM')
+})

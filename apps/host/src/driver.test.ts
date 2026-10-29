@@ -262,3 +262,17 @@ it('selects vsock for a guest that answers the service probe and closes relays o
     await expect(fetch(endpoint.replace('ws:', 'http:'))).rejects.toThrow()
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+it('refuses a template wake when AppKit lacks template support', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'template-driver-'))
+  try {
+    const start = vi.fn(async () => { throw new Error('must not cold boot') })
+    const controller = createController({ token: null, host: '127.0.0.1', port: 7310, idleMs: 1000,
+      imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm',
+      containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [],
+      gpu: 'none', agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 1, publicUrl: null, mdns: false, vmTemplate: true },
+    { desks: { start } as any, backend: { hypervisor: 'cloud-hypervisor' } as any, deviceExists: () => true, network: async () => {} })
+    await expect(controller.wake()).rejects.toThrow(/compatible AppKit/)
+    expect(start).not.toHaveBeenCalled()
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
