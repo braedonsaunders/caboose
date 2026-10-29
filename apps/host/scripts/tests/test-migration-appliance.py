@@ -121,6 +121,7 @@ class ApplianceTests(unittest.TestCase):
         # Identical physical occupancy is irrelevant: compressed or sparse
         # files with larger logical sizes need larger expanded staging/output.
         small = m._measured_scratch('CABOOSE_TREE_V1 4096 2 0\n')
+        self.assertEqual(m._measured_scratch('\n\nCABOOSE_TREE_V1 4096 2 0\n\n'), small)
         large = m._measured_scratch(f'CABOOSE_TREE_V1 {100 * 1024 ** 3} 2 0\n')
         self.assertEqual(large - small, 2 * (100 * 1024 ** 3 - 4096))
         self.assertEqual(m._measured_scratch('CABOOSE_TREE_V1 4096 3 1000\n') - small,

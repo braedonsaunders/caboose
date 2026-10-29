@@ -170,7 +170,8 @@ def _measurement_script():
 
 
 def _measured_scratch(result):
-    match = re.fullmatch(r'CABOOSE_TREE_V1 ([0-9]{1,13}) ([0-9]{1,7}) ([0-9]{1,8})\n{1,2}', result)
+    # guestfish prints blank lines for debug commands returning empty strings.
+    match = re.fullmatch(r'CABOOSE_TREE_V1 ([0-9]{1,13}) ([0-9]{1,7}) ([0-9]{1,8})', result.strip())
     if not match:
         raise ApplianceError('Invalid appliance tree measurement')
     logical, entries, xattrs = map(int, match.groups())
