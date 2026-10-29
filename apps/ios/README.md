@@ -816,3 +816,23 @@ Terminal fold and keyboard checks:
   remains visible (or in the dock's compact portrait control). There is no empty reserved
   sidebar. Switch to Terminal and back, then background and reopen: controls remain.
   Separate app cards retain their own hide/reveal controls, and Laptop keeps its lower deck.
+
+### Desktop files and launch feedback check
+
+On a paired device, create a folder and import a file using Desktop's menu or drop a file URL onto Desktop. Open, rename,
+move to Documents, and Trash the item; verify the corresponding real home paths in Linux
+Files. A name collision refuses replacement. Rotate and connect an external display: both
+show the same Desktop items; trackpad primary click opens and secondary click offers actions.
+Close every window: wallpaper and Desktop remain; All Apps opens only from its button.
+Window Overview uses overlapping rectangles and shows an empty-window state when empty.
+
+Hold a dock app and Add Shortcut to Desktop; verify the standard `.desktop` file in Linux.
+Open it on iOS and verify the installed app launches. Remove its installed target or replace
+its marker with an unknown ID: iOS reports it unavailable without executing its Exec field.
+Tap a closed app repeatedly: feedback starts immediately and only one launch is sent; a real
+matching window stops it. Launch two apps: feedback is independent. Simulate a host launch
+error and a launch with no window: feedback stops with the corresponding error or delayed
+opening message. Repeat with Reduce Motion, reconnect, and a running minimized app.
+
+Desktop imports copy one file at a time; they do not establish Open in Place synchronization.
+Items use file-type icons and name ordering; manual placement and file previews are absent.

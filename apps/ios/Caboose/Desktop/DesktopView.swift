@@ -15,6 +15,8 @@ struct DesktopView: View {
             ZStack(alignment: .topLeading) {
                 // On the phone the tab draws the wallpaper, under its bars too.
                 if fillsScreen { WallpaperView(store: WallpaperStore.shared) }
+                DesktopFilesView(desktop: desktop)
+                    .frame(width: proxy.size.width, height: max(0, proxy.size.height - desktop.dockHeight))
                 // Where the window being dragged would snap if let go now.
                 if let preview = desktop.snapPreview {
                     RoundedRectangle(cornerRadius: 12 * desktop.ui, style: .continuous)
@@ -178,6 +180,7 @@ struct Dock: View {
                         }
                     }
                     .frame(width: 52 * ui, height: 52 * ui)
+                    .modifier(DockLaunchFeedback(appID: app.id))
                     .scaleEffect(hot ? 1.28 : 1, anchor: .bottom)
                     .animation(.spring(duration: 0.22), value: hot)
                     Circle()
@@ -224,6 +227,7 @@ struct Dock: View {
                         } else { Image(systemName: "app.dashed").font(.title3) }
                     }
                     .frame(width: 26, height: 26)
+                    .modifier(DockLaunchFeedback(appID: app.id))
                     .frame(width: 44, height: 44)
                     if isRunning(app) {
                         Capsule().fill(.primary.opacity(0.75)).frame(width: 12, height: 2).padding(.bottom, 3)

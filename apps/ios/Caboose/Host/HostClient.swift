@@ -121,6 +121,11 @@ struct HostClient: Sendable {
         let _: [String: Bool] = try await request("POST", "/v1/apps/\(id)/launch", body: body, timeout: 30)
     }
 
+    func createDesktopShortcut(_ appID: String) async throws {
+        let id = appID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))) ?? appID
+        let _: [String: String] = try await request("POST", "/v1/apps/\(id)/desktop-shortcut", timeout: 30)
+    }
+
     func park() async throws {
         let _: [String: String] = try await request("POST", "/v1/session/park", timeout: 120)
     }

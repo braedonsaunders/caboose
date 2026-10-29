@@ -15,6 +15,8 @@ final class DesktopModel {
     enum Hit: Equatable {
         case none
         case dock(String)
+        case desktopItem(String)
+        case desktopMenu
         case titleBar(Int)
         case close(Int)
         case minimize(Int)
@@ -138,6 +140,11 @@ final class DesktopModel {
     var dockFrames: [String: CGRect] = [:]
     var contextDockID: String?
     /// Launchpad: every app, in a grid over the desktop.
+    var desktopItemFrames: [String: CGRect] = [:]
+    var desktopMenuFrame: CGRect = .zero
+    var desktopMenuOpen = false
+    var desktopContextItem: String?
+    var openDesktopItem: ((String) -> Void)?
     var launchpadOpen = false
     var launchpadButtonFrame: CGRect = .null
     var launcherFrames: [String: CGRect] = [:]
@@ -315,6 +322,8 @@ final class DesktopModel {
             case nil: return .titleBar(id)
             }
         }
+        if desktopMenuFrame.contains(point) { return .desktopMenu }
+        for (id, frame) in desktopItemFrames where frame.contains(point) { return .desktopItem(id) }
         return .none
     }
 
@@ -368,6 +377,9 @@ final class DesktopModel {
             return
         }
         switch hit {
+        case .desktopMenu: desktopMenuOpen = true
+        case .desktopItem(let id):
+            if button == 3 { desktopContextItem = id } else { openDesktopItem?(id) }
         case .launchpadButton: launchpadOpen.toggle()
         case .launcher(let id): open(id)
         case .launcherPage: break

@@ -36,6 +36,7 @@ struct YardDock: View {
                                     }
                                 }
                                 .frame(width: icon, height: icon)
+                                .modifier(DockLaunchFeedback(appID: app.id))
                                 Circle()
                                     .fill(.white.opacity(isRunning(app) ? 0.85 : 0))
                                     .frame(width: 4, height: 4)
@@ -54,7 +55,7 @@ struct YardDock: View {
             .scrollIndicators(.hidden)
             .frame(width: appWidth, height: icon + 7)
             Divider().frame(height: 34).overlay(.white.opacity(0.3))
-            OverviewControl(yard: yard, enabled: !columns.isEmpty)
+            OverviewControl(yard: yard, enabled: true)
             button("All Apps", "square.grid.3x3.fill") { withAnimation(.smooth(duration: 0.3)) { yard.launcherOpen = true } }
             if portraitDesktop { DesktopPanelButton() }
         }
@@ -102,7 +103,7 @@ private struct OverviewControl: View {
 
     var body: some View {
         let switcher = model.quickSwitch
-        Image(systemName: "square.grid.2x2")
+        Image(systemName: "rectangle.on.rectangle")
             .font(.system(size: 17, weight: .semibold))
             .frame(width: 34, height: 34)
             .background(.white.opacity(switcher.owner == .yard && switcher.mode == .hold ? 0.22 : 0), in: Circle())
@@ -130,8 +131,8 @@ private struct OverviewControl: View {
                 if !held, switcher.owner == .yard, switcher.mode == .hold { switcher.cancel() }
             }
             .accessibilityElement()
-            .accessibilityLabel("Overview")
-            .accessibilityHint("Hold and slide up to switch windows.")
+            .accessibilityLabel("Window Overview")
+            .accessibilityHint("Show open windows. Hold and slide up to switch windows.")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { openOverview() }
             .accessibilityAction(named: "Switch Windows") {
@@ -159,6 +160,9 @@ struct DockAppActions: View {
         let windows = model.appWindows.filter { model.matches($0, app) }
         let actions = DockMenu.actions(appName: app.name, pinned: model.pinnedApps.contains { $0.id == app.id },
                                        windows: windows.map { DockMenu.Window(id: $0.id, title: $0.title) })
+        Button("Add Shortcut to Desktop", systemImage: "plus.square") {
+            Task { await model.desktopFiles.addShortcut(app, model: model) }; done()
+        }
         ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
             switch action {
             case .open:

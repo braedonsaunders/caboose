@@ -79,7 +79,7 @@ struct MainTabs: View {
         } message: {
             Text("Open apps close. Files stay.")
         }
-        .alert("Couldn't Open", isPresented: Binding(
+        .alert("Opening App", isPresented: Binding(
             get: { model.launchFailure != nil },
             set: { if !$0 { model.launchFailure = nil } })) {
             Button("OK", role: .cancel) {}

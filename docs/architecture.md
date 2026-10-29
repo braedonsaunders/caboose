@@ -910,6 +910,31 @@ for the non-secret `CABOOSE_*` variables read at startup (container-only variabl
 only for a container). It never includes the owner token, APNs credentials, extra
 container arguments or URL credentials. The values are fixed until the host restarts.
 
+### Desktop files and shortcuts
+
+The native desktops display the same `~/Desktop` directory, backed by the file service.
+Closing the last window leaves the wallpaper and desktop items visible. All Apps opens
+only on request; Window Overview shows the running windows or an explicit empty state.
+Desktop supports opening files and folders, creating folders, importing files from the picker or file-URL drops,
+renaming, moving to a home-relative folder, and moving items to the home Trash. Imports
+refuse replacement; moves and Trash carry the listed ETag. Hidden files are omitted.
+Items sort by name; icon positions are not user-arrangeable. Files use type icons, not previews.
+
+The dock offers Add Shortcut to Desktop. `POST /v1/apps/:id/desktop-shortcut` resolves a
+visible installed desktop entry through the guest's normal application search path, copies
+at most 256 KiB as the owner, and atomically publishes `Desktop/<id>` without replacing an
+existing item. A symlink Desktop directory is refused. The standard `.desktop` copy retains
+its launch fields for Linux and carries `X-Caboose-AppId`. iOS reads only that reference,
+caps the streamed metadata read at 256 KiB without following redirects, requires the reference
+to match the current installed app list, and launches through the existing app
+route. It never executes Desktop `Exec` text; unrecognized shortcuts show an error.
+
+Dock launches show immediate bouncing icons and progress (progress only with Reduce Motion).
+Repeated launches of the same pending app coalesce; each app has an independent attempt.
+A matching real window or launch error settles it; an HTTP acknowledgement does not. After
+30 seconds without a matching window the app reports that opening may still be in progress.
+Disconnect clears pending feedback. Existing windows are focused immediately.
+
 ### Files
 
 The `/v1/fs` routes relay to the guest file service without buffering a whole file. Each

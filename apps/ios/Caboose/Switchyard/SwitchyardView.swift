@@ -70,6 +70,8 @@ struct SwitchyardView: View {
         let live = yard.liveWindows
         let keyTarget = yard.keyTarget(in: windows)
         return ZStack(alignment: .topLeading) {
+            DesktopFilesView()
+                .frame(width: size.width, height: size.height)
             if let carry = yard.carry, let preview = carry.preview {
                 RoundedRectangle(cornerRadius: yard.metrics.cornerRadius, style: .continuous)
                     .fill(.white.opacity(0.1))
@@ -96,10 +98,6 @@ struct SwitchyardView: View {
             }
             handles
             edges
-            if yard.layout.isEmpty {
-                YardLauncher(yard: yard, inline: true)
-                    .frame(width: size.width, height: size.height)
-            }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .coordinateSpace(name: Self.space)

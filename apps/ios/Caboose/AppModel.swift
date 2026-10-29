@@ -31,6 +31,9 @@ final class AppModel {
     /// The computer's MCP Library: Tools, on the Agents tab.
     private(set) var mcp = McpCenter()
     private(set) var documents = OpenDocumentCenter()
+    var desktopFiles = DesktopFilesCenter()
+    var dockLaunches = DockLaunchState()
+    private var dockLaunchTimeouts: [String: Task<Void, Never>] = [:]
     /// Videos playing on the computer that can move to the phone.
     private(set) var media = MediaHandoff()
     let phone = PhoneHandoff()
@@ -153,7 +156,7 @@ final class AppModel {
             self.mcp.handle(type, event)
             self.phone.handle(type, event)
             self.bridge.handle(type, event)
-            if type == "fs.changed" { self.refreshFileSearch() }
+            if type == "fs.changed" { self.refreshFileSearch(); Task { await self.desktopFiles.refresh(model: self) } }
             if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
             if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials); self.documents.requestSync(model: self) }
         }
@@ -262,6 +265,7 @@ final class AppModel {
         catalog.reset()
         mcp.reset()
         documents.reset()
+        desktopFiles.reset()
         media.reset()
         phone.reset()
         bridge.reset()
@@ -393,6 +397,7 @@ final class AppModel {
             catalog.attach(host)
             mcp.attach(host)
             documents.requestSync(model: self)
+            Task { await desktopFiles.refresh(model: self) }
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await media.refresh() }
             Task { await refreshApps() }
@@ -431,6 +436,7 @@ final class AppModel {
         phone.setActive(true)
         bridge.setActive(true)
         documents.requestSync(model: self)
+        Task { await desktopFiles.refresh(model: self) }
         showSharedDocumentIfAvailable()
         offerPasteboardIfChanged()
         guard phase != .displayElsewhere else { return }
@@ -597,10 +603,11 @@ final class AppModel {
             _ = session.state
             _ = session.windows.count
             _ = session.windowsAnnounced
-            // A window's class and minimum size can arrive after the window: Laptop fills
-            // the screen with it once they do.
+            // Late class metadata settles launch feedback; class and minimum size also
+            // determine whether a window can fill Laptop's upper screen.
             for window in session.windows.values {
                 _ = window.appClass?.name
+                _ = window.appClass?.instance
                 _ = window.minimumSize
             }
         } onChange: { [weak self] in
@@ -692,7 +699,12 @@ final class AppModel {
         if let presented = presentedWindowID, !current.contains(presented) {
             presentedWindowID = appWindows.first?.id
         }
-        if let target = launching, let newest = added.compactMap({ session.windows[$0] }).first(where: { !$0.isAuxiliary && matches($0, target) }) {
+        for (id, attempt) in dockLaunches.pending {
+            if let app = apps.first(where: { $0.id == id }), appWindows.contains(where: { matches($0, app) }) {
+                finishDockLaunch(id, token: attempt.token)
+            }
+        }
+        if let target = launching, let newest = appWindows.first(where: { matches($0, target) }) {
             launching = nil
             if !desktopActive { presentedWindowID = newest.id }
         }
@@ -988,6 +1000,9 @@ final class AppModel {
 
     /// Drops the display and the agent channel without parking; the host decides what happens next.
     private func closeDisplay() {
+        dockLaunchTimeouts.values.forEach { $0.cancel() }
+        dockLaunchTimeouts.removeAll()
+        dockLaunches.reset()
         wakes.invalidate()
         link.stop()
         presentedWindowID = nil
@@ -1077,6 +1092,7 @@ final class AppModel {
     /// A dock click on the big screen: show the app's windows if it has any, else launch it.
     func openOnDesktop(_ app: HostClient.App) {
         let windows = appWindows.filter { matches($0, app) }
+        if !windows.isEmpty, let pending = dockLaunches.pending[app.id] { finishDockLaunch(app.id, token: pending.token) }
         if yardActive, let latest = windows.first {
             yard.focus(latest.id)
             return
@@ -1270,18 +1286,31 @@ final class AppModel {
         }
     }
 
+    private func finishDockLaunch(_ id: String, token: UUID) {
+        guard dockLaunches.finish(id, token: token) else { return }
+        dockLaunchTimeouts.removeValue(forKey: id)?.cancel()
+    }
+
     private func launch(_ app: HostClient.App) {
-        guard let host else { return }
+        guard let host, let token = dockLaunches.begin(app.id) else { return }
         launching = app
         launchStartedAt = Date()
         let revision = connectionRevision
+        dockLaunchTimeouts[app.id] = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            guard let self, revision == self.connectionRevision, self.dockLaunches.pending[app.id]?.token == token else { return }
+            self.finishDockLaunch(app.id, token: token)
+            if self.launching?.id == app.id { self.launching = nil }
+            self.launchFailure = "\(app.name) has not shown a window yet. It may still be opening. You can wait or try again."
+        }
         Task {
             do {
                 try await host.launch(app)
             } catch {
-                guard revision == connectionRevision else { return }
-                launching = nil
-                launchFailure = "\(app.name) didn't open. \(error.localizedDescription)"
+                guard revision == connectionRevision, dockLaunches.pending[app.id]?.token == token else { return }
+                finishDockLaunch(app.id, token: token)
+                if launching?.id == app.id { launching = nil }
+                launchFailure = "Couldn’t confirm \(app.name) opened. \(error.localizedDescription)"
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
         }
@@ -1296,7 +1325,7 @@ final class AppModel {
     func matches(_ window: RemoteWindow, _ app: HostClient.App) -> Bool {
         guard let appClass = window.appClass else { return false }
         let id = app.id.replacingOccurrences(of: ".desktop", with: "").lowercased()
-        return [appClass.instance.lowercased(), appClass.name.lowercased()].contains { $0 == id || id.hasSuffix($0) || $0.hasSuffix(id) }
+        return !id.isEmpty && [appClass.instance.lowercased(), appClass.name.lowercased()].contains { !$0.isEmpty && ($0 == id || id.hasSuffix($0) || $0.hasSuffix(id)) }
     }
 
     func icon(for window: RemoteWindow) -> UIImage? {

@@ -16,48 +16,57 @@ struct YardOverview: View {
         ZStack {
             Rectangle().fill(.ultraThinMaterial)
                 .onTapGesture { close() }
-            ScrollViewReader { reader in
-                ScrollView(.horizontal) {
-                    HStack(alignment: .center, spacing: 14) {
-                        ForEach(yard.layout.columns) { column in
-                            let columnFrame = columnFrames[column.id] ?? .zero
-                            VStack(spacing: 8) {
-                                ForEach(column.windows, id: \.self) { id in
-                                    if let window = model.session?.windows[id], let frame = frames[id] {
-                                        OverviewCard(window: window, size: CGSize(width: frame.width * scale, height: frame.height * scale),
-                                                     focused: yard.layout.focused == id, radius: metrics.cornerRadius * max(0.6, scale * 1.6)) {
-                                            withAnimation(.smooth(duration: 0.38)) { yard.jump(to: id) }
-                                        } close: {
-                                            yard.close(id)
+            if yard.layout.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "rectangle.on.rectangle").font(.largeTitle)
+                    Text("No Open Windows").font(.headline)
+                    Button("Back to Desktop") { close() }.buttonStyle(.bordered)
+                }
+                .foregroundStyle(.white)
+            } else {
+                ScrollViewReader { reader in
+                    ScrollView(.horizontal) {
+                        HStack(alignment: .center, spacing: 14) {
+                            ForEach(yard.layout.columns) { column in
+                                let columnFrame = columnFrames[column.id] ?? .zero
+                                VStack(spacing: 8) {
+                                    ForEach(column.windows, id: \.self) { id in
+                                        if let window = model.session?.windows[id], let frame = frames[id] {
+                                            OverviewCard(window: window, size: CGSize(width: frame.width * scale, height: frame.height * scale),
+                                                         focused: yard.layout.focused == id, radius: metrics.cornerRadius * max(0.6, scale * 1.6)) {
+                                                withAnimation(.smooth(duration: 0.38)) { yard.jump(to: id) }
+                                            } close: {
+                                                yard.close(id)
+                                            }
                                         }
                                     }
                                 }
+                                .frame(width: columnFrame.width * scale)
+                                .id(column.id)
                             }
-                            .frame(width: columnFrame.width * scale)
-                            .id(column.id)
-                        }
-                        Button {
-                            withAnimation(.smooth(duration: 0.3)) {
-                                yard.overviewOpen = false
-                                yard.launcherOpen = true
+                            Button {
+                                withAnimation(.smooth(duration: 0.3)) {
+                                    yard.overviewOpen = false
+                                    yard.launcherOpen = true
+                                }
+                            } label: {
+                                Image(systemName: "plus")
+                                    .font(.title2.weight(.semibold))
+                                    .frame(width: max(64, 120 * scale * 2), height: max(64, metrics.columnHeight * scale))
+                                    .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
                             }
-                        } label: {
-                            Image(systemName: "plus")
-                                .font(.title2.weight(.semibold))
-                                .frame(width: max(64, 120 * scale * 2), height: max(64, metrics.columnHeight * scale))
-                                .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.white)
+                            .accessibilityLabel("Open App")
                         }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.white)
-                        .accessibilityLabel("Open App")
+                        .padding(.horizontal, 24)
+                        .frame(minWidth: metrics.size.width, minHeight: metrics.size.height)
                     }
-                    .padding(.horizontal, 24)
-                    .frame(minWidth: metrics.size.width, minHeight: metrics.size.height)
-                }
-                .scrollIndicators(.hidden)
-                .onAppear {
-                    if let index = yard.layout.focusedColumnIndex { reader.scrollTo(yard.layout.columns[index].id, anchor: .center) }
+                    .scrollIndicators(.hidden)
+                    .onAppear {
+                        if let index = yard.layout.focusedColumnIndex { reader.scrollTo(yard.layout.columns[index].id, anchor: .center) }
+                    }
                 }
             }
         }

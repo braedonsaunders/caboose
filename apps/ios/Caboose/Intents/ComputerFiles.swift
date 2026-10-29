@@ -15,6 +15,7 @@ struct ShortcutFileEntry: Decodable {
     var name: String
     var kind: String
     var mtime: Double
+    var etag: String?
 }
 
 struct HostShortcutFiles: ShortcutFileClient {
@@ -52,6 +53,24 @@ struct HostShortcutFiles: ShortcutFileClient {
         try FileManager.default.moveItem(at: temporary, to: destination)
         return destination
     }
+    /// Metadata only: no disk download, redirects, cookies or persistent cache.
+    func desktopShortcutData(_ path: String, etag: String? = nil) async throws -> Data {
+        var request = await request("content", path: path)
+        request.timeoutInterval = 15
+        if let etag { request.setValue(etag, forHTTPHeaderField: "If-Match") }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 20
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request, delegate: DesktopShortcutRedirectPolicy())
+        try check(response)
+        guard response.expectedContentLength <= Int64(DesktopAppShortcut.maximumBytes) else { throw CocoaError(.fileReadTooLarge) }
+        return try await DesktopAppShortcut.read(bytes)
+    }
+
     func mkdir(_ path: String, allowExisting: Bool = false) async throws {
         let (_, response) = try await URLSession.shared.data(for: request("mkdir", path: path, method: "POST"))
         if allowExisting, (response as? HTTPURLResponse)?.statusCode == 409 { return }
@@ -59,6 +78,20 @@ struct HostShortcutFiles: ShortcutFileClient {
     }
     func remove(_ path: String) async throws {
         let (_, response) = try await URLSession.shared.data(for: request("item", path: path, method: "DELETE"))
+        try check(response)
+    }
+    func move(_ path: String, to destination: String, etag: String) async throws {
+        var request = await request("move", path: path, method: "POST")
+        request.setValue(etag, forHTTPHeaderField: "If-Match")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["destination": destination])
+        let (_, response) = try await URLSession.shared.data(for: request)
+        try check(response)
+    }
+    func trash(_ path: String, etag: String) async throws {
+        var request = await request("item", path: path, method: "DELETE")
+        request.setValue(etag, forHTTPHeaderField: "If-Match")
+        let (_, response) = try await URLSession.shared.data(for: request)
         try check(response)
     }
     func upload(_ path: String, from file: URL) async throws {
@@ -150,5 +183,12 @@ struct SaveComputerFilesIntent: AppIntent {
             paths.append(path)
         }
         return .result(value: paths)
+    }
+}
+
+private final class DesktopShortcutRedirectPolicy: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 }
