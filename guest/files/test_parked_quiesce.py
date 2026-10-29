@@ -1,5 +1,7 @@
 import unittest
-from parked_quiesce import Unsupported, check_mounts, check_processes
+import errno
+from unittest.mock import patch
+from parked_quiesce import Unsupported, check_mounts, check_processes, thaw
 
 ROOT = '1 0 8:1 / / rw - ext4 /dev/vda rw\n'
 
@@ -26,6 +28,28 @@ class QuiesceChecks(unittest.TestCase):
             check_mounts(ROOT + '2 1 0:42 / /home/caboose/media rw - tmpfs tmpfs rw\n')
         with self.assertRaises(Unsupported):
             check_mounts(ROOT.replace('ext4', 'overlay'))
+
+    @patch('parked_quiesce.set_frozen')
+    @patch('parked_quiesce.fcntl.ioctl')
+    def test_thaw_unfreezes_filesystem_before_slice(self, ioctl, freezer):
+        with patch('parked_quiesce.os.open', return_value=33), patch('parked_quiesce.os.close'), patch('parked_quiesce.Path.exists', return_value=True):
+            thaw()
+        ioctl.assert_called_once()
+        freezer.assert_called_once_with('/sys/fs/cgroup/caboose-workloads.slice', False)
+
+    @patch('parked_quiesce.set_frozen')
+    @patch('parked_quiesce.fcntl.ioctl', side_effect=OSError(errno.EIO, 'error'))
+    def test_thaw_failure_does_not_release_slice(self, ioctl, freezer):
+        with patch('parked_quiesce.os.open', return_value=33), patch('parked_quiesce.os.close'), patch('parked_quiesce.Path.exists', return_value=True):
+            with self.assertRaises(OSError): thaw()
+        freezer.assert_not_called()
+
+    @patch('parked_quiesce.set_frozen')
+    @patch('parked_quiesce.fcntl.ioctl', side_effect=OSError(errno.EINVAL, 'not frozen'))
+    def test_thaw_accepts_already_thawed_filesystem(self, ioctl, freezer):
+        with patch('parked_quiesce.os.open', return_value=33), patch('parked_quiesce.os.close'), patch('parked_quiesce.Path.exists', return_value=True):
+            thaw()
+        freezer.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()

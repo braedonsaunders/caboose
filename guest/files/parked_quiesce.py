@@ -6,6 +6,8 @@ admission fenced, journal recovery on the host, freeze the filesystem, and bind
 an independent disk snapshot to the parked memory image.
 """
 import os
+import errno
+import fcntl
 import re
 import time
 from pathlib import Path
@@ -104,3 +106,32 @@ def set_frozen(cgroup, frozen, timeout=5):
             time.sleep(0.02)
     except (OSError, ValueError) as error:
         raise Unsupported('cgroup freezer unavailable') from error
+
+
+# Linux FITHAW; EINVAL means the filesystem is already thawed (for example,
+# after a cold boot).
+FITHAW = 0xC0045878
+
+
+def thaw(root='/', cgroup='/sys/fs/cgroup/caboose-workloads.slice'):
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        try:
+            fcntl.ioctl(fd, FITHAW, 0)
+        except OSError as error:
+            if error.errno != errno.EINVAL:
+                raise
+    finally:
+        os.close(fd)
+    if not Path(cgroup).exists():
+        if not Path('/sys/fs/cgroup/cgroup.controllers').exists():
+            raise Unsupported('cgroup v2 unavailable')
+        return  # A slice absent on the new boot has no frozen processes.
+    set_frozen(cgroup, False)
+
+
+if __name__ == '__main__':
+    import sys
+    if sys.argv[1:] != ['thaw']:
+        raise SystemExit('usage: parked_quiesce.py thaw')
+    thaw()

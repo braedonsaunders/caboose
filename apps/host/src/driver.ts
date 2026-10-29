@@ -12,6 +12,7 @@ import { guestLaunch } from './guest-apps.js'
 import { selectSystemImage, usesSystemImage } from './system-image.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
 import { ownerScopeCommand } from './owner-scope.js'
+import { ParkedFilesJournal } from './parked-files-journal.js'
 
 /** Verify the Files service through vsock before choosing it for this guest. */
 export async function probeServiceVsock(desk: DeskHandle, timeoutMs = 2_000): Promise<boolean> {
@@ -137,6 +138,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   let restartWarning: string | null = null
   const overlayPath = join(config.imageRoot, 'overlays', `${id}.raw`)
   const snapshotPath = join(config.imageRoot, 'overlays', `${id}.snapshot`)
+  const parkedFilesJournal = new ParkedFilesJournal(`${snapshotPath}.files-freeze`)
   const bindingPath = join(config.imageRoot, 'overlays', `${id}.system-image.json`)
   const resourcesPath = join(config.imageRoot, 'overlays', `${id}.resources.json`)
   let resources: ComputerResources | null = null
@@ -242,7 +244,18 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS,
         ...(nativeMac ? {} : { network: { tapDevice: address.tap, guestAddress: address.guest } }),
       }).catch(error => { if (!nativeMac) invalidateNetwork(slot); throw error })
+      let recoveryFailed = false
       try {
+        try {
+          const intent = await parkedFilesJournal.read()
+          if (intent) {
+            await command('/usr/bin/python3', ['/opt/caboose/files/parked_quiesce.py', 'thaw'], 30_000)
+            await parkedFilesJournal.clear(intent.id)
+          }
+        } catch (error) {
+          recoveryFailed = true
+          throw error
+        }
         if (restoring && host.stats().lastError?.includes('could not resume from its snapshot')) {
           throw new Error(host.stats().lastError ?? 'Snapshot restore failed')
         }
@@ -276,7 +289,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         if (!nativeMac) invalidateNetwork(slot)
         clearHeartbeat()
         await closeRelays().catch(failure => console.error('Failed to close guest relays:', failure))
-        await host.suspend(id).catch(failure => console.error('Failed to park after wake error:', failure))
+        if (!recoveryFailed) await host.suspend(id).catch(failure => console.error('Failed to park after wake error:', failure))
         desk = undefined
         throw error
       }

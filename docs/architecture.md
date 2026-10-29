@@ -175,6 +175,9 @@ VM images place Caboose owner service units in `caboose-workloads.slice` and ins
 The microVM command transport uses that launcher for standard owner commands when it
 is installed, and uses `runuser` on older guests. Other owner processes can still run
 outside that slice.
+If a parked Files freeze recovery intent exists, VM wake thaws the guest filesystem
+and workload slice before exposing guest services. A failed thaw retains the intent
+and fails the wake.
 
 ### Owner credential store
 

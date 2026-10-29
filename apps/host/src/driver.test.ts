@@ -6,12 +6,15 @@ import { expect, it, vi } from 'vitest'
 import type { DeskBackend } from '@braedonsaunders/appkit-desk'
 import { DISPLAY_ENV } from './display.test.js'
 import { createController } from './driver.js'
+import { ParkedFilesJournal } from './parked-files-journal.js'
 
 it('resumes old resources but cold-restarts with saved settings and preserves the disk', async () => {
   const root = await mkdtemp(join(tmpdir(), 'caboose-test-'))
   try {
     const commands: string[] = []
     let failSync = false
+    let failThaw = false
+    let parks = 0
     let supportsOwnerScope = true
     const restores: boolean[] = []
     const backend: DeskBackend = {
@@ -24,6 +27,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
           deskId: plan.deskId,
           async request(command) {
             if (command.op === 'exec') commands.push([command.command, ...(command.args ?? [])].join(' '))
+            if (failThaw && command.op === 'exec' && command.command === '/usr/bin/python3' && command.args?.[0] === '/opt/caboose/files/parked_quiesce.py') return { exitCode: 1, signal: null, stdout: '', stderr: 'thaw failed', truncated: false }
             if (command.op === 'exec' && command.command === '/usr/bin/test' && command.args?.[1] === '/usr/local/libexec/caboose-owner-run') return { exitCode: supportsOwnerScope ? 0 : 1, signal: null, stdout: '', stderr: '', truncated: false }
             if (command.op === 'exec' && command.command === '/bin/cat') return { exitCode: 0, signal: null, stdout: DISPLAY_ENV, stderr: '', truncated: false }
             if (failSync && command.op === 'exec' && command.command === '/bin/sync') {
@@ -33,7 +37,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
           },
           subscribe: () => () => {},
           shutdown: async () => {},
-          park: async () => {},
+          park: async () => { parks++ },
         }
       },
     }
@@ -44,8 +48,12 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
     const controller = createController(config, dependencies)
     // First-run provisioning happens after constructing the host pool.
     for (const file of ['base.raw', 'vmlinux', 'initrd']) await writeFile(join(root, file), '')
+    const recovery = new ParkedFilesJournal(join(root, 'overlays', 'owner.snapshot.files-freeze'))
+    await recovery.begin()
     expect(controller.activeResources()).toBeNull()
     const first = await controller.wake()
+    expect(commands).toContain('/usr/bin/python3 /opt/caboose/files/parked_quiesce.py thaw')
+    expect(await recovery.read()).toBeUndefined()
     await writeFile(join(root, 'overlays', 'owner.raw'), 'persistent user data')
     expect(first.display.token).toMatch(/^[a-f0-9]{64}$/)
     expect(first.computer.name).toBe('My computer')
@@ -77,6 +85,12 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
     expect(controller.lastError?.()).toContain('without confirming a disk flush')
     expect(await readFile(join(root, 'overlays', 'owner.raw'), 'utf8')).toBe('persistent user data')
     await controller.park()
+    await recovery.begin()
+    failThaw = true
+    const parksBeforeFailure = parks
+    await expect(controller.wake()).rejects.toThrow('thaw failed')
+    expect(parks).toBe(parksBeforeFailure)
+    expect(await recovery.read()).toBeDefined()
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
