@@ -70,6 +70,22 @@ struct HomeTodayTests {
         #expect(HomeToday.find("c", in: candidates, limit: 2).count == 2)
     }
 
+    @Test func theStripIsLiveWhileRunningAndKeptPicturesOnlyWhileResting() {
+        #expect(HomeToday.strip(running: true, live: 3, kept: 5) == .live)
+        // Running with every app closed: no stale pictures.
+        #expect(HomeToday.strip(running: true, live: 0, kept: 5) == .none)
+        #expect(HomeToday.strip(running: false, live: 0, kept: 2) == .kept)
+        #expect(HomeToday.strip(running: false, live: 0, kept: 0) == .none)
+    }
+
+    @Test func takingPicturesReplacesOrClearsOnlyWhileRunning() {
+        #expect(HomeToday.keptUpdate(running: true, pictures: 3) == .replace)
+        // The last app closed, or no window could be drawn: forget what was kept.
+        #expect(HomeToday.keptUpdate(running: true, pictures: 0) == .clear)
+        // Parked or out of reach: the kept pictures are still the newest there are.
+        #expect(HomeToday.keptUpdate(running: false, pictures: 0) == .leave)
+    }
+
     @Test func tilesKeepTheWindowsShapeWithinBounds() {
         #expect(HomeToday.tileSize(window: CGSize(width: 800, height: 600), height: 150) == CGSize(width: 200, height: 150))
         #expect(HomeToday.tileSize(window: CGSize(width: 3000, height: 600), height: 150).width == 225)

@@ -3,9 +3,11 @@ import SwiftUI
 
 /// The last picture of each open window, kept on the phone so Home can show the computer as
 /// it was while it is parked, waking or out of reach. Taken as the app leaves the screen and
-/// before a park, in the order the windows were last used, and replaced each time. Stored in
-/// Caches per computer: the system may clear it, and Home then shows no strip until the
-/// computer runs again.
+/// before a park, in the order the windows were last used, and replaced each time; forgotten
+/// when the running computer has no windows (`HomeToday.keptUpdate`). They are pictures
+/// only, never a window's identity: a window id kept from before may name another app's
+/// window after a cold boot. Stored in Caches per computer, written in the order taken; the
+/// system may clear them, and Home then shows no strip until the computer runs again.
 @MainActor @Observable
 final class HomeFrames {
     static let shared = HomeFrames()
@@ -18,6 +20,9 @@ final class HomeFrames {
         let width: Double
         let height: Double
     }
+
+    /// Writes one after another, so a park's pictures never land under older ones.
+    private static let writer = DispatchQueue(label: "caboose.home-frames", qos: .utility)
 
     private struct Manifest: Codable {
         var takenAt: Date
@@ -48,31 +53,42 @@ final class HomeFrames {
 
     /// Takes the open windows' pictures now, while the display still holds them.
     func capture(_ model: AppModel) {
-        guard model.phase == .ready, let key = model.credentials?.fileDomainIdentifier else { return }
-        let windows = model.appWindows.prefix(Self.limit)
-        guard !windows.isEmpty else { return }
+        guard let key = model.credentials?.fileDomainIdentifier else { return }
+        let running = model.phase == .ready
         var frames: [Frame] = []
         var images: [Int: UIImage] = [:]
-        for window in windows {
-            guard let picture = window.surface.snapshot() else { continue }
-            frames.append(Frame(id: window.id, title: window.title, app: model.appName(for: window),
-                                width: window.frame.width, height: window.frame.height))
-            images[window.id] = Self.scaled(picture)
+        if running {
+            for window in model.appWindows.prefix(Self.limit) {
+                guard let picture = window.surface.snapshot() else { continue }
+                frames.append(Frame(id: window.id, title: window.title, app: model.appName(for: window),
+                                    width: window.frame.width, height: window.frame.height))
+                images[window.id] = Self.scaled(picture)
+            }
         }
-        guard !frames.isEmpty else { return }
-        computer = key
-        self.frames = frames
-        self.images = images
-        takenAt = Date()
-        let manifest = Manifest(takenAt: takenAt ?? Date(), frames: frames)
-        let jpegs = images.compactMapValues { $0.jpegData(compressionQuality: 0.72) }
         guard let directory = directory(for: key) else { return }
-        Task.detached(priority: .utility) {
-            let files = FileManager.default
-            try? files.removeItem(at: directory)
-            try? files.createDirectory(at: directory, withIntermediateDirectories: true)
-            for (id, data) in jpegs { try? data.write(to: directory.appending(path: "\(id).jpg")) }
-            if let data = try? JSONEncoder().encode(manifest) { try? data.write(to: directory.appending(path: "frames.json")) }
+        switch HomeToday.keptUpdate(running: running, pictures: frames.count) {
+        case .leave:
+            return
+        case .clear:
+            computer = key
+            self.frames = []
+            self.images = [:]
+            takenAt = nil
+            Self.writer.async { try? FileManager.default.removeItem(at: directory) }
+        case .replace:
+            computer = key
+            self.frames = frames
+            self.images = images
+            let manifest = Manifest(takenAt: Date(), frames: frames)
+            takenAt = manifest.takenAt
+            let jpegs = images.compactMapValues { $0.jpegData(compressionQuality: 0.72) }
+            Self.writer.async {
+                let files = FileManager.default
+                try? files.removeItem(at: directory)
+                try? files.createDirectory(at: directory, withIntermediateDirectories: true)
+                for (id, data) in jpegs { try? data.write(to: directory.appending(path: "\(id).jpg")) }
+                if let data = try? JSONEncoder().encode(manifest) { try? data.write(to: directory.appending(path: "frames.json")) }
+            }
         }
     }
 

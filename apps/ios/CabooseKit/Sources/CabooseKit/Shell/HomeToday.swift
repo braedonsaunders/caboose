@@ -141,6 +141,44 @@ extension HomeToday {
     }
 }
 
+// MARK: Windows kept while the computer rests
+
+extension HomeToday {
+    /// What Home's window strip shows.
+    public enum Strip: Equatable, Sendable {
+        /// The windows open now, live.
+        case live
+        /// The pictures kept when the owner left, while the computer is not running.
+        case kept
+        case none
+    }
+
+    /// Live windows while the computer runs; while it rests, the kept pictures. A kept
+    /// picture is only ever a picture: tapping one turns the computer on and never opens a
+    /// window by the id it was kept under, since after a cold boot that id may name another
+    /// app's window.
+    public static func strip(running: Bool, live: Int, kept: Int) -> Strip {
+        if running { return live > 0 ? .live : .none }
+        return kept > 0 ? .kept : .none
+    }
+
+    /// What taking the pictures does to the ones kept.
+    public enum KeptUpdate: Equatable, Sendable {
+        /// Keep the windows open now in their place.
+        case replace
+        /// Forget them: the running computer has no windows to show, so a closed app's
+        /// picture must not come back.
+        case clear
+        /// Leave them: the computer is not running, so there is nothing newer.
+        case leave
+    }
+
+    public static func keptUpdate(running: Bool, pictures: Int) -> KeptUpdate {
+        guard running else { return .leave }
+        return pictures > 0 ? .replace : .clear
+    }
+}
+
 // MARK: Layout
 
 extension HomeToday {

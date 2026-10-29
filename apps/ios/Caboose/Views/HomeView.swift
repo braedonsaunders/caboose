@@ -218,21 +218,22 @@ struct TodayHeader: View {
 
 /// The computer's windows in the order they were last used, live and small, each opening
 /// full screen on a tap. While the computer is not running, the pictures kept when the
-/// owner left (`HomeFrames`) stand in for them, dimmed; a tap wakes it and opens that window
-/// once it is back.
+/// owner left (`HomeFrames`) stand in for them, dimmed; a tap on one turns the computer on,
+/// and the live windows take their place once it is back (`HomeToday.strip`).
 struct OnScreenStrip: View {
     @Environment(AppModel.self) private var model
     let wide: Bool
     private var frames = HomeFrames.shared
-    @State private var awaited: Int?
 
     init(wide: Bool) { self.wide = wide }
 
     var body: some View {
         let windows = model.phase == .ready ? model.appWindows : []
         let height: CGFloat = wide ? 176 : 156
+        let strip = HomeToday.strip(running: model.phase == .ready, live: windows.count, kept: frames.frames.count)
         Group {
-            if !windows.isEmpty {
+            switch strip {
+            case .live:
                 VStack(alignment: .leading, spacing: 12) {
                     TodaySectionHeader(title: "On Screen", link: "Desktop") { model.selectedTab = .desktop }
                     ScrollView(.horizontal) {
@@ -245,33 +246,32 @@ struct OnScreenStrip: View {
                     .homeColumnRow(cornerRadius: LiveWindowTile.cornerRadius, bottom: 6)
                 }
                 .transition(.opacity)
-            } else if model.phase != .ready, !frames.frames.isEmpty {
+            case .kept:
                 VStack(alignment: .leading, spacing: 12) {
                     TodaySectionHeader(title: "As You Left It", detail: frames.takenAt.map { $0.formatted(date: .omitted, time: .shortened) })
                     ScrollView(.horizontal) {
                         HStack(alignment: .top, spacing: 14) {
                             ForEach(frames.frames) { frame in
                                 KeptWindowTile(frame: frame, image: frames.images[frame.id], height: height,
-                                               waking: awaited == frame.id) { resume(frame.id) }
+                                               waking: waking) { turnOn() }
                             }
                         }
                     }
                     .homeColumnRow(cornerRadius: LiveWindowTile.cornerRadius, bottom: 6)
                 }
                 .transition(.opacity)
+            case .none:
+                EmptyView()
             }
         }
-        .animation(.smooth, value: windows.isEmpty)
-        .onChange(of: model.appWindows.map(\.id)) { _, ids in
-            guard let awaited, ids.contains(awaited) else { return }
-            self.awaited = nil
-            model.show(windowID: awaited)
-        }
+        .animation(.smooth, value: strip)
     }
 
-    private func resume(_ id: Int) {
-        awaited = id
-        if model.phase != .waking && model.phase != .connecting { Task { await model.wake() } }
+    private var waking: Bool { model.phase == .waking || model.phase == .connecting }
+
+    private func turnOn() {
+        guard !waking, !model.parking else { return }
+        Task { await model.wake() }
     }
 }
 
@@ -345,7 +345,7 @@ private struct KeptWindowTile: View {
         }
         .buttonStyle(TilePress())
         .accessibilityLabel("\(frame.app), \(frame.title)")
-        .accessibilityHint("Turns the computer on and opens this window")
+        .accessibilityHint("Turns the computer on")
     }
 }
 

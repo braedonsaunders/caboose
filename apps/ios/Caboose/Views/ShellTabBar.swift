@@ -4,9 +4,12 @@ import SwiftUI
 /// The shell's tabs where an iPhone's bars are horizontal: at the bottom right rather than
 /// the system's bar across the bottom (`HomeToday.tabPlacement`). Held upright, they are a
 /// short glass cluster at the bottom right, with the tab's own control (Home's Ask) to its
-/// left; on a wide screen, a sidebar down the trailing edge with the tabs at its foot, like
-/// the system's vertical bar on iPhone Duo. Where the system draws that vertical bar, its own
-/// tab bar is used and this draws nothing.
+/// left, which goes under the software keyboard as the system's tab bar does. On a wide
+/// screen they are a sidebar down the trailing edge with the tabs at its foot, which stays
+/// while the keyboard is up, as the system's vertical bar on iPhone Duo does, its tabs riding
+/// above the keyboard; it never takes the desktop's width away mid-typing. Both step aside
+/// for a window covering the Desktop. Where the system draws its vertical bar, its own tab
+/// bar is used and this draws nothing.
 struct ShellTabChrome: ViewModifier {
     @Environment(AppModel.self) private var model
     let placement: HomeToday.TabPlacement
@@ -147,8 +150,10 @@ private struct ClusterGlass: ViewModifier {
     }
 }
 
-/// Whether the software keyboard is on screen, so the tabs can go under it as the system's do.
-/// A hardware keyboard's short shortcuts bar does not count.
+/// Whether the software keyboard covers part of the phone's own window, so the cluster can go
+/// under it as the system's tab bar does. The keyboard's frame is taken in the coordinates of
+/// the screen it is on and measured against the app's window on that screen; a hardware
+/// keyboard's short shortcuts bar does not count.
 @MainActor @Observable
 final class SoftwareKeyboard {
     static let shared = SoftwareKeyboard()
@@ -156,16 +161,29 @@ final class SoftwareKeyboard {
 
     private init() {
         let center = NotificationCenter.default
-        center.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { note in
-            let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .zero
-            let screen = (note.object as? UIScreen)?.bounds ?? frame
-            MainActor.assumeIsolated {
-                SoftwareKeyboard.shared.visible = frame.height > 120 && frame.minY < screen.maxY
+        for name in [UIResponder.keyboardWillChangeFrameNotification, UIResponder.keyboardWillHideNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { note in
+                let hiding = note.name == UIResponder.keyboardWillHideNotification
+                let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+                let screen = note.object as? UIScreen
+                MainActor.assumeIsolated {
+                    SoftwareKeyboard.shared.visible = !hiding && SoftwareKeyboard.covered(by: frame, on: screen) > 120
+                }
             }
         }
-        center.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { SoftwareKeyboard.shared.visible = false }
-        }
+    }
+
+    /// How many points of the app's window on `screen` the keyboard's `frame` covers.
+    private static func covered(by frame: CGRect?, on screen: UIScreen?) -> CGFloat {
+        guard let frame, !frame.isEmpty else { return 0 }
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter { screen == nil || $0.screen === screen }
+            .compactMap(\.keyWindow)
+        guard let window = windows.first else { return 0 }
+        let local = window.convert(frame, from: window.screen.coordinateSpace)
+        let overlap = local.intersection(window.bounds)
+        return overlap.isNull ? 0 : overlap.height
     }
 }
 

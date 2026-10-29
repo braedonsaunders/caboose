@@ -8,12 +8,37 @@ struct HomeAskField: View {
     @State private var finding = false
 
     var body: some View {
+        // Beside five tabs on a narrow phone there is room only for the button itself.
+        ViewThatFits(in: .horizontal) {
+            field.frame(minWidth: 168)
+            compact
+        }
+        .sheet(isPresented: $finding) {
+            HomeFinder().environment(model)
+        }
+    }
+
+    private var title: String { model.agents.available ? "Ask, open or find" : "Open or find" }
+
+    private var compact: some View {
+        Button { finding = true } label: {
+            Image(systemName: "magnifyingglass")
+                .font(.body.weight(.semibold))
+                .frame(width: 50, height: 50)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .circle)
+        .accessibilityLabel(title)
+    }
+
+    private var field: some View {
         Button { finding = true } label: {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text(model.agents.available ? "Ask, open or find" : "Open or find")
+                Text(title)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
@@ -32,10 +57,7 @@ struct HomeAskField: View {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .capsule)
-        .accessibilityLabel(model.agents.available ? "Ask, open or find" : "Open or find")
-        .sheet(isPresented: $finding) {
-            HomeFinder().environment(model)
-        }
+        .accessibilityLabel(title)
     }
 }
 
@@ -49,7 +71,7 @@ struct HomeFinder: View {
     @State private var query = ""
     @State private var sending = false
     @State private var failure: String?
-    @FocusState private var focused: Bool
+    @State private var focused = false
 
     var body: some View {
         NavigationStack {
@@ -85,10 +107,8 @@ struct HomeFinder: View {
     private var field: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField(model.agents.available ? "Ask, open or find" : "Open or find", text: $query)
-                .focused($focused)
-                .submitLabel(.go)
-                .onSubmit(takeFirst)
+            NativeTextInput(model.agents.available ? "Ask, open or find" : "Open or find", text: $query,
+                            focus: $focused, submit: takeFirst)
             if !query.isEmpty {
                 Button("Clear", systemImage: "xmark.circle.fill") { query = "" }
                     .labelStyle(.iconOnly)
