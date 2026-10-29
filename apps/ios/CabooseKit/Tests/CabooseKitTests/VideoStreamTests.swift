@@ -70,11 +70,11 @@ import Testing
         return frame.data
     }
 
-    private func video(source: String, codec: String = "h264", sent: Sent) throws -> RemoteVideo {
+    private func video(source: String, codec: String = "h264", sent: Sent, clock: MediaClock? = nil) throws -> RemoteVideo {
         guard case .videoCreate(let fields) = VideoMessageTests.server(.videoCreate, [
             "id": 3, "window": 7, "rect": [0, 0, 64, 64], "codec": CBOR(codec), "source": CBOR(source),
         ]) else { throw CancellationError() }
-        return try #require(RemoteVideo(fields, send: { sent.append($0) }))
+        return try #require(RemoteVideo(fields, clock: clock, send: { sent.append($0) }))
     }
 
     private func settle(_ video: RemoteVideo) async throws {
@@ -104,6 +104,21 @@ import Testing
         #expect(sent.acks == [41])
         #expect(video.layer.sampleBufferRenderer.status == .rendering)
         #expect(video.layer.isReadyForDisplay)
+    }
+
+    @Test func liveMotionDoesNotWaitForTheAudioTimeline() async throws {
+        let sent = Sent()
+        let clock = MediaClock()
+        clock.start(at: 1_000_000)
+        let video = try video(source: "motion", sent: sent, clock: clock)
+        defer { video.close(); clock.stop() }
+        // A future timestamp must not leave an old full-screen overlay queued while
+        // the immediate window picture has already resized or returned to the desktop.
+        video.frame(VideoFrame(video: 3, seq: 41, keyframe: true, ptsMicros: 30_000_000, data: try keyframe()))
+        try await settle(video)
+        #expect(sent.acks == [41])
+        #expect(video.layer.isReadyForDisplay)
+        #expect(clock.synchronizer.renderers.isEmpty)
     }
 
     @Test func anUndecodableStreamAsksForAKeyframeAndWaitsForIt() async throws {

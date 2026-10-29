@@ -43,7 +43,11 @@ final class FramePipeline: @unchecked Sendable {
     }
 
     func resize(width: Int, height: Int) {
-        queue.async { [surface] in surface.resize(width: width, height: height) }
+        queue.async { [self] in
+            // Metadata may precede the replacement picture. Keep the old picture's
+            // coordinate space until its successor is decoded, so overlays scale with it.
+            if !showsLivePicture { surface.resize(width: width, height: height) }
+        }
     }
 
     /// Paints a cached frame, unless a live picture has already landed.
@@ -96,6 +100,9 @@ final class FramePipeline: @unchecked Sendable {
         do {
             // A picture the decoder holds back (none here: the server sends no B-frames) is not a failure.
             guard let picture = try decoder.decoder.decode(frame.data) else { return true }
+            if frame.keyframe, frame.rect.minX == 0, frame.rect.minY == 0 {
+                surface.resize(width: Int(frame.rect.width.rounded(.up)), height: Int(frame.rect.height.rounded(.up)))
+            }
             surface.upload(pixelBuffer: picture, crop: frame.crop, into: frame.rect)
             placement = (frame.crop, frame.rect)
             showsLivePicture = true

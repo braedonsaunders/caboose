@@ -12,8 +12,23 @@ public final class MediaClock: @unchecked Sendable {
     public let synchronizer = AVSampleBufferRenderSynchronizer()
     private let lock = NSLock()
     private var playout = PlayoutDelay()
+    private let hostTime: () -> CMTime
+    // The mapping requested from AVFoundation, protected by `lock`. Its rate property
+    // changes synchronously, but its timebase does not: reading currentTime immediately
+    // after setRate can still return the previous timeline and trigger another flush.
+    private var anchor: (media: Int64, host: Int64)?
 
-    public init() {}
+    public convenience init() {
+        self.init(hostTime: { CMClockGetTime(CMClockGetHostTimeClock()) })
+    }
+
+    /// An injectable monotonic clock keeps scheduling policy tests independent of devices.
+    init(hostTime: @escaping () -> CMTime) {
+        self.hostTime = hostTime
+        // Live packets already have a bounded jitter buffer. Waiting for every video
+        // renderer to preroll can hold sound indefinitely behind an idle video stream.
+        synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
+    }
 
     /// Puts a renderer (the sound, or a video layer's) on this clock.
     public func add(_ renderer: some AVQueuedSampleBufferRendering) {
@@ -26,7 +41,19 @@ public final class MediaClock: @unchecked Sendable {
 
     /// The clock's time in server microseconds, nil while it is stopped.
     public var now: Int64? {
-        synchronizer.rate == 0 ? nil : CMTimeConvertScale(synchronizer.currentTime(), timescale: 1_000_000, method: .default).value
+        lock.lock()
+        defer { lock.unlock() }
+        return projectedTime()
+    }
+
+    /// Called with `lock` held; this is the same host/media mapping supplied to the renderer.
+    private func projectedTime() -> Int64? {
+        guard let anchor else { return nil }
+        return anchor.media + Self.micros(hostTime()) - anchor.host
+    }
+
+    private static func micros(_ time: CMTime) -> Int64 {
+        CMTimeConvertScale(time, timescale: 1_000_000, method: .default).value
     }
 
     /// How far the sound plays behind the server, in microseconds.
@@ -38,12 +65,16 @@ public final class MediaClock: @unchecked Sendable {
     func place(audio pts: Int64) -> PlayoutDelay.Placement {
         lock.lock()
         defer { lock.unlock() }
-        return playout.place(pts: pts, now: now)
+        return playout.place(pts: pts, now: projectedTime())
     }
 
     /// Runs the clock from `time` (server microseconds) on.
     func start(at time: Int64) {
-        synchronizer.setRate(1, time: CMTime(value: time, timescale: 1_000_000))
+        lock.lock()
+        defer { lock.unlock() }
+        let host = hostTime()
+        anchor = (media: time, host: Self.micros(host))
+        synchronizer.setRate(1, time: CMTime(value: time, timescale: 1_000_000), atHostTime: host)
     }
 
     /// When a picture stamped `pts` should be shown, or nil to show it at once: the clock is
@@ -56,8 +87,9 @@ public final class MediaClock: @unchecked Sendable {
     /// The sound stopped (a failed renderer, a closed session): pictures go back to showing at once.
     func stop() {
         lock.lock()
+        defer { lock.unlock() }
         playout.stop()
-        lock.unlock()
+        anchor = nil
         synchronizer.setRate(0, time: .invalid)
     }
 }

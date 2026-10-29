@@ -70,7 +70,7 @@ public final class RemoteVideo: @unchecked Sendable {
         clip = fields.clip
         z = fields.z ?? 0
         if color?.isHDR == true { showHDR() }
-        clock?.add(layer.sampleBufferRenderer)
+        if !source.isLive { clock?.add(layer.sampleBufferRenderer) }
     }
 
     /// Stops playback; the window view drops the layer.
@@ -80,7 +80,7 @@ public final class RemoteVideo: @unchecked Sendable {
             session = nil
             kept.removeAll()
             layer.sampleBufferRenderer.flush()
-            clock?.remove(layer.sampleBufferRenderer)
+            if !source.isLive { clock?.remove(layer.sampleBufferRenderer) }
         }
     }
 
@@ -134,8 +134,8 @@ public final class RemoteVideo: @unchecked Sendable {
         }
     }
 
-    /// Hands a decoded picture to the layer: at its time on the session's clock while the
-    /// computer's sound is playing, otherwise (or when it is already late) at once.
+    /// Live motion follows the immediately presented base picture. Only passthrough
+    /// pictures use the audio clock; a live layer must not gate audio clock startup.
     private func show(_ picture: CVPixelBuffer, at pts: UInt64?) {
         let renderer = layer.sampleBufferRenderer
         if renderer.status == .failed || renderer.requiresFlushToResumeDecoding { renderer.flush() }
@@ -144,7 +144,7 @@ public final class RemoteVideo: @unchecked Sendable {
             CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: picture, formatDescriptionOut: &pictureFormat)
         }
         guard let pictureFormat else { return }
-        let scheduled = pts.flatMap { clock?.time(for: Int64($0)) }
+        let scheduled = source.isLive ? nil : pts.flatMap { clock?.time(for: Int64($0)) }
         var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: scheduled ?? CMClockGetTime(CMClockGetHostTimeClock()),
                                         decodeTimeStamp: .invalid)
         var sample: CMSampleBuffer?

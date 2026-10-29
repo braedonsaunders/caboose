@@ -226,6 +226,27 @@ final class FakeDecoder: PictureDecoder {
         #expect(session.windows[7]?.surface.generation ?? 0 > 0)
     }
 
+    @Test func resizeMetadataKeepsTheDisplayedPictureCoordinateSpaceUntilReplacement() throws {
+        let pipeline = FramePipeline(windowID: 7, width: 8, height: 8, makeDecoder: { _ in FakeDecoder() }, send: { _ in })
+        defer { pipeline.close() }
+        guard case .frame(let first) = ServerMessage(DisplayFrame(type: DisplayProtocol.ServerType.frame.rawValue, body: frame(7, pts: 1000))) else {
+            Issue.record("frame"); return
+        }
+        pipeline.frame(first)
+        pipeline.flush()
+        pipeline.resize(width: 16, height: 20)
+        pipeline.flush()
+        #expect(pipeline.surface.pixelSize == CGSize(width: 8, height: 8))
+        let body: CBOR = ["id": 7, "codec": "hevc", "keyframe": true, "pts_us": 2000,
+                          "rect": [0, 0, 16, 20], "crop": [0, 0, 8, 8], "data": .bytes(Data([0, 0, 1]))]
+        guard case .frame(let replacement) = ServerMessage(DisplayFrame(type: DisplayProtocol.ServerType.frame.rawValue, body: body)) else {
+            Issue.record("replacement"); return
+        }
+        pipeline.frame(replacement)
+        pipeline.flush()
+        #expect(pipeline.surface.pixelSize == CGSize(width: 16, height: 20))
+    }
+
     @Test func aBrokenStreamAsksForOneKeyframeAndSkipsToIt() async throws {
         _ = try await ready()
         decoder.fails = true

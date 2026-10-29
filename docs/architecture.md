@@ -1531,7 +1531,10 @@ XcodeGen. `apps/ios/README.md` covers its layout, build and device checks in det
 `CabooseDisplaySession`, behind the `DisplaySession` window model the app works against.
 It speaks the Caboose Display Protocol: canonical CBOR, per-window video with
 acknowledgements and keyframe recovery, video streams layered into windows, Opus sound on
-one playback clock with them, and vsync pacing. Each window fills a `RemoteWindow` and its
+the server timeline, and vsync pacing. Audio uses an explicit server/host clock anchor,
+cleared on interruption; renderer timebase updates never drive backlog recovery. Live
+window and motion pictures present immediately, while passthrough video shares the audio
+clock. Each window fills a `RemoteWindow` and its
 Metal `WindowSurface`. Decoding uses `VTDecompressionSession` for H.264, HEVC and, where the
 device has a hardware decoder, AV1, and ImageIO for PNG and WebP tiles. Every write to a
 window's texture is a blit on one shared Metal queue, which runs command buffers in commit
@@ -1539,6 +1542,7 @@ order, so no draw waits for the GPU before the next frame is decoded and acknowl
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 The window picture and its video layers use the same mapping from the confirmed surface
 size to the view's bounds, including while a resize stretches the previous picture.
+Resize metadata does not change that pixel basis until the replacement keyframe decodes.
 Video clips intersect the window bounds without rescaling the decoded picture. Only the
 active presentation hosts a stream's playback layer; an inactive Yard relinquishes it to
 the app card, and a detached view releases its layers.

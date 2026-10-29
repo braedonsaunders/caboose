@@ -66,6 +66,8 @@ final class SoundPlayer: @unchecked Sendable {
     private var decoder: OpusDecoder?
     private var format: CMAudioFormatDescription?
     private var sessionActive = false
+    private var interrupted = false
+    private var interruptionObserver: NSObjectProtocol?
     private(set) var played = 0
     private(set) var failed = 0
 
@@ -77,11 +79,34 @@ final class SoundPlayer: @unchecked Sendable {
         self.clock = clock
         self.activate = activate
         clock.add(renderer)
+        #if os(iOS)
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: nil
+        ) { [weak self] notification in
+            guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            self?.setInterrupted(type == .began)
+        }
+        #endif
+    }
+
+    deinit {
+        if let interruptionObserver { NotificationCenter.default.removeObserver(interruptionObserver) }
+        clock.remove(renderer)
+    }
+
+    private func setInterrupted(_ value: Bool) {
+        queue.async { [self] in
+            interrupted = value
+            sessionActive = false
+            renderer.flush()
+            clock.stop()
+        }
     }
 
     func play(_ packet: AudioPacket) {
         queue.async { [self] in
-            guard packet.codec == "opus" else { return }
+            guard packet.codec == "opus", !interrupted else { return }
             do {
                 if decoder?.channels != packet.channels {
                     decoder = try OpusDecoder(channels: packet.channels)

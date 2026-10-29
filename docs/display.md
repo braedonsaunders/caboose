@@ -312,6 +312,11 @@ first sample, the clock of `frame` and `video.present`, so a client plays sound 
 on one timeline. It goes only to a client whose hello lists `"opus"` in `audio_decoders`.
 Digital silence is not sent after a second of it: a gap in `pts_us` is silence, and packets
 resume without a reset. The server lists `audio` in `features` when it has sound to send.
+The iOS player anchors server time to the monotonic host clock when starting playback;
+it does not use the asynchronously updated renderer timebase to detect packet backlog.
+Audio-session interruptions clear that anchor before the next playback begins. Live
+window and motion pictures present immediately; only passthrough presentation uses the
+shared audio timeline, and an idle live video renderer cannot hold audio preroll.
 
 ### Video streams
 
@@ -325,7 +330,8 @@ window. Video ids are their own namespace, unique for the server's lifetime.
 The client intersects `clip` (or `rect` when absent) with the window's bounds and `rect`;
 clipping preserves the scale and origin of the complete decoded picture. The window's
 picture and video layers share one window-pixel-to-view transform, including while the
-previous picture stretches during a resize. A playback layer has one active presentation
+previous picture stretches during a resize. The pixel coordinate space changes only
+when the replacement keyframe is decoded, not when resize metadata arrives. A playback layer has one active presentation
 owner; thumbnails and inactive presentations do not take it from the visible window.
 
 - The client lists in `hello.video_decoders` what it can play as a video stream. The server
@@ -342,7 +348,9 @@ owner; thumbnails and inactive presentations do not take it from the visible win
   15 or more pictures a second. It is sent in the window stream's codec at the window
   picture's pixel scale, and only to a client that lists that codec in `video_decoders`;
   a window with a passthrough stream bound gets none. While the stream exists, the
-  window's `frame`s leave the region out; the client shows the stream over it. Once the
+  window's `frame`s keep the region frozen, including keyframes, replacement codec buffers
+  and refinement passes; the client shows the stream over it. Refining the base does not
+  recreate the motion encoder or lose its reference frames. Once the
   region has stopped looking like that for a second (the video paused, moved, or closed),
   the server sends a window `frame` that repaints the region and then `video.destroy`.
   The client keeps showing the stream until it has shown that frame. A resize ends the

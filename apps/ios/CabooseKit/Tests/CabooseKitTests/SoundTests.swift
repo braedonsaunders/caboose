@@ -39,6 +39,88 @@ import Testing
     }
 }
 
+/// Scheduling policy only: no renderer is attached and no sound is decoded or played.
+@Suite struct MediaClockSchedulingTests {
+    @Test func packetsUseTheRequestedAnchorBeforeTheRenderTimebaseCatchesUp() {
+        var host: Int64 = 10_000_000
+        let clock = MediaClock(hostTime: { CMTime(value: host, timescale: 1_000_000) })
+        let first: Int64 = 90_000_000_000
+        #expect(!clock.synchronizer.delaysRateChangeUntilHasSufficientMediaData)
+        #expect(clock.now == nil)
+        #expect(clock.place(audio: first) == .start(first - PlayoutDelay.initial))
+        clock.start(at: first - PlayoutDelay.initial)
+        // Do not wait for AVFoundation's asynchronous timebase update. A real-time stream
+        // must not flush on each packet just because its rate is set before its time is.
+        for index in 0 ..< 100 {
+            host = 10_000_000 + Int64(index) * 20_000
+            let pts = first + Int64(index) * 20_000
+            #expect(clock.now == pts - PlayoutDelay.initial)
+            #expect(clock.place(audio: pts) == .play)
+            #expect(clock.time(for: pts) == CMTime(value: pts, timescale: 1_000_000))
+            #expect(clock.time(for: pts - PlayoutDelay.initial - 1) == nil)
+        }
+        #expect(clock.delay == PlayoutDelay.initial)
+        clock.stop()
+    }
+
+    @Test func aLatePacketReanchorsOnceAndFollowingPacketsKeepPlaying() {
+        var host: Int64 = 10_000_000
+        let clock = MediaClock(hostTime: { CMTime(value: host, timescale: 1_000_000) })
+        _ = clock.place(audio: 1_000_000)
+        clock.start(at: 960_000)
+        host += 100_000
+        #expect(clock.place(audio: 1_020_000) == .restart(960_000))
+        clock.start(at: 960_000)
+        // This anchor moves backwards from the old projected time. Neither that old
+        // time nor AVFoundation's delayed application can cause a second restart.
+        for index in 1 ... 10 {
+            host = 10_100_000 + Int64(index) * 20_000
+            #expect(clock.place(audio: 1_020_000 + Int64(index) * 20_000) == .play)
+        }
+        #expect(clock.delay == 60_000)
+        clock.stop()
+    }
+
+    @Test func backlogRecoverySilenceAndStopUseTheSameTimeline() {
+        var host: Int64 = 10_000_000
+        let clock = MediaClock(hostTime: { CMTime(value: host, timescale: 1_000_000) })
+        _ = clock.place(audio: 1_000_000)
+        clock.start(at: 960_000)
+        host += 20_000
+        #expect(clock.place(audio: 1_500_000) == .restart(1_460_000))
+        clock.start(at: 1_460_000)
+        host += 20_000
+        #expect(clock.place(audio: 1_520_000) == .play)
+        host += 5_000_000
+        #expect(clock.place(audio: 6_520_000) == .play)
+        #expect(clock.delay == PlayoutDelay.initial)
+        clock.stop()
+        #expect(clock.now == nil)
+        #expect(clock.time(for: 6_520_000) == nil)
+        #expect(clock.place(audio: 6_540_000) == .start(6_500_000))
+    }
+
+    @Test func repeatedRealUnderrunsKeepTheDelayBounded() {
+        var host: Int64 = 10_000_000
+        var pts: Int64 = 1_000_000
+        let clock = MediaClock(hostTime: { CMTime(value: host, timescale: 1_000_000) })
+        _ = clock.place(audio: pts)
+        clock.start(at: pts - PlayoutDelay.initial)
+        for _ in 0 ..< 20 {
+            host += 300_000
+            pts += 20_000
+            let placement = clock.place(audio: pts)
+            #expect(placement == .restart(pts - clock.delay))
+            #expect(clock.delay <= PlayoutDelay.maximum)
+            clock.start(at: pts - clock.delay)
+        }
+        #expect(clock.delay == PlayoutDelay.maximum)
+        host += 20_000
+        #expect(clock.place(audio: pts + 20_000) == .play)
+        clock.stop()
+    }
+}
+
 /// Opus packets of a 1 kHz tone, made with the system's encoder.
 enum Tone {
     static func packets(_ count: Int, channels: Int = 2, frequency: Double = 1000) throws -> [Data] {
@@ -125,13 +207,15 @@ enum Tone {
         let player = SoundPlayer(clock: clock)
         player.renderer.isMuted = true // the renderer still plays the timeline; the Mac stays quiet
         let start: Int64 = 50_000_000
-        let packets = try Tone.packets(15)
+        // This test enqueues a burst: stay within the 120 ms backlog allowance. Longer
+        // bursts intentionally reanchor; real-time delivery is exercised separately.
+        let packets = try Tone.packets(7)
         let before = Date()
         for (index, packet) in packets.enumerated() {
             player.play(AudioPacket(ptsMicros: UInt64(start + Int64(index) * 20_000), data: packet))
         }
         player.flush()
-        #expect(player.played == 15 && player.failed == 0)
+        #expect(player.played == 7 && player.failed == 0)
         // The clock started 40 ms behind the first packet and has run in real time since, never restarted.
         let now = try #require(clock.now)
         let elapsed = Int64(Date().timeIntervalSince(before) * 1_000_000)
