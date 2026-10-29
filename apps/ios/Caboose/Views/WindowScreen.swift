@@ -401,15 +401,16 @@ struct RemoteWindowCanvas: UIViewRepresentable {
     }
 }
 
-/// A live preview for Home: same surface, no input.
+/// A live preview for Home: same surface, no input, drawn `width` points wide.
 struct RemoteWindowPreview: UIViewRepresentable {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
+    var width: CGFloat = 150
 
     func makeUIView(context: Context) -> RemoteWindowView {
         let view = RemoteWindowView(session: nil, window: window)
         view.isInteractive = false
-        view.pixelsPerPoint = max(1, window.frame.width / 150)
+        view.pixelsPerPoint = max(1, window.frame.width / width)
         view.pacer = model.session // a live preview is paced like any window on screen
         view.showsVideo = false // the window's own screen plays its videos
         return view
@@ -418,6 +419,6 @@ struct RemoteWindowPreview: UIViewRepresentable {
     func updateUIView(_ view: RemoteWindowView, context: Context) {
         view.pacer = model.session
         if view.remoteWindow?.id != window.id { view.attach(window) }
-        view.pixelsPerPoint = max(1, window.frame.width / 150)
+        view.pixelsPerPoint = max(1, window.frame.width / width)
     }
 }

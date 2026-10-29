@@ -311,6 +311,30 @@ OpenRouter key and see goose become the default and answer.
   receive approval, finished-task and desktop alerts (approvals can be answered from the
   notification), and running agent tasks show on the Lock Screen and Dynamic Island.
 
+## Home and the tabs
+
+Home is Today: the computer's name and how it is, with the one action that fits (Turn On,
+Try Again, Show Here); its windows in the order they were last used, live, each opening full
+screen on a tap; approvals the agents are waiting on, answered in place; agents at work;
+what finished and changed since the app last left the screen (agent turns that succeeded or
+failed, and new files outside hidden folders), or the newest files when nothing is new; and
+pinned apps. While the computer is parked, waking or out of reach, the window strip shows
+each window's last picture, dimmed, taken as the app leaves the screen and as the computer
+parks and kept in Caches per computer; a tap turns the computer on and opens that window
+once it is back. The toolbar has AirPlay beside the Computer pair.
+
+Ask opens windows, apps and the home's files by name (every word must start a word of the
+name, ignoring case and accents; windows first, then apps, then files) and, with an agent
+available, hands what was typed to the default agent as a new chat. Return takes the first
+row.
+
+On an iPhone whose bars are horizontal, the tabs sit at the bottom right instead of the
+system's bar across the bottom: a glass cluster beside Ask when the phone is upright, and a
+sidebar down the trailing edge with the tabs at its foot once the screen is 600 points wide
+(an iPhone Duo opened out, or any phone on its side). They go under the software keyboard
+and out of the way of a window covering the Desktop, as the system's do. Where the system
+draws its vertical bar (iPhone Duo, iOS 27.1), and on iPad, the system's tab bar is used.
+
 ## Computer settings
 
 The cog in every tab's toolbar opens **Computer**: the computer's name, the memory and cores
@@ -367,14 +391,24 @@ by a simulator build. On a signed device paired to a deployed computer, check:
 - **Tabs and the vertical bar.** On iPhone Duo, closed and open in landscape, every tab's
   bar is on the side with the tabs, the cog and the lifecycle menu; on the Desktop tab the
   desktop fills the space beside the bar and resizes when the device folds or rotates; on a
-  phone without the bar, the tab bar and toolbar are horizontal. Open the Desktop's
+  phone without the bar the toolbar is horizontal and the tabs are a cluster at the bottom
+  right beside Home's Ask, or a sidebar on the trailing edge on a Duo opened out or a phone
+  on its side; they hide under the keyboard and behind a full-screen Switchyard window, and
+  the Agents tab shows its approval count. Open the Desktop's
   Launchpad on the closed phone and check that it and the dock fit. Capture either display
   with `xcrun devicectl device capture screenshot --display-unique-id <id>` (ids from
   `devicectl device info displays`); `caboose://home`, `desktop`, `agents` and `apps`
   select a tab.
-- **AirPlay.** With an AirPlay device in reach, play to it once from Home's route picker;
-  Home then names it, and its main control reconnects or offers it as the Automatically
-  AirPlay setting allows. Park, Turn On and Restart from the lifecycle menu.
+- **AirPlay.** With an AirPlay device in reach, play to it once from the route picker in
+  Home's AirPlay sheet; the sheet then names it, and its main control reconnects or offers
+  it as the Automatically AirPlay setting allows. Park, Turn On and Restart from the
+  lifecycle menu.
+- **Home.** With three apps open, Home's strip shows them live, most recently used first,
+  and a tap opens each full screen. Background the app, then park from Computer settings on
+  return: the strip shows the dimmed pictures; tap one and the computer wakes and opens it.
+  Start an agent task, leave the app until it ends, and come back: it is under Since You
+  Left. In Ask, type part of an app's, window's and file's name, open each, and send a
+  request to the default agent.
 
 ## Agent conversations
 

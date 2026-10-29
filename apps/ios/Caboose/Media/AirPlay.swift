@@ -171,3 +171,58 @@ struct AirPlaySheet: View {
         }
     }
 }
+
+/// One tap to play on the AirPlay device used last; the picker beside it chooses another.
+/// See `AirPlayCenter` for what iOS lets an app do here. Shown in `AirPlaySheet`.
+struct AirPlayCard: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let airPlay = model.airPlay
+        let onTV = model.externalDisplayActive
+        let playing = airPlay.current != nil || onTV
+        HStack(spacing: 14) {
+            Button { airPlay.connect() } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: onTV ? "tv" : "airplay.audio")
+                        .font(.title2)
+                        .symbolEffect(.pulse, isActive: airPlay.connecting)
+                        .foregroundStyle(playing ? Brand.amber : .white)
+                        .frame(width: 44, height: 44)
+                        .glassEffect(.regular, in: .circle)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(.headline).lineLimit(1)
+                        if let status { Text(status).font(.footnote).foregroundStyle(.secondary).lineLimit(1) }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(airPlay.connecting || onTV || airPlay.current != nil)
+            // The system's own picker: another device, or back to the phone.
+            AirPlayRoutePicker()
+                .frame(width: 36, height: 36)
+                .accessibilityLabel("AirPlay devices")
+        }
+        .padding(14)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
+    }
+
+    private var title: String {
+        let airPlay = model.airPlay
+        if model.externalDisplayActive { return "Desktop on TV" }
+        if let current = airPlay.current { return current.name }
+        if let last = airPlay.last { return last.name }
+        return "AirPlay"
+    }
+
+    private var status: String? {
+        let airPlay = model.airPlay
+        if model.externalDisplayActive { return "Screen Mirroring" }
+        if airPlay.current != nil { return "Playing" }
+        if airPlay.connecting { return "Connecting" }
+        if let notice = airPlay.notice { return notice }
+        return airPlay.last != nil ? "AirPlay" : nil
+    }
+}

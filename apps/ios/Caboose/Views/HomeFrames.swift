@@ -1,0 +1,97 @@
+import CabooseKit
+import SwiftUI
+
+/// The last picture of each open window, kept on the phone so Home can show the computer as
+/// it was while it is parked, waking or out of reach. Taken as the app leaves the screen and
+/// before a park, in the order the windows were last used, and replaced each time. Stored in
+/// Caches per computer: the system may clear it, and Home then shows no strip until the
+/// computer runs again.
+@MainActor @Observable
+final class HomeFrames {
+    static let shared = HomeFrames()
+    static let limit = 8
+
+    struct Frame: Codable, Identifiable, Equatable {
+        let id: Int
+        let title: String
+        let app: String
+        let width: Double
+        let height: Double
+    }
+
+    private struct Manifest: Codable {
+        var takenAt: Date
+        var frames: [Frame]
+    }
+
+    private(set) var frames: [Frame] = []
+    private(set) var takenAt: Date?
+    private(set) var images: [Int: UIImage] = [:]
+    private var computer: String?
+
+    /// Reads what was kept for `computer` (its file domain), once per computer.
+    func load(for computer: String?) {
+        guard computer != self.computer else { return }
+        self.computer = computer
+        frames = []
+        images = [:]
+        takenAt = nil
+        guard let directory = directory(for: computer),
+              let data = try? Data(contentsOf: directory.appending(path: "frames.json")),
+              let manifest = try? JSONDecoder().decode(Manifest.self, from: data) else { return }
+        frames = manifest.frames
+        takenAt = manifest.takenAt
+        for frame in manifest.frames {
+            if let image = UIImage(contentsOfFile: directory.appending(path: "\(frame.id).jpg").path) { images[frame.id] = image }
+        }
+    }
+
+    /// Takes the open windows' pictures now, while the display still holds them.
+    func capture(_ model: AppModel) {
+        guard model.phase == .ready, let key = model.credentials?.fileDomainIdentifier else { return }
+        let windows = model.appWindows.prefix(Self.limit)
+        guard !windows.isEmpty else { return }
+        var frames: [Frame] = []
+        var images: [Int: UIImage] = [:]
+        for window in windows {
+            guard let picture = window.surface.snapshot() else { continue }
+            frames.append(Frame(id: window.id, title: window.title, app: model.appName(for: window),
+                                width: window.frame.width, height: window.frame.height))
+            images[window.id] = Self.scaled(picture)
+        }
+        guard !frames.isEmpty else { return }
+        computer = key
+        self.frames = frames
+        self.images = images
+        takenAt = Date()
+        let manifest = Manifest(takenAt: takenAt ?? Date(), frames: frames)
+        let jpegs = images.compactMapValues { $0.jpegData(compressionQuality: 0.72) }
+        guard let directory = directory(for: key) else { return }
+        Task.detached(priority: .utility) {
+            let files = FileManager.default
+            try? files.removeItem(at: directory)
+            try? files.createDirectory(at: directory, withIntermediateDirectories: true)
+            for (id, data) in jpegs { try? data.write(to: directory.appending(path: "\(id).jpg")) }
+            if let data = try? JSONEncoder().encode(manifest) { try? data.write(to: directory.appending(path: "frames.json")) }
+        }
+    }
+
+    private func directory(for computer: String?) -> URL? {
+        guard let computer, let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        return caches.appending(path: "HomeFrames", directoryHint: .isDirectory).appending(path: computer, directoryHint: .isDirectory)
+    }
+
+    /// Small enough for a tile on any phone at 3×, and for eight of them to load at once.
+    private static func scaled(_ picture: CGImage) -> UIImage {
+        let longest: CGFloat = 640
+        let width = CGFloat(picture.width), height = CGFloat(picture.height)
+        let scale = min(1, longest / max(width, height))
+        let size = CGSize(width: (width * scale).rounded(), height: (height * scale).rounded())
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIImage(cgImage: picture).draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+}

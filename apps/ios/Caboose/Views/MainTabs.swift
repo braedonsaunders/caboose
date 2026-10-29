@@ -3,34 +3,55 @@ import SwiftUI
 
 /// The app's shell: Home, the Desktop, Agents and Apps, in the system's tab view. Where the
 /// device has a vertical bar (iPhone Duo), the system draws the tab bar and each tab's
-/// toolbar together on the side; elsewhere they are the usual bars.
+/// toolbar together on the side. On an iPhone whose bars are horizontal, the tabs sit at the
+/// bottom right instead of across the bottom (`ShellTabChrome`); on iPad they are the
+/// system's.
 struct MainTabs: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var width: CGFloat = 0
 
     var body: some View {
         @Bindable var model = model
+        let placement = HomeToday.tabPlacement(isPhone: UIDevice.current.userInterfaceIdiom == .phone,
+                                               hasVerticalBar: barEdge != nil, width: width)
         TabView(selection: $model.selectedTab) {
             Tab("Home", systemImage: "house", value: ShellTab.home) {
-                HomeScreen()
+                HomeScreen().modifier(ShellTabChrome(placement: placement, tab: .home))
             }
             Tab("Desktop", systemImage: "macwindow.on.rectangle", value: ShellTab.desktop) {
-                DesktopScreen()
+                DesktopScreen().modifier(ShellTabChrome(placement: placement, tab: .desktop))
             }
             Tab("Agents", systemImage: "sparkles", value: ShellTab.agents) {
-                AgentsScreen()
+                AgentsScreen().modifier(ShellTabChrome(placement: placement, tab: .agents))
             }
             .badge(model.agents.awaitingApproval.count)
             Tab("Apps", systemImage: "square.grid.2x2", value: ShellTab.apps) {
-                AppsScreen()
+                AppsScreen().modifier(ShellTabChrome(placement: placement, tab: .apps))
             }
             if TerminalSlot.isFilled {
                 Tab("Terminal", systemImage: "apple.terminal", value: ShellTab.terminal) {
-                    TerminalSlot.screen()
+                    TerminalSlot.screen().modifier(ShellTabChrome(placement: placement, tab: .terminal))
                 }
             }
         }
+        .environment(\.shellTabPlacement, placement)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .tint(Brand.amber)
         .onChange(of: model.selectedTab) { _, _ in model.updateDeviceDesktop() }
+        // Home's strip shows the windows as they were while the computer rests: their
+        // pictures are kept as the app leaves the screen, and as the computer parks.
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .inactive: HomeFrames.shared.capture(model)
+            case .background: UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: SinceYouLeft.leftKey)
+            default: break
+            }
+        }
+        .onChange(of: model.parking) { _, parking in
+            if parking { HomeFrames.shared.capture(model) }
+        }
         .fullScreenCover(isPresented: Binding(
             get: { model.phase == .ready && model.presentedWindowID != nil },
             set: { if !$0 { model.presentedWindowID = nil } }), onDismiss: { model.windowCardDismissed() }) {

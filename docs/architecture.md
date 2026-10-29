@@ -1675,8 +1675,12 @@ the app card, and a detached view releases its layers.
 
 ### Shell
 
-The app is a system tab view (SwiftUI `TabView` with `Tab`), so each device gets the
-system's tab bar or sidebar. Every tab's toolbar ends with the Computer settings and a
+The app is a system tab view (SwiftUI `TabView` with `Tab`). Where the system draws a
+vertical bar, and on iPad, the tabs are the system's. On an iPhone whose bars are horizontal
+the system's tab bar is hidden and the tabs sit at the bottom right
+(`HomeToday.tabPlacement`): a cluster beside the tab's own bottom control (Home's Ask) when
+the screen is under 600 points wide, else a sidebar on the trailing edge with the tabs at
+its foot. Every tab's toolbar ends with the Computer settings and a
 lifecycle menu: Turn On (`POST /v1/session`) while parked or out of reach, Park
 (`POST /v1/session/park`) and, where `capabilities.restart` is true, Restart after
 confirmation (`POST /v1/computer/restart`). The host has no power-off. Host messages
@@ -1685,7 +1689,7 @@ repeated lines removed and clipped to a few lines, opens on tap.
 
 | Tab | What it is |
 | --- | --- |
-| Home | The computer's state, one-tap AirPlay, quick actions, agents working or waiting for approval (answered in place), open windows, pinned and recently opened apps, and the home's newest visible files (from the same `/v1/fs` scan that feeds Spotlight), which open with their default app |
+| Home | Today: the computer's state; its windows live in most-recently-used order, or while it rests their last pictures, kept on the phone; approvals (answered in place) and agents at work; agent turns that ended and visible files that changed since the app last left the screen, else the newest visible files (from the same `/v1/fs` scan that feeds Spotlight); pinned apps; AirPlay; and Ask, which opens a window, app or file by name or starts a chat with the default agent |
 | Desktop | The computer's desktop on this screen, configured for exactly the space beside or between the bars, with Keyboard, AirPlay and Full Screen in the toolbar; while a TV shows the desktop, the phone's trackpad |
 | Agents | The Ask bar, approvals, tasks and the agent seat's windows |
 | Apps | Every desktop entry, the Shelf and Library |
@@ -1703,12 +1707,12 @@ Pinned and recent apps are kept on the phone per computer.
   `toolbarVerticalEdge` to extend the desktop under the top and bottom insets beside the
   bar. Both horizontal safe edges stay protected as the bar moves. The desktop is bounded
   and clipped to its measured content viewport; folding, rotation and tab changes report
-  that viewport again. Home's Open, Pinned and Recent rows receive the measured column
-  width and clip within it; recent file names and paths truncate within the same column.
+  that viewport again. Home's window strip and Pinned row receive the measured column
+  width and clip within it; file names and paths truncate within the same column.
   The Desktop toolbar’s Full Screen control opens the focused app card. No screen disables
   the vertical bar.
-- **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. Home's
-  AirPlay control remembers the AirPlay output the computer's sound last played on (from the
+- **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. The
+  AirPlay control (in Home's and the Desktop's AirPlay sheet) remembers the AirPlay output the computer's sound last played on (from the
   audio session's route) and, on a tap, switches the session to long-form video routing and
   calls `prepareRouteSelectionForPlayback`, so the system reconnects or offers a device as
   its Automatically AirPlay setting allows. Beside it is the system route picker

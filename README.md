@@ -58,15 +58,15 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 
 1. **Open Caboose.** The computer wakes, and a parked machine resumes with its memory
    rather than booting.
-2. **Tap an app.** The Home grid lists the computer's real Linux apps with their real
-   icons. Chromium, VS Code or the terminal opens full screen, decoded in hardware, with
-   touch, keyboard, trackpad and clipboard working both ways.
+2. **Tap an app.** Home shows the computer's open windows live, and Apps lists its real
+   Linux apps with their real icons. Chromium, VS Code or the terminal opens full screen,
+   decoded in hardware, with touch, keyboard, trackpad and clipboard working both ways.
 3. **Leave.** Background the app and the stream closes. After the idle timeout the
    computer parks with its memory. Come back tomorrow and everything is where it was.
 4. **Put it on the TV.** Connect a display and the Linux desktop moves to the big screen
    while the phone becomes its trackpad. You can also open the desktop on the phone or
    iPad itself.
-5. **Hand work to an agent.** Ask from the Ask bar. The task runs on the agent's own
+5. **Hand work to an agent.** Ask from Home or the Agents tab. The task runs on the agent's own
    seat, and its windows show up in an Agent space you can watch, take over and hand
    back.
 
