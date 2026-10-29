@@ -16,6 +16,8 @@ struct MainTabs: View {
         @Bindable var model = model
         let placement = HomeToday.tabPlacement(isPhone: UIDevice.current.userInterfaceIdiom == .phone,
                                                hasVerticalBar: barEdge != nil, width: width)
+        let desktopHidesBars = model.selectedTab == .desktop &&
+            (model.laptopDesktopActive || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil))
         TabView(selection: $model.selectedTab) {
             Tab("Home", systemImage: "house", value: ShellTab.home) {
                 HomeScreen().modifier(ShellTabChrome(placement: placement, tab: .home))
@@ -36,7 +38,7 @@ struct MainTabs: View {
                 }
             }
         }
-        .toolbarVisibility((model.selectedTab == .desktop && model.laptopDesktopActive) || placement != .system ? .hidden : .automatic, for: .tabBar)
+        .toolbarVisibility(desktopHidesBars || placement != .system ? .hidden : .automatic, for: .tabBar)
         .environment(\.shellTabPlacement, placement)
         .background { ShellWindowProbe().allowsHitTesting(false).accessibilityHidden(true) }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }

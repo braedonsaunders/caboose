@@ -9,7 +9,8 @@ import SwiftUI
 /// while the keyboard is up, as the system's vertical bar on iPhone Duo does, its tabs riding
 /// above the keyboard; it never takes the desktop's width away mid-typing. Both step aside
 /// for a window covering the Desktop. Where the system draws its vertical bar, its own tab
-/// bar is used and this draws nothing.
+/// bar is used and this draws nothing. Desktop's custom rail also hosts its actions so
+/// a horizontal toolbar does not reserve height above the stage.
 struct ShellTabChrome: ViewModifier {
     @Environment(AppModel.self) private var model
     let placement: HomeToday.TabPlacement
@@ -45,15 +46,27 @@ struct ShellTabChrome: ViewModifier {
                 .toolbarVisibility(.hidden, for: .tabBar)
                 .safeAreaInset(edge: .trailing, spacing: 0) {
                     if !immersive {
-                        ShellTabButtons(axis: .vertical)
-                            .frame(maxHeight: .infinity, alignment: .bottom)
-                            .padding(.vertical, 8)
-                            .padding(.horizontal, 6)
-                            .frame(width: ShellTabButtons.sidebarWidth)
+                        GeometryReader { proxy in
+                            ScrollView(.vertical) {
+                                VStack(spacing: 8) {
+                                    if tab == .desktop { DesktopRailControls() }
+                                    Spacer(minLength: 0)
+                                    ShellTabButtons(axis: .vertical)
+                                }
+                                // Padding is inside the measured rail; the keyboard
+                                // can shorten it without making controls unreachable.
+                                .frame(minHeight: max(0, proxy.size.height - 16))
+                                .padding(.vertical, 8)
+                                .frame(width: ShellTabButtons.sidebarWidth)
+                            }
+                            .scrollIndicators(.hidden)
+                            .frame(width: ShellTabButtons.sidebarWidth, height: proxy.size.height)
                             .glassEffect(.regular, in: .rect(cornerRadius: 26))
-                            .padding(.vertical, 8)
-                            .padding(.trailing, 8)
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                        }
+                        .frame(width: ShellTabButtons.sidebarWidth)
+                        .padding(.trailing, 8)
+                        .ignoresSafeArea(.container, edges: tab == .desktop ? [.top, .bottom] : [])
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
                 .animation(.snappy, value: immersive)

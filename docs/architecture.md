@@ -1743,7 +1743,11 @@ vertical bar, and on iPad, the tabs are the system's. On an iPhone whose bars ar
 the system's tab bar is hidden and the tabs sit at the bottom right
 (`HomeToday.tabPlacement`): a cluster beside the tab's own bottom control (Home's Ask) when
 the screen is under 600 points wide, else a sidebar on the trailing edge with the tabs at
-its foot. Every tab's toolbar ends with the Computer settings and a
+its foot. On Desktop the custom sidebar also contains its controls, settings and power;
+there is no horizontal navigation bar or system tab bar reserving a second strip. Its
+padding is inside its measured height, and its controls scroll when the keyboard leaves
+less room. Both native and custom Desktop sidebars reserve width only; the measured
+stage owns the full height beside them. Every tab's toolbar ends with the Computer settings and a
 lifecycle menu: Turn On (`POST /v1/session`) while parked or out of reach, Park
 (`POST /v1/session/park`) and, where `capabilities.restart` is true, Restart after
 confirmation (`POST /v1/computer/restart`). The host has no power-off. Host messages
@@ -1768,7 +1772,7 @@ Pinned and recent apps are kept on the phone per computer.
   (`toolbarVerticalCompressionBehavior(.prefersTabBar)`), gives Full Screen the lowest
   visibility priority and the Computer pair the highest, and reads
   `toolbarVerticalEdge` to extend the desktop under the top and bottom insets beside the
-  bar. Both horizontal safe edges stay protected as the bar moves. The desktop is bounded
+  bar. The custom Desktop sidebar uses the same vertical safe-area policy. Both horizontal safe edges stay protected as the bar moves. The desktop is bounded
   and clipped to its measured content viewport; folding, rotation and tab changes report
   that viewport again. Home's window strip and Pinned row receive the measured column
   width and clip within it; Home window previews fit their original aspect ratio within

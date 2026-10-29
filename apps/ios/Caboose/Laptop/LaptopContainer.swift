@@ -27,6 +27,7 @@ struct LaptopContainer<Content: View>: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
+    @Environment(\.shellTabPlacement) private var tabPlacement
     @State private var layoutActive = false
     @AppStorage("caboose.laptop.mode") private var mode = LaptopLayout.Mode.automatic.rawValue
     @State private var geometry = LaptopGeometry()
@@ -95,9 +96,10 @@ struct LaptopContainer<Content: View>: View {
             }
         }
         // Safe-area expansion belongs to the measured parent, never a clipped child.
-        // Tablet keeps the horizontal sidebar; Laptop owns the whole display and draws
-        // its navigation only below the hinge.
-        .ignoresSafeArea(.container, edges: layoutActive ? .all : (barEdge == nil ? [] : [.top, .bottom]))
+        // Both native and custom side rails reserve width, not height. Only Desktop
+        // uses the custom rail; app cards retain their own toolbar safe areas.
+        // Laptop owns the whole display and draws navigation below the hinge.
+        .ignoresSafeArea(.container, edges: layoutActive ? .all : (barEdge != nil || (!isCard && tabPlacement == .sidebar) ? [.top, .bottom] : []))
         .ignoresSafeArea(.keyboard, edges: .bottom)
     }
     private func updatePointerArea(active: Bool, frames: LaptopLayout.Frames) {

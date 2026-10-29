@@ -526,6 +526,13 @@ Trackpad Gestures guide with the mappings and platform limitations. With a conne
 monitor, the phone shows window previews above its keyboard/trackpad and leaves the monitor's
 workspace intact. Book posture and compact screens keep the ordinary layout in Automatic.
 
+In Tablet mode, Desktop's custom side rail contains its controls and tabs in one
+column and scrolls when the keyboard leaves less height. The native landscape rail
+is used where available. Both reserve width without a second horizontal toolbar or
+bottom tab strip. Run `sh apps/ios/scripts/check-desktop.sh` for rotation, keyboard,
+fullscreen and return-from-tab checks on a device. The measurement-to-guest and dock
+geometry regression is in `DeviceViewportTests` (`swift test --filter DeviceViewportTests`).
+
 Run `sh apps/ios/scripts/check-laptop.sh` for the physical Duo, keyboard and monitor checks.
 Pure fold/keyboard geometry is covered by `swift test --filter LaptopLayoutTests` in CabooseKit.
 

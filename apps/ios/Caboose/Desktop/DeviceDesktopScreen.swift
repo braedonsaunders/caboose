@@ -9,10 +9,13 @@ import UIKit
 /// Its actions sit in the toolbar, so on iPhone Duo they join the tab bar in the vertical bar
 /// on the side, which stays fully shown as on every tab. The desktop fills everything beside
 /// the vertical bar, or between horizontal bars, and the computer lays its windows out for
-/// exactly that space; when the bars change, so does the desktop. Full Screen opens the focused app as a native card. Behind it all, under the
+/// exactly that space; when the bars change, so does the desktop. With a custom sidebar,
+/// actions join the tabs in that rail and no horizontal toolbar takes stage height.
+/// Full Screen opens the focused app as a native card. Behind it all, under the
 /// bar as well, is the desktop's photograph with a sheer of the brand gradient.
 struct DesktopScreen: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.shellTabPlacement) private var tabPlacement
     @State private var showAirPlay = false
     @State private var laptopActive = false
 
@@ -40,14 +43,17 @@ struct DesktopScreen: View {
             // edge then belongs to the desktop alone.
             .toolbar(removing: .title)
             .toolbar {
-                if !laptopActive {
+                if !laptopActive && tabPlacement != .sidebar {
                     if model.phase == .ready { actions }
                     ComputerToolbar()
                 }
             }
             .keepsTabBarInVerticalBar()
-            .toolbarVisibility(immersive || laptopActive ? .hidden : .automatic, for: .navigationBar, .tabBar)
-            .statusBarHidden(immersive || laptopActive)
+            .toolbarVisibility(immersive || laptopActive || tabPlacement == .sidebar ? .hidden : .automatic, for: .navigationBar)
+            // A child automatic preference must not restore the system bar beneath
+            // the shell's custom tabs after rotation.
+            .toolbarVisibility(immersive || laptopActive || tabPlacement != .system ? .hidden : .automatic, for: .tabBar)
+            .statusBarHidden(immersive || laptopActive || tabPlacement == .sidebar)
             .persistentSystemOverlays(immersive || laptopActive ? .hidden : .automatic)
             .animation(.snappy, value: immersive)
             .sheet(isPresented: $showAirPlay) {
@@ -113,6 +119,46 @@ struct DesktopScreen: View {
     }
 
 
+}
+
+/// Desktop actions share the custom shell rail with its tabs when the system has
+/// horizontal bars. The native vertical toolbar continues to own landscape controls.
+struct DesktopRailControls: View {
+    @Environment(AppModel.self) private var model
+    @State private var showAirPlay = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if model.phase == .ready {
+                Menu {
+                    LaptopModeMenu()
+                    Button("AirPlay", systemImage: "airplay.video") { showAirPlay = true }
+                    if !model.externalDisplayActive, UIDevice.current.userInterfaceIdiom == .pad {
+                        @Bindable var model = model
+                        Picker("Arrangement", selection: $model.deviceDesktopStyle) {
+                            Label("Tiled", systemImage: "rectangle.split.3x1").tag(AppModel.DeviceDesktopStyle.tiled)
+                            Label("Free", systemImage: "macwindow.on.rectangle").tag(AppModel.DeviceDesktopStyle.free)
+                        }
+                    }
+                    Button("Wallpaper", systemImage: "photo.on.rectangle") { model.wallpaperPickerPresented = true }
+                    if WallpaperStore.shared.choice.usesLibrary {
+                        Button("Next Photograph", systemImage: "arrow.triangle.2.circlepath") { WallpaperStore.shared.next() }
+                    }
+                } label: { Image(systemName: "ellipsis").frame(width: 56, height: 44) }
+                .accessibilityLabel("Desktop controls")
+                Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible.toggle() }
+                    .frame(width: 56, height: 44)
+            }
+            Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
+                .frame(width: 56, height: 44)
+            LifecycleMenu().frame(width: 56, height: 44)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showAirPlay) {
+            AirPlaySheet().environment(model).presentationDetents([.medium])
+        }
+    }
 }
 
 /// The phone's own desktop, edge to edge. Beside a vertical bar it takes the full height and

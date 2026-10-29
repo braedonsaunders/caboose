@@ -4,6 +4,23 @@ set -eu
 cat <<'CHECK'
 Open Chromium, Thunar and a terminal on a signed device paired to a real computer.
 
+Portrait/landscape shell (Tablet mode, no external display):
+1. Keep the actual Desktop tab open with Chrome focused. Rotate the opened Duo
+   landscape -> portrait -> landscape. There is one side rail, with desktop
+   controls and tabs together; no second bottom tab bar or top toolbar strip.
+   Native landscape controls remain unchanged. Chrome fills the available height,
+   its full tab/address bars remain visible, and the dock stays at the bottom
+   beside the rail with no vacant band below it. On iPad repeat in tiled and Free:
+   Chrome and the dock use all space left by the native system bars.
+2. Show/hide the keyboard in portrait, then rotate with it shown. The dock stays
+   above the keyboard, the guest is resized once to the visible stage, and the
+   rail scrolls if needed to reach every control and tab. Dismiss the keyboard:
+   the original full-height viewport returns without drift.
+3. Visit Home/Apps and return; no duplicate tab bar appears. Enter/leave the
+   browser's fullscreen and the existing app card; controls and dock return once.
+   In Laptop mode verify the accepted upper app and lower keyboard/trackpad/combo
+   arrangement remains intact, then switch back to Tablet and repeat rotation.
+
 Switchyard (Desktop tab, no external display):
 1. On a closed/upright phone, move between columns using the dock. Open the Duo or
    rotate a large phone: two columns fit; an iPad offers thirds. Drag a gap and
