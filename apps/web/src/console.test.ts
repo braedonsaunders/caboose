@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildInviteLink, buildPairingLink, computeSettingsPatch, formatPairingCode, readSessionToken,
+  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildInviteLink, buildPairingLink, computeSettingsPatch, settingsSavePatch, formatPairingCode, readSessionToken,
   validateSettingsInput, willRequireColdRestart, writeSessionToken, type ComputerSettings,
 } from './api.js'
 import { navigationGroups, parseRoute, routeHref, sidebarPath } from './navigation.js'
@@ -25,6 +25,14 @@ describe('settings', () => {
   it('sends only what changed', () => {
     expect(computeSettingsPatch(settings, { ...settings, name: ' Studio ', vcpus: 4 })).toEqual({ vcpus: 4 })
     expect(computeSettingsPatch(settings, settings)).toEqual({})
+  })
+
+  it('does not send a stale preset with an unrelated edit', () => {
+    const external = { ...settings, memoryMb: 8192, vcpus: 8 }
+    const nameOnly = computeSettingsPatch(external, { ...external, name: 'New name' })
+    expect(settingsSavePatch(nameOnly, 'standard')).toEqual({ name: 'New name' })
+    expect(settingsSavePatch({ name: 'New name', memoryMb: 4096, vcpus: 4 }, 'standard')).toEqual({ name: 'New name', size: 'standard' })
+    expect(settingsSavePatch({ vcpus: 3 }, 'custom')).toEqual({ vcpus: 3 })
   })
 
   it('knows when new resources need a cold restart', () => {
