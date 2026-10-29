@@ -42,6 +42,7 @@ jobs:
           python3 apps/host/scripts/tests/test-migrate-disk.py
           python3 apps/host/scripts/tests/test-parked-appliance.py
           python3 apps/host/scripts/tests/check-host-lock.py
+          python3 apps/host/scripts/tests/test-offline-recovery.py
       - run: pnpm --filter caboose-web test
       - run: pnpm --filter caboose-web build
 

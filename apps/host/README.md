@@ -701,3 +701,15 @@ It preserves any memory inode pinned by a descendant. For an incomplete source
 with no pins, it reports the directory to move aside before retrying. A source
 without a valid build receipt requires manual inspection. Never remove a source
 or child memory inode while a VMM may still map it.
+
+## Console and whole-host recovery
+
+Administrators inspect and manually capture parked disks or confirm a local capture restore
+through the separate management recovery API documented in [architecture](../../docs/architecture.md#console-recovery).
+This uses the existing opt-in parked Files and disk-helper prerequisites. Phone vault keys
+remain on devices. Local captures are not independent server backups.
+
+The operator's [offline recovery procedure](scripts/RECOVERY.md) covers protected directory
+capture, bounded hash verification, restoration to empty staging, identity databases,
+image dependencies, secrets and isolated restore drills. Run its focused checks with
+`python3 scripts/tests/test-offline-recovery.py`.

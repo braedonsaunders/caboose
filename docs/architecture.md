@@ -1187,6 +1187,38 @@ captures) are shared and deallocated with it; a clone that has diverged keeps it
 - `apps/host/disk/scripts/check-reflink.sh` checks the helper against a real loop-mounted XFS
   or Btrfs filesystem.
 
+### Console recovery
+
+The operator and a tenant's administrators manage local disk captures through
+`/v1/computers/:id/recovery`. The server checks the computer's tenant before routing;
+phones cannot use this API. `GET` returns availability/reason, parked capture readiness,
+retention, capture metadata and the last management operation. No disk bytes, device
+keys, manifests or protected configuration are exported by management routes.
+
+`POST /capture` manually captures a coherent parked Files view without enrolling a phone.
+A running computer or one without a coherent view is refused. The existing parked-work
+hold protects the reflink; hashing runs against the immutable clone. No running disk is
+copied and no guest filesystem is mounted on the host. Retention keeps the newest two
+captures plus captures pinned by phone downloads; deleting the computer deletes them.
+
+`POST /captures/:capture/restore` requires `{ confirm: "<capture id>" }`. It rebuilds and
+verifies the disk from available host data, checks matching image dependencies, then uses
+the guarded restart and journaled disk replacement. It refuses overlapping capture/restore
+work and an in-progress staged phone restore. The UI asks for typed destructive confirmation.
+Management operation state is saved privately; an interrupted operation is reported after
+host restart. Failure details in the console are sanitized; operator logs hold diagnostics.
+A failed staged restore may require operator inspection before retrying; staging expires
+under the existing restore retention rules. These routes do not change phone authorization
+or decrypt the phone's vault.
+
+Host captures share the server's failure domain and do not protect host identity, secrets
+or external dependencies. Whole-host recovery uses the explicit
+[offline capture, verification and restore procedure](../apps/host/scripts/RECOVERY.md).
+The tool copies protected directories only while the Linux host lock is held, and restores
+into an absent staging directory with an explicit byte bound. External PostgreSQL,
+container volumes and cold-tier storage require the operator steps in that procedure.
+No new backup scheduler, remote storage or automatic restore is enabled.
+
 ### Phone backups
 
 A phone signed in to a microVM computer can keep backups of the computer's disk. Backups need

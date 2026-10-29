@@ -136,3 +136,9 @@ remain on the host.
 
 Computer creation and settings offer host-provided sizes alongside custom CPU and memory.
 GPU access uses the host GPU and is shared; availability reflects host configuration.
+
+The computer Backups panel shows management recovery metadata, retention and operation
+results, captures a coherent parked disk on request, and requires typed confirmation before
+replacing its disk. It explains the distinction between local recovery, device-encrypted
+phone backups and independent whole-server backups. The panel uses the scoped management
+recovery API and AppKit controls.
