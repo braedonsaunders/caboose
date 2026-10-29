@@ -130,8 +130,21 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   async function startDisplay(service: string, port: number): Promise<void> {
     await command('/bin/sh', ['-c', 'systemctl start "$1" && caboose-display-ready 60 "$2"', 'sh', service, String(port)], 240_000)
   }
+  let displayReady: Promise<void> | undefined
+  async function ensureOwnerDisplay(): Promise<void> {
+    if (!displayReady) {
+      displayReady = (async () => {
+        await startDisplay('caboose-display.service', OWNER_DISPLAY_PORT)
+        const env = parseEnvFile(await command('/bin/cat', [DISPLAY_ENV_PATH]))
+        if (!env.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
+        launchEnv = env
+      })().catch(error => { displayReady = undefined; throw error })
+    }
+    return displayReady
+  }
   const controller: Controller = {
     componentsMode: 'vm',
+    ensureOwnerDisplay,
     get displayUrl() { return endpoint(OWNER_DISPLAY_PORT, 'ws') },
     get agentDisplayUrl() { return endpoint(AGENT_DISPLAY_PORT, 'ws') },
     fileService: () => ({ url: endpoint(14700, 'http'), token: displayToken }),
@@ -148,7 +161,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     activeResources: () => desk || existsSync(snapshotPath) ? resources : null,
     hasSavedState: () => Boolean(desk) || existsSync(snapshotPath),
     lastError: () => restartWarning,
-    async wake(): Promise<Session> {
+    async wake(options): Promise<Session> {
       const desired = settings()
       await Promise.all([
         ...(nativeMac || dependencies.deviceExists ? [] : [access('/dev/kvm', constants.R_OK | constants.W_OK)]),
@@ -177,9 +190,9 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         }
         displayToken = randomBytes(32).toString('hex')
         await command('/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
-        await startDisplay('caboose-display.service', OWNER_DISPLAY_PORT)
-        launchEnv = parseEnvFile(await command('/bin/cat', [DISPLAY_ENV_PATH]))
-        if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
+        displayReady = undefined
+        launchEnv = []
+        if (options?.display !== 'headless') await ensureOwnerDisplay()
         clearHeartbeat()
         heartbeat = setInterval(() => {
           try { desk?.renewLease(APPKIT_LEASE_MS) } catch (error) { console.error('Desk lease renewal failed:', error) }
@@ -191,6 +204,8 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         await closeRelays().catch(failure => console.error('Failed to close guest relays:', failure))
         await host.suspend(id).catch(failure => console.error('Failed to park after wake error:', failure))
         desk = undefined
+        displayReady = undefined
+        launchEnv = []
         throw error
       }
     },
@@ -199,6 +214,8 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       await closeRelays()
       await host.suspend(id)
       desk = undefined
+      displayReady = undefined
+      launchEnv = []
       displayToken = ''
       if (!existsSync(snapshotPath)) {
         throw new Error(host.stats().lastError ?? 'Memory snapshot was not created')
@@ -222,6 +239,8 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       await closeRelays()
       await host.shutdown(id)
       desk = undefined
+      displayReady = undefined
+      launchEnv = []
       displayToken = ''
       // A computer parked before this host process started is unknown to appkit-desk,
       // so its snapshot is removed here too.
@@ -235,6 +254,8 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       await closeRelays()
       await host.destroy(id).catch(error => console.error(`Desk ${id} could not be destroyed cleanly:`, error))
       desk = undefined
+      displayReady = undefined
+      launchEnv = []
       displayToken = ''
       resources = null
       // A computer parked before this host process started is unknown to appkit-desk.
@@ -251,7 +272,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         if (page.length < 10) return apps
       }
     },
-    async launch(id: string, path?: string): Promise<void> { await guestApps('launch', id, path) },
+    async launch(id: string, path?: string): Promise<void> { await ensureOwnerDisplay(); await guestApps('launch', id, path) },
   }
   return controller
 }

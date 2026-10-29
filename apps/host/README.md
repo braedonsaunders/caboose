@@ -495,3 +495,38 @@ requested and confirmed selection with `GET /v1/agent/tasks/:id/models`; `PUT` w
 are idle. Providers without an advertisement omit `models`. The runner checks the id
 against fresh session options before prompting; the host does not infer models from keys
 or environment variables. See `guest/agentd/README.md` for persistence and ACP negotiation.
+
+
+### Efficiency measurements
+
+`python3 apps/host/scripts/efficiency-baseline.py --url https://example.test/v1 --token-file /private/owner-token`
+records status-request latency as JSON Lines without waking the computer. Run from the repository
+root. The URL can instead end in `/v1/computers/<id>` for an authorized computer.
+The script reads the token from the named file, refuses redirects, and omits response bodies,
+addresses and credentials from its output.
+
+`--operation files` measures a directory listing (and wakes if parked); `--operation session`
+measures owner-display readiness; `--operation park` explicitly parks the computer. Use these
+only on an authorized disposable test computer. No operation cold-restarts or deletes it.
+`--repeat N` repeats the selected operation; it does not park between samples. Each sample
+records before/after lifecycle state, status and elapsed time, so resident requests are not
+mislabelled as snapshot restores. Record the runtime, revisions, hardware, image, workload,
+settings and whether a parked snapshot exists alongside the results. A session response does
+not measure time to the phone's first frame.
+
+On Linux, `--pid <VMM PID> --sample-seconds 10` additionally samples that process's RSS, PSS,
+private dirty memory, swap and CPU ticks. CPU seconds are the tick delta divided by
+`ticksPerSecond`; discard comparisons when `startTicks` changes. These samples exclude
+helper processes and do not establish total host CPU cost. `--snapshot <directory>` records
+logical and allocated snapshot bytes. Missing process metrics are marked unavailable.
+Compare separate cold, restored, resident, headless-to-display and parked runs with the same
+workload; no measured performance baseline is bundled with the repository.
+
+MicroVM file relays, Craft jobs and routines omit owner-display startup. Their existing
+service checks and leases still apply. Owner GUI operations and terminals prepare the owner
+seat on demand; restored GUI applications stay running on a headless wake. To check on a
+real disposable host: cold-start via a file listing, verify the owner unit is inactive while
+files work, request a session and verify one boot and an authenticated display hello, park,
+then repeat the file/session sequence and check the open windows survive. Repeat after a
+host-process restart, and verify terminal-launched GUI programs, agent-seat isolation and a
+failed display preparation followed by retry. The container startup behavior is unchanged.

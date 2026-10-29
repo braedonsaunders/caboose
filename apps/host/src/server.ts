@@ -1,3 +1,4 @@
+import { needsOwnerDisplay } from './wake-policy.js'
 import { createHash } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
 import { parseCraftRequest, runCraft } from './craft-jobs.js'
@@ -91,9 +92,9 @@ type Admission = (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'
 /** A controller whose wakes are admitted first. */
 function withAdmission(controller: Controller, admit: () => Promise<void>): Controller {
   const gated = Object.create(controller) as Controller
-  gated.wake = async () => {
+  gated.wake = async options => {
     await admit()
-    return controller.wake()
+    return controller.wake(options)
   }
   return gated
 }
@@ -159,7 +160,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       },
       acquire: async () => {
         const release = computer.acquire()
-        try { await computer.wake(); await ensureFilesReady(); return release } catch (error) { release(); throw error }
+        try { await computer.wake({ display: 'headless' }); await ensureFilesReady(); return release } catch (error) { release(); throw error }
       },
       lookup: async taskId => {
         await agents.restore()
@@ -288,6 +289,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const phoneSockets = new Map<WebSocket, string>()
 
   async function handle(request: IncomingMessage, response: ServerResponse, path: string, principal: Principal): Promise<unknown> {
+    if (needsOwnerDisplay(request.method, path)) await computer.run(async () => { await controller.ensureOwnerDisplay?.() })
     if (path === '/v1/agent/routines' || path.startsWith('/v1/agent/routines/')) {
       const routines = await routinesReady
       if (!routines) return json(response, 503, { error: routineError ?? 'Agent routines are unavailable' })
@@ -363,7 +365,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         await ensureFilesReady()
         if (!controller.fileService) throw new AgentUnavailableError()
         await proxyFiles(controller.fileService(), request, response)
-      })
+      }, { display: 'headless' })
     }
     if (path === '/v1/activities' && request.method === 'POST') {
       if (!activities) return json(response, 503, { error: 'Live Activities unavailable' })
@@ -464,7 +466,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       craftJobs.add(input.job)
       craftBusy++
       try {
-        await computer.wake()
+        await computer.wake({ display: 'headless' })
         return await leased(async () => {
           const listing = await appCatalog.list()
           const app = listing.apps.find(item => item.id === id)
@@ -644,7 +646,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const release = computer.acquire()
     socket.once('close', release)
     pendingTerminals.set(client, (pendingTerminals.get(client) ?? 0) + 1)
-    const ready = computer.acceptsConnections ? Promise.resolve() : computer.wakeAndRun(async () => {})
+    const ready = computer.acceptsConnections
+      ? computer.run(async () => { await controller.ensureOwnerDisplay?.() })
+      : computer.wakeAndRun(async () => {})
     ready.then(ensureTerminalReady).then(service => {
       if (socket.destroyed) return
       if (!computer.acceptsConnections) return refuse('409 Conflict')
@@ -699,7 +703,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
             () => client.close(1011, 'agent seat unavailable'))
           return
         }
-        relay(client, controller.displayUrl)
+        client.pause()
+        computer.run(async () => { await controller.ensureOwnerDisplay?.() }).then(
+          () => { if (client.readyState === WebSocket.OPEN) relay(client, controller.displayUrl) },
+          () => client.close(1011, 'owner display unavailable'))
       })
     } catch { release(); socket.destroy() }
   }

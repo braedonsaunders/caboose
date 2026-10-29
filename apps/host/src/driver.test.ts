@@ -107,7 +107,12 @@ it('serves the owner display and starts the agent seat on demand', async () => {
       vmmPath: process.execPath, runtime: 'microvm', containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false },
     { backend, network: async () => {}, deviceExists: () => true,
       snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} } })
-    const session = await controller.wake()
+    const session = await controller.wake({ display: 'headless' })
+    expect(commands.some(command => command.includes('caboose-display-ready'))).toBe(false)
+    expect(commands.some(command => command.includes('/run/caboose/display-token'))).toBe(true)
+    expect(controller.guest()?.ownerEnv).toEqual([])
+    await Promise.all([controller.ensureOwnerDisplay!(), controller.ensureOwnerDisplay!()])
+    expect(commands.filter(command => command.includes('caboose-display-ready')).length).toBe(1)
     expect(session.display.protocol).toBe('caboose-display')
     expect(controller.displayUrl).toMatch(/:14600\/$/)
     expect(commands.some(command => command.includes('caboose-display-ready 60') && command.endsWith('caboose-display.service 14600'))).toBe(true)

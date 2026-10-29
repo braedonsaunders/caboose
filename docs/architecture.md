@@ -128,7 +128,7 @@ endpoints, phone handoff and the agent runner) is a bundle listed in `guest/comp
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
 
-- After each wake, once the owner's display is ready, the host hashes the bundled files in
+- After each wake, once the guest command channel is ready, the host hashes the bundled files in
   manifest order and compares the hash with `/usr/local/share/caboose/components.version`
   in the guest. On a mismatch it runs the installer as root over the guest channel (`vm` or
   `container` mode). The installer adds missing Debian dependencies and preserves working
@@ -259,7 +259,7 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | Session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus` |
 | Notification endpoint | `caboose-notification-daemon.service` | `caboose-agent-notification-daemon.service` |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
-| Started | At every wake | On demand: by an agent task, or by a client opening `/v1/display?seat=agent` |
+| Started | On owner-display demand | On demand: by an agent task, or by a client opening `/v1/display?seat=agent` |
 
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
@@ -303,7 +303,7 @@ It exits 0 once the instance on `PORT` answers a hello made with the current dis
 token. The host starts the owner's display with
 `systemctl start caboose-display.service && caboose-display-ready 60 14600` (microVM) or
 `caboose-session start` and `ready` (container), then reads `/run/caboose/display.env`. A
-wake fails if the display writes no launch environment.
+display preparation fails if the display writes no launch environment.
 
 ### Display token
 
@@ -555,8 +555,15 @@ The computer has one state: `parked`, `waking`, `running`, `parking`, `restartin
 `error`. Wake, park and restart are serialized, so none can race another or a launch.
 
 - **Wake** (`POST /v1/session`, and routes that wake on demand) starts or restores the
-  computer, configures its network and clock, writes the display token, starts the file
-  service, starts the owner's display and reads its launch environment. A microVM whose
+  computer, configures its network and clock and writes the display token. File relays,
+  Craft jobs and routines wake a microVM without starting the owner's display; the component
+  readiness gate still starts and checks the file service. A headless resume keeps existing
+  applications running. Owner sessions, display connections, launches, screen operations,
+  URL opens and display sign-in prepare the owner display and read its launch environment
+  on demand, including when the guest is already running. Terminal connections also prepare
+  it to preserve their GUI launch environment. Promotion preserves the token and residency;
+  concurrent display preparation shares one attempt and a failed attempt can be retried.
+  Containers retain their existing session startup. A microVM whose
   snapshot cannot be restored is reported as an error rather than cold-booted.
 - **Leases.** Each open display, control or terminal WebSocket holds a lease, as do running agent
   tasks, catalog operations, Craft jobs, agent installs and sign-ins, and each `/v1/fs`

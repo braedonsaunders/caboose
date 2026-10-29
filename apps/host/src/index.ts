@@ -111,14 +111,14 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
  */
 function withImage(controller: Controller, provisioner: ImageProvisioner): Controller {
   const gated = Object.create(controller) as Controller
-  gated.wake = async () => {
+  gated.wake = async options => {
     // Checking for an image that is present takes moments; a download never holds a wake open.
     const ensured = provisioner.ensure().catch(() => undefined)
     await Promise.race([ensured, new Promise(resolve => setTimeout(resolve, 1000).unref())])
     const status = provisioner.status()
     if (status.state === 'fetching') throw new ComputerConflictError(describeImage(status))
     if (status.state === 'failed') throw new Error(describeImage(status))
-    return controller.wake()
+    return controller.wake(options)
   }
   gated.stats = () => ({ ...(controller.stats() as object), image: provisioner.status() })
   return gated

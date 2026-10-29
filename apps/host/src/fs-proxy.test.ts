@@ -192,3 +192,36 @@ it('signals control clients when the guest change anchor advances', async () => 
   await vi.waitFor(() => expect(events).toContainEqual({ type: 'fs.changed', anchor: 'epoch:2' }), { timeout: 3000 })
   socket.terminate()
 })
+
+
+it('wakes files headlessly then promotes a session without another boot or token change', async () => {
+  const upstream = createServer((req, res) => {
+    expect(req.headers.authorization).toBe('Bearer wake-token')
+    res.end('{"items":[]}')
+  })
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
+  cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
+  const wake = vi.fn(async () => ({ state: 'running', display: { path: '/v1/display', token: 'wake-token', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 512, vcpus: 1 } }))
+  const ensureOwnerDisplay = vi.fn(async () => {})
+  const controller: Controller = {
+    wake, ensureOwnerDisplay, park: async () => {}, stats: () => ({}), apps: async () => [], launch: async () => {},
+    displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined,
+    activeResources: () => null, hasSavedState: () => false,
+    fileService: () => ({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'wake-token' }),
+  }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 512, vcpus: 1, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  cleanup.unshift(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const headers = { authorization: 'Bearer owner' }
+  const files = await fetch(`${base}/v1/fs/list`, { headers })
+  expect(files.status).toBe(200); await files.text()
+  expect(wake).toHaveBeenCalledWith({ display: 'headless' })
+  expect(ensureOwnerDisplay).not.toHaveBeenCalled()
+  const session = await fetch(`${base}/v1/session`, { method: 'POST', headers })
+  expect(session.status).toBe(200)
+  expect((await session.json()).display.token).toBe('wake-token')
+  expect(ensureOwnerDisplay).toHaveBeenCalledOnce()
+  expect(wake).toHaveBeenCalledOnce()
+})

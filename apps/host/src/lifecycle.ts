@@ -1,8 +1,11 @@
 /** Serializes a computer's transitions and keeps it resident while clients hold leases. */
 export type ComputerState = 'parked' | 'waking' | 'running' | 'parking' | 'restarting' | 'error'
 
+export interface WakeOptions { display?: 'owner' | 'headless' }
+
 export interface ComputerDriver<T> {
-  wake(): Promise<T>
+  wake(options?: WakeOptions): Promise<T>
+  ensureOwnerDisplay?(): Promise<void>
   park(): Promise<void>
   restart?(): Promise<T>
 }
@@ -69,20 +72,22 @@ export class ComputerLifecycle<T> {
     this.idleTimer.unref()
   }
 
-  wake(): Promise<T> {
+  wake(options?: WakeOptions): Promise<T> {
     if (this.retired) return Promise.reject(new ComputerConflictError('Computer is being deleted'))
     this.clearIdle()
-    return this.serialize(() => this.wakeNow())
+    return this.serialize(() => this.wakeNow(options))
   }
 
-  private async wakeNow(): Promise<T> {
+  private async wakeNow(options?: WakeOptions): Promise<T> {
     if (this.current === 'running' && this.value !== undefined) {
-      this.armIdle()
+      try {
+        if (options?.display !== 'headless') await this.driver.ensureOwnerDisplay?.()
+      } finally { this.armIdle() }
       return this.value
     }
     this.setState('waking')
     try {
-      this.value = await this.driver.wake()
+      this.value = await this.driver.wake(options)
       this.failure = null
       this.setState('running')
       this.armIdle()
@@ -95,12 +100,12 @@ export class ComputerLifecycle<T> {
   }
 
   /** Wake and perform an operation in the same lifecycle turn, holding a lease throughout. */
-  wakeAndRun<R>(work: () => Promise<R>): Promise<R> {
+  wakeAndRun<R>(work: () => Promise<R>, options?: WakeOptions): Promise<R> {
     if (this.retired) return Promise.reject(new ComputerConflictError('Computer is being deleted'))
     if (this.restartPending) return Promise.reject(new ComputerConflictError('Computer is restarting'))
     const release = this.acquire()
     return this.serialize(async () => {
-      await this.wakeNow()
+      await this.wakeNow(options)
       return work()
     }).finally(release)
   }

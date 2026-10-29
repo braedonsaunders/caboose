@@ -157,3 +157,36 @@ describe('bearer authentication', () => {
     expect(authenticate('Bearer x', '')).toBe(false)
   })
 })
+
+it('promotes a headless residency without rebooting or rotating its session', async () => {
+  let finish!: () => void
+  const display = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  const driver = { wake: vi.fn(async () => 'same-token'), ensureOwnerDisplay: display, park: vi.fn(async () => {}) }
+  const computer = new ComputerLifecycle(driver, 60_000)
+  await computer.wakeAndRun(async () => {}, { display: 'headless' })
+  expect(driver.wake).toHaveBeenCalledWith({ display: 'headless' })
+  expect(display).not.toHaveBeenCalled()
+  const promoted = computer.wake()
+  await vi.waitFor(() => expect(display).toHaveBeenCalledOnce())
+  const parked = computer.park()
+  expect(driver.park).not.toHaveBeenCalled()
+  finish()
+  expect(await promoted).toBe('same-token')
+  await parked
+  expect(driver.wake).toHaveBeenCalledOnce()
+  expect(driver.park).toHaveBeenCalledOnce()
+})
+
+it('keeps headless work available and retries a failed display promotion', async () => {
+  const driver = { wake: vi.fn(async () => 'desk'), ensureOwnerDisplay: vi.fn().mockRejectedValueOnce(new Error('display failed')).mockResolvedValue(undefined), park: vi.fn(async () => {}) }
+  const computer = new ComputerLifecycle(driver, 60_000)
+  await computer.wake({ display: 'headless' })
+  await expect(computer.wake()).rejects.toThrow('display failed')
+  expect(computer.state).toBe('running')
+  await computer.wakeAndRun(async () => {}, { display: 'headless' })
+  expect(driver.ensureOwnerDisplay).toHaveBeenCalledOnce()
+  await computer.wake()
+  expect(driver.ensureOwnerDisplay).toHaveBeenCalledTimes(2)
+  expect(driver.wake).toHaveBeenCalledOnce()
+  await computer.park()
+})
