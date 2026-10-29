@@ -8,6 +8,7 @@ struct WindowDrop: ViewModifier {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
+    var presentedSize: CGSize? = nil
     @State private var error: String?
 
     func body(content: Content) -> some View {
@@ -20,12 +21,25 @@ struct WindowDrop: ViewModifier {
                 for (provider, representation) in accepted {
                     switch representation {
                     case .text:
+                        guard let targetSession = model.session,
+                              targetSession.windows[window.id] === window else { return false }
+                        let targetFrame = window.frame
+                        let position: CGPoint
+                        if let presentedSize {
+                            let mapping = DesktopGeometry.SurfaceMapping(
+                                shown: CGRect(origin: .zero, size: presentedSize), remote: targetFrame.size)
+                            guard let mapped = mapping.point(point) else { return false }
+                            position = mapped
+                        } else {
+                            position = CGPoint(x: point.x * pixelsPerPoint, y: point.y * pixelsPerPoint)
+                        }
                         _ = provider.loadObject(ofClass: NSString.self) { value, failure in
                             Task { @MainActor in
                                 guard let text = value as? String else { error = failure?.localizedDescription ?? "Could not read the dropped text."; return }
-                                guard let session = model.session, session.windows[window.id] != nil else { error = "The window is no longer connected."; return }
+                                guard let session = model.session, session === targetSession,
+                                      session.state == .ready, session.windows[window.id] === window,
+                                      window.frame == targetFrame else { error = "The window changed before the drop finished. Try dropping again."; return }
                                 session.focus(window)
-                                let position = CGPoint(x: point.x * pixelsPerPoint, y: point.y * pixelsPerPoint)
                                 session.pointerButton(in: window, button: 1, pressed: true, at: position)
                                 session.pointerButton(in: window, button: 1, pressed: false, at: position)
                                 session.type(text, in: window)

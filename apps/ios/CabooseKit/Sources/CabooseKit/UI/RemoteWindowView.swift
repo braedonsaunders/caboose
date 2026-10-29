@@ -740,10 +740,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             scrollUsesDirectTouch = gesture.numberOfTouches > 0
             let anchor = lastPointer
             let scale = pixelsPerPoint
+            let inputBounds = bounds
+            let remoteSize = remoteWindow.frame.size
             scrollDriver.begin(at: now - 1.0 / 120) { [weak self, weak session, weak remoteWindow] delta in
                 guard let self, let session, let remoteWindow, self.isInteractive,
                       self.window != nil, self.session === session, self.remoteWindow === remoteWindow,
-                      session.state == .ready, session.windows[remoteWindow.id] === remoteWindow else { return false }
+                      session.state == .ready, session.windows[remoteWindow.id] === remoteWindow,
+                      self.bounds == inputBounds, self.pixelsPerPoint == scale,
+                      remoteWindow.frame.size == remoteSize else { return false }
                 session.scroll(in: remoteWindow, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
                 return true
             }
