@@ -47,29 +47,32 @@ export function events(buffer) {
 }
 
 export function createProxy({ read = descriptor, fetcher = fetch, write = line => process.stdout.write(line + '\n'), timeoutMs = TIMEOUT_MS } = {}) {
-  let session = null
-  let protocol = null
-  let identity = null
+  // The session belongs to one account's endpoint. A request answered after the account
+  // changed is never let back in: neither its session nor its reply.
+  let state = null
   const fail = (id, text) => { if (id !== undefined && id !== null) write(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: text } })) }
   async function exchange(message, target) {
     const id = message.id
-    // A session belongs to one account's endpoint; a changed account starts afresh.
-    if (identity !== target.identity) { session = null; protocol = null; identity = target.identity }
+    if (!state || state.identity !== target.identity) state = { identity: target.identity, session: null, protocol: null }
+    const current = state
+    const changed = () => state !== current
     const response = await fetcher(target.url, {
       method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs), body: JSON.stringify(message),
       headers: { authorization: `Bearer ${target.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream',
-        ...(session ? { 'mcp-session-id': session } : {}), ...(protocol ? { 'mcp-protocol-version': protocol } : {}) },
+        ...(current.session ? { 'mcp-session-id': current.session } : {}), ...(current.protocol ? { 'mcp-protocol-version': current.protocol } : {}) },
     })
-    if (response.status === 404 && session) { session = null; protocol = null; return fail(id, 'The MCP Library session ended; ask again.') }
+    if (changed()) { await response.body?.cancel().catch(() => {}); return fail(id, 'The MCP Library changed while answering; ask again.') }
+    if (response.status === 404 && current.session) { current.session = null; current.protocol = null; return fail(id, 'The MCP Library session ended; ask again.') }
     if (response.status === 401 || response.status === 403) return fail(id, "The MCP Library's access has expired. Caboose renews it within the hour.")
     if (response.status === 202 || response.status === 204) return
     if (!response.ok) return fail(id, `The MCP Library answered ${response.status}.`)
     const sessionHeader = response.headers.get('mcp-session-id')
-    if (sessionHeader && /^[\x21-\x7e]{1,200}$/.test(sessionHeader)) session = sessionHeader
+    if (sessionHeader && /^[\x21-\x7e]{1,200}$/.test(sessionHeader)) current.session = sessionHeader
     const stream = String(response.headers.get('content-type') ?? '').includes('text/event-stream')
     let answered = false
     const deliver = reply => {
-      if (message.method === 'initialize' && reply.id === id && typeof reply.result?.protocolVersion === 'string') protocol = reply.result.protocolVersion.slice(0, 40)
+      if (changed()) throw new Error('changed')
+      if (message.method === 'initialize' && reply.id === id && typeof reply.result?.protocolVersion === 'string') current.protocol = reply.result.protocolVersion.slice(0, 40)
       if (reply.id === id && ('result' in reply || 'error' in reply)) answered = true
       write(JSON.stringify(reply))
     }
@@ -90,6 +93,7 @@ export function createProxy({ read = descriptor, fetcher = fetch, write = line =
         }
       } finally { await reader.cancel().catch(() => {}) }
     }
+    if (changed()) return fail(id, 'The MCP Library changed while answering; ask again.')
     if (stream) events(buffer + '\n\n').found.forEach(deliver)
     else messages(response.headers.get('content-type'), buffer).forEach(deliver)
     if (id !== undefined && id !== null && !answered) fail(id, 'The MCP Library did not answer.')

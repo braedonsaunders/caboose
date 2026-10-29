@@ -135,7 +135,11 @@ final class McpCenter {
             account = answer
             apply(connections: [], limit: limit)
         } catch {
-            if hostGeneration == generation { self.error = error.localizedDescription }
+            guard hostGeneration == generation else { return }
+            self.error = error.localizedDescription
+            // An unfinished disconnect leaves the account in a state the Library shows.
+            await loadAccount()
+            await loadConnections(refresh: false)
         }
     }
 

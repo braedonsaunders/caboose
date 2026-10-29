@@ -78,7 +78,16 @@ public struct McpSearchPage: Decodable, Sendable {
 public struct McpAccount: Decodable, Equatable, Sendable {
     public let connected: Bool
     public let namespace: String?
-    public init(connected: Bool, namespace: String?) { self.connected = connected; self.namespace = namespace }
+    /// A disconnect Smithery could not finish: agents have no access until it does.
+    public let disconnecting: Bool
+    public init(connected: Bool, namespace: String?, disconnecting: Bool = false) { self.connected = connected; self.namespace = namespace; self.disconnecting = disconnecting }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: Keys.self)
+        connected = try values.decode(Bool.self, forKey: .connected)
+        namespace = try values.decodeIfPresent(String.self, forKey: .namespace)
+        disconnecting = try values.decodeIfPresent(Bool.self, forKey: .disconnecting) ?? false
+    }
+    private enum Keys: String, CodingKey { case connected, namespace, disconnecting }
 }
 
 /// A setting a server asked for before it can connect.

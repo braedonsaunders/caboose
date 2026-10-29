@@ -123,4 +123,11 @@ struct McpLibraryTests {
         let marked = servers.marking([McpConnection(id: "cb-1", server: "brave", name: "Brave", status: .checking)])
         #expect(marked.map(\.connection) == ["cb-1", nil])
     }
+
+    @Test func anAccountSaysWhenItsDisconnectDidNotFinish() throws {
+        let old = try JSONDecoder().decode(McpAccount.self, from: Data(#"{"connected":true,"namespace":"space"}"#.utf8))
+        #expect(old == McpAccount(connected: true, namespace: "space"))
+        let stuck = try JSONDecoder().decode(McpAccount.self, from: Data(#"{"connected":true,"namespace":"space","disconnecting":true}"#.utf8))
+        #expect(stuck.disconnecting)
+    }
 }

@@ -15,6 +15,7 @@ import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import type { Architecture } from './app-catalog-data.js'
 import type { FlathubIndex } from './flathub.js'
 import { McpLibrary } from './mcp-library.js'
+import { replaceGuestFile } from './guest-private-file.js'
 import type { SmitheryCatalog } from './smithery.js'
 import type { CraftReleases } from './releases.js'
 import type { RuntimeDepot } from './depot.js'
@@ -146,8 +147,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       writeFile: async (relative, data) => {
         const service = controller.fileService?.()
         if (!service) throw new AgentUnavailableError()
-        const response = await fetch(`${service.url}/content?path=${encodeURIComponent(relative)}`, { method: 'PUT', body: new Uint8Array(data), headers: { authorization: `Bearer ${service.token}`, 'content-length': String(data.length) }, signal: AbortSignal.timeout(15_000) })
-        if (!response.ok) throw new Error(`The computer did not take its MCP Library access (${response.status})`)
+        await replaceGuestFile(service, relative, data)
       } })
     : undefined
   // Installed apps update once a day while the computer runs; a parked computer is not woken.

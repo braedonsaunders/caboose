@@ -92,6 +92,32 @@ describe('the Library proxy', () => {
     expect(s.sent[1].headers['mcp-session-id']).toBeUndefined()
     expect(s.sent[1].headers['mcp-protocol-version']).toBeUndefined()
   })
+  it('lets nothing from a request answered after the account changed into the new session', async () => {
+    const written = [], sent = []
+    let target = { url: 'https://mcp.smithery.run/space', token: 'old-token-123', identity: 'old' }
+    let releaseOld
+    const oldAnswer = new Promise(resolve => { releaseOld = resolve })
+    const fetcher = async (_url, init) => {
+      sent.push({ token: init.headers.authorization, session: init.headers['mcp-session-id'] })
+      if (init.headers.authorization.includes('old-token')) {
+        await oldAnswer
+        return new Response('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"old"}}', { headers: { 'content-type': 'application/json', 'mcp-session-id': 'old-session' } })
+      }
+      const body = JSON.parse(init.body)
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { protocolVersion: '2025-06-18' } }), { headers: { 'content-type': 'application/json', 'mcp-session-id': 'new-session' } })
+    }
+    const forward = createProxy({ read: async () => target, fetcher, write: line => written.push(JSON.parse(line)), timeoutMs: 2000 })
+    const old = forward({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    target = { url: 'https://mcp.smithery.run/space', token: 'new-token-456', identity: 'new' }
+    await forward({ jsonrpc: '2.0', id: 2, method: 'initialize', params: {} })
+    releaseOld()
+    await old
+    await forward({ jsonrpc: '2.0', id: 3, method: 'tools/list' })
+    expect(written.find(reply => reply.id === 1)).toEqual({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'The MCP Library changed while answering; ask again.' } })
+    expect(sent.at(-1)).toEqual({ token: 'Bearer new-token-456', session: 'new-session' })
+    expect(JSON.stringify(written)).not.toContain('old-session')
+  })
   it('answers with an error, never the token, when the Library is unavailable or refuses', async () => {
     const written = []
     const missing = createProxy({ read: async () => null, fetcher: async () => { throw new Error('must not be called') }, write: line => written.push(line) })

@@ -115,15 +115,21 @@ struct McpLibrary: View {
     private var account: some View {
         let mcp = model.mcp
         return VStack(alignment: .leading, spacing: 8) {
-            Label("Smithery account connected", systemImage: "checkmark.circle.fill")
-                .font(.subheadline.weight(.medium))
+            if mcp.account?.disconnecting == true {
+                Label("Disconnecting didn't finish", systemImage: "exclamationmark.triangle.fill")
+                    .font(.subheadline.weight(.medium))
+                Text("Smithery still has some of this computer's servers. Agents can't use Tools until you finish.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Label("Smithery account connected", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.medium))
+            }
             if let namespace = mcp.account?.namespace {
                 Text("Namespace \(namespace)").font(.caption).foregroundStyle(.secondary)
             }
             if mcp.disconnecting {
                 ProgressView()
             } else {
-                Button("Disconnect", role: .destructive) { confirmDisconnect = true }
+                Button(mcp.account?.disconnecting == true ? "Finish Disconnecting" : "Disconnect", role: .destructive) { confirmDisconnect = true }
             }
         }
         .padding(.horizontal, 20)

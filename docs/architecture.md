@@ -1010,7 +1010,7 @@ Per computer, authorized like the catalog's; none wakes the computer (§ MCP Lib
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` `PUT` `DELETE` | `/v1/mcp/account` | `{ connected, namespace }`. `PUT { apiKey }` connects a Smithery account (409 when Smithery refuses the key); `DELETE` removes this computer's servers from Smithery and forgets the key |
+| `GET` `PUT` `DELETE` | `/v1/mcp/account` | `{ connected, namespace, disconnecting }`. `PUT { apiKey }` connects a Smithery account (409 when Smithery refuses the key); `DELETE` removes this computer's servers from Smithery and forgets the key |
 | `GET` | `/v1/mcp/storefront` | `{ groups: [{ id, title, note, servers }], error }` |
 | `GET` | `/v1/mcp/discover?q=&page=` | `{ servers, total, page, pageSize }` (40 a page); `group=<row id>` in place of `q` pages a front-page row in full (Popular from its ranking by uses, the others from Smithery) |
 | `GET` | `/v1/mcp/servers/:name` | A server and its `tools: [{ name, description }]` |
@@ -1697,7 +1697,8 @@ agent on the computer gets them, in new chats. There is no choosing per agent or
   server>`; one belonging to another computer is never changed or removed. A computer has one
   account at a time: replacing it means disconnecting, which takes the computer's access
   away and removes its servers from Smithery. If Smithery cannot remove one, the account stays
-  connected (its key is the only way to remove them) and the owner is told to try again.
+  connected (its key is the only way to remove them), marked as disconnecting: the computer
+  gets no access back and nothing can be added until the owner finishes disconnecting.
   Changes to the Library run one at a time.
 - **Adding.** The host asks Smithery Connect for the connection (`PUT /connect/{namespace}/{id}`).
   Smithery's status decides what follows: settings it asks for become a form whose values go
@@ -1716,7 +1717,10 @@ agent on the computer gets them, in new chats. There is no choosing per agent or
   and replaces hourly once it has less than 20 hours left. A token that cannot be minted takes
   the computer's access away rather than leaving an old one. The proxy reads the file for every
   message, passes an event stream's messages on as they arrive, answers any failure with an
-  MCP error that names nothing from it, and starts a new MCP session when the account changes. Which servers a chat reaches is the Library's at
+  MCP error that names nothing from it, and starts a new MCP session when the account changes;
+  an answer to a request made under the previous account is replaced by an error and its
+  session dropped. The host replaces the file only at the version it has just read (the file
+  service's `If-Match`, or `If-None-Match: *` to create it), trying again if it changed. Which servers a chat reaches is the Library's at
   each call: a server added later is there, and a removed one (deleted from Smithery at once)
   is gone. A chat started without the Library never gets it; one whose Library is gone gets a
   notice. No secret is written to a task's records or transcript.

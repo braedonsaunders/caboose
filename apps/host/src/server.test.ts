@@ -347,9 +347,9 @@ it('serves the MCP Library to an authorized client without ever returning its ke
   const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
   const req = (path: string, method = 'GET', body?: unknown) => fetch(base + path, { method, headers: { authorization: 'Bearer owner' }, ...(body ? { body: JSON.stringify(body) } : {}) })
   expect((await fetch(base + '/v1/mcp/account')).status).toBe(401)
-  expect(await (await req('/v1/mcp/account')).json()).toEqual({ connected: false, namespace: null })
+  expect(await (await req('/v1/mcp/account')).json()).toEqual({ connected: false, namespace: null, disconnecting: false })
   expect((await req('/v1/mcp/connections', 'POST', { server: 'brave' })).status).toBe(409)
-  expect(await (await req('/v1/mcp/account', 'PUT', { apiKey: key })).json()).toEqual({ connected: true, namespace: 'space' })
+  expect(await (await req('/v1/mcp/account', 'PUT', { apiKey: key })).json()).toEqual({ connected: true, namespace: 'space', disconnecting: false })
   const storefront = await (await req('/v1/mcp/storefront')).json() as { groups: Array<{ id: string; servers: Array<Record<string, unknown>> }> }
   expect(storefront.groups[0]?.servers[0]).toMatchObject({ id: 'brave', uses: 900, connection: null })
   expect(storefront.groups[0]?.servers[0]).not.toHaveProperty('iconUrl')

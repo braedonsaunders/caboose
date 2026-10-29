@@ -39,6 +39,9 @@ interface Stored {
   namespace: string | null
   /** A fresh id for each account connected, so the computer starts new sessions on a change. */
   account: string | null
+  /** A disconnect that could not remove every server: the computer has no access, and gets
+   *  none back, until the disconnect is finished. */
+  disconnecting?: boolean
   connections: Record_[]
 }
 
@@ -125,7 +128,7 @@ export class McpLibrary {
     catalog: SmitheryCatalog
     guest: () => AgentGuest | undefined
     /** Writes a file under the computer's home privately (0600), without passing its contents
-     *  through a command line: the computer's file service. */
+     *  through a command line: the computer's file service (replaceGuestFile). */
     writeFile?: (relative: string, data: Buffer) => Promise<void>
     emit: (event: unknown) => void
     request?: Requester
@@ -141,6 +144,7 @@ export class McpLibrary {
         apiKey: typeof raw.apiKey === 'string' && raw.apiKey.length <= 400 ? raw.apiKey : null,
         namespace: typeof raw.namespace === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/i.test(raw.namespace) ? raw.namespace : null,
         account: typeof raw.account === 'string' && /^[0-9a-f-]{36}$/.test(raw.account) ? raw.account : null,
+        ...(raw.disconnecting === true ? { disconnecting: true } : {}),
         connections: (Array.isArray(raw.connections) ? raw.connections : []).slice(0, MAX_CONNECTIONS).filter(c =>
           c && CONNECTION_ID.test(c.id) && typeof c.server === 'string' && QUALIFIED.test(c.server) && typeof c.name === 'string' && typeof c.addedAt === 'string'),
       }
@@ -179,7 +183,7 @@ export class McpLibrary {
   /** Whether a Smithery account is connected; never the key. */
   async account() {
     await this.load()
-    return { connected: !!this.state.apiKey, namespace: this.state.namespace }
+    return { connected: !!this.state.apiKey, namespace: this.state.namespace, disconnecting: this.state.disconnecting === true }
   }
   /**
    * Connects a Smithery account by its API key: checked, and its namespace chosen. A computer
@@ -208,7 +212,7 @@ export class McpLibrary {
       this.statuses.clear()
       await this.save()
       this.changed()
-      return { connected: true, namespace }
+      return { connected: true, namespace, disconnecting: false }
     })
   }
   /**
@@ -218,6 +222,10 @@ export class McpLibrary {
    */
   disconnect() {
     return this.exclusive(async () => {
+      if (!this.state.apiKey) return { connected: false, namespace: null, disconnecting: false }
+      // Recorded before anything is removed: until it finishes, the computer gets no access back.
+      this.state.disconnecting = true
+      await this.save()
       await this.withdraw()
       const left: string[] = []
       for (const connection of [...this.state.connections]) {
@@ -226,13 +234,13 @@ export class McpLibrary {
       await this.save()
       if (left.length) {
         this.changed()
-        throw new AgentConflictError(`Smithery could not remove ${left.join(', ')} yet. The account stays connected so you can try again.`)
+        throw new AgentConflictError(`Smithery could not remove ${left.join(', ')} yet. Agents on this computer can't use the Library until you disconnect again.`)
       }
       this.state = { apiKey: null, namespace: null, account: null, connections: [] }
       this.token = null
       await this.save()
       this.changed()
-      return { connected: false, namespace: null }
+      return { connected: false, namespace: null, disconnecting: false }
     })
   }
 
@@ -253,6 +261,7 @@ export class McpLibrary {
     if (typeof server !== 'string' || !QUALIFIED.test(server)) throw new AgentInputError('Choose a server from the Library')
     return this.exclusive(async () => {
       if (!this.state.apiKey || !this.state.namespace) throw new AgentConflictError('Connect a Smithery account first')
+      if (this.state.disconnecting) throw new AgentConflictError('Finish disconnecting Smithery first')
       const existing = this.state.connections.find(c => c.server === server)
       if (existing) return this.checkLocked(existing.id)
       if (this.state.connections.length >= MAX_CONNECTIONS) throw new AgentConflictError(`A computer holds up to ${MAX_CONNECTIONS} MCP servers. Remove one to add another.`)
@@ -406,7 +415,7 @@ export class McpLibrary {
   }
   private async publish(): Promise<boolean> {
     if (!this.options.guest()) return false
-    if (!this.state.apiKey || !this.state.namespace || !this.state.account || !this.state.connections.length) { await this.withdraw(); return false }
+    if (!this.state.apiKey || !this.state.namespace || !this.state.account || this.state.disconnecting || !this.state.connections.length) { await this.withdraw(); return false }
     let token: { value: string; expiresAt: number }
     try { token = await this.serviceToken() } catch (error) {
       // No token, no access: the computer keeps none Caboose cannot renew.
@@ -435,6 +444,6 @@ export class McpLibrary {
   /** Whether new chats should be given the `caboose-library` server. */
   async active(): Promise<boolean> {
     await this.load()
-    return !!this.state.apiKey && this.state.connections.length > 0
+    return !!this.state.apiKey && !this.state.disconnecting && this.state.connections.length > 0
   }
 }

@@ -73,7 +73,7 @@ describe('the MCP Library', () => {
     const { lib, guest: g, dir, files } = library(s)
     expect(() => lib.connect('short')).toThrow('Paste a Smithery API key')
     await expect(lib.connect('wrong-key-12345')).rejects.toThrow('did not accept the API key')
-    expect(await lib.connect(KEY)).toEqual({ connected: true, namespace: 'owner-space' })
+    expect(await lib.connect(KEY)).toEqual({ connected: true, namespace: 'owner-space', disconnecting: false })
     expect(statSync(join(dir, 'mcp-library.json')).mode & 0o777).toBe(0o600)
     const added = await lib.add('brave')
     expect(added).toMatchObject({ id: connectionId('abcdef0123456789/owner', 'brave'), server: 'brave', status: { state: 'connected', tools: 2 } })
@@ -141,7 +141,7 @@ describe('the MCP Library', () => {
     expect(g!.runs.at(-1)).toEqual(['/bin/rm', '-f', '--', '/home/caboose/.local/state/caboose/mcp-library.json'])
     expect(events).toContainEqual({ type: 'mcp.changed', id: added.id })
     await lib.add('exa')
-    expect(await lib.disconnect()).toEqual({ connected: false, namespace: null })
+    expect(await lib.disconnect()).toEqual({ connected: false, namespace: null, disconnecting: false })
     expect(s.connections.size).toBe(0)
     expect(await lib.active()).toBe(false)
     await expect(lib.add('brave')).rejects.toThrow('Connect a Smithery account first')
@@ -164,23 +164,32 @@ describe('the MCP Library', () => {
     expect(s.connections.size).toBe(1)
     release()
     expect((await adding).status).toEqual({ state: 'connected', tools: 2 })
-    expect(await removing).toEqual({ connected: false, namespace: null })
+    expect(await removing).toEqual({ connected: false, namespace: null, disconnecting: false })
     expect(s.connections.size).toBe(0)
     // The last thing the computer was told: nothing.
     expect(files.length).toBeGreaterThan(0)
   })
   it('keeps the account when Smithery cannot remove a server, so removal can be retried', async () => {
     const s = smithery()
-    const { lib, guest: g } = library(s)
+    const { lib, guest: g, files, dir } = library(s)
     await lib.connect(KEY)
     await lib.add('brave')
     const original = s.request
     ;(lib as unknown as { options: { request: Requester } }).options.request = (async (url: string, max: number, init?: { method?: string }) => init?.method === 'DELETE' ? { status: 500, headers: {}, body: Buffer.from('boom') } : original(url, max, init as never)) as Requester
     await expect(lib.disconnect()).rejects.toThrow('could not remove Brave yet')
-    expect(await lib.account()).toEqual({ connected: true, namespace: 'owner-space' })
+    expect(await lib.account()).toEqual({ connected: true, namespace: 'owner-space', disconnecting: true })
     expect(g!.runs.at(-1)).toEqual(['/bin/rm', '-f', '--', '/home/caboose/.local/state/caboose/mcp-library.json'])
+    // Until the disconnect finishes, nothing gives the computer access back.
+    const writes = files.length
+    expect(await lib.sync(true)).toBe(false)
+    expect(files.length).toBe(writes)
+    expect(await lib.active()).toBe(false)
+    await expect(lib.add('exa')).rejects.toThrow('Finish disconnecting')
+    // A restart remembers it.
+    const again = new McpLibrary({ file: join(dir, 'mcp-library.json'), tag: 'abcdef0123456789/owner', catalog: new SmitheryCatalog(join(dir, 'catalog'), s.request), guest: () => g!, emit: () => {}, request: s.request })
+    expect((await again.account()).disconnecting).toBe(true)
     ;(lib as unknown as { options: { request: Requester } }).options.request = original
-    expect(await lib.disconnect()).toEqual({ connected: false, namespace: null })
+    expect(await lib.disconnect()).toEqual({ connected: false, namespace: null, disconnecting: false })
   })
   it('uses the expiry Smithery gives a token, and gives the computer nothing when minting fails', async () => {
     const s = smithery()
