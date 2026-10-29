@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Boot a built split image with software-emulated virtio MMIO; never writes its inputs.
 set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
 image=${1:?usage: check-arm64-boot.sh IMAGE_DIRECTORY}
 for tool in qemu-system-aarch64 cpio timeout unmkinitramfs lsinitramfs python3 gzip; do
   command -v "$tool" >/dev/null || { echo "Missing tool: $tool" >&2; exit 1; }
@@ -43,26 +44,7 @@ chmod 755 "$work/extra/scripts/local-bottom/00-caboose-device-check" "$work/extr
 # those with early archives extract their compressed payload into main/.
 # Rebuild the main archive instead of appending raw cpio after a compressed stream.
 unmkinitramfs "$image/initrd" "$work/unpacked"
-main=$(python3 - "$work/unpacked" "$work/extra/scripts/local-bottom" <<'PYTHON'
-from pathlib import Path
-import shutil
-import sys
-root, extra = map(Path, sys.argv[1:])
-candidates = [path for path in (root, root / 'main') if (path / 'scripts/local-bottom/ORDER').is_file()]
-if len(candidates) != 1:
-    raise SystemExit('Expected exactly one extracted initramfs main ORDER file')
-main = candidates[0]
-directory = main / 'scripts/local-bottom'
-order = directory / 'ORDER'
-original = order.read_text()
-for name in ('00-caboose-device-check', 'zz-caboose-boot-check'):
-    shutil.copyfile(extra / name, directory / name)
-    (directory / name).chmod(0o755)
-order.write_text('/scripts/local-bottom/00-caboose-device-check "$@"\n' + original
-                 + '\n/scripts/local-bottom/zz-caboose-boot-check "$@"\n')
-print(main)
-PYTHON
-)
+main=$(python3 "$here/boot_check.py" "$work/unpacked" "$work/extra/scripts/local-bottom")
 echo "Acceptance hooks installed in $main"
 : > "$work/initrd"
 if [[ $main == "$work/unpacked/main" ]]; then
@@ -72,7 +54,7 @@ if [[ $main == "$work/unpacked/main" ]]; then
   done
 fi
 (cd "$main" && find . -print0 | cpio --quiet --null -o -H newc --owner=0:0 | gzip -1) >> "$work/initrd"
-lsinitramfs "$work/initrd" > "$work/files"
+lsinitramfs "$work/initrd" | sed 's@^\./@@' > "$work/files"
 for name in 00-caboose-device-check zz-caboose-boot-check; do
   grep -Fx "scripts/local-bottom/$name" "$work/files"
 done

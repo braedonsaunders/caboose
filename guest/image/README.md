@@ -70,6 +70,9 @@ the normal system-image hook runs. Test hooks are installed into the extracted
 initramfs main archive and its original boot order; an early archive is retained
 when present. The rebuilt test archive is inspected before boot. Set
 `CABOOSE_BOOT_LOG` to keep the serial log outside the temporary directory.
+`python3 -m unittest discover -s guest/image -p test_boot_check.py -v` checks hook
+admission for extracted initrds with and without an early archive and rejects
+ambiguous layouts.
 Inputs remain unchanged: root writes go to QEMU's temporary snapshot. The check
 has a five-minute deadline, no guest networking, and requires Linux with
 `qemu-system-aarch64`, `cpio`, `timeout` and `unmkinitramfs`. It runs in the hosted split-image
