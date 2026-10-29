@@ -2225,14 +2225,17 @@ not account discovery.
   owner's own picture from Photos, kept on the phone. Rotation uses the 67 curated
   Unsplash photographs served by Lorem Picsum, with photographer credits in the picker.
   Photos are fetched over HTTPS at the display's pixel size, capped at 3840 on the longest
-  edge, and cached in Caches. Downloads have a 15-second request timeout, a 30-second
+  edge, and cached in Caches. The displayed library picture is also retained atomically with
+  its identity in Application Support, independently of purgeable render caches and the host.
+  Downloads have a 15-second request timeout, a 30-second
   resource timeout and a 12 MiB limit; image type, dimensions and decoding are validated.
   A failed fetch leaves the current background visible. Twelve named generated scenes
   (`WallpaperRenderer`) are also selectable and render locally without a network.
   The choice is made from Computer settings, the
   Desktop's overflow menu or a long press on Home's background. On the phone a sheer of
   the brand gradient lies over a wallpaper, which extends under the bars. The last
-  wallpaper is cached so no screen starts black.
+  wallpaper is restored locally at launch, including offline; failed downloads and resizing
+  keep that picture visible.
 - **Computer settings.** The Computer sheet edits the management settings, shows
   `restartRequired`, parks, restarts after confirmation and chooses the wallpaper.
 

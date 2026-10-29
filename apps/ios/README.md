@@ -532,14 +532,18 @@ The wallpaper lies behind every tab and the desktop, here and on a TV: the brand
 wallpapers that change every quarter hour, one wallpaper, or a picture of your own from
 Photos. Rotation uses the 67 curated Unsplash photographs served by Lorem Picsum, with
 photographer credits in the picker (`Desktop/Wallpapers.swift`). Photos download on demand
-at up to 4K and remain cached for offline use; a failed download keeps the current picture.
+at up to 4K. The selected library picture is retained in Application Support for offline
+use across cache purges, app launches and host reconnects; a failed download keeps it visible.
 Twelve generated scenes are also selectable and render on the device. Custom photos remain
 in Application Support. Choose the background in Computer settings, from the Desktop's
 overflow menu, or with a long press on Home's background.
 
 Wallpaper check on a device: choose Rotating and then Next Wallpaper; both show real photos.
 Choose a photograph, relaunch offline and confirm it reappears. Choose a generated scene and
-relaunch offline; it remains selected. Import Your Photo, relaunch and confirm it remains.
+relaunch offline; it remains selected. Clear only Library/Caches/Wallpapers in a development
+app container, relaunch offline and confirm the selected picture remains. Rotate/fold and
+reconnect to the computer; it stays visible while another size loads. Import Your Photo,
+relaunch and confirm it remains.
 Restore Rotating from a generated scene and confirm a photograph replaces it when online.
 Check the picker credits and confirm the wallpaper stays aligned behind the shell capsules
 in portrait, landscape and on an external display.
@@ -859,3 +863,6 @@ the device; the live game stays visible and fits its window. In tablet portrait,
 window’s green Full Screen control hides the dock and chrome; the return handle restores
 controls. Swipe horizontally across All Apps to change pages; vertical drags and short
 taps do not page. Opening Caboose does not read the system pasteboard.
+
+Computer settings offer the sizes provided by the host and custom CPU and memory.
+GPU access uses the host GPU and is shared; availability reflects host configuration.

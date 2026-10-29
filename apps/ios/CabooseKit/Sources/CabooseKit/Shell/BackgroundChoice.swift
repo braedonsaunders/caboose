@@ -48,3 +48,32 @@ public enum BackgroundChoice: Codable, Equatable, Hashable, Sendable {
         }
     }
 }
+
+/// One retained library picture. Its identity and bytes commit together; size-specific
+/// render caches can disappear without losing the owner's background.
+public struct BackgroundSnapshot: Codable, Equatable, Sendable {
+    public let id: Int
+    public let image: Data
+    public static let maximumBytes = 12 * 1024 * 1024
+
+    public init(id: Int, image: Data) { self.id = id; self.image = image }
+
+    public func save(to file: URL) throws {
+        guard !image.isEmpty, image.count <= Self.maximumBytes else { throw CocoaError(.fileWriteUnknown) }
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        try encoder.encode(self).write(to: file, options: .atomic)
+    }
+
+    public static func load(from file: URL, choice: BackgroundChoice) -> Self? {
+        guard choice.usesLibrary,
+              let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size <= maximumBytes + 4096,
+              let data = try? Data(contentsOf: file),
+              let saved = try? PropertyListDecoder().decode(Self.self, from: data),
+              !saved.image.isEmpty, saved.image.count <= maximumBytes,
+              choice.libraryPhoto(current: saved.id) == saved.id else { return nil }
+        return saved
+    }
+}

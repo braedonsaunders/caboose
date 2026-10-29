@@ -323,13 +323,21 @@ final class WallpaperStore {
         case .custom:
             image = UIImage(contentsOfFile: Self.customFile.path)
         case .rotating, .photo:
-            // The last wallpaper, from the cache, so a screen that shows it never starts black.
+            if let saved = BackgroundSnapshot.load(from: Self.retainedFile, choice: choice),
+               let wallpaper = Wallpaper.scene(saved.id), let picture = UIImage(data: saved.image) {
+                current = wallpaper
+                image = picture
+                return
+            }
+            // Migrate the previous cache-only storage while its picture still exists.
             guard let saved = UserDefaults.standard.string(forKey: Self.lastKey) else { return }
             let parts = saved.split(separator: " ")
             guard parts.count == 2, let id = Int(parts[0]), let wallpaper = Wallpaper.scene(id),
+                  choice.libraryPhoto(current: id) == id,
                   let image = UIImage(contentsOfFile: Self.cacheDirectory.appendingPathComponent(String(parts[1])).path) else { return }
             current = wallpaper
             self.image = image
+            retain(image, for: wallpaper)
         }
     }
 
@@ -342,8 +350,10 @@ final class WallpaperStore {
         let changed = bounded != pixelSize
         pixelSize = bounded
         switch choice {
-        case .gradient, .custom:
+        case .gradient:
             break
+        case .custom:
+            if image == nil { image = UIImage(contentsOfFile: Self.customFile.path) }
         case .photo(let id):
             // A chosen id the library no longer has moves on to one it does.
             guard let wallpaper = Wallpaper.scene(id) else { next(); break }
@@ -370,7 +380,14 @@ final class WallpaperStore {
         case .custom:
             withAnimation(.easeInOut(duration: 0.6)) { image = UIImage(contentsOfFile: Self.customFile.path); current = nil }
         case .photo(let id):
-            if let wallpaper = Wallpaper.scene(id) { load(wallpaper) } else { next() }
+            if let wallpaper = Wallpaper.scene(id) {
+                // Keep even the selected preview durably if the full-size download fails.
+                if current?.id != id, let preview = thumbnails[id] {
+                    retain(preview, for: wallpaper)
+                    withAnimation(.easeInOut(duration: 0.6)) { image = preview; current = wallpaper }
+                }
+                load(wallpaper)
+            } else { next() }
         case .rotating:
             next()
         }
@@ -431,6 +448,7 @@ final class WallpaperStore {
         loading?.cancel()
         loading = Task {
             guard let loaded = await Self.load(choice, width: width, height: height), !Task.isCancelled else { return }
+            retain(loaded, for: choice)
             withAnimation(.easeInOut(duration: 1.2)) {
                 image = loaded
                 current = choice
@@ -441,6 +459,15 @@ final class WallpaperStore {
 
     private static var cacheDirectory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Wallpapers")
+    }
+
+    private static var retainedFile: URL {
+        customFile.deletingLastPathComponent().appendingPathComponent("library.plist")
+    }
+
+    private func retain(_ image: UIImage, for wallpaper: Wallpaper) {
+        guard let data = image.jpegData(compressionQuality: 0.9) else { return }
+        try? BackgroundSnapshot(id: wallpaper.id, image: data).save(to: Self.retainedFile)
     }
 
     /// The owner's picture lives with the app's data, not its caches, so iOS never purges it.
@@ -524,6 +551,7 @@ final class WallpaperStore {
 struct ShellBackground: View {
     @Environment(AppModel.self) private var model
     @Environment(\.displayScale) private var scale
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.shellWallpaperWidth) private var wallpaperWidth
     var store = WallpaperStore.shared
 
@@ -553,6 +581,9 @@ struct ShellBackground: View {
             // The TV, when one is connected, sets the size wallpapers are drawn at.
             .onAppear { if !model.externalDisplayActive { store.show(pixelSize: pixels(size)) } }
             .onChange(of: size) { _, size in if !model.externalDisplayActive { store.show(pixelSize: pixels(size)) } }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active, !model.externalDisplayActive { store.show(pixelSize: pixels(size)) }
+            }
         }
         .ignoresSafeArea()
     }
