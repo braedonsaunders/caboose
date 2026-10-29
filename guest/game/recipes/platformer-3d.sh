@@ -8,6 +8,9 @@ set -euo pipefail
 GODOT_VERSION=4.7.2
 GODOT_TAG=${GODOT_VERSION}-stable
 DEMO_COMMIT=6ad6167e0577fe3622c18546138f456b107ce93c
+DEMO_SHA256=9c7164b5373c19957b59a03c39a2ede0e7dd67425bbf467f3fc3ed0e83f64d77
+GODOT_LICENSE_SHA256=b0435e3b3e4e55238f05f4b306f30524a1b2e20147810d436eaa554fa6855c80
+GODOT_COPYRIGHT_SHA256=cb1980c88089573bcacd7221d777c689bb8bbd778799f24c27fca0fe5f774d6d
 WORK=${WORK:-$HOME/caboose-game-build/platformer}
 RELEASE=https://github.com/godotengine/godot/releases/download/$GODOT_TAG
 mkdir -p "$WORK/dl" && cd "$WORK"
@@ -23,7 +26,14 @@ for asset in Godot_v${GODOT_TAG}_linux.x86_64.zip Godot_v${GODOT_TAG}_export_tem
   (cd dl && grep " $asset\$" SHA512-SUMS.txt | sha512sum -c -)
 done
 fetch demo.tar.gz "https://codeload.github.com/godotengine/godot-demo-projects/tar.gz/$DEMO_COMMIT"
-sha256sum dl/demo.tar.gz > dl/demo.tar.gz.sha256
+fetch godot-LICENSE.txt "https://raw.githubusercontent.com/godotengine/godot/$GODOT_TAG/LICENSE.txt"
+fetch godot-COPYRIGHT.txt "https://raw.githubusercontent.com/godotengine/godot/$GODOT_TAG/COPYRIGHT.txt"
+(cd dl && sha256sum -c - <<SUMS
+$DEMO_SHA256  demo.tar.gz
+$GODOT_LICENSE_SHA256  godot-LICENSE.txt
+$GODOT_COPYRIGHT_SHA256  godot-COPYRIGHT.txt
+SUMS
+)
 
 # Editor and the web templates only.
 rm -rf godot templates && mkdir -p godot templates
@@ -68,6 +78,10 @@ PRESET
 run() { nice -n 19 taskset -c 0,1 timeout 1200 "$GODOT" --headless --path project "$@"; }
 run --import
 run --export-release Web ../build/index.html
+# The archive carries its own attribution: the demo's licence and the engine's licence and
+# third-party notices.
+tar -xzf dl/demo.tar.gz --strip-components=1 -C build "godot-demo-projects-$DEMO_COMMIT/LICENSE.md"
+cp dl/godot-LICENSE.txt dl/godot-COPYRIGHT.txt build/
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='2026-10-08 09:25:44Z' \
   -C build -cf platformer-3d-${GODOT_VERSION}-${DEMO_COMMIT:0:7}.tar .
 sha256sum platformer-3d-${GODOT_VERSION}-${DEMO_COMMIT:0:7}.tar

@@ -898,6 +898,26 @@
         }
       },
       "flathub": "uk.co.powdertoy.tpt"
+    },
+    {
+      "id": "platformer-3d",
+      "name": "Platformer 3D",
+      "summary": "3D platformer",
+      "category": "Games",
+      "icon": "org.godotengine.demo.Platformer3D",
+      "desktopId": "org.godotengine.demo.Platformer3D.desktop",
+      "fileTypes": {
+        "extensions": [],
+        "utTypes": []
+      },
+      "source": {
+        "kind": "game",
+        "bundle": "platformer-3d",
+        "version": "4.7.2.20261008",
+        "url": "https://github.com/braedonsaunders/caboose/releases/download/game-bundles-20261029/platformer-3d-4.7.2-6ad6167.tar",
+        "sha256": "5ab6aeb8caf02b40df4a1c0713b51ab511254514305c6a3ef1f3e336279916d0",
+        "size": 41113600
+      }
     }
   ]
 }

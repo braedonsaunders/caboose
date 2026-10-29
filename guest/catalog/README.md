@@ -74,6 +74,13 @@ describes the Craft package layout at <https://github.com/storytold/craft-launch
 The Powder Toy's icon is the project's own, from its pinned release tag (see
 `powder-toy.LICENSE.txt`), and is the bundle's `icon.png`; the game is GPL-3.0.
 
+Platformer 3D's icon is the demo project's own, from the pinned demo commit (see
+`platformer-3d.LICENSE.txt`), and is the bundle's `icon.png`; the demo and Godot Engine are
+MIT. Its archive is Caboose's export of the demo (`guest/game/recipes/platformer-3d.sh`),
+published as a release asset of this repository, and carries the demo's and the engine's
+licences and the engine's third-party notices. Its version is the engine's version followed
+by the date of the pinned demo commit.
+
 The Debian apps' icons are their own hicolor theme icons, taken from the Debian 13 package
 that ships them (the app's package, or one built from the same source such as its `-data`
 package): the 256-pixel PNG scaled to 128 pixels, else the 128-pixel PNG, else the scalable

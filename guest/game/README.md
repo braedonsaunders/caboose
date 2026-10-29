@@ -77,15 +77,17 @@ which is installed as `native/powder`.
 at tag `4.7-6ad6167`, MIT): a character to run, jump and collect coins with a game
 controller (the Gamepad API standard mapping), WASD or the arrow keys and Space, or its own
 touch joystick. Its web build is Godot's own web export: `index.js`, `index.wasm`,
-`index.pck`, the audio worklets and the splash and icons lie at the top of the archive and are
-unpacked into the bundle's `web/`. `web/index.html` is the page the same export wrote, which
+`index.pck`, the audio worklets and the splash and icons lie at the top of the archive, with
+the demo's `LICENSE.md` and the engine's `godot-LICENSE.txt` and `godot-COPYRIGHT.txt`, and
+are unpacked into the bundle's `web/`. `web/index.html` is the page the same export wrote, which
 the bundle ships so the manifest's entry is there before the archive is (its `fileSizes`
 match only this archive). It has no saves and no native build.
 
 `recipes/platformer-3d.sh` makes the archive on an x86_64 Linux machine with `curl`,
 `unzip` and `tar`: it downloads Godot 4.7.2-stable's Linux editor and export templates,
-checks both against the release's `SHA512-SUMS.txt`, takes the demo from its pinned commit,
-and exports it headless with the Web preset it writes (single-threaded, desktop and mobile
+checks both against the release's `SHA512-SUMS.txt`, takes the demo from its pinned commit
+and the engine's licence files from its tag (each checked against the SHA-256 the script
+pins), and exports it headless with the Web preset it writes (single-threaded, desktop and mobile
 texture compression; WebGL 2 through Godot's Compatibility renderer), then packs the export
 as `platformer-3d-4.7.2-6ad6167.tar`. Every file of the export is the same on each run except
 `index.pck`, whose imported resources Godot writes differently each time, so a rebuilt archive
