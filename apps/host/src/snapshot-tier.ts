@@ -27,12 +27,19 @@ async function syncDirectory(path: string): Promise<void> {
   const dir = await open(path, 'r')
   try { await dir.sync() } finally { await dir.close() }
 }
-async function writePointer(path: string, archive: unknown, onRename: () => void): Promise<void> {
+async function writePointer(path: string, archive: unknown, onRename: () => void, beforeRename?: () => void): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`
-  const file = await open(temporary, 'wx', 0o600)
-  try { await file.writeFile(JSON.stringify(archive)); await file.sync() } finally { await file.close() }
-  try { await rename(temporary, path); onRename(); await syncDirectory(dirname(path)) }
-  catch (error) { await rm(temporary, { force: true }); throw error }
+  try {
+    const file = await open(temporary, 'wx', 0o600)
+    try { await file.writeFile(JSON.stringify(archive)); await file.sync() } finally { await file.close() }
+    beforeRename?.()
+    await rename(temporary, path)
+    onRename()
+    await syncDirectory(dirname(path))
+  } catch (error) {
+    await rm(temporary, { force: true })
+    throw error
+  }
 }
 async function matchesSnapshot(directory: string, archive: SnapshotArchive, signal: AbortSignal): Promise<boolean> {
   signal.throwIfAborted()
@@ -191,7 +198,10 @@ export class SnapshotTier {
         if (current !== generation || !this.isCurrent(generation) || existsSync(this.pointer) || existsSync(this.tombstone) || !await matchesSnapshot(this.snapshot, archive!, abort.signal)) throw new Error('Parked snapshot changed during upload')
         abort.signal.throwIfAborted()
         if (!this.isCurrent(generation)) throw new Error('Parked snapshot changed during upload')
-        await writePointer(this.pointer, archive!, () => { published = true })
+        await writePointer(this.pointer, archive!, () => { published = true }, () => {
+          abort.signal.throwIfAborted()
+          if (!this.isCurrent(generation)) throw new Error('Parked snapshot changed during publication')
+        })
         // Admission can invalidate the generation while fsync is in flight.
         // Preserve both copies and let the queued wake restore from the pointer.
         abort.signal.throwIfAborted()
