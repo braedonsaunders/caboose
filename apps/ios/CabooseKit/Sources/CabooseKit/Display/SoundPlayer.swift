@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreMedia
 import Foundation
+import OSLog
 
 /// Decodes Opus with the system's own decoder (AudioToolbox) into interleaved 32-bit float
 /// PCM at 48 kHz, the rate Opus always decodes at.
@@ -68,6 +69,13 @@ final class SoundPlayer: @unchecked Sendable {
     private var sessionActive = false
     private var interrupted = false
     private var timeline = AudioPacketTimeline()
+    private let log = Logger(subsystem: "com.braedonsaunders.caboose", category: "display-audio")
+    private var reportsAt: TimeInterval = 0
+    private var restarts = 0
+    private var frameMin = Int.max
+    private var frameMax = 0
+    private var arrivalAt: TimeInterval?
+    private var arrivalMax: TimeInterval = 0
     private var interruptionObserver: NSObjectProtocol?
     private(set) var played = 0
     private(set) var failed = 0
@@ -117,6 +125,11 @@ final class SoundPlayer: @unchecked Sendable {
                 guard let decoder else { return }
                 let pcm = try decoder.decode(packet.data)
                 guard pcm.frameLength > 0 else { return }
+                let arrived = ProcessInfo.processInfo.systemUptime
+                if let arrivalAt { arrivalMax = max(arrivalMax, arrived - arrivalAt) }
+                arrivalAt = arrived
+                frameMin = min(frameMin, Int(pcm.frameLength))
+                frameMax = max(frameMax, Int(pcm.frameLength))
                 try activateSession()
                 if renderer.status == .failed {
                     renderer.flush()
@@ -124,15 +137,24 @@ final class SoundPlayer: @unchecked Sendable {
                 }
                 let pts = timeline.place(server: Int64(packet.ptsMicros), frames: Int(pcm.frameLength))
                 let placement = clock.place(audio: pts)
-                if case .restart = placement { renderer.flush() }
+                if case .restart = placement { restarts += 1; renderer.flush() }
                 renderer.enqueue(try sample(pcm, decoder: decoder, pts: pts))
                 switch placement {
                 case .play: break
                 case .start(let time), .restart(let time): clock.start(at: time)
                 }
                 played += 1
+                if arrived - reportsAt >= 5 {
+                    log.notice("display audio packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(self.clock.delay) frames=\(self.frameMin)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(self.renderer.status.rawValue)")
+                    reportsAt = arrived
+                    frameMin = Int.max; frameMax = 0; arrivalMax = 0
+                }
             } catch {
                 failed += 1
+                if ProcessInfo.processInfo.systemUptime - reportsAt >= 5 {
+                    log.error("display audio failure count=\(self.failed) error=\(String(describing: error), privacy: .public)")
+                    reportsAt = ProcessInfo.processInfo.systemUptime
+                }
             }
         }
     }

@@ -163,29 +163,22 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   from its own screen's display link, at 120 Hz on ProMotion
   (`CADisableMinimumFrameDurationOnPhone`) and at the TV's rate on a TV. The server releases
   a window's frames on those ticks, so a window nobody sees costs nothing.
-- **Video in windows.** A video an app plays (its own bitstream through the computer's
-  VA-API driver, or a Wayland video surface) arrives as a stream of its own and is layered
-  into its window: an `AVSampleBufferDisplayLayer` per stream at the stream's `rect`, cut to
-  its `clip`, in `z` order over the window's picture. An app's own stream keeps its pictures
-  by `seq` and shows each when `video.present` says the app is showing it. A region that
-  updates at video rates (a canvas, a game, a player the server cannot see into) arrives the
-  same way as a `motion` stream. When a stream ends, the server repaints its region into the
-  window and then destroys the stream; the layer stays until the window view has shown that
-  repaint, so stale pixels never flash. HDR video streams (PQ, HLG) use the screen's extended
-  dynamic range; window pictures are SDR.
-  The base picture and video clips share the confirmed surface-to-view mapping during
-  resizing; the outer Yard transform applies to both once. Only the active presentation
-  owns the playback layer. `VideoLayerGeometryTests`, `VideoSessionTests` and
-  `TapTextFocusTests` cover geometry, repaint retirement and keyboard decisions on macOS;
-  `VideoLayerHostingTests` exercises layer transfer when running the package tests on iOS.
-  `scripts/check-desktop.sh` covers real-device video, fullscreen exit and editing gestures.
-- **Sound.** The computer's sound arrives as 20 ms Opus packets stamped on the server's
-  clock, decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`, so iOS
-  routes it like any app's sound. The renderer and every video layer share one
-  `AVSampleBufferRenderSynchronizer` per session whose timeline is the server's clock, so a
-  video and its sound play in step. Playback starts 40 ms behind the first packet; a late
-  packet adds 20 ms (up to 200 ms) and a backlog is dropped. The display closes when the app
-  goes to the background, and the sound with it.
+- **Video in windows.** The app negotiates one SDR picture stream per window, including
+  any video the app plays. It does not advertise separate video decoders; the computer
+  keeps motion in the window picture and decodes passthrough streams on the server.
+  The protocol client also implements explicitly negotiated layered video for checks:
+  passthrough presentation, live motion, repaint retirement and HDR decoding. Those
+  layers are not enabled in ordinary app sessions. Resize metadata retains the previous
+  picture's pixel basis until its replacement frame decodes.
+  `VideoLayerGeometryTests` and `VideoSessionTests` cover geometry, negotiation and
+  retirement; `scripts/check-desktop.sh` covers physical-device playback and resizing.
+- **Sound.** The computer's sound arrives as 20 ms Opus packets on the server timeline,
+  decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`. Playback uses
+  an explicit monotonic host/server anchor, with decoded sample durations keeping nearby
+  packets contiguous despite capture-timestamp jitter. Gaps over 200 ms reanchor to the
+  server. Playback starts 40 ms behind the first packet; a late packet adds 20 ms (up to
+  200 ms) and a backlog is dropped. Interruptions reset the anchor. The display closes
+  when the app goes to the background, and the sound with it.
 - **One device at a time.** The computer's display shows on one device. When another takes
   it, this one gets `bye { reason: "replaced" }`, says it is showing on another device, and
   does not reconnect on its own; Show Here takes it back. A ping every 5 s keeps the server

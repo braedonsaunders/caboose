@@ -100,7 +100,7 @@ final class FramePipeline: @unchecked Sendable {
         do {
             // A picture the decoder holds back (none here: the server sends no B-frames) is not a failure.
             guard let picture = try decoder.decoder.decode(frame.data) else { return true }
-            if frame.keyframe, frame.rect.minX == 0, frame.rect.minY == 0 {
+            if frame.rect.minX == 0, frame.rect.minY == 0 {
                 surface.resize(width: Int(frame.rect.width.rounded(.up)), height: Int(frame.rect.height.rounded(.up)))
             }
             surface.upload(pixelBuffer: picture, crop: frame.crop, into: frame.rect)

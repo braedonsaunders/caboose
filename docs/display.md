@@ -338,7 +338,7 @@ The client intersects `clip` (or `rect` when absent) with the window's bounds an
 clipping preserves the scale and origin of the complete decoded picture. The window's
 picture and video layers share one window-pixel-to-view transform, including while the
 previous picture stretches during a resize. The pixel coordinate space changes only
-when the replacement keyframe is decoded, not when resize metadata arrives. A playback layer has one active presentation
+when the replacement frame is decoded, not when resize metadata arrives. A playback layer has one active presentation
 owner; thumbnails and inactive presentations do not take it from the visible window.
 
 - The client lists in `hello.video_decoders` what it can play as a video stream. The server

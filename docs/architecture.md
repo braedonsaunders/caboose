@@ -1549,7 +1549,7 @@ packets despite capture-timestamp jitter; gaps over 200 ms retain the server tim
 
 The window picture and its video layers use the same mapping from the confirmed surface
 size to the view's bounds, including while a resize stretches the previous picture.
-Resize metadata does not change that pixel basis until the replacement keyframe decodes.
+Resize metadata does not change that pixel basis until the replacement frame decodes.
 Video clips intersect the window bounds without rescaling the decoded picture. Only the
 active presentation hosts a stream's playback layer; an inactive Yard relinquishes it to
 the app card, and a detached view releases its layers.
