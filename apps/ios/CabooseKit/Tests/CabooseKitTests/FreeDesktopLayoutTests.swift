@@ -209,11 +209,15 @@ struct FreeDesktopLayoutTests {
         // A cold boot: the same app may be given the same id, but it is a new window.
         layout.enter(epoch: "b")
         #expect(layout.places.isEmpty && layout.epoch == "b")
-        // The first epoch seen adopts the places kept before epochs were reported.
+        // Places kept before epochs were reported belong to no proven lifetime: the first
+        // epoch drops them, and minimized state with them.
         var older = FreeDesktopLayout()
         older.setPreferred(1, frame: CGRect(x: 0, y: 0, width: 300, height: 200), in: pad, app: "Code")
-        older.enter(epoch: "x")
+        older.setMinimized(1, true)
+        older.enter(epoch: nil)
         #expect(older.places.count == 1)
+        older.enter(epoch: "x")
+        #expect(older.places.isEmpty && !older.isMinimized(1, app: "Code"))
         #expect(FreeDesktopLayout.decoded(from: layout.encoded()) == layout)
     }
 

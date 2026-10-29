@@ -145,12 +145,10 @@ final class DesktopModel {
     func enter(epoch: String?) {
         let before = layout
         layout.enter(epoch: epoch)
-        guard layout != before else { return }
-        if before.epoch != nil {
-            stacking.removeAll()
-            minimized.removeAll()
-            liveWindows = nil
-        }
+        guard layout.epoch != before.epoch else { return }
+        stacking.removeAll()
+        minimized.removeAll()
+        liveWindows = nil
         save()
     }
 

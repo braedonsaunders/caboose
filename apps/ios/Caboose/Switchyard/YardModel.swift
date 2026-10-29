@@ -186,13 +186,11 @@ final class YardModel {
     func enter(epoch: String?) {
         let before = memory
         memory.enter(epoch: epoch)
-        guard memory != before else { return }
-        if before.epoch != nil {
-            scroll = 0
-            zoomed = nil
-            coverProgress = 0
-            invalidate()
-        }
+        guard memory.epoch != before.epoch else { return }
+        scroll = 0
+        zoomed = nil
+        coverProgress = 0
+        invalidate()
         save()
     }
 

@@ -93,10 +93,12 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
 
     /// The display server the windows come from. A new lifetime (the computer cold-booted,
     /// or its display restarted) numbers its windows afresh, so every place kept by id is
-    /// dropped before anything is placed. A server that reports no epoch changes nothing.
+    /// dropped before anything is placed. So are places kept before any epoch was reported:
+    /// nothing proves which lifetime their ids belong to. A server that reports no epoch
+    /// changes nothing.
     public mutating func enter(epoch: String?) {
         guard let epoch, epoch != self.epoch else { return }
-        if self.epoch != nil { places.removeAll() }
+        places.removeAll()
         self.epoch = epoch
     }
 

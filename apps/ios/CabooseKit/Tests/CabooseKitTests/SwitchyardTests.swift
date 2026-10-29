@@ -341,7 +341,12 @@ struct SwitchyardTests {
 
     @Test func aNewDisplayLifetimeClearsTheTrackButKeepsWidths() {
         var memory = YardMemory()
+        // A track kept before epochs were reported is cleared by the first one.
+        memory.layout = layout([7], in: pad)
+        memory.enter(epoch: nil)
+        #expect(memory.layout.windows == [7])
         memory.enter(epoch: "a")
+        #expect(memory.layout.isEmpty)
         memory.layout = layout([1, 2], in: pad)
         memory.layout.setWidth(twoThirds, column: memory.layout.columns[0].id, in: pad)
         memory.learnWidths { $0 == 1 ? "Code" : nil }

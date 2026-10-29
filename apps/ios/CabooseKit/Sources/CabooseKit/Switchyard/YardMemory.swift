@@ -18,12 +18,13 @@ public struct YardMemory: Codable, Equatable, Sendable {
 
     public init() {}
 
-    /// Clears the track for a new display server lifetime, keeping the hand-chosen widths,
-    /// which belong to apps rather than windows. A server that reports no epoch, or the same
-    /// one again, changes nothing.
+    /// Clears the track for a new display server lifetime, or for the first one reported
+    /// (nothing proves which lifetime an older track's ids belong to), keeping the
+    /// hand-chosen widths, which belong to apps rather than windows. A server that reports
+    /// no epoch, or the same one again, changes nothing.
     public mutating func enter(epoch: String?) {
         guard let epoch, epoch != self.epoch else { return }
-        if self.epoch != nil { layout = YardLayout() }
+        layout = YardLayout()
         self.epoch = epoch
     }
 
