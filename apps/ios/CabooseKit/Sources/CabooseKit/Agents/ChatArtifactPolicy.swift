@@ -2,6 +2,10 @@ import Foundation
 
 /// All guest paths are translated into home-relative file-service paths, never local URLs.
 public enum ChatArtifactPolicy {
+    /// WebKit content blockers do not support regular-expression alternation. Keep each
+    /// scheme in its own rule; a rejected rule list prevents the isolated view loading.
+    public static let contentRules = #"[{"trigger":{"url-filter":"^https?:","url-filter-is-case-sensitive":false},"action":{"type":"block"}},{"trigger":{"url-filter":"^wss?:","url-filter-is-case-sensitive":false},"action":{"type":"block"}},{"trigger":{"url-filter":"^ftp:","url-filter-is-case-sensitive":false},"action":{"type":"block"}},{"trigger":{"url-filter":"^file:","url-filter-is-case-sensitive":false},"action":{"type":"block"}}]"#
+
     public static let maximumFileBytes = 25 * 1024 * 1024
     public static let maximumHTMLBytes = 512 * 1024
     public static let maximumComposeCharacters = 32_000

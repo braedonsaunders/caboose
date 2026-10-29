@@ -414,8 +414,10 @@ Traversal and files outside the computer home never open on the phone.
 
 Return a complete fenced `inline-html` block with an inline SVG chart, a button that changes
 it, a growing/shrinking section and a CSS animation. Check touch, VoiceOver labels, rotation,
-Expand/Collapse, source and HTML export. Append prose after the fence while streaming: the
-widget retains its interactive state. An incomplete fence stays code. External script/image,
+Expand/Collapse and HTML export. Append prose after the fence while streaming: the
+widget retains its interactive state. Incomplete HTML shows a completion placeholder,
+never source; an oversized widget shows a size message. A failed preview offers Try Again
+without showing HTML. External script/image,
 fetch, WebSocket, navigation, popup and `file://` attempts must fail; self-contained data images
 and inline scripts/styles work. A widget button calling `window.Caboose.compose("Explain this chart")`
 shows a native proposed-message sheet; Cancel changes nothing, and Use in Composer fills the

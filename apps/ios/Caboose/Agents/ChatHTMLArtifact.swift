@@ -1,6 +1,7 @@
 import CabooseKit
 import SwiftUI
 import WebKit
+import OSLog
 
 struct ChatHTMLArtifact: View {
     @Environment(AppModel.self) private var model
@@ -9,7 +10,7 @@ struct ChatHTMLArtifact: View {
     @State private var expanded = false
     @State private var loading = true
     @State private var error: String?
-    @State private var source = false
+    @State private var retry = UUID()
     @State private var proposed: String?
     @State private var export: ChatArtifactFile?
 
@@ -19,8 +20,6 @@ struct ChatHTMLArtifact: View {
                 Label("Interactive", systemImage: "slider.horizontal.3").font(.caption.weight(.semibold))
                 Spacer()
                 if loading { ProgressView().controlSize(.small).accessibilityLabel("Loading interactive content") }
-                Button { source.toggle() } label: { Image(systemName: "chevron.left.forwardslash.chevron.right") }
-                    .accessibilityLabel(source ? "Hide HTML source" : "Show HTML source")
                 if let export { ShareLink(item: export.url) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("Export HTML") }
                 Button { withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() } } label: {
                     Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
@@ -30,13 +29,15 @@ struct ChatHTMLArtifact: View {
             IsolatedArtifactWebView(html: html, height: $height, loading: $loading, error: $error) { message in
                 if proposed == nil { proposed = message }
             }
-            .frame(height: expanded ? 720 : min(500, max(180, height)))
+            .id(retry)
+            .frame(height: error == nil ? (expanded ? 720 : min(500, max(180, height))) : 0)
             .accessibilityLabel("Interactive chart or tool")
-            if let error { Label(error, systemImage: "exclamationmark.triangle").font(.caption).padding(12) }
-            if source || error != nil {
-                ScrollView([.horizontal, .vertical]) {
-                    Text(html).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(12)
-                }.frame(maxHeight: 280)
+            if let error {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label(error, systemImage: "exclamationmark.triangle").font(.callout)
+                    Button("Try Again") { self.error = nil; loading = true; retry = UUID() }
+                        .buttonStyle(.bordered)
+                }.padding(16)
             }
         }
         .background(.thinMaterial, in: .rect(cornerRadius: 16))
@@ -119,12 +120,14 @@ private struct IsolatedArtifactWebView: UIViewRepresentable {
         func load(_ html: String, in view: WKWebView) {
             self.html = html
             let current = UUID(); generation = current
-            let rules = #"[{"trigger":{"url-filter":"^(https?|wss?|ftp|file):","url-filter-is-case-sensitive":false},"action":{"type":"block"}}]"#
-            WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "caboose-isolated-artifact-v1", encodedContentRuleList: rules) { [weak self, weak view] list, error in
+            parent.error = nil
+            parent.loading = true
+            WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "caboose-isolated-artifact-v2", encodedContentRuleList: ChatArtifactPolicy.contentRules) { [weak self, weak view] list, error in
                 guard let self, let view, self.generation == current else { return }
                 guard let list else {
                     self.parent.loading = false
-                    self.parent.error = "The isolated preview could not start. HTML source is available below."
+                    Logger(subsystem: "com.braedonsaunders.caboose", category: "ChatPreview").error("Content rule compilation failed: \(String(describing: error), privacy: .public)")
+                    self.parent.error = "This interactive preview couldn’t start. Try loading it again."
                     return
                 }
                 view.configuration.userContentController.removeAllContentRuleLists()
@@ -156,7 +159,7 @@ private struct IsolatedArtifactWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             parent.loading = false
-            parent.error = "The interactive preview stopped. HTML source is available below."
+            parent.error = "This interactive preview stopped. Try loading it again."
         }
         private func failed(_ error: Error) {
             parent.loading = false

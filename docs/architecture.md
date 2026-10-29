@@ -1813,11 +1813,14 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   Quick Look with Share. Unsupported preview formats offer sharing. Download failures are
   visible in the chat.
   Complete `html` and `inline-html` fences up to 512 KiB render self-contained interactive
-  HTML/CSS/JavaScript/SVG; incomplete or oversized fences remain selectable code. Each widget
+  HTML/CSS/JavaScript/SVG; incomplete fences show a completion placeholder and oversized
+  widgets show a size message. HTML source is never displayed in the chat. Each widget
   uses an ephemeral WKWebView and an opaque-origin sandbox frame, with CSP and content rules
   blocking network and file access, navigation, external dependencies, frames and popups.
   Widgets resize with their content, expand in place without losing JavaScript state, and
-  offer source and HTML export. No bearer token enters the web view. The sole native bridge,
+  offer HTML export. A preview failure shows a compact message with Retry, without dumping
+  source. Network-blocking rules use separate scheme patterns supported by WebKit's rule
+  compiler. No bearer token enters the web view. The sole native bridge,
   `window.Caboose.compose(message)`, accepts at most 32,000 characters after a widget touch
   and active JavaScript user activation, then shows a native proposed-message review sheet.
   Use in Composer prefills the chat draft; it never sends a message or executes tools.

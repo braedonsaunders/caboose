@@ -21,7 +21,16 @@ struct ChatMessageView: View {
                         .font(level == 1 ? .title2.weight(.bold) : level == 2 ? .title3.weight(.semibold) : .headline)
                         .accessibilityAddTraits(.isHeader).textSelection(.enabled)
                 case .code(let language, let code):
-                    CodeMessage(language: language, code: code)
+                    if ["html", "inline-html"].contains(language.lowercased()) {
+                        Label(code.utf8.count > ChatArtifactPolicy.maximumHTMLBytes
+                              ? "This interactive preview is too large to display."
+                              : "The interactive preview will appear when it’s complete.",
+                              systemImage: "rectangle.dashed")
+                            .font(.callout).foregroundStyle(.secondary).padding(16)
+                            .background(.thinMaterial, in: .rect(cornerRadius: 16))
+                    } else {
+                        CodeMessage(language: language, code: code)
+                    }
                 case .html(let html):
                     ChatHTMLArtifact(html: html)
                 case .image(let alt, let destination):
