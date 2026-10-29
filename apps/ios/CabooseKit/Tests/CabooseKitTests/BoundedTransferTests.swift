@@ -67,7 +67,8 @@ final class StubServer: URLProtocol, @unchecked Sendable {
         StubServer.replies["/ok"] = .init(status: 206, headers: ["Content-Range": "bytes 0-5/6", "Content-Length": "6"],
                                           chunks: [Data("abc".utf8), Data("def".utf8)])
         let (size, file) = try await download("/ok", limit: 10)
-        #expect(size == 6 && (try Data(contentsOf: file)) == Data("abcdef".utf8))
+        let data = try Data(contentsOf: file)
+        #expect(size == 6 && data == Data("abcdef".utf8))
         #expect(StubServer.requests.last?.value(forHTTPHeaderField: "Range") == "bytes=0-10")
     }
 
