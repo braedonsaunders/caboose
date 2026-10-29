@@ -765,6 +765,7 @@ struct AppButton: View {
         .contextMenu {
             let pinned = model.shortcuts.isPinned(app.id)
             Button(pinned ? "Unpin from Home" : "Pin to Home", systemImage: pinned ? "pin.slash" : "pin") { model.togglePin(app) }
+            AppActionsMenu(app: app, host: model.host)
         }
     }
 }

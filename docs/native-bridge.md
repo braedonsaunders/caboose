@@ -217,7 +217,13 @@ Control writes `now-playing-command.json` with a millisecond-based `seq`.
 
 ### Open and Save
 
-The app answers `bridge.request` while it is in the foreground:
+The app answers `bridge.request` while it is in the foreground. The shell supplies its own
+window for presentations and appearance; an external display is never chosen. Requests
+retain their original computer and generation through picking, uploading and answering.
+Changing computers, losing the control connection or entering the background dismisses
+pending dialogs and invalidates their callbacks. Native media handoff suspends the bridge’s
+Now Playing metadata and commands until playback returns to the computer.
+
 
 - **Open** presents the system document picker for the filter's types (any item when no
   type resolves), with multiple selection when asked. A file from Caboose's own File

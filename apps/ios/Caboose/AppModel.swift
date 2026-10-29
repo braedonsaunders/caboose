@@ -32,6 +32,8 @@ final class AppModel {
     /// Videos playing on the computer that can move to the phone.
     private(set) var media = MediaHandoff()
     let phone = PhoneHandoff()
+    /// Linux portals, appearance, media controls and opt-in location for this computer.
+    let bridge = NativeBridge()
     /// Where the computer's sound plays, and the AirPlay device it last played on.
     let airPlay = AirPlayCenter()
     /// A window on the agent seat being watched or taken over full screen.
@@ -147,6 +149,7 @@ final class AppModel {
             self.media.handle(type, event)
             self.catalog.handle(type, event)
             self.phone.handle(type, event)
+            self.bridge.handle(type, event)
             if type == "fs.changed" { self.refreshFileSearch() }
             if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
             if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials); self.documents.requestSync(model: self) }
@@ -157,6 +160,21 @@ final class AppModel {
         }
         media.attach(host: { [weak self] in self?.connectionRevision == revision ? self?.host : nil })
         phone.attach(host: { [weak self] in self?.connectionRevision == revision ? self?.host : nil })
+        bridge.attach(computer: { [weak self] in
+            guard let self, self.connectionRevision == revision,
+                  let host = self.host, let credentials = self.credentials else { return nil }
+            return NativeBridge.Computer(host: host, id: credentials.fileDomainIdentifier, documents: self.documents)
+        }, window: { SoftwareKeyboard.shared.window })
+        bridge.setActive(sceneActive)
+        bridge.nowPlayingSuspended = media.handedOff != nil
+        agents.onControlClosed = { [weak self] in
+            guard let self, self.connectionRevision == revision else { return }
+            self.bridge.controlClosed()
+        }
+        media.onHandoffChanged = { [weak self] handedOff in
+            guard let self, self.connectionRevision == revision else { return }
+            self.bridge.nowPlayingSuspended = handedOff
+        }
     }
 
     var host: HostClient? { credentials.map { HostClient(baseURL: activeHostURL ?? $0.hostURL, token: $0.token) } }
@@ -242,6 +260,7 @@ final class AppModel {
         documents.reset()
         media.reset()
         phone.reset()
+        bridge.reset()
         agents = AgentCenter()
         catalog = CatalogCenter()
         documents = OpenDocumentCenter()
@@ -404,6 +423,7 @@ final class AppModel {
         sceneActive = true
         registerFiles()
         phone.setActive(true)
+        bridge.setActive(true)
         documents.requestSync(model: self)
         showSharedDocumentIfAvailable()
         offerPasteboardIfChanged()
@@ -425,6 +445,7 @@ final class AppModel {
     func sceneEnteredBackground() {
         sceneActive = false
         phone.setActive(false)
+        bridge.setActive(false)
         wakes.invalidate()
         link.stop()
         if let session { cacheFrames(of: session) }

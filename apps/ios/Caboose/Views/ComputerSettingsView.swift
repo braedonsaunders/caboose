@@ -25,6 +25,7 @@ struct ComputerSettingsView: View {
                 } else if let loadError {
                     Form {
                         FilesSettingsSection()
+                        NativeBridgeSettingsSection(bridge: model.bridge)
                         connectionAddressSection
                         Section {
                             ContentUnavailableView {
@@ -39,6 +40,7 @@ struct ComputerSettingsView: View {
                 } else {
                     Form {
                         FilesSettingsSection()
+                        NativeBridgeSettingsSection(bridge: model.bridge)
                         connectionAddressSection
                         Section { ProgressView() }
                     }
@@ -90,6 +92,7 @@ struct ComputerSettingsView: View {
         let limits = status.limits
         Form {
             FilesSettingsSection()
+            NativeBridgeSettingsSection(bridge: model.bridge)
             connectionAddressSection
             if let upgrade = status.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
                 Section {
