@@ -13,9 +13,8 @@ part="${out}.part.$$"
 cleanup() { rm -rf "$stage"; rm -f "$part"; }
 trap cleanup EXIT
 cp -a "$root/usr" "$root/opt" "$stage/"
-# No compression or inline file data: eligible files can use filesystem DAX
-# when the device and guest kernel support it.
-mkfs.erofs -E noinline_data "$part" "$stage"
+# LZ4HC level 12, with a maximum physical cluster size of 64 KiB.
+mkfs.erofs -zlz4hc,12 -C65536 "$part" "$stage"
 fsck.erofs "$part"
 # Refuse to overwrite even if another writer published during the build.
 ln "$part" "$out"

@@ -1,4 +1,5 @@
 import type { RecoveryStatus } from './recovery.js'
+import type { Capacity } from '../../../packages/capacity/types.js'
 import type { CatalogOperation, CatalogPage, CatalogResponse, CatalogStorefront, DiscoverQuery } from './catalog.js'
 import { fsQuery, joinPath, numberedName, type FileItem } from './files.js'
 import type { ComponentsUpgrade, HealthStatus, HostInfo } from './host.js'
@@ -417,6 +418,10 @@ export class CabooseClient {
       }
       throw new CabooseApiError(0, error instanceof Error ? error.message : 'Network error')
     }
+  }
+
+  capacity(tenantId?: string): Promise<Capacity> {
+    return this.request<Capacity>('GET', tenantId === undefined ? '/v1/host/capacity' : `/v1/tenants/${encodeURIComponent(tenantId)}/capacity`, { timeoutMs: 15_000 })
   }
 
   private async request<T>(

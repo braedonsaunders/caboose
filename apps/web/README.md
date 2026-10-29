@@ -142,3 +142,8 @@ results, captures a coherent parked disk on request, and requires typed confirma
 replacing its disk. It explains the distinction between local recovery, device-encrypted
 phone backups and independent whole-server backups. The panel uses the scoped management
 recovery API and AppKit controls.
+### Capacity and usage
+
+The `Capacity` view uses AppKit dashboard primitives and reads an authorized host
+or tenant snapshot every thirty seconds while visible. It acquires no computer
+leases. See [capacity and usage](../../docs/capacity.md) for metric semantics and tests.

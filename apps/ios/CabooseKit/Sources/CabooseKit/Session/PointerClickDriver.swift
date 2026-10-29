@@ -9,7 +9,7 @@ public final class PointerClickDriver {
     private let sleep: Sleep
     private var pending: [(Bool) -> Bool] = []
     private var active: ((Bool) -> Bool)?
-    private var task: Task<Void, Never>?
+    private(set) var task: Task<Void, Never>?
     private var generation = 0
 
     public init(sleep: @escaping Sleep = { try await Task.sleep(nanoseconds: $0) }) {
