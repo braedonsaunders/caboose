@@ -6,6 +6,7 @@ on:
       - '.github/workflows/check-host.yml'
       - 'apps/host/**'
       - 'apps/web/**'
+      - 'packages/capacity/**'
       - 'guest/components/**'
       - 'package.json'
       - 'pnpm-lock.yaml'

@@ -923,6 +923,16 @@ checked when a computer is made, resized or moved, and all three when it wakes.
 
 A tenant an administrator does not administer answers 404, as if it were not there.
 
+The console Usage page reads `GET /v1/tenants/:id/capacity` for an administered
+tenant and `GET /v1/host/capacity` for the operator. It separates configured and
+running allocations from measured CPU busy time, OS free/available memory, and
+filesystem availability. Storage distinguishes logical bytes from allocated file
+blocks; shared/reflink block sums are never labeled unique physical usage. Missing
+measurements are explicit. Reads acquire no leases and wake no computers; host
+samples are cached ten seconds, bounded storage scans sixty seconds, and the visible
+console polls thirty seconds. Existing quotas and enforcement are unchanged.
+See [capacity and usage](capacity.md) for the complete contract and limitations.
+
 ### Authentication
 
 A request is from one of three kinds of caller:
