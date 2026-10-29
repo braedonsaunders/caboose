@@ -16,6 +16,7 @@ DEPOT = Path('/var/lib/caboose/depot')
 ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
 action = sys.argv[1]
 args = json.loads(sys.argv[2])
+UNSANDBOXED = "Flathub apps can't run on this computer yet: its container was created before Caboose allowed Flatpak's sandbox. Recreate the computer to add them; its home folder is kept."
 APP_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+){2,}')
 
 def save(path, value):
@@ -53,10 +54,22 @@ def depot(Flatpak):
     return Flatpak.Installation.new_for_path(Gio.File.new_for_path(str(DEPOT)), False, None)
 
 def sandbox_works():
-    # Flatpak runs every app in bubblewrap; a container without the Caboose seccomp
-    # profile refuses the namespaces it needs, and no app could start.
-    result = subprocess.run(['bwrap', '--unshare-all', '--die-with-parent', '--ro-bind', '/', '/', 'true'], capture_output=True)
-    return result.returncode == 0
+    """Whether Flatpak's sandbox can start here, as the computer's user. bubblewrap gives each
+    app fresh namespaces and its own /proc; in a container whose /proc Docker masks, the
+    kernel refuses that /proc, and no Flatpak app could start. Probed once per boot."""
+    marker = Path('/run/caboose-flatpak-sandbox')
+    try:
+        return marker.read_text() == 'yes'
+    except OSError:
+        pass
+    probe = subprocess.run(['runuser', '-u', 'caboose', '--', 'bwrap', '--unshare-all', '--die-with-parent',
+                            '--ro-bind', '/', '/', '--proc', '/proc', '--dev', '/dev', 'true'], capture_output=True)
+    works = probe.returncode == 0
+    try:
+        marker.write_text('yes' if works else 'no')
+    except OSError:
+        pass
+    return works
 
 def stage(name, message=None):
     record.update(stage=name, message=message)
@@ -142,11 +155,12 @@ def listing():
             continue
         versions = [version(p) for p in (source['packages'] if source['kind'] == 'apt' else [source['package']])]
         apps[app['id']] = state(app['id'], versions[0] if all(versions) else None)
-    environment = {'flatpak': False, 'depot': False, 'arch': None}
+    environment = {'flatpak': False, 'sandbox': False, 'depot': False, 'arch': None}
     Flatpak = flatpak()
     installed = {}
     if Flatpak:
-        environment.update(flatpak=True, arch=Flatpak.get_default_arch(), depot=(DEPOT / 'repo' / 'config').is_file())
+        environment.update(flatpak=True, arch=Flatpak.get_default_arch(), sandbox=sandbox_works(),
+                           depot=(DEPOT / 'repo' / 'config').is_file())
         system = Flatpak.Installation.new_system(None)
         for ref in system.list_installed_refs_by_kind(Flatpak.RefKind.APP, None):
             if ref.get_origin() != 'flathub' or not APP_ID.fullmatch(ref.get_name() or ''):
@@ -204,8 +218,8 @@ def flatpak_operation(app):
     Flatpak = flatpak()
     if not Flatpak:
         raise RuntimeError('Flatpak is not installed on this computer yet. Wake it again after Caboose components update.')
-    if not sandbox_works():
-        raise RuntimeError("This computer's container cannot start Flatpak's sandbox. Recreate it so the host applies Caboose's seccomp profile; its home volume is kept.")
+    if action != 'remove' and not sandbox_works():
+        raise RuntimeError(UNSANDBOXED)
     from gi.repository import GLib
     app_id = app['source']['appId']
     if not APP_ID.fullmatch(app_id):

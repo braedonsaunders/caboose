@@ -1,0 +1,24 @@
+#!/bin/bash
+# bubblewrap for a computer that runs in a container (guest/flatpak/README.md). The kernel
+# lets a sandbox mount a fresh /proc only where a fully visible one exists, and Docker masks
+# parts of the container's; each sandbox gets the container's /proc, read-only, instead.
+# bwrap's sysctl lock on nested user namespaces needs that fresh /proc too: Flatpak's own
+# seccomp filter still refuses every app a user namespace. Root holds no CAP_SYS_ADMIN here,
+# so a sandbox it starts begins in a user namespace of its own.
+set -euo pipefail
+args=()
+while (($#)); do
+  # Flatpak passes most arguments through a descriptor (--args FD).
+  if [[ $1 == --args ]]; then mapfile -d '' extra < "/proc/self/fd/$2"; args+=("${extra[@]}"); shift 2
+  else args+=("$1"); shift; fi
+done
+out=()
+[[ $(id -u) == 0 ]] && out+=(--unshare-user)
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case ${args[i]} in
+    --proc) out+=(--ro-bind /proc "${args[i + 1]}"); ((i += 1)) ;;
+    --disable-userns|--assert-userns-disabled) ;;
+    *) out+=("${args[i]}") ;;
+  esac
+done
+exec /usr/bin/bwrap.distrib "${out[@]}"

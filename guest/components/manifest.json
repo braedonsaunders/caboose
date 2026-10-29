@@ -35,6 +35,7 @@
   "flatpak/flathub.flatpakrepo",
   "flatpak/caboose-depot.conf",
   "flatpak/var-lib-caboose-depot.mount",
+  "flatpak/caboose-bwrap",
   "agentd/caboose-agentd.mjs",
   "agentd/agent-tools.mjs",
   "agentd/package.json",

@@ -43,7 +43,7 @@ install -Dm644 "$root/terminal/caboose-terminal.service" /etc/systemd/system/cab
 sh "$root/notifications/install.sh"
 bash "$root/phone/install.sh"
 sh "$root/bridge/install.sh"
-sh "$root/flatpak/install.sh"
+sh "$root/flatpak/install.sh" "$mode"
 sh "$root/agentd/install.sh"
 install -d -m 0755 /usr/local/share/caboose
 if [[ "$mode" = *container ]]; then

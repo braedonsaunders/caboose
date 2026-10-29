@@ -124,8 +124,15 @@ namespace, which the container's root does not hold, so these calls reach only n
 sandbox created for itself: the policy Debian applies to every unprivileged user. A container
 created before this profile keeps its own policy; recreate it (its home volume is kept) to
 run Flatpak apps. On hosts that confine containers with Docker's default AppArmor profile,
-which denies `mount`, Flatpak's sandbox cannot start; the Library reports that when an app is
-installed.
+which denies `mount`, Flatpak's sandbox cannot start; the Library says so beside each Flathub
+app.
+
+Docker also masks parts of the container's `/proc`, and the kernel then refuses a sandbox a
+fresh `/proc` of its own. The image diverts `/usr/bin/bwrap` to `/usr/bin/bwrap.distrib` and
+installs `guest/flatpak/caboose-bwrap` in its place, which gives each sandbox the container's
+`/proc` read-only and drops bubblewrap's sysctl-based user-namespace lock, which needs the fresh
+one; Flatpak's seccomp filter still refuses apps every way to make or join a user namespace.
+What this costs is in `docs/architecture.md` § Catalog (Flatpak in a container).
 
 ### Shared runtimes
 
