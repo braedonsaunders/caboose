@@ -285,7 +285,26 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "clipboard-server",
             "",
-            Message::ServerClipboard(Clipboard { mime: "text/plain;charset=utf-8".into(), data: "héllo ✓".as_bytes().to_vec() }),
+            Message::ServerClipboard(Clipboard {
+                mime: "text/plain;charset=utf-8".into(),
+                data: "héllo ✓".as_bytes().to_vec(),
+                alternatives: Vec::new(),
+            }),
+        ),
+        one(
+            "clipboard-server-types",
+            "A copy of files in a file manager, for a client that takes images and files: text first, then a PNG and the files as a text/uri-list.",
+            Message::ServerClipboard(Clipboard {
+                mime: "text/plain;charset=utf-8".into(),
+                data: b"/home/caboose/Pictures/a b.png".to_vec(),
+                alternatives: vec![
+                    ClipboardEntry { mime: "image/png".into(), data: media.png.clone() },
+                    ClipboardEntry {
+                        mime: "text/uri-list".into(),
+                        data: b"file:///home/caboose/Pictures/a%20b.png\r\n".to_vec(),
+                    },
+                ],
+            }),
         ),
         one(
             "notification",
@@ -377,6 +396,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 displays: vec![phone(), tv()],
                 video_decoders: None,
                 audio_decoders: None,
+                clipboard_types: None,
             }),
         ),
         one(
@@ -389,6 +409,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 displays: vec![phone()],
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: None,
+                clipboard_types: None,
             }),
         ),
         one(
@@ -401,6 +422,20 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 displays: vec![phone()],
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: Some(vec!["opus".into()]),
+                clipboard_types: None,
+            }),
+        ),
+        one(
+            "client-hello-clipboard",
+            "client-hello-audio plus images and files from the computer's clipboard.",
+            Message::ClientHello(ClientHello {
+                version: 0,
+                token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264],
+                displays: vec![phone()],
+                video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
+                audio_decoders: Some(vec!["opus".into()]),
+                clipboard_types: Some(vec!["image/png".into(), "image/jpeg".into(), "text/uri-list".into()]),
             }),
         ),
         one("vsync", "", Message::Vsync { display: 1, t_us: 5_000_008_333 }),
@@ -486,7 +521,16 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "clipboard-client",
             "",
-            Message::ClientClipboard(Clipboard { mime: "text/plain;charset=utf-8".into(), data: b"copied on the phone".to_vec() }),
+            Message::ClientClipboard(Clipboard {
+                mime: "text/plain;charset=utf-8".into(),
+                data: b"copied on the phone".to_vec(),
+                alternatives: Vec::new(),
+            }),
+        ),
+        one(
+            "clipboard-client-image",
+            "An image copied on the phone, with no text.",
+            Message::ClientClipboard(Clipboard { mime: "image/png".into(), data: media.png.clone(), alternatives: Vec::new() }),
         ),
         one("ping", "", Message::Ping { t_us: 98_765_432_100 }),
         Vector {

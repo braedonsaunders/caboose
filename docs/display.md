@@ -202,9 +202,9 @@ preference order, and its `features`; then sends `window.create` for every live 
 followed by a keyframe of each.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `audio`, `xwayland`, `video`. A feature is listed only when the
-server implements it. caboose-display always lists `vsync`, `ack`, `touch`,
-`text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
+`clipboard-types`, `cursor-named`, `tiles`, `audio`, `xwayland`, `video`. A feature is
+listed only when the server implements it. caboose-display always lists `vsync`, `ack`,
+`touch`, `text-input-v3`, `cursor-named`, `clipboard` and `clipboard-types`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
 plays sound; and `tiles` unless tiles are turned off. It does not list `pencil`.
 
@@ -251,7 +251,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …) |
-| `0x30` | `clipboard` | `mime`, `data: bytes` |
+| `0x30` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` (see "Clipboard") |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x40` | `audio` | `codec: "opus"`, `pts_us`, `channels?: uint` (1 or 2, absent = 2), `data: bytes` |
 | `0x7E` | `pong` | `t_us` (echoed from `ping`) |
@@ -261,7 +261,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]` |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `clipboard_types?: [mime]` (what the client takes from the clipboard besides text) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
@@ -275,7 +275,7 @@ Client → server (`0x81`–`0xFF`):
 | `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool }` (pixels when precise, otherwise wheel clicks) |
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
-| `0xA0` | `clipboard` | `mime`, `data: bytes` |
+| `0xA0` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` |
 | `0xFE` | `ping` | `t_us`, answered by `pong` for round-trip time |
 
 A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: float, hdr: bool }`.
@@ -302,7 +302,42 @@ caboose-display sends a subset of these messages. It sends named cursors (`curso
 and no `cursor` images; tiles only as `png`; `video.create` and `video.update` without
 `z`, `color` or `extradata`; and no `notification` (the computer's notifications reach
 the app through the host, from [guest/notifications](../guest/notifications)). It ignores
-`pencil`. The clipboard carries text (`text/plain;charset=utf-8`).
+`pencil`.
+
+### Clipboard
+
+One `clipboard` message is one copy: its first representation in `mime` and `data`, and
+the same content in other types in `alternatives`, absent when there are none. Either
+side sends one whenever its own clipboard changes; the server also sends the computer's
+current copy right after `hello`. The types are:
+
+| Type | Content |
+| --- | --- |
+| `text/plain;charset=utf-8` | UTF-8 text, at most 1 MiB |
+| `image/png` | A PNG, beginning with the PNG signature |
+| `image/jpeg` | A JPEG, beginning with `FF D8 FF` |
+| `text/uri-list` | Files: `file://` URIs of absolute paths (empty or `localhost` host, percent-encoded), one per line, `#` lines ignored; at most 64 files and 256 KiB |
+
+- A copy carries each type at most once, at most 12 MiB (`MAX_BYTES`) for every
+  representation together, and is listed text first, then images, then files. A receiver
+  refuses a whole copy with an unknown or repeated type, bytes that are not what their
+  type says, or more than the limit; the framing's 16 MiB limit is enforced before any of
+  it is read.
+- **To the client**, the server sends text, and the other types only when the client's
+  `hello` lists them in `clipboard_types`; a copy that leaves nothing for the client is
+  not sent. caboose-display reads an application's copy in its best text type
+  (`text/plain;charset=utf-8`, `UTF8_STRING`, `text/plain`, `TEXT`, `STRING`), its best
+  image type (`image/png`, then `image/jpeg`) and its files (`text/uri-list`, or
+  GNOME's `x-special/gnome-copied-files`, converted), each within its share of the limit
+  and five seconds. Paths are the computer's; a client fetches files under the home
+  through the host's `/v1/fs` routes and cannot reach others.
+- **From the client**, `text/uri-list` may only name files the client has uploaded to the
+  computer's transfer area (`~/.cache/caboose/transfers/<id>/<name>`, through the host's
+  `/v1/fs/transfer`, [architecture.md § Files](architecture.md#files)). caboose-display
+  opens each one without following links before it offers the copy, and refuses the copy
+  otherwise. It offers applications the text in every text type above, the images in
+  their own types, and files as `text/uri-list` and `x-special/gnome-copied-files`
+  (`copy`), and gives an application that pastes thirty seconds to read.
 
 ### Audio
 

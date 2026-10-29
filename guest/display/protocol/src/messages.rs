@@ -229,11 +229,34 @@ pub struct TextInputState {
     pub purpose: Option<String>,
 }
 
-/// `clipboard` (0x30 server → client, 0xA0 client → server).
+/// One representation of a copy: its MIME type and its bytes.
 #[derive(Debug, Clone, PartialEq)]
+pub struct ClipboardEntry {
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+/// `clipboard` (0x30 server → client, 0xA0 client → server): one copy, in its first
+/// representation (`mime`, `data`) and the same content in other types
+/// (`alternatives`, absent when there are none).
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Clipboard {
     pub mime: String,
     pub data: Vec<u8>,
+    pub alternatives: Vec<ClipboardEntry>,
+}
+
+impl Clipboard {
+    /// Every representation, the first one first.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        std::iter::once((self.mime.as_str(), self.data.as_slice()))
+            .chain(self.alternatives.iter().map(|e| (e.mime.as_str(), e.data.as_slice())))
+    }
+
+    /// The bytes of every representation together.
+    pub fn total_len(&self) -> usize {
+        self.entries().map(|(_, d)| d.len()).sum()
+    }
 }
 
 /// `notification` (0x31).
@@ -267,6 +290,9 @@ pub struct ClientHello {
     pub video_decoders: Option<Vec<Codec>>,
     /// Audio codecs the client plays (`"opus"`); absent means no audio is sent.
     pub audio_decoders: Option<Vec<String>>,
+    /// MIME types the client takes from the computer's clipboard besides text; absent
+    /// means text only.
+    pub clipboard_types: Option<Vec<String>>,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -555,11 +581,29 @@ fn codecs_from(f: &Fields<'_>, key: &'static str) -> Result<Vec<Codec>, Protocol
 }
 
 fn clipboard_value(c: &Clipboard) -> Value {
-    MapBuilder::new().put("mime", c.mime.as_str()).put("data", c.data.clone()).build()
+    let entry = |e: &ClipboardEntry| MapBuilder::new().put("mime", e.mime.as_str()).put("data", e.data.clone()).build();
+    MapBuilder::new()
+        .put("mime", c.mime.as_str())
+        .put("data", c.data.clone())
+        .opt(
+            "alternatives",
+            (!c.alternatives.is_empty()).then(|| Value::Array(c.alternatives.iter().map(entry).collect())),
+        )
+        .build()
 }
 
 fn clipboard_from(f: &Fields<'_>) -> Result<Clipboard, ProtocolError> {
-    Ok(Clipboard { mime: f.string("mime")?, data: f.bytes("data")? })
+    let alternatives = match f.opt("alternatives", fields::as_array)? {
+        None => Vec::new(),
+        Some(entries) => entries
+            .iter()
+            .map(|e| {
+                let e = Fields::new("clipboard.alternatives", e)?;
+                Ok(ClipboardEntry { mime: e.string("mime")?, data: e.bytes("data")? })
+            })
+            .collect::<Result<_, ProtocolError>>()?,
+    };
+    Ok(Clipboard { mime: f.string("mime")?, data: f.bytes("data")?, alternatives })
 }
 
 impl Message {
@@ -733,6 +777,7 @@ impl Message {
                 .put("displays", displays_value(&m.displays))
                 .opt("video_decoders", m.video_decoders.as_deref().map(codecs_value))
                 .opt("audio_decoders", m.audio_decoders.clone())
+                .opt("clipboard_types", m.clipboard_types.clone())
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -941,6 +986,10 @@ impl Message {
                 audio_decoders: match f.opt("audio_decoders", fields::as_array)? {
                     None => None,
                     Some(_) => Some(f.strings("audio_decoders")?),
+                },
+                clipboard_types: match f.opt("clipboard_types", fields::as_array)? {
+                    None => None,
+                    Some(_) => Some(f.strings("clipboard_types")?),
                 },
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },

@@ -7,6 +7,7 @@
 //! boundaries carry no meaning.
 
 pub mod cbor;
+pub mod clipboard;
 mod fields;
 mod messages;
 pub mod vectors;
