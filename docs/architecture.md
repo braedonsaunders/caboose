@@ -213,6 +213,8 @@ Linux hosts can opt new microVM computers into a memory template with
 systemd target from a copy of the golden image. The host pins a read-only
 memory inode shared by descendants, gives each computer its own writable disk
 and device identities, and retains the source inode while descendants exist.
+The host administrator and source owner keep that read-only inode unchanged;
+writing or truncating it while a descendant runs corrupts the guest.
 The source registration binds the VMM, CPU, golden image, kernel, initramfs and
 read-only attachments. Before resuming, the host verifies that the VMM privately
 maps the complete memory file; a fallback to eager copying is rejected. Before
@@ -224,8 +226,9 @@ only after the private Files and terminal services are ready. The guest runtime-
 networkd wait-online because the host configures its network directly. An interrupted
 strict restore remains fenced and requires
 recovery. Existing non-template computers keep their original paths and restore
-behavior. Copy-on-write mode may fall back for unsupported Cloud Hypervisor
-configurations; template preparation rejects those configurations.
+behavior. A fork retains the source kernel boot ID until its next cold boot.
+Copy-on-write mode may fall back for unsupported Cloud Hypervisor configurations;
+template preparation rejects those configurations.
 
 An optional S3-compatible cold tier compresses and encrypts a parked snapshot
 after four hours. It verifies the remote archive before replacing the local
