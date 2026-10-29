@@ -170,6 +170,15 @@ replaces its script atomically and reuses dependencies whose exact versions alre
 An active runner finishes with the code it loaded; the next runner uses the installed code.
 The bundle does not include Caboose Display or its units, which come with the image.
 
+VM images place Caboose owner service units in `caboose-workloads.slice` and install
+`caboose-owner-run`, which enters a scope in that slice before switching to the owner.
+The microVM command transport uses that launcher for standard owner commands when it
+is installed, and uses `runuser` on older guests. Other owner processes can still run
+outside that slice.
+If a parked Files freeze recovery intent exists, VM wake thaws the guest filesystem
+and workload slice before exposing guest services. A failed thaw retains the intent
+and fails the wake.
+
 ### Owner credential store
 
 The host holds a random nonempty per-computer keyring password in `keyring-secret` in that
@@ -2521,8 +2530,10 @@ The extension enumerates its home through `/v1/fs`, downloads on demand, and upl
 `If-Match` and `If-None-Match`. It keeps stable item identifiers in its extension storage
 across moves, signals the working set when the app receives `fs.changed`, and
 re-enumerates after an expired anchor. The system generates previews for downloaded files;
-there are no server-side thumbnails. Files access wakes a parked computer, and an
-unreachable host is reported to Files as unreachable.
+there are no server-side thumbnails. On an opted-in supported Linux microVM, Files can
+read a sealed parked view through one network-disabled, read-only libguestfs appliance per request. Metadata and bounded content chunks share that appliance. The reader parses the guest Python MIME tables as literal data without executing guest code. Unsupported paths,
+metadata, change feeds and all mutations wake the computer. An unreachable host is
+reported to Files as unreachable.
 
 ### Open in place
 

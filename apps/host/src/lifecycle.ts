@@ -56,6 +56,13 @@ export class ComputerLifecycle<T> {
     return !this.retired && !this.restartPending && this.current === 'parked' && this.parkedGeneration === generation
   }
 
+  /** Capture a park attempt before asynchronous sidecar work starts. A wake,
+   * restart or delete invalidates it synchronously, including during a park. */
+  parkingGenerationGuard(): () => boolean {
+    const generation = this.parkedGeneration
+    return () => !this.retired && !this.restartPending && this.current === 'parking' && this.parkedGeneration === generation
+  }
+
   /** Serialize a parked-only action with wake, restart, park and deletion. */
   parkedExclusive<R>(work: (generation: number) => Promise<R>): Promise<R> {
     const generation = this.parkedGeneration

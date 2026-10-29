@@ -79,7 +79,7 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const identity = { id: record.id, slot: record.slot }
   const controller = deployment.runtime === 'container'
     ? createContainerController(deployment, { identity, settings: () => settings.get() })
-    : createController(deployment, { identity, splitImage, depotPath: vmDepot, ...(desks ? { desks } : {}), settings: () => settings.get() })
+    : createController(deployment, { identity, splitImage, depotPath: vmDepot, parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
   const snapshotPath = join(deployment.imageRoot, 'overlays', `${record.id}.snapshot`)
   return { ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), join(deployment.imageRoot, 'overlays', `${record.id}.raw`), snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }

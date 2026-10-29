@@ -212,6 +212,7 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks. |
 | `CABOOSE_VM_COW` | `off` | `on` enables Cloud Hypervisor copy-on-write snapshot restore. |
 | `CABOOSE_VM_FREE_PAGE_REPORTING` | `off` | `on` enables a zero-size virtio-balloon with free-page reporting on new Cloud Hypervisor boots. |
+| `CABOOSE_PARKED_FILES` | `off` | `on` opts Linux microVMs into parked read-only Files views when the guest, AppKit backend, reflink filesystem and libguestfs appliance support them; unsupported requests wake the computer. |
 | `CABOOSE_SNAPSHOT_TIER` | `off` | `on` archives parked Linux microVM memory to the configured private S3-compatible store after four hours. |
 | `CABOOSE_SNAPSHOT_KEY_FILE` | unset | Absolute path to a host-owned mode 0600 file containing a 32-byte encryption key as lowercase hex. Required when tiering is on. |
 | `APPKIT_STORAGE_ENDPOINT`, `APPKIT_STORAGE_BUCKET`, `APPKIT_STORAGE_ACCESS_KEY_ID`, `APPKIT_STORAGE_SECRET_ACCESS_KEY` | unset | S3-compatible storage connection used for cold snapshots. Required when tiering is on. |
@@ -556,9 +557,21 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
 | `node apps/host/scripts/check-terminal.mjs` | Opens a terminal through `/v1/terminal` (waking the computer), checks the login shell's environment, resizes, lists the session, detaches, reattaches from its offset and receives what was written meanwhile, then exits the shell with a code. A failed check hangs the session up. |
 | `node apps/host/scripts/check-fs.mjs` | Creates a temporary directory, uploads, lists, downloads a byte range, moves, and trashes its files and the directory. |
+| `bash apps/host/scripts/check-parked-appliance.sh <reflink-directory>` | Checks reflink and read-only libguestfs appliance access using a disposable ext4 image; it does not exercise parked Files access. |
+| `node apps/host/scripts/check-parked-files.mjs` | On a dedicated disposable computer, checks parked list/stat/range and version failure, cancelled reads, change-feed fallback, and mutation after wake and thaw. Set `CABOOSE_DISPOSABLE_CHECK=yes`, `CABOOSE_URL`, and `CABOOSE_OWNER_TOKEN`. |
 | `node apps/host/scripts/check-agents.mjs [--agent <id>] [--install] [--open]` | Saves a file to `~/Downloads`, lists the registry, and runs a real task with the given agent (default: the computer's default agent) that asks before acting with an attachment, approves it through the API, and replies. The agent must be signed in; `--install` installs it first; `--open` also opens https://example.com on the owner's display. |
 | `node apps/host/scripts/check-craft.mjs <app> <files…>` | Runs a Craft job (`photocraft`, `pdfcraft`, `lightcraft`, `filmcraft`) on the given files, checks the output signature and moves the job directory to Trash. FilmCraft media must already be on the computer at the paths in the project. Failed jobs remain for inspection. |
 | `apps/host/scripts/check-open-app.sh` | With `CABOOSE_CHECK_FILE` (a local document) and `CABOOSE_CHECK_APP` (an installed desktop entry id): uploads the file and opens it with that app. Check the owner's display; the test copy stays in a uniquely named folder in the home. |
+
+For `check-parked-files.mjs`, use a dedicated disposable Linux microVM with a
+legacy ext4 image, updated guest components, `CABOOSE_PARKED_FILES=on`, a
+reflink-capable image filesystem, and a working libguestfs appliance. Disconnect
+other clients and allow component updates to finish before running it. The check
+parks and wakes the computer, creates a unique home directory and moves that
+directory to Trash afterward. A failed cleanup is reported. A fallback wake
+during a read fails the check; it does not prove the source of a failure. Run
+`node --test apps/host/scripts/check-parked-files.test.mjs` for the local harness
+without a VM. `CABOOSE_CHECK_TIMEOUT_MS` sets the request bound (10–600 seconds).
 | `node apps/host/scripts/check-push.mjs [device-index]` | Run on the host with its `CABOOSE_APNS_*` variables and `CABOOSE_IMAGE_ROOT`: sends a test alert to a device from `push-devices.json` (default index 0) without printing tokens. APNs acceptance is not proof of delivery; check the device. |
 | `apps/host/scripts/check-container.sh` | Against the running Compose service on Linux: the container's own network namespace, TAP and NAT, KVM access, the reflink disk root, authenticated health, and the bundled console (HTML, compiled assets, SPA fallback, API authentication). |
 
@@ -618,3 +631,5 @@ pnpm --filter caboose-host exec tsx -e "import {writeFileSync} from 'node:fs'; i
 docker run --rm --init --network none --memory 128m --cpus 1 -v "$PWD/apps/host/scripts/check-agent-delete.mjs:/check.mjs:ro" -v /tmp/caboose-delete-task-code.js:/delete-task.js:ro node:22-bookworm-slim node /check.mjs /delete-task.js
 rm /tmp/caboose-delete-task-code.js
 ```
+
+Parked Files requires Linux `python3-guestfs`, a libguestfs appliance kernel readable by the host user, and KVM access. Each supported request starts one network-disabled, read-only appliance; all metadata and bounded content chunks share that appliance. Names outside the supported ASCII subset, non-owner paths, ancestor ACLs, unsupported MIME tables and oversized directories fall back to wake. Guest MIME tables are parsed as literal data; no program from the computer executes in the reader.

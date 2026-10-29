@@ -39,6 +39,8 @@ export interface Config {
   /** Cloud Hypervisor snapshot and memory options. */
   vmCow?: boolean
   vmFreePageReporting?: boolean
+  /** Opt in to the read-only parked Files appliance on supported Linux VMs. */
+  parkedFiles?: boolean
   /** `CABOOSE_MDNS`: advertise `_caboose._tcp` on the LAN (default on). */
   mdns: boolean
 }
@@ -61,6 +63,7 @@ export function config(env: NodeJS.ProcessEnv): Config {
   const selectedRuntime = runtime(env.CABOOSE_RUNTIME)
   const vmCow = toggle(env.CABOOSE_VM_COW, 'CABOOSE_VM_COW')
   const vmFreePageReporting = toggle(env.CABOOSE_VM_FREE_PAGE_REPORTING, 'CABOOSE_VM_FREE_PAGE_REPORTING')
+  const parkedFiles = toggle(env.CABOOSE_PARKED_FILES, 'CABOOSE_PARKED_FILES')
   if (vmCow && env.CABOOSE_VM_DEPOT?.trim()) throw new Error('CABOOSE_VM_COW cannot be combined with the microVM depot')
   if (selectedRuntime === 'container' && (vmCow || vmFreePageReporting)) throw new Error('Cloud Hypervisor memory options require the microVM runtime')
   return {
@@ -88,6 +91,7 @@ export function config(env: NodeJS.ProcessEnv): Config {
     mdns: mdns(env.CABOOSE_MDNS),
     vmCow,
     vmFreePageReporting,
+    parkedFiles,
   }
 }
 
