@@ -3,7 +3,7 @@ import errno
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-from parked_quiesce import Unsupported, branch_states, cgroup_tree, check_control_plane, check_mounts, check_processes, freeze, freeze_branches, freeze_filesystem, plan_freezer_branches, recovery_ancestry, thaw
+from parked_quiesce import Unsupported, branch_states, bridge_processes, cgroup_tree, check_control_plane, check_mounts, check_processes, freeze, freeze_branches, freeze_filesystem, plan_freezer_branches, recovery_ancestry, thaw
 
 ROOT = '1 0 8:1 / / rw - ext4 /dev/vda rw\n'
 
@@ -21,9 +21,36 @@ class QuiesceChecks(unittest.TestCase):
             proc = Path(directory)
             (proc / 'self').mkdir()
             (proc / 'self' / 'mountinfo').write_text(ROOT)
-            with patch('parked_quiesce.os.stat') as stat, patch('parked_quiesce.cgroup_tree', return_value={}), patch('parked_quiesce.recovery_ancestry', return_value=[1]), patch('parked_quiesce.check_control_plane'), patch('parked_quiesce.freeze_branches'), patch('parked_quiesce.freeze_filesystem', side_effect=OSError('unknown outcome')), patch('parked_quiesce.thaw') as recover:
+            with patch('parked_quiesce.os.stat') as stat, patch('parked_quiesce.cgroup_tree', return_value={}), patch('parked_quiesce.recovery_ancestry', return_value=[1]), patch('parked_quiesce.bridge_processes', return_value=[2]), patch('parked_quiesce.check_control_plane'), patch('parked_quiesce.freeze_branches'), patch('parked_quiesce.freeze_filesystem', side_effect=OSError('unknown outcome')), patch('parked_quiesce.thaw') as recover:
                 stat.return_value.st_dev = 5
                 with self.assertRaises(OSError): freeze({'branches': recorded, 'homeDevice': 5}, proc=directory)
+            recover.assert_called_once_with(branches=recorded)
+
+    def test_bridge_listener_and_children_are_protected_and_unknown_peer_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            argv = b'/usr/bin/socat\0VSOCK-LISTEN:5252,fork,reuseaddr\0UNIX-CONNECT:/run/desk-guest-agent.sock\0'
+            for pid, parent in ((20, 1), (21, 20)):
+                base = proc / str(pid); base.mkdir()
+                (base / 'exe').symlink_to('/usr/bin/socat')
+                (base / 'cmdline').write_bytes(argv)
+                (base / 'status').write_text(f'PPid:\t{parent}\n')
+            nodes = {'/': [1], '/system.slice': [], '/system.slice/desk-guest-agent.service': [10, 11], '/system.slice/desk-vsock-bridge.service': [20, 21], '/system.slice/writer.service': [30]}
+            bridge = bridge_processes(nodes, directory)
+            self.assertEqual(bridge, [20, 21])
+            self.assertEqual(plan_freezer_branches(nodes, [1, 10, 11, *bridge]), ['/system.slice/writer.service'])
+            (proc / '21' / 'cmdline').write_bytes(b'/bin/unknown\0')
+            with self.assertRaises(Unsupported): bridge_processes(nodes, directory)
+
+    def test_changed_bridge_after_freeze_rolls_back_via_thaw(self):
+        recorded = [{'path': '/user.slice', 'frozen': False}]
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory); (proc / 'self').mkdir()
+            (proc / 'self' / 'mountinfo').write_text(ROOT)
+            with patch('parked_quiesce.os.stat') as stat, patch('parked_quiesce.cgroup_tree', return_value={}), patch('parked_quiesce.recovery_ancestry', return_value=[1]), patch('parked_quiesce.bridge_processes', side_effect=[[2], [2, 3]]), patch('parked_quiesce.check_control_plane'), patch('parked_quiesce.freeze_branches'), patch('parked_quiesce.freeze_filesystem') as fsfreeze, patch('parked_quiesce.thaw') as recover:
+                stat.return_value.st_dev = 5
+                with self.assertRaises(Unsupported): freeze({'branches': recorded, 'homeDevice': 5}, proc=directory)
+            fsfreeze.assert_not_called()
             recover.assert_called_once_with(branches=recorded)
 
     def test_changed_home_device_refuses_freeze(self):

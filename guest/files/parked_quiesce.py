@@ -176,7 +176,46 @@ def recovery_ancestry(proc='/proc', pid=None):
     return sorted(seen)
 
 
-def check_control_plane(trusted, proc='/proc', home='/home/caboose', pid=None):
+BRIDGE_CGROUP = '/system.slice/desk-vsock-bridge.service'
+BRIDGE_ARGV = [b'/usr/bin/socat', b'VSOCK-LISTEN:5252,fork,reuseaddr', b'UNIX-CONNECT:/run/desk-guest-agent.sock']
+
+
+def bridge_processes(nodes, proc='/proc'):
+    """Identify the packaged listener and its socat fork children, or fail closed."""
+    pids = nodes.get(BRIDGE_CGROUP)
+    if not pids or len(pids) > 64:
+        raise Unsupported('private vsock bridge unavailable')
+    parents = {}
+    try:
+        for pid in pids:
+            base = Path(proc) / str(pid)
+            if os.readlink(base / 'exe') != '/usr/bin/socat':
+                raise Unsupported('unknown private vsock bridge process')
+            argv = (base / 'cmdline').read_bytes().split(b'\0')
+            if argv and argv[-1] == b'': argv.pop()
+            if argv != BRIDGE_ARGV:
+                raise Unsupported('unknown private vsock bridge arguments')
+            status = (base / 'status').read_text()
+            parent = re.search(r'^PPid:\s+(\d+)\s*$', status, re.M)
+            if not parent:
+                raise Unsupported('private vsock bridge parent unavailable')
+            parents[pid] = int(parent.group(1))
+        listeners = [pid for pid, parent in parents.items() if parent == 1]
+        if len(listeners) != 1:
+            raise Unsupported('private vsock bridge listener is ambiguous')
+        for pid in parents:
+            seen = set()
+            while pid != listeners[0]:
+                if pid in seen or pid not in parents:
+                    raise Unsupported('unknown private vsock bridge child')
+                seen.add(pid)
+                pid = parents[pid]
+    except (OSError, UnicodeError, ValueError) as error:
+        raise Unsupported('private vsock bridge inspection unavailable') from error
+    return sorted(pids)
+
+
+def check_control_plane(trusted, proc='/proc', home='/home/caboose', pid=None, bridge=()):
     """Allow only systemd, the packaged guest agent and this helper as control."""
     helper = os.getpid() if pid is None else pid
     if len(trusted) != 3 or 1 not in trusted or helper not in trusted:
@@ -190,7 +229,7 @@ def check_control_plane(trusted, proc='/proc', home='/home/caboose', pid=None):
             raise Unsupported('unknown recovery control ancestry')
         device = os.stat(home).st_dev
         home_device = (os.major(device), os.minor(device))
-        for process in trusted:
+        for process in [*trusted, *bridge]:
             status = (Path(proc) / str(process) / 'status').read_text()
             if not re.search(r'^Uid:\s+0\s+0\s+0\s+0\s*$', status, re.M):
                 raise Unsupported('recovery control process is not root')
@@ -213,8 +252,10 @@ def check_control_plane(trusted, proc='/proc', home='/home/caboose', pid=None):
 def prepare(root='/sys/fs/cgroup', proc='/proc'):
     check_mounts((Path(proc) / 'self' / 'mountinfo').read_text())
     nodes = cgroup_tree(root)
-    trusted = recovery_ancestry(proc)
-    check_control_plane(trusted, proc)
+    ancestry = recovery_ancestry(proc)
+    bridge = bridge_processes(nodes, proc)
+    check_control_plane(ancestry, proc, bridge=bridge)
+    trusted = sorted(set(ancestry + bridge))
     return {'branches': branch_states(nodes, trusted, root), 'homeDevice': os.stat('/home/caboose').st_dev}
 
 
@@ -227,11 +268,16 @@ def freeze(intent, root='/sys/fs/cgroup', proc='/proc'):
     if os.stat('/home/caboose').st_dev != intent['homeDevice']:
         raise Unsupported('home filesystem identity changed')
     nodes = cgroup_tree(root)
-    trusted = recovery_ancestry(proc)
-    check_control_plane(trusted, proc)
+    ancestry = recovery_ancestry(proc)
+    bridge = bridge_processes(nodes, proc)
+    check_control_plane(ancestry, proc, bridge=bridge)
+    trusted = sorted(set(ancestry + bridge))
     freeze_branches(nodes, trusted, recorded, root)
     try:
-        check_control_plane(trusted, proc)
+        refreshed = cgroup_tree(root)
+        if refreshed != nodes or bridge_processes(refreshed, proc) != bridge or recovery_ancestry(proc) != ancestry:
+            raise Unsupported('recovery control plane changed during freeze')
+        check_control_plane(ancestry, proc, bridge=bridge)
         freeze_filesystem()
     except BaseException:
         # The ioctl may have succeeded before reporting an error. The host must

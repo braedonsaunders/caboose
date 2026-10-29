@@ -40,6 +40,10 @@ to the network: it is a private host-to-guest transport.
 
 - `test_logic.py` unit-tests path validation, byte ranges, versions and change anchors. The
   host's test suite runs it (`src/fs-logic.test.ts`), or run `python3 guest/files/test_logic.py`.
+- `python3 guest/files/test_parked_quiesce.py` checks parked Files freezer planning,
+  recovery-control identity, bridge protection and rollback. The control plane accepts
+  only the packaged root guest agent, its helper, systemd and the exact private vsock
+  bridge listener and its validated socat children; unknown peers make the view unavailable.
 - `check-service.py` runs the real service in Linux, including inotify and dirfd confinement.
   From the repository root, with Docker:
 
