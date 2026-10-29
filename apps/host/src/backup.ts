@@ -196,9 +196,11 @@ export class ComputerBackups {
     }
     if (lastOperation?.state === 'running' && !this.managementBusy) lastOperation = { ...lastOperation, state: 'interrupted', error: 'The host stopped before this operation completed. Inspect the computer before retrying.' }
     const reason = this.host.unavailable ?? (this.closing.signal.aborted ? 'The host is stopping' : null)
+    const coherent = !reason && this.computer.lifecycle.state === 'parked' && await this.computer.parkedView()
+    const captureReason = reason ?? (this.computer.lifecycle.state !== 'parked' ? 'Park this computer before capturing it.' : !coherent ? 'No coherent parked disk is available; wake and park this computer first.' : null)
     return { available: !reason, reason, capturing: Boolean(this.capturing), restoring: this.restoring,
-      busy: this.managementBusy, captureReady: !reason && !this.managementBusy && !this.capturing && !this.restoring && this.computer.lifecycle.state === 'parked',
-      captureReason: reason ?? (this.computer.lifecycle.state !== 'parked' ? 'Park this computer before capturing it.' : null),
+      busy: this.managementBusy, captureReady: !captureReason && !this.managementBusy && !this.capturing && !this.restoring && this.computer.lifecycle.state === 'parked',
+      captureReason,
       retention: { newest: 2, downloadingPhoneCapturesPinned: true }, lastOperation,
       captures: (await this.captures()).reverse().map(record => ({ id: record.info.id, createdAt: record.info.createdAt, diskBytes: record.info.diskBytes })),
     }
@@ -213,7 +215,9 @@ export class ComputerBackups {
     this.managementDone = new Promise<void>(resolve => { finish = resolve })
     const operation = { kind, state: 'running', startedAt: new Date(this.now).toISOString() }
     try {
+      await mkdir(this.root, { recursive: true, mode: 0o700 })
       await writePrivateJson(this.path('management.json'), operation)
+      await syncDirectory(this.root)
       if (kind === 'capture') {
         if (this.computer.lifecycle.state !== 'parked') throw new ComputerConflictError('Park this computer before capturing it')
         await this.capture(true)
@@ -228,7 +232,9 @@ export class ComputerBackups {
     } catch (error) {
       await writePrivateJson(this.path('management.json'), { ...operation, state: 'failed', finishedAt: new Date(this.now).toISOString(), error: kind === 'capture' ? 'Capture failed. Check parked Files readiness and host storage; see operator logs for details.' : 'Restore failed. Check image availability and the computer recovery state; see operator logs for details.' })
       throw error
-    } finally { this.managementBusy = false; finish(); this.managementDone = undefined }
+    } finally {
+      try { await syncDirectory(this.root) } finally { this.managementBusy = false; finish(); this.managementDone = undefined }
+    }
   }
 
   /** Remove incomplete captures, expired packs and abandoned restores left by a crash. */

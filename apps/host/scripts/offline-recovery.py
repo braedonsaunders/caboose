@@ -26,17 +26,35 @@ def regular(path):
     return info
 
 
-def entries(root):
-    for directory, dirs, files in os.walk(root, followlinks=False):
+def walk_error(error):
+    raise error
+
+
+def inventory(root, budget):
+    directories, files = [], []
+    for directory, dirs, names in os.walk(root, followlinks=False, onerror=walk_error):
+        directories.append(Path(directory))
+        if len(directories) + len(files) + len(dirs) + len(names) > budget:
+            raise ValueError('Too many filesystem entries')
         for name in dirs:
             if Path(directory, name).is_symlink():
                 raise ValueError('Symlink directory refused')
-        for name in files:
+        for name in names:
             path = Path(directory, name)
             if name == '.host.lock':
                 continue
             regular(path)
-            yield path
+            files.append(path)
+    return directories, files
+
+
+def sync_directories(directories):
+    for path in sorted(set(directories), key=lambda p: len(p.parts), reverse=True):
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
 
 def safe_path(root, relative):
@@ -101,27 +119,33 @@ def capture(args):
     fd = os.open(roots['images'] / '.host.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        inventories = {}
+        remaining = MAX_FILES
+        for label, root in roots.items():
+            directories, files = inventory(root, remaining)
+            remaining -= len(directories) + len(files)
+            inventories[label] = (directories, files)
         # Split image bindings must be covered, including bindings inside template directories.
-        for path in entries(roots['images']):
+        for path in inventories['images'][1]:
             if path.name.endswith('.system-image.json'):
                 binding = json.loads(path.read_text())
                 dependency = Path(binding['directory']).resolve()
                 if not any(dependency == root or root in dependency.parents for root in roots.values()):
                     raise ValueError('An image binding is outside supplied roots; add a dependency root')
-        total = sum(regular(path).st_size for root in roots.values() for path in entries(root))
+        total = sum(regular(path).st_size for _, files in inventories.values() for path in files)
         if total > args.max_bytes:
             raise ValueError('Sources exceed --max-bytes')
         bundle.mkdir(mode=0o700)
         records = []
         directories = []
         for label, root in roots.items():
-            for directory, _, _ in os.walk(root, followlinks=False):
+            for directory in inventories[label][0]:
                 relative = label + ('/' + Path(directory).relative_to(root).as_posix() if Path(directory) != root else '')
                 safe_path(bundle / 'data', relative).mkdir(mode=0o700, parents=True, exist_ok=True)
                 directories.append(relative)
                 if len(directories) > MAX_FILES:
                     raise ValueError('Too many directories')
-            for source in entries(root):
+            for source in inventories[label][1]:
                 if len(records) >= MAX_FILES:
                     raise ValueError('Too many files')
                 relative = label + '/' + source.relative_to(root).as_posix()
@@ -146,6 +170,7 @@ def capture(args):
             stream.flush()
             os.fsync(stream.fileno())
         manifest(bundle, args.max_bytes)
+        sync_directories([bundle.parent, bundle, bundle / 'data', *[bundle / 'data' / name for name in directories]])
     finally:
         os.close(fd)
 
@@ -159,12 +184,19 @@ def restore(args):
     if target.exists() or target.is_symlink():
         raise ValueError('Restore destination must not exist')
     target.mkdir(mode=0o700)
+    created_directories = {target, target.parent}
     for relative in data.get('directories', []):
-        safe_path(target, relative).mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory = safe_path(target, relative)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        created_directories.add(directory)
     for record in data['files']:
         source = safe_path(bundle / 'data', record['path'])
         destination = safe_path(target, record['path'])
         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for directory in destination.parents:
+            if directory == target.parent:
+                break
+            created_directories.add(directory)
         import subprocess
         subprocess.run(['cp', '--sparse=always', '--reflink=never', '--', str(source), str(destination)], check=True)
         if digest(destination) != record['sha256']:
@@ -173,6 +205,7 @@ def restore(args):
         destination.chmod(0o600 | (record['mode'] & 0o100))
         with destination.open('rb') as copied:
             os.fsync(copied.fileno())
+    sync_directories(created_directories)
 
 
 def main():

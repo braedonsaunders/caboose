@@ -7,6 +7,7 @@ import fcntl
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('recovery', Path(__file__).parents[1] / 'offline-recovery.py')
 module = importlib.util.module_from_spec(spec)
@@ -53,6 +54,16 @@ class RecoveryTests(unittest.TestCase):
         path.symlink_to(self.bundle / 'manifest.json')
         with self.assertRaises(ValueError):
             module.manifest(self.bundle, 100)
+
+    def test_walk_failure_and_preflight_bound(self):
+        def failed_walk(root, **kwargs):
+            kwargs['onerror'](PermissionError('unreadable subtree'))
+            return iter([])
+        with patch.object(module.os, 'walk', failed_walk):
+            with self.assertRaises(PermissionError):
+                module.inventory(self.root, 100)
+        with self.assertRaises(ValueError):
+            module.inventory(self.bundle, 1)
 
     def test_capture_refuses_live_lock(self):
         roots = []
