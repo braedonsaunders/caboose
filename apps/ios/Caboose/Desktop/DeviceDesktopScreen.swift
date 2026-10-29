@@ -418,29 +418,31 @@ final class DesktopTouchSurface: RemoteTextInputView {
             }
             press.begin(at: first.location(in: self), time: ProcessInfo.processInfo.systemUptime)
             holdTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
-                guard let self, let desktop = self.desktop, !self.dragging,
-                      let point = self.press.context(at: ProcessInfo.processInfo.systemUptime) else { return }
-                self.scrollDriver.cancel()
-                self.lastTap = nil
-                self.point(at: point)
-                if self.pansContent {
-                    guard let target = self.panWindow, let session = self.session, session === self.panSession,
-                          session.state == .ready, session.windows[target.id] === target,
-                          case .content(let id, _) = desktop.hitTest(point, windows: session.windows),
-                          id == target.id else { self.scrollSuppressed = true; return }
-                    self.dragging = true
-                    desktop.beginDrag(session: session)
-                    self.haptics.impactOccurred()
-                    return
+                MainActor.assumeIsolated {
+                    guard let self, let desktop = self.desktop, !self.dragging,
+                          let point = self.press.context(at: ProcessInfo.processInfo.systemUptime) else { return }
+                    self.scrollDriver.cancel()
+                    self.lastTap = nil
+                    self.point(at: point)
+                    if self.pansContent {
+                        guard let target = self.panWindow, let session = self.session, session === self.panSession,
+                              session.state == .ready, session.windows[target.id] === target,
+                              case .content(let id, _) = desktop.hitTest(point, windows: session.windows),
+                              id == target.id else { self.scrollSuppressed = true; return }
+                        self.dragging = true
+                        desktop.beginDrag(session: session)
+                        self.haptics.impactOccurred()
+                        return
+                    }
+                    self.contextOpened = true
+                    // Held on Launchpad: Quick Switch, slid through with the same finger.
+                    if desktop.beginSwitchHold(session: self.session) {
+                        self.switchHolding = true
+                        return
+                    }
+                    desktop.click(button: 3, session: self.session, open: self.open)
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 }
-                self.contextOpened = true
-                // Held on Launchpad: Quick Switch, slid through with the same finger.
-                if desktop.beginSwitchHold(session: self.session) {
-                    self.switchHolding = true
-                    return
-                }
-                desktop.click(button: 3, session: self.session, open: self.open)
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
         } else { cancelHold() }
     }
