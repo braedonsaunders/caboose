@@ -65,6 +65,9 @@ window's whole picture. Once the window is mapped it connects to `$CABOOSE_GAME_
   native game opens its own); otherwise the window asks for Caboose on an iPhone or iPad.
   After a `handoff`, a `local` (the device went away) only changes the status line, and a
   later `handoff` resumes.
+- `local` with `declined: true`: the device could not run the game it was given (see
+  "Declining"). The launcher runs `native_fallback` in place of itself whenever it comes, or,
+  without one, says the device could not run the game and the computer has no build of it.
 
 Without `CABOOSE_GAME_SOCKET`, or when the socket does not answer within five seconds, the
 launcher behaves as for a first `local`. The agent seat has no game socket, so a game an agent
@@ -84,7 +87,7 @@ payload larger than 64 KiB closes the connection.
 | Direction | Type | Message | Fields |
 | --- | --- | --- | --- |
 | launcher → display | `0x01` | `hello` | `version: 1`, `title`, `app_id`, `root`, `entry`, `saves?: [{ mount, path }]` |
-| display → launcher | `0x81` | `mode` | `mode: "handoff"\|"local"`, `window?: uint` |
+| display → launcher | `0x81` | `mode` | `mode: "handoff"\|"local"`, `window?: uint`, `declined?: true` |
 
 `root` is the served directory relative to `/home/caboose` (the bundle's path joined with its
 manifest's `root`), `entry` is relative to `root`, and `saves` are as in the manifest.
@@ -107,6 +110,18 @@ launcher disconnects or its window closes. Game ids are their own namespace, uni
 server process's lifetime. While its game is shown on a client, the window sends no
 `frame`, `tile` or video stream, and `request_keyframe` for it is ignored. The client's
 `configure` and `close` for the window are handled as for any window.
+
+### Declining
+
+A client that finds it cannot run a game it was given (its page needs threads WebKit will not
+give it, or its web content keeps crashing) sends `game.decline { id, reason }` once, after
+writing the saves still on their way. caboose-display takes it only for a game it announced
+to that client and not yet withdrawn, once: it sends `game.destroy`, the window sends its
+pictures again, and the launcher hears `local` with `declined`, so the bundle's native build
+replaces it and the client sees the game as an ordinary window. The game stays with the
+computer for the rest of the launcher's life. The client says it is handing the game back,
+and says so plainly if no `game.destroy` follows within ten seconds (a computer that does not
+know `game.decline` skips it).
 
 ## The client
 

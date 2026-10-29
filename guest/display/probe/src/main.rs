@@ -50,6 +50,8 @@ OPTIONS:
                            then commit), copy:STRING (the phone's clipboard), tap:X,Y,
                            click:X,Y, wait:MS, maximize (fill the display),
                            scroll:X,Y,DY (precise, DY pixels), resize:W,H, close,
+                           decline (refuse the game handed to the probe, as a device that
+                           cannot run it does),
                            finger-down:X,Y, finger-move:X,Y, finger-up:X,Y (16 ms apart)
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
@@ -590,6 +592,14 @@ fn run(args: Args) -> Result<bool, String> {
             if now >= next_action {
                 pending.pop_front();
                 next_action = now + Duration::from_millis(if action.starts_with("finger-") { 16 } else { 300 });
+                if action == "decline" {
+                    // The game handed to the probe, not the window: game ids are their own namespace.
+                    if let Some(game) = games.keys().next().copied() {
+                        let reason = "the probe declines it".to_owned();
+                        send(&mut ws, &Message::GameDecline { id: game, reason })?;
+                    }
+                    continue;
+                }
                 for m in action_messages(id, &action)? {
                     if let Message::Ping { t_us } = m {
                         next_action = now + Duration::from_millis(t_us);

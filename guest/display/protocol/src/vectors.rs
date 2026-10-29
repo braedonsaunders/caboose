@@ -416,6 +416,11 @@ pub fn all(media: &Media) -> Vec<Vector> {
             Message::GpuDestroy { id: 1, reason: Some("spool-limit".into()) },
         ),
         one("gpu-ack", "The client has consumed stream 1 up to byte 65536.", Message::GpuAck { id: 1, offset: 65536 }),
+        one(
+            "game-decline",
+            "The client cannot run game 1: its page needs threads the device would not give it.",
+            Message::GameDecline { id: 1, reason: "the page is not cross-origin isolated".into() },
+        ),
         one("video-keyframe", "", Message::VideoKeyframe { id: 1 }),
         one(
             "audio-opus-stereo",

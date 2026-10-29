@@ -193,6 +193,21 @@ class Fallback(Home):
         self.assertEqual(answers.mode('local'), ('status', run.ASK))
         self.assertEqual(answers.mode('handoff'), ('status', run.PLAYING))
 
+    def test_a_declined_game_runs_natively_even_after_handoff(self):
+        answers = run.Answers(['/bin/game'])
+        self.assertEqual(answers.mode('handoff'), ('status', run.PLAYING))
+        self.assertEqual(answers.mode('declined'), ('native', None))
+        answers = run.Answers(None)
+        self.assertEqual(answers.mode('handoff'), ('status', run.PLAYING))
+        self.assertEqual(answers.mode('declined'), ('status', run.DECLINED))
+
+    def test_declined_is_read_from_a_local_mode(self):
+        def mode(value):
+            payload = run.encode(value)
+            return bytes([run.MODE]) + len(payload).to_bytes(4, 'little') + payload
+        stream = mode({'mode': 'local', 'window': 3, 'declined': True}) + mode({'mode': 'local', 'declined': False})
+        self.assertEqual(run.modes(run.Frames(), stream), ['declined', 'local'])
+
 
 class Cbor(unittest.TestCase):
     def test_round_trip(self):

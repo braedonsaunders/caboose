@@ -299,6 +299,7 @@ Client → server (`0x81`–`0xFF`):
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
 | `0x96` | `gpu.ack` | `id`, `offset`: the client has consumed the stream up to `offset` |
+| `0x97` | `game.decline` | `id`, `reason: text`: the client cannot run game `id` ([game-handoff.md, "Declining"](game-handoff.md#declining)) |
 | `0xA0` | `clipboard` | `mime`, `data: bytes` |
 | `0xFE` | `ping` | `t_us`, answered by `pong` for round-trip time |
 
