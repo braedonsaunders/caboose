@@ -1,0 +1,26 @@
+name: Check CabooseKit
+
+on:
+  pull_request:
+    paths:
+      - 'apps/ios/CabooseKit/**'
+      - 'guest/display/vectors/**'
+      - '.github/workflows/check-caboosekit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: caboosekit-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kit:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - name: Check protocol, session and Metal surface behavior
+        run: swift test --package-path apps/ios/CabooseKit --disable-sandbox -j 2
