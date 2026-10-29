@@ -6,6 +6,17 @@ mode=${1:?expected image-vm, image-container, vm or container}
 case "$mode" in image-vm|image-container|vm|container) ;; *) exit 2;; esac
 export DEBIAN_FRONTEND=noninteractive
 packages=(gnome-keyring appstream gir1.2-appstream-1.0 cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi gir1.2-gtk-3.0 python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1 libvulkan1 libxcb-keysyms1 xdg-desktop-portal xdg-desktop-portal-gtk geoclue-2.0 flatpak gir1.2-flatpak-1.0 gir1.2-webkit2-4.1)
+# Steam's native amd64 client still launches a 32-bit reaper and overlay outside
+# its bundled runtime. Keep their host loader/GL dependencies available to all
+# titles. Debian's amd64 libc6-i386 supplies /lib/ld-linux.so.2; libgl1:i386
+# supplies the overlay's GL dependency and its normal APT dependency closure.
+if [[ $(dpkg --print-architecture) = amd64 ]]; then
+  foreign_architectures=$(dpkg --print-foreign-architectures)
+  if [[ $'\n'"$foreign_architectures"$'\n' != *$'\ni386\n'* ]]; then
+    dpkg --add-architecture i386
+  fi
+  packages+=(libc6-i386 libgl1:i386)
+fi
 missing=()
 for pkg in "${packages[@]}"; do
   [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || :)" = installed ] || missing+=("$pkg")
@@ -37,6 +48,7 @@ if ! node --version >/dev/null 2>&1 || ! npm --version >/dev/null 2>&1; then
   exit 1
 fi
 install -Dm755 "$root/files/caboose-files.py" /opt/caboose/files/caboose-files.py
+install -Dm755 "$root/components/check-steam-bootstrap.sh" /usr/local/libexec/caboose-check-steam-bootstrap
 install -Dm644 "$root/files/caboose-files.service" /etc/systemd/system/caboose-files.service
 install -Dm755 "$root/terminal/caboose-terminal.py" /opt/caboose/terminal/caboose-terminal.py
 install -Dm644 "$root/terminal/caboose-terminal.service" /etc/systemd/system/caboose-terminal.service

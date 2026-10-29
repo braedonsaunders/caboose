@@ -23,7 +23,13 @@ case "$command" in
     # NodeSource has nodejs installed, but no separate npm package.
     [ "$pkg" != npm ] || exit 1
     printf installed ;;
-  dpkg) exit 0 ;;
+  dpkg)
+    case "$1" in
+      --print-architecture) printf '%s\\n' "${FIXTURE_ARCH:-amd64}" ;;
+      --print-foreign-architectures) printf '%s\\n' "${FOREIGN_ARCH:-i386}" ;;
+      --add-architecture) [ "${FAIL_ARCH_ADD:-}" != yes ] ;;
+      *) exit 0 ;;
+    esac ;;
   apt-get)
     [ "${FAIL_APT:-}" != "$1" ] || { echo 'fixture apt failure' >&2; exit 1; }
     [ "$1" = install ] || exit 0
@@ -64,7 +70,8 @@ class Dependencies(unittest.TestCase):
         for name in ('dirname', 'mktemp', 'rm', 'tail'):
             (self.bin / name).symlink_to(shutil.which(name))
         self.env = {**os.environ, 'PATH': str(self.bin), 'FIXTURE': str(self.root)}
-        for name in ('BASH_ENV', 'MISSING_PACKAGE', 'FAIL_APT', 'BROKEN_INSTALL', 'BUNDLED_NPM'):
+        for name in ('BASH_ENV', 'MISSING_PACKAGE', 'FAIL_APT', 'BROKEN_INSTALL', 'BUNDLED_NPM',
+                     'FIXTURE_ARCH', 'FOREIGN_ARCH', 'FAIL_ARCH_ADD'):
             self.env.pop(name, None)
 
     def runtime(self, node=True, npm=True):
@@ -90,7 +97,32 @@ class Dependencies(unittest.TestCase):
         for mode in ('image-vm', 'image-container', 'vm', 'container'):
             with self.subTest(mode=mode):
                 calls, _ = self.run_installer(mode=mode)
-                self.assertFalse(any(line.startswith(('apt-get ', 'dpkg ')) for line in calls), calls)
+                self.assertFalse(any(line.startswith(('apt-get ', 'dpkg --configure',
+                                                      'dpkg --add-architecture')) for line in calls), calls)
+
+    def test_amd64_installs_missing_overlay_dependency(self):
+        self.runtime()
+        calls, _ = self.run_installer(MISSING_PACKAGE='libgl1:i386')
+        self.assertEqual(self.apt_installs(calls), [['libgl1:i386']])
+        self.assertIn("dpkg-query -W -f=${db:Status-Status} libc6-i386", calls)
+        self.assertNotIn('dpkg --add-architecture i386', calls)
+
+    def test_amd64_registers_i386_before_apt(self):
+        self.runtime()
+        calls, _ = self.run_installer(FOREIGN_ARCH='armhf', MISSING_PACKAGE='libgl1:i386')
+        self.assertLess(calls.index('dpkg --add-architecture i386'), calls.index('apt-get update'))
+        self.assertEqual(self.apt_installs(calls), [['libgl1:i386']])
+
+    def test_arm64_keeps_native_dependencies_only(self):
+        self.runtime()
+        calls, _ = self.run_installer(FIXTURE_ARCH='arm64', MISSING_PACKAGE='libgl1:i386')
+        self.assertEqual(self.apt_installs(calls), [])
+        self.assertFalse(any('i386' in line or '--print-foreign-architectures' in line for line in calls))
+
+    def test_architecture_registration_failure_stops_before_install(self):
+        self.runtime()
+        calls, _ = self.run_installer(expected=1, FOREIGN_ARCH='armhf', FAIL_ARCH_ADD='yes')
+        self.assertFalse(any(line.startswith('apt-get ') for line in calls))
 
     def test_other_missing_packages_do_not_replace_working_runtime(self):
         self.runtime()

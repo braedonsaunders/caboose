@@ -92,6 +92,10 @@ The image contains:
   desktop launchers for terminal tools and agents. Mesa provides software Vulkan and OpenGL when the
   computer has no GPU. Fonts are Inter, JetBrains Mono and Noto (including CJK and colour
   emoji). Optional applications come from the catalog (below).
+  On amd64, guest components also register Debian's i386 package architecture and install
+  the native Steam bootstrap's 32-bit loader and GL dependencies (`libc6-i386` and
+  `libgl1:i386`); arm64 keeps its native dependencies. This does not advertise additional
+  GPU features or establish game compatibility.
 - **Caboose Display.** `caboose-display` and its units, installed but not enabled. The
   host starts them (see [Displays](#displays)).
 - **Codec passthrough.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and

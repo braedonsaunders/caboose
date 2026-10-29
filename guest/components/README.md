@@ -18,6 +18,29 @@ From the repository root, `python3 guest/components/test_install.py` checks depe
 detection and APT failures with isolated shell fixtures. It needs Bash and Python 3, runs
 without root, Docker or network access, and stops before the first system-file write.
 
+On amd64, the installer registers Debian's `i386` package architecture and provides
+`libc6-i386` and `libgl1:i386` with APT's dependency closure. Native Steam's `steamrt64`
+directory includes a 32-bit `reaper`; its loader and the 32-bit overlay's GL dependency
+must resolve outside Steam's bundled runtime. Arm64 keeps its native package set. These
+are shared bootstrap prerequisites, not game-specific compatibility settings or a
+complete set of 32-bit graphics drivers. Steam, account data and games are not installed
+or changed by this check.
+
+After installing the official native client, run as its owner in the native guest:
+
+```sh
+/usr/local/libexec/caboose-check-steam-bootstrap /path/to/installed/Steam
+```
+
+From a checkout, use
+`bash guest/components/check-steam-bootstrap.sh /path/to/installed/Steam`.
+It resolves the actual 32/64-bit overlay and wrapper dependencies with the system
+loaders, then runs the wrapper/reaper chain with both overlays and `/usr/bin/true`.
+Each subprocess has a ten-second timeout. Expected wrong-ELF-class overlay warnings
+are ignored by the opposite-architecture loader, as in normal Steam launches. Missing
+dependencies or a failed chain return failure; a non-amd64 guest returns skip code 77.
+This proves bootstrap loading only, not runtime sandbox startup, GPU support or gameplay.
+
 `python3 guest/components/test_staging.py` checks that every file in `manifest.json` is
 staged where each builder runs the installer: the host image's `/app/guest` (for updating
 computers), the container image's `/tmp/bundle`, and the VM image's `/builder` directories
