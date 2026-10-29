@@ -228,6 +228,23 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   240 ms). A rolling sample-clock estimate adjusts playback speed with pitch preservation;
   drift does not flush queued sound. A backlog beyond another 300 ms is dropped. Interruptions reset the anchor. The display closes
   when the app goes to the background, and the sound with it.
+  The `display-audio` five-second report includes fixed-size timing maxima in milliseconds:
+  `rx_gap` measures all socket callbacks, `audio_rx_gap` those completing audio packets,
+  `incoming_wait` callback-to-parser entry, and `incoming` synchronous parsing/frame dispatch.
+  `rx_dispatch` measures callback-to-audio dispatch, `queue` audio queue wait, `decode`
+  decoder setup/conversion, `prepare` activation/clock recovery/sample preparation, and
+  `enqueue` the renderer enqueue call. `dispatch_gap`, `entry_gap`, `decoded_gap`, and
+  `enqueued_gap` identify where packet cadence changes; all these keys have `_ms` suffixes.
+  `total_ms` ends after enqueue and clock startup. Counts `rx_n` and `timed_n` cover callbacks
+  and audio attempts in that interval. Gaps span adjacent reports, but stop/interruption
+  clears them. Timing uses `systemUptime`; `mono_s` identifies the observation time.
+  Restart notices retain the first-ten/then-every-fiftieth bound, snapshot the clock before
+  flush, and log after enqueue finishes (`finished_s`, or `-1` for an incomplete stage).
+  `rate` (restart: `requested_rate`) is the requested playback speed; `observed_rate` and
+  `rendered` are asynchronous synchronizer observations and never drive recovery.
+  These diagnostics contain no packet payloads and do not distinguish wire latency from
+  URLSession delivery delay before the app's callback. Test aggregation without a renderer
+  or real-time waits using `swift test --filter AudioTimingTests` in `CabooseKit`.
 - **One device at a time.** The computer's display shows on one device. When another takes
   it, this one gets `bye { reason: "replaced" }`, says it is showing on another device, and
   does not reconnect on its own; Show Here takes it back. A ping every 5 s keeps the server

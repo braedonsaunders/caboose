@@ -62,6 +62,8 @@ final class SoundPlayer: @unchecked Sendable {
     let renderer = AVSampleBufferAudioRenderer()
     private let clock: MediaClock
     private let activate: () throws -> Void
+    private let now: @Sendable () -> TimeInterval
+    let timing = AudioTimingMetrics()
     private let queue = DispatchQueue(label: "caboose.display.sound", qos: .userInteractive)
     // On `queue`:
     private var decoder: OpusDecoder?
@@ -71,6 +73,7 @@ final class SoundPlayer: @unchecked Sendable {
     private var timeline = AudioPacketTimeline()
     private let log = Logger(subsystem: "com.braedonsaunders.caboose", category: "display-audio")
     private var reportsAt: TimeInterval = 0
+    private var errorsAt: TimeInterval = 0
     private var restarts = 0
     private var frameMin = Int.max
     private var frameMax = 0
@@ -82,13 +85,14 @@ final class SoundPlayer: @unchecked Sendable {
     private(set) var played = 0
     private(set) var failed = 0
 
-    init(clock: MediaClock, activate: @escaping () throws -> Void = {
+    init(clock: MediaClock, now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }, activate: @escaping () throws -> Void = {
         #if os(iOS)
         try AVAudioSession.sharedInstance().setActive(true)
         #endif
     }) {
         self.clock = clock
         self.activate = activate
+        self.now = now
         renderer.audioTimePitchAlgorithm = .spectral
         clock.add(renderer)
         #if os(iOS)
@@ -112,14 +116,37 @@ final class SoundPlayer: @unchecked Sendable {
             interrupted = value
             sessionActive = false
             timeline.reset()
+            timing.update { $0.reset() }
+            arrivalAt = nil
             renderer.flush()
             clock.stop()
         }
     }
 
-    func play(_ packet: AudioPacket) {
+    func play(_ packet: AudioPacket, receivedAt: TimeInterval? = nil) {
+        let dispatchedAt = now()
+        let receivedAt = receivedAt ?? dispatchedAt
         queue.async { [self] in
+            let enteredAt = now()
             guard packet.codec == "opus", !interrupted else { return }
+            var decodedAt: TimeInterval?
+            var enqueueStartedAt: TimeInterval?
+            var enqueuedAt: TimeInterval?
+            var restartNotice: String?
+            defer {
+                let finishedAt = now()
+                timing.update {
+                    $0.packet(received: receivedAt, dispatched: dispatchedAt, entered: enteredAt,
+                              decoded: decodedAt, enqueueStarted: enqueueStartedAt, enqueued: enqueuedAt,
+                              finished: finishedAt)
+                }
+                if let restartNotice {
+                    let enqueueMS = enqueueStartedAt.flatMap { start in enqueuedAt.map { milliseconds($0, since: start) } } ?? -1
+                    let preparationMS = decodedAt.flatMap { decoded in enqueueStartedAt.map { milliseconds($0, since: decoded) } } ?? -1
+                    log.notice("display audio restart \(restartNotice, privacy: .public) prepare_ms=\(preparationMS) enqueue_ms=\(enqueueMS) finished_s=\(finishedAt) total_ms=\(self.milliseconds(finishedAt, since: receivedAt))")
+                }
+                report(at: finishedAt)
+            }
             do {
                 if decoder?.channels != packet.channels {
                     decoder = try OpusDecoder(channels: packet.channels)
@@ -127,8 +154,9 @@ final class SoundPlayer: @unchecked Sendable {
                 }
                 guard let decoder else { return }
                 let pcm = try decoder.decode(packet.data)
+                let arrived = now()
+                decodedAt = arrived
                 guard pcm.frameLength > 0 else { return }
-                let arrived = ProcessInfo.processInfo.systemUptime
                 if let arrivalAt { arrivalMax = max(arrivalMax, arrived - arrivalAt) }
                 arrivalAt = arrived
                 frameMin = min(frameMin, Int(pcm.frameLength))
@@ -146,35 +174,60 @@ final class SoundPlayer: @unchecked Sendable {
                 if case .restart = placement {
                     restarts += 1
                     if restarts <= 10 || restarts % 50 == 0 {
-                        let rendered = CMTimeConvertScale(clock.synchronizer.currentTime(), timescale: 1_000_000, method: .default).value
-                        log.notice("display audio restart n=\(self.restarts) raw=\(rawPTS) pts=\(pts) projected=\(self.clock.now ?? -1) rendered=\(rendered) delay=\(self.clock.delay) regressions=\(self.timestampRegressions)")
+                        let rendered = observedRendererMicros()
+                        let stage = "mono_s=\(now()) rx_dispatch_ms=\(milliseconds(dispatchedAt, since: receivedAt)) queue_ms=\(milliseconds(enteredAt, since: dispatchedAt)) decode_ms=\(milliseconds(arrived, since: enteredAt)) requested_rate=\(clock.rate) observed_rate=\(clock.synchronizer.rate)"
+                        // Snapshot before flush; emit once enqueue finishes so its cost is
+                        // included. The observed renderer time may lag AVFoundation updates.
+                        restartNotice = "n=\(restarts) raw=\(rawPTS) pts=\(pts) projected=\(clock.now ?? -1) rendered=\(rendered) delay=\(clock.delay) regressions=\(timestampRegressions) \(stage)"
                     }
                     renderer.flush()
                 }
-                renderer.enqueue(try sample(pcm, decoder: decoder, pts: pts))
+                let buffer = try sample(pcm, decoder: decoder, pts: pts)
+                enqueueStartedAt = now()
+                renderer.enqueue(buffer)
+                enqueuedAt = now()
                 switch placement {
                 case .play: break
                 case .start(let time), .restart(let time): clock.start(at: time)
                 }
                 played += 1
-                if arrived - reportsAt >= 5 {
-                    log.notice("display audio packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(self.clock.delay) frames=\(self.frameMin)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(self.renderer.status.rawValue) rate=\(self.clock.rate) regressions=\(self.timestampRegressions)")
-                    reportsAt = arrived
-                    frameMin = Int.max; frameMax = 0; arrivalMax = 0
-                }
             } catch {
                 failed += 1
-                if ProcessInfo.processInfo.systemUptime - reportsAt >= 5 {
+                if now() - errorsAt >= 5 {
                     log.error("display audio failure count=\(self.failed) error=\(String(describing: error), privacy: .public)")
-                    reportsAt = ProcessInfo.processInfo.systemUptime
+                    errorsAt = now()
                 }
             }
         }
     }
 
+    private func milliseconds(_ end: TimeInterval, since start: TimeInterval) -> Int {
+        Int(AudioTimingAccumulator.elapsed(end, since: start) * 1000)
+    }
+
+    /// Diagnostic snapshot only. AVFoundation may apply timebase changes asynchronously;
+    /// this value never drives placement or recovery.
+    private func observedRendererMicros() -> Int64 {
+        let time = clock.synchronizer.currentTime()
+        return time.isNumeric ? CMTimeConvertScale(time, timescale: 1_000_000, method: .default).value : -1
+    }
+
+    private func report(at time: TimeInterval) {
+        guard time - reportsAt >= 5 else { return }
+        let interval = timing.takeInterval()
+        let stages = interval.logFields
+        let rendered = observedRendererMicros()
+        let observedRate = clock.synchronizer.rate
+        log.notice("display audio packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(self.clock.delay) frames=\(self.frameMax == 0 ? 0 : self.frameMin)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(self.renderer.status.rawValue) rate=\(self.clock.rate) observed_rate=\(observedRate) projected=\(self.clock.now ?? -1) rendered=\(rendered) regressions=\(self.timestampRegressions) mono_s=\(time) \(stages, privacy: .public)")
+        reportsAt = time
+        frameMin = Int.max; frameMax = 0; arrivalMax = 0
+    }
+
     func stop() {
         queue.async { [self] in
             timeline.reset()
+            timing.update { $0.reset() }
+            arrivalAt = nil
             renderer.flush()
             clock.stop()
         }
