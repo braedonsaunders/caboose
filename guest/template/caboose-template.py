@@ -185,6 +185,14 @@ def reinitialize(mac, cid):
     if dbus_machine_file.exists() and dbus_machine_file.read_text().strip() != machine_id:
         raise RuntimeError('D-Bus machine identity did not change')
     check_vsock(cid)
+    # A bus that was already started by system management may have cached the
+    # source machine ID. Restart it before user services can connect.
+    bus = subprocess.run(['systemctl', 'is-active', '--quiet', 'dbus.service'], timeout=5)
+    if bus.returncode == 0:
+        run('systemctl', 'restart', 'dbus.service')
+        probe = subprocess.run(['busctl', '--system', 'call', 'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.Peer', 'GetMachineId'], timeout=10, check=True, capture_output=True, text=True)
+        if machine_id not in probe.stdout:
+            raise RuntimeError('D-Bus retained the template machine identity')
     INITIALIZED.write_text('initialized\n')
     READY.unlink()
     os.sync()
