@@ -16,7 +16,7 @@ try {
           : 'light'
         : theme.defaultTheme
   document.documentElement.classList.toggle('dark', resolved === 'dark')
-  document.documentElement.style.colorScheme = resolved
+  document.documentElement.classList.toggle('light', resolved === 'light')
 } catch {
   // Keep default dark class when localStorage is unavailable.
 }
