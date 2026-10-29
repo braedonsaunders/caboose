@@ -68,7 +68,8 @@ lived and worked. Here it's the computer that comes along wherever your phone go
    iPad itself.
 5. **Hand work to an agent.** Ask from Home or the Agents tab. The task runs on the agent's own
    seat, and its windows show up in an Agent space you can watch, take over and hand
-   back.
+   back. Ask an agent for an app and it builds one: its icon appears in Apps, and it opens
+   in its own window like any other app.
 
 ## What's inside
 
@@ -189,6 +190,7 @@ WSL2 and NVIDIA, are in [apps/host](apps/host/README.md) and
 | [`guest/vaapi`](guest/vaapi) | The VA-API codec-passthrough driver that forwards apps' compressed video to the phone (C) |
 | [`guest/agentd`](guest/agentd) | `caboose-agentd`: the ACP client that runs any registry agent for a task |
 | [`guest/desktop-mcp`](guest/desktop-mcp) | GUI tools for agents on their own seat, and the accessibility helper behind `/v1/screen` |
+| [`guest/apps`](guest/apps) | `caboose-app`: apps agents make, web apps that run in their own window and appear in Apps |
 | [`guest/catalog`](guest/catalog) | The optional apps and packs the computer can install |
 | [`guest/files`](guest/files) | The file service behind the Files app extension and the console |
 | [`guest/notifications`](guest/notifications) | The owner's desktop notifications, forwarded to the phone |

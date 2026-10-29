@@ -89,6 +89,8 @@ The image contains:
 - **Agent runner.** `caboose-agentd` at `/opt/caboose/agentd` (Node with the pinned ACP
   TypeScript SDK), `uv` for agents published as Python packages, and the desktop tools
   (`/opt/caboose/desktop-mcp.mjs`, `/opt/caboose/a11y.py`). See [Agents](#5-agents).
+- **Agent apps.** `caboose-app` and WebKitGTK 4.1, which run the web apps agents make as
+  applications of their own ([Agent apps](#agent-apps)).
 - **Services.** The file service, the notification monitor and endpoints, phone handoff
   (`caboose-open`, `caboose-share`, an `iPhone` print queue) and media handoff.
 - **Guest agent.** The appkit-desk guest agent (vsock 5252), which runs as root with
@@ -126,7 +128,7 @@ computer in `error` with the reason in `lastError`, and the next wake retries it
 
 Caboose's own guest plumbing (the file and terminal services, the notification monitor and
 endpoints, phone handoff, `caboose-game-run` with the game bundles Caboose ships in
-`/usr/local/share/caboose/games`, and the agent runner) is a bundle listed in `guest/components/manifest.json` and installed by
+`/usr/local/share/caboose/games`, the agent runner and the agent app runtime) is a bundle listed in `guest/components/manifest.json` and installed by
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
 
@@ -507,6 +509,32 @@ Retry for failed or interrupted operations even when the application is already 
 Craft applications (`ai.storyteller.<name>.desktop`) are launched on the owner display's
 Xwayland, with `WAYLAND_DISPLAY` removed and `GDK_BACKEND`, `WINIT_UNIX_BACKEND` and
 `XDG_SESSION_TYPE` set to X11.
+
+### Agent apps
+
+An agent app is a web app an agent writes into `~/Apps/<id>/` (`app.json` and its files)
+that runs as an application of its own. `caboose-app` (`guest/apps`, installed with the
+guest components at `/opt/caboose/apps`) runs each in a GTK 3 window around a WebKitGTK 4.1
+view. `caboose-app publish <id>` validates it and writes
+`~/.local/share/applications/caboose.app.<id>.desktop`, so `/v1/apps` lists it and
+`/v1/apps/:id/launch` opens it like any desktop entry; the window's `app_id` is the entry's
+name. Ids are `[a-z][a-z0-9-]{0,47}`. The format, the API and the runtime's rules are in
+[guest/apps](../guest/apps/README.md).
+
+- The page is served only from `caboose-app://<id>/`, from regular files inside the app
+  directory after decoding and resolving symlinks, with a content security policy (header
+  and `<meta>`) under which script runs only from the app's own files and frames hold only
+  its own pages. Publishing rejects pages with inline script. The top frame cannot leave the
+  app; web, mail and phone links the person follows open in their default application.
+- `window.caboose` exists only in the top frame, through a relay in an isolated script world
+  that admits only the current document. It offers the capabilities `app.json` declares:
+  `exec` (programs, with bounded arguments, output, time and concurrency, each in its own
+  process group, ended when the document is replaced or the app quits), `files`
+  (symlink-safe file operations in the home), `notify` (a desktop notification, which
+  reaches the phone) and `open`. Declared capabilities describe the app; they are not a
+  sandbox. An app runs as `caboose`, and `exec` has that user's full authority.
+- Each app keeps its web storage and files under `~/.local/share/caboose/apps/<id>/`. Edits
+  to the app's files reload its open windows; capabilities apply from the next start.
 
 ## 3. Host
 
@@ -1611,6 +1639,12 @@ the seat, so an agent cannot list, read or press the owner's windows. The coordi
 and `screenshot` use the seat's control socket through `seat.py`, so they reach Wayland and
 X11 applications alike and work while nobody watches the seat; coordinates are the seat's
 logical pixels, the same as the screenshot's and the elements' bounds.
+
+When `/opt/caboose/apps/apps-mcp.mjs` is installed, the runner also passes `caboose-apps`
+with the same environment: `app_guide`, `app_publish`, `app_list`, `app_open` (on the
+agent seat) and `app_remove`, for making [agent apps](#agent-apps). The runner's
+presentation guidance tells agents to make an app, rather than an inline widget, when the
+owner asks for an app or something they will come back to.
 
 At task creation the host also snapshots installed catalog entries that declare an `mcp`
 command and offers each as a `caboose-<catalog id>` stdio server in ACP new, load and
