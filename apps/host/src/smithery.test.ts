@@ -62,6 +62,10 @@ describe('the MCP Library catalog', () => {
     expect(calls.every(url => url.startsWith('https://registry.smithery.ai/servers?remote=true'))).toBe(true)
     const offline = new SmitheryCatalog(dir, vi.fn(async () => { throw new Error('offline') }) as unknown as Requester)
     expect((await offline.storefront())[0]!.servers.map(s => s.id)).toEqual(['high', 'mid', 'low'])
+    // See All pages a row in full: Popular from the ranked list, the rest from Smithery.
+    expect(await offline.group('popular', 1)).toMatchObject({ total: 3, servers: [{ id: 'high' }, { id: 'mid' }, { id: 'low' }] })
+    expect((await catalog.group('search', 1)).servers.map(s => s.id)).toEqual(['exa'])
+    await expect(catalog.group('nonsense', 1)).rejects.toThrow('Unknown row')
   })
   it('searches Smithery and validates its arguments', async () => {
     const { request } = requester({ github: [listing('github', 6000)] })

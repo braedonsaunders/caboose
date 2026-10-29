@@ -91,7 +91,7 @@ async function defaultRasterize(): Promise<Rasterize> {
  * six hours, live search, and icons fetched once each into a bounded disk cache.
  */
 export class SmitheryCatalog {
-  private rows: { at: number; groups: Array<{ id: string; title: string; note: string | null; servers: McpServer[] }> } | null = null
+  private rows: { at: number; groups: Array<{ id: string; title: string; note: string | null; servers: McpServer[] }>; popular: McpServer[] } | null = null
   private loading: Promise<void> | undefined
   private icons = new Map<string, string>()
   private rasterize: Promise<Rasterize> | undefined
@@ -138,7 +138,7 @@ export class SmitheryCatalog {
       if (servers.length) groups.push({ id: topic.id, title: topic.title, note: null, servers: byUses(servers).slice(0, SHELF) })
     }
     if (!groups[0]!.servers.length) throw new Error("Smithery's registry returned no servers")
-    this.rows = { at: this.now(), groups }
+    this.rows = { at: this.now(), groups, popular: byUses(popular) }
     await mkdir(this.root, { recursive: true })
     await writeFile(join(this.root, 'storefront.json.tmp'), JSON.stringify(this.rows))
     await rename(join(this.root, 'storefront.json.tmp'), join(this.root, 'storefront.json'))
@@ -146,7 +146,7 @@ export class SmitheryCatalog {
   private async loadCache(): Promise<void> {
     const file = join(this.root, 'storefront.json')
     try {
-      if ((await stat(file)).size > 2 * 1024 * 1024) return
+      if ((await stat(file)).size > 4 * 1024 * 1024) return
       const raw = JSON.parse(await readFile(file, 'utf8')) as { at?: unknown; groups?: unknown }
       if (!Number.isSafeInteger(raw.at) || !Array.isArray(raw.groups)) return
       const groups = raw.groups.slice(0, 10).flatMap(value => {
@@ -159,7 +159,12 @@ export class SmitheryCatalog {
         })
         return [{ id: group.id, title: text(group.title, 60)!, note: text(group.note, 120), servers }]
       })
-      if (groups.length) this.rows = { at: raw.at as number, groups }
+      const popular = (Array.isArray((raw as { popular?: unknown }).popular) ? (raw as { popular: unknown[] }).popular : []).slice(0, POPULAR_PAGES * 100).flatMap(server => {
+        const s = server as Record<string, unknown>
+        const parsed = parseServer({ qualifiedName: s.id, displayName: s.name, description: s.description, useCount: s.uses, verified: s.verified, iconUrl: s.iconUrl, homepage: s.homepage, remote: true })
+        return parsed ? [parsed] : []
+      })
+      if (groups.length) this.rows = { at: raw.at as number, groups, popular }
     } catch { /* no cache yet */ }
   }
 
@@ -169,6 +174,20 @@ export class SmitheryCatalog {
     if (!Number.isSafeInteger(page) || page < 1 || page > 250) throw new RangeError('Invalid page')
     const { servers, total } = await this.list({ ...(query.trim() ? { q: query.trim() } : {}), page: String(page), pageSize: '40' })
     return { servers, total, page, pageSize: 40 }
+  }
+
+  /** A front-page row in full, 40 at a time: Popular from the ranked list, the others from Smithery's search. */
+  async group(id: string, page: number) {
+    if (!Number.isSafeInteger(page) || page < 1 || page > 250) throw new RangeError('Invalid page')
+    if (id === 'popular') {
+      await this.storefront()
+      const all = this.rows?.popular ?? []
+      return { servers: all.slice((page - 1) * 40, page * 40), total: all.length, page, pageSize: 40 }
+    }
+    const topic = TOPICS.find(t => t.id === id)
+    if (id !== 'verified' && !topic) throw new RangeError('Unknown row')
+    const { servers, total } = await this.list({ ...(topic ? { q: topic.query } : { verified: 'true' }), page: String(page), pageSize: '40' })
+    return { servers: id === 'verified' ? [...servers].sort((a, b) => b.uses - a.uses) : servers, total, page, pageSize: 40 }
   }
 
   /** One server, with the tools Smithery lists for it. */

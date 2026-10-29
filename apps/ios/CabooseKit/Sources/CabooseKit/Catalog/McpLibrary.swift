@@ -181,6 +181,11 @@ public enum McpRoute {
         "/v1/mcp/discover?q=" + query(text.trimmingCharacters(in: .whitespacesAndNewlines)) + "&page=\(max(1, page))"
     }
 
+    /// A page (1-based) of one front-page row in full, for See All.
+    public static func group(_ id: String, page: Int = 1) -> String {
+        "/v1/mcp/discover?group=" + query(id) + "&page=\(max(1, page))"
+    }
+
     public static func connections(refresh: Bool) -> String { refresh ? connections + "?refresh=1" : connections }
     public static func connection(_ id: String) -> String { connections + "/" + segment(id) }
     public static func check(_ id: String) -> String { connection(id) + "/check" }

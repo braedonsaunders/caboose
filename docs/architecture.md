@@ -1012,7 +1012,7 @@ Per computer, authorized like the catalog's; none wakes the computer (§ MCP Lib
 | --- | --- | --- |
 | `GET` `PUT` `DELETE` | `/v1/mcp/account` | `{ connected, namespace }`. `PUT { apiKey }` connects a Smithery account (409 when Smithery refuses the key); `DELETE` removes this computer's servers from Smithery and forgets the key |
 | `GET` | `/v1/mcp/storefront` | `{ groups: [{ id, title, note, servers }], error }` |
-| `GET` | `/v1/mcp/discover?q=&page=` | `{ servers, total, page, pageSize }` (40 a page) |
+| `GET` | `/v1/mcp/discover?q=&page=` | `{ servers, total, page, pageSize }` (40 a page); `group=<row id>` in place of `q` pages a front-page row in full (Popular from its ranking by uses, the others from Smithery) |
 | `GET` | `/v1/mcp/servers/:name` | A server and its `tools: [{ name, description }]` |
 | `GET` | `/v1/mcp/icons/:id` | The icon a listing named by `iconId`, PNG or JPEG |
 | `GET` `POST` | `/v1/mcp/connections` | `{ account, limit, connections }`, `?refresh=1` asking Smithery for each status; `POST { server }` adds one (201; 409 past 20 or without an account) |

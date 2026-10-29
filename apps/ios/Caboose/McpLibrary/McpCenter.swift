@@ -32,6 +32,8 @@ final class McpCenter {
     /// A search's matches, a page at a time.
     private(set) var results: [McpServer] = []
     private(set) var resultsQuery = ""
+    /// The front-page row the results show in full (See All), or nil for a search.
+    private(set) var resultsGroup: String?
     private(set) var resultsLoading = false
     private(set) var resultsLoaded = false
     var resultsError: String?
@@ -72,7 +74,7 @@ final class McpCenter {
         working = []; error = nil; icons = [:]; iconsRequested = []
     }
     private func clearResults() {
-        searchGeneration += 1; results = []; resultsQuery = ""; resultsLoading = false; resultsLoaded = false; resultsError = nil; nextPage = nil
+        searchGeneration += 1; results = []; resultsQuery = ""; resultsGroup = nil; resultsLoading = false; resultsLoaded = false; resultsError = nil; nextPage = nil
     }
 
     /// Opening the Library: the account, the servers as the host last heard of them, then the
@@ -189,8 +191,14 @@ final class McpCenter {
     /// The first page of Smithery's search for `text`.
     func search(_ text: String) async {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text != resultsQuery { results = []; nextPage = nil; resultsLoaded = false }
-        resultsQuery = text
+        if text != resultsQuery || resultsGroup != nil { results = []; nextPage = nil; resultsLoaded = false }
+        resultsQuery = text; resultsGroup = nil
+        await load(page: 1)
+    }
+    /// The first page of a front-page row in full.
+    func browse(_ group: String) async {
+        if group != resultsGroup { results = []; nextPage = nil; resultsLoaded = false }
+        resultsGroup = group; resultsQuery = ""
         await load(page: 1)
     }
     func loadMore() async {
@@ -204,7 +212,8 @@ final class McpCenter {
         let generation = searchGeneration, hostVersion = hostGeneration
         resultsLoading = true; resultsError = nil
         do {
-            let answer: McpSearchPage = try await host.request("GET", McpRoute.discover(resultsQuery, page: page), timeout: 60)
+            let route = resultsGroup.map { McpRoute.group($0, page: page) } ?? McpRoute.discover(resultsQuery, page: page)
+            let answer: McpSearchPage = try await host.request("GET", route, timeout: 60)
             guard searchGeneration == generation && hostGeneration == hostVersion else { return }
             results = (answer.page <= 1 ? [] : results).appendingPage(answer.servers.marking(connections))
             nextPage = McpRoute.nextPage(after: answer.page, count: answer.servers.count, total: answer.total, pageSize: answer.pageSize)

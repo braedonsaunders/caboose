@@ -450,22 +450,35 @@ private struct McpResults: View {
     }
 }
 
-/// A row's whole shelf, from See All, as rows.
+/// A front-page row in full, from See All, a page at a time.
 private struct McpShelfList: View {
     @Environment(AppModel.self) private var model
     let shelfID: String
 
     var body: some View {
-        let shelf = model.mcp.storefront.first { $0.id == shelfID }
+        let mcp = model.mcp
+        let shelf = mcp.storefront.first { $0.id == shelfID }
         List {
             Section {
-                ForEach(shelf?.servers ?? []) { McpServerRow(server: $0) }
+                ForEach(mcp.resultsGroup == shelfID ? mcp.results : []) { server in
+                    McpServerRow(server: server)
+                        .onAppear { if server.id == mcp.results.last?.id { Task { await mcp.loadMore() } } }
+                }
+                if let error = mcp.resultsError {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(error).foregroundStyle(.secondary)
+                        Button("Try Again") { Task { await mcp.retrySearch() } }
+                    }
+                } else if mcp.resultsLoading {
+                    ProgressView().frame(maxWidth: .infinity)
+                }
             } footer: {
                 if let note = shelf?.note { Text(note) }
             }
         }
         .navigationTitle(shelf?.title ?? "Servers")
-        .refreshable { await model.mcp.loadStorefront() }
+        .task(id: shelfID) { await mcp.browse(shelfID) }
+        .refreshable { await mcp.browse(shelfID) }
     }
 }
 

@@ -25,6 +25,7 @@ struct McpLibraryTests {
         #expect(McpRoute.discover("") == "/v1/mcp/discover?q=&page=1")
         #expect(McpRoute.discover("  web & search/c++  ", page: 3) == "/v1/mcp/discover?q=web%20%26%20search%2Fc%2B%2B&page=3")
         #expect(McpRoute.discover("x", page: 0) == "/v1/mcp/discover?q=x&page=1")
+        #expect(McpRoute.group("popular", page: 2) == "/v1/mcp/discover?group=popular&page=2")
         #expect(McpRoute.connections(refresh: true) == "/v1/mcp/connections?refresh=1")
         #expect(McpRoute.connections(refresh: false) == "/v1/mcp/connections")
     }

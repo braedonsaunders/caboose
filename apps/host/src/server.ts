@@ -533,7 +533,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       if (request.method === 'GET' && path === '/v1/mcp/discover') {
         const page = params.get('page') ?? '1'
         if (!/^\d{1,3}$/.test(page)) throw new AgentInputError('Invalid page')
-        const result = await guarded(() => mcpCatalog.search(params.get('q') ?? '', Number(page)))
+        const group = params.get('group')
+        const result = await guarded(() => group ? mcpCatalog.group(group, Number(page)) : mcpCatalog.search(params.get('q') ?? '', Number(page)))
         return json(response, 200, { ...result, servers: await view(result.servers) })
       }
       const serverPath = /^\/v1\/mcp\/servers\/(.+)$/.exec(path)
