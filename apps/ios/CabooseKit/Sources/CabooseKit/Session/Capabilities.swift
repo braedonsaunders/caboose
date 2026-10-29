@@ -2,7 +2,7 @@ import Foundation
 
 /// The screen the computer lays windows out for: the phone's, or a connected display's.
 /// It becomes the display described in the Caboose Display `hello` (`DisplayInfo`).
-public struct ClientCapabilities: Equatable, Sendable {
+public struct ClientCapabilities: Sendable {
     public var desktopWidth: Int
     public var desktopHeight: Int
     /// Linux text follows this: 96 is scale 1, 192 is scale 2.

@@ -279,42 +279,6 @@ final class DesktopModel {
                width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
     }
 
-    /// One presentation map for rendering, trackpad/touch hit testing and auxiliary
-    /// trees. Root geometry comes from committed surfaces, never pending requests.
-    func surfaceFrames(in windows: [Int: RemoteWindow]) -> [Int: CGRect] {
-        let covering = fullscreenWindow(in: windows)?.id
-        var roots: [Int: CGRect] = [:]
-        for window in windows.values where !window.isAuxiliary && isVisible(window.id) {
-            guard covering == nil || covering == window.id else { continue }
-            let viewport = contentRect(window)
-            let natural = CGSize(width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
-            let local = DesktopGeometry.surfaceFrame(
-                natural: window.game == nil ? natural : viewport.size, available: viewport.size, resizing: false)
-            roots[window.id] = local.offsetBy(dx: viewport.minX, dy: viewport.minY)
-        }
-        let geometry = Dictionary(uniqueKeysWithValues: windows.values.filter { isVisible($0.id) }.map {
-            ($0.id, DesktopGeometry.WindowGeometry(frame: $0.frame, parent: $0.transientFor))
-        })
-        let auxiliaries = DesktopGeometry.popupFrames(windows: geometry, rootFrames: roots,
-            viewport: CGRect(origin: .zero, size: size), pixelsPerPoint: pixelsPerPoint, covering: covering)
-        return roots.merging(auxiliaries) { root, _ in root }
-    }
-
-    func presentedChrome(_ window: RemoteWindow, surface: CGRect) -> CGRect {
-        window.isAuxiliary || window.isFullscreen ? surface :
-            surface.inset(by: UIEdgeInsets(top: -titleBarHeight, left: 0, bottom: 0, right: 0))
-    }
-
-    func inputMapping(for window: RemoteWindow, windows: [Int: RemoteWindow]) -> DesktopGeometry.SurfaceMapping? {
-        guard let shown = surfaceFrames(in: windows)[window.id] else { return nil }
-        return .init(shown: shown, remote: window.frame.size)
-    }
-
-    private func surfacePoint(_ point: CGPoint, window: RemoteWindow,
-                              windows: [Int: RemoteWindow], captured: Bool = false) -> CGPoint? {
-        inputMapping(for: window, windows: windows)?.point(point, captured: captured)
-    }
-
     func chromeRect(_ window: RemoteWindow) -> CGRect {
         let content = contentRect(window)
         return window.isAuxiliary || window.isFullscreen ? content : content.inset(by: UIEdgeInsets(top: -titleBarHeight, left: 0, bottom: 0, right: 0))
@@ -340,15 +304,14 @@ final class DesktopModel {
             for (id, frame) in launcherFrames where frame.contains(point) { return .launcher(id) }
             return .none
         }
-        let surfaces = surfaceFrames(in: windows)
         for id in stacking.reversed() where isVisible(id) {
-            guard let window = windows[id], let content = surfaces[id] else { continue }
-            let chrome = presentedChrome(window, surface: content)
+            guard let window = windows[id] else { continue }
+            let chrome = chromeRect(window)
             guard chrome.contains(point) else { continue }
+            let content = contentRect(window)
             if content.contains(point) {
-                if !detachedChrome, !window.isAuxiliary, !window.isFullscreen,
-                   point.x > content.maxX - 18 * ui, point.y > content.maxY - 18 * ui { return .resize(id) }
-                guard let local = DesktopGeometry.remotePoint(point, shown: content, remote: window.frame.size) else { continue }
+                if !detachedChrome, !window.isAuxiliary, point.x > content.maxX - 18 * ui, point.y > content.maxY - 18 * ui { return .resize(id) }
+                let local = CGPoint(x: (point.x - content.minX) * pixelsPerPoint, y: (point.y - content.minY) * pixelsPerPoint)
                 return .content(id, local)
             }
             // The controls answer where DesktopWindow draws them, across the bar's height.
@@ -359,7 +322,6 @@ final class DesktopModel {
             case nil: return .titleBar(id)
             }
         }
-        if fullscreenWindow(in: windows) != nil { return .none }
         if desktopMenuFrame.contains(point) { return .desktopMenu }
         for (id, frame) in desktopItemFrames where frame.contains(point) { return .desktopItem(id) }
         return .none
@@ -464,11 +426,10 @@ final class DesktopModel {
         defer { drag = nil; snapPreview = nil; pendingSnap = nil; dragged = nil }
         guard let drag, let session else { return }
         switch drag.hit {
-        case .content(let id, let pressedPoint):
+        case .content(let id, _):
             guard let window = session.windows[id] else { return }
-            // Release still belongs to the captured window even if it was obscured.
-            let local = surfacePoint(cursor, window: window, windows: session.windows, captured: true)
-                ?? pressedPoint
+            let content = contentRect(window)
+            let local = CGPoint(x: (cursor.x - content.minX) * pixelsPerPoint, y: (cursor.y - content.minY) * pixelsPerPoint)
             session.pointerButton(in: window, button: 1, pressed: false, at: local)
         case .titleBar(let id), .resize(let id):
             guard let window = session.windows[id], let frame = dragged else { return }
@@ -490,9 +451,8 @@ final class DesktopModel {
 
     func scroll(by delta: CGPoint, session: (any DisplaySession)?) {
         guard let session, case .content(let id, let local) = hitTest(cursor, windows: session.windows),
-              let window = session.windows[id],
-              let mapped = inputMapping(for: window, windows: session.windows)?.delta(delta) else { return }
-        session.scroll(in: window, dx: mapped.x, dy: mapped.y, at: local)
+              let window = session.windows[id] else { return }
+        session.scroll(in: window, dx: delta.x * pixelsPerPoint, dy: delta.y * pixelsPerPoint, at: local)
     }
 
     private func dragMoved(_ drag: (hit: Hit, start: CGPoint, chrome: CGRect), session: any DisplaySession) {
@@ -539,9 +499,9 @@ final class DesktopModel {
             session.configure(window, frame: linuxFrame(frame), state: ["maximized": false])
         case .content(let id, _):
             guard let window = session.windows[id] else { return }
-            if let local = surfacePoint(cursor, window: window, windows: session.windows, captured: true) {
-                session.pointerMove(in: window, to: local)
-            }
+            let content = contentRect(window)
+            session.pointerMove(in: window, to: CGPoint(x: (cursor.x - content.minX) * pixelsPerPoint,
+                                                        y: (cursor.y - content.minY) * pixelsPerPoint))
         default:
             break
         }
@@ -562,13 +522,19 @@ final class DesktopModel {
         }
     }
 
-    /// Fullscreen sizing belongs to the compositor. On exit the view supplies the
-    /// last ordinary committed geometry, if it observed one before fullscreen.
-    func applyFullscreen(_ window: RemoteWindow, entered: Bool, restore: CGRect?, session: (any DisplaySession)?) {
+    /// Frames windows had before they went full screen, to restore them.
+    private var windowedFrames: [Int: CGRect] = [:]
+
+    /// Follows the app's own full-screen request: the window takes the whole display (in
+    /// Linux pixels) and gets its old frame back when it leaves.
+    func applyFullscreen(_ window: RemoteWindow, session: (any DisplaySession)?) {
         guard let session else { return }
         if window.isFullscreen {
-            if entered { raise(window.id) }
-        } else if let previous = restore {
+            if windowedFrames[window.id] == nil { windowedFrames[window.id] = window.frame }
+            let full = CGRect(x: 0, y: 0, width: size.width * pixelsPerPoint, height: size.height * pixelsPerPoint).integral
+            raise(window.id)
+            if window.frame != full { session.configure(window, frame: full) }
+        } else if let previous = windowedFrames.removeValue(forKey: window.id) {
             session.configure(window, frame: previous, state: ["maximized": false])
         }
     }

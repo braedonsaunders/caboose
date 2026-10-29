@@ -704,18 +704,7 @@ public final class CabooseDisplaySession: DisplaySession {
     // MARK: Windows
 
     public func configure(_ window: RemoteWindow, frame: CGRect, state: [String: Bool] = [:]) {
-        let fullscreen = state["fullscreen"] ?? window.isFullscreen
-        // All layouts share this boundary. Fullscreen sizing belongs to the
-        // compositor; only explicit state transitions travel without geometry.
-        if fullscreen {
-            if state["fullscreen"] == true {
-                send(.configure(window: window.id, geometry: nil, fullscreen: true, maximized: state["maximized"]))
-                window.isFullscreen = true
-            }
-            return
-        }
-        guard let rounded = WindowSizePolicy.request(frame, minimum: window.minimumSize,
-            maximum: window.maximumSize, fullscreen: false) else { return }
+        let rounded = frame.integral
         var geometry = rounded
         if var entry = placement[window.id] {
             if entry.kind != .toplevel, let parent = entry.parent.flatMap({ windows[$0] }) {
@@ -766,9 +755,7 @@ public final class CabooseDisplaySession: DisplaySession {
     public func refresh(_ window: RemoteWindow) { send(.requestKeyframe(window: window.id)) }
 
     public func reconfigure(_ capabilities: ClientCapabilities) {
-        let next = [DisplayInfo(capabilities)]
-        guard displays != next else { return }
-        displays = next
+        displays = [DisplayInfo(capabilities)]
         lastVsync.removeAll()
         // Before the hello, the new screen goes in the hello itself.
         if state == .ready || state == .authenticating { send(.displays(displays)) }
