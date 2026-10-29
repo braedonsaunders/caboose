@@ -8,6 +8,7 @@
 pub mod convert;
 pub mod lavc;
 pub mod refine;
+pub mod scroll;
 
 use caboose_display_protocol::{Codec, Rect};
 use std::fmt;
@@ -110,6 +111,30 @@ pub trait Encoder: Send {
         let _ = (input, damage, max_px);
         Ok(None)
     }
+    /// A scroll as a copy within the client's picture (see [`scroll`]): when the input in
+    /// `damage` is what the client shows, moved, returns that copy and the tiles that
+    /// complete it exactly; the client then shows the input, and the next `encode` codes
+    /// it into the stream. `hints` are shifts the window was just scrolled by (picture
+    /// pixels). `None`: nothing is taken, and the caller tiles or encodes as usual
+    /// (software encoders only copy).
+    fn copy(&mut self, input: Input<'_>, damage: &[Rect], hints: &[(i32, i32)]) -> Result<Option<Copied>, EncodeError> {
+        let _ = (input, damage, hints);
+        Ok(None)
+    }
+}
+
+/// A scroll sent as a copy: `src` (picture pixels) of what the client shows lands with
+/// its top-left pixel at `dst`, then `tiles` (as in [`Tiles`]) paint what it does not
+/// reproduce.
+pub struct Copied {
+    pub src: Rect,
+    pub dst: [i32; 2],
+    pub tiles: Vec<(Rect, Vec<u8>)>,
+    /// As in [`Picture`].
+    pub refine_in_ms: Option<u64>,
+    /// The copied area, out to whole blocks, and the tiles: what the client's picture
+    /// changed in.
+    pub changed: Vec<Rect>,
 }
 
 /// Changed areas sent as tiles: each rectangle (picture pixels) with its RGB pixels,

@@ -10,7 +10,7 @@
 //!   path on WSL2, where clients hand over wl_shm buffers and CUDA reaches the GPU
 //!   through /dev/dxg.
 
-use super::{convert, refine, CpuImage, EncodeError, Encoder, Input, Picture, Pixels, Settings, Tiles};
+use super::{convert, refine, scroll, Copied, CpuImage, EncodeError, Encoder, Input, Picture, Pixels, Settings, Tiles};
 
 /// More changed runs than this go into a picture rather than tiles.
 const MAX_TILES: usize = 32;
@@ -30,6 +30,17 @@ fn merge_columns(runs: &[Rect]) -> Vec<Rect> {
         }
     }
     out
+}
+
+/// A rectangle of BGRX pixels as packed RGB, for a tile.
+fn rgb(src: &Pixels<'_>, r: Rect) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(r.w as usize * r.h as usize * 3);
+    for y in r.y as usize..(r.y + r.h) as usize {
+        for px in src.data[y * src.stride + r.x as usize * 4..][..r.w as usize * 4].chunks_exact(4) {
+            rgb.extend_from_slice(&[px[2], px[1], px[0]]);
+        }
+    }
+    rgb
 }
 use caboose_display_protocol::Codec;
 use caboose_display_protocol::Rect;
@@ -429,19 +440,56 @@ impl LavcEncoder {
         if area > max_px || changed.len() > MAX_TILES {
             return Ok(None);
         }
-        let tiles = merge_columns(&changed)
-            .iter()
-            .map(|r| {
-                let mut rgb = Vec::with_capacity(r.w as usize * r.h as usize * 3);
-                for y in r.y as usize..(r.y + r.h) as usize {
-                    for px in src.data[y * src.stride + r.x as usize * 4..][..r.w as usize * 4].chunks_exact(4) {
-                        rgb.extend_from_slice(&[px[2], px[1], px[0]]);
-                    }
-                }
-                (*r, rgb)
-            })
-            .collect();
+        let tiles = merge_columns(&changed).iter().map(|r| (*r, rgb(src, *r))).collect();
         Ok(Some(Tiles { tiles, refine_in_ms: self.quiet.as_ref().and_then(|q| q.next_due_ms(now)) }))
+    }
+
+    /// The input as a copy of what the client shows plus tiles, if it is a scroll of it;
+    /// otherwise nothing is taken (the shadow is untouched) and the caller goes on as usual.
+    fn take_copy(
+        &mut self,
+        src: &Pixels<'_>,
+        damage: &[Rect],
+        hints: &[(i32, i32)],
+    ) -> Result<Option<Copied>, EncodeError> {
+        let row = self.width as usize * 4;
+        let h = self.height as usize;
+        // The shadow is what the client shows. Under a motion stream it holds frozen
+        // pixels the client does not show, so nothing is copied then.
+        if self.family != Family::Software || self.shadow.len() != row * h || self.excluded.is_some() {
+            return Ok(None);
+        }
+        if src.stride < row || src.data.len() < (h - 1) * src.stride + row {
+            return Err(EncodeError("the input is smaller than the picture".into()));
+        }
+        let shown = scroll::Plane { data: &self.shadow, stride: row };
+        let new = scroll::Plane { data: src.data, stride: src.stride };
+        let Some(plan) = scroll::plan(shown, new, self.width, self.height, damage, hints) else { return Ok(None) };
+        let tiles = plan.tiles.iter().map(|r| (*r, rgb(src, *r))).collect();
+        // After the copy and the tiles the client shows the input: everywhere they change
+        // (`stale`) the shadow takes it, and the next picture codes it.
+        for r in &plan.stale {
+            for y in r.y as usize..(r.y + r.h) as usize {
+                let (x0, x1) = (r.x as usize * 4, (r.x + r.w) as usize * 4);
+                self.shadow[y * row + x0..y * row + x1]
+                    .copy_from_slice(&src.data[y * src.stride + x0..y * src.stride + x1]);
+            }
+        }
+        // A scroll copies much the same area time after time; it is coded once.
+        let within = |a: &Rect, b: &Rect| a.x <= b.x && a.y <= b.y && a.x + a.w >= b.x + b.w && a.y + a.h >= b.y + b.h;
+        for r in &plan.stale {
+            if !self.stale.iter().any(|s| within(s, r)) {
+                self.stale.retain(|s| !within(r, s));
+                self.stale.push(*r);
+            }
+        }
+        Ok(Some(Copied {
+            src: plan.src,
+            dst: [plan.dst.0, plan.dst.1],
+            tiles,
+            refine_in_ms: self.quiet.as_ref().and_then(|q| q.next_due_ms(self.now_ms())),
+            changed: plan.stale,
+        }))
     }
 
     /// Tells libx264 which macroblocks changed, so it skips analysing the rest.
@@ -644,6 +692,10 @@ impl Encoder for LavcEncoder {
         self.with_pixels(input, |enc, pixels| enc.take_tiles(pixels, damage, max_px))
     }
 
+    fn copy(&mut self, input: Input<'_>, damage: &[Rect], hints: &[(i32, i32)]) -> Result<Option<Copied>, EncodeError> {
+        self.with_pixels(input, |enc, pixels| enc.take_copy(pixels, damage, hints))
+    }
+
     fn refine(&mut self) -> Result<Picture, EncodeError> {
         if self.quiet.is_none() {
             return Err(EncodeError(format!("{} does not refine", self.name())));
@@ -771,6 +823,51 @@ mod tests {
         assert!(tiled < 7, "{tiled} of 12 quick updates went as tiles");
         // A change too big for tiles is left to a picture.
         assert!(enc.tiles(Input::Cpu(&gradient(128, 64, 9)), &[Rect::new(0, 0, 128, 64)], 1024).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_scroll_becomes_a_copy_that_the_next_picture_carries() {
+        ff::init().unwrap();
+        let settings = Settings { threads: 1, refine_qp: 0, ..Settings::default() };
+        let (w, h) = (256u32, 512u32);
+        let mut enc = LavcEncoder::new(Family::Software, Codec::H264, w, h, &settings).unwrap();
+        let image = text(w, h);
+        enc.encode(Input::Cpu(&image), true, None).unwrap();
+        // Scrolled down by 18 rows; the rows that come into view are new content.
+        let mut scrolled = CpuImage::new(w, h);
+        scrolled.data.copy_from_slice(&image.data);
+        scrolled.data.rotate_left(scrolled.stride * 18);
+        let all = [Rect::new(0, 0, w as i32, h as i32)];
+        let copy = enc.copy(Input::Cpu(&scrolled), &all, &[(0, -18)]).unwrap().expect("a copy");
+        assert_eq!((copy.src, copy.dst), (Rect::new(0, 18, w as i32, h as i32 - 18), [0, 0]));
+        // What the client shows after the copy and its tiles is the scrolled picture, byte
+        // for byte (B, G, R).
+        let mut shown = image.data.clone();
+        let (src, dst, stride) = (copy.src, copy.dst, image.stride);
+        for y in 0..src.h as usize {
+            let (from, to) = (
+                (src.y as usize + y) * stride + src.x as usize * 4,
+                (dst[1] as usize + y) * stride + dst[0] as usize * 4,
+            );
+            shown[to..to + src.w as usize * 4].copy_from_slice(&image.data[from..from + src.w as usize * 4]);
+        }
+        for (r, rgb) in &copy.tiles {
+            for (i, px) in rgb.chunks_exact(3).enumerate() {
+                let (x, y) = (r.x as usize + i % r.w as usize, r.y as usize + i / r.w as usize);
+                shown[y * stride + x * 4..][..3].copy_from_slice(&[px[2], px[1], px[0]]);
+            }
+        }
+        for (a, b) in shown.chunks_exact(4).zip(scrolled.data.chunks_exact(4)) {
+            assert_eq!(a[..3], b[..3]);
+        }
+        // The encoder's record of what the client shows is the scrolled picture, and the
+        // next picture codes the copied area.
+        assert!(enc.shadow == scrolled.data);
+        let next = enc.encode(Input::Cpu(&scrolled), false, Some(&[])).unwrap();
+        assert!(next.changed.unwrap().contains(&Rect::new(0, 0, w as i32, 496)));
+        // Under a motion stream the shadow holds frozen pixels: no copies.
+        enc.exclude(Some(Rect::new(32, 32, 64, 64)));
+        assert!(enc.copy(Input::Cpu(&image), &all, &[(0, 18)]).unwrap().is_none());
     }
 
     #[test]
