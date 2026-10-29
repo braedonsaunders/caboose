@@ -60,8 +60,9 @@ it (see [Updating a running computer](#updating-a-running-computer)).
 
 ## What the image contains
 
-- **System.** Debian 13 from its signed repositories, the `linux-image-cloud-amd64` or `linux-image-arm64` kernel,
-  systemd, D-Bus with a user session, the `caboose` user (uid 1000, passwordless `sudo`,
+- **System.** Debian 13 from its signed repositories, the `linux-image-cloud-amd64` or
+  `linux-image-cloud-arm64` kernel (Debian's virtual-machine flavour, without sound, DRM or
+  `uinput` drivers), systemd, D-Bus with a user session, the `caboose` user (uid 1000, passwordless `sudo`,
   lingering enabled so its user manager runs at boot), Node 22 from NodeSource and VS Code
   from Microsoft's repository.
 - **Guest agent.** The appkit-desk guest agent from Bunkhouse at a pinned revision, with the

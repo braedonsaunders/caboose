@@ -2,7 +2,7 @@
 set -euxo pipefail
 export DEBIAN_FRONTEND=noninteractive USER=root HOME=/root TERM=xterm
 arch=$(dpkg --print-architecture)
-case $arch in amd64) triplet=x86_64-linux-gnu; kernel=linux-image-cloud-amd64 ;; arm64) triplet=aarch64-linux-gnu; kernel=linux-image-arm64 ;; *) exit 1 ;; esac
+case $arch in amd64) triplet=x86_64-linux-gnu; kernel=linux-image-cloud-amd64 ;; arm64) triplet=aarch64-linux-gnu; kernel=linux-image-cloud-arm64 ;; *) exit 1 ;; esac
 printf 'deb https://deb.debian.org/debian trixie main contrib non-free-firmware\ndeb https://security.debian.org/debian-security trixie-security main contrib non-free-firmware\n' > /etc/apt/sources.list
 apt-get -o APT::Acquire::Queue-Mode=access update
 apt-get install -y --no-install-recommends ca-certificates curl gnupg
