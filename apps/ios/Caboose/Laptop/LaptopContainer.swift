@@ -51,7 +51,9 @@ struct LaptopContainer<Content: View>: View {
             ZStack(alignment: .topLeading) {
                 content(active)
                     .environment(\.laptopInputOwned, active)
-                    .frame(width: proxy.size.width, height: active ? frames.screen.height : max(0, proxy.size.height - geometry.keyboard))
+                    // In Tablet, the shell has already proposed the area above the keyboard.
+                    // Subtracting its measured height again collapses the app to its title bar.
+                    .frame(width: proxy.size.width, height: active ? frames.screen.height : proxy.size.height)
                     .clipped()
                 if active {
                     VStack(spacing: 0) {
@@ -122,7 +124,8 @@ struct LaptopContainer<Content: View>: View {
         // uses the custom rail; app cards retain their own toolbar safe areas.
         // Laptop owns the whole display and draws navigation below the hinge.
         .ignoresSafeArea(.container, edges: layoutActive ? .all : (barEdge != nil || (!isCard && tabPlacement == .sidebar) ? [.top, .bottom] : []))
-        .ignoresSafeArea(.keyboard, edges: .bottom)
+        // Only the split layout owns keyboard avoidance. Tablet uses SwiftUI's proposal.
+        .ignoresSafeArea(.keyboard, edges: layoutActive ? .bottom : [])
     }
     private func updatePointerArea(active: Bool, frames: LaptopLayout.Frames) {
         guard active, !isCard, !model.externalDisplayActive else { return }

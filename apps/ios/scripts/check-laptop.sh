@@ -13,6 +13,9 @@ Laptop layout — signed app on the paired physical Duo:
    workspace: no Full Screen button or Exit App Full Screen menu item, no duplicate
    card controls. In Tablet, the green button still opens the native app card.
 3. Tablet: check the full title bar and whole dock, with no top/bottom clipping.
+   In tablet landscape, focus Chromium's address bar: the app and dock fill the
+   area above the keyboard, rather than collapsing to a title bar and a raised dock.
+   Hide the keyboard, rotate to portrait, and repeat; the full viewport returns.
    Laptop: no system sidebar or toolbar spans the upper half. All shell controls
    stay in the lower-right rail. The app fills the upper viewport without Caboose
    title bars; the dock is at the top of the LOWER half.
