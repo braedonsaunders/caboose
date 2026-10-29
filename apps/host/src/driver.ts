@@ -209,7 +209,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       if (paths.template && config.vmRestoreMode === 'ondemand') throw new Error('Template computers cannot use on-demand restore')
       if (paths.template && nativeMac) throw new Error('Template computers require Cloud Hypervisor')
       const api = deskApi as unknown as { DESK_TEMPLATE_VERSION?: number; forkDeskTemplate?: unknown; hostCpuSignature?: () => Promise<string> }
-      if (paths.template && (api.DESK_TEMPLATE_VERSION !== 1 || typeof api.forkDeskTemplate !== 'function' || typeof api.hostCpuSignature !== 'function')) throw new Error('Template computers require a compatible AppKit desk release')
+      if (paths.template && (api.DESK_TEMPLATE_VERSION !== 3 || typeof api.forkDeskTemplate !== 'function' || typeof api.hostCpuSignature !== 'function')) throw new Error('Template computers require a compatible AppKit desk release')
       const coldStart = paths.template && !desk && existsSync(initializedPath) && !existsSync(snapshotPath) && existsSync(coldStartPath)
       if (paths.template && !desk && existsSync(initializedPath) && !existsSync(snapshotPath) && !coldStart) throw new Error('Template computer memory is missing; recovery is required')
       if (dependencies.depotPath) {
@@ -250,7 +250,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
             for await (const chunk of createReadStream(path)) digest.update(chunk as Buffer)
             identity.update(path).update('\0').update(digest.digest('hex')).update('\0')
           }
-          identity.update(await api.hostCpuSignature!()).update(config.vmmPath).update(String(desired.memoryMb)).update(':').update(String(desired.vcpus)).update(String(Boolean(config.vmFreePageReporting)))
+          identity.update(JSON.stringify([await api.hostCpuSignature!(), config.vmmPath, desired.memoryMb, desired.vcpus, Boolean(config.vmFreePageReporting)]))
           sourceId = identity.digest('hex')
         }
         const templates = join(config.imageRoot, 'templates')

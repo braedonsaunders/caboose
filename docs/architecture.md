@@ -218,7 +218,8 @@ read-only attachments. Before resuming, the host verifies that the VMM privately
 maps the complete memory file; a fallback to eager copying is rejected. Before
 exposing a fork, the host blocks its TAP, the
 guest refreshes vsock and virtio-rng devices, reseeds its kernel, changes its
-machine ID and MAC, and starts its normal services; the host releases the fence
+machine ID and MAC, and restarts the private agent to discard its copied
+userspace random state. It then starts its normal services; the host releases the fence
 only after the private Files and terminal services are ready. The guest runtime-masks
 networkd wait-online because the host configures its network directly. An interrupted
 strict restore remains fenced and requires

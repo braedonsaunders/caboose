@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import * as desk from '@braedonsaunders/appkit-desk'
 import type { DeskLaunchPlan, DeskMachine, DeskReadOnlyAttachment } from '@braedonsaunders/appkit-desk'
 import { parseExecResult } from '@braedonsaunders/appkit-desk'
@@ -13,6 +14,8 @@ interface Compatibility { vmmVersion: string; vmmPath: string; cpuSignature: str
 interface TemplateApi {
   hostCpuSignature(): Promise<string>
   forkDeskTemplate(snapshot: string, childDirectory: string, identity: { deskId: string; tap: string; mac: string; vsockCid: number; vsockSocket: string }, compatibility: Compatibility): Promise<unknown>
+  verifyDeskTemplateFork(childDirectory: string, identity: { deskId: string; tap: string; mac: string; vsockCid: number; vsockSocket: string }, compatibility: Compatibility): Promise<void>
+  verifyDeskTemplateCompatibility(childDirectory: string, compatibility: Compatibility): Promise<void>
 }
 export interface TemplateForkOptions extends TemplateBuildOptions {
   childDirectory: string
@@ -31,6 +34,16 @@ export function templateFork(options: TemplateForkOptions) {
     if (result.exitCode !== 0 || result.truncated) throw new Error(`Template guest command failed: ${result.stderr || result.exitCode}`)
     return result.stdout
   }
+  const compatibility = async (api: Partial<TemplateApi>): Promise<Compatibility> => {
+    if (typeof api.hostCpuSignature !== 'function') throw new Error('Template forks require a compatible AppKit desk release')
+    const version = (await exec(options.vmmPath, ['--version'], { timeout: 15_000 })).stdout.trim()
+    return { vmmVersion: version, vmmPath: options.vmmPath, cpuSignature: await api.hostCpuSignature(), baseImagePath: options.baseImage,
+      kernelPath: options.kernel, initramfsPath: options.initramfs, attachmentPaths: (options.attachments ?? []).map(item => item.path) }
+  }
+  const identity = (plan: DeskLaunchPlan) => {
+    if (plan.hypervisor !== 'cloud-hypervisor') throw new Error('Template forks require Cloud Hypervisor')
+    return { deskId: options.deskId, tap: plan.tap.device, mac: plan.tap.mac, vsockCid: plan.vsock.cid, vsockSocket: plan.vsock.socketPath }
+  }
   return {
     async holdFence(): Promise<void> { await fence.hold() },
     async prepare(plan: DeskLaunchPlan): Promise<void> {
@@ -38,11 +51,21 @@ export function templateFork(options: TemplateForkOptions) {
       const api = desk as unknown as Partial<TemplateApi>
       if (typeof api.hostCpuSignature !== 'function' || typeof api.forkDeskTemplate !== 'function') throw new Error('Template forks require an AppKit desk release with template support')
       await buildTemplateSource(options)
-      const version = (await exec(options.vmmPath, ['--version'], { timeout: 15_000 })).stdout.trim()
-      const compatibility: Compatibility = { vmmVersion: version, vmmPath: options.vmmPath, cpuSignature: await api.hostCpuSignature(), baseImagePath: options.baseImage,
-        kernelPath: options.kernel, initramfsPath: options.initramfs, attachmentPaths: (options.attachments ?? []).map(item => item.path) }
-      await api.forkDeskTemplate(join(options.directory, 'source.snapshot'), options.childDirectory,
-        { deskId: options.deskId, tap: plan.tap.device, mac: plan.tap.mac, vsockCid: plan.vsock.cid, vsockSocket: plan.vsock.socketPath }, compatibility)
+      await api.forkDeskTemplate(join(options.directory, 'source.snapshot'), options.childDirectory, identity(plan), await compatibility(api))
+    },
+    async verifyPrepared(plan: DeskLaunchPlan): Promise<void> {
+      const api = desk as unknown as Partial<TemplateApi>
+      if (typeof api.verifyDeskTemplateFork !== 'function') throw new Error('Template forks require prepared-state verification')
+      await api.verifyDeskTemplateFork(options.childDirectory, identity(plan), await compatibility(api))
+    },
+    async verifyResume(plan: DeskLaunchPlan): Promise<void> {
+      if (plan.hypervisor !== 'cloud-hypervisor') throw new Error('Template forks require Cloud Hypervisor')
+      const api = desk as unknown as Partial<TemplateApi>
+      if (typeof api.verifyDeskTemplateCompatibility !== 'function') throw new Error('Template resume requires image verification')
+      await api.verifyDeskTemplateCompatibility(options.childDirectory, await compatibility(api))
+      const saved = JSON.parse(await readFile(join(plan.snapshot.dir, 'config.json'), 'utf8')) as { disks?: { path?: string }[]; net?: { tap?: string; mac?: string }[]; vsock?: { cid?: number; socket?: string } }
+      if (saved.disks?.[0]?.path !== plan.overlay.path || saved.net?.[0]?.tap !== plan.tap.device || saved.net[0].mac?.toLowerCase() !== plan.tap.mac.toLowerCase()
+        || saved.vsock?.cid !== plan.vsock.cid || saved.vsock.socket !== plan.vsock.socketPath) throw new Error('Parked template device identity does not match')
     },
     async initialize(machine: DeskMachine, plan: DeskLaunchPlan): Promise<void> {
       if (plan.hypervisor !== 'cloud-hypervisor') throw new Error('Template forks require Cloud Hypervisor')
@@ -57,6 +80,15 @@ export function templateFork(options: TemplateForkOptions) {
       }
       if (!ready) throw new Error('Guest vsock identity did not refresh')
       await command(machine, '/usr/bin/python3', [helper, 'reinitialize', plan.tap.mac, String(plan.vsock.cid)], 90_000)
+      const previous = (await command(machine, '/usr/bin/python3', [helper, 'restart-agent'])).trim().split('\n').at(-1) ?? ''
+      if (!/^[0-9]+:[0-9]+$/.test(previous)) throw new Error('Could not identify the source guest agent')
+      const agentDeadline = Date.now() + 60_000
+      let agentReady = false
+      while (Date.now() < agentDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        try { await command(machine, '/usr/bin/python3', [helper, 'check-agent', previous], 5_000); agentReady = true; break } catch { /* wait for a new private agent */ }
+      }
+      if (!agentReady) throw new Error('Private guest agent did not restart')
       const script = `set -eu\ndev=$(ls /sys/class/net | grep -E '^(en|eth)' | head -n 1)\ntest -n "$dev"\nip addr flush dev "$dev"\nip addr add ${address.guest}/30 dev "$dev"\nip link set dev "$dev" up\nip route replace default via ${address.host} dev "$dev"\nrm -f /etc/resolv.conf\nprintf 'nameserver 1.1.1.1\\n' > /etc/resolv.conf\ndate -u -s @${(Date.now() / 1000).toFixed(3)} >/dev/null`
       await command(machine, '/bin/sh', ['-c', script])
     },

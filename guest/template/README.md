@@ -12,7 +12,9 @@ reconnects and checks the child CID with `check-vsock CID`.
 child while the host blocks network traffic. It requires the prepare marker and
 no non-root process, checks the guest vsock CID, reprobes virtio-rng to discard snapshot-cached bytes, mixes fresh host-backed
 entropy and reseeds the kernel RNG, changes the machine ID and NIC address,
-and regenerates SSH host keys. After reset succeeds, `caboose-template.py activate` starts the normal multi-user target while the host network remains fenced. A failure
+and regenerates SSH host keys. The host schedules `restart-agent`, reconnects,
+and checks the new agent process identity to discard copied userspace random
+state. After reset succeeds, `caboose-template.py activate` starts the normal multi-user target while the host network remains fenced. A failure
 exits nonzero and must keep the VM and network fenced. The host must verify these
 operations on its actual guest kernel and Cloud Hypervisor before exposing a
 child; the helper does not create or register snapshots.

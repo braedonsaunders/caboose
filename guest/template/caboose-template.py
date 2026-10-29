@@ -198,6 +198,40 @@ def reinitialize(mac, cid):
     os.sync()
 
 
+def agent_identity():
+    result = subprocess.run(['systemctl', 'show', '--property=MainPID', '--value', 'desk-guest-agent.service'], timeout=5, check=True, capture_output=True, text=True)
+    pid = int(result.stdout.strip())
+    if pid < 2:
+        raise RuntimeError('Private guest agent is not running')
+    fields = pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+    return f'{pid}:{fields[19]}'
+
+
+def restart_agent():
+    template_boot()
+    if INITIALIZED.read_text() != 'initialized\n':
+        raise RuntimeError('Guest identity has not been reinitialized')
+    previous = agent_identity()
+    # Restart asynchronously so the request returns before its channel closes.
+    run('systemd-run', '--unit=caboose-template-agent-restart', '--on-active=5s',
+        '/usr/bin/python3', '/usr/local/libexec/caboose-template', 'restart-agent-worker')
+    print(previous)
+
+
+def restart_agent_worker():
+    template_boot()
+    if INITIALIZED.read_text() != 'initialized\n':
+        raise RuntimeError('Guest identity has not been reinitialized')
+    run('systemctl', 'restart', 'desk-guest-agent.service', 'desk-vsock-bridge.service')
+
+
+def check_agent(previous):
+    if not re.fullmatch(r'[0-9]+:[0-9]+', previous):
+        raise RuntimeError('Invalid prior agent identity')
+    if agent_identity() == previous:
+        raise RuntimeError('Private guest agent has not restarted')
+
+
 def activate():
     template_boot()
     if INITIALIZED.read_text() != 'initialized\n':
@@ -237,6 +271,12 @@ if __name__ == '__main__':
             prepare()
         elif sys.argv[1:] == ['activate']:
             activate()
+        elif sys.argv[1:] == ['restart-agent']:
+            restart_agent()
+        elif sys.argv[1:] == ['restart-agent-worker']:
+            restart_agent_worker()
+        elif len(sys.argv) == 3 and sys.argv[1] == 'check-agent':
+            check_agent(sys.argv[2])
         elif sys.argv[1:] == ['refresh-vsock']:
             refresh_vsock()
         elif sys.argv[1:] == ['refresh-vsock-worker']:

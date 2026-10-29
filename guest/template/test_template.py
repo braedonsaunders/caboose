@@ -18,6 +18,14 @@ class TemplateHelperTest(unittest.TestCase):
                     helper.prepare()
                 self.assertFalse(marker.exists())
 
+    def test_agent_restart_requires_a_new_process_identity(self):
+        with patch.object(helper, 'agent_identity', return_value='123:456'):
+            with self.assertRaisesRegex(RuntimeError, 'has not restarted'):
+                helper.check_agent('123:456')
+            helper.check_agent('123:455')
+            with self.assertRaisesRegex(RuntimeError, 'Invalid prior'):
+                helper.check_agent('invalid')
+
     def test_reprobe_requires_exactly_one_device(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

@@ -5,7 +5,7 @@ import { expect, it, vi } from 'vitest'
 
 vi.mock('@braedonsaunders/appkit-desk', async importOriginal => ({
   ...await importOriginal<typeof import('@braedonsaunders/appkit-desk')>(),
-  DESK_TEMPLATE_VERSION: 1,
+  DESK_TEMPLATE_VERSION: 3,
   forkDeskTemplate: vi.fn(),
   hostCpuSignature: vi.fn(async () => 'cpu'),
 }))

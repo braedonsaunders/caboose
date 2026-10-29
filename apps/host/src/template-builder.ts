@@ -49,7 +49,7 @@ export async function buildTemplateSource(options: TemplateBuildOptions): Promis
   }
   if (options.attachments?.some(item => item.kind !== 'block')) throw new Error('Templates support read-only block attachments only')
   const api = desk as unknown as Partial<TemplateApi>
-  if (api.DESK_TEMPLATE_VERSION !== 1 || typeof api.hostCpuSignature !== 'function' || typeof api.registerDeskTemplate !== 'function') throw new Error('Template building requires an AppKit desk release with template registration')
+  if (api.DESK_TEMPLATE_VERSION !== 3 || typeof api.hostCpuSignature !== 'function' || typeof api.registerDeskTemplate !== 'function') throw new Error('Template building requires an AppKit desk release with template registration')
   const version = (await exec(options.vmmPath, ['--version'], { timeout: 15_000 })).stdout.trim()
   if (version !== 'cloud-hypervisor v54.0') throw new Error('Templates require Cloud Hypervisor v54.0')
   const expectedComponents = (await readBundle()).version

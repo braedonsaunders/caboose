@@ -6,7 +6,7 @@ import { join } from 'node:path'
 
 const required = (key: string): string => { const value = process.env[key]; if (!value) throw new Error(`${key} required`); return value }
 const stage = required('TEMPLATE_CHECK_STAGE')
-const { createDeskHost, createDeskNetwork, createCloudHypervisorBackend, hostCpuSignature, registerDeskTemplate, forkDeskTemplate, planTemplateConfig, pinTemplateMemory } = await import(pathToFileURL(required('APPKIT_DESK_ENTRY')).href)
+const { createDeskHost, createDeskNetwork, createCloudHypervisorBackend, hostCpuSignature, registerDeskTemplate, forkDeskTemplate, verifyDeskTemplateFork, planTemplateConfig, pinTemplateMemory } = await import(pathToFileURL(required('APPKIT_DESK_ENTRY')).href)
 if (await readlink('/proc/self/ns/net') === await readlink('/proc/1/ns/net')) throw new Error('A private network namespace is required')
 const [golden, disposable] = await Promise.all([stat(required('TEMPLATE_CHECK_GOLDEN')), stat(join(stage, 'base.raw'))])
 if (golden.dev !== disposable.dev || golden.ino === disposable.ino) throw new Error('Test disk must be a distinct copy on the golden disk filesystem')
@@ -85,6 +85,10 @@ try {
           await writeFile(join(childDir, '.prepared'), '1\n')
         }
       },
+      async verifyResume() {}, // This diagnostic does not re-park a child.
+      async verifyPrepared(plan: any) {
+        if (!quick) await verifyDeskTemplateFork(childDir, { deskId: id, tap: plan.tap.device, mac: plan.tap.mac, vsockCid: plan.vsock.cid, vsockSocket: plan.vsock.socketPath }, compatibility)
+      },
       async initialize(machine: any) {
         initializedMachine = machine
         console.log(`CHECK ${id} schedule vsock refresh`)
@@ -104,6 +108,21 @@ try {
         const result = await machine.request({ op: 'exec', command: '/usr/bin/python3', args: ['/usr/local/libexec/caboose-template', 'reinitialize', childMac, String(childCid)], timeoutMs: 90_000 }, { timeoutMs: 95_000 })
         if (result.exitCode !== 0) throw new Error(`guest reset failed: ${result.stderr}`)
         console.log(`CHECK ${id} entropy and identity reset completed`)
+        const restart = await machine.request({ op: 'exec', command: '/usr/bin/python3', args: ['/usr/local/libexec/caboose-template', 'restart-agent'], timeoutMs: 30_000 })
+        if (restart.exitCode !== 0) throw new Error(`agent restart scheduling failed: ${restart.stderr}`)
+        const previous = String(restart.stdout).trim().split('\n').at(-1) ?? ''
+        if (!/^[0-9]+:[0-9]+$/.test(previous)) throw new Error('invalid agent identity')
+        const agentDeadline = Date.now() + 60_000
+        let restarted = false
+        while (Date.now() < agentDeadline) {
+          await new Promise(resolve => setTimeout(resolve, 500))
+          try {
+            const probe = await machine.request({ op: 'exec', command: '/usr/bin/python3', args: ['/usr/local/libexec/caboose-template', 'check-agent', previous], timeoutMs: 5_000 }, { timeoutMs: 10_000 })
+            if (probe.exitCode === 0) { restarted = true; break }
+          } catch { /* wait for the new private agent */ }
+        }
+        if (!restarted) throw new Error('guest agent did not restart')
+        console.log(`PASS ${id} private agent restarted`)
         const gateway = address.replace(/\.2$/, '.1')
         const networkScript = `set -eu\ndev=$(ls /sys/class/net | grep -E '^(en|eth)' | head -n 1)\ntest -n "$dev"\nip addr flush dev "$dev"\nip addr add ${address}/24 dev "$dev"\nip link set dev "$dev" up\nip route replace default via ${gateway} dev "$dev"`
         const configured = await machine.request({ op: 'exec', command: '/bin/sh', args: ['-c', networkScript], timeoutMs: 20_000 })
