@@ -254,7 +254,9 @@ function setup(options: { defaultAgent?: string | null; craftServers?: () => Pro
 describe('AgentTasks', () => {
   it('requires explicit stop for live deletion, releases the lease, and survives restore', async () => {
     const { tasks, fake, events, release } = setup()
+    await tasks.restore()
     const task = await tasks.start({ prompt: 'hello' })
+    release.mockClear() // Initial restore has released its temporary lease; the task lease remains.
     await expect(tasks.delete(task.id)).rejects.toThrow('Stop the agent')
     expect(tasks.list()).toHaveLength(1)
     await expect(tasks.delete(task.id, true)).resolves.toBe(true)
@@ -294,7 +296,9 @@ describe('AgentTasks', () => {
 
   it('retains the chat and lease when runner retirement fails', async () => {
     const { tasks, fake, events, release } = setup()
+    await tasks.restore()
     const task = await tasks.start({ prompt: 'hello' })
+    release.mockClear() // Assert deletion preserves the task lease, independently of restore.
     const run = fake.guest.run.bind(fake.guest)
     fake.guest.run = async (command, args, timeout) => {
       if (args.some(arg => arg.startsWith('// delete-agent-task'))) throw new Error('Cannot identify this chat runner')

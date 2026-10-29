@@ -70,7 +70,7 @@ async function startHost(gpu = false, small = false) {
 it('lists, makes and serves several computers, each through its own routes', async () => {
   const host = await startHost()
   const listed = await (await host.call('/v1/computers')).json()
-  expect(listed).toMatchObject({ canCreate: true, limits: { computers: 64, running: 4 }, computers: [{ id: 'owner', state: 'parked', settings: { name: 'Caboose' } }] })
+  expect(listed).toMatchObject({ canCreate: true, limits: { computers: 32832, running: 4 }, computers: [{ id: 'owner', state: 'parked', settings: { name: 'Caboose' } }] })
 
   expect((await host.call('/v1/computers', { method: 'POST', body: { memoryMb: 2048 } })).status).toBe(400)
   expect((await host.call('/v1/computers', { method: 'POST', body: { name: 'Kids', defaultAgent: 'claude' } })).status).toBe(400)
