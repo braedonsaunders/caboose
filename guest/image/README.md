@@ -230,3 +230,6 @@ extraction, source preservation and overwrite refusal.
 On a split microVM, run `sudo guest/image/check-split-system.sh prepare`, cold-restart
 the computer, then run `sudo guest/image/check-split-system.sh verify` to check that a
 write persists in the upper layer while the EROFS lower stays unchanged.
+
+On a microVM with `CABOOSE_VM_DEPOT`, `sudo guest/image/check-vm-depot.sh` checks
+that the Flatpak repository is mounted via read-only virtio-fs and rejects a write.
