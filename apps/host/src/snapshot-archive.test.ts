@@ -87,4 +87,15 @@ describe('snapshot archives', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
+  it('refuses an incorrect key without leaving plaintext staging files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'snapshot-archive-')), source = join(root, 'source'), target = join(root, 'target')
+    try {
+      await mkdir(source); await writeFile(join(source, 'state.json'), 'private')
+      const { store } = storage()
+      const manifest = await uploadSnapshotArchive(source, store, randomBytes(32))
+      await expect(downloadSnapshotArchive(target, store, randomBytes(32), manifest)).rejects.toThrow()
+      await expect(readdir(target)).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
 })
