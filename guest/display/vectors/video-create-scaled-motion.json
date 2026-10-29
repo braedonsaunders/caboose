@@ -1,0 +1,8 @@
+{
+  "name": "video-create-scaled-motion",
+  "description": "A half-resolution motion picture placed in window coordinates.",
+  "messages": [
+    {"direction": "server", "type": "video.create", "type_id": 18, "fields": {"id": 3, "rect": [40, 80, 640, 360], "codec": "h264", "scaled": true, "source": "motion", "window": 12}}
+  ],
+  "hex": "123e000000a6626964036472656374841828185019028019016865636f6465636468323634667363616c6564f566736f75726365666d6f74696f6e6677696e646f770c"
+}

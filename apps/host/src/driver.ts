@@ -6,11 +6,39 @@ import { buildDeskLaunchPlan, createDeskHost, createCloudHypervisorBackend, crea
 import type { Config } from './config.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 import { TERMINAL_PORT } from './terminal.js'
-import { configureGuest, ensureNetwork, networkSlot, removeNetwork } from './network.js'
+import { configureGuest, ensureNetwork, invalidateNetwork, networkSlot, removeNetwork } from './network.js'
 import type { App, Controller, Session } from './server.js'
 import { guestLaunch } from './guest-apps.js'
 import { selectSystemImage, usesSystemImage } from './system-image.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
+
+/** Verify the Files service through vsock before choosing it for this guest. */
+export async function probeServiceVsock(desk: DeskHandle, timeoutMs = 2_000): Promise<boolean> {
+  let expired = false
+  let stream: Awaited<ReturnType<DeskHandle['connect']>> | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<boolean>(resolve => {
+    timer = setTimeout(() => { expired = true; stream?.destroy(); resolve(false) }, timeoutMs)
+  })
+  const probe = (async () => {
+    try {
+      stream = await desk.connect(14700, { transport: 'vsock' })
+      if (expired) { stream.destroy(); return false }
+      return await new Promise<boolean>(resolve => {
+        let header = ''
+        stream!.on('error', () => resolve(false))
+        stream!.on('close', () => resolve(false))
+        stream!.on('data', (chunk: Buffer) => {
+          header += chunk.toString('latin1')
+          if (header.includes('\n') || header.length > 1024) resolve(/^HTTP\/1\.[01] [1-5]\d\d[ \r\n]/.test(header))
+        })
+        stream!.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')
+      })
+    } catch { return false }
+  })()
+  try { return await Promise.race([probe, timeout]) }
+  finally { if (timer) clearTimeout(timer); stream?.destroy() }
+}
 
 export interface ComputerResources { memoryMb: number; vcpus: number }
 
@@ -52,7 +80,7 @@ export function createDeskPool(config: Config, dependencies: DeskPoolDependencie
   const nativeMac = usesVirtualization(dependencies)
   const backend = dependencies.backend ?? (nativeMac
     ? createVirtualizationBackend({ helperPath: config.vmmPath, connectTimeoutMs: 120_000 })
-    : createCloudHypervisorBackend({ connectTimeoutMs: 120_000 }))
+    : createCloudHypervisorBackend({ connectTimeoutMs: 120_000, serviceVsock: true }))
   return createDeskHost({
     imageRoot: config.imageRoot, vmmPath: config.vmmPath,
     // Images may be downloaded after pool creation; don't let AppKit's eager existence
@@ -84,16 +112,21 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   const { id, slot } = dependencies.identity ?? OWNER
   const address = networkSlot(slot)
   const host = dependencies.desks ?? createDeskPool(config, dependencies)
+  // AppKit 0.9 provides resident pause. Older installs and other backends keep the existing
+  // idle park behavior until the capability is available.
+  const pausable = host as DeskHost & { canPause?: (id: string) => boolean; pause?: (id: string) => Promise<void> }
   let desk: DeskHandle | undefined
   let heartbeat: ReturnType<typeof setInterval> | undefined
+  let serviceVsock = false
   const relays = new Map<number, Awaited<ReturnType<typeof listenDeskPort>>>()
   async function closeRelays(): Promise<void> {
     const open = [...relays.values()]
     relays.clear()
+    serviceVsock = false
     await Promise.all(open.map(relay => relay.close()))
   }
   function endpoint(port: number, scheme: 'http' | 'ws'): string {
-    if (!nativeMac) return `${scheme}://${address.guest}:${port}${scheme === 'ws' ? '/' : ''}`
+    if (!nativeMac && !serviceVsock) return `${scheme}://${address.guest}:${port}${scheme === 'ws' ? '/' : ''}`
     const relay = relays.get(port)
     if (!relay) throw new Error('Computer is not running')
     return `${scheme}://${relay.host}:${relay.port}${scheme === 'ws' ? '/' : ''}`
@@ -189,7 +222,12 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       if (!nativeMac) await (dependencies.network ?? (() => ensureNetwork(slot)))()
       const restoring = existsSync(snapshotPath)
       const wasResident = Boolean(desk)
-      desk = await host.start({ deskId: id, baseImage: join(imageDirectory, 'base.raw'), overlayPath, ...(dependencies.depotPath ? { shares: [{ tag: 'caboose-depot', path: dependencies.depotPath, readOnly: true }] } : {}), ...systemImage && { kernelPath: join(imageDirectory, 'vmlinux'), initramfsPath: join(imageDirectory, 'initrd'), readOnlyAttachments: [{ path: join(imageDirectory, 'system.erofs'), sha256: systemImage.hashes['system.erofs'], kind: 'block' as const }] }, memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS, ...(nativeMac ? {} : { network: { tapDevice: address.tap } }) })
+      desk = await host.start({ deskId: id, baseImage: join(imageDirectory, 'base.raw'), overlayPath,
+        ...(dependencies.depotPath ? { shares: [{ tag: 'caboose-depot', path: dependencies.depotPath, readOnly: true }] } : {}),
+        ...(systemImage ? { kernelPath: join(imageDirectory, 'vmlinux'), initramfsPath: join(imageDirectory, 'initrd'), readOnlyAttachments: [{ path: join(imageDirectory, 'system.erofs'), sha256: systemImage.hashes['system.erofs'], kind: 'block' as const }] } : {}),
+        memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS,
+        ...(nativeMac ? {} : { network: { tapDevice: address.tap, guestAddress: address.guest } }),
+      }).catch(error => { if (!nativeMac) invalidateNetwork(slot); throw error })
       try {
         if (restoring && host.stats().lastError?.includes('could not resume from its snapshot')) {
           throw new Error(host.stats().lastError ?? 'Snapshot restore failed')
@@ -205,9 +243,10 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
             .catch(error => console.error('Shared runtime depot unavailable:', error))
         }
         await configureGuest(desk, slot, nativeMac ? { host: '10.0.2.2', guest: '10.0.2.15', prefix: 24 } : undefined)
-        if (nativeMac && !relays.size) {
+        if (!nativeMac && !relays.size) serviceVsock = await probeServiceVsock(desk)
+        if ((nativeMac || serviceVsock) && !relays.size) {
           for (const port of [OWNER_DISPLAY_PORT, AGENT_DISPLAY_PORT, 14700, TERMINAL_PORT]) {
-            relays.set(port, await listenDeskPort(desk, port))
+            relays.set(port, await listenDeskPort(nativeMac ? desk : { connect: (target) => desk!.connect(target, { transport: 'vsock' }) }, port))
           }
         }
         displayToken = randomBytes(32).toString('hex')
@@ -220,6 +259,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         heartbeat.unref()
         return session()
       } catch (error) {
+        if (!nativeMac) invalidateNetwork(slot)
         clearHeartbeat()
         await closeRelays().catch(failure => console.error('Failed to close guest relays:', failure))
         await host.suspend(id).catch(failure => console.error('Failed to park after wake error:', failure))
@@ -228,6 +268,12 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       }
     },
     async promote() { await ownerDisplay(); return session() },
+    canFreeze: () => Boolean(desk && pausable.canPause?.(id) && pausable.pause),
+    async freeze() {
+      if (!pausable.pause) throw new Error('Resident pause is unavailable')
+      await pausable.pause(id)
+    },
+    async thaw() { desk = await host.resume(id) },
     async park() {
       clearHeartbeat()
       await closeRelays()
@@ -240,6 +286,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       }
     },
     async restart() {
+      if (!nativeMac) invalidateNetwork(slot)
       restartWarning = null
       // A wedged guest still needs a restart. Try to flush briefly, then surface the
       // failure while proceeding with the explicitly confirmed cold restart.

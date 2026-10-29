@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { config } from './config.js'
-import { containerPlacement, createContainerController, detectGpu, gpuArgs, type Docker } from './container-driver.js'
+import { containerPlacement, createContainerController, detectGpu, gpuArgs, withContainerPorts, type Docker } from './container-driver.js'
 import { DISPLAY_ENV } from './display.test.js'
 
 /** `published` are the container ports Docker reports as mapped; the bridge address is 172.18.0.2. */
@@ -188,6 +188,23 @@ describe('container settings and restart', () => {
 })
 
 describe('container network fence', () => {
+  it('uses Docker-assigned loopback ports for new slots and rediscovers them after park', async () => {
+    const fake = fakeDocker('missing')
+    const docker: Docker = async (args, timeout) => {
+      if (args[0] === 'ps') return ''
+      if (args[0] === 'port') return `127.0.0.1:${({ '14600/tcp': 21000, '14601/tcp': 21001, '14700/tcp': 21002, '14701/tcp': 21003 } as Record<string, number>)[args[2]!]}\n`
+      return fake.docker(args, timeout)
+    }
+    const controller = createContainerController(settings, { identity: { id: 'c-0123456789', slot: 64 }, docker, exists: () => false, fence: async () => {} })
+    await controller.wake()
+    expect(fake.calls.find(call => call[0] === 'run')).toEqual(expect.arrayContaining(['127.0.0.1:21000:14600', '127.0.0.1:21002:14700']))
+    expect(controller.displayUrl).toBe('ws://127.0.0.1:21000/')
+    expect(controller.fileService?.().url).toBe('http://127.0.0.1:21002')
+    await controller.park()
+    await controller.wake()
+    expect(controller.terminalService?.().url).toBe('http://127.0.0.1:21003')
+  })
+
   it('puts the computer on its own fenced network with public DNS before it starts', async () => {
     const fake = fakeDocker('missing')
     const fenced: string[] = []
@@ -225,4 +242,18 @@ describe('container network fence', () => {
     expect(fenced).toEqual(['caboose-br3', '-caboose-br3'])
     expect(controller.guest()).toBeUndefined()
   })
+})
+
+
+it('avoids ports recorded by stopped containers and serializes new allocations', async () => {
+  let published = false
+  const docker: Docker = async args => {
+    if (args[0] === 'ps') return 'stopped\n'
+    if (args[0] === 'inspect') return `${JSON.stringify({ '14600/tcp': [{ HostIp: '127.0.0.1', HostPort: '21000' }], ...(published ? { '14700/tcp': [{ HostIp: '127.0.0.1', HostPort: '21004' }] } : {}) })}\t${JSON.stringify({ '14701/tcp': [{ HostPort: '21012' }] })}`
+    return ''
+  }
+  const a = withContainerPorts(docker, async ports => { published = true; return ports })
+  const b = withContainerPorts(docker, async ports => ports)
+  expect((await a).display).toBe(21004)
+  expect((await b).display).toBe(21008)
 })

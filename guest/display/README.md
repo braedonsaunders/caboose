@@ -120,9 +120,10 @@ This directory is a Cargo workspace:
   A dense rectangle of at least 192×112 pixels whose blocks change in most pictures at
   15 fps or more, for a second, becomes a `motion` video stream. The window's encode
   worker encodes that crop with its own encoder (no sharpening) and leaves it out of the
-  window picture. Once the region has stopped looking like video for a second, a window
+  window picture. A client advertising `scaled_motion` receives eligible software-encoded regions at half
+  width and height with placement unchanged. Once the region has stopped looking like video for a second, a window
   picture repaints it and the stream ends. Only for a client that lists the stream's codec
-  in `video_decoders`; `--no-motion` turns it off.
+  in `video_decoders` or advertising `scaled_motion`; `--no-motion` turns it off.
 
 Limitations: the renderer is pixman (CPU), so buffers reach the encoders through system
 memory and the compositor offers no YUV formats; tiles come only from the software
@@ -194,6 +195,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
 | `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer; a blinking caret costs at most 4 extra pictures in 6 s, not one per blink |
 | `motion` | Chromium plays a 480×270 canvas "video" in a page of text for 8 s: it becomes one `motion` stream at the canvas, every frame decodes with a pts, the window stream sends at most half as many pictures beside it, the stream ends after the video stops, and the final window picture matches the one streamed with `--no-motion` (≥ 40 dB) |
+| `scaled-motion` | Chromium motion decodes at half size and retains its placement when the client advertises `scaled_motion` |
 | `tiles` | 31 characters typed into Chromium at 1179×2556 go as tiles: every tile decodes, at most a third of the pictures of a run without tiles, the server spends at most 60% of the CPU, and the final picture (frame plus tiles, as the client paints it) matches the one without tiles (≥ 40 dB); a 250×250 animation at 60 Hz stays video |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 

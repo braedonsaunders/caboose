@@ -32,6 +32,7 @@ pub struct Session {
     pub wasm: bool,
     /// The client renders Vulkan streams, and this instance relays them.
     pub gpu: bool,
+    pub scaled_motion: bool,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
@@ -265,8 +266,9 @@ impl State {
                 encoders,
                 features: features(
                     self.xwm.is_some() || self.config.x_display.is_some(),
-                    (self.videos.socket.is_some() || self.config.motion)
-                        && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()),
+                    ((self.videos.socket.is_some() || self.config.motion)
+                        && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()))
+                        || (self.config.motion && hello.scaled_motion),
                     self.audio.is_some(),
                     self.encoders.settings.tile_max_px > 0,
                     wasm,
@@ -278,8 +280,17 @@ impl State {
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
         let video_decoders = hello.video_decoders.clone().unwrap_or_default();
         let audio = hello.audio_decoders.as_ref().is_some_and(|d| d.iter().any(|c| c == "opus"));
-        self.session =
-            Some(Session { conn, ready: true, backend, last_vsync: HashMap::new(), video_decoders, audio, wasm, gpu });
+        self.session = Some(Session {
+            conn,
+            ready: true,
+            backend,
+            last_vsync: HashMap::new(),
+            video_decoders,
+            audio,
+            wasm,
+            gpu,
+            scaled_motion: hello.scaled_motion,
+        });
         self.games_session_changed();
         if audio {
             let (tx, bitrate) = (self.audio_tx.clone(), self.config.audio_bitrate);
@@ -571,6 +582,7 @@ impl State {
                             id: m.id,
                             rect: m.rect,
                             keyframe: m.need_keyframe,
+                            scaled: m.scaled,
                         }),
                         ends_motion: ending.map(|(id, _)| id),
                     };
@@ -747,7 +759,7 @@ impl State {
     fn motion_possible(&self, window: u64) -> bool {
         let Some(session) = self.session.as_ref().filter(|s| s.ready) else { return false };
         self.config.motion
-            && session.video_decoders.contains(&session.backend.codec())
+            && (session.scaled_motion || session.video_decoders.contains(&session.backend.codec()))
             && !self.videos.streams.by_id.values().any(|s| s.binding.as_ref().is_some_and(|b| b.window == window))
     }
 
@@ -763,6 +775,8 @@ impl State {
         }
         let Some(conn) = self.session.as_ref().map(|s| s.conn) else { return };
         let codec = self.session.as_ref().map(|s| s.backend.codec()).unwrap();
+        let scaled_motion =
+            self.session.as_ref().is_some_and(|s| s.scaled_motion && matches!(s.backend, Backend::Software(_)));
         let Some(w) = self.windows.get_mut(window) else { return };
         let Some(image) = w.stream.image.as_ref() else { return };
         let size = (image.width, image.height);
@@ -777,6 +791,7 @@ impl State {
             Some(crate::motion::Change::Start(region)) if w.stream.motion.is_none() => {
                 let id = self.videos.streams.allocate_id();
                 let (video_rect, clip) = motion_to_window(region, rect, crop);
+                let scaled = scaled_motion && region.w % 4 == 0 && region.h % 4 == 0;
                 tracing::info!("window {window}: motion stream {id} for {region:?} (picture pixels)");
                 self.net.send(
                     conn,
@@ -790,6 +805,7 @@ impl State {
                         source: proto::VideoSource::Motion,
                         color: None,
                         extradata: None,
+                        scaled,
                     }),
                 );
                 w.stream.motion = Some(MotionStream {
@@ -799,6 +815,7 @@ impl State {
                     in_flight: Default::default(),
                     need_keyframe: true,
                     ending: false,
+                    scaled,
                 });
             }
             Some(crate::motion::Change::Stop) => {

@@ -189,15 +189,13 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   from its own screen's display link, at 120 Hz on ProMotion
   (`CADisableMinimumFrameDurationOnPhone`) and at the TV's rate on a TV. The server releases
   a window's frames on those ticks, so a window nobody sees costs nothing.
-- **Video in windows.** The app negotiates one SDR picture stream per window, including
-  any video the app plays. It does not advertise separate video decoders; the computer
-  keeps motion in the window picture and decodes passthrough streams on the server.
-  The protocol client also implements explicitly negotiated layered video for checks:
-  passthrough presentation, live motion, repaint retirement and HDR decoding. Those
-  layers are not enabled in ordinary app sessions. Resize metadata retains the previous
+- **Video in windows.** The app leaves passthrough streams to server decoding. It requests
+  half-resolution software-encoded motion streams and upscales them using MetalFX or vImage
+  on the CPU. If both fail, the video layer scales the decoded picture. Resize metadata retains the previous
   picture's pixel basis until its replacement frame decodes.
   `VideoLayerGeometryTests` and `VideoSessionTests` cover geometry, negotiation and
-  retirement; `scripts/check-desktop.sh` covers physical-device playback and resizing.
+  retirement; `scripts/check-desktop.sh` covers physical-device playback and resizing,
+  and `scripts/check-scaled-motion.sh` checks scaled motion and device fallback.
 - **Sound.** The computer's sound arrives as 20 ms Opus packets on the server timeline,
   decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`. Playback uses
   an explicit monotonic host/server anchor, with decoded sample durations keeping nearby

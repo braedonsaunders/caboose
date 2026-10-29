@@ -1,10 +1,13 @@
 /** Serializes a computer's transitions and keeps it resident while clients hold leases. */
-export type ComputerState = 'parked' | 'waking' | 'running' | 'parking' | 'restarting' | 'error'
+export type ComputerState = 'parked' | 'waking' | 'running' | 'frozen' | 'parking' | 'restarting' | 'error'
 export type WakeMode = 'interactive' | 'headless'
 
 export interface ComputerDriver<T> {
   wake(mode?: WakeMode): Promise<T>
   promote?(): Promise<T>
+  canFreeze?(): boolean
+  freeze?(): Promise<void>
+  thaw?(): Promise<void>
   park(): Promise<void>
   restart?(): Promise<T>
 }
@@ -22,16 +25,21 @@ export class ComputerLifecycle<T> {
   private retired = false
   private failure: string | null = null
   private mode: WakeMode = 'interactive'
+  private beforeFreeze: () => Promise<boolean> = async () => true
+  private freezeAllowed: () => boolean = () => true
 
-  constructor(private readonly driver: ComputerDriver<T>, private idleMs: number) {
+  constructor(private readonly driver: ComputerDriver<T>, private idleMs: number, private readonly freezeParkMs = 60_000) {
     if (!Number.isSafeInteger(idleMs) || idleMs < 1 || idleMs > 2_147_483_647) {
       throw new Error('idleMs must be an integer between 1 and 2147483647')
     }
+    if (!Number.isSafeInteger(freezeParkMs) || freezeParkMs < 1 || freezeParkMs > 2_147_483_647) throw new Error('Invalid freeze park timeout')
   }
 
   get state(): ComputerState { return this.current }
-  get acceptsConnections(): boolean { return this.current === 'running' && !this.restartPending }
+  get acceptsConnections(): boolean { return (this.current === 'running' || this.current === 'frozen') && !this.restartPending }
   get lastError(): string | null { return this.failure }
+  setBeforeFreeze(work: () => Promise<boolean>): void { this.beforeFreeze = work }
+  setFreezeAllowed(check: () => boolean): void { this.freezeAllowed = check }
 
   setIdleMs(value: number): void {
     if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647) throw new Error('Invalid idle timeout')
@@ -60,15 +68,34 @@ export class ComputerLifecycle<T> {
     this.idleTimer = undefined
   }
 
-  private armIdle(): void {
+  private armIdle(retryMs?: number): void {
     this.clearIdle()
-    if (this.leases || this.current !== 'running' || this.retired) return
+    if (this.leases || !['running', 'frozen'].includes(this.current) || this.retired) return
+    const freezing = this.current === 'running' && this.idleMs > 3000 && this.freezeAllowed() && this.driver.canFreeze?.() && this.driver.freeze && this.driver.thaw
+    const delay = this.current === 'frozen' ? Math.min(this.idleMs - 3000, this.freezeParkMs) : freezing ? 3000 : this.idleMs
     this.idleTimer = setTimeout(() => {
       this.idleTimer = undefined
       void this.serialize(async () => {
-        if (this.leases === 0 && this.current === 'running') await this.parkNow()
+        if (this.leases !== 0) return
+        if (freezing && !this.freezeAllowed()) { this.armIdle(); return }
+        if (freezing && this.current === 'running') {
+          // Publish the fence before awaiting the VMM so new work queues behind pause.
+          this.setState('frozen')
+          try {
+            if (!await this.beforeFreeze()) {
+              this.setState('running')
+              this.armIdle(30_000)
+              return
+            }
+            await this.driver.freeze!()
+            this.failure = null
+          }
+          catch (error) { this.failure = error instanceof Error ? error.message : String(error) }
+          // A failed pause can have reached the VMM. Keep all guest access fenced until thaw.
+          this.armIdle()
+        } else if (this.current === 'running' || this.current === 'frozen') await this.parkNow()
       }).catch(() => {})
-    }, this.idleMs)
+    }, Math.max(1, retryMs ?? delay))
     this.idleTimer.unref()
   }
 
@@ -79,6 +106,17 @@ export class ComputerLifecycle<T> {
   }
 
   private async wakeNow(mode: WakeMode = 'interactive'): Promise<T> {
+    if (this.current === 'frozen') {
+      try {
+        await this.driver.thaw!()
+        this.failure = null
+        this.setState('running')
+      } catch (error) {
+        this.failure = error instanceof Error ? error.message : String(error)
+        this.armIdle()
+        throw error
+      }
+    }
     if (this.current === 'running' && this.value !== undefined) {
       if (mode === 'interactive' && this.mode === 'headless' && this.driver.promote) {
         try {
@@ -124,6 +162,7 @@ export class ComputerLifecycle<T> {
     if (this.restartPending) return Promise.reject(new ComputerConflictError('Computer is restarting'))
     const release = this.acquire()
     return this.serialize(async () => {
+      if (this.current === 'frozen') await this.wakeNow('headless')
       if (this.current !== 'running') throw new ComputerConflictError('Computer is not running')
       return work()
     }).finally(release)
@@ -136,8 +175,10 @@ export class ComputerLifecycle<T> {
     this.restartPending = true
     this.clearIdle()
     return this.serialize(async () => {
+      const frozen = this.current === 'frozen'
       this.setState('restarting')
       try {
+        if (frozen) await this.driver.thaw!()
         await before()
         this.value = await this.driver.restart!()
         this.mode = 'interactive'
@@ -168,7 +209,7 @@ export class ComputerLifecycle<T> {
   }
 
   private async parkNow(): Promise<void> {
-    if (this.current !== 'running') return
+    if (this.current !== 'running' && this.current !== 'frozen') return
     this.clearIdle()
     this.setState('parking')
     try {

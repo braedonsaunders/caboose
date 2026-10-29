@@ -22,18 +22,51 @@ const FILES_PORT = 14700
  * Where a container computer lives on the host. Slot 0 is the owner's computer and keeps the
  * names and loopback ports a host had before it ran several. Every other computer gets its own
  * container, home volume and bridge network (Docker isolates bridge networks from each other),
- * and loopback ports from 20000 + 10 × slot.
+ * and legacy loopback ports from 20000 + 10 × slot for slots 1–63. Later slots use Docker-assigned ports.
  */
 export function containerPlacement(config: Pick<Config, 'containerName' | 'containerHome'>, identity: ComputerIdentity) {
   if (identity.slot === 0) {
     return { name: config.containerName, home: config.containerHome, network: CONTAINER_NETWORK, bridge: CONTAINER_BRIDGE, ports: { display: OWNER_DISPLAY_PORT, agent: AGENT_DISPLAY_PORT, files: FILES_PORT, terminal: TERMINAL_PORT } }
   }
-  const base = 20_000 + identity.slot * 10
+  // Existing mappings are immutable. New slots ask Docker to allocate loopback ports.
+  const base = identity.slot < 64 ? 20_000 + identity.slot * 10 : 0
   return {
     name: `caboose-${identity.id}`, home: `${config.containerHome}-${identity.id}`,
     network: `caboose-${identity.slot}`, bridge: `caboose-br${identity.slot}`,
-    ports: { display: base, agent: base + 1, files: base + 2, terminal: base + 3 },
+    ports: base ? { display: base, agent: base + 1, files: base + 2, terminal: base + 3 } : { display: 0, agent: 0, files: 0, terminal: 0 },
   }
+}
+
+// Docker keeps port bindings in stopped containers too. Reserve only ports outside the
+// legacy range, and serialize allocation through container creation so parked containers
+// cannot be assigned the same ports as a new one.
+let allocationQueue: Promise<void> = Promise.resolve()
+export async function withContainerPorts<T>(docker: Docker, work: (ports: { display: number; agent: number; files: number; terminal: number }) => Promise<T>): Promise<T> {
+  const run = allocationQueue.then(async () => {
+    const ids = (await docker(['ps', '-aq'], 15_000)).trim().split(/\s+/).filter(Boolean)
+    const occupied = new Set<number>()
+    if (ids.length) {
+      const lines = await docker(['inspect', '-f', '{{json .HostConfig.PortBindings}}\t{{json .NetworkSettings.Ports}}', ...ids], 30_000)
+      for (const field of lines.trim().split(/[\n\t]/)) {
+        const bindings: unknown = JSON.parse(field)
+        if (!bindings || typeof bindings !== 'object') continue
+        for (const value of Object.values(bindings)) {
+          if (!Array.isArray(value)) continue
+          for (const item of value) {
+            const port = Number(item?.HostPort)
+            if (Number.isInteger(port) && port > 0 && port <= 65535) occupied.add(port)
+          }
+        }
+      }
+    }
+    for (let base = 21000; base <= 65532; base += 4) {
+      if ([base, base + 1, base + 2, base + 3].some(port => occupied.has(port))) continue
+      return work({ display: base, agent: base + 1, files: base + 2, terminal: base + 3 })
+    }
+    throw new Error('No loopback ports remain for another container computer')
+  })
+  allocationQueue = run.then(() => {}, () => {})
+  return run
 }
 
 /**
@@ -146,7 +179,7 @@ export function createContainerController(config: Config, dependencies: { docker
       '--restart', 'no',
       '--label', `caboose.memory-mb=${size.memoryMb}`, '--label', `caboose.vcpus=${size.vcpus}`,
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
-      '-p', `127.0.0.1:${place.ports.files}:${FILES_PORT}`, '-p', `127.0.0.1:${place.ports.terminal}:${TERMINAL_PORT}`, '-p', `127.0.0.1:${place.ports.display}:${OWNER_DISPLAY_PORT}`, '-p', `127.0.0.1:${place.ports.agent}:${AGENT_DISPLAY_PORT}`,
+      ...([['files', FILES_PORT], ['terminal', TERMINAL_PORT], ['display', OWNER_DISPLAY_PORT], ['agent', AGENT_DISPLAY_PORT]] as const).flatMap(([key, port]) => ['-p', `127.0.0.1:${place.ports[key] || ''}:${port}`]),
       '-v', `${place.home}:/home/caboose`,
       // Shared runtimes: written only by the host's builder, never by a computer.
       '-v', `${DEPOT_VOLUME}:/var/lib/caboose/depot:ro`,
@@ -206,8 +239,8 @@ export function createContainerController(config: Config, dependencies: { docker
   const controller: Controller = {
     componentsMode: 'container',
     componentsWarning: () => filesPortWarning,
-    displayUrl: `ws://127.0.0.1:${place.ports.display}/`,
-    agentDisplayUrl: `ws://127.0.0.1:${place.ports.agent}/`,
+    get displayUrl() { return `ws://127.0.0.1:${place.ports.display}/` },
+    get agentDisplayUrl() { return `ws://127.0.0.1:${place.ports.agent}/` },
     fileService: () => ({ url: `http://127.0.0.1:${place.ports.files}`, token: displayToken }),
     terminalService: () => ({ url: terminalUrl, token: displayToken }),
     async ensureAgentSeat() {
@@ -227,7 +260,12 @@ export function createContainerController(config: Config, dependencies: { docker
       if (current === 'missing') {
         const desired = settings()
         resources = { memoryMb: desired.memoryMb, vcpus: desired.vcpus }
-        await docker(runArgs(resources), 300_000)
+        if (dependencies.identity && dependencies.identity.slot >= 64) {
+          await withContainerPorts(docker, async ports => {
+            Object.assign(place.ports, ports)
+            await docker(runArgs(resources!), 300_000)
+          })
+        } else await docker(runArgs(resources), 300_000)
       } else {
         resources ??= await createdWith()
         if (current === 'stopped') await docker(['start', name], 120_000)
@@ -235,6 +273,15 @@ export function createContainerController(config: Config, dependencies: { docker
       }
       running = true
       try {
+        if (dependencies.identity && dependencies.identity.slot >= 64) {
+          for (const [key, port] of ([['files', FILES_PORT], ['terminal', TERMINAL_PORT], ['display', OWNER_DISPLAY_PORT], ['agent', AGENT_DISPLAY_PORT]] as const)) {
+            const mapping = await docker(['port', name, `${port}/tcp`], 15_000)
+            const match = /^127\.0\.0\.1:(\d+)$/m.exec(mapping.trim())
+            const value = match ? Number(match[1]) : 0
+            if (!Number.isInteger(value) || value < 1 || value > 65535) throw new Error(`Container ${name} has no loopback mapping for ${port}`)
+            place.ports[key] = value
+          }
+        }
         const mapping = await docker(['port', name, `${FILES_PORT}/tcp`], 15_000).catch(() => '')
         filesPortWarning = mapping.split(/\r?\n/).some(line => line.trim() === `127.0.0.1:${place.ports.files}`) ? undefined : 'Recreate the container to enable Files.'
         terminalUrl = await terminalAddress()

@@ -8,6 +8,8 @@ export interface Config {
   host: string
   port: number
   idleMs: number
+  /** Maximum time a resident microVM remains frozen before parking. */
+  freezeParkMs?: number
   imageRoot: string
   memoryMb: number
   vcpus: number
@@ -58,6 +60,7 @@ export function config(env: NodeJS.ProcessEnv): Config {
     host: env.CABOOSE_BIND ?? '127.0.0.1',
     port: integer(env.CABOOSE_PORT, 7310, 'CABOOSE_PORT', 65535),
     idleMs: integer(env.CABOOSE_IDLE_MS, 600_000, 'CABOOSE_IDLE_MS', 2_147_483_647),
+    freezeParkMs: integer(env.CABOOSE_FREEZE_PARK_MS, 60_000, 'CABOOSE_FREEZE_PARK_MS', 2_147_483_647),
     imageRoot: resolve(env.CABOOSE_IMAGE_ROOT ?? '/var/lib/caboose'),
     memoryMb: integer(env.CABOOSE_MEMORY_MB, 6144, 'CABOOSE_MEMORY_MB', 1_048_576),
     vcpus: integer(env.CABOOSE_VCPUS, 4, 'CABOOSE_VCPUS', 256),

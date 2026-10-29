@@ -341,6 +341,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 source: VideoSource::Passthrough,
                 color: Some(VideoColor { primaries: 9, transfer: 16, matrix: 9, full_range: false }),
                 extradata: None,
+                scaled: false,
             }),
         ),
         one(
@@ -356,6 +357,15 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 source: VideoSource::Surface,
                 color: None,
                 extradata: None,
+                scaled: false,
+            }),
+        ),
+        one(
+            "video-create-scaled-motion",
+            "A half-resolution motion picture placed in window coordinates.",
+            Message::VideoCreate(VideoCreate {
+                id: 3, window: 12, rect: Rect::new(40, 80, 640, 360), clip: None, z: None,
+                codec: Codec::H264, source: VideoSource::Motion, color: None, extradata: None, scaled: true,
             }),
         ),
         one(
@@ -446,6 +456,15 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 audio_decoders: None,
                 wasm: false,
                 gpu: false,
+                scaled_motion: false,
+            }),
+        ),
+        one(
+            "client-hello-scaled-motion",
+            "A client accepts half-resolution motion without enabling passthrough video.",
+            Message::ClientHello(ClientHello {
+                version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![Codec::H264], displays: vec![phone()],
+                video_decoders: None, audio_decoders: None, wasm: false, gpu: false, scaled_motion: true,
             }),
         ),
         one(
@@ -460,6 +479,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 audio_decoders: None,
                 wasm: false,
                 gpu: false,
+                scaled_motion: false,
             }),
         ),
         one(
@@ -474,6 +494,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 audio_decoders: Some(vec!["opus".into()]),
                 wasm: false,
                 gpu: false,
+                scaled_motion: false,
             }),
         ),
         one(
@@ -488,6 +509,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 audio_decoders: Some(vec!["opus".into()]),
                 wasm: false,
                 gpu: true,
+                scaled_motion: false,
             }),
         ),
         one(
@@ -502,6 +524,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 audio_decoders: Some(vec!["opus".into()]),
                 wasm: true,
                 gpu: false,
+                scaled_motion: false,
             }),
         ),
         one("vsync", "", Message::Vsync { display: 1, t_us: 5_000_008_333 }),

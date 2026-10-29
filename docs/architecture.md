@@ -247,9 +247,9 @@ survives host restarts.
 
 ### Network fencing
 
-Each Linux microVM computer has its own persistent TAP device and /30 in `192.0.2.0/24`: the
-computer on slot *n* (see Computers) uses `caboose<n>`, with the host at `192.0.2.(4n+1)`
-and the guest at `192.0.2.(4n+2)`. The owner's computer is slot 0: `caboose0`,
+Each Linux microVM computer has its own persistent TAP device and /30. Slots 0–63 use
+`192.0.2.0/24`, with the host at `192.0.2.(4n+1)` and guest at `192.0.2.(4n+2)`.
+Slots 64–32831 use consecutive /30s in `198.18.0.0/15`. TAP names remain `caboose<n>`. The owner's computer is slot 0: `caboose0`,
 `192.0.2.1/30` and `192.0.2.2/30`. Each guest gets NAT to the host's other interfaces and
 DNS `1.1.1.1`. At each wake the host also sets the guest's clock over the guest agent.
 
@@ -258,16 +258,17 @@ The guest is fenced in chains the host owns, each jumped to first from its built
 | Chain | Hook | Rules |
 | --- | --- | --- |
 | `CABOOSE-IN` | `INPUT -i caboose<n>` | Established and related traffic returns; everything else is dropped. The guest can open nothing on the host. |
-| `CABOOSE-FWD` | `FORWARD -i caboose<n>` | Established and related traffic returns; new connections to `192.0.2.0/24` (every computer) and to private and reserved ranges are rejected; the rest returns to normal forwarding. |
+| `CABOOSE-FWD` | `FORWARD -i caboose<n>` | Established and related traffic returns; new connections to `192.0.2.0/24` and `198.18.0.0/15` (every computer) and to private and reserved ranges are rejected; the rest returns to normal forwarding. |
 
-Both chains are shared by every computer and refilled only when their rules differ, so
-waking one computer never leaves another unfenced.
+Both chains are shared by every computer. After setup the host records the TAP, firewall and
+forwarding state; a later wake skips setup only when the live state still matches. Failure,
+restart or deletion invalidates the cached state.
 
 The rejected ranges are `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
 `169.254.0.0/16` (link-local and cloud metadata), `100.64.0.0/10` (CGNAT and Tailscale),
 `127.0.0.0/8`, `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`, `224.0.0.0/4` and
 `240.0.0.0/4`. `CABOOSE_GUEST_LAN=allow` removes them, so the guest can reach the local
-network; it never removes `192.0.2.0/24`, so one computer can never reach another. The host
+network; it never removes the two computer ranges, so one computer can never reach another. The host
 opens the relay connections to the guest itself.
 
 A container computer gets the same fence on its own Docker bridge network: `caboose`
@@ -283,9 +284,10 @@ appkit-desk. Those listeners and their active connections close when the compute
 restarts, is deleted, or fails to wake. They reopen on wake; guest service tokens still
 authorize every connection.
 
-Linux VM guest components include a host-CID-only vsock bridge to the display, agent display,
-Files and terminal loopback TCP services. The current host continues to use guest TCP for
-these services; the bridge is available for hosts that support the AppKit vsock connector.
+Linux VM guest components include a host-CID-only vsock bridge to display, agent display,
+Files and terminal. At wake the host probes Files through vsock; when it answers HTTP the
+host opens service relays over vsock, otherwise it uses guest TCP for older images. Relays
+and active connections close on park, restart, deletion or a failed wake.
 
 ### Displays
 
@@ -597,6 +599,7 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_MEMORY_MB` | `6144` | Initial memory setting of the owner's computer and of new computers |
 | `CABOOSE_VCPUS` | `4` | Initial vCPU setting, likewise |
 | `CABOOSE_IDLE_MS` | `600000` | Initial idle time before parking, likewise |
+| `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor binary |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container` |
 | `CABOOSE_GPU` | `auto` | Container GPU: `auto`, `wsl`, `nvidia`, `dri` or `none` |
@@ -632,9 +635,10 @@ Computer slots and ownership live in `caboose_computers` and `caboose_people` in
 
 A host runs several computers. The owner's computer always exists, with id `owner` and
 slot 0, and cannot be deleted. Every other computer has an id `c-` followed by 10 hex
-digits, and the lowest free slot from 1 to 63. The slot names its network (see Network
-fencing) and, for a container, its loopback ports: 20000 + 10 × slot for the owner's
-display, plus 1 for the agent seat and plus 2 for the file service. Each computer has its
+digits, and the lowest free slot from 1 to 32831. The slot names its network (see Network
+fencing). Containers in slots 1–63 retain their fixed loopback ports; later containers use
+loopback ports allocated outside the legacy range after inspecting Docker bindings, including
+stopped containers. Docker retains those ports while parked. Each computer has its
 own disk, settings, lifecycle, leases, agents, catalog, notifications and phones; nothing
 of one is reachable from another. microVM computers share one appkit-desk host, so at most
 `CABOOSE_MAX_RUNNING` run at once and further wakes queue.
@@ -642,7 +646,7 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/v1/computers` | `{ computers: [{ id, createdAt, …management status }], canCreate, limits: { computers, running } }`. `createdAt` is null for an owner's computer made before the host recorded it; `running` is null for the container runtime |
-| `POST` | `/v1/computers` | `{ name, memoryMb?, vcpus?, idleMs? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. 409 when all 63 slots are taken |
+| `POST` | `/v1/computers` | `{ name, memoryMb?, vcpus?, idleMs? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. 409 when all computer slots are taken |
 | `GET` | `/v1/computers/:id` | One computer, as listed |
 | `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer, or while a catalog operation or Craft job someone started runs on it (the message says which; retry when it finishes) |
 | any | `/v1/computers/:id/<route>` | Any computer route (§ Session and display through § Live Activities, and the agent routes of § 5), served by that computer (`/v1/computers/:id/session`, `/v1/computers/:id/fs/list`, `/v1/computers/:id/display`, …) |
@@ -722,7 +726,7 @@ unknown keys as reserved and a higher `v` as possibly incompatible.
 
 ### Lifecycle
 
-The computer has one state: `parked`, `waking`, `running`, `parking`, `restarting` or
+The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, `restarting` or
 `error`. Wake, park and restart are serialized, so none can race another or a launch.
 
 - **Wake** (`POST /v1/session`, and routes that wake on demand) starts or restores the
@@ -734,11 +738,18 @@ The computer has one state: `parked`, `waking`, `running`, `parking`, `restartin
   Desktop MCP tools and `app_open` start the agent seat on demand; an owner display request or
   app launch promotes a headless computer to an interactive one. A memory restore retains any
   display already running in the snapshot; headless wake does not stop existing applications.
-- **Leases.** Each open display, control or terminal WebSocket holds a lease, as do running agent
+- **Leases.** Each open display, terminal or foreground control WebSocket holds a lease, as do running agent
   tasks, catalog operations, Craft jobs, agent installs and sign-ins, and each `/v1/fs`
-  request until its response completes. With no lease, the computer parks after the
-  `idleMs` setting. HTTP polling of `/v1/computer` holds no lease, so leaving the web
-  console open does not keep the computer awake.
+  request until its response completes. Control sockets marked `foreground=0` do not hold a
+  lease; unmarked sockets retain the foreground behavior for compatibility. HTTP polling of
+  `/v1/computer` holds no lease, so leaving the web console open does not keep it awake.
+- **Freeze.** On a microVM backend that supports resident pause, three seconds without a
+  lease pauses the guest in memory. A new operation resumes it before guest access. The
+  computer parks at the earlier of its configured idle timeout or the freeze-to-park timeout;
+  a frozen VM retains RAM until then. Backends without resident pause use the ordinary idle park. A failed pause
+  remains fenced until a resume or park reconciles the VMM state. A detached terminal can
+  still run a foreground process, so any existing terminal session defers freezing; if the
+  terminal service cannot confirm the session list, the host also defers it and retries.
 - **Park** keeps memory, so every application is where it was on resume. An explicit park
   closes all client sockets first and ignores leases.
 - **Restart** is a cold boot that keeps the disk and discards memory. It first tries a 5 s
@@ -1042,6 +1053,10 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   10000 events. A missing, expired, overflowed or previous-run anchor answers
   `reset: true`, and the client re-enumerates. Rename events carry the inotify `cookie`
   that pairs the old and new path.
+- The journal is a notification mechanism, not a complete consistency proof: inotify
+  does not report every change (including modifications through memory mappings), and
+  processing is asynchronous. The host does not serve parked reads from this journal;
+  reads and writes wake the computer.
 - While the computer runs and at least one control socket is connected, the host polls the
   journal every second and broadcasts `fs.changed { anchor }` when something changed.
 - `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
@@ -1843,10 +1858,10 @@ window's texture is a blit on one shared Metal queue, which runs command buffers
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-The iOS app negotiates whole-window video by default: it omits `video_decoders`, so the
-computer encodes video into the same window picture as its controls and returns unsupported
-passthrough streams to server decoding. The layered-video client remains explicitly
-negotiated for protocol checks. PCM playback uses decoded sample durations to join adjacent
+The iOS app omits `video_decoders`, returning passthrough streams to server decoding. It
+requests half-resolution software-encoded motion streams and upscales them with MetalFX,
+or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer scales the
+decoded picture. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 The phone estimates the source sample-clock rate over a bounded rolling arrival window,
 then adjusts playback continuously with pitch preservation. This accommodates virtual
@@ -2524,7 +2539,7 @@ phone's location while Caboose is open. Computer settings has the switches. See
   console. The host stores only SHA-256 digests; signing a phone out closes its sockets and
   removes its notifications. The app and its extensions keep the token in a shared Keychain
   access group.
-- **Computers.** Each computer is fenced from every other (`192.0.2.0/24` is always
+- **Computers.** Each computer is fenced from every other (both computer subnets are always
   rejected; containers sit on separate bridge networks) and has its own disk and data
   directory.
 - **Display token.** A random per-wake token in `/run/caboose/display-token` (mode 0600,

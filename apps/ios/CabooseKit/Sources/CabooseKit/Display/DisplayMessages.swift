@@ -231,6 +231,7 @@ public struct VideoStreamFields: Sendable {
     public var codec: DisplayCodec?
     public var source: VideoSource?
     public var color: VideoColor?
+    public var scaled: Bool
 
     init?(_ body: CBOR) {
         guard let id = body["id"]?.int else { return nil }
@@ -242,6 +243,7 @@ public struct VideoStreamFields: Sendable {
         codec = body["codec"]?.string.flatMap(DisplayCodec.init(rawValue:))
         source = body["source"]?.string.flatMap(VideoSource.init(rawValue:))
         color = body["color"].flatMap(VideoColor.init)
+        scaled = body["scaled"]?.bool ?? false
     }
 }
 
@@ -563,7 +565,7 @@ public enum ClientMessage: Sendable {
     /// `wasm`: the client runs handed-off games (`"wasm": true`); the key is absent otherwise.
     /// `gpu`: the client renders GPU streams (`"gpu": true`); the key is absent otherwise.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
-               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false)
+               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -597,7 +599,7 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
@@ -605,6 +607,7 @@ public enum ClientMessage: Sendable {
                 ("audio_decoders", audioDecoders.map { .array($0.map { CBOR($0) }) }),
                 ("wasm", wasm ? CBOR(true) : nil),
                 ("gpu", gpu ? CBOR(true) : nil),
+                ("scaled_motion", scaledMotion ? CBOR(true) : nil),
             ]))
         case .videoAck(let video, let seq):
             return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))

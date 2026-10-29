@@ -54,8 +54,8 @@ the host after the Files service is ready, never inside the installer.
 Linux VM images install `caboose-vsock-services.service`, which accepts host CID 2 on
 vsock ports 14600, 14601, 14700 and 14701 and relays each to the corresponding loopback
 TCP service. The bridge bounds concurrent connections and closes both ends on disconnect.
-Container mode does not install it. The host retains TCP until it enables a compatible
-AppKit connector for a guest with the bridge installed.
+Container mode does not install it. At wake the host probes the Files bridge and falls back
+to guest TCP when the bridge is unavailable.
 
 `python3 guest/components/test_vsock_services.py` checks relay forwarding and cleanup
 without KVM. On a running Linux microVM with Files ready, run

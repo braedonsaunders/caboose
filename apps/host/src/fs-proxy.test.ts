@@ -11,6 +11,37 @@ import { SettingsStore, settingsLimits } from './settings.js'
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close() })
 
+it('wakes for parked reads and writes, and authenticates before waking', async () => {
+  const requests: Array<{ method?: string; range?: string; match?: string }> = []
+  const upstream = createServer((req, res) => {
+    requests.push({ method: req.method, range: req.headers.range, match: req.headers['if-match'] })
+    req.resume()
+    req.on('end', () => { res.writeHead(req.method === 'GET' ? 206 : 200, { etag: '"v1"', 'content-range': 'bytes 0-0/1' }); res.end(req.method === 'GET' ? 'x' : '') })
+  })
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
+  cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
+  const wake = vi.fn(async () => ({ state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }))
+  const controller: Controller = { wake, park: async () => {}, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined, activeResources: () => null, hasSavedState: () => false,
+    fileService: () => ({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'private' }) }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  cleanup.unshift(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  expect((await fetch(base + '/v1/fs/content?path=a')).status).toBe(401)
+  expect(wake).not.toHaveBeenCalled()
+  const headers = { authorization: 'Bearer owner' }
+  const read = await fetch(base + '/v1/fs/content?path=a', { headers: { ...headers, range: 'bytes=0-0', 'if-match': '"v1"' } })
+  expect(read.status).toBe(206)
+  expect(read.headers.get('etag')).toBe('"v1"')
+  expect(read.headers.get('content-range')).toBe('bytes 0-0/1')
+  expect(await read.text()).toBe('x')
+  expect((await fetch(base + '/v1/session/park', { method: 'POST', headers })).status).toBe(200)
+  expect((await fetch(base + '/v1/fs/content?path=a', { method: 'PUT', headers: { ...headers, 'if-match': '"v1"' }, body: 'y' })).status).toBe(200)
+  expect(wake).toHaveBeenCalledTimes(2)
+  expect(requests).toEqual([{ method: 'GET', range: 'bytes=0-0', match: '"v1"' }, { method: 'PUT', range: undefined, match: '"v1"' }])
+})
+
 it('releases the lifecycle queue when a file client disconnects during wake', async () => {
   const upstream = createServer(() => {})
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')

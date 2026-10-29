@@ -209,6 +209,7 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_VM_DEPOT` | unset | Linux host directory for a shared Flatpak runtime depot, mounted read-only in microVMs using virtio-fs. Requires Docker, the computer container image, and virtiofsd 1.13 or later. |
 | `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
+| `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks. |
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
 | `CABOOSE_PUBLIC_URL` | unset | Where phones reach this host from anywhere, such as `https://caboose.example.com`; listed first in pairing links and used as the console auth base URL (auth defaults to loopback when unset). |
 | `CABOOSE_MDNS` | `on` | `off` stops advertising `_caboose._tcp` on the LAN. |
@@ -274,8 +275,9 @@ The owner token manages every computer through `/v1/computers` (list, make, dele
 reaches any one under `/v1/computers/<id>/…`; the routes without an id serve the owner's
 computer, as they always have. Each computer has its own disk, settings, lifecycle, agents,
 catalog, notifications and phones, and its own network slot: a microVM on slot *n* gets TAP
-`caboose<n>` and `192.0.2.(4n+2)`, a container its own container, home, bridge network and
-loopback ports from 20000 + 10 × *n*. The owner's computer is slot 0 with the names and
+`caboose<n>` and a persistent /30: slots 0–63 use `192.0.2.0/24`, later slots use
+`198.18.0.0/15`. A container has its own home and bridge; slots 1–63 retain loopback ports
+from 20000 + 10 × *n*, and later slots use available loopback ports outside that range; stopped containers retain their allocations. The owner's computer is slot 0 with the names and
 addresses below, and cannot be deleted. Deleting another computer removes its disk, files,
 network and phones.
 
@@ -328,6 +330,17 @@ Agent tasks and routines can wake headlessly: components and file service start,
 owner display starts on an interactive session, display connection or app launch. The agent
 display starts on a desktop tool call or an agent-seat display connection. A restored memory
 snapshot keeps any displays that were already running.
+
+When AppKit supports resident pause, a microVM with no leases freezes after three seconds;
+new work resumes it. It parks at the earlier of its idle timeout or the host's
+`CABOOSE_FREEZE_PARK_MS` after freezing. Container and unsupported microVM backends park at
+the configured idle timeout.
+
+On a disposable Linux microVM host with resident pause support, run
+`CABOOSE_OWNER_TOKEN=… node apps/host/scripts/check-freeze.mjs` to check freeze, resume,
+park and snapshot restore. Set `CABOOSE_URL` for a nonlocal host and
+`CABOOSE_CHECK_TIMEOUT_MS` if the configured timeouts exceed 90 seconds. Close other clients
+and terminal sessions first; the check wakes the computer and leaves it running.
 
 `POST /v1/session` returns `{ state, display: { path: "/v1/display", token, protocol:
 "caboose-display" }, computer }`. `/v1/display` is a WebSocket (subprotocol `binary`) that
@@ -505,6 +518,7 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-lineup.mjs` | Opens Mousepad, btop and OpenCode and requires a new window for each on the owner's display. Leaves them open and does not park. |
 | `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft (or the catalog app `CABOOSE_CATALOG_APP` names, such as `powder-toy`) if needed, launches it and requires a new window with its name and a PNG icon in the app list. Close the app's windows first. |
 | `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |
+| `apps/host/node_modules/.bin/tsx apps/host/scripts/check-container-ports.mts` | Real Docker port allocation, including legacy and stopped container bindings; requires an existing `node:22-bookworm-slim` image (override with `CABOOSE_CHECK_IMAGE`). |
 | `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk. Hosts with accounts also get a throwaway tenant, removed after the computer even when the check fails. Older hosts without tenants remain supported. It creates no accounts; the owner's computer is only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
 | `node apps/host/scripts/check-accounts.mjs` | Accounts and tenants: the setup state and the owner token's view, then a throwaway tenant with a memory quota, a computer within it made and one beyond it refused, a resize past it refused, and both deleted. It makes no accounts and verifies that setup requires its code even on loopback. |
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |

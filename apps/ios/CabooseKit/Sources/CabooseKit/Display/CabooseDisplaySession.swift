@@ -302,7 +302,8 @@ public final class CabooseDisplaySession: DisplaySession {
     private func sendHello() {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
-                    audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams))
+                    audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
+                    scaledMotion: true))
     }
 
     // MARK: Server messages

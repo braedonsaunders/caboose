@@ -25,8 +25,11 @@ it('relays native Mac guest ports only while awake and preserves the disk on par
       renewLease: () => {},
     } as unknown as DeskHandle
     const start = vi.fn(async (_options: unknown) => desk)
+    const pause = vi.fn(async () => {})
+    const resume = vi.fn(async () => desk)
     const host = {
       start, stats: () => ({}),
+      canPause: () => true, pause, resume,
       suspend: async () => { await mkdir(join(root, 'overlays/owner.snapshot'), { recursive: true }) },
       destroy: async () => {},
     } as unknown as DeskHost
@@ -38,6 +41,11 @@ it('relays native Mac guest ports only while awake and preserves the disk on par
     expect(commands.some(command => command.includes('systemctl start') && command.includes('caboose-display.service'))).toBe(false)
     await controller.promote!()
     expect(commands.some(command => command.includes('caboose-display.service'))).toBe(true)
+    expect(controller.canFreeze?.()).toBe(true)
+    await controller.freeze!()
+    await controller.thaw!()
+    expect(pause).toHaveBeenCalledWith('owner')
+    expect(resume).toHaveBeenCalledWith('owner')
     expect(network).not.toHaveBeenCalled()
     expect(start.mock.calls[0]?.[0]).not.toHaveProperty('network')
     expect(commands.some(command => command.includes('10.0.2.15/24'))).toBe(true)
