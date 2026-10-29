@@ -12,7 +12,7 @@ struct DesktopView: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .topLeading) {
-                // On the phone the tab draws the photograph, under its bars too.
+                // On the phone the tab draws the wallpaper, under its bars too.
                 if fillsScreen { WallpaperView(store: WallpaperStore.shared) }
                 // Where the window being dragged would snap if let go now.
                 if let preview = desktop.snapPreview {
