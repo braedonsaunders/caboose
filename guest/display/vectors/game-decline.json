@@ -1,0 +1,8 @@
+{
+  "name": "game-decline",
+  "description": "The client cannot run game 1: its page needs threads the device would not give it.",
+  "messages": [
+    {"direction": "client", "type": "game.decline", "type_id": 151, "fields": {"id": 1, "reason": "the page is not cross-origin isolated"}}
+  ],
+  "hex": "9733000000a26269640166726561736f6e78257468652070616765206973206e6f742063726f73732d6f726967696e2069736f6c61746564"
+}
