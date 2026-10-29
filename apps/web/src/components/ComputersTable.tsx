@@ -27,8 +27,8 @@ export function ComputersTable({ computers, tenants }: { computers: ComputerSumm
           return (
             <TableRow key={computer.id} className="cursor-pointer" onClick={() => navigate(href)}>
               <TableCell>
-                <a href={href} className="inline-flex items-center gap-3 font-medium hover:underline" onClick={event => { event.stopPropagation(); if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(href) }}>
-                  <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-border bg-bg-subtle text-fg-muted"><Monitor className="size-4" aria-hidden /></span><span className="break-words">{computer.settings.name}</span>
+                <a href={href} className="inline-flex items-start gap-3 font-medium hover:underline" onClick={event => { event.stopPropagation(); if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(href) }}>
+                  <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-border bg-bg-subtle text-fg-muted"><Monitor className="size-4" aria-hidden /></span><span className="min-w-0 break-words">{computer.settings.name}<span className="mt-1 block text-xs font-normal leading-relaxed text-fg-muted sm:hidden">{computer.person || 'Assignment required'}<br />{formatMemoryMb(computer.settings.memoryMb)} · {computer.settings.vcpus} vCPUs{computer.restartRequired ? ' · Restart to apply' : ''}</span></span>
                 </a>
               </TableCell>
               <TableCell className="hidden text-sm sm:table-cell">{computer.personId ? computer.person : <span className="text-fg-muted">Assignment required</span>}</TableCell>
