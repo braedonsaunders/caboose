@@ -1569,6 +1569,20 @@ the app card, and a detached view releases its layers.
   drawn and hit-tested from one `WindowTitleBar`: Mac-sized circles in a Mac-sized bar under
   a pointer, which show their symbols on hover; under touch, the same circles further apart
   in a bar at least 32 points tall, with their symbols always shown.
+  Dragging a title bar to a side edge snaps the window to that half, near a corner to that
+  quarter (where quarters are at least 280 × 200 points), and to the top edge maximizes it,
+  with an outline of where it will go; elsewhere its edges pull onto the desktop's and its
+  neighbours' within ten points. Pulled out of a snap, a window takes back its own size
+  under the finger. Each window keeps a place (`FreeDesktopLayout`): the frame last given
+  by hand and the work area it was given in, or a snap. Every other desktop size, after a
+  rotation, a TV, a zoom or a relaunch, is derived from that pair, keeping the free space
+  on each side in proportion, so a layout never drifts and returns exactly when the size
+  does. Places are kept on the phone per computer, one arrangement for its own screen and
+  one for an external display, at most 64, and only for a window of the app that had the
+  place. A window's place is forgotten when it closes while the display session is ready.
+  ⌘⌥ with the arrows brings the nearest window that way forward, with ⇧ snaps the front
+  window left or right, maximizes it (↑) or restores it (↓); F zooms, M minimizes, W closes,
+  A opens Launchpad and Return a terminal.
   Launchpad pages through the available apps, with its controls above the dock.
   An external display scene supplies its current size and scale to the shared desktop;
   changes reconfigure the display without transferring geometry ownership to an app card.

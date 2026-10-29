@@ -92,7 +92,7 @@ its offset, is replaced by a second connection, exits, and checks the closes tha
 
 ## Checking Switchyard on a device
 
-The layout and work-area geometry are unit-tested (`swift test --filter 'SwitchyardTests|DesktopGeometryTests'`).
+The layout and work-area geometry are unit-tested (`swift test --filter 'SwitchyardTests|DesktopGeometryTests|FreeDesktopLayoutTests|WindowTitleBarTests'`).
 Run `sh scripts/check-desktop.sh` for the real-device checks, including external-display
 maximizing, browser controls and app-card toolbars on Duo and ordinary iPhones. The gestures
 and picture need a device with the computer awake. On the Desktop tab, with three apps open:
@@ -117,6 +117,14 @@ and picture need a device with the computer awake. On the Desktop tab, with thre
    edge to reveal the wallpaper-backed native controls; swipe outward starting on a control
    or use Hide window controls to dismiss them. Check both edge placements, VoiceOver,
    keyboard and Return, and repeat after folding and rotating.
+6. iPad set to Free, and a TV: drag a title bar to the left edge, a corner and the top
+   edge; an outline shows each snap and letting go takes it. Drag the window back out: it
+   returns to its own size under the finger. Drag one window beside another: their edges
+   meet. Arrange three windows, rotate, rotate back: every window is where it was. Relaunch
+   the app: the same places. Close a window and open the app again: it gets a fresh place.
+   Under a finger, Close, Minimize and Zoom show their symbols and each takes a tap at the
+   bar's full height. ⌘⌥←/→/↑/↓ bring the nearest window forward; ⌘⌥⇧←/→ snap, ⌘⌥⇧↑
+   maximizes, ⌘⌥⇧↓ restores.
 
 ## How it renders
 

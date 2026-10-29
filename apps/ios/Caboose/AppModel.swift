@@ -398,11 +398,12 @@ final class AppModel {
         if yardActive, deviceViewport.owner != .card {
             yard.sync(session.windows) { $0.appClass?.name }
         } else if desktopActive, deviceViewport.owner != .card {
-            desktop.sync(with: Array(session.windows.values))
+            desktop.sync(with: Array(session.windows.values), session: session)
+            // Each window goes to the place the owner gave it, fitted to this desktop; a new
+            // one gets a first place, which it keeps.
             for (index, window) in appWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
                 placedWindowIDs.insert(window.id)
-                let frame = desktop.isZoomed(window.id) ? desktop.maximizedFrame
-                    : desktop.remembered(window) ?? desktop.placement(for: window, index: index)
+                let frame = desktop.place(window, index: index)
                 session.configure(window, frame: frame, state: ["maximized": false])
                 desktop.raise(window.id)
             }
@@ -497,11 +498,10 @@ final class AppModel {
         else { deviceDesktopResized(to: deviceViewport.desktopSize) }
     }
 
-    /// Takes the phone's desktop down so a window can be a full-screen card, keeping each
-    /// window's place on it for when the desktop comes back.
+    /// Takes the phone's desktop down so a window can be a full-screen card. Each window's
+    /// place stays in the desktop's layout for when the desktop comes back.
     private func leaveDeviceDesktop() {
         guard deviceDesktopActive else { return }
-        if let session { desktop.remember(Array(session.windows.values)) }
         closeDeviceDesktop()
     }
 
@@ -515,6 +515,7 @@ final class AppModel {
         let scale = min(2, max(1, UIScreen.main.scale))
         if !(desktop.directTouch && desktop.pixelsPerPoint == scale) { desktop = DesktopModel(pixelsPerPoint: scale) }
         desktop.directTouch = true
+        desktop.storageKey = freeDesktopKey(external: false)
         desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
         desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -558,6 +559,7 @@ final class AppModel {
         externalSize = size
         externalScale = scale
         desktop = DesktopModel(pixelsPerPoint: tvPixelsPerPoint(width: size.width, scale: scale))
+        desktop.storageKey = freeDesktopKey(external: true)
         externalDisplayActive = true
         selectedTab = .desktop // the phone's Desktop tab is the TV's trackpad
         desktop.ui = desktopUI(forWidth: size.width)
@@ -593,6 +595,8 @@ final class AppModel {
         let new = tvPixelsPerPoint(width: externalSize.width, scale: externalScale)
         guard old != new else { return }
         let replacement = DesktopModel(pixelsPerPoint: new)
+        // Places are in points, so they hold at any pixel scale.
+        replacement.storageKey = desktop.storageKey
         replacement.ui = desktop.ui
         replacement.size = desktop.size
         replacement.cursor = desktop.cursor
@@ -836,6 +840,12 @@ final class AppModel {
         yard.pixelsPerPoint = desktop.pixelsPerPoint
         yard.session = session
         yard.learnAppClasses { [weak self] id in self?.session?.windows[id]?.appClass?.name }
+    }
+
+    /// The floating desktop's places, kept for this computer: one arrangement for this
+    /// device's own screen, another for a TV or monitor.
+    private func freeDesktopKey(external: Bool) -> String? {
+        credentials.map { "freedesktop.\(external ? "display" : "device")." + $0.fileDomainIdentifier }
     }
 
     /// ⌘⌥Return: a terminal, as on a Linux desktop.

@@ -14,6 +14,17 @@ struct DesktopView: View {
             ZStack(alignment: .topLeading) {
                 // On the phone the tab draws the photograph, under its bars too.
                 if fillsScreen { WallpaperView(store: WallpaperStore.shared) }
+                // Where the window being dragged would snap if let go now.
+                if let preview = desktop.snapPreview {
+                    RoundedRectangle(cornerRadius: 12 * desktop.ui, style: .continuous)
+                        .fill(.white.opacity(0.12))
+                        .strokeBorder(.white.opacity(0.55), lineWidth: 1.5)
+                        .background(.ultraThinMaterial.opacity(0.6), in: RoundedRectangle(cornerRadius: 12 * desktop.ui, style: .continuous))
+                        .frame(width: preview.width, height: preview.height)
+                        .position(x: preview.midX, y: preview.midY)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
                 if let session = model.session {
                     ForEach(desktop.stacking.compactMap { session.windows[$0] }.filter { desktop.isVisible($0.id) }) { window in
                         DesktopWindow(window: window, desktop: desktop, icon: model.icon(for: window))
@@ -47,10 +58,10 @@ struct DesktopView: View {
             .onChange(of: proxy.size) { _, size in
                 guard !model.windowCardOwnsGeometry else { return }
                 desktop.size = size
-                desktop.resizeMaximizedWindows(session: model.session)
+                desktop.relayout(session: model.session)
             }
             .onChange(of: desktop.ui) { _, _ in
-                if !model.windowCardOwnsGeometry { desktop.resizeMaximizedWindows(session: model.session) }
+                if !model.windowCardOwnsGeometry { desktop.relayout(session: model.session) }
             }
         }
         .ignoresSafeArea(edges: fillsScreen ? .all : [])
@@ -275,5 +286,49 @@ struct Launchpad: View {
             .frame(width: 44 * ui, height: 44 * ui)
             .background(.white.opacity(0.16), in: Circle())
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launcherPageFrames[direction] = $0 }
+    }
+}
+
+/// ⌘⌥ (Ctrl+Alt to Linux, the chord Linux desktops keep for the window manager) arranges
+/// the floating desktop, as it moves Switchyard: the arrows bring the nearest window that
+/// way forward, and with ⇧ snap the front window to a side, maximize it or put it back.
+/// Plain ⌘ stays the apps' Ctrl. They show in the ⌘-hold overlay on iPad.
+struct DesktopKeyCommands: View {
+    @Environment(AppModel.self) private var model
+    let desktop: DesktopModel
+
+    var body: some View {
+        Group {
+            key("Focus Left", .leftArrow) { desktop.moveFocus(.left, session: model.session) }
+            key("Focus Right", .rightArrow) { desktop.moveFocus(.right, session: model.session) }
+            key("Focus Up", .upArrow) { desktop.moveFocus(.up, session: model.session) }
+            key("Focus Down", .downArrow) { desktop.moveFocus(.down, session: model.session) }
+            key("Snap Left", .leftArrow, shift: true) { snap(.left) }
+            key("Snap Right", .rightArrow, shift: true) { snap(.right) }
+            key("Maximize", .upArrow, shift: true) { snap(.maximized) }
+            key("Restore", .downArrow, shift: true) { snap(nil) }
+            key("Zoom", "f") { front { desktop.toggleZoom($0.id, $1) } }
+            key("Minimize", "m") { front { window, _ in desktop.minimize(window.id) } }
+            key("Close Window", "w") { front { $1.close($0) } }
+            key("Launchpad", "a") { withAnimation(.smooth(duration: 0.3)) { desktop.launchpadOpen.toggle() } }
+            key("New Terminal", .return) { model.openTerminalApp() }
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+
+    private func front(_ action: (RemoteWindow, any DisplaySession) -> Void) {
+        guard let session = model.session, let window = desktop.frontWindow(in: session.windows) else { return }
+        action(window, session)
+    }
+
+    private func snap(_ snap: FreeDesktopLayout.Snap?) {
+        front { window, session in desktop.snap(window.id, snap, session) }
+    }
+
+    private func key(_ title: String, _ key: KeyEquivalent, shift: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .keyboardShortcut(key, modifiers: shift ? [.command, .option, .shift] : [.command, .option])
     }
 }

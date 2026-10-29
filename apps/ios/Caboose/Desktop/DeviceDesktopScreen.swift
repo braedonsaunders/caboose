@@ -123,6 +123,7 @@ private struct DesktopStage: View {
                     ZStack {
                         DesktopView(desktop: model.desktop, fillsScreen: false)
                         DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
+                        DesktopKeyCommands(desktop: model.desktop)
                     }
                 }
             }

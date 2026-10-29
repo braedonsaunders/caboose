@@ -45,6 +45,7 @@ struct TrackpadScreen: View {
                 }
             }
             Trackpad(desktop: desktop, keyboardVisible: model.keyboardVisible)
+                .background { DesktopKeyCommands(desktop: desktop) }
                 .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(.white.opacity(0.12)))
             TimelineView(.periodic(from: .now, by: 2)) { _ in
