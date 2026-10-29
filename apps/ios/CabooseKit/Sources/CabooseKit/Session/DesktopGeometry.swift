@@ -3,6 +3,12 @@ import CoreGraphics
 /// Desktop coordinates are in points. A normal window's frame starts at its title bar;
 /// its height counts only the remote content below that bar.
 public enum DesktopGeometry {
+    /// Keep the external desktop's default render width bounded while respecting the screen scale.
+    public static func externalPixelsPerPoint(width: CGFloat, scale: CGFloat, fullResolution: Bool) -> CGFloat {
+        let full = max(1, scale)
+        guard !fullResolution, width > 0 else { return full }
+        return min(full, max(1, 2560 / width))
+    }
     public struct WindowGeometry {
         public var frame: CGRect
         public var parent: Int?

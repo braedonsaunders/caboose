@@ -100,6 +100,14 @@ final class VisibleRecentFilesTests: XCTestCase {
 }
 
 final class LaunchpadLayoutTests: XCTestCase {
+    func testPagesCoverEveryAppAndClampAfterResize() {
+        let layout = LaunchpadLayout(size: CGSize(width: 800, height: 600), ui: 1, dockHeight: 76)
+        let capacity = layout.columns * layout.rows
+        XCTAssertEqual(layout.pageRange(0, count: capacity + 3), 0..<capacity)
+        XCTAssertEqual(layout.pageRange(1, count: capacity + 3), capacity..<(capacity + 3))
+        XCTAssertEqual(layout.pageRange(99, count: capacity + 3), capacity..<(capacity + 3))
+        XCTAssertEqual(layout.pageRange(0, count: 0), 0..<0)
+    }
     func testABigScreenGetsSevenFullColumns() {
         let layout = LaunchpadLayout(size: CGSize(width: 1920, height: 1080), ui: 1.2, dockHeight: 76 * 1.2)
         XCTAssertEqual(layout.columns, 7)

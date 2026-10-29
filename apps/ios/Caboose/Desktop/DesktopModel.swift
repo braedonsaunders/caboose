@@ -19,6 +19,7 @@ final class DesktopModel {
         case zoom(Int)
         case launchpadButton
         case launcher(String)
+        case launcherPage(Int)
         case content(Int, CGPoint)  // window id, point in window pixels
         case resize(Int)
     }
@@ -64,6 +65,8 @@ final class DesktopModel {
     var launchpadOpen = false
     var launchpadButtonFrame: CGRect = .null
     var launcherFrames: [String: CGRect] = [:]
+    var launcherPage = 0
+    var launcherPageFrames: [Int: CGRect] = [:]
 
     private var drag: (hit: Hit, start: CGPoint, frame: CGRect)?
 
@@ -111,6 +114,7 @@ final class DesktopModel {
             for (id, frame) in dockFrames where frame.contains(point) { return .dock(id) }
         }
         if launchpadOpen {
+            for (direction, frame) in launcherPageFrames where frame.contains(point) { return .launcherPage(direction) }
             for (id, frame) in launcherFrames where frame.contains(point) { return .launcher(id) }
             return .none
         }
@@ -153,6 +157,12 @@ final class DesktopModel {
     func click(button: Int = 1, session: (any DisplaySession)?, open: (String) -> Void) {
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
+        if case .launcherPage(let direction) = hit {
+            launcherFrames = [:]
+            launcherPageFrames = [:]
+            launcherPage = max(0, launcherPage + direction)
+            return
+        }
         if launchpadOpen, hit != .launchpadButton {
             launchpadOpen = false
             if case .launcher(let id) = hit { open(id) }
@@ -161,6 +171,7 @@ final class DesktopModel {
         switch hit {
         case .launchpadButton: launchpadOpen.toggle()
         case .launcher(let id): open(id)
+        case .launcherPage: break
         case .dock(let id):
             if button == 3 { contextDockID = id } else { contextDockID = nil; open(id) }
         case .close(let id): if let window = session.windows[id] { session.close(window) }
