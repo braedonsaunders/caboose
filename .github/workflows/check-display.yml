@@ -7,6 +7,7 @@ on:
       - 'guest/display/**'
       - 'guest/apps/**'
       - 'guest/files/**'
+      - 'guest/template/**'
       - 'guest/components/**'
       - 'guest/container/Dockerfile'
       - 'guest/image/Dockerfile'
@@ -36,6 +37,9 @@ jobs:
           python3 -m unittest guest.components.test_staging guest.components.test_install guest.components.test_vsock_services guest.components.test_container_services.BusStartup
           python3 -m unittest discover -s guest/apps -p 'test_*.py'
           python3 guest/files/test_webview_endpoint.py
+          python3 guest/files/test_parked_quiesce.py
+          python3 guest/template/test_template.py
+          python3 -m unittest guest.components.test_owner_run
           node --test guest/apps/agent-page.test.mjs
       - name: Build the Linux display test environment
         run: docker build -t caboose-display-dev guest/display
