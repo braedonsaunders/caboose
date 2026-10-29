@@ -29,6 +29,7 @@ OPTIONS:
     --decoders LIST        comma-separated codecs [default: hevc,h264]
     --video-decoders LIST  codecs to accept as video.* streams [default: none]
     --scaled-motion        accept half-resolution motion streams
+    --copy                 apply frame.copy (scrolls as a copy within the picture plus tiles)
     --audio                play the computer's sound (decoded and measured, not heard)
     --wasm                 run games handed off to the client (reports game.create and
                            game.destroy; a game's window is a target like any other)
@@ -65,6 +66,7 @@ struct Args {
     decoders: Vec<Codec>,
     video_decoders: Option<Vec<Codec>>,
     scaled_motion: bool,
+    copy: bool,
     audio: bool,
     wasm: bool,
     gpu_save: Option<PathBuf>,
@@ -106,6 +108,7 @@ fn parse_args() -> Result<Args, String> {
         decoders: vec![Codec::Hevc, Codec::H264],
         video_decoders: None,
         scaled_motion: false,
+        copy: false,
         audio: false,
         wasm: false,
         gpu_save: None,
@@ -140,6 +143,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--audio" => a.audio = true,
             "--scaled-motion" => a.scaled_motion = true,
+            "--copy" => a.copy = true,
             "--wasm" => a.wasm = true,
             "--gpu-save" => a.gpu_save = Some(value()?.into()),
             "--video-decoders" => {
@@ -252,6 +256,9 @@ struct WindowStats {
     tile_bytes: u64,
     /// Tiles that did not decode or came before any picture.
     tile_errors: u64,
+    copies: u64,
+    /// Copies that came before any picture.
+    copy_errors: u64,
 }
 
 /// The `audio` stream as received.
@@ -333,8 +340,16 @@ struct Decoder {
     last: Option<ff::frame::Video>,
     crop: proto::Rect,
     stream: Option<std::fs::File>,
-    /// Tiles painted over `last` since it was decoded (picture pixels, RGB).
-    tiles: Vec<(proto::Rect, Vec<u8>)>,
+    /// What was painted over `last` since it was decoded, in order.
+    paints: Vec<Paint>,
+}
+
+/// A change to the picture after it was decoded, as the client applies it.
+enum Paint {
+    /// A tile: picture pixels, RGB.
+    Tile(proto::Rect, Vec<u8>),
+    /// `frame.copy`: picture pixels, and where the source's top-left pixel lands.
+    Copy(proto::Rect, [i32; 2]),
 }
 
 /// A PNG tile's RGB pixels, if it is an 8-bit RGB PNG of the rectangle's size.
@@ -365,7 +380,7 @@ fn open_decoder(codec: Codec) -> Result<ff::decoder::Video, ff::Error> {
 fn save_png(
     frame: &ff::frame::Video,
     crop: proto::Rect,
-    tiles: &[(proto::Rect, Vec<u8>)],
+    paints: &[Paint],
     path: &std::path::Path,
 ) -> Result<(), String> {
     let (w, h) = (frame.width(), frame.height());
@@ -389,18 +404,36 @@ fn save_png(
         let start = y * stride + crop.x.max(0) as usize * 3;
         pixels.extend_from_slice(&rgb.data(0)[start..start + cw as usize * 3]);
     }
-    // Tiles drawn since the picture, in order, as the client shows them.
-    for (r, tile) in tiles {
-        for ty in 0..r.h {
-            let (y, x0) = (r.y + ty - crop.y, r.x - crop.x);
-            if y < 0 || y >= ch as i32 {
-                continue;
+    // Tiles and copies applied since the picture, in order, as the client shows them.
+    let inside = |x: i32, y: i32| x >= 0 && y >= 0 && x < cw as i32 && y < ch as i32;
+    for paint in paints {
+        match paint {
+            Paint::Tile(r, tile) => {
+                for ty in 0..r.h {
+                    for tx in 0..r.w {
+                        let (x, y) = (r.x + tx - crop.x, r.y + ty - crop.y);
+                        if inside(x, y) {
+                            let (d, s) = ((y as usize * cw as usize + x as usize) * 3, (ty * r.w + tx) as usize * 3);
+                            pixels[d..d + 3].copy_from_slice(&tile[s..s + 3]);
+                        }
+                    }
+                }
             }
-            for tx in 0..r.w {
-                let x = x0 + tx;
-                if x >= 0 && x < cw as i32 {
-                    let (d, s) = ((y as usize * cw as usize + x as usize) * 3, (ty * r.w + tx) as usize * 3);
-                    pixels[d..d + 3].copy_from_slice(&tile[s..s + 3]);
+            Paint::Copy(r, dst) => {
+                // From the picture as it was before the copy: the two may overlap.
+                let before = pixels.clone();
+                for ty in 0..r.h {
+                    for tx in 0..r.w {
+                        let (sx, sy) = (r.x + tx - crop.x, r.y + ty - crop.y);
+                        let (dx, dy) = (dst[0] + tx - crop.x, dst[1] + ty - crop.y);
+                        if inside(sx, sy) && inside(dx, dy) {
+                            let (d, s) = (
+                                (dy as usize * cw as usize + dx as usize) * 3,
+                                (sy as usize * cw as usize + sx as usize) * 3,
+                            );
+                            pixels[d..d + 3].copy_from_slice(&before[s..s + 3]);
+                        }
+                    }
                 }
             }
         }
@@ -563,7 +596,7 @@ fn run(args: Args) -> Result<bool, String> {
             webview: false,
             gpu: args.gpu_save.is_some(),
             scaled_motion: args.scaled_motion,
-            copy: false,
+            copy: args.copy,
         }),
     )?;
 
@@ -686,8 +719,16 @@ fn run(args: Args) -> Result<bool, String> {
                     s.tiles += 1;
                     s.tile_bytes += t.data.len() as u64;
                     match (decode_tile(t.rect, &t.data), decoders.get_mut(&t.id)) {
-                        (Some(rgb), Some(d)) if d.last.is_some() => d.tiles.push((t.rect, rgb)),
+                        (Some(rgb), Some(d)) if d.last.is_some() => d.paints.push(Paint::Tile(t.rect, rgb)),
                         _ => s.tile_errors += 1,
+                    }
+                }
+                Message::FrameCopy(c) => {
+                    let s = windows.entry(c.id).or_default();
+                    s.copies += 1;
+                    match decoders.get_mut(&c.id) {
+                        Some(d) if d.last.is_some() => d.paints.push(Paint::Copy(c.src, c.dst)),
+                        _ => s.copy_errors += 1,
                     }
                 }
                 Message::Frame(f) => {
@@ -727,7 +768,7 @@ fn run(args: Args) -> Result<bool, String> {
                         };
                         decoders.insert(
                             f.id,
-                            Decoder { codec: f.codec, decoder, last: None, crop: f.crop, stream, tiles: Vec::new() },
+                            Decoder { codec: f.codec, decoder, last: None, crop: f.crop, stream, paints: Vec::new() },
                         );
                     }
                     let d = decoders.get_mut(&f.id).unwrap();
@@ -746,7 +787,7 @@ fn run(args: Args) -> Result<bool, String> {
                                 got = true;
                                 s.size = (frame.width(), frame.height());
                                 d.last = Some(frame.clone());
-                                d.tiles.clear();
+                                d.paints.clear();
                             }
                             Err(ff::Error::Other { errno: libc::EAGAIN }) => break,
                             Err(_) => {
@@ -923,7 +964,7 @@ fn run(args: Args) -> Result<bool, String> {
     if let Some(dir) = &args.save {
         for (id, d) in &decoders {
             if let Some(frame) = &d.last {
-                if let Err(e) = save_png(frame, d.crop, &d.tiles, &dir.join(format!("window-{id}.png"))) {
+                if let Err(e) = save_png(frame, d.crop, &d.paints, &dir.join(format!("window-{id}.png"))) {
                     eprintln!("window {id}: cannot save PNG: {e}");
                 }
             }
@@ -958,7 +999,7 @@ fn run(args: Args) -> Result<bool, String> {
                     _ => 0.0,
                 };
                 format!(
-                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{}}}",
+                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{},\"copies\":{},\"copy_errors\":{}}}",
                     w.title,
                     w.kind,
                     w.parent.map(|p| p.to_string()).unwrap_or("null".into()),
@@ -984,7 +1025,9 @@ fn run(args: Args) -> Result<bool, String> {
                     w.destroyed,
                     w.tiles,
                     w.tile_bytes,
-                    w.tile_errors
+                    w.tile_errors,
+                    w.copies,
+                    w.copy_errors
                 )
             })
             .collect();

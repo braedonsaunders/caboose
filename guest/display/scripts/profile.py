@@ -8,7 +8,8 @@ Each run starts the compositor with Chromium, connects the probe with the displa
 phone or a TV, maximizes the window as the app does, drives it (typing, scrolling, an
 idle caret), and prints the server's CPU time per picture, in total and split into
 rendering and encoding (from the compositor's own counters), with the picture rate and
-bitrate. Extra compositor flags can follow `--`.
+bitrate. The probe applies `frame.copy`, as the app does. Extra compositor flags can follow
+`--` (`-- --no-copy` sends scrolls as pictures).
 """
 import json
 import os
@@ -69,7 +70,7 @@ def run(display, workload, page, actions, extra):
         # the session).
         cmd = [os.path.join(check.BIN, "caboose-display-probe"), "--url", f"ws://127.0.0.1:{check.PORT}/",
                "--token-file", token, "--duration", "11", "--windows", "1", "--display", DISPLAYS[display],
-               "--actions", actions, "--server-pid", str(proc.pid), "--json"]
+               "--copy", "--actions", actions, "--server-pid", str(proc.pid), "--json"]
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
         time.sleep(1.5)
         before, total0 = threads(proc.pid), process(proc.pid)
@@ -85,7 +86,7 @@ def run(display, workload, page, actions, extra):
     m = re.search(r"per frame: render ([\d.]+) ms, encode ([\d.]+) ms CPU", log)
     w = max(r["windows"], key=lambda w: w["frames"])
     render, encode = (m.group(1), m.group(2)) if m else ("?", "?")
-    print(f"{display:5} {workload:6} {w['size'][0]}x{w['size'][1]}: {w['frames']} pictures, {w.get('tiles', 0)} tiles, "
+    print(f"{display:5} {workload:6} {w['size'][0]}x{w['size'][1]}: {w['frames']} pictures, {w.get('tiles', 0)} tiles, {w.get('copies', 0)} copies, "
           f"{w['kbps']:.0f} kbit/s; server {r['server_cpu_pct']}% of a core, "
           f"{r['server_cpu_ms_per_frame']} ms/picture (render {render}, encode {encode})", flush=True)
     busy = sorted(r["threads"].items(), key=lambda t: -t[1])

@@ -210,6 +210,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `motion` | Chromium plays a 480×270 canvas "video" in a page of text for 8 s: it becomes one `motion` stream at the canvas, every frame decodes with a pts, the window stream sends at most half as many pictures beside it, the stream ends after the video stops, and the final window picture matches the one streamed with `--no-motion` (≥ 40 dB) |
 | `scaled-motion` | Chromium motion decodes at half size and retains its placement when the client advertises `scaled_motion` |
 | `tiles` | 31 characters typed into Chromium at 1179×2556 go as tiles: every tile decodes, at most a third of the pictures of a run without tiles, the server spends at most 60% of the CPU, and the final picture (frame plus tiles, as the client paints it) matches the one without tiles (≥ 40 dB); a 250×250 animation at 60 Hz stays video |
+| `copies` | 24 precise scrolls of an article in Chromium at 1179×2556, with a probe that applies `frame.copy`: at least 8 go as copies, every tile decodes, no copy comes before a picture, and the window sends fewer pictures and the server spends less CPU than with `--no-copy`. How far the two final pictures are apart is reported, not asserted: both are lossy, and that a copy and its tiles give the new picture exactly is checked by the unit tests in `src/encode/scroll.rs` |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 For the `passthrough` check's cross-check against the driver's reference detector, mount
@@ -224,7 +225,8 @@ says.
 the app uses. It connects with a phone's display (1179×2556 at 3×) or a TV's
 (3840×2160 at 2×) and maximises the window, as the app does. It then types, scrolls an
 article, or leaves a caret blinking, and prints the server's CPU per picture and its
-split by thread:
+split by thread. Its probe applies `frame.copy`, as the app does; `-- --no-copy` measures
+scrolling without copies:
 
     guest/display/scripts/dev.sh python3 scripts/profile.py [phone|tv] [type|scroll|caret] [-- FLAGS]
 
@@ -315,7 +317,8 @@ caboose-display-probe --check --url ws://127.0.0.1:14601/ --token-file /run/cabo
 window's stream and last decoded picture (PNG); `--type`, `--click` and `--touch` send
 input once a window shows, and `--actions` replays a sequence of keys, text, taps and
 clicks (`--window` picks the window, and `close` closes it); `--decoders`,
-`--video-decoders`, `--audio` and `--wasm` set what the probe announces, and with `--wasm`
+`--video-decoders`, `--audio`, `--copy` and `--wasm` set what the probe announces (with
+`--copy` it applies `frame.copy` to the picture it saves), and with `--wasm`
 the report lists the games handed to it; `--json` prints a machine-readable report; `--check` exits 0 as
 soon as the server answers a hello. `caboose-display-probe --help` lists every option.
 

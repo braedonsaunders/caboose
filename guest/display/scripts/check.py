@@ -734,6 +734,40 @@ def check_tiles():
             f"final pictures match at {match:.1f} dB; an animation stays video ({anim['fps']:.0f} fps, {anim['tile_bytes'] // 1000} kB of tiles at its start)")
 
 
+def check_copies():
+    # Scrolling an article in Chromium at a phone's size, 120 px at a time, for a client
+    # that applies frame.copy: scrolls must go as copies with their tiles (every tile
+    # decodes, no copy arrives before a picture), the window must send fewer pictures and
+    # the server must spend less than with --no-copy. That a copy and its tiles give the
+    # new picture exactly is what the compositor's unit tests check (encode/scroll.rs);
+    # here both final pictures are lossy, so how closely they agree is only reported.
+    actions = ";".join(["maximize", "wait:1500"] + [f"scroll:589,1278,{dy}" for dy in [120] * 16 + [-120] * 8]
+                       + ["wait:600"])
+    runs = {}
+    for name, extra in (("copies", ()), ("pictures", ("--no-copy",))):
+        out = tempfile.mkdtemp(prefix="copies-")
+        def run(proc, token, out=out):
+            r = probe(["--token-file", token, "--duration", "14", "--windows", "1", "--display", "1179x2556@120x3",
+                       "--copy", "--actions", actions, "--server-pid", str(proc.pid), "--save", out])
+            return r, os.path.join(out, "window-1.png")
+        runs[name] = with_server(CHROMIUM + [f"--app={PAGES}/article.html"], run, extra=extra)
+    (r, picture), (plain, plain_picture) = runs["copies"], runs["pictures"]
+    w, p = r["windows"][0], plain["windows"][0]
+    if w["copies"] < 8 or w["copy_errors"] or w["tile_errors"] or w["decode_errors"]:
+        raise Failed(f"{w['copies']} copies for 24 scrolls, {w['copy_errors']} before a picture, "
+                     f"{w['tile_errors']} bad tiles, {w['decode_errors']} decode errors")
+    if p["copies"]:
+        raise Failed(f"{p['copies']} copies with --no-copy")
+    if w["frames"] >= p["frames"]:
+        raise Failed(f"{w['frames']} pictures with copies against {p['frames']} without")
+    cpu, plain_cpu = r["server_cpu_ms"], plain["server_cpu_ms"]
+    if cpu >= plain_cpu:
+        raise Failed(f"server CPU {cpu} ms with copies, {plain_cpu} ms without")
+    return (f"24 scrolls at 1179x2556: {w['copies']} copies, {w['tiles']} tiles ({w['tile_bytes'] // 1000} kB) and "
+            f"{w['frames']} pictures, against {p['frames']} pictures; server {cpu} ms against {plain_cpu} ms; "
+            f"final pictures {psnr(picture, plain_picture):.1f} dB apart")
+
+
 def check_idle():
     def run(proc, token):
         r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--server-pid", str(proc.pid)])
@@ -776,6 +810,7 @@ CHECKS = [
     ("refine", check_refine),
     ("motion", check_motion),
     ("tiles", check_tiles),
+    ("copies", check_copies),
     ("idle", check_idle),
 ]
 
