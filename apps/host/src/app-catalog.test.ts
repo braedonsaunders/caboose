@@ -257,3 +257,22 @@ describe('Flathub in the Library', () => {
     expect(s.calls.filter(call => call.action === 'updates')).toHaveLength(2)
   })
 })
+
+it('browses a collection as its apps, then popular apps in its category, and never installs it whole', async () => {
+  const { mkdtempSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path')
+  const { FlathubIndex } = await import('./flathub.js'), { hit } = await import('./flathub.test.js')
+  const hits = Array.from({ length: 120 }, (_, i) => hit(`org.example.Video${i}`, { name: `Video ${i}`, main_categories: 'audiovideo', installs_last_month: i }))
+  const fetcher = vi.fn(async (url: string) => url.endsWith('.png') ? { ok: false, status: 404, json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) }
+    : { ok: true, status: 200, json: async () => ({ hits, totalPages: 1 }), arrayBuffer: async () => new ArrayBuffer(0) })
+  const flathub = new FlathubIndex(mkdtempSync(join(tmpdir(), 'caboose-collection-')), 'x86_64', fetcher)
+  const catalog = new AppCatalog(() => undefined, () => {}, () => () => {}, { data, releases, flathub })
+  const pack = data.packs.find(item => item.id === 'video-audio')!
+  const members = data.apps.filter(app => app.packs.includes(pack.id)).map(app => app.id)
+  const page = await catalog.discover('', '', 0, 'video-audio')
+  expect(page.apps.slice(0, members.length).map(app => app.id)).toEqual(members)
+  expect(page.apps[members.length]).toMatchObject({ id: 'flathub-org.example.Video119', origin: 'flathub' })
+  expect((await catalog.discover('', '', 0, 'creative-studio')).apps.every(app => app.curated)).toBe(true)
+  await expect(catalog.discover('', 'Games', 0, 'video-audio')).rejects.toThrow('not both')
+  await expect(catalog.discover('', '', 0, 'missing')).rejects.toThrow('Collection not found')
+  expect('startPack' in catalog).toBe(false)
+})

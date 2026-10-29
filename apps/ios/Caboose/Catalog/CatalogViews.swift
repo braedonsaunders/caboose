@@ -53,9 +53,11 @@ struct CatalogLibrary: View {
     @State private var remove: CatalogApp?
     @State private var search = ""
     @State private var category = ""
+    /// A collection narrows the list like a category does; it never installs anything itself.
+    @State private var collection: CatalogPack?
 
-    private var query: LibraryQuery { LibraryQuery(text: search, category: category) }
-    private var listTitle: String { !query.text.isEmpty ? "Results" : category.isEmpty ? "All Apps" : category }
+    private var query: LibraryQuery { LibraryQuery(text: search, category: category, collection: collection?.id ?? "") }
+    private var listTitle: String { !query.text.isEmpty ? "Results" : collection?.name ?? (category.isEmpty ? "All Apps" : category) }
 
     var body: some View {
         let catalog = model.catalog
@@ -67,7 +69,7 @@ struct CatalogLibrary: View {
                             ScrollView(.horizontal) {
                                 HStack(spacing: 12) {
                                     ForEach(catalog.packs) { pack in
-                                        NavigationLink(value: pack) { CollectionCard(pack: pack, apps: catalog.apps.filter { $0.packs.contains(pack.id) }) }
+                                        Button { category = ""; collection = pack } label: { CollectionCard(pack: pack, apps: catalog.apps.filter { $0.packs.contains(pack.id) }) }
                                             .buttonStyle(.plain)
                                     }
                                 }
@@ -108,12 +110,12 @@ struct CatalogLibrary: View {
                 }
             }
             .safeAreaInset(edge: .top) {
-                if !catalog.categories.isEmpty { CategoryChips(categories: catalog.categories, selection: $category) }
+                if !catalog.categories.isEmpty {
+                    CategoryChips(categories: catalog.categories, selection: Binding(get: { category }, set: { category = $0; collection = nil }), collection: collection?.name)
+                }
             }
             .navigationTitle("Library")
-            .navigationDestination(for: CatalogPack.self) { pack in
-                CollectionView(pack: pack, close: { dismiss() }, remove: { remove = $0 })
-            }
+            .onChange(of: category) { if !category.isEmpty { collection = nil } }
             .searchable(text: $search, prompt: "Search apps")
             .task(id: query) {
                 catalog.prepare(model.host)
@@ -139,13 +141,16 @@ struct CatalogLibrary: View {
 private struct CategoryChips: View {
     let categories: [String]
     @Binding var selection: String
+    /// The collection being browsed, shown as the selected chip until another is chosen.
+    var collection: String? = nil
 
     var body: some View {
         ScrollView(.horizontal) {
             GlassEffectContainer {
                 HStack(spacing: 8) {
-                    chip("All", value: "")
-                    ForEach(categories, id: \.self) { chip($0, value: $0) }
+                    chip("All", value: "", selected: selection.isEmpty && collection == nil)
+                    if let collection { chip(collection, value: "", selected: true) }
+                    ForEach(categories, id: \.self) { chip($0, value: $0, selected: selection == $0) }
                 }
             }
             .padding(.horizontal, 20)
@@ -154,8 +159,8 @@ private struct CategoryChips: View {
         .scrollIndicators(.hidden)
     }
 
-    @ViewBuilder private func chip(_ title: String, value: String) -> some View {
-        if selection == value {
+    @ViewBuilder private func chip(_ title: String, value: String, selected: Bool) -> some View {
+        if selected {
             Button(title) { selection = value }.buttonStyle(.glassProminent).accessibilityAddTraits(.isSelected)
         } else {
             Button(title) { selection = value }.buttonStyle(.glass)
@@ -164,7 +169,7 @@ private struct CategoryChips: View {
 }
 
 /// A curated collection at the top of the Library: a few of its icons, its name, and how
-/// much of it the computer has.
+/// much of it the computer has. Choosing it browses its apps; each installs on its own.
 private struct CollectionCard: View {
     @Environment(AppModel.self) private var model
     let pack: CatalogPack
@@ -189,29 +194,6 @@ private struct CollectionCard: View {
         .padding(14)
         .frame(width: 168, alignment: .leading)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
-    }
-}
-
-/// One curated collection's apps, and Get Pack for the ones the computer lacks.
-private struct CollectionView: View {
-    @Environment(AppModel.self) private var model
-    let pack: CatalogPack
-    let close: () -> Void
-    let remove: (CatalogApp) -> Void
-
-    var body: some View {
-        let apps = model.catalog.apps.filter { $0.packs.contains(pack.id) }
-        List {
-            ForEach(apps) { LibraryRow(app: $0, close: close, remove: remove) }
-        }
-        .navigationTitle(pack.name)
-        .toolbar {
-            if apps.contains(where: { $0.installedVersion == nil }) {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Get Pack") { Task { await model.catalog.perform(pack.id, action: "install", pack: true) } }
-                }
-            }
-        }
     }
 }
 

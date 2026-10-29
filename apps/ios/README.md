@@ -371,7 +371,8 @@ the computer can add: Caboose's curated apps first, then Flathub's desktop apps,
 the same row (developer, a seal for Flathub's verified publishers, license) and the same Get,
 progress, Retry, Open and Remove. Search (after a 300 ms pause) and the row of category
 chips narrow it, and more results load as you scroll. Curated collections lead the
-unfiltered list, and each offers Get Pack. Apps update on their own; an app with a newer
+unfiltered list; choosing one browses its apps, then popular apps in its category, each
+installed on its own. Nothing installs more than the one app chosen. Apps update on their own; an app with a newer
 version waiting is listed under Updates with Update Now. The list comes from the host's own
 index, so it works while the computer is parked and never wakes it; getting, updating and
 removing an app need the computer running, and the host's reason shows when it is not.

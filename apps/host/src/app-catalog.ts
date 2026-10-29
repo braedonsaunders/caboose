@@ -154,16 +154,20 @@ export class AppCatalog {
     }
   }
   /** One ranked list: curated matches in catalog order, then Flathub by popularity or relevance. */
-  async discover(query: string, category = '', offset = 0) {
+  async discover(query: string, category = '', offset = 0, collection = '') {
     if (typeof query !== 'string' || query.length > 100 || /[\x00-\x1f]/.test(query)) throw new AgentInputError('Invalid search')
     if (category && !(CATEGORIES as readonly string[]).includes(category)) throw new AgentInputError('Unknown category')
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100_000) throw new AgentInputError('Invalid offset')
+    // A collection is a way to browse, never to install: its apps, then its category's.
+    const pack = collection ? this.data.packs.find(item => item.id === collection) : undefined
+    if (collection && !pack) throw new AgentNotFoundError('Collection not found')
+    if (pack && category) throw new AgentInputError('Choose a collection or a category, not both')
     let error: string | null = null
     if (this.flathub) await this.flathub.ready().catch(cause => { error = `Flathub could not be reached: ${cause instanceof Error ? cause.message : String(cause)}` })
     const terms = words(query)
-    const curated = this.curated.filter(app => (!category || app.category === category) && terms.every(term => words(`${app.name} ${app.summary} ${app.id} ${app.category}`).some(word => word.startsWith(term))))
+    const curated = this.curated.filter(app => (pack ? app.packs.includes(pack.id) : !category || app.category === category) && terms.every(term => words(`${app.name} ${app.summary} ${app.id} ${app.category}`).some(word => word.startsWith(term))))
     const aliases = new Set(this.curated.flatMap(app => app.flathub ? [app.flathub] : []))
-    const flathub = this.flathub?.size ? this.flathub.search(query, category, aliases) : []
+    const flathub = this.flathub?.size && (!pack || pack.category) ? this.flathub.search(query, pack?.category ?? category, aliases) : []
     const total = curated.length + flathub.length
     const slice = [...curated.slice(offset, offset + PAGE), ...flathub.slice(Math.max(0, offset - curated.length), Math.max(0, offset + PAGE - curated.length)).map(flathubEntry)]
     return { apps: await Promise.all(slice.map(app => this.view(this.flatpaks.get(app.id) ?? app))), total, offset, limit: PAGE, categories: [...CATEGORIES], error }
@@ -225,10 +229,6 @@ export class AppCatalog {
     throw new AgentNotFoundError('Application not found in catalog')
   }
   start(id: string, action: Operation): void { this.startMany([this.find(id)], action) }
-  startPack(id: string): void {
-    if (!this.data.packs.some(p => p.id === id)) throw new AgentNotFoundError('Pack not found')
-    this.startMany(this.curated.filter(app => app.packs.includes(id)), 'install')
-  }
   /** The exact argument the guest installer runs with: resolved releases and current runtimes. */
   private async prepare(app: Entry, action: Operation): Promise<Record<string, unknown>> {
     if (app.source.kind === 'release' && action !== 'remove') {

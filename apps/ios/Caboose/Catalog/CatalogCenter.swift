@@ -176,11 +176,11 @@ final class CatalogCenter {
             libraryError = error.localizedDescription; failedOffset = offset; libraryLoading = false
         }
     }
-    func perform(_ id: String, action: String, pack: Bool = false) async {
+    func perform(_ id: String, action: String) async {
         guard let host else { return }
         error = nil
         let encoded = HostClient.pathComponent(id)
-        let path = pack ? "/v1/catalog/packs/\(encoded)/install" : action == "remove" ? "/v1/catalog/\(encoded)" : "/v1/catalog/\(encoded)/\(action)"
+        let path = action == "remove" ? "/v1/catalog/\(encoded)" : "/v1/catalog/\(encoded)/\(action)"
         do {
             let _: [String: Bool] = try await host.request(action == "remove" ? "DELETE" : "POST", path, timeout: 30)
             await refresh()

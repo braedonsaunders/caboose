@@ -7,8 +7,8 @@ import {
 import { BadgeCheck, Layers, Package, RefreshCw } from 'lucide-react'
 import { CabooseApiError, type CabooseClient } from '../../api.js'
 import {
-  actionLabel, appActions, appendPage, catalogBusy, displayVersion, nextOffset, packApps, packMissing, progressSummary,
-  withLiveState, type CatalogApp, type CatalogOperation, type CatalogResponse,
+  actionLabel, appActions, appendPage, catalogBusy, displayVersion, nextOffset, packApps, progressSummary,
+  withLiveState, type CatalogApp, type CatalogOperation, type CatalogPack, type CatalogResponse,
 } from '../../catalog.js'
 import { AppIcon, NotRunningNotice, TabIntro, errorMessage, useVisibleInterval } from '../../components/common.js'
 import type { ComputerHandle } from '../../useComputer.js'
@@ -34,6 +34,8 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
   const [search, setSearch] = React.useState('')
   const [query, setQuery] = React.useState('')
   const [category, setCategory] = React.useState('')
+  /** A collection narrows the Library like a category; it never installs anything itself. */
+  const [collection, setCollection] = React.useState<CatalogPack | null>(null)
   const [library, setLibrary] = React.useState<Library | null>(null)
   const [categories, setCategories] = React.useState<string[]>([])
   /** The page that failed, so Try again asks for it again. */
@@ -72,7 +74,7 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
     setLibraryError(null)
     if (offset === 0) setLibrary(null)
     try {
-      const page = await client.discoverCatalog({ q: query, category, offset })
+      const page = await client.discoverCatalog({ q: query, category, collection: collection?.id ?? '', offset })
       if (ticket !== generation.current) return
       setLibrary(current => ({
         apps: appendPage(offset > 0 && current ? current.apps : [], page.apps),
@@ -86,7 +88,7 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
     } finally {
       if (ticket === generation.current) setLoading(false)
     }
-  }, [client, query, category, handle])
+  }, [client, query, category, collection, handle])
 
   React.useEffect(() => { void loadPage(0) }, [loadPage])
 
@@ -112,20 +114,7 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
     }
   }
 
-  async function installPack(id: string, name: string) {
-    setStarting(`pack:${id}`)
-    try {
-      await client.installPack(id)
-      toast.success(`Installing ${name}. Apps already installed are skipped.`)
-    } catch (failure) {
-      toast.error(errorMessage(failure))
-    } finally {
-      setStarting(null)
-      await refreshCatalog()
-    }
-  }
-
-  const unfiltered = !query && !category
+  const unfiltered = !query && !category && !collection
   const rows = withLiveState(library?.apps ?? [], catalog)
   const updates = catalog?.apps.filter(app => app.updateAvailable) ?? []
   const operations = catalog?.apps.filter(app => app.progress && app.progress.phase !== 'finished') ?? []
@@ -168,22 +157,18 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
           <div className="flex gap-3 overflow-x-auto pb-1">
             {catalog.packs.map(pack => {
               const apps = packApps(catalog, pack.id)
-              const missing = packMissing(catalog, pack.id)
               return (
-                <div key={pack.id} className="flex w-56 shrink-0 flex-col gap-2 rounded-lg border border-border p-3" title={apps.map(app => app.name).join(', ')}>
+                <button
+                  key={pack.id}
+                  type="button"
+                  className="flex w-56 shrink-0 flex-col gap-2 rounded-lg border border-border p-3 text-left hover:bg-bg-muted"
+                  title={`Browse ${pack.name}`}
+                  onClick={() => { setCategory(''); setCollection(pack) }}
+                >
                   <div className="flex gap-1">{apps.slice(0, 4).map(app => <AppIcon key={app.id} src={app.iconData} name={app.name} size={24} />)}</div>
                   <div className="truncate font-medium">{pack.name}</div>
-                  <div className="text-xs text-fg-muted">{apps.length === 1 ? '1 app' : `${apps.length} apps`}{missing ? ` · ${missing} to install` : ' · all installed'}</div>
-                  <Button
-                    size="sm"
-                    variant={missing ? 'default' : 'outline'}
-                    disabled={!running || busy || missing === 0 || starting !== null}
-                    title={!running ? 'Wake the computer first.' : busy ? 'Another operation is running.' : undefined}
-                    onClick={() => void installPack(pack.id, pack.name)}
-                  >
-                    {missing ? 'Get pack' : 'All installed'}
-                  </Button>
-                </div>
+                  <div className="text-xs text-fg-muted">{pack.category ? `${apps.length === 1 ? '1 pick' : `${apps.length} picks`}, then popular ${pack.category} apps` : apps.length === 1 ? '1 app' : `${apps.length} apps`}</div>
+                </button>
               )
             })}
           </div>
@@ -209,14 +194,19 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
       >
         {categories.length ? (
           <div className="mb-3 flex gap-2 overflow-x-auto pb-1" role="group" aria-label="Category">
+            {collection ? (
+              <Button className="shrink-0" size="sm" variant="default" aria-pressed onClick={() => setCollection(null)} title="Show every app">
+                {collection.name} ×
+              </Button>
+            ) : null}
             {['', ...categories].map(value => (
               <Button
                 key={value || 'all'}
                 className="shrink-0"
                 size="sm"
-                variant={category === value ? 'default' : 'outline'}
-                aria-pressed={category === value}
-                onClick={() => setCategory(value)}
+                variant={!collection && category === value ? 'default' : 'outline'}
+                aria-pressed={!collection && category === value}
+                onClick={() => { setCollection(null); setCategory(value) }}
               >
                 {value || 'All'}
               </Button>

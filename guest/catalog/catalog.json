@@ -6,27 +6,33 @@
     },
     {
       "id": "create",
-      "name": "Create"
+      "name": "Create",
+      "category": "Create"
     },
     {
       "id": "video-audio",
-      "name": "Video & Audio"
+      "name": "Video & Audio",
+      "category": "Video & Audio"
     },
     {
       "id": "make",
-      "name": "Make"
+      "name": "Make",
+      "category": "Make"
     },
     {
       "id": "office",
-      "name": "Office"
+      "name": "Office",
+      "category": "Office"
     },
     {
       "id": "admin",
-      "name": "Admin"
+      "name": "Admin",
+      "category": "Admin"
     },
     {
       "id": "utilities",
-      "name": "Utilities"
+      "name": "Utilities",
+      "category": "Utilities"
     }
   ],
   "apps": [

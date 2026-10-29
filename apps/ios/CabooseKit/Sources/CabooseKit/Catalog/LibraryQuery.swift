@@ -1,25 +1,31 @@
 import Foundation
 
-/// What the Library asks the host's discover route for: a search within one category, or
-/// within all of them, a page at a time (docs/architecture.md, Catalog).
+/// What the Library asks the host's discover route for: a search within one category or one
+/// curated collection, or within all of them, a page at a time (docs/architecture.md, Catalog).
 public struct LibraryQuery: Hashable, Sendable {
     /// The search, without surrounding whitespace, so a trailing space asks nothing new.
     public let text: String
     /// One of the categories discover lists, or "" for every category.
     public let category: String
+    /// A curated collection's id, or "". A collection is browsed, never installed at once;
+    /// the host answers with its apps, then popular apps in its category.
+    public let collection: String
 
-    public init(text: String = "", category: String = "") {
+    public init(text: String = "", category: String = "", collection: String = "") {
         self.text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.category = category
+        // The host takes a collection or a category, not both; the collection wins.
+        self.category = collection.isEmpty ? category : ""
+        self.collection = collection
     }
 
-    /// The Library as it opens: no search and no category, where the collections show.
-    public var isUnfiltered: Bool { text.isEmpty && category.isEmpty }
+    /// The Library as it opens: no search, category or collection, where the collections show.
+    public var isUnfiltered: Bool { text.isEmpty && category.isEmpty && collection.isEmpty }
 
     /// The page of results that starts at `offset`, percent-encoded for the host client.
     public func path(offset: Int = 0) -> String {
         var items = ["q=" + Self.encode(text)]
         if !category.isEmpty { items.append("category=" + Self.encode(category)) }
+        if !collection.isEmpty { items.append("collection=" + Self.encode(collection)) }
         if offset > 0 { items.append("offset=\(offset)") }
         return "/v1/catalog/discover?" + items.joined(separator: "&")
     }

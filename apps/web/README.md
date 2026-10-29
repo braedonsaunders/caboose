@@ -42,7 +42,8 @@ tasks and choosing a default agent live in the app, and the console does not rep
     apps first and then Flathub's, each with its developer (and a mark for Flathub's
     verified publishers) and license. Search (after a 300 ms pause) and the category
     buttons narrow it; more results load as you scroll, or with **Show more**. With no
-    search or category, curated **Collections** come first, each with **Get pack**, then
+    search or category, curated **Collections** come first (choosing one browses its apps,
+    then popular apps in its category; each app installs on its own), then
     **Updates**: apps update on their own, and **Update now** installs a waiting version
     right away. Install, Retry, Update now and Remove need the computer running. Queued and
     running operations show their stage and progress, and failures show the installer's

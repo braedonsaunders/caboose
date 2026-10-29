@@ -14,9 +14,12 @@ export interface CatalogProgress {
   totalBytes?: number
 }
 
+/** A curated collection: browsed, never installed at once. */
 export interface CatalogPack {
   id: string
   name: string
+  /** The Library category whose popular apps follow the collection's own. */
+  category?: string
 }
 
 export interface CatalogSource {
@@ -81,6 +84,8 @@ export interface DiscoverQuery {
   q?: string
   /** One of `CatalogPage.categories`; empty for all. */
   category?: string
+  /** A curated collection's id, browsed in place of a category; never installed at once. */
+  collection?: string
   offset?: number
 }
 
@@ -142,10 +147,6 @@ export function packApps(catalog: CatalogResponse, packId: string): CatalogApp[]
   return catalog.apps.filter(app => app.packs.includes(packId))
 }
 
-/** A pack is worth offering while any of its apps is missing. */
-export function packMissing(catalog: CatalogResponse, packId: string): number {
-  return packApps(catalog, packId).filter(app => !app.installedVersion).length
-}
 
 /**
  * Library rows with the catalog's current state. `GET /v1/catalog` lists every app that is

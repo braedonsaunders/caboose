@@ -586,9 +586,10 @@ export class CabooseClient {
   }
 
   /** A page of the Library from the host's own index; it works while the computer is parked and never wakes it. */
-  discoverCatalog({ q = '', category = '', offset = 0 }: DiscoverQuery = {}): Promise<CatalogPage> {
+  discoverCatalog({ q = '', category = '', collection = '', offset = 0 }: DiscoverQuery = {}): Promise<CatalogPage> {
     const query = new URLSearchParams({ q: q.trim() })
-    if (category) query.set('category', category)
+    if (collection) query.set('collection', collection)
+    else if (category) query.set('category', category)
     if (offset > 0) query.set('offset', String(offset))
     return this.request<CatalogPage>('GET', `/v1/catalog/discover?${query}`, { timeoutMs: 60_000 })
   }
@@ -601,9 +602,6 @@ export class CabooseClient {
       : this.request<{ accepted: true }>('POST', `${app}/${operation}`, { timeoutMs: 30_000 })
   }
 
-  installPack(id: string): Promise<{ accepted: true }> {
-    return this.request<{ accepted: true }>('POST', `/v1/catalog/packs/${encodeURIComponent(id)}/install`, { timeoutMs: 30_000 })
-  }
 
   /** Lists a home-relative folder. Every /v1/fs request wakes a parked computer. */
   async listFiles(path: string): Promise<FileItem[]> {

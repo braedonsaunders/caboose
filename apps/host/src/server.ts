@@ -499,7 +499,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       const params = new URL(request.url ?? '/', 'http://localhost').searchParams
       const offset = params.get('offset') ?? '0'
       if (!/^\d{1,6}$/.test(offset)) throw new AgentInputError('Invalid offset')
-      return json(response, 200, await appCatalog.discover(params.get('q') ?? '', params.get('category') ?? '', Number(offset)))
+      return json(response, 200, await appCatalog.discover(params.get('q') ?? '', params.get('category') ?? '', Number(offset), params.get('collection') ?? ''))
     }
     if (request.method === 'GET' && path === '/v1/catalog') return json(response, 200, await appCatalog.list())
     const craftRun = /^\/v1\/catalog\/([^/]+)\/run$/.exec(path)
@@ -533,8 +533,6 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         })
       } finally { craftBusy--; craftJobs.delete(input.job) }
     }
-    const packInstall = /^\/v1\/catalog\/packs\/([^/]+)\/install$/.exec(path)
-    if (request.method === 'POST' && packInstall?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
     const appAction = /^\/v1\/catalog\/([^/]+)\/(install|update)$/.exec(path)
     if (request.method === 'POST' && appAction?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); await appCatalog.ready(); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update'); return json(response, 202, { accepted: true }) }
     const removeApp = /^\/v1\/catalog\/([^/]+)$/.exec(path)

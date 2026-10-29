@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  actionLabel, appActions, appendPage, catalogBusy, displayVersion, isPending, nextOffset, packApps, packMissing, progressSummary,
+  actionLabel, appActions, appendPage, catalogBusy, displayVersion, isPending, nextOffset, packApps, progressSummary,
   withLiveState, type CatalogApp, type CatalogResponse,
 } from './catalog.js'
 
@@ -52,14 +52,13 @@ describe('catalog', () => {
     expect(progressSummary({ id: 'a', operation: 'remove', phase: 'finished' })).toEqual({ label: 'Removed' })
   })
 
-  it('groups packs and counts what is missing', () => {
+  it('groups a collection\'s apps in catalog order', () => {
     const catalog: CatalogResponse = {
       packs: [{ id: 'studio', name: 'Studio' }, { id: 'office', name: 'Office' }],
       apps: [app('a', { installedVersion: '1' }), app('b'), app('c', { packs: ['office'] })],
     }
     expect(packApps(catalog, 'studio').map(entry => entry.id)).toEqual(['a', 'b'])
-    expect(packMissing(catalog, 'studio')).toBe(1)
-    expect(packMissing(catalog, 'office')).toBe(1)
+    expect(packApps(catalog, 'office').map(entry => entry.id)).toEqual(['c'])
   })
 
   it('trims Debian revisions from Debian versions only', () => {

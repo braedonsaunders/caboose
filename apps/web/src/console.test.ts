@@ -244,18 +244,18 @@ describe('host surfaces', () => {
     await client.startCatalogOperation('photocraft', 'update')
     await client.startCatalogOperation('flathub-org.mozilla.firefox', 'remove')
     await client.startCatalogOperation('flathub-org/odd id', 'install')
-    await client.installPack('creative-studio')
     await client.discoverCatalog()
     await client.discoverCatalog({ q: ' photo editor ', category: 'Video & Audio', offset: 40 })
+    await client.discoverCatalog({ collection: 'video-audio', category: 'Games' })
     expect(seen.map(entry => [entry.method, entry.url])).toEqual([
       ['GET', '/v1/catalog'],
       ['POST', '/v1/catalog/photocraft/install'],
       ['POST', '/v1/catalog/photocraft/update'],
       ['DELETE', '/v1/catalog/flathub-org.mozilla.firefox'],
       ['POST', '/v1/catalog/flathub-org%2Fodd%20id/install'],
-      ['POST', '/v1/catalog/packs/creative-studio/install'],
       ['GET', '/v1/catalog/discover?q='],
       ['GET', '/v1/catalog/discover?q=photo+editor&category=Video+%26+Audio&offset=40'],
+      ['GET', '/v1/catalog/discover?q=&collection=video-audio'],
     ])
   })
 

@@ -374,7 +374,8 @@ messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 
 The Library is one list of applications a computer can add. Caboose's curated entries
 (`guest/catalog/catalog.json`: Craft releases, Debian applications and the packs that group
-them) come first, then Flathub's desktop applications. A Flathub application that is also a
+them) come first, then Flathub's desktop applications. A pack is a collection to browse, never
+to install at once: every operation is on one application. A Flathub application that is also a
 curated entry (`flathub` in `catalog.json`) is shown once, as the curated entry.
 
 - **Flathub.** The host keeps its own index of Flathub's desktop applications for the
@@ -933,11 +934,10 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/catalog/discover?q=&category=&offset=` | The Library, ranked (§ Catalog), 40 at a time: `{ apps, total, offset, limit, categories, error }`. `category` is one of `categories` (Create, Video & Audio, Make, Office, Develop, Games, Internet, Learn, Science, Admin, Utilities). `error` explains a Flathub index that could not be fetched; curated entries are still listed. Never wakes the computer |
+| `GET` | `/v1/catalog/discover?q=&category=&collection=&offset=` | The Library, ranked (§ Catalog), 40 at a time: `{ apps, total, offset, limit, categories, error }`. `category` is one of `categories` (Create, Video & Audio, Make, Office, Develop, Games, Internet, Learn, Science, Admin, Utilities). `collection` (a pack id, in place of `category`) lists the pack's apps, then the popular apps of the pack's `category`. `error` explains a Flathub index that could not be fetched; curated entries are still listed. Never wakes the computer |
 | `GET` | `/v1/catalog` | `{ packs, apps }`: every curated entry and every other application that is installed, being changed or failed; an application this list leaves out is not installed. Each has `origin` (`caboose`, `flathub` or `debian`), `curated`, `categories`, `developer`, `verified`, `license`, `installs`, `installedVersion`, `latestVersion`, `updateAvailable`, `lastError`, `interrupted`, `active` (a guest operation runs), `iconData` and `progress` |
 | `POST` | `/v1/catalog/:id/install`, `/update` | Queue an operation → 202 `{ accepted: true }`. A Flathub id is `flathub-<app id>`, URL-encoded |
 | `DELETE` | `/v1/catalog/:id` | Queue removal → 202 |
-| `POST` | `/v1/catalog/packs/:id/install` | Queue every application in a pack → 202 |
 | `POST` | `/v1/catalog/:id/run` | **Wakes.** Run a Craft job (below) |
 
 Catalog mutations answer 409 while the computer is not running, another catalog operation

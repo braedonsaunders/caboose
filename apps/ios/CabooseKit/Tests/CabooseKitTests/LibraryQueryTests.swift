@@ -23,6 +23,13 @@ struct LibraryQueryTests {
         #expect(query.path() == "/v1/catalog/discover?q=&category=Games")
     }
 
+    @Test func aCollectionIsBrowsedInPlaceOfACategory() {
+        let query = LibraryQuery(category: "Games", collection: "video-audio")
+        #expect(!query.isUnfiltered)
+        #expect(query.category == "")
+        #expect(query.path() == "/v1/catalog/discover?q=&collection=video-audio")
+    }
+
     @Test func pagingStopsAtTheTotalOrAnEmptyPage() {
         #expect(LibraryQuery.nextOffset(after: 0, count: 40, total: 3300) == 40)
         #expect(LibraryQuery.nextOffset(after: 3280, count: 20, total: 3300) == nil)
