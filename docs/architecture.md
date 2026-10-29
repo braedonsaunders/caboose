@@ -2167,6 +2167,14 @@ waits, its bytes wait in its feed unacknowledged, and it plays when the first en
 
 ### Shell
 
+With the native vertical tab bar, Home's Ask field, the Agent composer and the tiled
+Desktop dock share a bottom baseline relative to the shell window's system safe area.
+The composer grows upward; showing the software keyboard restores its eight-point clearance.
+The phone keeps the last successful installed-app list and icons in a bounded, pairing-scoped
+cache. Home and the dock can draw while the host refreshes; a successful response replaces
+the cache, including an empty list. Sign-out removes that pairing's cache. Launches still
+resolve against the host's current installed apps.
+
 The app is a system tab view (SwiftUI `TabView` with `Tab`). Outside wide portrait Desktop,
 where the system draws a vertical bar, and on iPad, the tabs are the system's. On an iPhone whose bars are horizontal
 the system's tab bar is hidden and the tabs sit at the bottom right

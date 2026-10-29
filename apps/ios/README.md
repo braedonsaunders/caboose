@@ -508,6 +508,13 @@ keyboard, as the system's vertical bar does. Desktop keeps its navigation and do
 when a Linux app requests fullscreen; that app fills the workspace above the dock. Where the system
 draws its vertical bar (iPhone Duo, iOS 27.1), and on iPad, the system's tab bar is used,
 except wide portrait Desktop, whose controls and navigation share the compact dock-side panel.
+With the native vertical bar, Ask, the Agent composer and the tiled Desktop dock end on
+the same bottom baseline. Check all three tabs on the closed Duo and after rotation;
+show the keyboard in Agents and confirm the composer still clears it.
+The last installed-app response (including icons, at most 16 MiB) is cached per pairing.
+Relaunch the phone app after its first successful app scan: Home and the dock retain their
+icons while the host refreshes. Switching computers never displays another pairing's apps;
+signing out removes its cache. Removed apps disappear on the next successful refresh.
 
 ## Computer settings
 

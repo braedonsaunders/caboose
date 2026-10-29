@@ -268,6 +268,7 @@ extension EnvironmentValues {
     @Entry var portraitDesktopChrome = false
     @Entry var shellWallpaperWidth: CGFloat = 0
     @Entry var shellBottomInset: CGFloat = 0
+    @Entry var shellHasVerticalBar = false
     /// Where the shell's tabs sit, so a tab can place its own bottom control beside them.
     @Entry var shellTabPlacement: HomeToday.TabPlacement = .system
 }
@@ -281,7 +282,21 @@ struct ShellRailActionsKey: PreferenceKey {
 }
 
 extension View {
+    func shellComposerBottomPadding() -> some View {
+        modifier(ShellComposerBottomPadding())
+    }
+
     func shellRailActions<Actions: View>(@ViewBuilder _ actions: () -> Actions) -> some View {
         preference(key: ShellRailActionsKey.self, value: AnyView(actions()))
+    }
+}
+
+private struct ShellComposerBottomPadding: ViewModifier {
+    @Environment(\.shellHasVerticalBar) private var verticalBar
+    private var keyboard = SoftwareKeyboard.shared
+
+    func body(content: Content) -> some View {
+        content.padding(.bottom, DesktopChrome.composerBottomPadding(
+            verticalBar: verticalBar, keyboardVisible: keyboard.visible))
     }
 }
