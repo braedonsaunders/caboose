@@ -37,6 +37,7 @@ describe('computer backups', () => {
       pending = undefined
       restarts.push({ ...replacement, content: await readFile(replacement.image) })
     },
+    checkDisk: async () => {},
     replaceDisk: replacement => { pending = replacement },
   }
 
@@ -63,6 +64,7 @@ describe('computer backups', () => {
     disk = Buffer.concat([chunk(1), chunk('random'), chunk(0), chunk(4), chunk('random')])
     await mkdir(join(root, 'images'))
     await writeFile(join(root, 'images', 'base.raw'), base)
+    for (const name of ['vmlinux', 'initrd']) await writeFile(join(root, 'images', name), name)
     await mkdir(join(root, 'overlays'))
     await writeFile(join(root, 'overlays', 'view.raw'), disk)
     binding = null
@@ -99,7 +101,7 @@ describe('computer backups', () => {
     expect((await request('GET', '/v1/backup')).body).toMatchObject({ available: true, enabled: false, capture: null })
     expect((await request('PUT', '/v1/backup/device', { enabled: true })).body).toMatchObject({ enabled: true, devices: [{ id: 'phone-1', name: 'iPhone', lastCompletedAt: null }] })
     const capture = await waitForCapture()
-    expect(capture).toMatchObject({ diskBytes: 5 * MiB, chunkBytes: MiB, dataChunks: 2, dataBytes: 2 * MiB, image: { baseSha256: createHash('sha256').update(base).digest('hex'), system: null } })
+    expect(capture).toMatchObject({ diskBytes: 5 * MiB, chunkBytes: MiB, dataChunks: 2, dataBytes: 2 * MiB, image: { baseSha256: createHash('sha256').update(base).digest('hex'), vmlinux: createHash('sha256').update('vmlinux').digest('hex'), initrd: createHash('sha256').update('initrd').digest('hex'), systemErofs: null } })
     const { body } = await request('GET', `/v1/backup/captures/${capture.id}`)
     expect(body.manifest.chunks).toEqual([{ base: 1 }, createHash('sha256').update(disk.subarray(MiB, 2 * MiB)).digest('hex'), { zero: 1 }, { base: 1 }, createHash('sha256').update(disk.subarray(4 * MiB)).digest('hex')])
   })
@@ -160,20 +162,20 @@ describe('computer backups', () => {
 
   it('refuses a backup made with an image this host does not have', async () => {
     const manifest = { version: 1, diskBytes: MiB, chunkBytes: MiB, baseSha256: 'a'.repeat(64), chunks: [{ base: 1 }] }
-    const response = await request('POST', '/v1/backup/restores', { image: { baseSha256: 'a'.repeat(64), system: null }, manifest })
+    const response = await request('POST', '/v1/backup/restores', { image: { baseSha256: 'a'.repeat(64), vmlinux: 'b'.repeat(64), initrd: 'c'.repeat(64), systemErofs: null }, manifest })
     expect(response.status).toBe(409)
     expect(response.body.error).toMatch(/needs the computer image it was made with/)
   })
 
   it('a split-image backup restores only onto the same kernel, initramfs and system image', async () => {
-    for (const name of ['vmlinux', 'initrd', 'system.erofs']) await writeFile(join(root, 'images', name), name)
+    await writeFile(join(root, 'images', 'system.erofs'), 'system.erofs')
     const hash = (data: Buffer | string) => createHash('sha256').update(data).digest('hex')
     binding = { version: 1, directory: join(root, 'images'), hashes: { 'base.raw': hash(base), vmlinux: hash('vmlinux'), initrd: hash('initrd'), 'system.erofs': hash('system.erofs') } }
     await request('PUT', '/v1/backup/device', { enabled: true })
     const capture = await waitForCapture()
-    expect(capture.image.system).toEqual({ vmlinux: hash('vmlinux'), initrd: hash('initrd'), 'system.erofs': hash('system.erofs') })
+    expect(capture.image).toMatchObject({ vmlinux: hash('vmlinux'), initrd: hash('initrd'), systemErofs: hash('system.erofs') })
     const { manifest, info } = (await request('GET', `/v1/backup/captures/${capture.id}`)).body
-    const other = await request('POST', '/v1/backup/restores', { image: { ...info.image, system: { ...info.image.system, vmlinux: 'b'.repeat(64) } }, manifest })
+    const other = await request('POST', '/v1/backup/restores', { image: { ...info.image, vmlinux: 'b'.repeat(64) }, manifest })
     expect(other.status).toBe(409)
     const begun = await request('POST', '/v1/backup/restores', { image: info.image, manifest })
     await request('POST', `/v1/backup/restores/${begun.body.id}/apply`, { confirm: true })

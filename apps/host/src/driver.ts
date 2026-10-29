@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { constants, createReadStream, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { access, mkdir, open, readFile, rename, rm } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { access, mkdir, readFile, rm } from 'node:fs/promises'
+import { join } from 'node:path'
 import * as deskApi from '@braedonsaunders/appkit-desk'
 import { templateFork } from './template-fork.js'
 import { readBundle } from './components.js'
@@ -14,7 +14,8 @@ import { TERMINAL_PORT } from './terminal.js'
 import { configureGuest, ensureNetwork, invalidateNetwork, networkSlot, removeNetwork } from './network.js'
 import type { App, Controller, Session } from './server.js'
 import { guestLaunch } from './guest-apps.js'
-import { selectSystemImage, usesSystemImage, type SystemImageBinding } from './system-image.js'
+import { selectSystemImage, usesSystemImage } from './system-image.js'
+import { assertRestorable, discardRestoredDisk, installRestoredDisk, recoverRestoredDisk, type RestoredDisk } from './restore-journal.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
 import { ownerScopeCommand } from './owner-scope.js'
 import { ParkedFilesJournal } from './parked-files-journal.js'
@@ -173,8 +174,9 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     }
     throw new Error('Computer has an unfinished disk migration')
   }
-  /** A restored disk to install at the next restart (phone backups). */
-  let replacement: { image: string; binding: SystemImageBinding | null } | undefined
+  /** A restored disk to install at the next restart (phone backups), journaled beside the disk. */
+  let replacement: RestoredDisk | undefined
+  const restorePaths = () => ({ disk: overlayPath, binding: bindingPath, journal: join(config.imageRoot, 'overlays', `${id}.restore.json`), ...(paths.template ? { template: { initialized: existsSync(initializedPath) } } : {}) })
   let resources: ComputerResources | null = null
   try {
     const saved = JSON.parse(readFileSync(resourcesPath, 'utf8')) as ComputerResources
@@ -246,6 +248,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     lastError: () => restartWarning,
     async wake(mode = 'interactive'): Promise<Session> {
       assertNoMigration()
+      await recoverRestoredDisk(restorePaths())
       await parkedFilesStore.invalidate()
       const desired = settings()
       if (paths.template && config.vmRestoreMode === 'ondemand') throw new Error('Template computers cannot use on-demand restore')
@@ -382,12 +385,14 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         throw new Error(host.stats().lastError ?? 'Memory snapshot was not created')
       }
     },
+    checkDiskReplacement: next => assertRestorable(restorePaths(), next),
     replaceDiskOnRestart(next) { replacement = next },
     async restart() {
       // Taken now, so a restart that fails before installing it never installs it later.
       const restored = replacement
       replacement = undefined
       assertNoMigration()
+      await recoverRestoredDisk(restorePaths())
       await parkedFilesStore.invalidate()
       if (!nativeMac) invalidateNetwork(slot)
       restartWarning = null
@@ -413,22 +418,14 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       // A computer parked before this host process started is unknown to appkit-desk,
       // so its snapshot is removed here too.
       await rm(snapshotPath, { recursive: true, force: true })
-      if (restored) {
-        // Assembled beside the disk, on the same filesystem: the rename is atomic.
-        await rename(restored.image, overlayPath)
-        if (restored.binding) await writePrivateJson(bindingPath, restored.binding)
-        else await rm(bindingPath, { force: true })
-        for (const directory of new Set([dirname(overlayPath), dirname(bindingPath)])) {
-          const handle = await open(directory, 'r')
-          try { await handle.sync() } finally { await handle.close() }
-        }
-      }
+      if (restored) await installRestoredDisk(restorePaths(), restored)
       resources = null
       return controller.wake()
     },
     /** Deletes the computer: its memory, snapshot and disk, and its network. Nothing of it is kept. */
     async destroy() {
       assertNoMigration()
+      await discardRestoredDisk(restorePaths())
       await parkedFilesStore.invalidate()
       clearHeartbeat()
       await closeRelays()

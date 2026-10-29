@@ -32,10 +32,12 @@ const PACK_CHUNKS = 32
 const PACK_TTL_MS = 3 * 24 * 3_600_000
 const RESTORE_TTL_MS = 24 * 3_600_000
 const MAX_UPLOAD_BYTES = 256 * 1024 * 1024
-const SYSTEM_FILES = ['vmlinux', 'initrd', 'system.erofs'] as const
-
-/** What a disk needs to boot: the base its unchanged chunks come from, and for a split image its kernel, initramfs and system image. */
-export interface BackupImage { baseSha256: string; system: Record<typeof SYSTEM_FILES[number], string> | null }
+/**
+ * What a disk needs to boot: the base its unchanged chunks come from, the kernel and initramfs
+ * it starts with, and for a split image its read-only system image (null for a disk that holds
+ * its whole system).
+ */
+export interface BackupImage { baseSha256: string; vmlinux: string; initrd: string; systemErofs: string | null }
 export interface CaptureInfo { id: string; createdAt: string; diskBytes: number; chunkBytes: number; dataChunks: number; dataBytes: number; image: BackupImage }
 interface CaptureRecord { version: 1; info: CaptureInfo; manifest: DiskManifest }
 interface DeviceRecord { enabledAt: string; lastCompletedAt: string | null; lastCaptureId: string | null }
@@ -77,7 +79,9 @@ const reflink = (from: string, to: string) => copyFile(from, to, constants.COPYF
 export interface RestoreContext {
   /** Run a confirmed restart; `stage` runs inside it, after sockets close and before the computer stops. */
   restart(stage: () => Promise<void>): Promise<unknown>
-  /** Install `image` as the disk (and `binding` as its image) during the next restart. */
+  /** Refuse a disk the computer cannot boot (wrong image, or not yet initialized), before anything changes. */
+  checkDisk(replacement: { image: string; binding: SystemImageBinding | null }): Promise<void>
+  /** Install `image` as the disk (and `binding` as its image), journaled, during the next restart. */
   replaceDisk(replacement: { image: string; binding: SystemImageBinding | null }): void
 }
 
@@ -140,12 +144,8 @@ async function syncDirectory(path: string): Promise<void> {
 
 function validImage(value: unknown): BackupImage {
   const image = value as BackupImage
-  if (!image || typeof image !== 'object' || typeof image.baseSha256 !== 'string' || !HASH.test(image.baseSha256)) throw new SettingsInputError('Invalid backup image')
-  if (image.system !== null) {
-    if (!image.system || typeof image.system !== 'object' || SYSTEM_FILES.some(file => !HASH.test(String(image.system![file])))) throw new SettingsInputError('Invalid backup image')
-    return { baseSha256: image.baseSha256, system: { vmlinux: image.system.vmlinux, initrd: image.system.initrd, 'system.erofs': image.system['system.erofs'] } }
-  }
-  return { baseSha256: image.baseSha256, system: null }
+  if (!image || typeof image !== 'object' || [image.baseSha256, image.vmlinux, image.initrd].some(hash => typeof hash !== 'string' || !HASH.test(hash)) || (image.systemErofs !== null && (typeof image.systemErofs !== 'string' || !HASH.test(image.systemErofs)))) throw new SettingsInputError('Invalid backup image')
+  return { baseSha256: image.baseSha256, vmlinux: image.vmlinux, initrd: image.initrd, systemErofs: image.systemErofs }
 }
 
 async function readBody(request: IncomingMessage, limit: number): Promise<Buffer> {
@@ -304,11 +304,13 @@ export class ComputerBackups {
       const base = binding ? join(binding.directory, 'base.raw') : join(this.host.imageRoot, 'base.raw')
       const manifest = await serially(() => diskManifest(this.host.helper, partial, { path: base, cache: this.host.cacheDirectory }, { signal: this.closing.signal }))
       if (!manifest.baseSha256) throw new Error('The capture has no base image')
-      const system = binding ? { vmlinux: binding.hashes.vmlinux, initrd: binding.hashes.initrd, 'system.erofs': binding.hashes['system.erofs'] } : null
+      const boot = binding
+        ? { vmlinux: binding.hashes.vmlinux, initrd: binding.hashes.initrd, systemErofs: binding.hashes['system.erofs'] }
+        : { vmlinux: await fileSha256(join(this.host.imageRoot, 'vmlinux')), initrd: await fileSha256(join(this.host.imageRoot, 'initrd')), systemErofs: null }
       const chunks = expandChunks(manifest)
       const data = chunks.map((chunk, index) => [chunk, index] as const).filter(([chunk]) => chunk !== 'zero' && chunk !== 'base')
       const info: CaptureInfo = { id, createdAt: new Date(this.now).toISOString(), diskBytes: manifest.diskBytes, chunkBytes: manifest.chunkBytes,
-        dataChunks: data.length, dataBytes: data.reduce((sum, [, index]) => sum + chunkRange(manifest, index)[1], 0), image: { baseSha256: manifest.baseSha256, system } }
+        dataChunks: data.length, dataBytes: data.reduce((sum, [, index]) => sum + chunkRange(manifest, index)[1], 0), image: { baseSha256: manifest.baseSha256, ...boot } }
       await rename(partial, this.path('captures', `${id}.raw`))
       await writePrivateJson(this.path('captures', `${id}.json`), { version: 1, info, manifest } satisfies CaptureRecord)
       await syncDirectory(this.path('captures'))
@@ -399,19 +401,21 @@ export class ComputerBackups {
 
   /** A directory on this host holding exactly the image the backup was made with. */
   private async restoreTarget(image: BackupImage): Promise<{ base: string; binding: SystemImageBinding | null }> {
-    const baseMatches = async (base: string) => (await baseHash(this.host.helper, base, this.host.cacheDirectory).catch(() => null))?.sha256 === image.baseSha256
-    if (!image.system) {
-      const base = join(this.host.imageRoot, 'base.raw')
-      if (await baseMatches(base)) return { base, binding: null }
+    const matches = async (directory: string) => {
+      const files: Array<[string, string | null]> = [['vmlinux', image.vmlinux], ['initrd', image.initrd], ['system.erofs', image.systemErofs]]
+      for (const [file, expected] of files) {
+        if (expected === null) continue
+        if (await fileSha256(join(directory, file)).catch(() => null) !== expected) return false
+      }
+      return (await baseHash(this.host.helper, join(directory, 'base.raw'), this.host.cacheDirectory).catch(() => null))?.sha256 === image.baseSha256
+    }
+    if (!image.systemErofs) {
+      if (await matches(this.host.imageRoot)) return { base: join(this.host.imageRoot, 'base.raw'), binding: null }
     } else {
       const current = await this.computer.binding()
-      const candidates = [...new Set([current?.directory, this.host.splitImage].filter((value): value is string => Boolean(value)))]
-      for (const directory of candidates) {
-        const hashes = current?.directory === directory ? current.hashes : undefined
-        const matches = async (file: typeof SYSTEM_FILES[number], expected: string) =>
-          (hashes ? hashes[file] : await fileSha256(join(directory, file)).catch(() => null)) === expected
-        if (await baseMatches(join(directory, 'base.raw')) && (await Promise.all(SYSTEM_FILES.map(file => matches(file, image.system![file])))).every(Boolean)) {
-          return { base: join(directory, 'base.raw'), binding: { version: 1, directory, hashes: { 'base.raw': image.baseSha256, ...image.system } } }
+      for (const directory of new Set([current?.directory, this.host.splitImage].filter((value): value is string => Boolean(value)))) {
+        if (await matches(directory)) {
+          return { base: join(directory, 'base.raw'), binding: { version: 1, directory, hashes: { 'base.raw': image.baseSha256, vmlinux: image.vmlinux, initrd: image.initrd, 'system.erofs': image.systemErofs } } }
         }
       }
     }
@@ -534,6 +538,7 @@ export class ComputerBackups {
       const rebuilt = await serially(() => diskManifest(this.host.helper, disk, { path: target.base, cache: this.host.cacheDirectory }, { chunkBytes: state.manifest.chunkBytes }))
       const expected = chunks, actual = expandChunks(rebuilt)
       if (rebuilt.diskBytes !== state.manifest.diskBytes || actual.length !== expected.length || actual.some((chunk: Chunk, at) => chunk !== expected[at])) throw new Error('The rebuilt disk does not match the backup')
+      await context.checkDisk({ image: disk, binding: target.binding })
       await context.restart(async () => context.replaceDisk({ image: disk, binding: target.binding }))
       await rm(directory, { recursive: true, force: true })
     } finally { this.restoring = false }

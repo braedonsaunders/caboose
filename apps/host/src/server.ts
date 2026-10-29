@@ -44,7 +44,7 @@ import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
 import type { ComputerStorage } from './storage.js'
 import type { SharedStorageStatus } from './shared-storage.js'
-import type { SystemImageBinding } from './system-image.js'
+import type { RestoredDisk } from './restore-journal.js'
 import { ReachUnavailableError, type ReachService } from './reach.js'
 import { DesktopNotifications } from './desktop-notifications.js'
 import type { PushService } from './push.js'
@@ -84,8 +84,10 @@ export interface Controller extends ComputerDriver<Session> {
   lastError?(): string | null
   /** Deletes the computer and its disk; only when the computer itself is deleted. */
   destroy?(): Promise<void>
-  /** Install a restored disk (and its image binding) during the next restart. */
-  replaceDiskOnRestart?(replacement: { image: string; binding: SystemImageBinding | null }): void
+  /** Refuse a restored disk this computer cannot boot, before anything changes. */
+  checkDiskReplacement?(replacement: RestoredDisk): Promise<void>
+  /** Install a restored disk (and its image binding), journaled, during the next restart. */
+  replaceDiskOnRestart?(replacement: RestoredDisk): void
 }
 
 /** Body limits: base64 inflates by a third, plus room for the JSON around it. */
@@ -602,10 +604,11 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       if (!pieces.storage) return json(response, 404, { error: 'This computer cannot be backed up to a phone' })
       return pieces.storage.backups(request, response, path, principal, {
         restart: confirmedRestart,
-        replaceDisk: replacement => {
-          if (!controller.replaceDiskOnRestart) throw new ComputerConflictError('This computer cannot be restored')
-          controller.replaceDiskOnRestart(replacement)
+        checkDisk: async replacement => {
+          if (!controller.checkDiskReplacement || !controller.replaceDiskOnRestart) throw new ComputerConflictError('This computer cannot be restored')
+          await controller.checkDiskReplacement(replacement).catch(error => { throw new ComputerConflictError(error instanceof Error ? error.message : String(error)) })
         },
+        replaceDisk: replacement => controller.replaceDiskOnRestart!(replacement),
       })
     }
     if (request.method === 'POST' && path === '/v1/session') {
