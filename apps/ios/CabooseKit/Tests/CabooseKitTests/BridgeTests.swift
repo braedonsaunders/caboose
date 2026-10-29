@@ -155,20 +155,24 @@ private func request(_ overrides: [String: Any] = [:]) throws -> BridgeRequest {
     }
 }
 
+private func admit(_ throttle: inout LocationThrottle, _ fix: LocationThrottle.Fix, at now: Double) -> Bool {
+    throttle.admit(fix, at: now)
+}
+
 @Suite struct LocationThrottleTests {
     @Test func admitsAtMostEveryFiveSecondsAndOnlyMeaningfulMoves() {
         var throttle = LocationThrottle()
         let here = LocationThrottle.Fix(latitude: 43.6532, longitude: -79.3832, accuracy: 20)
         let near = LocationThrottle.Fix(latitude: 43.65321, longitude: -79.3832, accuracy: 20)
         let far = LocationThrottle.Fix(latitude: 43.6600, longitude: -79.3832, accuracy: 20)
-        #expect(throttle.admit(here, at: 0))
-        #expect(!throttle.admit(far, at: 3))
-        #expect(!throttle.admit(near, at: 10))
-        #expect(throttle.admit(far, at: 10))
-        #expect(throttle.admit(far, at: 71))
-        #expect(!throttle.admit(.init(latitude: 91, longitude: 0, accuracy: 1), at: 200))
+        #expect(admit(&throttle, here, at: 0) == true)
+        #expect(admit(&throttle, far, at: 3) == false)
+        #expect(admit(&throttle, near, at: 10) == false)
+        #expect(admit(&throttle, far, at: 10) == true)
+        #expect(admit(&throttle, far, at: 71) == true)
+        #expect(admit(&throttle, .init(latitude: 91, longitude: 0, accuracy: 1), at: 200) == false)
         throttle.reset()
-        #expect(throttle.admit(here, at: 72))
+        #expect(admit(&throttle, here, at: 72) == true)
         #expect(abs(LocationThrottle.distance(here, far) - 753) < 5)
     }
 }
