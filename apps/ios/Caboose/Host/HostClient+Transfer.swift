@@ -22,10 +22,10 @@ extension HostClient {
         var request = URLRequest(url: components.url!, timeoutInterval: 120)
         request.httpMethod = "PUT"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let data: Data, response: URLResponse
-        do { (data, response) = try await URLSession.shared.upload(for: request, fromFile: file) }
+        let data: Data, status: Int
+        do { (data, status) = try await BoundedTransfer.upload(request, fromFile: file) }
+        catch BoundedTransfer.Failure.redirected { throw Failure.unreachable("The host redirected the upload; it was not sent.") }
         catch { throw Failure.unreachable(error.localizedDescription) }
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         switch status {
         case 201:
             guard let uploaded = try? JSONDecoder().decode(Uploaded.self, from: data),
@@ -49,7 +49,7 @@ extension HostClient {
         var request = URLRequest(url: components.url!, timeoutInterval: 30)
         request.httpMethod = "DELETE"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        _ = try? await URLSession.shared.data(for: request)
+        _ = try? await BoundedTransfer.fetch(request)
     }
 
     /// Downloads a home file to disk (never into memory), refusing more than `limit` bytes.
@@ -65,26 +65,20 @@ extension HostClient {
         struct Item: Decodable { var kind: String; var size: Int64 }
         let name = (relative as NSString).lastPathComponent
         let stat: Data
-        do { stat = try await URLSession.shared.data(for: fsRequest("stat")).0 }
+        do { stat = try await BoundedTransfer.fetch(fsRequest("stat")).0 }
         catch { throw Failure.unreachable(error.localizedDescription) }
         guard let item = try? JSONDecoder().decode(Item.self, from: stat), item.kind == "file" else {
             throw Failure.server(0, "\(name) is not a file the computer can share.")
         }
         guard item.size <= limit else { throw Failure.server(0, "\(name) is too large to copy to iPhone.") }
-        let request = fsRequest("content")
-        let (file, response): (URL, URLResponse)
-        do { (file, response) = try await URLSession.shared.download(for: request) }
-        catch { throw Failure.unreachable(error.localizedDescription) }
-        defer { try? FileManager.default.removeItem(at: file) }
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw Failure.server((response as? HTTPURLResponse)?.statusCode ?? 0, "Could not copy \(name) from the computer.")
-        }
-        let size = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? .max
-        guard size <= limit, http.expectedContentLength < 0 || http.expectedContentLength == size else {
-            throw Failure.server(http.statusCode, "\(name) is too large to copy to iPhone.")
-        }
+        // The file can change after the stat: the download itself stops at the limit.
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(name)
-        try FileManager.default.moveItem(at: file, to: destination)
+        do { _ = try await BoundedTransfer.download(fsRequest("content"), to: destination, limit: limit) }
+        catch BoundedTransfer.Failure.tooLarge { throw Failure.server(0, "\(name) is too large to copy to iPhone.") }
+        catch BoundedTransfer.Failure.redirected { throw Failure.unreachable("The host redirected the download; it was refused.") }
+        catch BoundedTransfer.Failure.status(let status) { throw Failure.server(status, "Could not copy \(name) from the computer.") }
+        catch { throw Failure.unreachable(error.localizedDescription) }
         return destination
     }
 
