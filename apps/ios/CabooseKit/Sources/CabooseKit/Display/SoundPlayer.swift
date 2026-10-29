@@ -89,6 +89,7 @@ final class SoundPlayer: @unchecked Sendable {
     }) {
         self.clock = clock
         self.activate = activate
+        renderer.audioTimePitchAlgorithm = .timeDomain
         clock.add(renderer)
         #if os(iOS)
         interruptionObserver = NotificationCenter.default.addObserver(
@@ -157,7 +158,7 @@ final class SoundPlayer: @unchecked Sendable {
                 }
                 played += 1
                 if arrived - reportsAt >= 5 {
-                    log.notice("display audio packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(self.clock.delay) frames=\(self.frameMin)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(self.renderer.status.rawValue) regressions=\(self.timestampRegressions)")
+                    log.notice("display audio packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(self.clock.delay) frames=\(self.frameMin)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(self.renderer.status.rawValue) rate=\(self.clock.rate) regressions=\(self.timestampRegressions)")
                     reportsAt = arrived
                     frameMin = Int.max; frameMax = 0; arrivalMax = 0
                 }

@@ -176,8 +176,9 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`. Playback uses
   an explicit monotonic host/server anchor, with decoded sample durations keeping nearby
   packets contiguous despite capture-timestamp jitter. Gaps over 200 ms reanchor to the
-  server. Playback starts 40 ms behind the first packet; a late packet adds 20 ms (up to
-  200 ms) and a backlog is dropped. Interruptions reset the anchor. The display closes
+  server. Playback starts 120 ms behind the first packet; a late packet adds 20 ms (up to
+  240 ms). A rolling sample-clock estimate adjusts playback speed with pitch preservation;
+  drift does not flush queued sound. A backlog beyond another 300 ms is dropped. Interruptions reset the anchor. The display closes
   when the app goes to the background, and the sound with it.
 - **One device at a time.** The computer's display shows on one device. When another takes
   it, this one gets `bye { reason: "replaced" }`, says it is showing on another device, and

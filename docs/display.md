@@ -325,6 +325,12 @@ computer encodes video into the same window picture as its controls and returns 
 passthrough streams to server decoding. The layered-video client remains explicitly
 negotiated for protocol checks. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
+The phone estimates the source sample-clock rate over a bounded rolling arrival window,
+then adjusts playback continuously with pitch preservation. This accommodates virtual
+machines whose clocks run at a different rate without repeatedly discarding sound.
+The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
+only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
+playback resets the clock and estimator.
 
 
 A video stream is layered into a window (`window`) by the client: it decodes it with its
