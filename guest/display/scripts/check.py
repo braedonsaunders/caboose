@@ -242,10 +242,14 @@ def check_popup():
         main = [w for w in r["windows"] if w["kind"] == "toplevel"]
         if not popups or not main or popups[0]["parent"] != main[0]["id"]:
             raise Failed(f"expected a popup parented to the page: {r['windows']}")
-        g = popups[0]["geometry"]
-        if popups[0]["frames"] < 1:
-            raise Failed("the popup was never streamed")
-        return f"<select> list is its own popup window, parent {main[0]['id']}, at {g} relative to it"
+        p, g = popups[0], popups[0]["geometry"]
+        # A popup keeps its alpha: announced with alpha, sent only as tiles, never a frame.
+        if not p["alpha"] or main[0]["alpha"]:
+            raise Failed(f"popup alpha {p['alpha']}, toplevel alpha {main[0]['alpha']}")
+        if p["tiles"] < 1 or p["frames"] != 0:
+            raise Failed(f"the popup was streamed as {p['tiles']} tiles and {p['frames']} frames")
+        return (f"<select> list is its own popup window, parent {main[0]['id']}, at {g} relative to it, "
+                f"with alpha, as {p['tiles']} tiles and no frame")
     return with_server(CHROMIUM + ["--window-size=900,400", f"--app={PAGES}/popup.html"], run)
 
 
