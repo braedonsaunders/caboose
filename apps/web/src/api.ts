@@ -1,4 +1,4 @@
-import type { CatalogOperation, CatalogPage, CatalogResponse, DiscoverQuery } from './catalog.js'
+import type { CatalogOperation, CatalogPage, CatalogResponse, CatalogStorefront, DiscoverQuery } from './catalog.js'
 import { fsQuery, joinPath, numberedName, type FileItem } from './files.js'
 import type { ComponentsUpgrade, HealthStatus, HostInfo } from './host.js'
 
@@ -586,10 +586,14 @@ export class CabooseClient {
   }
 
   /** A page of the Library from the host's own index; it works while the computer is parked and never wakes it. */
-  discoverCatalog({ q = '', category = '', collection = '', offset = 0 }: DiscoverQuery = {}): Promise<CatalogPage> {
+  /** The Library's front page: shelves of apps, from the host's own index; never wakes the computer. */
+  catalogStorefront(): Promise<CatalogStorefront> {
+    return this.request<CatalogStorefront>('GET', '/v1/catalog/storefront', { timeoutMs: 60_000 })
+  }
+
+  discoverCatalog({ q = '', category = '', offset = 0 }: DiscoverQuery = {}): Promise<CatalogPage> {
     const query = new URLSearchParams({ q: q.trim() })
-    if (collection) query.set('collection', collection)
-    else if (category) query.set('category', category)
+    if (category) query.set('category', category)
     if (offset > 0) query.set('offset', String(offset))
     return this.request<CatalogPage>('GET', `/v1/catalog/discover?${query}`, { timeoutMs: 60_000 })
   }

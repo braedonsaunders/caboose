@@ -7,13 +7,13 @@ updates and removes them inside the computer (see [`apps/host`](../../apps/host/
 
 | File | What |
 | --- | --- |
-| `catalog.json` | The packs and apps. |
+| `catalog.json` | The curated apps. |
 | `schema.json` | A JSON Schema describing `catalog.json`. |
 | `icons/` | Each app's 128-pixel icon (`<id>.png`) and its licence files. |
 | `extract-icons.sh` | Regenerates the Debian apps' icons from their packages. |
 
-Each app has an `id`, `name`, `summary`, `category` (a Library category), the `packs` it belongs
-to, an `icon` name (the `Icon` key of its desktop entry), its `desktopId`, and `fileTypes`
+Each app has an `id`, `name`, `summary`, `category` (one of the Library's categories), an
+`icon` name (the `Icon` key of its desktop entry), its `desktopId`, and `fileTypes`
 (`extensions` and iOS `utTypes`) for opening documents in place. Craft apps also name their
 `cli` and `mcp` commands, which Craft jobs and agent tasks use. A Debian app names the Flathub
 application it also is in `flathub`, so the Library shows it once. An app's `source` is either:
@@ -25,8 +25,8 @@ application it also is in `flathub`, so the Library shows it once. An app's `sou
   The host offers a release only when GitHub publishes the asset's SHA-256; the guest downloads
   it and checks its size and SHA-256 before APT runs.
 
-The host validates identifiers, pack membership, aliases and every package source when it
-loads the catalog and rejects anything else.
+The host validates identifiers, categories, aliases and every package source when it loads the
+catalog and rejects anything else.
 
 Debian package names and desktop ids are checked against the Debian 13 amd64 and all-arch
 package indexes; Craft desktop ids and file associations against the release desktop files

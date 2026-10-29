@@ -366,16 +366,16 @@ queue times, send backlog, typing echo). A figure without a sample shows a dash.
 computer's state and offers Turn On, Park and Restart as they apply. Both use the host's
 management API (`docs/architecture.md`) and follow `computer.settings` events on the control
 socket. The Apps tab's Shelf offers Caboose's curated applications to get; apps installed from
-anywhere join the rest of the computer's apps above it. **Library** is one list of every app
-the computer can add: Caboose's curated apps first, then Flathub's desktop apps, each with
-the same row (developer, a seal for Flathub's verified publishers, license) and the same Get,
-progress, Retry, Open and Remove. Search (after a 300 ms pause) and the row of category
-chips narrow it, and more results load as you scroll. Curated collections lead the
-unfiltered list; choosing one browses its apps, then popular apps in its category, each
-installed on its own. Nothing installs more than the one app chosen. Apps update on their own; an app with a newer
-version waiting is listed under Updates with Update Now. The list comes from the host's own
-index, so it works while the computer is parked and never wakes it; getting, updating and
-removing an app need the computer running, and the host's reason shows when it is not.
+anywhere join the rest of the computer's apps above it. **Library** is every app the computer can add. Its front page is shelves of icons: Popular,
+then one per category, Caboose's curated apps among them, each with Get, its progress, Retry or
+Open. See All lists a shelf's whole category, and Search (after a 300 ms pause) lists matches
+across everything; those lists show each app's developer (with a seal for Flathub's verified
+publishers) and license, and load more as you scroll. Each app installs on its own. Apps update
+on their own; an app with a newer version waiting is listed under Updates with Update Now. An
+app this computer cannot install says why (a container computer made before Flatpak support
+must be recreated). The Library comes from the host's own index, so it works while the computer
+is parked and never wakes it; getting, updating and removing an app need the computer running,
+and the host's reason shows when it is not.
 
 The wallpaper lies behind every tab and the desktop, here and on a TV: the brand gradient,
 wallpapers that change every quarter hour, one wallpaper, or a picture of your own from

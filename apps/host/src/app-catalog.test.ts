@@ -175,32 +175,29 @@ it('rehydrates stored applications before listing and accepting operations after
 })
 
 describe('Flathub in the Library', () => {
-  async function library(options: { depot?: boolean; environment?: Record<string, unknown> } = {}) {
+  async function library(options: { environment?: Record<string, unknown> } = {}) {
     const { mkdtempSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path')
     const { FlathubIndex } = await import('./flathub.js'), { hit } = await import('./flathub.test.js')
     const hits = [hit('org.gimp.GIMP', { name: 'GIMP', installs_last_month: 900 }), hit('org.mozilla.firefox', { name: 'Firefox', main_categories: 'network', installs_last_month: 800 }),
       ...Array.from({ length: 120 }, (_, i) => hit(`org.example.Paint${i}`, { name: `Paint ${i}`, installs_last_month: i }))]
-    const fetcher = vi.fn(async (url: string) => url.endsWith('.png') ? { ok: false, status: 404, json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) }
-      : { ok: true, status: 200, json: async () => ({ hits, totalPages: 1 }), arrayBuffer: async () => new ArrayBuffer(0) })
+    const fetcher = vi.fn(async (url: string) => url.endsWith('.png') ? new Response(null, { status: 404 }) : new Response(JSON.stringify({ hits, totalPages: 1 })))
     const flathub = new FlathubIndex(mkdtempSync(join(tmpdir(), 'caboose-library-')), 'x86_64', fetcher)
     const calls: Array<{ action: string; argument: any }> = []
     let apps: Record<string, unknown> = {}
     const guest = { run: vi.fn(async (_command: string, args: string[]) => {
       if (args.length === 3) return '[]'
       const action = args[2]!, argument = JSON.parse(args[3]!)
-      if (action === 'list') return JSON.stringify({ apps, environment: options.environment ?? { flatpak: true, depot: !!options.depot } })
+      if (action === 'list') return JSON.stringify({ apps, environment: options.environment ?? { flatpak: true, sandbox: true } })
       if (action === 'progress') return 'null'
       calls.push({ action, argument })
       if (action === 'updates') return JSON.stringify({ flatpak: ['org.mozilla.firefox'], apt: [] })
       if (action === 'install') apps = { ...apps, [argument.id]: { installedVersion: '1.0', flatpak: { version: '1.0', name: 'Firefox', summary: 'Browser', runtime: 'org.freedesktop.Platform/x86_64/25.08' }, progress: { operation: 'install', phase: 'finished', stage: 'finished' } } }
       return ''
     }) }
-    const ensure = vi.fn(async (_runtime: string, onProgress: (p: { message: string }) => void) => { onProgress({ message: 'Adding Freedesktop 25.08' }) })
-    const depot = options.depot ? { enabled: true, ensure, has: () => true, note: vi.fn(async () => {}), maintain: vi.fn(async () => {}) } : undefined
     const events: any[] = []
     let now = 0
-    const catalog = new AppCatalog(() => guest, event => events.push(event), () => () => {}, { data, releases, flathub, ...(depot ? { depot: depot as never } : {}), now: () => now })
-    return { catalog, calls, events, ensure, depot, setApps: (value: Record<string, unknown>) => { apps = value }, advance: (ms: number) => { now += ms } }
+    const catalog = new AppCatalog(() => guest, event => events.push(event), () => () => {}, { data, releases, flathub, now: () => now })
+    return { catalog, calls, events, setApps: (value: Record<string, unknown>) => { apps = value }, advance: (ms: number) => { now += ms } }
   }
 
   it('ranks curated apps first, hides Flathub copies of them, and pages the rest by popularity', async () => {
@@ -217,37 +214,52 @@ describe('Flathub in the Library', () => {
     expect((await catalog.discover('', 'Internet')).apps.map(app => app.id)).toEqual(['flathub-org.mozilla.firefox'])
     await expect(catalog.discover('', 'Nonsense')).rejects.toThrow('Unknown category')
   })
-  it('adds the runtime to the shared depot before the guest installs the app on it', async () => {
-    const s = await library({ depot: true })
+  it('groups a storefront: Popular by installs, curated twins counted, then each category with Caboose\'s apps first', async () => {
+    const { catalog } = await library()
+    const { groups, error } = await catalog.storefront()
+    expect(error).toBeNull()
+    expect(groups[0]).toMatchObject({ id: 'popular', title: 'Popular', category: '' })
+    expect(groups[0]!.apps.slice(0, 2).map(app => app.id)).toEqual(['gimp', 'flathub-org.mozilla.firefox'])
+    expect(groups[0]!.apps).toHaveLength(15)
+    const create = groups.find(group => group.category === 'Create')!
+    const curatedCreate = data.apps.filter(app => app.category === 'Create').map(app => app.id)
+    expect(create.apps.slice(0, Math.min(15, curatedCreate.length)).map(app => app.id)).toEqual(curatedCreate.slice(0, 15))
+    expect(groups.find(group => group.category === 'Internet')?.apps.map(app => app.id)).toEqual(['flathub-org.mozilla.firefox'])
+    expect(groups.every(group => group.apps.length > 0 && group.apps.length <= 15)).toBe(true)
+    expect(groups.some(group => group.category === 'Games')).toBe(false)
+  })
+  it('installs a Flathub app on its current runtime and lists it as installed', async () => {
+    const s = await library()
     await s.catalog.ready(); await s.catalog.list()
     s.catalog.start('flathub-org.mozilla.firefox', 'install')
     await expect.poll(() => s.calls.some(call => call.action === 'install')).toBe(true)
-    expect(s.ensure).toHaveBeenCalledWith('org.gnome.Platform/x86_64/49', expect.any(Function))
     expect(s.calls.find(call => call.action === 'install')!.argument.source).toEqual({ kind: 'flatpak', appId: 'org.mozilla.firefox', runtime: 'org.gnome.Platform/x86_64/49' })
-    expect(s.events).toContainEqual(expect.objectContaining({ id: 'flathub-org.mozilla.firefox', stage: 'preparing', message: 'Adding Freedesktop 25.08' }))
     await expect.poll(() => s.catalog.busy).toBe(false)
     const listed = (await s.catalog.list()).apps.find(app => app.id === 'flathub-org.mozilla.firefox')
-    expect(listed).toMatchObject({ installedVersion: '1.0', name: 'Firefox', origin: 'flathub' })
-    expect(s.depot!.note).toHaveBeenCalledWith('owner', ['org.freedesktop.Platform/x86_64/25.08'])
+    expect(listed).toMatchObject({ installedVersion: '1.0', name: 'Firefox', origin: 'flathub', unavailable: null })
   })
-  it('installs without the depot on a computer that does not mount it, and refuses before Flatpak exists', async () => {
-    const s = await library({ depot: true, environment: { flatpak: true, depot: false } })
-    await s.catalog.ready(); await s.catalog.list()
-    s.catalog.start('flathub-org.mozilla.firefox', 'install')
-    await expect.poll(() => s.calls.some(call => call.action === 'install')).toBe(true)
-    expect(s.ensure).not.toHaveBeenCalled()
+  it('says why Flathub apps cannot run where Flatpak\'s sandbox cannot start, and refuses them', async () => {
+    for (const s of [await library({ environment: { flatpak: true, sandbox: false } })]) {
+      await s.catalog.ready(); await s.catalog.list()
+      const firefox = (await s.catalog.discover('firefox')).apps[0]!
+      expect(firefox.unavailable).toBeTruthy()
+      expect((await s.catalog.discover('gimp')).apps.find(app => app.id === 'gimp')?.unavailable).toBeNull()
+      s.catalog.start(firefox.id, 'install')
+      await expect.poll(() => s.events.some(event => event.phase === 'failed')).toBe(true)
+      expect(s.events).toContainEqual(expect.objectContaining({ phase: 'failed', message: firefox.unavailable }))
+      expect(s.calls.some(call => call.action === 'install')).toBe(false)
+    }
     const old = await library({ environment: { flatpak: false } })
     await old.catalog.ready(); await old.catalog.list()
     old.catalog.start('flathub-org.mozilla.firefox', 'install')
     await expect.poll(() => old.events.some(event => event.phase === 'failed')).toBe(true)
     expect(old.events).toContainEqual(expect.objectContaining({ phase: 'failed', message: expect.stringContaining('Flatpak is not installed') }))
   })
-  it('updates installed apps once a day, runtimes first', async () => {
-    const s = await library({ depot: true })
+  it('updates installed apps once a day', async () => {
+    const s = await library()
     s.setApps({ 'flathub-org.mozilla.firefox': { installedVersion: '1.0', flatpak: { version: '1.0', name: 'Firefox', summary: 'Browser', runtime: null } } })
     await s.catalog.ready()
     await s.catalog.autoUpdate()
-    expect(s.depot!.maintain).toHaveBeenCalledOnce()
     await expect.poll(() => s.calls.filter(call => call.action === 'update').map(call => call.argument.id)).toEqual(['flathub-org.mozilla.firefox'])
     await expect.poll(() => s.catalog.busy).toBe(false)
     await s.catalog.autoUpdate()
@@ -256,23 +268,4 @@ describe('Flathub in the Library', () => {
     await s.catalog.autoUpdate()
     expect(s.calls.filter(call => call.action === 'updates')).toHaveLength(2)
   })
-})
-
-it('browses a collection as its apps, then popular apps in its category, and never installs it whole', async () => {
-  const { mkdtempSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path')
-  const { FlathubIndex } = await import('./flathub.js'), { hit } = await import('./flathub.test.js')
-  const hits = Array.from({ length: 120 }, (_, i) => hit(`org.example.Video${i}`, { name: `Video ${i}`, main_categories: 'audiovideo', installs_last_month: i }))
-  const fetcher = vi.fn(async (url: string) => url.endsWith('.png') ? { ok: false, status: 404, json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) }
-    : { ok: true, status: 200, json: async () => ({ hits, totalPages: 1 }), arrayBuffer: async () => new ArrayBuffer(0) })
-  const flathub = new FlathubIndex(mkdtempSync(join(tmpdir(), 'caboose-collection-')), 'x86_64', fetcher)
-  const catalog = new AppCatalog(() => undefined, () => {}, () => () => {}, { data, releases, flathub })
-  const pack = data.packs.find(item => item.id === 'video-audio')!
-  const members = data.apps.filter(app => app.packs.includes(pack.id)).map(app => app.id)
-  const page = await catalog.discover('', '', 0, 'video-audio')
-  expect(page.apps.slice(0, members.length).map(app => app.id)).toEqual(members)
-  expect(page.apps[members.length]).toMatchObject({ id: 'flathub-org.example.Video119', origin: 'flathub' })
-  expect((await catalog.discover('', '', 0, 'creative-studio')).apps.every(app => app.curated)).toBe(true)
-  await expect(catalog.discover('', 'Games', 0, 'video-audio')).rejects.toThrow('not both')
-  await expect(catalog.discover('', '', 0, 'missing')).rejects.toThrow('Collection not found')
-  expect('startPack' in catalog).toBe(false)
 })

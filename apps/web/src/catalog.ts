@@ -14,14 +14,6 @@ export interface CatalogProgress {
   totalBytes?: number
 }
 
-/** A curated collection: browsed, never installed at once. */
-export interface CatalogPack {
-  id: string
-  name: string
-  /** The Library category whose popular apps follow the collection's own. */
-  category?: string
-}
-
 export interface CatalogSource {
   kind: 'apt' | 'release' | 'flatpak'
   /** Download bytes, when known. */
@@ -35,8 +27,6 @@ export interface CatalogApp {
   summary: string
   category: string
   categories: string[]
-  /** Curated packs only. */
-  packs: string[]
   desktopId: string
   fileTypes: { extensions: string[]; utTypes: string[] }
   /** A 128-pixel PNG data URL, or null. */
@@ -53,6 +43,8 @@ export interface CatalogApp {
   installs: number | null
   /** The installed version, or null. Last observed while the computer is parked. */
   installedVersion: string | null
+  /** Why this computer cannot install the app, or null. */
+  unavailable: string | null
   latestVersion: string | null
   /** Apps update on their own; this is a newer version not yet installed. */
   updateAvailable: boolean
@@ -64,8 +56,23 @@ export interface CatalogApp {
 }
 
 export interface CatalogResponse {
-  packs: CatalogPack[]
   apps: CatalogApp[]
+}
+
+/** A shelf of the Library's front page: Popular, then one per category. */
+export interface CatalogShelf {
+  id: string
+  title: string
+  /** The category See all lists, or '' for every app. */
+  category: string
+  apps: CatalogApp[]
+}
+
+/** The Library's front page, as `GET /v1/catalog/storefront` reports it. */
+export interface CatalogStorefront {
+  groups: CatalogShelf[]
+  /** Why only Caboose's apps are shown: the host could not reach Flathub. */
+  error: string | null
 }
 
 /** One page of the Library: curated matches first, then Flathub's, ranked by the host. */
@@ -84,8 +91,6 @@ export interface DiscoverQuery {
   q?: string
   /** One of `CatalogPage.categories`; empty for all. */
   category?: string
-  /** A curated collection's id, browsed in place of a category; never installed at once. */
-  collection?: string
   offset?: number
 }
 
@@ -142,10 +147,6 @@ export function actionLabel(app: Pick<CatalogApp, 'lastError' | 'interrupted'>, 
   }
 }
 
-/** Apps in a pack, in catalog order. */
-export function packApps(catalog: CatalogResponse, packId: string): CatalogApp[] {
-  return catalog.apps.filter(app => app.packs.includes(packId))
-}
 
 
 /**

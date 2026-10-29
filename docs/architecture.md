@@ -372,11 +372,17 @@ messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 
 ### Catalog
 
-The Library is one list of applications a computer can add. Caboose's curated entries
-(`guest/catalog/catalog.json`: Craft releases, Debian applications and the packs that group
-them) come first, then Flathub's desktop applications. A pack is a collection to browse, never
-to install at once: every operation is on one application. A Flathub application that is also a
-curated entry (`flathub` in `catalog.json`) is shown once, as the curated entry.
+The Library is every application a computer can add: Caboose's curated entries
+(`guest/catalog/catalog.json`: Craft releases and Debian applications) and Flathub's desktop
+applications. A Flathub application that is also a curated entry (`flathub` in `catalog.json`)
+is shown once, as the curated entry. Every operation is on one application.
+
+- **Storefront.** The Library's front page is shelves: Popular (every application by installs
+  in the last month, a curated entry counted by its Flathub twin's), then one per category
+  with Caboose's entries first and the category's most installed Flathub applications after,
+  15 to a shelf.
+- **Lists.** A search, or a shelf's whole category, is one ranked list: curated matches first,
+  then Flathub's by popularity, or with a query by relevance weighted by popularity.
 
 - **Flathub.** The host keeps its own index of Flathub's desktop applications for the
   computer's architecture: name, summary, developer, licence, verified publisher, display
@@ -435,14 +441,34 @@ downloads each runtime once, for every computer: none is installed ahead of an a
 - **Without the depot** (a microVM host, or a container created before the depot existed), an
   app's runtime installs into the computer itself.
 
-A container runs Flatpak's sandbox (bubblewrap) only with the namespaces and mounts that
-`guest/container/caboose-seccomp.json` allows, and that Docker's AppArmor profile, where the
-host uses AppArmor, denies; the installer checks the sandbox first and asks for the container to
-be recreated when it cannot start.
+**Flatpak in a container.** Flatpak runs each app in bubblewrap, which needs user and mount
+namespaces and gives the app its own `/proc`. A container computer gets them as follows:
+
+- The host creates containers with `guest/container/caboose-seccomp.json`, which allows the
+  namespaces and the mounts inside them (the kernel still requires `CAP_SYS_ADMIN` in the
+  owning user namespace, which the container's root lacks).
+- The kernel lets a sandbox mount a fresh `/proc` only where a fully visible one exists, and
+  Docker masks parts of the container's. In container computers `/usr/bin/bwrap` is
+  `guest/flatpak/caboose-bwrap` (the real one is diverted to `/usr/bin/bwrap.distrib`), which
+  gives each sandbox the container's `/proc` read-only instead. A Flatpak app there can see
+  the computer's processes, and read the `/proc` entries of its user's other processes, which
+  Flatpak elsewhere hides; nothing of the host is exposed, and Docker's masks stay.
+- bubblewrap's own lock on nested user namespaces (`--disable-userns`, which writes
+  `/proc/sys/user/max_user_namespaces`) needs that fresh `/proc`, so the wrapper drops it and
+  `--assert-userns-disabled`. Flatpak's seccomp filter still refuses every app `unshare`,
+  `setns`, `clone` with `CLONE_NEWUSER` and `clone3`; `check-flathub.sh` proves each refusal
+  inside a running app.
+- A sandbox root starts (Flatpak's own setup, such as `ldconfig`) begins in a user namespace
+  of its own, since the container's root cannot make the others.
+
+A container created before this profile cannot start the sandbox: the guest probes it as the
+computer's user, and the Library lists Flathub apps there with `unavailable` saying the computer
+must be recreated (its home is kept). On hosts that confine containers with Docker's default
+AppArmor profile, which denies `mount`, the probe fails the same way. A microVM computer needs
+none of this: its root holds every capability inside the VM.
 
 Only one catalog operation runs at a time, and it holds a computer lease. A second
-operation, a park, a restart or a Craft job receives 409 while one runs. A pack installs
-its entries in order and continues past individual failures. The listing reports the last
+operation, a park, a restart or a Craft job receives 409 while one runs. The listing reports the last
 observed state while the computer is parked and never wakes it. `/v1/apps` discovers
 installed desktop entries independently. Listings include the active operation's progress;
 a host that rediscovers it holds a lease and observes it until it ends. A command-channel
@@ -934,14 +960,15 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/catalog/discover?q=&category=&collection=&offset=` | The Library, ranked (§ Catalog), 40 at a time: `{ apps, total, offset, limit, categories, error }`. `category` is one of `categories` (Create, Video & Audio, Make, Office, Develop, Games, Internet, Learn, Science, Admin, Utilities). `collection` (a pack id, in place of `category`) lists the pack's apps, then the popular apps of the pack's `category`. `error` explains a Flathub index that could not be fetched; curated entries are still listed. Never wakes the computer |
-| `GET` | `/v1/catalog` | `{ packs, apps }`: every curated entry and every other application that is installed, being changed or failed; an application this list leaves out is not installed. Each has `origin` (`caboose`, `flathub` or `debian`), `curated`, `categories`, `developer`, `verified`, `license`, `installs`, `installedVersion`, `latestVersion`, `updateAvailable`, `lastError`, `interrupted`, `active` (a guest operation runs), `iconData` and `progress` |
+| `GET` | `/v1/catalog/storefront` | The Library's front page (§ Catalog): `{ groups: [{ id, title, category, apps }], error }`, Popular first (`category` `""`), then each category with apps. Never wakes the computer |
+| `GET` | `/v1/catalog/discover?q=&category=&offset=` | The Library, ranked (§ Catalog), 40 at a time: `{ apps, total, offset, limit, categories, error }`. `category` is one of `categories` (Create, Video & Audio, Make, Productivity, Development, Games, Internet, Learn, Science, System, Utilities). `error` explains a Flathub index that could not be fetched; curated entries are still listed. Never wakes the computer |
+| `GET` | `/v1/catalog` | `{ apps }`: every curated entry and every other application that is installed, being changed or failed; an application this list leaves out is not installed. Each has `origin` (`caboose`, `flathub` or `debian`), `curated`, `categories`, `developer`, `verified`, `license`, `installs`, `installedVersion`, `latestVersion`, `updateAvailable`, `lastError`, `interrupted`, `active` (a guest operation runs), `unavailable` (why this computer cannot install it, or null), `iconData` and `progress` |
 | `POST` | `/v1/catalog/:id/install`, `/update` | Queue an operation → 202 `{ accepted: true }`. A Flathub id is `flathub-<app id>`, URL-encoded |
 | `DELETE` | `/v1/catalog/:id` | Queue removal → 202 |
 | `POST` | `/v1/catalog/:id/run` | **Wakes.** Run a Craft job (below) |
 
 Catalog mutations answer 409 while the computer is not running, another catalog operation
-runs, or a Craft job runs; 404 for an unknown application or pack.
+runs, or a Craft job runs; 404 for an unknown application.
 
 **Craft jobs.** A client stages inputs under `.caboose-jobs/<job>/` through `/v1/fs`, where
 `job` is 32 lowercase hex digits and inputs are named `input-0.<ext>`, `input-1.<ext>`, ….

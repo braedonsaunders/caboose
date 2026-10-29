@@ -4,11 +4,11 @@ import {
   Alert, AlertDescription, AlertTitle, Badge, Button, EmptyState, Input, Progress, Spinner,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, confirmDialog, toast,
 } from '@braedonsaunders/appkit-ui'
-import { BadgeCheck, Layers, Package, RefreshCw } from 'lucide-react'
+import { BadgeCheck, Package, RefreshCw } from 'lucide-react'
 import { CabooseApiError, type CabooseClient } from '../../api.js'
 import {
-  actionLabel, appActions, appendPage, catalogBusy, displayVersion, nextOffset, packApps, progressSummary,
-  withLiveState, type CatalogApp, type CatalogOperation, type CatalogPack, type CatalogResponse,
+  actionLabel, appActions, appendPage, catalogBusy, displayVersion, nextOffset, progressSummary,
+  withLiveState, type CatalogApp, type CatalogOperation, type CatalogResponse, type CatalogStorefront,
 } from '../../catalog.js'
 import { AppIcon, NotRunningNotice, TabIntro, errorMessage, useVisibleInterval } from '../../components/common.js'
 import type { ComputerHandle } from '../../useComputer.js'
@@ -33,11 +33,11 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
   const [catalogError, setCatalogError] = React.useState<string | null>(null)
   const [search, setSearch] = React.useState('')
   const [query, setQuery] = React.useState('')
-  const [category, setCategory] = React.useState('')
-  /** A collection narrows the Library like a category; it never installs anything itself. */
-  const [collection, setCollection] = React.useState<CatalogPack | null>(null)
+  /** The list in view: null for the storefront's shelves, '' for every app, or a category. */
+  const [category, setCategory] = React.useState<string | null>(null)
+  const [storefront, setStorefront] = React.useState<CatalogStorefront | null>(null)
+  const [storefrontError, setStorefrontError] = React.useState<string | null>(null)
   const [library, setLibrary] = React.useState<Library | null>(null)
-  const [categories, setCategories] = React.useState<string[]>([])
   /** The page that failed, so Try again asks for it again. */
   const [libraryError, setLibraryError] = React.useState<{ message: string; offset: number } | null>(null)
   const [loading, setLoading] = React.useState(false)
@@ -74,7 +74,7 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
     setLibraryError(null)
     if (offset === 0) setLibrary(null)
     try {
-      const page = await client.discoverCatalog({ q: query, category, collection: collection?.id ?? '', offset })
+      const page = await client.discoverCatalog({ q: query, category: category ?? '', offset })
       if (ticket !== generation.current) return
       setLibrary(current => ({
         apps: appendPage(offset > 0 && current ? current.apps : [], page.apps),
@@ -82,15 +82,25 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
         total: page.total,
         notice: page.error,
       }))
-      setCategories(page.categories)
     } catch (failure) {
       if (ticket === generation.current) handle(failure, message => setLibraryError({ message, offset }))
     } finally {
       if (ticket === generation.current) setLoading(false)
     }
-  }, [client, query, category, collection, handle])
+  }, [client, query, category, handle])
 
-  React.useEffect(() => { void loadPage(0) }, [loadPage])
+  const listing = query !== '' || category !== null
+  React.useEffect(() => { if (listing) void loadPage(0) }, [listing, loadPage])
+
+  const loadStorefront = React.useCallback(async () => {
+    try {
+      setStorefront(await client.catalogStorefront())
+      setStorefrontError(null)
+    } catch (failure) {
+      handle(failure, setStorefrontError)
+    }
+  }, [client, handle])
+  React.useEffect(() => { void loadStorefront() }, [loadStorefront])
 
   const loadMore = React.useCallback(() => {
     if (!loading && !libraryError && library?.next != null) void loadPage(library.next)
@@ -114,7 +124,6 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
     }
   }
 
-  const unfiltered = !query && !category && !collection
   const rows = withLiveState(library?.apps ?? [], catalog)
   const updates = catalog?.apps.filter(app => app.updateAvailable) ?? []
   const operations = catalog?.apps.filter(app => app.progress && app.progress.phase !== 'finished') ?? []
@@ -152,98 +161,113 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
         </DashboardPanel>
       ) : null}
 
-      {unfiltered && catalog?.packs.length ? (
-        <DashboardPanel title="Collections" icon={<Layers className="size-4" aria-hidden />}>
-          <div className="flex gap-3 overflow-x-auto pb-1">
-            {catalog.packs.map(pack => {
-              const apps = packApps(catalog, pack.id)
-              return (
-                <button
-                  key={pack.id}
-                  type="button"
-                  className="flex w-56 shrink-0 flex-col gap-2 rounded-lg border border-border p-3 text-left hover:bg-bg-muted"
-                  title={`Browse ${pack.name}`}
-                  onClick={() => { setCategory(''); setCollection(pack) }}
-                >
-                  <div className="flex gap-1">{apps.slice(0, 4).map(app => <AppIcon key={app.id} src={app.iconData} name={app.name} size={24} />)}</div>
-                  <div className="truncate font-medium">{pack.name}</div>
-                  <div className="text-xs text-fg-muted">{pack.category ? `${apps.length === 1 ? '1 pick' : `${apps.length} picks`}, then popular ${pack.category} apps` : apps.length === 1 ? '1 app' : `${apps.length} apps`}</div>
-                </button>
-              )
-            })}
-          </div>
-        </DashboardPanel>
-      ) : null}
-
-      {unfiltered && updates.length ? (
+      {!listing && updates.length ? (
         <DashboardPanel title="Updates" icon={<RefreshCw className="size-4" aria-hidden />}>
           <p className="mb-3 text-sm text-fg-muted">These apps have a newer version waiting. They update on their own; Update now installs it right away.</p>
           <AppTable apps={updates} {...actions} />
         </DashboardPanel>
       ) : null}
 
-      <DashboardPanel
-        title="Library"
-        icon={<Package className="size-4" aria-hidden />}
-        actions={library ? (
-          <div className="flex items-center gap-2 text-sm text-fg-muted">
-            {loading ? <Spinner size={14} /> : null}
-            {library.total === 1 ? '1 app' : `${library.total.toLocaleString()} apps`}
-          </div>
-        ) : null}
-      >
-        {categories.length ? (
-          <div className="mb-3 flex gap-2 overflow-x-auto pb-1" role="group" aria-label="Category">
-            {collection ? (
-              <Button className="shrink-0" size="sm" variant="default" aria-pressed onClick={() => setCollection(null)} title="Show every app">
-                {collection.name} ×
-              </Button>
-            ) : null}
-            {['', ...categories].map(value => (
-              <Button
-                key={value || 'all'}
-                className="shrink-0"
-                size="sm"
-                variant={!collection && category === value ? 'default' : 'outline'}
-                aria-pressed={!collection && category === value}
-                onClick={() => { setCollection(null); setCategory(value) }}
-              >
-                {value || 'All'}
-              </Button>
-            ))}
-          </div>
-        ) : null}
-        {libraryError ? (
-          <Alert variant="destructive" className="mb-3">
-            <AlertTitle>The Library could not be read</AlertTitle>
-            <AlertDescription>
-              {libraryError.message}{' '}
-              <Button size="sm" variant="outline" onClick={() => void loadPage(libraryError.offset)}>Try again</Button>
-            </AlertDescription>
-          </Alert>
-        ) : null}
-        {library?.notice ? <p className="mb-3 text-sm text-fg-muted">{library.notice}</p> : null}
-        {!library ? (
-          libraryError ? null : <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Reading the Library…</div>
-        ) : rows.length === 0 ? (
-          loading ? null : <EmptyState icon={<Package className="size-6" aria-hidden />} title="No apps match" description="Try another search or category." />
-        ) : (
-          <>
-            <AppTable apps={rows} {...actions} />
-            {library.next !== null ? <MoreResults count={rows.length} loading={loading} onMore={loadMore} /> : null}
-          </>
-        )}
-      </DashboardPanel>
+      {!listing ? (
+        <>
+          {storefrontError ? (
+            <Alert variant="destructive">
+              <AlertTitle>The Library could not be read</AlertTitle>
+              <AlertDescription>{storefrontError}{' '}<Button size="sm" variant="outline" onClick={() => void loadStorefront()}>Try again</Button></AlertDescription>
+            </Alert>
+          ) : null}
+          {storefront?.error ? <p className="text-sm text-fg-muted">{storefront.error}</p> : null}
+          {!storefront && !storefrontError ? <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Reading the Library…</div> : null}
+          {storefront?.groups.map(group => (
+            <DashboardPanel
+              key={group.id}
+              title={group.title}
+              icon={<Package className="size-4" aria-hidden />}
+              actions={<Button size="sm" variant="ghost" onClick={() => setCategory(group.category)}>See all</Button>}
+            >
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] gap-3">
+                {withLiveState(group.apps, catalog).map(app => <StoreCard key={app.id} app={app} {...actions} />)}
+              </div>
+            </DashboardPanel>
+          ))}
+        </>
+      ) : (
+        <DashboardPanel
+          title={query ? 'Results' : category ? category : 'All apps'}
+          icon={<Package className="size-4" aria-hidden />}
+          actions={
+            <div className="flex items-center gap-2 text-sm text-fg-muted">
+              {loading ? <Spinner size={14} /> : null}
+              {library ? (library.total === 1 ? '1 app' : `${library.total.toLocaleString()} apps`) : null}
+              {category !== null ? <Button size="sm" variant="ghost" onClick={() => setCategory(null)}>Back to Library</Button> : null}
+            </div>
+          }
+        >
+          {libraryError ? (
+            <Alert variant="destructive" className="mb-3">
+              <AlertTitle>The Library could not be read</AlertTitle>
+              <AlertDescription>
+                {libraryError.message}{' '}
+                <Button size="sm" variant="outline" onClick={() => void loadPage(libraryError.offset)}>Try again</Button>
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          {library?.notice ? <p className="mb-3 text-sm text-fg-muted">{library.notice}</p> : null}
+          {!library ? (
+            libraryError ? null : <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Reading the Library…</div>
+          ) : rows.length === 0 ? (
+            loading ? null : <EmptyState icon={<Package className="size-6" aria-hidden />} title="No apps match" description="Try another search." />
+          ) : (
+            <>
+              <AppTable apps={rows} {...actions} />
+              {library.next !== null ? <MoreResults count={rows.length} loading={loading} onMore={loadMore} /> : null}
+            </>
+          )}
+        </DashboardPanel>
+      )}
     </div>
   )
 }
 
-interface AppTableProps {
-  apps: CatalogApp[]
+/** An app on a storefront shelf: its icon, name and what it is, and its one action. */
+function StoreCard({ app, running, busy, starting, start }: ActionProps & { app: CatalogApp }) {
+  const operation = app.installedVersion ? null : appActions(app)[0] ?? null
+  const progress = app.progress && app.progress.phase !== 'finished' ? progressSummary(app.progress) : null
+  return (
+    <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border p-3">
+      <AppIcon src={app.iconData} name={app.name} size={48} />
+      <div className="min-w-0">
+        <div className="truncate font-medium">{app.name}</div>
+        <div className="line-clamp-2 text-xs text-fg-muted">{app.summary}</div>
+      </div>
+      <div className="mt-auto">
+        {progress ? <span className="text-xs text-fg-muted">{progress.label}{progress.percent !== undefined ? ` ${progress.percent}%` : ''}</span>
+          : app.installedVersion ? <span className="text-xs text-fg-muted">Installed</span>
+          : app.unavailable ? <span className="text-xs text-fg-muted" title={app.unavailable}>Unavailable here</span>
+          : operation ? (
+            <Button
+              size="sm"
+              disabled={!running || busy || starting !== null}
+              title={!running ? 'Wake the computer first.' : busy ? 'Another operation is running.' : undefined}
+              onClick={() => void start(app, operation)}
+            >
+              {actionLabel(app, operation)}
+            </Button>
+          ) : null}
+      </div>
+    </div>
+  )
+}
+
+interface ActionProps {
   running: boolean
   busy: boolean
   starting: string | null
   start: (app: CatalogApp, operation: CatalogOperation) => Promise<void>
+}
+
+interface AppTableProps extends ActionProps {
+  apps: CatalogApp[]
 }
 
 function AppTable({ apps, running, busy, starting, start }: AppTableProps) {

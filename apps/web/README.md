@@ -38,16 +38,16 @@ tasks and choosing a default agent live in the app, and the console does not rep
     create a folder, rename, or move to the Trash. The folder is in the address
     (`/computers/<id>/files?path=…`), so back and forward work. File requests wake a parked
     computer, so a parked one is woken only when you ask.
-  - **Apps** — the Library: every app the computer can add, in one list, Caboose's curated
-    apps first and then Flathub's, each with its developer (and a mark for Flathub's
-    verified publishers) and license. Search (after a 300 ms pause) and the category
-    buttons narrow it; more results load as you scroll, or with **Show more**. With no
-    search or category, curated **Collections** come first (choosing one browses its apps,
-    then popular apps in its category; each app installs on its own), then
-    **Updates**: apps update on their own, and **Update now** installs a waiting version
-    right away. Install, Retry, Update now and Remove need the computer running. Queued and
+  - **Apps** — the Library: every app the computer can add. Its front page is shelves of
+    app cards (Popular, then one per category, Caboose's curated apps among them), each with
+    its icon and its one action; **See all** lists a shelf's whole category. Search (after a
+    300 ms pause) lists matches across everything. Lists show each app's developer (and a
+    mark for Flathub's verified publishers) and license, and load more as you scroll, or with
+    **Show more**. Each app installs on its own. **Updates**: apps update on their own, and
+    **Update now** installs a waiting version right away. An app this computer cannot install
+    says why. Install, Retry, Update now and Remove need the computer running. Queued and
     running operations show their stage and progress, and failures show the installer's
-    error. The list comes from the host's own index, so it works while the computer is
+    error. The Library comes from the host's own index, so it works while the computer is
     parked and never wakes it; installed state is what the computer reported when it last
     ran.
   - **Phones** — **Sign in a phone** shows a single-use pairing code as a QR code, a

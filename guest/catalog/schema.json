@@ -2,11 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Caboose application catalog",
   "type": "object",
-  "required": ["packs", "apps"],
+  "required": ["apps"],
   "properties": {
-    "packs": { "type": "array", "items": { "type": "object", "required": ["id", "name"], "properties": { "id": {"type":"string"}, "name": {"type":"string"}, "category": {"type":"string"} } } },
-    "apps": { "type": "array", "items": { "type": "object", "required": ["id", "name", "summary", "category", "packs", "icon", "desktopId", "fileTypes", "source"], "properties": {
-      "id": {"type":"string"}, "name": {"type":"string"}, "summary": {"type":"string"}, "category": {"type":"string"}, "packs": {"type":"array", "items":{"type":"string"}},
+    "apps": { "type": "array", "items": { "type": "object", "required": ["id", "name", "summary", "category", "icon", "desktopId", "fileTypes", "source"], "properties": {
+      "id": {"type":"string"}, "name": {"type":"string"}, "summary": {"type":"string"}, "category": {"type":"string"},
       "icon":{"type":"string"}, "desktopId":{"type":"string"}, "cli":{"type":"string"}, "mcp":{"type":"string"}, "flathub":{"type":"string"},
       "fileTypes":{"type":"object", "required":["extensions","utTypes"], "properties":{"extensions":{"type":"array", "items":{"type":"string"}}, "utTypes":{"type":"array", "items":{"type":"string"}}}},
       "source":{"oneOf":[{"type":"object", "required":["kind","package"], "properties":{"kind":{"const":"release"},"package":{"type":"string"}}},{"type":"object", "required":["kind","packages"],"properties":{"kind":{"const":"apt"},"packages":{"type":"array","minItems":1,"items":{"type":"string"}}}}]}

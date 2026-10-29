@@ -3,13 +3,14 @@
 Flathub in every computer, and the computer's view of the host's shared runtimes
 (`docs/architecture.md` § Catalog and § Runtime depot). `guest/components/install.sh` installs
 Flatpak, its introspection bindings (`gir1.2-flatpak-1.0`) and bubblewrap, then runs
-`install.sh` here.
+`install.sh` here with its mode; only the container modes install `caboose-bwrap`.
 
 | File | What |
 | --- | --- |
 | `install.sh` | Adds the Flathub remote to the system installation, the depot's installation and its mount. |
 | `flathub.flatpakrepo` | Flathub's repository file as Flathub publishes it, with its signing key, so trusting Flathub fetches nothing. |
 | `caboose-depot.conf` | `/etc/flatpak/installations.d/caboose-depot.conf`: the read-only installation at `/var/lib/caboose/depot`. |
+| `caboose-bwrap` | In a container computer, `/usr/bin/bwrap` (the real one is diverted to `bwrap.distrib`): each sandbox gets the container's `/proc` read-only, without bubblewrap's sysctl lock on user namespaces, and root's sandboxes start in a user namespace of their own (`docs/architecture.md` § Catalog). Every other argument passes through. |
 | `var-lib-caboose-depot.mount` | In a microVM, mounts the host's virtio-fs tag `caboose-depot` read-only at `/var/lib/caboose/depot`. Without the tag the mount fails without delaying boot. |
 
 On the container runtime the host mounts the `caboose-depot` volume at the same path instead.

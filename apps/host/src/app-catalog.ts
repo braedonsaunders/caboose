@@ -16,7 +16,11 @@ type Installed = { version: string; name: string; summary: string; runtime: stri
 const EMPTY: State = { installedVersion: null, lastError: null, interrupted: false, active: false, operationId: null, progress: null }
 const OPERATIONS = ['install', 'update', 'remove']
 const STAGES = ['preparing', 'downloading', 'verifying', 'refreshing', 'installing', 'configuring', 'removing', 'finished']
+/** The guest's words for a computer whose Flatpak sandbox cannot start (guest-catalog.py). */
+export const FLATPAK_UNSANDBOXED = "Flathub apps can't run on this computer yet: its container was created before Caboose allowed Flatpak's sandbox. Recreate the computer to add them; its home folder is kept."
 const PAGE = 40
+/** Apps on each storefront shelf. */
+const SHELF = 15
 const UPDATE_MS = 24 * 3600_000
 const RUNTIME = /^[A-Za-z_][A-Za-z0-9_.-]{0,254}\/(x86_64|aarch64)\/[A-Za-z0-9_.-]{1,64}$/
 const bounded = (value: unknown) => typeof value === 'string' ? value.slice(-1000) : undefined
@@ -68,7 +72,7 @@ export function catalogIcon(id: string): string | null {
 
 /** A Flathub application as a Library entry. */
 export function flathubEntry(app: FlathubApp): Entry {
-  return { id: `flathub-${app.appId}`, name: app.name, summary: app.summary, category: app.categories[0] ?? 'Utilities', categories: app.categories, packs: [], icon: '', desktopId: `${app.appId}.desktop`,
+  return { id: `flathub-${app.appId}`, name: app.name, summary: app.summary, category: app.categories[0] ?? 'Utilities', categories: app.categories, icon: '', desktopId: `${app.appId}.desktop`,
     fileTypes: { extensions: [], utTypes: [] }, source: { kind: 'flatpak', appId: app.appId, runtime: app.runtime }, origin: 'flathub', curated: false,
     developer: app.developer, verified: app.verified, license: app.license, installs: app.installs }
 }
@@ -93,6 +97,8 @@ export interface CatalogOptions {
 export class AppCatalog {
   private readonly data: CatalogData
   private readonly curated: Entry[]
+  /** Flathub apps that are curated entries too, shown once, as the curated entry. */
+  private readonly aliases: ReadonlySet<string>
   private readonly flathub: FlathubIndex | undefined
   private readonly releases: CraftReleases | undefined
   private readonly depot: RuntimeDepot | undefined
@@ -103,7 +109,8 @@ export class AppCatalog {
   private store = new Map<string, Entry>()
   /** Flathub apps this computer has installed or operated on, as last observed. */
   private flatpaks = new Map<string, Entry>()
-  private environment = { flatpak: false, depot: false }
+  /** What the guest last reported: Flatpak installed, its sandbox able to start, the depot mounted. */
+  private environment: { flatpak: boolean; sandbox: boolean; depot: boolean } | null = null
   private updates = new Set<string>()
   private updatedAt = -Infinity
   private restored = false
@@ -114,6 +121,7 @@ export class AppCatalog {
     const settings: CatalogOptions = 'apps' in options ? { data: options } : options
     this.data = settings.data ?? loadCatalog()
     this.curated = this.data.apps.map(app => ({ ...app, origin: 'caboose', curated: true, categories: [app.category], developer: null, verified: false, license: null, installs: null }))
+    this.aliases = new Set(this.curated.flatMap(app => app.flathub ? [app.flathub] : []))
     this.flathub = settings.flathub
     this.releases = settings.releases
     this.depot = settings.depot
@@ -141,7 +149,7 @@ export class AppCatalog {
       if (typeof v.package !== 'string' || !/^[a-z0-9][a-z0-9+.-]{0,99}$/.test(v.package) || v.id !== `debian-${v.package}` || typeof v.desktopId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}\.desktop$/.test(v.desktopId) || typeof v.name !== 'string' || !v.name || v.name.length > 160 || typeof v.summary !== 'string' || !v.summary || v.summary.length > 500 || typeof v.license !== 'string' || v.license.length > 200 || typeof v.componentId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}$/.test(v.componentId)) continue
       if (this.data.apps.some(app => app.source.kind === 'apt' && app.source.packages.includes(v.package as string))) continue
       this.store.set(v.id as string, { id: v.id as string, name: v.name, summary: v.summary, category: 'Utilities', categories: ['Utilities'], origin: 'debian', curated: false, developer: null, verified: false, license: v.license || null, installs: null,
-        storeComponent: v.componentId, packs: [], icon: '', desktopId: v.desktopId, fileTypes: { extensions: [], utTypes: [] }, source: { kind: 'apt', packages: [v.package] } })
+        storeComponent: v.componentId, icon: '', desktopId: v.desktopId, fileTypes: { extensions: [], utTypes: [] }, source: { kind: 'apt', packages: [v.package] } })
     }
   }
   /** Loads Flathub's index, so an app found by an earlier search can be operated on after a restart. */
@@ -154,23 +162,41 @@ export class AppCatalog {
     }
   }
   /** One ranked list: curated matches in catalog order, then Flathub by popularity or relevance. */
-  async discover(query: string, category = '', offset = 0, collection = '') {
+  async discover(query: string, category = '', offset = 0) {
     if (typeof query !== 'string' || query.length > 100 || /[\x00-\x1f]/.test(query)) throw new AgentInputError('Invalid search')
     if (category && !(CATEGORIES as readonly string[]).includes(category)) throw new AgentInputError('Unknown category')
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100_000) throw new AgentInputError('Invalid offset')
-    // A collection is a way to browse, never to install: its apps, then its category's.
-    const pack = collection ? this.data.packs.find(item => item.id === collection) : undefined
-    if (collection && !pack) throw new AgentNotFoundError('Collection not found')
-    if (pack && category) throw new AgentInputError('Choose a collection or a category, not both')
-    let error: string | null = null
-    if (this.flathub) await this.flathub.ready().catch(cause => { error = `Flathub could not be reached: ${cause instanceof Error ? cause.message : String(cause)}` })
+    const error = await this.index()
     const terms = words(query)
-    const curated = this.curated.filter(app => (pack ? app.packs.includes(pack.id) : !category || app.category === category) && terms.every(term => words(`${app.name} ${app.summary} ${app.id} ${app.category}`).some(word => word.startsWith(term))))
-    const aliases = new Set(this.curated.flatMap(app => app.flathub ? [app.flathub] : []))
-    const flathub = this.flathub?.size && (!pack || pack.category) ? this.flathub.search(query, pack?.category ?? category, aliases) : []
+    const curated = this.curated.filter(app => (!category || app.category === category) && terms.every(term => words(`${app.name} ${app.summary} ${app.id} ${app.category}`).some(word => word.startsWith(term))))
+    const flathub = this.flathub?.size ? this.flathub.search(query, category, this.aliases) : []
     const total = curated.length + flathub.length
     const slice = [...curated.slice(offset, offset + PAGE), ...flathub.slice(Math.max(0, offset - curated.length), Math.max(0, offset + PAGE - curated.length)).map(flathubEntry)]
     return { apps: await Promise.all(slice.map(app => this.view(this.flatpaks.get(app.id) ?? app))), total, offset, limit: PAGE, categories: [...CATEGORIES], error }
+  }
+  /**
+   * The Library's front page: Popular (every app by installs last month, curated ones counted
+   * by their Flathub twin's), then each category with Caboose's apps first and its most
+   * installed Flathub apps after.
+   */
+  async storefront() {
+    const error = await this.index()
+    const installs = (app: Entry) => app.installs ?? (app.flathub ? this.flathub?.get(app.flathub)?.installs ?? 0 : 0)
+    const flathub = this.flathub?.size ? this.flathub.search('', '', this.aliases) : []
+    const popular = [...this.curated.filter(app => installs(app) > 0), ...flathub.slice(0, SHELF * 2).map(flathubEntry)]
+      .sort((a, b) => installs(b) - installs(a)).slice(0, SHELF)
+    const groups = [{ id: 'popular', title: 'Popular', category: '', apps: popular }]
+    for (const category of CATEGORIES) {
+      const apps = [...this.curated.filter(app => app.category === category), ...flathub.filter(app => app.categories.includes(category)).slice(0, SHELF).map(flathubEntry)].slice(0, SHELF)
+      if (apps.length) groups.push({ id: category.toLowerCase().replace(/[^a-z]+/g, '-'), title: category, category, apps })
+    }
+    return { groups: await Promise.all(groups.map(async group => ({ ...group, apps: await Promise.all(group.apps.map(app => this.view(this.flatpaks.get(app.id) ?? app))) }))), error }
+  }
+  /** Loads Flathub's index; the reason it could not be, for the Library to say. */
+  private async index(): Promise<string | null> {
+    if (!this.flathub) return null
+    try { await this.flathub.ready(); return null }
+    catch (cause) { return `Flathub could not be reached: ${cause instanceof Error ? cause.message : String(cause)}` }
   }
   private async view(app: Entry) {
     const { operationId: _operationId, ...state } = this.states[app.id] ?? EMPTY
@@ -179,9 +205,14 @@ export class AppCatalog {
     const iconData = app.origin === 'flathub' && app.source.kind === 'flatpak' ? await this.flathub?.icon(app.source.appId) ?? null : catalogIcon(app.id)
     const { icon: _icon, flathub: _alias, ...entry } = app
     const source = app.source.kind === 'flatpak' ? { kind: 'flatpak' as const } : app.source.kind === 'release' ? { kind: 'release' as const, ...(release ? { size: release.size } : {}) } : app.source
-    return { ...entry, source, ...state, iconData, latestVersion: release?.version ?? null,
+    return { ...entry, source, ...state, iconData, latestVersion: release?.version ?? null, unavailable: this.unavailable(app),
       updateAvailable: release && installedVersion ? newer(release.version, installedVersion) : !!installedVersion && this.updates.has(app.id),
       progress: state.active ? state.progress : this.progress.get(app.id) ?? state.progress }
+  }
+  /** Why this app cannot be installed here, or null. Only Flatpak apps depend on the computer. */
+  private unavailable(app: Entry): string | null {
+    if (app.source.kind !== 'flatpak') return null
+    return this.environment?.flatpak && !this.environment.sandbox ? FLATPAK_UNSANDBOXED : null
   }
   async list() {
     // Earlier Debian discoveries must not hide the curated catalog if AppStream is missing.
@@ -189,13 +220,13 @@ export class AppCatalog {
     if (this.guest()) await this.observeGuest()
     if (!this.working && !this.observing && Object.values(this.states).some(state => state.active)) this.observe()
     const apps = [...this.curated, ...this.store.values(), ...this.flatpaks.values()]
-    return { packs: this.data.packs, apps: await Promise.all(apps.map(app => this.view(app))) }
+    return { apps: await Promise.all(apps.map(app => this.view(app))) }
   }
   private async observeGuest(): Promise<void> {
     const tracked = [...this.curated, ...this.store.values()]
     const raw = object(JSON.parse(await this.invoke('list', tracked.map(({ id, source }) => ({ id, source })))))
     const apps = object(raw.apps), environment = object(raw.environment)
-    this.environment = { flatpak: environment.flatpak === true, depot: environment.depot === true }
+    this.environment = { flatpak: environment.flatpak === true, sandbox: environment.sandbox === true, depot: environment.depot === true }
     const states: Record<string, State> = {}
     for (const app of tracked) states[app.id] = parseState(app.id, apps[app.id])
     const flatpaks = new Map<string, Entry>()
@@ -237,7 +268,9 @@ export class AppCatalog {
       return { ...app, source: { kind: 'deb', package: app.source.package, ...release } }
     }
     if (app.source.kind === 'flatpak' && action !== 'remove') {
-      if (!this.environment.flatpak) throw new Error('Flatpak is not installed on this computer yet. Wake it again after Caboose components update.')
+      const unavailable = this.unavailable(app)
+      if (unavailable) throw new Error(unavailable)
+      if (!this.environment?.flatpak) throw new Error('Flatpak is not installed on this computer yet. Wake it again after Caboose components update.')
       // An update can move an app to a newer runtime; the index names the current one.
       const runtime = this.flathub?.get(app.source.appId)?.runtime ?? app.source.runtime
       if (this.depot?.enabled && this.environment.depot && RUNTIME.test(runtime)) {

@@ -4,7 +4,6 @@ import ImageIO
 import Observation
 import UIKit
 
-struct CatalogPack: Decodable, Hashable, Identifiable { let id: String; let name: String }
 struct CatalogProgress: Decodable {
     let id: String
     let operation: String
@@ -47,7 +46,6 @@ struct CatalogApp: Decodable, Identifiable {
     let name: String
     let summary: String
     let category: String
-    let packs: [String]
     let desktopId: String
     let categories: [String]?
     let license: String?
@@ -59,6 +57,8 @@ struct CatalogApp: Decodable, Identifiable {
     let iconData: String?
     let source: Source
     var installedVersion: String?
+    /// Why this computer cannot install the app, or nil.
+    let unavailable: String?
     var updateAvailable: Bool
     var lastError: String?
     var interrupted: Bool
@@ -93,12 +93,22 @@ struct CatalogApp: Decodable, Identifiable {
         return icon
     }
 }
-struct CatalogResponse: Decodable { let packs: [CatalogPack]; let apps: [CatalogApp] }
+struct CatalogResponse: Decodable { let apps: [CatalogApp] }
+/// A shelf of the Library's front page: Popular, then one per category.
+struct StorefrontGroup: Decodable, Identifiable {
+    let id: String
+    let title: String
+    /// The category its See All lists, or "" for every app.
+    let category: String
+    var apps: [CatalogApp]
+}
 
 @MainActor @Observable
 final class CatalogCenter {
     private(set) var apps: [CatalogApp] = []
-    private(set) var packs: [CatalogPack] = []
+    /// The Library's front page, a shelf at a time; it shows until a search or category.
+    private(set) var storefront: [StorefrontGroup] = []
+    private(set) var storefrontError: String?
     /// The Library: one ranked list from discover, curated apps first, a page at a time.
     private(set) var library: [CatalogApp] = []
     /// Discover's categories, in its order.
@@ -122,12 +132,13 @@ final class CatalogCenter {
     func attach(_ host: HostClient) {
         hostGeneration += 1
         let showing = libraryLoaded || libraryLoading ? libraryQuery : nil
-        clearLibrary(); self.host = host
-        Task { await refresh(); if let showing { await discover(showing) } }
+        let front = !storefront.isEmpty || storefrontError != nil
+        clearLibrary(); storefront = []; storefrontError = nil; self.host = host
+        Task { await refresh(); if front { await loadStorefront() }; if let showing { await discover(showing) } }
     }
     /// The Library works while the computer is parked, so it attaches before any wake has.
     func prepare(_ host: HostClient?) { if self.host == nil, let host { attach(host) } }
-    func reset() { hostGeneration += 1; clearLibrary(); host = nil; apps = []; packs = []; recentInstalls = []; categories = []; error = nil }
+    func reset() { hostGeneration += 1; clearLibrary(); host = nil; apps = []; storefront = []; storefrontError = nil; recentInstalls = []; categories = []; error = nil }
     private func clearLibrary() {
         libraryGeneration += 1; libraryLoading = false; libraryLoaded = false; library = []; libraryError = nil; nextOffset = nil; libraryQuery = LibraryQuery()
     }
@@ -137,10 +148,11 @@ final class CatalogCenter {
         do {
             let catalog: CatalogResponse = try await host.request("GET", "/v1/catalog", timeout: 60)
             guard hostGeneration == generation else { return }
-            apps = catalog.apps; packs = catalog.packs; error = nil
+            apps = catalog.apps; error = nil
             let live = Dictionary(catalog.apps.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             library = library.map { live[$0.id] ?? $0.settled }
-        } catch HostClient.Failure.server(404, _) { if hostGeneration == generation { apps = []; packs = [] } }
+            for index in storefront.indices { storefront[index].apps = storefront[index].apps.map { live[$0.id] ?? $0.settled } }
+        } catch HostClient.Failure.server(404, _) { if hostGeneration == generation { apps = [] } }
         catch { if hostGeneration == generation { self.error = error.localizedDescription } }
     }
     /// The first page for a search and category. Discover answers from the host's own index,
@@ -176,6 +188,23 @@ final class CatalogCenter {
             libraryError = error.localizedDescription; failedOffset = offset; libraryLoading = false
         }
     }
+    /// The front page's shelves. Like discover, it answers from the host's own index, so it
+    /// works while the computer is parked and never wakes it.
+    func loadStorefront() async {
+        guard let host else { return }
+        let generation = hostGeneration
+        do {
+            struct Storefront: Decodable { let groups: [StorefrontGroup]; let error: String? }
+            let page: Storefront = try await host.request("GET", "/v1/catalog/storefront", timeout: 60)
+            guard hostGeneration == generation else { return }
+            let live = Dictionary(apps.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            storefront = page.groups.map { group in var group = group; group.apps = group.apps.map { live[$0.id] ?? $0 }; return group }
+            storefrontError = nil; libraryNotice = page.error
+        } catch {
+            guard hostGeneration == generation else { return }
+            storefrontError = error.localizedDescription
+        }
+    }
     func perform(_ id: String, action: String) async {
         guard let host else { return }
         error = nil
@@ -193,6 +222,7 @@ final class CatalogCenter {
             let progress = CatalogProgress(id: id, operation: operation, phase: phase, message: event["message"] as? String, stage: event["stage"] as? String, value: event["value"] as? Double, downloadedBytes: (event["downloadedBytes"] as? NSNumber)?.int64Value, totalBytes: (event["totalBytes"] as? NSNumber)?.int64Value)
             if let index = apps.firstIndex(where: { $0.id == id }) { apps[index].progress = progress }
             if let index = library.firstIndex(where: { $0.id == id }) { library[index].progress = progress }
+            for group in storefront.indices { if let index = storefront[group].apps.firstIndex(where: { $0.id == id }) { storefront[group].apps[index].progress = progress } }
             if phase == "finished" && operation == "install" { recentInstalls.insert(id) }
             if phase == "failed" { error = event["message"] as? String ?? "The application could not be installed." }
         }

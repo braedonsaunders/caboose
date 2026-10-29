@@ -1,49 +1,10 @@
 {
-  "packs": [
-    {
-      "id": "creative-studio",
-      "name": "Creative Studio"
-    },
-    {
-      "id": "create",
-      "name": "Create",
-      "category": "Create"
-    },
-    {
-      "id": "video-audio",
-      "name": "Video & Audio",
-      "category": "Video & Audio"
-    },
-    {
-      "id": "make",
-      "name": "Make",
-      "category": "Make"
-    },
-    {
-      "id": "office",
-      "name": "Office",
-      "category": "Office"
-    },
-    {
-      "id": "admin",
-      "name": "Admin",
-      "category": "Admin"
-    },
-    {
-      "id": "utilities",
-      "name": "Utilities",
-      "category": "Utilities"
-    }
-  ],
   "apps": [
     {
       "id": "photocraft",
       "name": "PhotoCraft",
       "summary": "Photo editing",
       "category": "Create",
-      "packs": [
-        "creative-studio"
-      ],
       "icon": "ai.storyteller.photocraft",
       "desktopId": "ai.storyteller.photocraft.desktop",
       "fileTypes": {
@@ -79,9 +40,6 @@
       "name": "LightCraft",
       "summary": "Photo development",
       "category": "Create",
-      "packs": [
-        "creative-studio"
-      ],
       "icon": "ai.storyteller.lightcraft",
       "desktopId": "ai.storyteller.lightcraft.desktop",
       "fileTypes": {
@@ -126,9 +84,6 @@
       "name": "FilmCraft",
       "summary": "Video editing",
       "category": "Video & Audio",
-      "packs": [
-        "creative-studio"
-      ],
       "icon": "ai.storyteller.filmcraft",
       "desktopId": "ai.storyteller.filmcraft.desktop",
       "fileTypes": {
@@ -164,9 +119,6 @@
       "name": "VectorCraft",
       "summary": "Vector drawing",
       "category": "Create",
-      "packs": [
-        "creative-studio"
-      ],
       "icon": "ai.storyteller.vectorcraft",
       "desktopId": "ai.storyteller.vectorcraft.desktop",
       "fileTypes": {
@@ -203,10 +155,7 @@
       "id": "pdfcraft",
       "name": "PDFCraft",
       "summary": "PDF editing",
-      "category": "Office",
-      "packs": [
-        "creative-studio"
-      ],
+      "category": "Productivity",
       "icon": "ai.storyteller.pdfcraft",
       "desktopId": "ai.storyteller.pdfcraft.desktop",
       "fileTypes": {
@@ -229,9 +178,6 @@
       "name": "EffectCraft",
       "summary": "Visual effects",
       "category": "Create",
-      "packs": [
-        "creative-studio"
-      ],
       "icon": "ai.storyteller.effectcraft",
       "desktopId": "ai.storyteller.effectcraft.desktop",
       "fileTypes": {
@@ -250,9 +196,6 @@
       "name": "DesignCraft",
       "summary": "Graphic design",
       "category": "Create",
-      "packs": [
-        "creative-studio"
-      ],
       "icon": "ai.storyteller.designcraft",
       "desktopId": "ai.storyteller.designcraft.desktop",
       "fileTypes": {
@@ -274,10 +217,7 @@
       "id": "wordcraft",
       "name": "WordCraft",
       "summary": "Word processing",
-      "category": "Office",
-      "packs": [
-        "creative-studio"
-      ],
+      "category": "Productivity",
       "icon": "ai.storyteller.wordcraft",
       "desktopId": "ai.storyteller.wordcraft.desktop",
       "fileTypes": {
@@ -311,10 +251,7 @@
       "id": "gridcraft",
       "name": "GridCraft",
       "summary": "Spreadsheets",
-      "category": "Office",
-      "packs": [
-        "creative-studio"
-      ],
+      "category": "Productivity",
       "icon": "ai.storyteller.gridcraft",
       "desktopId": "ai.storyteller.gridcraft.desktop",
       "fileTypes": {
@@ -343,10 +280,7 @@
       "id": "deckcraft",
       "name": "DeckCraft",
       "summary": "Presentations",
-      "category": "Office",
-      "packs": [
-        "creative-studio"
-      ],
+      "category": "Productivity",
       "icon": "ai.storyteller.deckcraft",
       "desktopId": "ai.storyteller.deckcraft.desktop",
       "fileTypes": {
@@ -371,9 +305,6 @@
       "name": "CADCraft",
       "summary": "Computer-aided design",
       "category": "Make",
-      "packs": [
-        "creative-studio"
-      ],
       "icon": "ai.storyteller.cadcraft",
       "desktopId": "ai.storyteller.cadcraft.desktop",
       "fileTypes": {
@@ -398,9 +329,6 @@
       "name": "SoundCraft",
       "summary": "Audio editing",
       "category": "Video & Audio",
-      "packs": [
-        "creative-studio"
-      ],
       "icon": "ai.storyteller.soundcraft",
       "desktopId": "ai.storyteller.soundcraft.desktop",
       "fileTypes": {
@@ -432,9 +360,6 @@
       "name": "FigCraft",
       "summary": "Interface design",
       "category": "Create",
-      "packs": [
-        "creative-studio"
-      ],
       "icon": "ai.storyteller.figcraft",
       "desktopId": "ai.storyteller.figcraft.desktop",
       "fileTypes": {
@@ -462,9 +387,6 @@
       "name": "Krita",
       "summary": "Digital painting",
       "category": "Create",
-      "packs": [
-        "create"
-      ],
       "icon": "krita",
       "desktopId": "org.kde.krita.desktop",
       "fileTypes": {
@@ -495,9 +417,6 @@
       "name": "darktable",
       "summary": "Photo development",
       "category": "Create",
-      "packs": [
-        "create"
-      ],
       "icon": "darktable",
       "desktopId": "org.darktable.darktable.desktop",
       "fileTypes": {
@@ -529,9 +448,6 @@
       "name": "Inkscape",
       "summary": "Vector drawing",
       "category": "Create",
-      "packs": [
-        "create"
-      ],
       "icon": "org.inkscape.Inkscape",
       "desktopId": "org.inkscape.Inkscape.desktop",
       "fileTypes": {
@@ -559,9 +475,6 @@
       "name": "GIMP",
       "summary": "Image editing",
       "category": "Create",
-      "packs": [
-        "create"
-      ],
       "icon": "gimp",
       "desktopId": "gimp.desktop",
       "fileTypes": {
@@ -596,9 +509,6 @@
       "name": "Kdenlive",
       "summary": "Video editing",
       "category": "Video & Audio",
-      "packs": [
-        "video-audio"
-      ],
       "icon": "kdenlive",
       "desktopId": "org.kde.kdenlive.desktop",
       "fileTypes": {
@@ -625,9 +535,6 @@
       "name": "Shotcut",
       "summary": "Video editing",
       "category": "Video & Audio",
-      "packs": [
-        "video-audio"
-      ],
       "icon": "org.shotcut.Shotcut",
       "desktopId": "org.shotcut.Shotcut.desktop",
       "fileTypes": {
@@ -654,9 +561,6 @@
       "name": "Audacity",
       "summary": "Audio editing",
       "category": "Video & Audio",
-      "packs": [
-        "video-audio"
-      ],
       "icon": "audacity",
       "desktopId": "audacity.desktop",
       "fileTypes": {
@@ -685,9 +589,6 @@
       "name": "HandBrake",
       "summary": "Video conversion",
       "category": "Video & Audio",
-      "packs": [
-        "video-audio"
-      ],
       "icon": "fr.handbrake.ghb",
       "desktopId": "fr.handbrake.ghb.desktop",
       "fileTypes": {
@@ -715,9 +616,6 @@
       "name": "FreeCAD",
       "summary": "Parametric 3D design",
       "category": "Make",
-      "packs": [
-        "make"
-      ],
       "icon": "org.freecad.FreeCAD",
       "desktopId": "org.freecad.FreeCAD.desktop",
       "fileTypes": {
@@ -742,9 +640,6 @@
       "name": "OpenSCAD",
       "summary": "Scripted 3D design",
       "category": "Make",
-      "packs": [
-        "make"
-      ],
       "icon": "openscad",
       "desktopId": "openscad.desktop",
       "fileTypes": {
@@ -767,9 +662,6 @@
       "name": "KiCad",
       "summary": "Electronics design",
       "category": "Make",
-      "packs": [
-        "make"
-      ],
       "icon": "kicad",
       "desktopId": "org.kicad.kicad.desktop",
       "fileTypes": {
@@ -793,9 +685,6 @@
       "name": "PrusaSlicer",
       "summary": "3D printing preparation",
       "category": "Make",
-      "packs": [
-        "make"
-      ],
       "icon": "PrusaSlicer",
       "desktopId": "PrusaSlicer.desktop",
       "fileTypes": {
@@ -818,10 +707,7 @@
       "id": "thunderbird",
       "name": "Thunderbird",
       "summary": "Email and calendar",
-      "category": "Office",
-      "packs": [
-        "office"
-      ],
+      "category": "Productivity",
       "icon": "thunderbird",
       "desktopId": "thunderbird.desktop",
       "fileTypes": {
@@ -840,10 +726,7 @@
       "id": "calibre",
       "name": "Calibre",
       "summary": "E-book management",
-      "category": "Office",
-      "packs": [
-        "office"
-      ],
+      "category": "Productivity",
       "icon": "calibre-gui",
       "desktopId": "calibre-gui.desktop",
       "fileTypes": {
@@ -868,10 +751,7 @@
       "id": "remmina",
       "name": "Remmina",
       "summary": "Remote desktop",
-      "category": "Admin",
-      "packs": [
-        "admin"
-      ],
+      "category": "System",
       "icon": "org.remmina.Remmina",
       "desktopId": "org.remmina.Remmina.desktop",
       "fileTypes": {
@@ -890,10 +770,7 @@
       "id": "wireshark",
       "name": "Wireshark",
       "summary": "Network analysis",
-      "category": "Admin",
-      "packs": [
-        "admin"
-      ],
+      "category": "System",
       "icon": "org.wireshark.Wireshark",
       "desktopId": "org.wireshark.Wireshark.desktop",
       "fileTypes": {
@@ -913,9 +790,6 @@
       "name": "Image Viewer",
       "summary": "View images",
       "category": "Utilities",
-      "packs": [
-        "utilities"
-      ],
       "icon": "org.gnome.eog",
       "desktopId": "org.gnome.eog.desktop",
       "fileTypes": {
@@ -947,9 +821,6 @@
       "name": "Calculator",
       "summary": "Calculator",
       "category": "Utilities",
-      "packs": [
-        "utilities"
-      ],
       "icon": "org.gnome.Calculator",
       "desktopId": "org.gnome.Calculator.desktop",
       "fileTypes": {
@@ -969,9 +840,6 @@
       "name": "VLC",
       "summary": "Media player",
       "category": "Video & Audio",
-      "packs": [
-        "video-audio"
-      ],
       "icon": "vlc",
       "desktopId": "vlc.desktop",
       "fileTypes": {

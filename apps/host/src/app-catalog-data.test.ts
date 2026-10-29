@@ -10,9 +10,10 @@ describe('application catalog', () => {
     expect(apps.find(app => app.id === 'gimp')?.flathub).toBe('org.gimp.GIMP')
     expect(apps.filter(app => app.source.kind === 'apt').every(app => app.flathub)).toBe(true)
   })
-  it('loads the reviewed entries and their pack memberships', () => {
+  it('loads the reviewed entries in the Library\'s categories', () => {
     const data = loadCatalog()
-    expect(data.apps.filter(a => a.packs.includes('creative-studio'))).toHaveLength(13)
+    expect(data.apps.filter(a => a.source.kind === 'release')).toHaveLength(13)
+    expect(data.apps.find(a => a.id === 'wordcraft')?.category).toBe('Productivity')
     expect(data.apps.find(a => a.id === 'gridcraft')?.source.kind).toBe('release')
     expect(data.apps.find(a => a.id === 'gimp')?.source).toEqual({ kind: 'apt', packages: ['gimp'] })
   })
@@ -36,14 +37,14 @@ describe('application catalog', () => {
     const ids = new Set(apps.map(app => app.id))
     expect(files.filter(file => !ids.has(file.split('.')[0]!))).toEqual([])
   })
-  it('rejects malformed packages, release sources, aliases, duplicates and unknown packs', () => {
+  it('rejects malformed packages, release sources, aliases, duplicates and unknown categories', () => {
     for (const mutate of [
       (d: ReturnType<typeof loadCatalog>) => { d.apps[0]!.source = { kind: 'apt', packages: ['-y'] } },
       (d: ReturnType<typeof loadCatalog>) => { d.apps.find(app => app.id === 'photocraft')!.source = { kind: 'release', package: 'other' } },
       (d: ReturnType<typeof loadCatalog>) => { d.apps.find(app => app.id === 'gimp')!.source = { kind: 'release', package: 'gimp' } },
       (d: ReturnType<typeof loadCatalog>) => { d.apps.find(app => app.id === 'gimp')!.flathub = '../evil' },
       (d: ReturnType<typeof loadCatalog>) => { d.apps.push(d.apps[0]!) },
-      (d: ReturnType<typeof loadCatalog>) => { d.apps[0]!.packs = ['missing'] },
+      (d: ReturnType<typeof loadCatalog>) => { d.apps[0]!.category = 'Office' },
     ]) { const data = loadCatalog(); mutate(data); expect(() => parseCatalog(data)).toThrow() }
   })
 })

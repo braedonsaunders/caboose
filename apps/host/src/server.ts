@@ -499,8 +499,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       const params = new URL(request.url ?? '/', 'http://localhost').searchParams
       const offset = params.get('offset') ?? '0'
       if (!/^\d{1,6}$/.test(offset)) throw new AgentInputError('Invalid offset')
-      return json(response, 200, await appCatalog.discover(params.get('q') ?? '', params.get('category') ?? '', Number(offset), params.get('collection') ?? ''))
+      return json(response, 200, await appCatalog.discover(params.get('q') ?? '', params.get('category') ?? '', Number(offset)))
     }
+    if (request.method === 'GET' && path === '/v1/catalog/storefront') return json(response, 200, await appCatalog.storefront())
     if (request.method === 'GET' && path === '/v1/catalog') return json(response, 200, await appCatalog.list())
     const craftRun = /^\/v1\/catalog\/([^/]+)\/run$/.exec(path)
     if (request.method === 'POST' && craftRun?.[1]) {

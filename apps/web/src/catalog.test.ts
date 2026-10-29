@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import {
-  actionLabel, appActions, appendPage, catalogBusy, displayVersion, isPending, nextOffset, packApps, progressSummary,
+  actionLabel, appActions, appendPage, catalogBusy, displayVersion, isPending, nextOffset, progressSummary,
   withLiveState, type CatalogApp, type CatalogResponse,
 } from './catalog.js'
 
 function app(id: string, overrides: Partial<CatalogApp> = {}): CatalogApp {
   return {
-    id, name: id[0]!.toUpperCase() + id.slice(1), summary: `${id} summary`, category: 'Create', categories: ['Create'], packs: ['studio'],
+    id, name: id[0]!.toUpperCase() + id.slice(1), summary: `${id} summary`, category: 'Create', categories: ['Create'],
     desktopId: `${id}.desktop`, fileTypes: { extensions: [], utTypes: [] }, iconData: null, source: { kind: 'apt' }, curated: true,
-    origin: 'caboose', developer: null, verified: false, license: null, installs: null, installedVersion: null, latestVersion: null,
+    origin: 'caboose', developer: null, verified: false, license: null, installs: null, installedVersion: null, unavailable: null, latestVersion: null,
     updateAvailable: false, lastError: null, interrupted: false, active: false, progress: null, ...overrides,
   }
 }
 
 function flathub(appId: string, overrides: Partial<CatalogApp> = {}): CatalogApp {
   return app(`flathub-${appId}`, {
-    desktopId: `${appId}.desktop`, packs: [], source: { kind: 'flatpak', size: 1000 }, curated: false, origin: 'flathub', ...overrides,
+    desktopId: `${appId}.desktop`, source: { kind: 'flatpak', size: 1000 }, curated: false, origin: 'flathub', ...overrides,
   })
 }
 
@@ -32,7 +32,7 @@ describe('catalog', () => {
 
   it('is busy while an operation is queued or installing, not after it finishes or fails', () => {
     const catalog = (phase: 'queued' | 'installing' | 'finished' | 'failed'): CatalogResponse => ({
-      packs: [], apps: [app('a', { progress: { id: 'a', operation: 'install', phase } })],
+      apps: [app('a', { progress: { id: 'a', operation: 'install', phase } })],
     })
     expect(catalogBusy(catalog('queued'))).toBe(true)
     expect(catalogBusy(catalog('installing'))).toBe(true)
@@ -52,14 +52,6 @@ describe('catalog', () => {
     expect(progressSummary({ id: 'a', operation: 'remove', phase: 'finished' })).toEqual({ label: 'Removed' })
   })
 
-  it('groups a collection\'s apps in catalog order', () => {
-    const catalog: CatalogResponse = {
-      packs: [{ id: 'studio', name: 'Studio' }, { id: 'office', name: 'Office' }],
-      apps: [app('a', { installedVersion: '1' }), app('b'), app('c', { packs: ['office'] })],
-    }
-    expect(packApps(catalog, 'studio').map(entry => entry.id)).toEqual(['a', 'b'])
-    expect(packApps(catalog, 'office').map(entry => entry.id)).toEqual(['c'])
-  })
 
   it('trims Debian revisions from Debian versions only', () => {
     expect(displayVersion('7.6.1-1+b2')).toBe('7.6.1')
@@ -77,7 +69,6 @@ describe('library', () => {
       flathub('org.kde.krita', { installedVersion: '5.2', progress: { id: 'flathub-org.kde.krita', operation: 'remove', phase: 'queued' } }),
     ]
     const catalog: CatalogResponse = {
-      packs: [],
       apps: [
         app('gimp', { installedVersion: '3.0' }),
         flathub('org.mozilla.firefox', { active: true, progress: { id: 'flathub-org.mozilla.firefox', operation: 'install', phase: 'installing' } }),
@@ -92,7 +83,7 @@ describe('library', () => {
 
   it('keeps a curated row the catalog does not list as it came', () => {
     const curated = app('photocraft', { installedVersion: '1.0' })
-    expect(withLiveState([curated], { packs: [], apps: [] })[0]).toBe(curated)
+    expect(withLiveState([curated], { apps: [] })[0]).toBe(curated)
   })
 
   it('appends pages without repeating an app and stops at the total or an empty page', () => {
