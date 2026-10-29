@@ -68,6 +68,50 @@ def actions(section):
             break
     return found
 
+def desktop_shortcut(ident):
+    """Copy an installed entry; publish atomically, never replace an owner's item."""
+    if not ident.endswith('.desktop') or '/' in ident or len(ident) > 240 or any(ord(c) < 32 for c in ident):
+        raise SystemExit('Invalid application id')
+    entry = entries().get(ident)
+    section = read(entry) if entry else None
+    if section is None:
+        raise SystemExit('Application not found')
+    with open(entry, 'rb') as source:
+        data = source.read(262145)
+    if len(data) > 262144:
+        raise SystemExit('Desktop entry is too large')
+    # This reference is interpreted only as an installed ID by iOS, never as Exec.
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str
+    parser.read_string(data.decode('utf-8'))
+    parser['Desktop Entry']['X-Caboose-AppId'] = ident
+    import io, uuid
+    output = io.StringIO()
+    parser.write(output, space_around_delimiters=False)
+    desktop = pathlib.Path.home() / 'Desktop'
+    desktop.mkdir(exist_ok=True)
+    # A directory fd prevents a renamed/replaced Desktop from redirecting publication.
+    fd = os.open(desktop, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = '.caboose-shortcut-' + uuid.uuid4().hex
+    try:
+        out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o755, dir_fd=fd)
+        with os.fdopen(out, 'w', encoding='utf-8') as target:
+            target.write(output.getvalue())
+            target.flush()
+            os.fsync(target.fileno())
+        try:
+            os.link(temporary, ident, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+        except FileExistsError:
+            raise SystemExit('Desktop shortcut already exists')
+    finally:
+        try: os.unlink(temporary, dir_fd=fd)
+        finally: os.close(fd)
+    print(json.dumps({'path': 'Desktop/' + ident}))
+
+if sys.argv[1] == 'desktop-shortcut':
+    desktop_shortcut(sys.argv[2])
+    sys.exit(0)
+
 # `launch <id> [home-relative file]` starts an entry; `action <id> <action>` starts one of its actions.
 if sys.argv[1] in ('launch', 'action'):
     if sys.argv[1] == 'action' and len(sys.argv) != 4:

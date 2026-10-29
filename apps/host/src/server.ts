@@ -9,7 +9,7 @@ import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { NOT_FOUND, json, noContent, readJson } from './http.js'
-import { parseAppLaunch, type AppAction } from './guest-apps.js'
+import { createDesktopShortcut, parseAppLaunch, type AppAction } from './guest-apps.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import type { Architecture } from './app-catalog-data.js'
@@ -541,6 +541,14 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (request.method === 'DELETE' && removeApp?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); await appCatalog.ready(); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
     if (request.method === 'GET' && path === '/v1/apps') {
       return json(response, 200, await computer.run(() => controller.apps()))
+    }
+    const desktopShortcut = /^\/v1\/apps\/([^/]+)\/desktop-shortcut$/.exec(path)
+    if (request.method === 'POST' && desktopShortcut?.[1]) {
+      return json(response, 201, await computer.run(async () => {
+        const guest = controller.guest()
+        if (!guest) throw new AgentUnavailableError()
+        return createDesktopShortcut(guest, decodeURIComponent(desktopShortcut[1]!))
+      }))
     }
     const match = /^\/v1\/apps\/([^/]+)\/launch$/.exec(path)
     if (request.method === 'POST' && match?.[1]) {

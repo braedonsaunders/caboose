@@ -519,3 +519,12 @@ requested and confirmed selection with `GET /v1/agent/tasks/:id/models`; `PUT` w
 are idle. Providers without an advertisement omit `models`. The runner checks the id
 against fresh session options before prompting; the host does not infer models from keys
 or environment variables. See `guest/agentd/README.md` for persistence and ACP negotiation.
+
+### Desktop shortcut endpoint
+
+`POST /v1/apps/:id/desktop-shortcut` creates an owner-owned standard `.desktop` shortcut in
+`~/Desktop` from a visible installed application. It returns `{ path }` with status 201,
+404 for an unavailable app, and 409 for a filename collision. Entries are bounded to 256 KiB,
+the Desktop directory cannot be a symlink, and publication never overwrites an existing item.
+The copy includes `X-Caboose-AppId` for the native app's installed-ID launch route.
+Run `pnpm test -- src/guest-apps.test.ts` for copy, collision, traversal and symlink checks.

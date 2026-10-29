@@ -94,6 +94,11 @@ it('routes agent replies, approvals, files and links with the right status codes
   expect(launch).toHaveBeenCalledWith('ai.storyteller.photocraft.desktop', 'Documents/a.psd')
   expect((await post('/v1/fs/open', { path: '../bad', app: 'a.desktop' })).status).toBe(400)
   expect((await post('/v1/fs/open', { path: 'a', app: '../bad.desktop' })).status).toBe(400)
+  expect((await fetch(base + '/v1/apps/firefox.desktop/desktop-shortcut', { method: 'POST' })).status).toBe(401)
+  const shortcut = await post('/v1/apps/firefox.desktop/desktop-shortcut', {})
+  expect(shortcut.status).toBe(201)
+  expect(await shortcut.json()).toEqual({ path: 'Desktop/firefox.desktop' })
+  expect((await post('/v1/apps/bad%2Fid.desktop/desktop-shortcut', {})).status).toBe(400)
   // A launch takes no body, or { action } naming one of the entry's desktop actions.
   expect((await fetch(base + '/v1/apps/firefox.desktop/launch', { method: 'POST', headers: { authorization: 'Bearer owner' } })).status).toBe(200)
   expect(launch).toHaveBeenLastCalledWith('firefox.desktop', undefined, undefined)

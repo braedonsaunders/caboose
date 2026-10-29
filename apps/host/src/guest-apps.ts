@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises'
+import type { AgentGuest } from './agents.js'
+import { ComputerConflictError } from './lifecycle.js'
 import { AgentInputError, AgentNotFoundError } from './agents.js'
 
 /** One of a desktop entry's actions (`Actions=` and its `[Desktop Action <id>]` group). */
@@ -30,6 +33,21 @@ export async function guestLaunch(run: (args: string[]) => Promise<string>, id: 
     const message = error instanceof Error ? error.message : ''
     if (message.includes('Application action not found')) throw new AgentNotFoundError('Application action not found')
     if (message.includes('Application not found')) throw new AgentNotFoundError('Application not found')
+    throw error
+  }
+}
+
+/** Resolve the ID in the guest's installed-entry search path, as its owner. */
+export async function createDesktopShortcut(guest: AgentGuest, id: string): Promise<{ path: string }> {
+  if (!id.endsWith('.desktop') || id.length > 240 || /[/\x00-\x1f\x7f]/.test(id)) throw new AgentInputError('Invalid application id')
+  const script = await readFile(new URL('./guest-apps.py', import.meta.url), 'utf8')
+  try {
+    await guest.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/python3', '-c', script, 'desktop-shortcut', id], 15_000)
+    return { path: `Desktop/${id}` }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : ''
+    if (message.includes('Application not found')) throw new AgentNotFoundError('Application not found')
+    if (message.includes('Desktop shortcut already exists')) throw new ComputerConflictError('Desktop shortcut already exists')
     throw error
   }
 }

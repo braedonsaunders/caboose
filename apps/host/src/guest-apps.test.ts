@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -60,7 +60,7 @@ function fixture(entries: Record<string, string>) {
   const env = { ...process.env, PYTHONPATH: root, HOME: root, TEST_LAUNCHES: launches }
   const run = (...args: string[]) => spawnSync('/usr/bin/python3', ['-c', script, ...args], { env, encoding: 'utf8' })
   const recorded = () => existsSync(launches) ? readFileSync(launches, 'utf8').trim().split('\n').map(line => JSON.parse(line) as unknown) : []
-  return { run, recorded }
+  return { run, recorded, root }
 }
 
 const FIREFOX = `[Desktop Entry]
@@ -155,5 +155,40 @@ describe('app launch requests', () => {
     await expect(guestLaunch(failing('Application action not found'), 'firefox.desktop', undefined, 'x')).rejects.toEqual(new AgentNotFoundError('Application action not found'))
     await expect(guestLaunch(failing('Application not found'), 'gone.desktop')).rejects.toBeInstanceOf(AgentNotFoundError)
     await expect(guestLaunch(failing('Application could not be started'), 'gimp.desktop')).rejects.not.toBeInstanceOf(AgentNotFoundError)
+  })
+})
+
+describe('desktop shortcuts', () => {
+  it('copies a standard installed entry atomically and refuses collisions', () => {
+    const f = fixture({ 'firefox.desktop': FIREFOX })
+    expect(f.run('desktop-shortcut', 'firefox.desktop').status).toBe(0)
+    const path = join(f.root, 'Desktop', 'firefox.desktop')
+    const text = readFileSync(path, 'utf8')
+    expect(text).toContain('Exec=firefox %u')
+    expect(text).toContain('X-Caboose-AppId=firefox.desktop')
+    expect(f.run('desktop-shortcut', 'firefox.desktop').stderr).toContain('already exists')
+    expect(readFileSync(path, 'utf8')).toBe(text)
+    expect(f.recorded()).toEqual([])
+  })
+  it('rejects unknown IDs, traversal, hidden entries and a symlink Desktop', () => {
+    const f = fixture({ 'firefox.desktop': FIREFOX, 'hidden.desktop': FIREFOX.replace('Type=Application', 'Type=Application\nHidden=true') })
+    expect(f.run('desktop-shortcut', '../firefox.desktop').status).not.toBe(0)
+    expect(f.run('desktop-shortcut', 'missing.desktop').stderr).toContain('Application not found')
+    expect(f.run('desktop-shortcut', 'hidden.desktop').stderr).toContain('Application not found')
+    const outside = join(f.root, 'elsewhere')
+    mkdirSync(outside)
+    symlinkSync(outside, join(f.root, 'Desktop'))
+    expect(f.run('desktop-shortcut', 'firefox.desktop').status).not.toBe(0)
+    expect(existsSync(join(outside, 'firefox.desktop'))).toBe(false)
+  })
+  it('bounds copied content and refuses destination symlinks', () => {
+    const f = fixture({ 'big.desktop': FIREFOX + '#'.repeat(262144), 'firefox.desktop': FIREFOX })
+    expect(f.run('desktop-shortcut', 'big.desktop').stderr).toContain('too large')
+    mkdirSync(join(f.root, 'Desktop'))
+    const target = join(f.root, 'keep')
+    writeFileSync(target, 'keep')
+    symlinkSync(target, join(f.root, 'Desktop', 'firefox.desktop'))
+    expect(f.run('desktop-shortcut', 'firefox.desktop').status).not.toBe(0)
+    expect(readFileSync(target, 'utf8')).toBe('keep')
   })
 })
