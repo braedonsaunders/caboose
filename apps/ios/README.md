@@ -18,6 +18,12 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 
 ## Build
 
+Building needs **Xcode 27.1 or later** (the iOS 27.1 SDK); the app itself runs on iOS 26.
+The fold-aware Laptop layout (`UIHingeInteraction`, `reservedRegions(kind:)`) and the
+vertical tab bar and toolbar (`toolbarVerticalEdge`, `ToolbarOverflowMenu`,
+`visibilityPriority`) are iOS 27 API behind `#available(iOS 27, *)` checks, which only
+compile against that SDK; on iOS 26 those paths are skipped at run time.
+
 ```sh
 brew install xcodegen
 cd apps/ios
