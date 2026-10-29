@@ -319,8 +319,11 @@ def _environment(directory):
 
 def _mount_root_script(readonly):
     """Use appliance tools only, with filesystem-specific replay/compression options."""
-    ext4 = 'ro,noload' if readonly else 'rw'
-    btrfs = 'ro,rescue=nologreplay' if readonly else 'rw,compress-force=zstd:1'
+    # Migration may start after an unclean stop. readonly:true attachments
+    # recover journals only into libguestfs disposable COW overlays; using
+    # no-replay here could pack a different view than later writable recovery.
+    ext4 = 'ro' if readonly else 'rw'
+    btrfs = 'ro' if readonly else 'rw,compress-force=zstd:1'
     return ('set -eu; fs=$(blkid -p -s TYPE -o value /dev/sda3); '
             f'case "$fs" in ext4) opts={ext4};; btrfs) opts={btrfs};; '
             '*) echo "unsupported root filesystem" >&2; exit 1;; esac; '

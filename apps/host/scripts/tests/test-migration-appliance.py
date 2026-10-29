@@ -41,7 +41,7 @@ class ApplianceTests(unittest.TestCase):
 
     def test_mounts_both_filesystems_with_correct_replay_and_compression(self):
         for filesystem, readonly, options in (
-                ('ext4', True, 'ro,noload'), ('btrfs', True, 'ro,rescue=nologreplay'),
+                ('ext4', True, 'ro'), ('btrfs', True, 'ro'),
                 ('ext4', False, 'rw'), ('btrfs', False, 'rw,compress-force=zstd:1')):
             with self.subTest(filesystem=filesystem, readonly=readonly):
                 result = self.run_mount_script(filesystem, readonly)

@@ -22,6 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
 import migration_appliance as m
 
 
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', required=True, type=Path)
@@ -71,12 +76,33 @@ def main():
                             'sync', ':', 'shutdown']
                 m._guestfish(commands, m._environment(directory), directory / 'create.log',
                              600, m._READONLY_LIMIT, guard)
+            # Leave a filesystem mounted after a durable file write, then reset
+            # only this disposable appliance without a filesystem shutdown.
+            # Migration must recover the same view when measuring and packing.
+            with m._appliance_directory(root, 'crash-', guard) as directory:
+                commands = m._disk_commands('/usr/bin/guestfish', disk, False) + [
+                    'debug', 'sh',
+                    'set -eu; test -w /proc/sysrq-trigger; sync; dd if=/sysroot/usr/probe of=/sysroot/usr/after-crash '
+                    'bs=65536 conv=fsync status=none; echo b > /proc/sysrq-trigger']
+                try:
+                    m._guestfish(commands, m._environment(directory), directory / 'crash.log',
+                                 120, m._READONLY_LIMIT, guard)
+                except m.ApplianceError as error:
+                    detail = str(error).lower()
+                    assert any(message in detail for message in (
+                        'appliance closed the connection', 'unexpected end of file',
+                        'appliance has crashed')), detail
+                    assert m._guard_quiescent(guard), 'Reset appliance did not stop safely'
+                else:
+                    raise AssertionError('Expected disposable appliance reset to disconnect')
+            source_hash = digest(disk)
             before = disk.stat()
             output = root / f'{filesystem}.erofs'
             m.pack_system_image(disk, output, root, timeout=600, guard=guard)
             after = disk.stat()
             assert (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) == (
                 after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            assert digest(disk) == source_hash, 'Read-only migration changed source bytes'
             assert 0 < output.stat().st_size < 16 * 1024 ** 2
             with m._appliance_directory(root, 'verify-', guard) as directory:
                 commands = ['/usr/bin/guestfish', 'add-drive', str(output), 'readonly:true', 'format:raw', ':',
@@ -84,13 +110,14 @@ def main():
                             'mount-ro', '/dev/sda', '/', ':',
                             'checksum', 'sha256', '/usr/probe', ':',
                             'checksum', 'sha256', '/opt/hardlink', ':',
+                            'checksum', 'sha256', '/usr/after-crash', ':',
                             'getxattr', '/usr/probe', 'user.caboose-test', ':', 'echo', '', ':',
                             'filesize', '/usr/sparse', ':',
                             'readlink', '/usr/symlink', ':', 'shutdown']
                 result = m._guestfish(commands, m._environment(directory), directory / 'verify.log',
                                      600, m._READONLY_LIMIT, guard)
-            assert result.splitlines() == [expected, expected, 'preserved', '4194304', '/does-not-exist'], result
-            print(f'{filesystem}: read-only measured pack, hashes, hardlink content, xattr, sparse size, symlink passed', flush=True)
+            assert result.splitlines() == [expected, expected, expected, 'preserved', '4194304', '/does-not-exist'], result
+            print(f'{filesystem}: unclean source recovery, unchanged source hash, measured pack, hashes, hardlink content, xattr, sparse size, symlink passed', flush=True)
             output.unlink()
             disk.unlink()
         success = True

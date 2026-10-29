@@ -649,7 +649,10 @@ with disposable processes. The lock cannot fence VMMs started by older hosts.
 ### Migrate a legacy microVM disk
 
 The appliance accepts ext4 and Btrfs roots. Migration keeps the root filesystem and
-reclaims deleted system files with discard on its staged clone.
+reclaims deleted system files with discard on its staged clone. Unlike sealed
+parked-file views, migration permits journal/log recovery inside libguestfs's
+private COW overlays when reading an uncleanly stopped source; the source bytes
+remain unchanged.
 
 On the Linux machine that owns the image root, stop the host and make sure the
 computer is cold-stopped. Local snapshots, cold snapshot pointers and incomplete
