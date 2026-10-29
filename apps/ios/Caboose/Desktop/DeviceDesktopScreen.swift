@@ -490,10 +490,13 @@ final class DesktopTouchSurface: RemoteTextInputView {
                 scrolling = true
                 session.resetScroll()
                 guard let mapping = desktop.inputMapping(for: target, windows: session.windows) else { return }
+                let epoch = session.epoch
+                let connection = (session as? CabooseDisplaySession)?.connections
                 scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak target, weak desktop] delta in
                     guard let self, let session, let target, let desktop, self.window != nil,
                           self.session === session, self.desktop === desktop, session.state == .ready,
                           session.windows[id] === target, desktop.isVisible(id),
+                          session.epoch == epoch, (session as? CabooseDisplaySession)?.connections == connection,
                           desktop.inputMapping(for: target, windows: session.windows) == mapping,
                           case .content(let current, _) = desktop.hitTest(desktop.cursor, windows: session.windows), current == id else { return false }
                     guard let remoteDelta = mapping.delta(delta) else { return false }
@@ -519,6 +522,10 @@ final class DesktopTouchSurface: RemoteTextInputView {
             scrollSuppressed = true
         }
         guard live(event).isEmpty, let desktop else {
+            // A partial lift must not restart a two-finger scroll with one finger
+            // or turn the remaining contact into a click/hold.
+            scrollSuppressed = true
+            cancelHold()
             lastCentroid = centroid(live(event))
             return
         }

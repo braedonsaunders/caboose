@@ -358,7 +358,9 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
   fields hinted sensitive or hidden, whose text never leaves the computer.
 - Clients keep pointer gestures (tap, long-press right-click, swipe to scroll) for
   `xwayland: true` windows and send real touch to native Wayland ones, because most X11
-  apps turn a touch drag into a selection.
+  apps turn a touch drag into a selection. Emulated pans retain one gesture owner;
+  a finger-count change cancels that pan. Card and free-desktop scroll delivery,
+  including momentum, stops when its connection or coordinate mapping changes.
 
 caboose-display sends a subset of these messages. It sends named cursors (`cursor.named`)
 and no `cursor` images; tiles only as `png`; `video.create` and `video.update` without

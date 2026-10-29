@@ -291,12 +291,15 @@ final class TrackpadSurface: RemoteTextInputView {
             let directTarget = target
             let originalDesktop = desktop
             let originalFrame = window.frame
+            let epoch = session.epoch
+            let connection = (session as? CabooseDisplaySession)?.connections
             scrolling = true
             session.resetScroll()
             scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak window, weak directTarget, weak originalDesktop] delta in
                 guard let self, let session, let window, self.window != nil,
                       self.inputEnabled, self.pointerEnabled, self.session === session,
-                      session.state == .ready, session.windows[window.id] === window else { return false }
+                      session.state == .ready, session.windows[window.id] === window,
+                      session.epoch == epoch, (session as? CabooseDisplaySession)?.connections == connection else { return false }
                 if let directTarget {
                     guard self.target === directTarget, window.frame == originalFrame else { return false }
                 } else {

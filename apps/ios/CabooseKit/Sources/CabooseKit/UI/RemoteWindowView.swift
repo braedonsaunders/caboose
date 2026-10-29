@@ -63,6 +63,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private let pointerClicks = PointerClickDriver()
     private let scrollDriver = ScrollDriver()
     private var scrollUsesDirectTouch = false
+    private var scrollOwnership = ScrollGestureOwnership<ObjectIdentifier>()
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
     private weak var contextTouchGesture: UILongPressGestureRecognizer?
     private var holdUsesPointerDrag = false
@@ -602,7 +603,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        stopMomentum()
+        // A second contact belongs to the current recognizer. Its topology check
+        // cancels the whole gesture; do not silently strand an active driver here.
+        if !scrollOwnership.isActive { stopMomentum() }
         let native = touches.filter(routesNatively)
         nativeTouches.formUnion(native.map(ObjectIdentifier.init))
         if !native.isEmpty {
@@ -730,6 +733,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// send precise deltas once per display frame, followed by client-side inertia.
     @objc private func handleScroll(_ gesture: UIPanGestureRecognizer) {
         let now = CACurrentMediaTime()
+        let owner = ObjectIdentifier(gesture)
         switch gesture.state {
         case .began:
             stopMomentum()
@@ -741,23 +745,36 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             scrollUsesDirectTouch = gesture.numberOfTouches > 0
             let anchor = lastPointer
             let scale = pixelsPerPoint
+            let geometry = bounds
+            let size = remoteWindow.frame.size
+            let epoch = session.epoch
+            let connection = (session as? CabooseDisplaySession)?.connections
+            scrollOwnership.begin(owner, contacts: gesture.numberOfTouches)
             scrollDriver.begin(at: now - 1.0 / 120) { [weak self, weak session, weak remoteWindow] delta in
                 guard let self, let session, let remoteWindow, self.isInteractive,
                       self.window != nil, self.session === session, self.remoteWindow === remoteWindow,
-                      session.state == .ready, session.windows[remoteWindow.id] === remoteWindow else { return false }
+                      session.state == .ready, session.windows[remoteWindow.id] === remoteWindow,
+                      session.epoch == epoch, (session as? CabooseDisplaySession)?.connections == connection,
+                      self.pixelsPerPoint == scale, self.bounds == geometry, remoteWindow.frame.size == size
+                else { return false }
                 session.scroll(in: remoteWindow, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
                 return true
             }
             appendScroll(gesture, at: now)
         case .changed:
+            guard scrollOwnership.update(owner, contacts: gesture.numberOfTouches) else {
+                if !scrollOwnership.isActive { scrollDriver.cancel() }
+                return
+            }
             appendScroll(gesture, at: now)
         case .ended:
+            guard scrollOwnership.end(owner) else { return }
             appendScroll(gesture, at: now)
             let velocity = gesture.velocity(in: self)
             // Indirect hardware scrolling already includes OS momentum.
             scrollDriver.end(at: now, velocity: CGPoint(x: -velocity.x, y: -velocity.y), coast: scrollUsesDirectTouch)
         case .cancelled, .failed:
-            stopMomentum()
+            if scrollOwnership.end(owner) { scrollDriver.cancel() }
         default: break
         }
     }
@@ -770,7 +787,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         }
     }
 
-    private func stopMomentum() { scrollDriver.cancel() }
+    private func stopMomentum() {
+        scrollOwnership.cancel()
+        scrollDriver.cancel()
+    }
 
     // MARK: Keyboard — the software keyboard through UITextInput, hardware keys through presses.
 

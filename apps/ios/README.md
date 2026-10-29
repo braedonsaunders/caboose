@@ -380,11 +380,17 @@ client inertia; native Wayland touch keeps the application's own fling behavior.
 stall drops old movement and momentum while continuing to accept the finger's new movement.
 Run `swift test --filter ScrollPhysicsTests` in `apps/ios/CabooseKit` for deterministic
 checks of distance at 30/60/90/120 Hz, fractional input, cancellation, stale release,
-reversal and display stalls. On a real host, check slow and fast swipes in a native
+reversal and display stalls. `swift test --filter ScrollGestureOwnershipTests` checks
+recognizer ownership and cancellation on finger-count changes. Card and free-desktop
+scrolling retain their original connection and coordinate mapping through momentum.
+On a real host, check slow and fast swipes in a native
 Wayland app and one- and two-finger swipes in an Xwayland app, then desktop/trackpad scrolling. Confirm
 that a new touch stops the fling, a held finger stops before release, pinches still
 zoom, drawing and selection still work, context clicks do not fling, and changing
-windows or backgrounding never sends old scroll input to the next window.
+windows or backgrounding never sends old scroll input to the next window. In cards,
+free Desktop and Laptop, add or lift a finger during a pan: the remainder must neither
+scroll, click nor fling; a fresh swipe works. Resize or rotate during momentum and
+reconnect during a pan: no old delta may enter the new mapping or connection.
 
 
 With the desktop on a TV the phone is its input, with the same choices as Laptop from the
