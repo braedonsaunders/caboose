@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
 import { publicUrl } from './reach.js'
 import { REGISTRY_URL } from './registry.js'
+import { parseTrustedProxies, type TrustedProxies } from './proxies.js'
 
 export interface Config {
   /** `CABOOSE_OWNER_TOKEN`; null means the host generates one in its state directory. */
@@ -36,6 +37,8 @@ export interface Config {
   publicUrl: string | null
   /** `CABOOSE_MDNS`: advertise `_caboose._tcp` on the LAN (default on). */
   mdns: boolean
+  /** `CABOOSE_TRUSTED_PROXIES`: reverse proxies whose forwarding headers are believed; loopback always is. */
+  trustedProxies: TrustedProxies
 }
 
 /** What `/v1/session` tells the app to speak on `/v1/display` (docs/architecture.md, docs/display.md). */
@@ -75,6 +78,7 @@ export function config(env: NodeJS.ProcessEnv): Config {
     maxRunning: integer(env.CABOOSE_MAX_RUNNING, 4, 'CABOOSE_MAX_RUNNING', 64),
     publicUrl: publicUrl(env.CABOOSE_PUBLIC_URL),
     mdns: mdns(env.CABOOSE_MDNS),
+    trustedProxies: parseTrustedProxies(env.CABOOSE_TRUSTED_PROXIES),
   }
 }
 

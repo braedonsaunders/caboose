@@ -440,6 +440,7 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park |
 | `CABOOSE_PUBLIC_URL` | unset | Where phones reach the host from anywhere (an `http(s)` URL, optionally with a path, without credentials, query or fragment); first in `/v1/host/reach`, and the console auth base URL (auth defaults to loopback when unset) |
 | `CABOOSE_MDNS` | `on` | `off` stops the LAN advertisement ([Reachability](#reachability)) |
+| `CABOOSE_TRUSTED_PROXIES` | empty | Reverse proxies whose forwarding headers are believed: IPv4 or IPv6 addresses or CIDR ranges, separated by commas; loopback always is. From a trusted proxy, `X-Forwarded-For` names the client whose sign-in attempts are counted (the last address no trusted proxy added) and `X-Forwarded-Proto` the scheme of the request's origin; from anyone else both are ignored |
 | `CABOOSE_WEB_ROOT` | `apps/web/dist` | The built web console |
 | `CABOOSE_APNS_KEY_PATH`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC` | unset | APNs provider; all four or none |
 
@@ -1939,8 +1940,10 @@ app group and a Keychain access group.
   sessions are signed with `CABOOSE_AUTH_SECRET` or the generated `auth-secret`). Sign-up
   is closed: the first account comes from setting the host up with its one-time code, the
   rest from single-use invitation links. The host allows twenty sign-in, setup or
-  invitation attempts per client in ten minutes, then answers 429. An administrator
-  sees only their tenants' computers; only the operator sees the host itself.
+  invitation attempts per client in ten minutes, then answers 429; behind a reverse proxy,
+  the client is the address the proxy forwarded only when the proxy is in
+  `CABOOSE_TRUSTED_PROXIES` or on loopback. An administrator sees only their tenants'
+  computers; only the operator sees the host itself.
 - **Phone tokens.** A phone signs in to one computer with its own token, obtained once for a
   single-use, ten-minute pairing code, so no token is ever shown in a link, a QR code or the
   console. The host stores only SHA-256 digests; signing a phone out closes its sockets and

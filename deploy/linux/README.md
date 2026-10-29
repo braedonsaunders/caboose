@@ -39,7 +39,11 @@ for the QR code) with apt, dnf, pacman or zypper.
 The host listens on every address on port 7310 by default, so a phone on the same network
 reaches it. Traffic is plain HTTP on that network. To use Caboose away from home, use
 Tailscale or a server with a domain and HTTPS (`--domain`, [deploy/server](../server)).
-Never forward the port from your router.
+Never forward the port from your router. If you put your own HTTPS reverse proxy in front
+of the host, on another machine or in a container, add its address or range to
+`CABOOSE_TRUSTED_PROXIES` in `/etc/caboose/host.env` (apps/host/README.md, Configuration):
+otherwise the host counts every client behind it as one address for sign-in throttling
+and does not believe the scheme it forwards. A proxy on the host itself needs nothing.
 
 ## Options
 

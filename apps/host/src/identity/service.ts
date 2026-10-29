@@ -93,7 +93,8 @@ export class Identity {
   /**
    * `baseURL` is where the console is usually reached; sign-in also accepts requests from
    * whatever origin a browser used to reach this host, since a home server answers on its LAN
-   * address, its Tailscale name and loopback alike.
+   * address, its Tailscale name and loopback alike. `X-Forwarded-Proto` reaches here only
+   * from a trusted proxy: the server drops it from any other peer (`dropUntrustedForwarding`).
    */
   static create(options: { database: IdentityDatabase; baseURL: string; secret: string; setupCodePath: string }): Identity {
     const auth = createAppkitAuth({

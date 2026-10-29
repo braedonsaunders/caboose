@@ -9,6 +9,7 @@ import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { NOT_FOUND, json, readJson } from './http.js'
+import { dropUntrustedForwarding, type TrustedProxies } from './proxies.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import { loadCatalog } from './app-catalog-data.js'
@@ -778,10 +779,13 @@ export function createCabooseServer(options: ComputerPieces & {
   fleet?: Fleet
   /** Accounts and tenants. Without it the owner token and phones are the only principals. */
   identity?: Identity
+  /** Reverse proxies whose forwarding headers are believed (`CABOOSE_TRUSTED_PROXIES`); loopback always is. */
+  trustedProxies?: TrustedProxies
 }) {
   const identity = options.identity
   const authHandler = identity ? toNodeHandler(identity.auth) : undefined
-  const throttle = new SignInThrottle()
+  const trustedProxies = options.trustedProxies ?? []
+  const throttle = new SignInThrottle({ trustedProxies })
   const shared = {
     registry: options.registry ?? new AgentRegistry(),
     guestArchitecture: options.guestArchitecture,
@@ -927,6 +931,7 @@ export function createCabooseServer(options: ComputerPieces & {
 
   const server = createServer((request, response) => {
     void (async () => {
+      dropUntrustedForwarding(request, trustedProxies)
       const path = new URL(request.url ?? '/', 'http://localhost').pathname
       if (path !== '/v1' && !path.startsWith('/v1/')) {
         // Until the host is claimed, its setup page requires the one-time setup code.
@@ -1047,6 +1052,7 @@ export function createCabooseServer(options: ComputerPieces & {
   })
 
   server.on('upgrade', (request, socket, head) => void (async () => {
+    dropUntrustedForwarding(request, trustedProxies)
     const url = new URL(request.url ?? '/', 'http://localhost')
     const principal = await principalOf(request).catch(() => undefined)
     if (!principal) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }

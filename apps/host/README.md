@@ -206,6 +206,7 @@ the three packages public in its package settings before anonymous pulls work.
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
 | `CABOOSE_PUBLIC_URL` | unset | Where phones reach this host from anywhere, such as `https://caboose.example.com`; listed first in pairing links and used as the console auth base URL (auth defaults to loopback when unset). |
 | `CABOOSE_MDNS` | `on` | `off` stops advertising `_caboose._tcp` on the LAN. |
+| `CABOOSE_TRUSTED_PROXIES` | empty | Reverse proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed: addresses or CIDR ranges separated by commas (loopback always is). List a proxy on another machine or in another container, or every client behind it shares one sign-in throttle. |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor (microVM). |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container`. |
 | `CABOOSE_BASE_IMAGE` | empty (release: pinned) | OCI reference fetched when the disk root lacks the image (microVM). |
