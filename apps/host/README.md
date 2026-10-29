@@ -296,7 +296,9 @@ the GPU (`/dev/udmabuf` too, when the host has it), and drives the computer with
 Parking freezes the container (`docker pause`): memory stays in RAM and waking is immediate,
 but a Docker or host restart loses the running session and the next wake starts fresh with
 the home intact. A cold restart stops and starts the same container, so installed packages
-and the catalog's rollback cache survive; removing the container discards them.
+survive; removing the container discards them. New containers get Caboose's seccomp profile
+(`guest/container/caboose-seccomp.json`) unless `CABOOSE_CONTAINER_ARGS` sets one, and mount the
+shared runtime volume `caboose-depot` read-only.
 
 A computer is fenced in both runtimes: it can open no connection to the host or to another
 computer, and reaches only the public internet, not private, link-local (cloud metadata),
@@ -417,16 +419,32 @@ appended. The API and its limits are in `docs/architecture.md` § Notifications.
 
 ## Catalog and Craft jobs
 
-The pinned catalog in [`guest/catalog`](../../guest/catalog/README.md) is served at
-`GET /v1/catalog`. `GET /v1/catalog/discover?q=...` searches Debian AppStream desktop entries available to the guest architecture; results include categories and project licences. An empty query returns up to 100 entries, with Caboose picks identified as curated. `apps/host/scripts/check-store.sh` checks discovery, installation, installed state, the desktop launcher and restoration in a disposable Debian container; it requires Docker and network access. Install, update, rollback and removal are asynchronous; watch
-`catalog.progress` and `catalog.changed` on `/v1/control`. The guest downloads and verifies
-release packages before APT runs, and Debian packages come from the signed Debian 13
-repositories. Progress percentages describe measured release-download bytes only;
-verification, package installation and triggers show indeterminate stages. One catalog
-operation runs at a time. Listings distinguish a lock-held active operation from an
-interrupted worker; the host observes surviving work and holds its lease until it ends.
-Retry completes pending dpkg configuration even if the application already reports an
-installed version. Rollback is available only when an earlier release package is cached.
+The Library is the curated catalog in [`guest/catalog`](../../guest/catalog/README.md) followed
+by Flathub (`docs/architecture.md` § Catalog). `GET /v1/catalog` lists curated entries and every
+installed application; `GET /v1/catalog/discover?q=&category=&offset=` ranks the whole Library 40
+at a time without a running computer. `src/flathub.ts` keeps Flathub's index and icons in
+`CABOOSE_IMAGE_ROOT/flathub`, `src/releases.ts` the latest verified Craft releases in
+`CABOOSE_IMAGE_ROOT/releases`, and `src/depot.ts` the shared runtime depot's record in
+`CABOOSE_IMAGE_ROOT/depot.json` (`docs/architecture.md` § Runtime depot). On the container
+runtime the depot is the Docker volume `caboose-depot` and its builder runs `src/depot-builder.py`
+in a throwaway container from `CABOOSE_CONTAINER_IMAGE`; a microVM host installs each app's
+runtime into the computer.
+
+Install, update and removal are asynchronous; watch `catalog.progress` and `catalog.changed` on
+`/v1/control`. Installed applications update once a day while their computer runs. The guest
+downloads and verifies Craft releases against their published SHA-256 before APT runs, Debian
+packages come from the signed Debian 13 repositories, and Flathub apps install through
+libflatpak. Progress percentages describe measured download bytes only; verification, package
+installation and triggers show indeterminate stages. One catalog operation runs at a time.
+Listings distinguish a lock-held active operation from an interrupted worker; the host observes
+surviving work and holds its lease until it ends. Retry completes pending dpkg configuration
+even if the application already reports an installed version.
+
+`apps/host/scripts/check-flathub.sh` checks the depot builder, a read-only depot mount, a
+Flathub install that uses the depot's runtime, a sandboxed run under Caboose's seccomp profile
+and removal, in disposable Debian containers; it needs Docker and about 1 GB from Flathub.
+`apps/host/scripts/check-store.sh` checks that a Debian app installed through the earlier
+AppStream discovery is rediscovered from its record.
 
 Craft jobs run a fixed list of installed catalog CLI operations, as `caboose`, on files
 staged in `~/.caboose-jobs/<job>` through `/v1/fs`. The contract, formats, progress events

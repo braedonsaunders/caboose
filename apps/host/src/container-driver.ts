@@ -247,7 +247,7 @@ export function createContainerController(config: Config, dependencies: { docker
       if ((await state()) === 'running') await docker(['pause', name], 60_000)
       running = false
     },
-    /** Restart the same container so installed packages and their rollback cache survive. */
+    /** Restart the same container so installed packages survive. */
     async restart() {
       lastError = null
       if (running) {
