@@ -2581,7 +2581,8 @@ origin only, and a reported content size is applied even during placement reconc
 
 Chat deletion uses `DELETE /v1/agent/tasks/:id` with `{ "stop": true }` for an
 explicit stop-and-delete operation; omitting `stop` rejects a running, paused, or queued
-chat with 409. The per-computer host retires only a runner whose process identity and
+chat with 409. Deleting an absent or already deleted UUID succeeds idempotently; a
+malformed task ID returns 404. The per-computer host retires only a runner whose process identity and
 working directory match the chat, and verifies its process group has exited before
 removing history. A durable `.deleted-<id>` marker prevents restoration and reuse of
 that task ID. Caboose removes its conversation, queued messages, approval records and

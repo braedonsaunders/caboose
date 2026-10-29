@@ -537,7 +537,7 @@ the Desktop directory cannot be a symlink, and publication never overwrites an e
 The copy includes `X-Caboose-AppId` for the native app's installed-ID launch route.
 Run `pnpm test -- src/guest-apps.test.ts` for copy, collision, traversal and symlink checks.
 
-Chat deletion is covered by `pnpm exec vitest run apps/host/src/agents.test.ts apps/host/src/agent-delete.test.ts`
+Chat deletion is covered by `pnpm --filter caboose-host exec vitest run src/agents.test.ts src/agent-delete.test.ts src/server.test.ts src/fleet.test.ts`
 from the repository root. On a real Linux computer, create a chat that writes a file in
 its working directory and one outside it, then swipe Delete in Agents > Chats. Confirm
 Stop and Delete while running (repeat while paused and while awaiting approval). Verify
