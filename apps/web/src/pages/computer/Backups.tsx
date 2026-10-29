@@ -20,7 +20,7 @@ export function Backups({ client }: { client: CabooseClient }) {
     finally { setBusy(false) }
   }
   async function restore(id: string, date: string) {
-    const typed = await promptDialog({ title: 'Replace this computer’s disk?', description: `Restore the capture from ${new Date(date).toLocaleString()}. This closes apps, discards memory and all changes since this capture, and restarts the computer. Type RESTORE to continue.`, confirmLabel: 'Replace disk and restart' })
+    const typed = await promptDialog({ title: 'Replace this computer’s disk?', label: `Restore the capture from ${new Date(date).toLocaleString()}. This closes apps, discards memory and all changes since this capture, and restarts the computer. Type RESTORE to continue.`, confirmLabel: 'Replace disk and restart' })
     if (typed !== 'RESTORE') return
     await run(() => client.restoreRecovery(id))
   }
