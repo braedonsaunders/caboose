@@ -34,6 +34,9 @@ struct PointerClickDriverTests {
         private var nextObserver = 0
         private var closed = false
         private var tasks: [Task<Void, Never>] = []
+        private let timeoutDuration: Duration
+
+        init(timeout: Duration) { timeoutDuration = timeout }
 
         func sleep(_ duration: UInt64) async throws {
             guard !closed else { throw CancellationError() }
@@ -64,7 +67,7 @@ struct PointerClickDriverTests {
                 nextObserver += 1
                 let ticket = nextObserver
                 let timeout = Task { [weak self] in
-                    do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                    do { try await Task.sleep(for: self?.timeoutDuration ?? .seconds(5)) } catch { return }
                     self?.failObserver(ticket, error: Failure.timerNotRegistered)
                 }
                 defer { timeout.cancel() }
@@ -103,7 +106,7 @@ struct PointerClickDriverTests {
         func finish(_ task: Task<Void, Never>) async throws {
             var timedOut = false
             let timeout = Task {
-                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                do { try await Task.sleep(for: timeoutDuration) } catch { return }
                 timedOut = true
                 abort()
             }
@@ -126,8 +129,8 @@ struct PointerClickDriverTests {
         }
     }
 
-    private func withDriver(_ body: (Clock, PointerClickDriver) async throws -> Void) async throws {
-        let clock = Clock()
+    private func withDriver(timeout: Duration = .seconds(5), _ body: (Clock, PointerClickDriver) async throws -> Void) async throws {
+        let clock = Clock(timeout: timeout)
         let driver = PointerClickDriver(sleep: clock.sleep)
         do {
             try await body(clock, driver)
@@ -136,6 +139,48 @@ struct PointerClickDriverTests {
             throw error
         }
         await clock.close(driver)
+    }
+
+    @Test func anUnregisteredTimerFailsWithinTheBound() async throws {
+        try await withDriver(timeout: .milliseconds(20)) { clock, _ in
+            do {
+                _ = try await clock.next(100_000_000)
+                Issue.record("Missing timer unexpectedly registered")
+            } catch Clock.Failure.timerNotRegistered {}
+        }
+    }
+
+    @Test func aStuckTaskTimesOutAndDrainsItsTimer() async throws {
+        try await withDriver(timeout: .milliseconds(20)) { clock, driver in
+            var edges: [Bool] = []
+            driver.click { edges.append($0); return true }
+            let task = try clock.capture(driver)
+            _ = try await clock.next(100_000_000)
+            do {
+                try await clock.finish(task)
+                Issue.record("Unadvanced timer unexpectedly finished")
+            } catch Clock.Failure.taskDidNotFinish {}
+            #expect(edges == [true, false])
+            #expect(driver.task == nil)
+        }
+    }
+
+    @Test func cancellationDrainsThePendingTaskAndTimer() async throws {
+        var edges: [Bool] = []
+        let check = Task {
+            try await withDriver { clock, driver in
+                driver.click { edges.append($0); return true }
+                let task = try clock.capture(driver)
+                _ = try await clock.next(100_000_000)
+                withUnsafeCurrentTask { $0?.cancel() }
+                try await clock.finish(task)
+            }
+        }
+        do {
+            try await check.value
+            Issue.record("Cancelled completion wait unexpectedly succeeded")
+        } catch is CancellationError {}
+        #expect(edges == [true, false])
     }
 
     @Test func tapsHaveDownAndUpIntervalsAndStayOrdered() async throws {

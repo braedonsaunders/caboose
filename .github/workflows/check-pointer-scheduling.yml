@@ -1,0 +1,92 @@
+name: Check pointer test scheduling
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/check-pointer-scheduling.yml'
+      - 'apps/ios/CabooseKit/Sources/CabooseKit/Session/PointerClickDriver.swift'
+      - 'apps/ios/CabooseKit/Tests/CabooseKitTests/PointerClickDriverTests.swift'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  pointer:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
+      REQUESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Record exact source and toolchain
+        run: |
+          mkdir -p pointer-logs
+          test "$(git rev-parse HEAD)" = "$REQUESTED_SHA"
+          test "$(uname -m)" = arm64
+          {
+            echo "requested=$REQUESTED_SHA"
+            git rev-parse HEAD 'HEAD^{tree}'
+            swift --version
+            xcodebuild -version
+            shasum -a 256 apps/ios/CabooseKit/Sources/CabooseKit/Session/PointerClickDriver.swift apps/ios/CabooseKit/Tests/CabooseKitTests/PointerClickDriverTests.swift
+          } | tee pointer-logs/source.txt
+      - name: Check ordering and cancellation-timeout cleanup
+        run: |
+          swift test --package-path apps/ios/CabooseKit --disable-sandbox -j 1 --filter PointerClickDriverTests 2>&1 | tee pointer-logs/pointer.log
+      - name: Require stale-task negative control to fail its assertion
+        run: |
+          mkdir -p "$RUNNER_TEMP/pointer-negative"
+          git archive HEAD apps/ios/CabooseKit | tar -x -C "$RUNNER_TEMP/pointer-negative"
+          export NEGATIVE_KIT="$RUNNER_TEMP/pointer-negative/apps/ios/CabooseKit"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          source = Path(os.environ['NEGATIVE_KIT']) / 'Sources/CabooseKit/Session/PointerClickDriver.swift'
+          text = source.read_text()
+          guard = 'guard generation == ticket, !Task.isCancelled else { return }'
+          assert text.count(guard) == 2
+          # Deliberately release an old target after cancellation, then finish that old
+          # task. The test must observe its completion and reject the duplicate release.
+          mutation = 'if generation != ticket || Task.isCancelled { _ = send(false); return }'
+          source.write_text(text.replace(guard, mutation, 1))
+          PY
+          shasum -a 256 "$NEGATIVE_KIT/Sources/CabooseKit/Session/PointerClickDriver.swift" | tee pointer-logs/negative-source.txt
+          set +e
+          swift test --package-path "$NEGATIVE_KIT" --disable-sandbox -j 1 --filter oldTimerCannotReleaseANewerClick > pointer-logs/negative.log 2>&1
+          result=$?
+          set -e
+          echo "negative_exit=$result" | tee -a pointer-logs/negative-source.txt
+          test "$result" -ne 0
+          python3 - <<'PY'
+          from pathlib import Path
+          log = Path('pointer-logs/negative.log').read_text(errors='replace')
+          assert 'oldTimerCannotReleaseANewerClick' in log
+          assert 'Expectation failed' in log and 'A up' in log, log[-12000:]
+          assert 'taskDidNotFinish' not in log and 'timerNotRegistered' not in log
+          print('Stale-task negative control failed its edge assertion: PASS')
+          PY
+      - name: Bound retained test logs
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for path in Path('pointer-logs').glob('*'):
+              if path.is_file() and path.stat().st_size > 2 * 1024 * 1024:
+                  data = path.read_bytes()
+                  path.write_bytes(data[:1024 * 1024 - 32] + b'\n[bounded middle omitted]\n' + data[-1024 * 1024:])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pointer-scheduling-${{ github.event.pull_request.head.sha || github.sha }}
+          path: pointer-logs
+          if-no-files-found: error
+          retention-days: 7
