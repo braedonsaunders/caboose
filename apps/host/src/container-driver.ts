@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { guardContainerPrinting } from './components.js'
 import { randomBytes } from 'node:crypto'
+import { createServer, type Server } from 'node:net'
 import { existsSync } from 'node:fs'
 import { readFile, rm } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
@@ -28,7 +29,7 @@ export function containerPlacement(config: Pick<Config, 'containerName' | 'conta
   if (identity.slot === 0) {
     return { name: config.containerName, home: config.containerHome, network: CONTAINER_NETWORK, bridge: CONTAINER_BRIDGE, ports: { display: OWNER_DISPLAY_PORT, agent: AGENT_DISPLAY_PORT, files: FILES_PORT, terminal: TERMINAL_PORT } }
   }
-  // Existing mappings are immutable. New slots ask Docker to allocate loopback ports.
+  // Existing mappings are immutable. New slots allocate loopback ports independently.
   const base = identity.slot < 64 ? 20_000 + identity.slot * 10 : 0
   return {
     name: `caboose-${identity.id}`, home: `${config.containerHome}-${identity.id}`,
@@ -40,8 +41,31 @@ export function containerPlacement(config: Pick<Config, 'containerName' | 'conta
 // Docker keeps port bindings in stopped containers too. Reserve only ports outside the
 // legacy range, and serialize allocation through container creation so parked containers
 // cannot be assigned the same ports as a new one.
+class PortBindRace extends Error {}
+
+/** Check all four ports on the host, then release them before Docker binds. */
+export async function portsAvailable(ports: readonly number[]): Promise<boolean> {
+  const servers: Server[] = []
+  try {
+    for (const port of ports) {
+      const server = createServer()
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.once('error', reject)
+          server.listen(port, '127.0.0.1', () => { server.removeListener('error', reject); resolve() })
+        })
+        servers.push(server)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE' || (error as NodeJS.ErrnoException).code === 'EACCES') return false
+        throw error
+      }
+    }
+    return true
+  } finally { await Promise.all(servers.map(server => new Promise<void>(resolve => server.close(() => resolve())))) }
+}
+
 let allocationQueue: Promise<void> = Promise.resolve()
-export async function withContainerPorts<T>(docker: Docker, work: (ports: { display: number; agent: number; files: number; terminal: number }) => Promise<T>): Promise<T> {
+export async function withContainerPorts<T>(docker: Docker, work: (ports: { display: number; agent: number; files: number; terminal: number }) => Promise<T>, available = portsAvailable): Promise<T> {
   const run = allocationQueue.then(async () => {
     const ids = (await docker(['ps', '-aq'], 15_000)).trim().split(/\s+/).filter(Boolean)
     const occupied = new Set<number>()
@@ -59,9 +83,12 @@ export async function withContainerPorts<T>(docker: Docker, work: (ports: { disp
         }
       }
     }
+    let races = 0
     for (let base = 21000; base <= 65532; base += 4) {
-      if ([base, base + 1, base + 2, base + 3].some(port => occupied.has(port))) continue
-      return work({ display: base, agent: base + 1, files: base + 2, terminal: base + 3 })
+      const ports = [base, base + 1, base + 2, base + 3]
+      if (ports.some(port => occupied.has(port)) || !await available(ports)) continue
+      try { return await work({ display: base, agent: base + 1, files: base + 2, terminal: base + 3 }) }
+      catch (error) { if (!(error instanceof PortBindRace)) throw error; if (++races >= 32) throw new Error('Could not reserve container ports after 32 bind races', { cause: error }) }
     }
     throw new Error('No loopback ports remain for another container computer')
   })
@@ -171,12 +198,13 @@ export function createContainerController(config: Config, dependencies: { docker
     await (dependencies.fence ?? fenceBridge)(place.bridge)
   }
 
-  function runArgs(size: ComputerResources): string[] {
+  function runArgs(size: ComputerResources, attempt?: string): string[] {
     return [
       'run', '-d', '--name', name, '--hostname', 'caboose', '--init',
       // Its own fenced network, and public DNS like the microVM, so nothing depends on the LAN.
       '--network', place.network, '--dns', '1.1.1.1', '--dns', '9.9.9.9',
       '--restart', 'no',
+      ...(attempt ? ['--label', `caboose.port-attempt=${attempt}`] : []),
       '--label', `caboose.memory-mb=${size.memoryMb}`, '--label', `caboose.vcpus=${size.vcpus}`,
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
       ...([['files', FILES_PORT], ['terminal', TERMINAL_PORT], ['display', OWNER_DISPLAY_PORT], ['agent', AGENT_DISPLAY_PORT]] as const).flatMap(([key, port]) => ['-p', `127.0.0.1:${place.ports[key] || ''}:${port}`]),
@@ -263,7 +291,17 @@ export function createContainerController(config: Config, dependencies: { docker
         if (dependencies.identity && dependencies.identity.slot >= 64) {
           await withContainerPorts(docker, async ports => {
             Object.assign(place.ports, ports)
-            await docker(runArgs(resources!), 300_000)
+            const attempt = randomBytes(16).toString('hex')
+            try { await docker(runArgs(resources!, attempt), 300_000) }
+            catch (error) {
+              if (!(error instanceof Error) || !/port is already allocated|address already in use|bind:.*(?:in use|failed)/i.test(error.message)) throw error
+              let info: { Id?: string; State?: { Status?: string }; Config?: { Labels?: Record<string, string> } }
+              try { info = JSON.parse(await docker(['inspect', '-f', '{{json .}}', name], 15_000)) }
+              catch { throw error } // No proof of ownership: never remove an existing computer.
+              if (!/^[a-f0-9]{64}$/.test(info.Id ?? '') || info.State?.Status !== 'created' || info.Config?.Labels?.['caboose.port-attempt'] !== attempt) throw error
+              await docker(['rm', info.Id!], 60_000)
+              throw new PortBindRace('Docker port bind raced', { cause: error })
+            }
           })
         } else await docker(runArgs(resources), 300_000)
       } else {

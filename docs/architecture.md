@@ -625,7 +625,8 @@ slot 0, and cannot be deleted. Every other computer has an id `c-` followed by 1
 digits, and the lowest free slot from 1 to 32831. The slot names its network (see Network
 fencing). Containers in slots 1–63 retain their fixed loopback ports; later containers use
 loopback ports allocated outside the legacy range after inspecting Docker bindings, including
-stopped containers. Docker retains those ports while parked. Each computer has its
+stopped containers, and probing the host before binding. A bind race is retried after
+removing only the newly created failed container. Docker retains ports while parked. Each computer has its
 own disk, settings, lifecycle, leases, agents, catalog, notifications and phones; nothing
 of one is reachable from another. microVM computers share one appkit-desk host, so at most
 `CABOOSE_MAX_RUNNING` run at once and further wakes queue.

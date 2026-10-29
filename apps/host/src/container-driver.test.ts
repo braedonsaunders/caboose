@@ -257,3 +257,60 @@ it('avoids ports recorded by stopped containers and serializes new allocations',
   expect((await a).display).toBe(21004)
   expect((await b).display).toBe(21008)
 })
+
+it('skips an occupied host listener before selecting a port block', async () => {
+  const { createServer } = await import('node:net')
+  const { portsAvailable } = await import('./container-driver.js')
+  const server = createServer()
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('No test port')
+    const docker: Docker = async () => ''
+    const picked = await withContainerPorts(docker, async ports => ports, ports => ports[0] === 21000 ? portsAvailable([address.port]) : Promise.resolve(true))
+    expect(picked.display).toBe(21004)
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())) }
+})
+
+it('removes only its failed bind attempt and retries with new ports', async () => {
+  const fake = fakeDocker('missing')
+  const calls: string[][] = []
+  let attempt = '', runs = 0
+  const id = 'a'.repeat(64)
+  const docker: Docker = async (args, timeout) => {
+    calls.push(args)
+    if (args[0] === 'ps') return ''
+    if (args[0] === 'run') {
+      runs++
+      if (runs === 1) {
+        attempt = args.find(arg => arg.startsWith('caboose.port-attempt='))!.split('=')[1]!
+        throw new Error('port is already allocated')
+      }
+    }
+    if (args[0] === 'inspect' && args.includes('{{json .}}')) return JSON.stringify({ Id: id, State: { Status: 'created' }, Config: { Labels: { 'caboose.port-attempt': attempt } } })
+    if (args[0] === 'rm' && args[1] === id) return ''
+    if (args[0] === 'port') return `127.0.0.1:${({ '14600/tcp': 21004, '14601/tcp': 21005, '14700/tcp': 21006, '14701/tcp': 21007 } as Record<string, number>)[args[2]!]}\n`
+    return fake.docker(args, timeout)
+  }
+  const controller = createContainerController(settings, { identity: { id: 'c-0123456789', slot: 64 }, docker, exists: () => false, fence: async () => {} })
+  await controller.wake()
+  expect(runs).toBe(2)
+  expect(calls.filter(call => call[0] === 'rm')).toEqual([['rm', id]])
+  expect(calls.filter(call => call[0] === 'run')[1]).toContain('127.0.0.1:21004:14600')
+  expect(calls.some(call => call[0] === 'volume' || (call[0] === 'network' && call[1] === 'rm'))).toBe(false)
+})
+
+it('never removes an existing container when a bind failure cannot prove ownership', async () => {
+  const fake = fakeDocker('missing')
+  const calls: string[][] = []
+  const docker: Docker = async (args, timeout) => {
+    calls.push(args)
+    if (args[0] === 'ps') return ''
+    if (args[0] === 'run') throw new Error('port is already allocated')
+    if (args[0] === 'inspect' && args.includes('{{json .}}')) return JSON.stringify({ Id: 'b'.repeat(64), State: { Status: 'created' }, Config: { Labels: { 'caboose.port-attempt': 'someone-else' } } })
+    return fake.docker(args, timeout)
+  }
+  const controller = createContainerController(settings, { identity: { id: 'c-0123456789', slot: 64 }, docker, exists: () => false, fence: async () => {} })
+  await expect(controller.wake()).rejects.toThrow('port is already allocated')
+  expect(calls.some(call => call[0] === 'rm' || call[0] === 'volume')).toBe(false)
+})
