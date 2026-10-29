@@ -243,3 +243,10 @@ private final class ResumeOnce {
         continuation = nil
     }
 }
+
+/// Live game ownership is separate from input routing: a desktop routes input elsewhere.
+enum GamePresentation {
+    static func hosts(interactive: Bool, desktop: Bool, contentEnabled: Bool, hasConnection: Bool, onScreen: Bool) -> Bool {
+        (interactive || desktop) && contentEnabled && hasConnection && onScreen
+    }
+}

@@ -2102,6 +2102,10 @@ open the window. A changed session, connection generation or window cancels the 
 `caboose://task/<id>` opens a task and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 
+The phone reads the system clipboard only for an explicit paste, not when entering the
+foreground. Desktop Full Screen opens a borderless window card with a return handle.
+The desktop app launcher accepts horizontal swipes as well as its page arrows.
+
 The name on Home opens a menu of explicitly paired computers, with the active computer
 checked. Add Computer uses the existing pairing flow and retains the other pairings.
 A single shared Keychain record stores the collection and active selection atomically;

@@ -836,3 +836,9 @@ opening message. Repeat with Reduce Motion, reconnect, and a running minimized a
 
 Desktop imports copy one file at a time; they do not establish Open in Place synchronization.
 Items use file-type icons and name ordering; manual placement and file previews are absent.
+
+Desktop checks: launch a handed-off game directly in Laptop mode, then flatten and fold
+the device; the live game stays visible and fits its window. In tablet portrait, the
+window’s green Full Screen control hides the dock and chrome; the return handle restores
+controls. Swipe horizontally across All Apps to change pages; vertical drags and short
+taps do not page. Opening Caboose does not read the system pasteboard.

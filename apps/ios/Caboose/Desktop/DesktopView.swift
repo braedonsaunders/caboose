@@ -140,13 +140,16 @@ struct RemoteWindowSurface: UIViewRepresentable {
     func makeUIView(context: Context) -> RemoteWindowView {
         let view = RemoteWindowView(session: nil, window: window)
         view.isInteractive = false
+        view.hostsGame = true
         view.pixelsPerPoint = pixelsPerPoint
         view.pacer = model.session
+        view.showsVideo = model.desktopActive && !model.yardActive
         return view
     }
 
     func updateUIView(_ view: RemoteWindowView, context: Context) {
         view.pacer = model.session
+        view.showsVideo = model.desktopActive && !model.yardActive
         if view.remoteWindow?.id != window.id { view.attach(window) }
     }
 }
@@ -287,6 +290,9 @@ struct Cursor: View {
 /// desktop it is on: up to seven columns on a big screen, fewer beside a phone's bars, and as
 /// many rows as fit above the dock.
 struct Launchpad: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @GestureState private var pageDrag: CGFloat = 0
+    @State private var movingForward = true
     @Environment(AppModel.self) private var model
     let desktop: DesktopModel
 
@@ -319,10 +325,14 @@ struct Launchpad: View {
                             .shadow(color: .black.opacity(0.5), radius: 2)
                     }
                     .frame(width: layout.column)
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.openOnDesktop(app); desktop.launchpadOpen = false }
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launcherFrames[app.id] = $0 }
                 }
             }
             .padding(.top, layout.top)
+            .offset(x: reduceMotion ? 0 : pageDrag)
+            .transition(reduceMotion ? .opacity : .asymmetric(insertion: .move(edge: movingForward ? .trailing : .leading), removal: .move(edge: movingForward ? .leading : .trailing)))
             .id("\(desktop.launcherPage)-\(apps.map(\.id).joined(separator: ","))-\(desktop.size.width)-\(desktop.size.height)")
             if apps.count > layout.columns * layout.rows {
                 HStack(spacing: 24 * ui) {
@@ -338,6 +348,21 @@ struct Launchpad: View {
         }
         .frame(width: desktop.size.width, height: desktop.size.height)
         .clipped()
+        .contentShape(Rectangle())
+        .simultaneousGesture(DragGesture(minimumDistance: 12)
+            .updating($pageDrag) { value, state, _ in
+                if abs(value.translation.width) > abs(value.translation.height) * 1.3 { state = value.translation.width }
+            }
+            .onEnded { value in
+                let next = layout.pageAfterSwipe(desktop.launcherPage, count: apps.count,
+                    translation: value.translation, predicted: value.predictedEndTranslation)
+                movingForward = next > desktop.launcherPage
+                withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.28)) {
+                    desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]
+                    desktop.launcherPage = next
+                }
+            })
+        .animation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.28), value: desktop.launcherPage)
         .onChange(of: apps.map(\.id)) { _, _ in resetFrames(layout: layout, count: apps.count) }
         .onChange(of: desktop.size) { _, _ in resetFrames(layout: layout, count: apps.count) }
         .onDisappear { desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]; desktop.launcherPage = 0 }
@@ -354,6 +379,11 @@ struct Launchpad: View {
             .font(.system(size: 16 * ui, weight: .semibold)).foregroundStyle(.white)
             .frame(width: 44 * ui, height: 44 * ui)
             .background(.white.opacity(0.16), in: Circle())
+            .onTapGesture {
+                movingForward = direction > 0
+                desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]
+                desktop.launcherPage += direction
+            }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launcherPageFrames[direction] = $0 }
     }
 }

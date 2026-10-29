@@ -44,6 +44,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// The game this view runs over the window's picture, when the window has one and this is
     /// its main view (see `layoutGame()`).
     private weak var gameSurface: GameSurfaceView?
+    /// The desktop routes input separately but still owns the live game, unlike a thumbnail.
+    public var hostsGame = false
     #if canImport(CabooseGPUStream)
     /// The GPU stream this view shows over the window's picture (see `layoutGPUStream()`).
     private weak var gpuStreamView: GPUStreamView?
@@ -146,7 +148,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             }
             updateGestures()
         }
-        let runs = game.map { !$0.isEnded } == true && isInteractive && showsVideo && session != nil && window != nil
+        let runs = game.map { !$0.isEnded } == true && GamePresentation.hosts(
+            interactive: isInteractive, desktop: hostsGame, contentEnabled: showsVideo,
+            hasConnection: (session ?? pacer) != nil, onScreen: window != nil)
         if let surface = gameSurface, !runs || surface.game !== game || surface.superview !== self {
             if surface.superview === self { surface.removeFromSuperview() }
             gameSurface = nil

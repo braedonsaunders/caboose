@@ -110,7 +110,7 @@ struct YardTitleBar: View {
         .overlay(alignment: .bottom) { Rectangle().fill(.black.opacity(0.45)).frame(height: 0.5) }
     }
 
-    private func openCard() { model.show(windowID: window.id) }
+    private func openCard() { model.show(windowID: window.id, borderless: true) }
 
     @ViewBuilder private var menuContent: some View {
         Section(window.title.isEmpty ? "Window" : window.title) {

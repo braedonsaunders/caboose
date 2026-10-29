@@ -64,6 +64,7 @@ struct WindowScreen: View {
             .statusBarHidden(!chromeVisible || laptopActive)
             .persistentSystemOverlays(chromeVisible && !laptopActive ? .automatic : .hidden)
         }
+        .onAppear { chromeVisible = !model.windowCardBorderless }
         .tint(Brand.amber)
         .fullScreenCover(item: Binding(
             get: { model.media.handedOff },

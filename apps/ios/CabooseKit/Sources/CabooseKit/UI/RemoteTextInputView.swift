@@ -78,8 +78,16 @@ open class RemoteTextInputView: UIView, UITextInput {
             resetTyping()
             sendKey(stroke, modifiers: Array(stickyModifiers))
             releaseSticky()
-        case .text(let text): insertText(text)
+        case .text(let text):
+            if stickyModifiers == ["control"], text.lowercased() == "v" { paste(nil) }
+            else { insertText(text) }
         }
+    }
+
+    /// Read the system clipboard only in response to the user's Paste action.
+    open override func paste(_ sender: Any?) {
+        releaseSticky()
+        if let text = UIPasteboard.general.string { insertText(text) }
     }
 
     private func releaseSticky() {

@@ -125,6 +125,9 @@ know `game.decline` skips it).
 
 ## The client
 
+The free desktop and Laptop host the live game even though their pointer and keyboard
+input is routed by the desktop. Thumbnails show snapshots and never host the game.
+
 CabooseKit lays a `WKWebView` over the window's content in `RemoteWindowView`, sharing the
 window's chrome, title bar, resizing and Stage Manager placement. The web view uses a
 non-persistent website data store, so the computer is the only place a game's state lives.
