@@ -8,17 +8,23 @@ struct CardWindowFitTests {
 
     @Test func appResizeAfterOnboardingGetsTheViewportBack() {
         var fit = CardWindowFit()
-        #expect(fit.shouldCorrect(frame: portrait, target: viewport, now: 0))
-        #expect(!fit.shouldCorrect(frame: viewport, target: viewport, now: 0.1))
-        #expect(fit.shouldCorrect(frame: portrait, target: viewport, now: 20))
+        let check10 = fit.shouldCorrect(frame: portrait, target: viewport, now: 0)
+        #expect(check10)
+        let check11 = !fit.shouldCorrect(frame: viewport, target: viewport, now: 0.1)
+        #expect(check11)
+        let check12 = fit.shouldCorrect(frame: portrait, target: viewport, now: 20)
+        #expect(check12)
     }
 
     @Test func minimumSizeRefusalDoesNotLoopThroughOptimisticFrames() {
         var fit = CardWindowFit()
         for i in 0..<10 {
-            #expect(fit.shouldCorrect(frame: portrait, target: viewport, now: Double(i) / 100) == (i < 2))
-            #expect(!fit.shouldCorrect(frame: viewport, target: viewport, now: Double(i) / 100))
+            let check18 = fit.shouldCorrect(frame: portrait, target: viewport, now: Double(i) / 100) == (i < 2)
+            #expect(check18)
+            let check19 = !fit.shouldCorrect(frame: viewport, target: viewport, now: Double(i) / 100)
+            #expect(check19)
         }
-        #expect(fit.shouldCorrect(frame: viewport, target: portrait, now: 0.2))
+        let check21 = fit.shouldCorrect(frame: viewport, target: portrait, now: 0.2)
+        #expect(check21)
     }
 }
