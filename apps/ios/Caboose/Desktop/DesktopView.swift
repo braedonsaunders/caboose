@@ -40,7 +40,8 @@ struct DesktopView: View {
                         .padding(.bottom, desktop.dockBottomInset)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                QuickSwitchStrip(height: desktop.workArea.height)
+                // Its rows are hit-tested by the desktop, in this space, like the dock.
+                QuickSwitchStrip(owner: .desktop, height: desktop.workArea.height, space: .named("desktop"), tappable: false)
                     .frame(width: desktop.size.width, height: desktop.workArea.height)
                 if desktop.showsCursor {
                     Cursor(hit: desktop.hovered, ui: desktop.ui)
@@ -49,6 +50,7 @@ struct DesktopView: View {
                 }
             }
             .coordinateSpace(name: "desktop")
+            .task(id: ObjectIdentifier(desktop)) { desktop.quickSwitch = model.quickSwitch }
             .onAppear {
                 if !model.windowCardOwnsGeometry { desktop.size = proxy.size }
                 if fillsScreen {
@@ -314,12 +316,7 @@ struct DesktopKeyCommands: View {
             key("Close Window", "w") { front { $1.close($0) } }
             key("Launchpad", "a") { withAnimation(.smooth(duration: 0.3)) { desktop.launchpadOpen.toggle() } }
             key("New Terminal", .return) { model.openTerminalApp() }
-            QuickSwitchKeys(recent: { model.appWindows.map(\.id) }) {
-                QuickSwitcher.Desktop(
-                    preview: { desktop.peek = $0 },
-                    commit: { desktop.peek = nil; desktop.activate($0, session: model.session) },
-                    cancel: { desktop.peek = nil })
-            }
+            QuickSwitchKeys(recent: { model.recentWindowIDs }) { desktop.switchTarget(session: model.session) }
         }
         .frame(width: 0, height: 0)
         .opacity(0)

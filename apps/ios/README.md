@@ -130,6 +130,15 @@ and picture need a device with the computer awake. On the Desktop tab, with thre
    leading edge moves its selection with the app and title beside it, and the desktop shows
    each window; ⇧ goes back; letting go of ⌥ lands there; Escape stays. Tap a window in the
    open strip. Close a window while the strip is open: it leaves the strip.
+8. Without a keyboard, on an upright iPhone, a Duo and an iPad (Tiled): tap Overview, and
+   Overview opens. Hold Overview until the strip appears, slide up the screen: the window
+   level with your finger is selected, named beside it, and the track slides to it while the
+   apps keep their size and place. Let go on a row: that window is focused. Hold again and
+   let go back on the dock: nothing changes, and Overview does not open. With VoiceOver,
+   Overview's actions include Switch Windows; choose a window or Stay Here. On iPad Free, do
+   the same holding Launchpad. On a TV, two-finger tap Launchpad on the phone's trackpad,
+   then tap a row or Stay Here. While a strip is open, background the app, open a card, or
+   lose the connection: the strip closes and nothing moves.
 
 ## How it renders
 

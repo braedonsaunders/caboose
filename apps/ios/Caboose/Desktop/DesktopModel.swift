@@ -24,7 +24,14 @@ final class DesktopModel {
         case launcherPage(Int)
         case content(Int, CGPoint)  // window id, point in window pixels
         case resize(Int)
+        /// A window in the open Quick Switch strip, and its Stay Here.
+        case switchItem(Int)
+        case switchStay
     }
+
+    /// Quick Switch, whose strip this desktop hit-tests while it is open: the touch area and
+    /// a TV's trackpad route every touch and click through here.
+    weak var quickSwitch: QuickSwitcher?
 
     /// How much larger than a Mac at arm's length the desktop draws, for the distance it is
     /// seen from: title bars, the dock, the cursor and (through the DPI it asks Linux for)
@@ -201,6 +208,36 @@ final class DesktopModel {
         return shown
     }
 
+    /// Application windows, most recently used first.
+    func recentWindows(_ session: any DisplaySession) -> [Int] {
+        session.windows.values.filter { !$0.isAuxiliary }.sorted { $0.raisedAt > $1.raisedAt }.map(\.id)
+    }
+
+    /// Quick Switch on the floating desktop: the selection is drawn in front (`peek`), with no
+    /// geometry sent, and the switch lands by raising and focusing it.
+    func switchTarget(session: (any DisplaySession)?) -> QuickSwitcher.Desktop {
+        QuickSwitcher.Desktop(owner: .desktop, session: session,
+                              preview: { [weak self] in self?.peek = $0 },
+                              commit: { [weak self] window in
+                                  self?.peek = nil
+                                  self?.activate(window, session: session)
+                              },
+                              cancel: { [weak self] in self?.peek = nil })
+    }
+
+    /// A finger held on Launchpad opens Quick Switch to slide through. False when the finger
+    /// is not on Launchpad.
+    func beginSwitchHold(session: (any DisplaySession)?) -> Bool {
+        guard let session, let quickSwitch, hitTest(cursor, windows: session.windows) == .launchpadButton else { return false }
+        launchpadOpen = false
+        quickSwitch.hold(recent: recentWindows(session), desktop: switchTarget(session: session))
+        return quickSwitch.owner == .desktop
+    }
+
+    func trackSwitchHold(at point: CGPoint) { quickSwitch?.track(point) }
+    func endSwitchHold() { quickSwitch?.release() }
+    func cancelSwitchHold() { quickSwitch?.cancel(owner: .desktop) }
+
     /// Brings a window forward and gives it the keyboard.
     func activate(_ id: Int, session: (any DisplaySession)?) {
         guard let session else { return }
@@ -241,6 +278,10 @@ final class DesktopModel {
     }
 
     func hitTest(_ point: CGPoint, windows: [Int: RemoteWindow]) -> Hit {
+        if quickSwitch?.owner == .desktop {
+            if let item = quickSwitch?.item(at: point) { return .switchItem(item) }
+            if quickSwitch?.staysAt(point) == true { return .switchStay }
+        }
         if fullscreenWindow(in: windows) == nil {
             if launchpadButtonFrame.contains(point) { return .launchpadButton }
             for (id, frame) in dockFrames where frame.contains(point) { return .dock(id) }
@@ -289,6 +330,21 @@ final class DesktopModel {
     func click(button: Int = 1, session: (any DisplaySession)?, open: (String) -> Void) {
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
+        switch hit {
+        case .switchItem(let id):
+            quickSwitch?.choose(id)
+            return
+        case .switchStay:
+            quickSwitch?.cancel()
+            return
+        case .launchpadButton where button == 3:
+            // A secondary click on Launchpad: the windows to choose from.
+            launchpadOpen = false
+            quickSwitch?.present(recent: recentWindows(session), desktop: switchTarget(session: session))
+            return
+        default:
+            break
+        }
         if case .launcherPage(let direction) = hit {
             launcherFrames = [:]
             launcherPageFrames = [:]
@@ -310,6 +366,8 @@ final class DesktopModel {
         case .minimize(let id): minimize(id)
         case .zoom(let id): toggleZoom(id, session)
         case .titleBar(let id), .resize(let id): raise(id); focus(id, session)
+        case .switchItem, .switchStay:
+            break
         case .content(let id, let local):
             guard let window = session.windows[id] else { return }
             if !window.isAuxiliary { raise(id) }

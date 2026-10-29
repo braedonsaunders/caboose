@@ -190,6 +190,8 @@ final class DesktopTouchSurface: RemoteTextInputView {
     private var maxFingers = 0
     private var dragging = false
     private var contextOpened = false
+    /// A finger held on Launchpad is sliding through Quick Switch.
+    private var switchHolding = false
     private var press = DirectPointerPress()
     private var holdTimer: Timer?
     private var lastCentroid: CGPoint?
@@ -257,6 +259,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
             travel = 0
             dragging = false
             contextOpened = false
+            switchHolding = false
             cancelHold()
             if let first = touches.first, touches.first?.type != .indirectPointer { desktop?.pointerHovering = false; point(at: first.location(in: self)) }
             else if let first = touches.first { point(at: first.location(in: self)) }
@@ -272,6 +275,11 @@ final class DesktopTouchSurface: RemoteTextInputView {
                 self.contextOpened = true
                 self.lastTap = nil
                 self.point(at: point)
+                // Held on Launchpad: Quick Switch, slid through with the same finger.
+                if desktop.beginSwitchHold(session: self.session) {
+                    self.switchHolding = true
+                    return
+                }
                 desktop.click(button: 3, session: self.session, open: self.open)
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
@@ -280,6 +288,10 @@ final class DesktopTouchSurface: RemoteTextInputView {
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         let fingers = live(event)
+        if switchHolding, let finger = fingers.first {
+            desktop?.trackSwitchHold(at: finger.location(in: self))
+            return
+        }
         guard !contextOpened else { return }
         guard let desktop, let now = centroid(fingers), let last = lastCentroid else { return }
         let delta = CGPoint(x: now.x - last.x, y: now.y - last.y)
@@ -305,6 +317,11 @@ final class DesktopTouchSurface: RemoteTextInputView {
         let now = event?.timestamp ?? 0
         let duration = now - began
         defer { maxFingers = 0; lastCentroid = nil; cancelHold() }
+        if switchHolding {
+            switchHolding = false
+            desktop.endSwitchHold()
+            return
+        }
         if contextOpened { return }
         if dragging {
             desktop.endDrag(session: session)
@@ -331,6 +348,10 @@ final class DesktopTouchSurface: RemoteTextInputView {
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         cancelHold()
+        if switchHolding {
+            switchHolding = false
+            desktop?.cancelSwitchHold()
+        }
         if dragging { desktop?.endDrag(session: session) }
         dragging = false
         maxFingers = 0

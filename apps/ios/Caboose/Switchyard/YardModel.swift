@@ -250,6 +250,41 @@ final class YardModel {
         apply()
     }
 
+    // MARK: Quick Switch
+
+    /// Where the track was before Quick Switch started showing windows.
+    private var scrollBeforePeek: CGFloat?
+
+    /// Slides the track to show a window's column for Quick Switch, telling Linux nothing:
+    /// no window is configured until the switch lands.
+    func peek(_ window: Int) {
+        guard layout.contains(window) else { return }
+        if scrollBeforePeek == nil { scrollBeforePeek = scroll }
+        let target = layout.scroll(revealing: window, from: scroll, in: metrics)
+        guard target != scroll else { return }
+        withAnimation(.smooth(duration: 0.3)) { scroll = target }
+    }
+
+    /// Ends showing windows: staying where the track is now, or sliding back.
+    func endPeek(keep: Bool) {
+        guard let before = scrollBeforePeek else { return }
+        scrollBeforePeek = nil
+        if !keep, before != scroll { withAnimation(.smooth(duration: 0.3)) { scroll = before } }
+        apply()
+    }
+
+    /// Quick Switch on the yard: windows are shown by sliding the track, and the switch lands
+    /// by focusing the window, which sends the geometry of where the track ended.
+    func switchTarget() -> QuickSwitcher.Desktop {
+        QuickSwitcher.Desktop(owner: .yard, session: session,
+                              preview: { [weak self] in self?.peek($0) },
+                              commit: { [weak self] window in
+                                  self?.focus(window)
+                                  self?.endPeek(keep: true)
+                              },
+                              cancel: { [weak self] in self?.endPeek(keep: false) })
+    }
+
     func moveFocus(_ direction: YardLayout.Direction) {
         guard let next = layout.window(direction) else { bump(); return }
         focus(next)

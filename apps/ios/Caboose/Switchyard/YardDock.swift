@@ -6,7 +6,8 @@ import SwiftUI
 ///
 /// A tap on an app goes to its window, or opens it. Slide along the cars
 /// to move along the track, tap one to go to that column. A swipe up on the dock opens
-/// Overview.
+/// Overview. Holding Overview opens Quick Switch: slide up to a window and let go to go to
+/// it, or let go anywhere else to stay.
 struct YardDock: View {
     @Environment(AppModel.self) private var model
     let yard: YardModel
@@ -57,8 +58,7 @@ struct YardDock: View {
                 .accessibilityLabel("Columns")
             }
             Divider().frame(height: 34).overlay(.white.opacity(0.3))
-            button("Overview", "square.grid.2x2") { withAnimation(.smooth(duration: 0.35)) { yard.overviewOpen = true } }
-                .disabled(columns.isEmpty)
+            OverviewControl(yard: yard, enabled: !columns.isEmpty)
             button("All Apps", "square.grid.3x3.fill") { withAnimation(.smooth(duration: 0.3)) { yard.launcherOpen = true } }
         }
         .padding(.horizontal, 12)
@@ -67,6 +67,9 @@ struct YardDock: View {
         .simultaneousGesture(
             DragGesture(minimumDistance: 20).onEnded { value in
                 guard value.translation.height < -30, abs(value.translation.height) > abs(value.translation.width), !columns.isEmpty else { return }
+                // A finger that held Overview and slid up was choosing a window, not asking for Overview.
+                let switcher = model.quickSwitch
+                guard switcher.mode != .hold, Date().timeIntervalSince(switcher.holdEnded) > 0.4 else { return }
                 withAnimation(.smooth(duration: 0.35)) { yard.overviewOpen = true }
             }
         )
@@ -104,6 +107,64 @@ struct YardDock: View {
     private func ratio(_ columns: Int) -> CGFloat {
         let track = yard.layout.trackWidth(in: yard.metrics)
         return max(1, track / max(car, CGFloat(columns) * (car + 4)))
+    }
+}
+
+/// Overview on the dock. A tap opens Overview. Held, it opens Quick Switch with nothing
+/// selected: sliding up selects the window level with the finger, and letting go goes to it;
+/// letting go off the strip, or the gesture being cancelled, stays. VoiceOver offers Switch
+/// Windows, which opens the strip to choose from, with Stay Here.
+private struct OverviewControl: View {
+    @Environment(AppModel.self) private var model
+    let yard: YardModel
+    let enabled: Bool
+    @GestureState private var held = false
+
+    var body: some View {
+        let switcher = model.quickSwitch
+        Image(systemName: "square.grid.2x2")
+            .font(.system(size: 17, weight: .semibold))
+            .frame(width: 34, height: 34)
+            .background(.white.opacity(switcher.owner == .yard && switcher.mode == .hold ? 0.22 : 0), in: Circle())
+            .contentShape(Rectangle())
+            .foregroundStyle(.white.opacity(enabled ? 1 : 0.4))
+            .gesture(
+                LongPressGesture(minimumDuration: 0.35)
+                    .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
+                    .updating($held) { value, state, _ in
+                        if case .second(true, _) = value { state = true }
+                    }
+                    .onChanged { value in
+                        guard case .second(true, let drag) = value else { return }
+                        if !(switcher.owner == .yard && switcher.mode == .hold) {
+                            switcher.hold(recent: recent, desktop: yard.switchTarget())
+                        }
+                        if let drag { switcher.track(drag.location) }
+                    }
+                    .onEnded { _ in switcher.release() }
+                    .exclusively(before: TapGesture().onEnded { openOverview() }),
+                including: enabled ? .all : .none
+            )
+            // A hold the system took away (a call, a system gesture) stays where it was.
+            .onChange(of: held) { _, held in
+                if !held, switcher.owner == .yard, switcher.mode == .hold { switcher.cancel() }
+            }
+            .accessibilityElement()
+            .accessibilityLabel("Overview")
+            .accessibilityHint("Hold and slide up to switch windows.")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { openOverview() }
+            .accessibilityAction(named: "Switch Windows") {
+                switcher.present(recent: recent, desktop: yard.switchTarget())
+            }
+            .disabled(!enabled)
+    }
+
+    private var recent: [Int] { model.recentWindowIDs.filter { yard.layout.contains($0) } }
+
+    private func openOverview() {
+        guard enabled else { return }
+        withAnimation(.smooth(duration: 0.35)) { yard.overviewOpen = true }
     }
 }
 

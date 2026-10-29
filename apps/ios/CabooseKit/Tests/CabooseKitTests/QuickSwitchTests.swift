@@ -68,4 +68,36 @@ struct QuickSwitchTests {
         #expect(crowded.size.height <= 500)
         #expect(crowded.frame(of: 0) == nil)
     }
+
+    @Test func aFingerCanSelectNothingAndLetGoSafely() {
+        var quick = QuickSwitch()
+        quick.present([4, 9, 2])
+        #expect(quick.isOpen && quick.selection == nil)
+        quick.select(2)
+        #expect(quick.selection == 2)
+        quick.deselect()
+        #expect(quick.isOpen && quick.selection == nil)
+        // A window closing with nothing selected only leaves the strip.
+        quick.prune(keeping: [4, 2])
+        #expect(quick.windows == [4, 2] && quick.selection == nil)
+        // A key takes over from the first window.
+        quick.advance()
+        #expect(quick.selection == 4)
+        quick.deselect()
+        #expect(quick.close() == nil && !quick.isOpen)
+    }
+
+    @Test func rowsAnswerAcrossTheirShareOfTheSpacing() {
+        var quick = QuickSwitch()
+        quick.open([1, 2, 3])
+        let strip = quick.strip(height: 800)
+        // Rows of 64 from y 10, every 72.
+        #expect(strip.index(atY: 5) == nil)
+        #expect(strip.index(atY: 6) == 0)
+        #expect(strip.index(atY: 77.9) == 0)
+        #expect(strip.index(atY: 78) == 1)
+        #expect(strip.index(atY: 221) == 2)
+        #expect(strip.index(atY: 223) == nil)
+        #expect(strip.index(atY: -40) == nil)
+    }
 }

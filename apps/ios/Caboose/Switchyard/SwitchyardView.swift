@@ -48,7 +48,7 @@ struct SwitchyardView: View {
                         .zIndex(6)
                 }
                 // ⌥Tab's strip, over the tiles beside the leading edge.
-                QuickSwitchStrip(height: area.height)
+                QuickSwitchStrip(owner: .yard, height: area.height, space: .global)
                     .frame(width: proxy.size.width, height: area.height)
                     .zIndex(7)
                 YardKeyCommands(yard: yard)
@@ -295,13 +295,7 @@ private struct YardKeyCommands: View {
             key("Overview", "o") { withAnimation(.smooth(duration: 0.35)) { yard.overviewOpen.toggle() } }
             key("Open App", "a") { withAnimation(.smooth(duration: 0.3)) { yard.launcherOpen.toggle() } }
             key("New Terminal", .return) { model.openTerminalApp() }
-            QuickSwitchKeys(recent: { model.appWindows.map(\.id).filter { yard.layout.contains($0) } }) {
-                let focused = yard.layout.focused
-                return QuickSwitcher.Desktop(
-                    preview: { yard.reveal($0) },
-                    commit: { yard.focus($0) },
-                    cancel: { if let focused { yard.reveal(focused) } })
-            }
+            QuickSwitchKeys(recent: { model.recentWindowIDs.filter { yard.layout.contains($0) } }) { yard.switchTarget() }
         }
         .frame(width: 0, height: 0)
         .opacity(0)

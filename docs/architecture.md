@@ -1593,7 +1593,17 @@ the app card, and a detached view releases its layers.
   keyboard, goes to it; Escape stays. A tap on a window in the strip goes to it. The order is
   taken when the strip opens and windows that close leave it; a strip too long for the screen
   shrinks its icons, then shows the windows around the selection (`CabooseKit/Shell/QuickSwitch`).
-  Where ⌥ cannot be observed, each press goes straight to the selected window.
+  Where ⌥ cannot be observed, each press goes straight to the selected window. By touch,
+  holding the dock's Overview (Switchyard) or Launchpad (the floating desktop) opens the strip
+  with nothing selected: sliding up selects the window level with the finger, letting go goes
+  to it, and letting go off the strip, or a cancelled touch, stays; a tap on Overview still
+  opens Overview. VoiceOver's Switch Windows action on Overview, and a secondary click on
+  Launchpad (the way a TV's trackpad reaches it), open the strip to choose from, with Stay
+  Here; on the floating desktop and a TV the strip's rows are hit-tested by the desktop like
+  the dock. While the strip is open nothing is configured: Switchyard's track slides without
+  sending geometry until the switch lands. It lands only on a window still present in the
+  same ready session, and is cancelled when its desktop leaves the screen, a card is shown,
+  the app leaves the foreground or the session changes.
   Launchpad pages through the available apps, with its controls above the dock.
   An external display scene supplies its current size and scale to the shared desktop;
   changes reconfigure the display without transferring geometry ownership to an app card.

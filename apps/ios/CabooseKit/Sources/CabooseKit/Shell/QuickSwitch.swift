@@ -7,6 +7,8 @@ import CoreGraphics
 ///
 /// The order is taken when the strip opens and holds still while it is open, so the
 /// selection never jumps under the owner's hand; a window that closes meanwhile leaves it.
+/// Held open by a finger, the strip may have no selection: letting go there goes nowhere.
+/// The strip may also open without a selection (`present`), for choosing by touch alone.
 public struct QuickSwitch: Equatable, Sendable {
     /// The windows in the strip, most recently used first.
     public private(set) var windows: [Int] = []
@@ -14,8 +16,24 @@ public struct QuickSwitch: Equatable, Sendable {
 
     public init() {}
 
-    public var isOpen: Bool { index != nil }
+    public private(set) var isOpen = false
     public var selection: Int? { index.map { windows[$0] } }
+
+    /// Opens on `recent` with nothing selected.
+    public mutating func present(_ recent: [Int]) {
+        guard !recent.isEmpty else {
+            close()
+            return
+        }
+        windows = recent
+        index = nil
+        isOpen = true
+    }
+
+    /// Nothing selected: closing now goes nowhere.
+    public mutating func deselect() {
+        if isOpen { index = nil }
+    }
 
     public mutating func open(_ recent: [Int], reverse: Bool = false) {
         guard !recent.isEmpty else {
@@ -24,10 +42,15 @@ public struct QuickSwitch: Equatable, Sendable {
         }
         windows = recent
         index = recent.count == 1 ? 0 : (reverse ? recent.count - 1 : 1)
+        isOpen = true
     }
 
     public mutating func advance(reverse: Bool = false) {
-        guard let index, !windows.isEmpty else { return }
+        guard isOpen, !windows.isEmpty else { return }
+        guard let index else {
+            self.index = reverse ? windows.count - 1 : 0
+            return
+        }
         self.index = (index + (reverse ? windows.count - 1 : 1)) % windows.count
     }
 
@@ -38,15 +61,17 @@ public struct QuickSwitch: Equatable, Sendable {
     /// Windows that closed leave the strip. The selection stays on its window while it is
     /// there, else moves to the window that took its place.
     public mutating func prune(keeping live: Set<Int>) {
-        guard let index else { return }
-        let selected = windows[index]
-        let before = windows[..<index].filter(live.contains).count
+        guard isOpen else { return }
+        let selected = index.map { windows[$0] }
+        let before = index.map { windows[..<$0].filter(live.contains).count }
         windows.removeAll { !live.contains($0) }
         if windows.isEmpty {
-            self.index = nil
+            index = nil
+            isOpen = false
             return
         }
-        self.index = windows.firstIndex(of: selected) ?? min(before, windows.count - 1)
+        guard let selected, let before else { return }
+        index = windows.firstIndex(of: selected) ?? min(before, windows.count - 1)
     }
 
     /// Closes the strip, answering the window it ended on.
@@ -54,6 +79,7 @@ public struct QuickSwitch: Equatable, Sendable {
         defer {
             windows = []
             index = nil
+            isOpen = false
         }
         return selection
     }
@@ -80,6 +106,16 @@ public struct QuickSwitch: Equatable, Sendable {
             guard visible.contains(index) else { return nil }
             let offset = CGFloat(index - visible.lowerBound)
             return CGRect(x: padding, y: padding + offset * (item + spacing), width: item, height: item)
+        }
+
+        /// The window whose row is at `y` in the strip's own coordinates, each row taking half
+        /// the spacing on either side. Above or below the shown rows there is none, so a finger
+        /// that slides back off the strip selects nothing.
+        public func index(atY y: CGFloat) -> Int? {
+            guard !visible.isEmpty else { return nil }
+            let offset = Int(((y - padding + spacing / 2) / (item + spacing)).rounded(.down))
+            guard y >= padding - spacing / 2, offset >= 0, offset < visible.count else { return nil }
+            return visible.lowerBound + offset
         }
     }
 
