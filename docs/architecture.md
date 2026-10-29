@@ -2673,3 +2673,8 @@ files in the task directory. Provider-side conversation retention is unchanged.
 `agent.task.deleted` informs connected phones. Agents > Chats offers native swipe Delete
 with confirmation; active chats show Stop and Delete. Successful deletion clears the
 selection, drafts, title and cached transcript, and fences late responses for that chat.
+
+The display advertises both xdg-decoration and the legacy KDE server-decoration
+protocol used by GTK 3, with server-side decorations preferred. Ordinary GTK windows
+therefore omit their automatic titlebars. `GTK_CSD=0` applies the same default to
+GTK on X11; explicit application headerbars and menus remain application content.

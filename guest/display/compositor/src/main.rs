@@ -41,6 +41,8 @@ use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shell::kde::decoration::KdeDecorationState;
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::socket::ListeningSocketSource;
@@ -57,6 +59,7 @@ use std::time::Duration;
 const TOOLKIT_ENV: &[(&str, &str)] = &[
     ("GDK_BACKEND", "wayland,x11"),
     ("GTK_USE_PORTAL", "1"),
+    ("GTK_CSD", "0"),
     ("QT_QPA_PLATFORM", "wayland;xcb"),
     ("MOZ_ENABLE_WAYLAND", "1"),
     ("SDL_VIDEODRIVER", "wayland,x11"),
@@ -265,6 +268,8 @@ fn run(config: Config) -> Result<(), String> {
     }
     OutputManagerState::new_with_xdg_output::<State>(&dh);
     XdgDecorationState::new::<State>(&dh);
+    // GTK 3 uses this legacy protocol, not xdg-decoration, for ordinary windows.
+    let kde_decoration = KdeDecorationState::new::<State>(&dh, KdeDecorationMode::Server);
     ViewporterState::new::<State>(&dh);
     FractionalScaleManagerState::new::<State>(&dh);
     CursorShapeManagerState::new::<State>(&dh);
@@ -364,6 +369,7 @@ fn run(config: Config) -> Result<(), String> {
         config,
         compositor,
         xdg_shell,
+        kde_decoration,
         shm,
         dmabuf,
         seat_state,

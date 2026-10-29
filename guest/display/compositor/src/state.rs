@@ -41,6 +41,7 @@ use smithay::wayland::selection::primary_selection::{
 };
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
+use smithay::wayland::shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState};
 use smithay::wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
@@ -173,6 +174,7 @@ pub struct State {
 
     pub compositor: CompositorState,
     pub xdg_shell: XdgShellState,
+    pub kde_decoration: KdeDecorationState,
     pub shm: ShmState,
     pub dmabuf: DmabufState,
     pub seat_state: SeatState<State>,
@@ -688,6 +690,15 @@ impl State {
     }
 }
 
+// The global default removes GTK's automatic titlebar. A Client request means
+// the app supplies its own header widgets; acknowledge it instead of looping or
+// stripping useful application controls.
+impl KdeDecorationHandler for State {
+    fn kde_decoration_state(&self) -> &KdeDecorationState {
+        &self.kde_decoration
+    }
+}
+
 impl XdgDecorationHandler for State {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         toplevel.with_pending_state(|s| s.decoration_mode = Some(DecorationMode::ServerSide));
@@ -808,6 +819,7 @@ smithay::delegate_shm!(State);
 smithay::delegate_dmabuf!(State);
 smithay::delegate_xdg_shell!(State);
 smithay::delegate_xdg_decoration!(State);
+smithay::delegate_kde_decoration!(State);
 smithay::delegate_seat!(State);
 smithay::delegate_data_device!(State);
 smithay::delegate_primary_selection!(State);

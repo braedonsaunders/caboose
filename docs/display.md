@@ -45,6 +45,12 @@ The renderer is pixman, on the CPU. Applications render themselves (with Mesa's 
 driver on WSL2 hosts, for example), and their buffers reach the encoder through system
 memory.
 
+GTK 3 ordinary windows use the KDE server-decoration default; xdg-decoration
+clients are configured for server-side decorations. Both leave their window controls
+to Caboose. The launch environment sets `GTK_CSD=0` for the X11 GTK fallback.
+Application-supplied headerbars and menus remain content: their controls cannot be
+safely removed by cropping the picture.
+
 ## Hosts and encoders
 
 caboose-display probes its encoders at start-up by encoding a test picture and offers

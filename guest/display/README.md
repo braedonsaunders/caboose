@@ -359,3 +359,13 @@ check, and the D-Bus notification endpoint and monitor from
 host, separately from the display protocol. Run `guest/notifications/check-container.sh`
 to exercise the monitor without a VM; `guest/notifications/check.sh` checks a running
 guest.
+
+### Window decoration check
+
+`guest/display/scripts/dev.sh python3 scripts/check-decorations.py` starts private
+compositors and GTK 3 windows on Wayland and X11. It verifies that default titlebars
+are absent while menus and explicit custom headerbars remain visible. Build the
+debug compositor first (`cargo build` in the dev container). The dev image includes
+PyGObject and GTK 3 introspection for this check. After deploying a new compositor,
+reopen a CLI launcher such as OpenCode: the phone supplies its single window header,
+while the terminal menu remains usable. Existing app processes must be reopened.
