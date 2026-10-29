@@ -38,7 +38,7 @@ import Testing
         #expect(pixel(image, 1, 1) == [0, 0, 0, 0])
     }
 
-    @Test func resizeKeepsTheOverlap() throws {
+    @Test func resizeKeepsTheOverlapAndTheRestIsTransparent() throws {
         let surface = WindowSurface()
         surface.resize(width: 4, height: 4)
         fill(surface, x: 0, y: 0, width: 4, height: 4, bgra: [7, 7, 7, 255])
@@ -46,5 +46,25 @@ import Testing
         let image = try #require(surface.snapshot())
         #expect(image.width == 6)
         #expect(pixel(image, 3, 1) == [7, 7, 7, 255])
+        #expect(pixel(image, 5, 1) == [0, 0, 0, 0], "a popup's new area shows nothing until a tile lands")
+    }
+
+    @Test func aTileWithAlphaKeepsItsTransparency() throws {
+        let surface = WindowSurface()
+        surface.resize(width: 4, height: 4)
+        // A 2x2 RGBA tile: an opaque red pixel beside a transparent one.
+        var pixels = [UInt8](repeating: 0, count: 16)
+        pixels.replaceSubrange(0 ..< 4, with: [255, 0, 0, 255])
+        let data = Data(pixels)
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        let tile = try #require(CGImage(width: 2, height: 2, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8,
+                                        space: CGColorSpaceCreateDeviceRGB(),
+                                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+                                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        surface.upload(image: tile, x: 1, y: 1)
+        let image = try #require(surface.snapshot())
+        #expect(pixel(image, 1, 1) == [0, 0, 255, 255])
+        #expect(pixel(image, 2, 1) == [0, 0, 0, 0], "a transparent tile pixel stays transparent")
+        #expect(pixel(image, 0, 0) == [0, 0, 0, 0])
     }
 }

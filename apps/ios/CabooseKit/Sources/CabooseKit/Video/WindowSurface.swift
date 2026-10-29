@@ -48,7 +48,9 @@ public final class WindowSurface: @unchecked Sendable {
         return backing
     }
 
-    /// Resizes the backing store, preserving the overlapping top-left content.
+    /// Resizes the backing store, preserving the overlapping top-left content. The rest of
+    /// the new texture is transparent (a new texture's pixels are undefined), so a window
+    /// with alpha shows nothing where no picture has landed yet.
     public func resize(width: Int, height: Int) {
         guard width > 0, height > 0 else { return }
         lock.lock()
@@ -58,15 +60,22 @@ public final class WindowSurface: @unchecked Sendable {
             pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
         descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
         descriptor.storageMode = .shared
-        guard let next = renderer.device.makeTexture(descriptor: descriptor) else { return }
-        if let old = backing, let commands = renderer.queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder() {
+        guard let next = renderer.device.makeTexture(descriptor: descriptor),
+              let commands = renderer.queue.makeCommandBuffer() else { return }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = next
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        commands.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
+        if let old = backing, let blit = commands.makeBlitCommandEncoder() {
             let copyWidth = min(old.width, width), copyHeight = min(old.height, height)
             blit.copy(from: old, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
                       sourceSize: MTLSize(width: copyWidth, height: copyHeight, depth: 1),
                       to: next, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
             blit.endEncoding()
-            commands.commit()
         }
+        commands.commit()
         backing = next
         pixelSize = CGSize(width: width, height: height)
         generation &+= 1

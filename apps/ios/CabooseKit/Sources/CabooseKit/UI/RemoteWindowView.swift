@@ -68,6 +68,19 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         attach(window)
     }
 
+    /// Whether the view shows through where the window's picture is transparent (a popup's
+    /// rounded corners and shadow); an opaque window sits on black.
+    public private(set) var showsThrough = false
+
+    /// Matches the layer and background to the window's alpha, which `window.update` can change.
+    private func followAlpha() {
+        let alpha = remoteWindow?.hasAlpha ?? false
+        guard alpha != showsThrough || metalLayer.isOpaque == alpha else { return }
+        showsThrough = alpha
+        metalLayer.isOpaque = !alpha
+        backgroundColor = alpha ? .clear : .black
+    }
+
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     public func attach(_ window: RemoteWindow?) {
@@ -81,7 +94,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         remoteWindow = window
         prefersProse = autocorrectChoice ?? !Self.isCodeApp(window)
         presentedGeneration = .max
-        metalLayer.isOpaque = !(window?.hasAlpha ?? false)
+        followAlpha()
     }
 
     public override func didMoveToWindow() {
@@ -158,6 +171,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     fileprivate func present() {
+        followAlpha()
         guard let surface = remoteWindow?.surface, let texture = surface.texture else { return }
         let generation = surface.generation
         guard generation != presentedGeneration else { return }

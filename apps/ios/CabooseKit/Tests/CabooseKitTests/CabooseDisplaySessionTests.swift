@@ -90,10 +90,11 @@ final class FakeDecoder: PictureDecoder {
         return session
     }
 
-    func window(_ id: Int, kind: String = "toplevel", parent: Int? = nil, geometry: [Int], xwayland: Bool = false) -> CBOR {
+    func window(_ id: Int, kind: String = "toplevel", parent: Int? = nil, geometry: [Int], xwayland: Bool = false, alpha: Bool? = nil) -> CBOR {
         var pairs: [(CBOR, CBOR)] = [("id", CBOR(id)), ("kind", CBOR(kind)), ("title", "t"), ("app_id", "app"),
                                      ("geometry", .array(geometry.map { CBOR($0) })), ("fullscreen", false), ("xwayland", CBOR(xwayland))]
         if let parent { pairs.append(("parent", CBOR(parent))) }
+        if let alpha { pairs.append(("alpha", CBOR(alpha))) }
         return .map(pairs)
     }
 
@@ -189,6 +190,17 @@ final class FakeDecoder: PictureDecoder {
 
         stream.server([(.windowDestroy, ["id": 9])])
         try await until("destroyed") { session.windows[9] == nil }
+    }
+
+    @Test func aPopupSentWithAlphaIsMarkedAndAnUpdateCanClearIt() async throws {
+        let session = try await ready()
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100])),
+                       (.windowCreate, window(9, kind: "popup", parent: 7, geometry: [10, 10, 40, 30], alpha: true))])
+        try await until("windows") { session.windows.count == 2 }
+        let popup = try #require(session.windows[9])
+        #expect(popup.hasAlpha && session.windows[7]?.hasAlpha == false)
+        stream.server([(.windowUpdate, ["id": 9, "alpha": false])])
+        try await until("opaque") { popup.hasAlpha == false }
     }
 
     @Test func nativeWaylandWindowsTakeTouchAndXwaylandOnesDoNot() async throws {
