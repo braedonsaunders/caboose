@@ -46,3 +46,11 @@ Laptop layout — signed app on the paired physical Duo:
    large text; native sidebar reveal/hide; hardware keyboard; fold/rotate during
    reconnect. Leaving Laptop mode preserves the app and restores the full viewport.
 CHECK
+
+cat <<'CHECK'
+Card to Laptop transition: open an app full screen, then bend into Laptop or choose
+Laptop from Screen layout. The card closes into the same focused desktop window;
+the compact dock appears across the top of the lower screen, above the trackpad.
+It remains possible to switch apps, open the Library and use the whole desktop cursor.
+Return to Tablet: the regular tablet desktop and dock return, with no duplicate card.
+CHECK

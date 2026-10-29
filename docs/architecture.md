@@ -1845,6 +1845,10 @@ not account discovery.
 - **Computer settings.** The Computer sheet edits the management settings, shows
   `restartRequired`, parks, restarts after confirmation and chooses the wallpaper.
 
+A full-screen app card entering Laptop mode returns its focused window to the shared
+Laptop desktop. The compact dock belongs to the top of the lower control surface;
+there is no separate dockless Laptop app-card workspace.
+
 ### Input
 
 - **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap or stationary

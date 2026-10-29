@@ -23,7 +23,15 @@ struct WindowScreen: View {
                 ShellBackground()
                 if let window = model.window(model.presentedWindowID) {
                     WindowCardViewport(controlsVisible: chromeVisible && !laptopActive, verticalEdge: $verticalEdge) { _ in
-                        LaptopContainer(isCard: true, activeChanged: { laptopActive = $0 }) { _ in
+                        LaptopContainer(isCard: true, activeChanged: { active in
+                            laptopActive = active
+                            // Enter the shared desktop when a card folds into Laptop.
+                            // Its lower dock and whole-desktop pointer have one owner.
+                            if active, !model.externalDisplayActive, let id = model.presentedWindowID {
+                                model.setLaptopDesktop(true)
+                                model.show(windowID: id)
+                            }
+                        }) { _ in
                             GeometryReader { proxy in surface(for: window, size: proxy.size) }
                         }
                     }
