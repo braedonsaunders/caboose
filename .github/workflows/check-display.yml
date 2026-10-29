@@ -57,4 +57,4 @@ jobs:
         env:
           CABOOSE_DISPLAY_CPUS: '2'
           CABOOSE_DISPLAY_MEMORY: 4g
-        run: guest/display/scripts/dev.sh python3 scripts/check.py copies
+        run: guest/display/scripts/dev.sh env CABOOSE_COPY_CHECK_DEBUG=1 python3 scripts/check.py copies

@@ -602,6 +602,10 @@ impl State {
                     // A scroll can be a copy within the client's picture when the client shows
                     // what the encoder last had, at the picture's own size (a copy in a
                     // scaled picture would not land on whole pixels).
+                    if copies && w.stream.scrolling(now_us) {
+                        tracing::debug!("window {id}: copy eligibility: picture {pic_w}x{pic_h}, rect {rect:?}, ready {}, ending {}",
+                            w.stream.copy_ready(), ending.is_some());
+                    }
                     let copy = (copies
                         && ending.is_none()
                         && (pic_w, pic_h) == (rect.w, rect.h)
