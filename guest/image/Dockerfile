@@ -39,8 +39,9 @@ COPY bridge /builder/bridge
 COPY flatpak /builder/flatpak
 COPY game /builder/game
 COPY gpu /builder/gpu
+COPY apps/install.sh apps/caboose-app apps/appcore.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /builder/apps/
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /out/vaapi/caboose_drv_video.so /builder/display/
 COPY --from=gpu /out/caboose-gpu /builder/display/caboose-gpu
 COPY display/caboose-display-ready display/systemd/caboose-display.service display/systemd/caboose-display-agent.service /builder/display/
-COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /builder/agentd/
+COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/package.json agentd/install.sh /builder/agentd/
 ENTRYPOINT ["/builder/build-inside.sh"]
