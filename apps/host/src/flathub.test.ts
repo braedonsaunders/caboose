@@ -18,10 +18,10 @@ function fetcher(pages: unknown[][], icons: Record<string, Buffer> = {}) {
   return vi.fn(async (url: string, init?: { body?: string }) => {
     if (url === 'https://flathub.org/api/v2/search') {
       const page = JSON.parse(init!.body!).page as number
-      return { ok: true, status: 200, json: async () => ({ hits: pages[page - 1] ?? [], totalPages: pages.length }), arrayBuffer: async () => new ArrayBuffer(0) }
+      return new Response(JSON.stringify({ hits: pages[page - 1] ?? [], totalPages: pages.length }))
     }
     const bytes = icons[url]
-    return { ok: !!bytes, status: bytes ? 200 : 404, json: async () => ({}), arrayBuffer: async () => bytes ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length) as ArrayBuffer : new ArrayBuffer(0) }
+    return bytes ? new Response(new Uint8Array(bytes)) : new Response(null, { status: 404 })
   }) satisfies Fetcher
 }
 const many = (count: number, prefix = 'org.example.App') => Array.from({ length: count }, (_, i) => hit(`${prefix}${i}`, { installs_last_month: i }))
@@ -63,6 +63,14 @@ describe('Flathub index', () => {
     const index = new FlathubIndex(root(), 'x86_64', fetcher([many(5)]))
     await expect(index.ready()).rejects.toThrow('too few')
     expect(index.size).toBe(0)
+  })
+  it('refuses an icon larger than the limit while it streams, and redirects', async () => {
+    const { fetchBounded } = await import('./flathub.js')
+    let pulled = 0
+    const endless = new ReadableStream<Uint8Array>({ pull(controller) { pulled++; controller.enqueue(new Uint8Array(64 * 1024)) } })
+    const fetch = vi.fn(async (_url: string, init?: { redirect?: string }) => { expect(init?.redirect).toBe('error'); return new Response(endless) })
+    await expect(fetchBounded(fetch, 'https://dl.flathub.org/x.png', 512 * 1024)).rejects.toThrow('more than')
+    expect(pulled).toBeLessThan(20)
   })
   it('caches PNG icons and rejects anything else', async () => {
     const dir = root(), good = hit('org.example.Good'), bad = hit('org.example.Bad')

@@ -37,6 +37,7 @@ export class RuntimeDepot {
   private state: State = { usage: {}, maintainedAt: 0, runtimes: [], bytes: null }
   private loaded: Promise<void> | undefined
   private maintaining: Promise<void> | undefined
+  private saving: Promise<void> = Promise.resolve()
   constructor(private readonly runner: DepotRunner | null, private readonly file: string, private readonly now: () => number = Date.now) {}
   get enabled(): boolean { return this.runner !== null }
   private load(): Promise<void> {
@@ -51,10 +52,15 @@ export class RuntimeDepot {
     }).catch(() => {})
     return this.loaded
   }
-  private async save(): Promise<void> {
-    await mkdir(dirname(this.file), { recursive: true })
-    await writeFile(this.file + '.tmp', JSON.stringify(this.state))
-    await rename(this.file + '.tmp', this.file)
+  /** Writes run one after another, each of the state as it is then, so none is lost or torn. */
+  private save(): Promise<void> {
+    const next = this.saving.then(async () => {
+      await mkdir(dirname(this.file), { recursive: true })
+      await writeFile(this.file + '.tmp', JSON.stringify(this.state))
+      await rename(this.file + '.tmp', this.file)
+    })
+    this.saving = next.catch(() => {})
+    return next
   }
   /** One builder at a time; each run is independent of the last one's failure. */
   private run(args: string[], onEvent: (event: Record<string, unknown>) => void, timeoutMs: number): Promise<void> {

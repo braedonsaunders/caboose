@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { Fetcher } from './flathub.js'
+import { fetchBounded, type Fetcher } from './flathub.js'
 
 /** A Craft release `.deb`, as its GitHub release describes it. */
 export interface Release { version: string; url: string; sha256: string; size: number }
@@ -37,6 +37,7 @@ export class CraftReleases {
   private cache = new Map<string, { release: Release | null; checkedAt: number }>()
   private loaded: Promise<void> | undefined
   private pending = new Map<string, Promise<Release | null>>()
+  private saving: Promise<void> = Promise.resolve()
   constructor(private readonly root: string, readonly arch: 'x86_64' | 'aarch64', private readonly fetcher: Fetcher = fetch as unknown as Fetcher, private readonly now: () => number = Date.now) {}
   private load(): Promise<void> {
     this.loaded ??= readFile(join(this.root, `releases-${this.arch}.json`), 'utf8').then(text => {
@@ -69,16 +70,24 @@ export class CraftReleases {
     }
   }
   private async check(id: string): Promise<Release | null> {
-    const response = await this.fetcher(`https://api.github.com/repos/storytold/${id}/releases/latest`, { headers: { accept: 'application/vnd.github+json', 'user-agent': 'caboose-host' }, signal: AbortSignal.timeout(20_000) })
+    const response = await fetchBounded(this.fetcher, `https://api.github.com/repos/storytold/${id}/releases/latest`, 4 * 1024 * 1024, { headers: { accept: 'application/vnd.github+json', 'user-agent': 'caboose-host' }, timeoutMs: 20_000 })
     if (!response.ok && response.status !== 404) throw new Error(`GitHub answered ${response.status} for ${id}`)
-    const release = response.ok ? parseRelease(id, await response.json(), this.arch) : null
+    const release = response.ok ? parseRelease(id, JSON.parse(response.bytes.toString('utf8')), this.arch) : null
     const previous = this.cache.get(id)?.release
     // A newer tag without a verifiable asset keeps the last verified release on offer.
     this.cache.set(id, { release: release ?? previous ?? null, checkedAt: this.now() })
-    await mkdir(this.root, { recursive: true })
-    const file = join(this.root, `releases-${this.arch}.json`)
-    await writeFile(file + '.tmp', JSON.stringify(Object.fromEntries(this.cache)))
-    await rename(file + '.tmp', file)
+    await this.save()
     return release ?? previous ?? null
+  }
+  /** Writes run one after another, each of the cache as it is then, so none is lost or torn. */
+  private save(): Promise<void> {
+    const next = this.saving.then(async () => {
+      await mkdir(this.root, { recursive: true })
+      const file = join(this.root, `releases-${this.arch}.json`)
+      await writeFile(file + '.tmp', JSON.stringify(Object.fromEntries(this.cache)))
+      await rename(file + '.tmp', file)
+    })
+    this.saving = next.catch(() => {})
+    return next
   }
 }

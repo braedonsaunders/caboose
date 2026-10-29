@@ -11,7 +11,7 @@ const digest = 'b'.repeat(64)
 function release(version: string, assets = [{ name: `photocraft-${version}-linux-x86_64.deb`, browser_download_url: releaseUrl('photocraft', version), digest: `sha256:${digest}`, size: 42 }]) {
   return { tag_name: `v${version}`, draft: false, prerelease: false, assets }
 }
-const answer = (body: unknown, status = 200) => ({ ok: status === 200, status, json: async () => body, arrayBuffer: async () => new ArrayBuffer(0) })
+const answer = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
 
 describe('Craft releases', () => {
   it('accepts only the app\'s own asset with a published SHA-256', () => {
