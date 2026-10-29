@@ -1,0 +1,124 @@
+#!/usr/bin/python3
+"""Provision/unlock the owner's GNOME login keyring; never print or persist its password."""
+import fcntl
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+BUS = 'unix:path=/run/user/1000/bus'
+SERVICE = 'org.freedesktop.secrets'
+ROOT = '/org/freedesktop/secrets'
+HOME = Path('/home/caboose')
+
+
+class MigrationRequired(Exception):
+    pass
+
+
+def credential(data):
+    # The host supplies exactly 64 hex characters, without a line terminator.
+    # Accept one trailing LF for an operator's private credential file.
+    data = data.removesuffix(b'\n')
+    if len(data) != 64 or any(c not in b'0123456789abcdef' for c in data):
+        raise ValueError('invalid credential')
+    return data
+
+
+def action(default, login, collections, files):
+    """Never create a parallel keyring when existing persistent state is present."""
+    if default != '/':
+        if login != '/' and default == login:
+            return 'unlock'
+        raise MigrationRequired()
+    if login == '/' and not files and all(p == ROOT + '/collection/session' for p in collections):
+        return 'create'
+    raise MigrationRequired()
+
+
+class Keyring:
+    def __init__(self):
+        from gi.repository import Gio, GLib
+        self.Gio, self.GLib = Gio, GLib
+        self.bus = Gio.DBusConnection.new_for_address_sync(
+            BUS, Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
+        self.bus.set_exit_on_close(False)
+        # Standard bus activation starts a single owner daemon, or adopts its existing owner.
+        self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+                  'StartServiceByName', '(su)', (SERVICE, 0))
+        self.owner = self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+                               'GetNameOwner', '(s)', (SERVICE,))[0]
+
+    def call(self, dest, path, interface, method, signature=None, args=()):
+        result = self.bus.call_sync(dest, path, interface, method,
+                                   self.GLib.Variant(signature, args) if signature else None,
+                                   None, self.Gio.DBusCallFlags.NO_AUTO_START, 10000, None)
+        return result.unpack()
+
+    def alias(self, name):
+        return self.call(self.owner, ROOT, SERVICE + '.Service', 'ReadAlias', '(s)', (name,))[0]
+
+    def property(self, path, interface, name):
+        return self.call(self.owner, path, 'org.freedesktop.DBus.Properties', 'Get', '(ss)', (interface, name))[0]
+
+    def ensure(self, password):
+        default, login = self.alias('default'), self.alias('login')
+        if default != '/' and not self.property(default, SERVICE + '.Collection', 'Locked'):
+            return 'ready'
+        directory = HOME / '.local/share/keyrings'
+        files = list(directory.iterdir()) if directory.exists() else []
+        operation = action(default, login, self.property(ROOT, SERVICE + '.Service', 'Collections'), files)
+        # Address the daemon already serving this exact bus; do not replace it or start
+        # another daemon pointing at the same persistent keyring files.
+        control = self.call(self.owner, '/org/gnome/keyring/daemon', 'org.gnome.keyring.Daemon', 'GetControlDirectory')[0]
+        if not (Path(control) / 'control').is_socket():
+            raise RuntimeError('no control socket')
+        result = subprocess.run(['/usr/bin/gnome-keyring-daemon', '--unlock', '--components=secrets',
+                                 '--control-directory=' + control], input=password,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=15, env={**os.environ, 'HOME': str(HOME),
+                                                'XDG_RUNTIME_DIR': '/run/user/1000',
+                                                'DBUS_SESSION_BUS_ADDRESS': BUS,
+                                                'GNOME_KEYRING_CONTROL': control})
+        # GNOME's CLI exit code alone does not establish that the password was accepted.
+        login = self.alias('login')
+        if result.returncode or login == '/' or self.property(login, SERVICE + '.Collection', 'Locked'):
+            raise MigrationRequired()
+        if operation == 'create':
+            # A creation dialog might have raced us. Never redirect an existing default.
+            current = self.alias('default')
+            if current not in ('/', login):
+                raise MigrationRequired()
+            if current == '/':
+                self.call(self.owner, ROOT, SERVICE + '.Service', 'SetAlias', '(so)', ('default', login))
+        if self.alias('default') != login:
+            raise MigrationRequired()
+        return 'ready'
+
+
+def main():
+    try:
+        if os.getuid() != 1000:
+            raise RuntimeError('run as caboose')
+        password = credential(sys.stdin.buffer.read(66))
+        # Serialize HTTP requests and direct operator invocations, without storing secrets.
+        fd = os.open('/run/user/1000/caboose-keyring.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            state = Keyring().ensure(password)
+        finally:
+            os.close(fd)
+        print(json.dumps({'state': state}))
+        return 0
+    except MigrationRequired:
+        print('{"state":"migration-required"}')
+        return 3
+    except Exception:
+        # Neither backend errors nor supplied credentials enter logs or API errors.
+        print('{"state":"unavailable"}')
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
