@@ -58,7 +58,7 @@ def main():
                             'part-init', '/dev/sda', 'gpt', ':',
                             'part-add', '/dev/sda', 'p', '2048', '4095', ':',
                             'part-add', '/dev/sda', 'p', '4096', '8191', ':',
-                            'part-add', '/dev/sda', 'p', '8192', '-34', ':',
+                            'part-add', '/dev/sda', 'p', '8192', str(512 * 1024 ** 2 // 512 - 34), ':',
                             'mkfs', filesystem, '/dev/sda3', ':',
                             'debug', 'sh', m._mount_root_script(False), ':',
                             'mkdir', '/usr', ':', 'mkdir', '/opt', ':', 'mkdir', '/tmp', ':',
