@@ -683,3 +683,14 @@ migration archives the rollback artifacts in `migration-images`.
 The transaction and appliance checks run with `python3` on the corresponding
 `apps/host/scripts/tests/test-migration-*.py` files. Real-device checks require
 a disposable Linux microVM; never run them on a production computer.
+### Recovering an interrupted template source build
+
+An incomplete source build is never silently reused. Stop the Caboose host and
+verify that no other host instance is using the same image root. Run as root
+`apps/host/scripts/recover-template-source.sh IMAGE_ROOT SOURCE_ID` (the native
+bundle includes `bin/caboose-recover-template-source`). The command checks the
+recorded private VMM socket and TAP before removing the temporary network fence.
+It preserves any memory inode pinned by a descendant. For an incomplete source
+with no pins, it reports the directory to move aside before retrying. A source
+without a valid build receipt requires manual inspection. Never remove a source
+or child memory inode while a VMM may still map it.

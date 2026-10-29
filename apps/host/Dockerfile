@@ -47,6 +47,7 @@ COPY --from=host-deps /src/apps/host/package.json ./apps/host/package.json
 COPY --from=host-build /src/apps/host/dist ./apps/host/dist
 # The identity database's own migrations, beside AppKit's in node_modules.
 COPY apps/host/migrations ./apps/host/migrations
+COPY apps/host/scripts/recover-template-source.sh ./apps/host/scripts/recover-template-source.sh
 COPY guest/agentd/caboose-agentd.mjs guest/agentd/agent-tools.mjs guest/agentd/library-mcp.mjs guest/agentd/package.json guest/agentd/install.sh ./guest/agentd/
 COPY guest/components ./guest/components
 COPY guest/template/caboose-template.py guest/template/caboose-template.target ./guest/template/

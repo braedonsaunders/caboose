@@ -95,6 +95,7 @@ cp -R "$repo/guest/catalog/icons" "$root/app/guest/catalog/icons"
 # The seccomp profile the host gives containers (guest/container/README.md).
 cp "$repo/guest/container/caboose-seccomp.json" "$root/app/guest/container/"
 cp "$repo/apps/host/scripts/setup-disks.sh" "$root/bin/caboose-setup-disks"
+cp "$repo/apps/host/scripts/recover-template-source.sh" "$root/bin/caboose-recover-template-source"
 
 echo "Adding Node $NODE_VERSION ($os-$node_arch)"
 node_tar=$(fetch "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-$os-$node_arch.tar.xz" "$(node_sha "$os-$node_arch")")
