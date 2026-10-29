@@ -3,11 +3,28 @@ import errno
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-from parked_quiesce import Unsupported, branch_states, cgroup_tree, check_mounts, check_processes, freeze_branches, freeze_filesystem, plan_freezer_branches, thaw
+from parked_quiesce import Unsupported, branch_states, cgroup_tree, check_mounts, check_processes, freeze, freeze_branches, freeze_filesystem, plan_freezer_branches, recovery_ancestry, thaw
 
 ROOT = '1 0 8:1 / / rw - ext4 /dev/vda rw\n'
 
 class QuiesceChecks(unittest.TestCase):
+    def test_recovery_ancestry_rejects_missing_init(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / '10').mkdir()
+            (proc / '10' / 'status').write_text('PPid:\t0\n')
+            with self.assertRaises(Unsupported): recovery_ancestry(directory, 10)
+
+    def test_ambiguous_filesystem_freeze_attempts_thaw(self):
+        recorded = [{'path': '/user.slice', 'frozen': False}]
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / 'self').mkdir()
+            (proc / 'self' / 'mountinfo').write_text(ROOT)
+            with patch('parked_quiesce.cgroup_tree', return_value={}), patch('parked_quiesce.recovery_ancestry', return_value=[1]), patch('parked_quiesce.freeze_branches'), patch('parked_quiesce.freeze_filesystem', side_effect=OSError('unknown outcome')), patch('parked_quiesce.thaw') as recover:
+                with self.assertRaises(OSError): freeze(recorded, proc=directory)
+            recover.assert_called_once_with(branches=recorded)
+
     def test_filesystem_freeze_syncs_before_ioctl_and_closes_descriptor(self):
         steps = []
         with patch('parked_quiesce.os.open', return_value=33), patch('parked_quiesce.os.close', side_effect=lambda fd: steps.append('close')), patch('parked_quiesce.os.sync', side_effect=lambda: steps.append('sync')), patch('parked_quiesce.fcntl.ioctl', side_effect=lambda *args: steps.append('freeze')):

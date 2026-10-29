@@ -155,6 +155,48 @@ def inventory(proc='/proc'):
     return result
 
 
+def recovery_ancestry(proc='/proc', pid=None):
+    """Return this helper's process ancestry, refusing incomplete or cyclic data."""
+    current = os.getpid() if pid is None else pid
+    seen = set()
+    try:
+        while current:
+            if current in seen or len(seen) >= 128:
+                raise Unsupported('invalid recovery ancestry')
+            seen.add(current)
+            status = (Path(proc) / str(current) / 'status').read_text()
+            parent = re.search(r'^PPid:\s+(\d+)\s*$', status, re.M)
+            if not parent:
+                raise Unsupported('recovery ancestry unavailable')
+            current = int(parent.group(1))
+    except (OSError, UnicodeError, ValueError) as error:
+        raise Unsupported('recovery ancestry unavailable') from error
+    if 1 not in seen:
+        raise Unsupported('recovery ancestry does not reach init')
+    return sorted(seen)
+
+
+def prepare(root='/sys/fs/cgroup', proc='/proc'):
+    check_mounts((Path(proc) / 'self' / 'mountinfo').read_text())
+    nodes = cgroup_tree(root)
+    return branch_states(nodes, recovery_ancestry(proc), root)
+
+
+def freeze(recorded, root='/sys/fs/cgroup', proc='/proc'):
+    """Freeze only after the host has durably recorded `recorded`."""
+    check_mounts((Path(proc) / 'self' / 'mountinfo').read_text())
+    nodes = cgroup_tree(root)
+    trusted = recovery_ancestry(proc)
+    freeze_branches(nodes, trusted, recorded, root)
+    try:
+        freeze_filesystem()
+    except BaseException:
+        # The ioctl may have succeeded before reporting an error. The host must
+        # retain its intent if this recovery fails or the helper is interrupted.
+        thaw(branches=recorded)
+        raise
+
+
 def set_frozen(cgroup, frozen, timeout=5):
     """Set cgroup v2 freeze and wait for the kernel's matching acknowledgement."""
     directory = Path(cgroup)
@@ -280,9 +322,13 @@ def thaw(root='/', cgroup='/sys/fs/cgroup/caboose-workloads.slice', branches=Non
 if __name__ == '__main__':
     import json
     import sys
-    if sys.argv[1:] == ['thaw']:
+    if sys.argv[1:] == ['prepare']:
+        print(json.dumps(prepare(), separators=(',', ':')))
+    elif len(sys.argv) == 3 and sys.argv[1] == 'freeze':
+        freeze(json.loads(sys.argv[2]))
+    elif sys.argv[1:] == ['thaw']:
         thaw()
     elif len(sys.argv) == 3 and sys.argv[1] == 'thaw':
         thaw(branches=json.loads(sys.argv[2]))
     else:
-        raise SystemExit('usage: parked_quiesce.py thaw [BRANCHES_JSON]')
+        raise SystemExit('usage: parked_quiesce.py prepare | freeze BRANCHES_JSON | thaw [BRANCHES_JSON]')
