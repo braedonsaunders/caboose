@@ -1584,6 +1584,19 @@ the app card, and a detached view releases its layers.
   ⌘⌥ with the arrows brings the nearest window that way forward, with ⇧ snaps the front
   window left or right, maximizes it (↑) or restores it (↓); F zooms, M minimizes, W closes,
   A opens Launchpad and Return a terminal.
+- **Laptop layout.** Desktop and app cards use the same `LaptopContainer`. On iOS 27.1,
+  a view-scoped `UIHingeInteraction` and horizontal division reserved region select the
+  upper content and lower controls for a partially folded inner display. A vertical book
+  fold does not activate it. Screen Layout offers Automatic, Tablet and Laptop overrides;
+  compact viewports keep the ordinary layout. The system keyboard's measured intersection
+  with that view takes precedence over the fold, so it cannot cover the upper app. The
+  lower trackpad owns the existing `RemoteTextInputView`/`KeyBar`; upper surfaces keep
+  touch input and text-focus detection but do not compete for first responder. Tiled/card
+  pointer input targets the current window and displays a local pointer; free/external
+  desktops use their existing desktop hit testing. The same bounded text-focus policy
+  follows clicks and double clicks. Detaching or changing target releases a held drag
+  and cancels focus requests. With an external display the upper phone region offers
+  window previews and switching without resizing or taking video layers from the monitor.
 - **Quick Switch.** On both desktops, ⌥Tab (iPadOS keeps ⌘Tab for itself; Alt+Tab is the
   Linux habit) opens a glass strip of the windows' app icons down the leading edge, most
   recently used first, with the window before the current one selected, its app and title

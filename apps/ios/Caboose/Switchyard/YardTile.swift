@@ -155,6 +155,7 @@ struct YardTitleBar: View {
 /// window that keeps a size of its own is shown at it, centred.
 struct YardSurface: UIViewRepresentable {
     @Environment(AppModel.self) private var model
+    @Environment(\.laptopInputOwned) private var laptopInputOwned
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
     let stretch: Bool
@@ -180,9 +181,10 @@ struct YardSurface: UIViewRepresentable {
         view.onTouch = onTouch
         view.stretch = stretch
         view.natural = CGSize(width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
-        if keyboard && model.yardActive, !view.content.isFirstResponder {
+        view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
+        if keyboard && model.yardActive && !laptopInputOwned, !view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.becomeFirstResponder() }
-        } else if (!keyboard || !model.yardActive), view.content.isFirstResponder {
+        } else if (!keyboard || !model.yardActive || laptopInputOwned), view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.resignFirstResponder() }
         }
     }
@@ -193,12 +195,21 @@ final class YardSurfaceView: UIView {
     var onTouch: (() -> Void)?
     var stretch = false { didSet { if stretch != oldValue { setNeedsLayout() } } }
     var natural: CGSize = .zero { didSet { if natural != oldValue { setNeedsLayout() } } }
+    var laptopPoint: CGPoint? { didSet { if laptopPoint != oldValue { setNeedsLayout() } } }
+    private let laptopCursor = UIImageView(image: UIImage(systemName: "cursorarrow"))
 
     init(content: RemoteWindowView) {
         self.content = content
         super.init(frame: .zero)
         clipsToBounds = true
         addSubview(content)
+        laptopCursor.tintColor = .white
+        laptopCursor.isUserInteractionEnabled = false
+        laptopCursor.layer.shadowColor = UIColor.black.cgColor
+        laptopCursor.layer.shadowOpacity = 0.9
+        laptopCursor.layer.shadowRadius = 2
+        laptopCursor.layer.shadowOffset = .zero
+        content.addSubview(laptopCursor)
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -220,5 +231,11 @@ final class YardSurfaceView: UIView {
         guard size.width > 0, size.height > 0 else { return }
         content.transform = CGAffineTransform(scaleX: shown.width / size.width, y: shown.height / size.height)
         content.center = CGPoint(x: shown.midX, y: shown.midY)
+        laptopCursor.isHidden = laptopPoint == nil
+        if let point = laptopPoint {
+            let sx = max(0.01, shown.width / size.width), sy = max(0.01, shown.height / size.height)
+            laptopCursor.frame = CGRect(x: point.x * size.width, y: point.y * size.height, width: 18 / sx, height: 24 / sy)
+            content.bringSubviewToFront(laptopCursor)
+        }
     }
 }

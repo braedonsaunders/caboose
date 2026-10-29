@@ -21,8 +21,10 @@ struct WindowScreen: View {
             ZStack(alignment: .top) {
                 ShellBackground()
                 if let window = model.window(model.presentedWindowID) {
-                    WindowCardViewport(controlsVisible: chromeVisible, verticalEdge: $verticalEdge) { proxy in
-                        surface(for: window, size: proxy.size)
+                    WindowCardViewport(controlsVisible: chromeVisible, verticalEdge: $verticalEdge) { _ in
+                        LaptopContainer(isCard: true) { _ in
+                            GeometryReader { proxy in surface(for: window, size: proxy.size) }
+                        }
                     }
                     if !chromeVisible { exitFullScreenHandle }
                 } else {
@@ -231,6 +233,7 @@ struct WindowScreen: View {
     /// Native icon items join the system's side bar on Duo and fit a horizontal toolbar
     /// elsewhere. The window title stays in the switcher instead of taking a content row.
     @ToolbarContentBuilder private func controls(for window: RemoteWindow) -> some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) { LaptopModeMenu() }
         ToolbarItem(placement: .topBarLeading) {
             Button("Back to \(model.selectedTab.rawValue.capitalized)", systemImage: "chevron.backward") {
                 model.presentedWindowID = nil
@@ -369,6 +372,7 @@ private struct WindowCardViewport<Content: View>: View {
 /// An interactive remote window surface.
 struct RemoteWindowCanvas: UIViewRepresentable {
     @Environment(AppModel.self) private var model
+    @Environment(\.laptopInputOwned) private var laptopInputOwned
     let window: RemoteWindow
     let keyboardVisible: Bool
 
@@ -388,9 +392,10 @@ struct RemoteWindowCanvas: UIViewRepresentable {
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.natural = CGSize(width: window.frame.width / model.pixelsPerPoint,
                               height: window.frame.height / model.pixelsPerPoint)
-        if keyboardVisible, !view.content.isFirstResponder {
+        view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
+        if keyboardVisible && !laptopInputOwned, !view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.becomeFirstResponder() }
-        } else if !keyboardVisible, view.content.isFirstResponder {
+        } else if (!keyboardVisible || laptopInputOwned), view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.resignFirstResponder() }
         }
     }

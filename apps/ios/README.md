@@ -457,3 +457,17 @@ its column and dragging the column strip still scrolls the desktop. In Agents, o
 system overflow remains; Stop, Copy Answer and Connect a Model join its regular actions.
 Open the power control and confirm its popover appears beside that control on both Duo
 screens. Dismiss it without parking or restarting when checking placement only.
+
+## Laptop mode
+
+Desktop and full-screen app cards offer Screen Layout → Automatic, Tablet or Laptop.
+Automatic uses a partially folded horizontal hinge on iOS 27.1 and later. Laptop also
+works as a manual split on a sufficiently tall flat screen. The upper area shows the
+app/desktop; below it, Type opens the same system keyboard and shared KeyBar used elsewhere,
+and Hide Keyboard returns to the trackpad. One-finger movement, tap/double-tap, two-finger
+scroll/right-click and tap-then-drag use the existing trackpad gestures. With a connected
+monitor, the phone shows window previews above its keyboard/trackpad and leaves the monitor's
+workspace intact. Book posture and compact screens keep the ordinary layout in Automatic.
+
+Run `sh apps/ios/scripts/check-laptop.sh` for the physical Duo, keyboard and monitor checks.
+Pure fold/keyboard geometry is covered by `swift test --filter LaptopLayoutTests` in CabooseKit.

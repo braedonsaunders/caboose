@@ -44,7 +44,8 @@ struct TrackpadScreen: View {
                     .accessibilityLabel("Keyboard")
                 }
             }
-            Trackpad(desktop: desktop, keyboardVisible: model.keyboardVisible)
+            Trackpad(desktop: desktop, keyboardVisible: model.keyboardVisible,
+                     enabled: model.presentedWindowID == nil && model.selectedTab == .desktop)
                 .background { DesktopKeyCommands(desktop: desktop) }
                 .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(.white.opacity(0.12)))
@@ -62,28 +63,59 @@ struct TrackpadScreen: View {
 
 struct Trackpad: UIViewRepresentable {
     @Environment(AppModel.self) private var model
-    let desktop: DesktopModel
+    let desktop: DesktopModel?
+    var target: RemoteWindow? = nil
     let keyboardVisible: Bool
+    var enabled = true
 
     func makeUIView(context: Context) -> TrackpadSurface {
         let view = TrackpadSurface()
         view.desktop = desktop
         view.model = model
+        view.target = target
+        view.inputEnabled = enabled
         return view
     }
 
     func updateUIView(_ view: TrackpadSurface, context: Context) {
         view.desktop = desktop
         view.model = model
-        if keyboardVisible, !view.isFirstResponder { DispatchQueue.main.async { view.becomeFirstResponder() } }
-        if !keyboardVisible, view.isFirstResponder { DispatchQueue.main.async { view.resignFirstResponder() } }
+        view.target = target
+        view.wantsKeyboard = keyboardVisible && enabled
+        if view.autocorrectChoice == nil {
+            if let purpose = model.session?.textPurpose {
+                view.prefersProse = !["terminal", "password", "pin", "url", "email", "number", "digits", "phone", "date", "time", "datetime"].contains(purpose)
+            } else { view.prefersProse = !RemoteWindowView.isCodeApp(target) }
+        }
+        if !enabled, view.inputEnabled { view.endInteraction() }
+        view.inputEnabled = enabled
+        DispatchQueue.main.async { [weak view] in
+            guard let view, view.window != nil else { return }
+            if view.wantsKeyboard, !view.isFirstResponder { view.becomeFirstResponder() }
+            if !view.wantsKeyboard, view.isFirstResponder { view.resignFirstResponder() }
+        }
     }
+
+    static func dismantleUIView(_ view: TrackpadSurface, coordinator: ()) { view.endInteraction() }
 }
 
 /// Raw multi-touch tracking; gesture recognizers add too much latency for a cursor.
 final class TrackpadSurface: RemoteTextInputView {
     weak var desktop: DesktopModel?
     weak var model: AppModel?
+    var wantsKeyboard = false
+    var inputEnabled = true
+    weak var target: RemoteWindow? {
+        willSet {
+            if newValue !== target {
+                endInteraction()
+                point = CGPoint(x: 0.5, y: 0.5)
+                resetTyping()
+            }
+        }
+    }
+    private var point = CGPoint(x: 0.5, y: 0.5)
+    private var focusTask: Task<Void, Never>?
 
     private var gestures = TrackpadGestures()
     private let haptics = UIImpactFeedbackGenerator(style: .light)
@@ -127,11 +159,13 @@ final class TrackpadSurface: RemoteTextInputView {
     }
 
     private func perform(_ actions: [TrackpadGestures.Action]) {
+        guard inputEnabled else { return }
         let open: (String) -> Void = { [weak self] id in
             guard let app = self?.model?.apps.first(where: { $0.id == id }) else { return }
             self?.model?.openOnDesktop(app)
         }
         for action in actions {
+            if let target { perform(action, in: target); continue }
             switch action {
             case .move(let delta): desktop?.move(by: delta, session: session)
             case .scroll(let delta): desktop?.scroll(by: delta, session: session)
@@ -151,11 +185,72 @@ final class TrackpadSurface: RemoteTextInputView {
         }
     }
 
+    /// Laptop control uses the same trackpad gestures, aimed at the card/focused tile.
+    /// Free desktops and external monitors continue through DesktopModel's hit testing.
+    private func perform(_ action: TrackpadGestures.Action, in target: RemoteWindow) {
+        guard let session, session.state == .ready, session.windows[target.id] === target else { return }
+        func pixel() -> CGPoint { CGPoint(x: point.x * target.frame.width, y: point.y * target.frame.height) }
+        func button(_ button: Int, _ down: Bool) {
+            session.pointerButton(in: target, button: button, pressed: down, at: pixel())
+        }
+        switch action {
+        case .move(let delta):
+            let scale = model?.pixelsPerPoint ?? 1
+            point.x = min(0.999, max(0, point.x + delta.x * scale / max(1, target.frame.width)))
+            point.y = min(0.999, max(0, point.y + delta.y * scale / max(1, target.frame.height)))
+            session.pointerMove(in: target, to: pixel())
+        case .scroll(let delta): session.scroll(in: target, dx: delta.x, dy: delta.y, at: pixel())
+        case .beginDrag: session.focus(target); button(1, true)
+        case .endDrag: button(1, false)
+        case .click(let number):
+            session.focus(target)
+            button(number, true); button(number, false)
+            if number == 1 { checkTextFocus(session, target: target) }
+            haptics.impactOccurred()
+        case .doubleClick:
+            session.focus(target)
+            button(1, true); button(1, false)
+            checkTextFocus(session, target: target)
+        }
+        LaptopPointer.shared.show(in: target, session: session, at: point, owner: self)
+    }
+
+    private func checkTextFocus(_ session: any DisplaySession, target: RemoteWindow) {
+        focusTask?.cancel()
+        let check = TapTextFocus(since: CACurrentMediaTime(), serial: session.cursorSerial)
+        focusTask = Task { [weak self, weak target, weak session] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(50))
+                guard !Task.isCancelled, let self, let target, let session,
+                      self.inputEnabled, self.target === target, self.session === session, self.window != nil else { return }
+                if let wanted = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial, isText: session.cursorIsText) {
+                    self.prefersProse = self.autocorrectChoice ?? !RemoteWindowView.isCodeApp(target)
+                    self.model?.keyboardVisible = wanted
+                    return
+                }
+            }
+        }
+    }
+
+    func endInteraction() {
+        focusTask?.cancel()
+        focusTask = nil
+        perform(gestures.cancelled())
+        resignFirstResponder()
+        LaptopPointer.shared.clear(owner: self)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { endInteraction() }
+    }
+
     // MARK: Keyboard: typed text goes to the focused Linux window.
 
-    override var canBecomeFirstResponder: Bool { true }
+    override var canBecomeFirstResponder: Bool { inputEnabled && session?.state == .ready }
 
     private var focusedWindow: RemoteWindow? {
+        if let target { return target }
         guard let session, let desktop else { return nil }
         return desktop.stacking.reversed().compactMap { session.windows[$0] }.first { !$0.isAuxiliary && desktop.isVisible($0.id) }
     }
@@ -169,6 +264,8 @@ final class TrackpadSurface: RemoteTextInputView {
     }
 
     override func dismissKeyboard() {
+        focusTask?.cancel()
+        focusTask = nil
         model?.keyboardVisible = false
         super.dismissKeyboard()
     }

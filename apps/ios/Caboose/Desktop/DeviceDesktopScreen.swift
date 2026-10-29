@@ -20,10 +20,15 @@ struct DesktopScreen: View {
             Group {
                 if model.phase != .ready {
                     ComputerStateView()
-                } else if model.externalDisplayActive {
-                    TrackpadScreen(desktop: model.desktop)
                 } else {
-                    DesktopStage(fullScreen: immersive)
+                    LaptopContainer { laptop in
+                        if model.externalDisplayActive {
+                            if laptop { LaptopExternalOverview() }
+                            else { TrackpadScreen(desktop: model.desktop) }
+                        } else {
+                            DesktopStage(fullScreen: immersive)
+                        }
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -59,6 +64,7 @@ struct DesktopScreen: View {
     /// the dock, so they are not repeated here. Full Screen gives way first when room runs out.
     @ToolbarContentBuilder private var actions: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
+            LaptopModeMenu()
             if !model.keyboardVisible {
                 Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible = true }
             }
@@ -112,6 +118,7 @@ struct DesktopScreen: View {
 private struct DesktopStage: View {
     @Environment(AppModel.self) private var model
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
+    @Environment(\.laptopInputOwned) private var laptopInputOwned
     let fullScreen: Bool
 
     var body: some View {
@@ -140,6 +147,7 @@ private struct DesktopStage: View {
     }
 
     private var ignoredEdges: Edge.Set {
+        if laptopInputOwned { return [] }
         if fullScreen { return .all }
         switch barEdge {
         case .trailing: return [.top, .bottom]
@@ -162,6 +170,7 @@ extension EnvironmentValues {
 /// An iPad pointer hovers and clicks like a Mac's. Keys go to the frontmost window.
 struct DesktopTouchArea: UIViewRepresentable {
     @Environment(AppModel.self) private var model
+    @Environment(\.laptopInputOwned) private var laptopInputOwned
     let desktop: DesktopModel
     let keyboardVisible: Bool
 
@@ -175,8 +184,8 @@ struct DesktopTouchArea: UIViewRepresentable {
     func updateUIView(_ view: DesktopTouchSurface, context: Context) {
         view.desktop = desktop
         view.model = model
-        if keyboardVisible && !model.windowCardOwnsGeometry, !view.isFirstResponder { DispatchQueue.main.async { view.becomeFirstResponder() } }
-        if (!keyboardVisible || model.windowCardOwnsGeometry), view.isFirstResponder { DispatchQueue.main.async { view.resignFirstResponder() } }
+        if keyboardVisible && !model.windowCardOwnsGeometry && !laptopInputOwned, !view.isFirstResponder { DispatchQueue.main.async { view.becomeFirstResponder() } }
+        if (!keyboardVisible || model.windowCardOwnsGeometry || laptopInputOwned), view.isFirstResponder { DispatchQueue.main.async { view.resignFirstResponder() } }
     }
 }
 
