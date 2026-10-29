@@ -5,7 +5,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 mode=${1:?expected image-vm, image-container, vm or container}
 case "$mode" in image-vm|image-container|vm|container) ;; *) exit 2;; esac
 export DEBIAN_FRONTEND=noninteractive
-packages=(cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1)
+packages=(appstream gir1.2-appstream-1.0 cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1)
 missing=()
 for pkg in "${packages[@]}"; do
   [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || :)" = installed ] || missing+=("$pkg")
@@ -26,6 +26,10 @@ install_packages() {
 }
 if ((${#missing[@]})); then
   install_packages "${missing[@]}"
+  # AppStream installs APT index targets; fetch them after installing its configuration.
+  if [[ " ${missing[*]} " == *" appstream "* ]]; then
+    apt-get update
+  fi
 fi
 npm --version >/dev/null 2>&1 || install_packages npm
 if ! node --version >/dev/null 2>&1 || ! npm --version >/dev/null 2>&1; then

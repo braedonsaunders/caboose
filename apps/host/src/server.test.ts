@@ -209,7 +209,7 @@ it('routes Live Activity registrations and distinguishes foreground app sockets'
 it('serves the catalog and serializes authenticated application operations', async () => {
   let finish!: () => void
   const gate = new Promise<void>(resolve => { finish = resolve })
-  const guest = { run: async (_command: string, args: string[]) => { if (args[2] === 'list') return '{}'; await gate; return '' } }
+  const guest = { run: async (_command: string, args: string[]) => { if (args[2] === 'list') return '{}'; if (args[1]?.includes('AppStream.Pool.new')) return '[]'; await gate; return '' } }
   const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const app = createCabooseServer({ token: 'owner', settings, controller })

@@ -178,6 +178,15 @@ final class AppModel {
         Task { await wake() }
     }
 
+    /// Change reachability without replacing the phone token or its Files identity.
+    func updateAddresses(_ updated: Credentials) throws {
+        guard let current = credentials, current.hostURL == updated.hostURL,
+              current.token == updated.token else { return }
+        try updated.saveAddresses()
+        credentials = updated
+        if case .failed = phase { Task { await wake() } }
+    }
+
     func signOut() {
         fileSearchTask?.cancel()
         ComputerSearch.clear()
@@ -229,7 +238,7 @@ final class AppModel {
     /// Wakes the computer and opens the display. `quiet` keeps the current screen in place,
     /// for reconnects the person should not have to notice.
     func wake(quiet: Bool = false) async {
-        if let credentials, credentials.candidates.count > 1 {
+        if let credentials {
             let reached = await credentials.reachableURL()
             if reached != activeHostURL { activeHostURL = reached }
         }
@@ -533,6 +542,17 @@ final class AppModel {
     }
 
     func externalDisplayConnected(size: CGSize, scale: CGFloat) {
+        guard size.width > 0, size.height > 0 else { return }
+        if externalDisplayActive {
+            guard size != externalSize || scale != externalScale else { return }
+            externalSize = size
+            externalScale = scale
+            updateExternalPixelScale()
+            desktop.size = size
+            desktop.ui = desktopUI(forWidth: size.width)
+            reconnectForDisplayChange()
+            return
+        }
         // The TV takes the desktop over from the phone's own screen.
         deviceDesktopActive = false
         externalSize = size
@@ -557,15 +577,18 @@ final class AppModel {
     private(set) var desktopFull4K = UserDefaults.standard.bool(forKey: "desktopFull4K")
 
     private func tvPixelsPerPoint(width: CGFloat, scale: CGFloat) -> CGFloat {
-        let full = max(1, scale)
-        guard !desktopFull4K, width > 0 else { return full }
-        return min(full, max(1, 2560 / width))
+        DesktopGeometry.externalPixelsPerPoint(width: width, scale: scale, fullResolution: desktopFull4K)
     }
 
     func toggleDesktopFull4K() {
         desktopFull4K.toggle()
         UserDefaults.standard.set(desktopFull4K, forKey: "desktopFull4K")
         guard externalDisplayActive else { return }
+        updateExternalPixelScale()
+        reconnectForDisplayChange()
+    }
+
+    private func updateExternalPixelScale() {
         let old = desktop.pixelsPerPoint
         let new = tvPixelsPerPoint(width: externalSize.width, scale: externalScale)
         guard old != new else { return }
@@ -583,7 +606,6 @@ final class AppModel {
                 session.configure(window, frame: CGRect(x: f.minX * ratio, y: f.minY * ratio, width: f.width * ratio, height: f.height * ratio))
             }
         }
-        reconnectForDisplayChange()
     }
 
     /// The owner's adjustment to the desktop's automatic size, kept across sessions.

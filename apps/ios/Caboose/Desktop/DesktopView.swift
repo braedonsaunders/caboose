@@ -220,11 +220,12 @@ struct Launchpad: View {
         let ui = desktop.ui
         let apps = model.partitionedApps.main
         let layout = LaunchpadLayout(size: desktop.size, ui: ui, dockHeight: desktop.dockHeight)
+        let range = layout.pageRange(desktop.launcherPage, count: apps.count)
         let columns = Array(repeating: GridItem(.fixed(layout.column), spacing: layout.spacing), count: layout.columns)
         ZStack(alignment: .top) {
             Rectangle().fill(.ultraThinMaterial)
             LazyVGrid(columns: columns, spacing: layout.spacing) {
-                ForEach(apps.prefix(layout.columns * layout.rows)) { app in
+                ForEach(Array(apps[range])) { app in
                     let hot = desktop.hovered == .launcher(app.id)
                     VStack(spacing: 8 * ui) {
                         Group {
@@ -248,9 +249,37 @@ struct Launchpad: View {
                 }
             }
             .padding(.top, layout.top)
+            .id("\(desktop.launcherPage)-\(apps.map(\.id).joined(separator: ","))-\(desktop.size.width)-\(desktop.size.height)")
+            if apps.count > layout.columns * layout.rows {
+                HStack(spacing: 24 * ui) {
+                    if range.lowerBound > 0 { pageArrow(-1, symbol: "chevron.left", ui: ui) }
+                    Text("\(range.lowerBound / (layout.columns * layout.rows) + 1) / \((apps.count + layout.columns * layout.rows - 1) / (layout.columns * layout.rows))")
+                        .foregroundStyle(.white).font(.system(size: 14 * ui, weight: .semibold))
+                    if range.upperBound < apps.count { pageArrow(1, symbol: "chevron.right", ui: ui) }
+                }
+                .id("\(desktop.launcherPage)-\(apps.count)-\(desktop.size.width)-\(desktop.size.height)")
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .padding(.bottom, desktop.dockHeight + 12 * ui)
+            }
         }
         .frame(width: desktop.size.width, height: desktop.size.height)
         .clipped()
-        .onDisappear { desktop.launcherFrames = [:] }
+        .onChange(of: apps.map(\.id)) { _, _ in resetFrames(layout: layout, count: apps.count) }
+        .onChange(of: desktop.size) { _, _ in resetFrames(layout: layout, count: apps.count) }
+        .onDisappear { desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]; desktop.launcherPage = 0 }
+    }
+
+    private func resetFrames(layout: LaunchpadLayout, count: Int) {
+        desktop.launcherFrames = [:]
+        desktop.launcherPageFrames = [:]
+        desktop.launcherPage = layout.clampedPage(desktop.launcherPage, count: count)
+    }
+
+    private func pageArrow(_ direction: Int, symbol: String, ui: CGFloat) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 16 * ui, weight: .semibold)).foregroundStyle(.white)
+            .frame(width: 44 * ui, height: 44 * ui)
+            .background(.white.opacity(0.16), in: Circle())
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launcherPageFrames[direction] = $0 }
     }
 }

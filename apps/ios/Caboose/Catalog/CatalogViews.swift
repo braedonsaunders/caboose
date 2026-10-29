@@ -42,6 +42,8 @@ struct CatalogLibrary: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var remove: CatalogApp?
+    @State private var search = ""
+    @State private var category = "All"
 
     var body: some View {
         NavigationStack {
@@ -50,6 +52,25 @@ struct CatalogLibrary: View {
                 if !updates.isEmpty {
                     Section("Updates Available") { ForEach(updates) { row($0) } }
                 }
+                Section("Debian applications") {
+                    if model.catalog.storeLoading { ProgressView() }
+                    if let error = model.catalog.storeError { Text(error).foregroundStyle(.secondary) }
+                    let categories = Set(model.catalog.storeApps.flatMap { $0.categories ?? [] }).sorted()
+                    if !categories.isEmpty {
+                        Picker("Category", selection: $category) {
+                            Text("All").tag("All")
+                            ForEach(categories, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                    let shown = model.catalog.storeApps.filter { category == "All" || ($0.categories ?? []).contains(category) }
+                    if search.isEmpty && shown.contains(where: { $0.curated == true }) {
+                        Text("Caboose picks").font(.subheadline.weight(.semibold))
+                        ForEach(shown.filter { $0.curated == true }) { row($0) }
+                    }
+                    ForEach(search.isEmpty ? shown.filter { $0.curated != true } : shown) { row($0) }
+                    if !model.catalog.storeLoading && model.catalog.storeApps.isEmpty && model.catalog.storeError == nil { Text("No applications found.").foregroundStyle(.secondary) }
+                }
+                Section { Text("Curated collections").font(.headline) }
                 ForEach(model.catalog.packs) { pack in
                     let entries = model.catalog.apps.filter { $0.packs.contains(pack.id) }
                     Section {
@@ -67,6 +88,12 @@ struct CatalogLibrary: View {
                 }
             }
             .navigationTitle("Library")
+            .searchable(text: $search, prompt: "Search Debian applications")
+            .task(id: search) {
+                category = "All"
+                do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+                await model.catalog.discover(search)
+            }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .refreshable { await model.catalog.refresh() }
             .confirmationDialog("Remove \(remove?.name ?? "app")?", isPresented: Binding(get: { remove != nil }, set: { if !$0 { remove = nil } }), titleVisibility: .visible) {
@@ -85,6 +112,7 @@ struct CatalogLibrary: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(app.name).font(.body.weight(.medium))
                 Text(app.summary).font(.caption).foregroundStyle(.secondary)
+                if let license = app.license, !license.isEmpty { Text(license).font(.caption2).foregroundStyle(.secondary) }
                 if app.busy, let progress = app.progress {
                     Text(progress.label).font(.caption2).foregroundStyle(.secondary)
                     if let detail = progress.downloadDetail { Text(detail).font(.caption2).foregroundStyle(.secondary) }

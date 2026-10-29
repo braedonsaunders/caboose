@@ -138,11 +138,18 @@ struct YardLauncher: View {
                     .onTapGesture { close() }
             }
             VStack(spacing: 18) {
-                if inline {
+                HStack {
                     Text("Open an app")
                         .font(.headline)
                         .foregroundStyle(.white.opacity(0.9))
+                    Spacer()
+                    if !inline {
+                        Button("Close", systemImage: "xmark", action: close)
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.glass)
+                    }
                 }
+                .frame(maxWidth: 520)
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 96), spacing: 14)], spacing: 18) {
                         ForEach(apps) { app in
@@ -174,7 +181,6 @@ struct YardLauncher: View {
                 }
                 .scrollIndicators(.hidden)
                 .frame(maxWidth: 560, maxHeight: inline ? 420 : 520)
-                .fixedSize(horizontal: false, vertical: apps.count < 12)
                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
             }
             .padding(16)

@@ -365,8 +365,14 @@ messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 
 ### Catalog
 
-`guest/catalog/catalog.json` is the source of optional applications, packs and release
-pins. Debian applications install from Debian 13's signed repositories. On arm64, the catalog
+`guest/catalog/catalog.json` supplies curated applications, packs and release pins. The
+Library also searches the guest's Debian AppStream desktop-application metadata and displays
+at most 100 matching applications with categories and project licences. The initial selection labels Caboose picks as curated; it does not claim a popularity ranking. The guest requires
+an APT candidate for its architecture; the host validates the package and desktop identifiers
+before offering an APT operation. A discovered application's package and AppStream identity
+are retained in its operation record so it can be rediscovered after a host restart. Search
+requires a running guest and does not wake it. The Library reports discovery failures and
+keeps curated entries available. Debian applications install from Debian 13's signed repositories. On arm64, the catalog
 omits the pinned Craft `.deb` packages, which are x86_64-only, and packs with no compatible entries. Craft releases have
 fixed URLs, byte counts and SHA-256 hashes. No pin changes automatically; a changed pin
 makes an update available for the owner to choose.
@@ -500,7 +506,11 @@ their SHA-256.
 
 How a phone finds and reaches the host. `GET /v1/host/reach` lists every address a phone can
 use, best first, and a pairing link carries them all: the first as `host=`, the rest as
-`alt=`. The app uses the first that answers.
+`alt=`. The app probes the addresses without credentials and selects the first returning the
+host’s anonymous health response; this filters captive portals but does not authenticate the
+host. A paired phone can add or remove alternate
+addresses in Computer settings, including while offline, without changing its token or Files
+identity. It chooses among the saved addresses at each wake.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -864,6 +874,7 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `GET` | `/v1/catalog/discover?q=...` | Search Debian desktop applications, or list up to 100 when `q` is empty; returns `{ apps }` |
 | `GET` | `/v1/catalog` | `{ packs, apps }`: each catalog entry with `installedVersion`, `canRollback`, `lastError`, `interrupted`, `active`, `iconData`, `pinnedVersion`, `updateAvailable` and `progress` |
 | `POST` | `/v1/catalog/:id/install`, `/update`, `/rollback` | Queue an operation → 202 `{ accepted: true }` |
 | `DELETE` | `/v1/catalog/:id` | Queue removal → 202 |
@@ -1554,6 +1565,9 @@ the app card, and a detached view releases its layers.
   the pending request.
   An external display shows the windows floating, resizing and
   stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
+  Launchpad pages through the available apps, with its controls above the dock.
+  An external display scene supplies its current size and scale to the shared desktop;
+  changes reconfigure the display without transferring geometry ownership to an app card.
   The green title-bar button maximizes above the dock: its title bar meets the desktop's
   top edge, and its content ends eight UI-scaled points above the dock. Rotation and UI
   scaling update this area. Maximizing and restoring clear the guest's maximized state
@@ -1683,7 +1697,10 @@ Pinned and recent apps are kept on the phone per computer.
 - **Keyboard accessory.** Remote app cards, tiled and free desktops, the external-display
   trackpad, Terminal, the Agents composer and app-owned native form fields use
   CabooseKit’s shared `KeyBar` accessory. Hide Keyboard stays at the
-  top right above the horizontally scrolling key row; it never enters toolbar overflow.
+  top right beside the Keys, Move and Symbols groups; it never enters toolbar overflow.
+  Each group presents six fixed keys without horizontal scrolling. Home/End and symbol keys
+  offer related actions on touch-and-hold. Switching groups preserves active modifiers.
+  The accessory lays out within its own bounds, independently of the tab sidebar's safe area.
   The row offers Escape, Tab, sticky Ctrl/Alt, repeating arrows, navigation and shell symbols.
   Remote inputs share the same text/composition and modifier handling, with an Aa control
   for autocorrect; Terminal keeps its own terminal-byte semantics without prose correction.
@@ -1994,6 +2011,10 @@ an advertised model for the next message when the chat and its queue are idle (4
 otherwise). Model selection does not change profile identity, routines, MCP scope, or
 sign-in attempts. The phone's Agents toolbar offers the provider's advertised models
 for new chats and the current chat.
+
+Agent chats and the new-chat screen use a translucent navy reading field matching Terminal,
+with opaque text and the selected wallpaper visible beneath it. Reduce Transparency makes
+the reading field opaque.
 
 Agent chats keep their rendered turns mounted through keyboard and reply updates. A stale
 transcript read preserves completed turns already shown unless the host explicitly truncates

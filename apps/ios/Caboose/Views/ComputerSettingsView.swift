@@ -14,6 +14,8 @@ struct ComputerSettingsView: View {
     @State private var parking = false
     @State private var confirmRestart = false
     @State private var confirmSignOut = false
+    @State private var alternateAddress = ""
+    @State private var addressError: String?
 
     var body: some View {
         NavigationStack {
@@ -23,6 +25,7 @@ struct ComputerSettingsView: View {
                 } else if let loadError {
                     Form {
                         FilesSettingsSection()
+                        connectionAddressSection
                         Section {
                             ContentUnavailableView {
                                 Label("Settings unavailable", systemImage: "exclamationmark.triangle")
@@ -36,6 +39,7 @@ struct ComputerSettingsView: View {
                 } else {
                     Form {
                         FilesSettingsSection()
+                        connectionAddressSection
                         Section { ProgressView() }
                     }
                 }
@@ -86,6 +90,7 @@ struct ComputerSettingsView: View {
         let limits = status.limits
         Form {
             FilesSettingsSection()
+            connectionAddressSection
             if let upgrade = status.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
                 Section {
                     if upgrade.state == "failed" {
@@ -227,6 +232,41 @@ struct ComputerSettingsView: View {
         }
         .scrollContentBackground(.hidden)
         .refreshable { await load() }
+    }
+
+    private var connectionAddressSection: some View {
+        Section {
+            NativeTextInput("Remote address", text: $alternateAddress, keyboard: .URL, capitalization: .none, correction: false, contentType: .URL)
+            Button("Save Remote Address") {
+                guard var credentials = model.credentials,
+                      let url = Credentials.normalizedAddress(alternateAddress) else {
+                    addressError = "Enter an HTTP or HTTPS address without a username, password, query, or fragment."
+                    return
+                }
+                credentials.addAlternate(url)
+                do { try model.updateAddresses(credentials) }
+                catch { addressError = error.localizedDescription; return }
+                alternateAddress = ""
+                addressError = nil
+            }
+            ForEach(model.credentials?.alternateURLs ?? [], id: \.self) { url in
+                HStack {
+                    Text(url.absoluteString).textSelection(.enabled)
+                    Spacer()
+                    Button("Remove", role: .destructive) {
+                        guard var credentials = model.credentials else { return }
+                        credentials.alternateURLs.removeAll { $0 == url }
+                        do { try model.updateAddresses(credentials) }
+                        catch { addressError = error.localizedDescription }
+                    }
+                }
+            }
+            if let addressError { Text(addressError).foregroundStyle(.red) }
+        } header: {
+            Text("Remote Access")
+        } footer: {
+            Text("Add an address for this same computer. Your phone keeps its existing sign-in.")
+        }
     }
 
     private var backgroundName: String {

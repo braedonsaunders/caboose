@@ -130,6 +130,8 @@ with (ROOT / 'install.lock').open('a') as lock, (ROOT / (ident + '.lock')).open(
         raise SystemExit('Another catalog operation is still running. Wait for it to finish.')
     record = load(path)
     recover = record.get('running') or record.get('error')
+    if app.get('storeComponent'):
+        record['storeComponent'] = app['storeComponent']
     record.update(running=True, operation=action, operationId=app.get('operationId'), error=None, stage='preparing', message=None)
     save(path, record)
     try:

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
-import { AgentConflictError, AgentNotFoundError, AgentUnavailableError, type AgentGuest } from './agents.js'
+import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { loadCatalog, type CatalogData, type CatalogEntry } from './app-catalog-data.js'
 
 type Operation = 'install' | 'update' | 'rollback' | 'remove'
@@ -49,6 +49,9 @@ export class AppCatalog {
   private readonly data: CatalogData
   private states: Record<string, State> = {}
   private progress = new Map<string, Progress>()
+  private store = new Map<string, CatalogEntry & { categories: string[]; license: string; storeComponent: string; curated: boolean }>()
+  private restored = false
+  private restoring: Promise<void> | undefined
   private working = false
   private observing = false
   constructor(private readonly guest: () => AgentGuest | undefined, private readonly emit: (event: unknown) => void, private readonly lease: () => () => void, data = loadCatalog()) { this.data = data }
@@ -59,10 +62,54 @@ export class AppCatalog {
     const script = await readFile(new URL('./guest-catalog.py', import.meta.url), 'utf8')
     return guest.run('/usr/bin/python3', ['-c', script, action, JSON.stringify(argument)], timeout)
   }
+  private async loadStore(query: string | { restore: true }) {
+    if (typeof query === 'string' && (query.length > 100 || /[\x00-\x1f]/.test(query))) throw new AgentInputError('Invalid search')
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const script = await readFile(new URL('./guest-store.py', import.meta.url), 'utf8')
+    const output = await guest.run('/usr/bin/python3', ['-c', script, JSON.stringify(query)], 60_000)
+    if (output.length > 600_000) throw new Error('AppStream results too large')
+    const raw: unknown = JSON.parse(output)
+    if (!Array.isArray(raw) || raw.length > (typeof query === 'string' ? 100 : 300)) throw new Error('Invalid AppStream results')
+    const found: string[] = []
+    for (const value of raw) {
+      const v = object(value)
+      if (typeof v.package !== 'string' || !/^[a-z0-9][a-z0-9+.-]{0,99}$/.test(v.package) || v.id !== `debian-${v.package}` || typeof v.desktopId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}\.desktop$/.test(v.desktopId) || typeof v.name !== 'string' || !v.name || v.name.length > 160 || typeof v.summary !== 'string' || !v.summary || v.summary.length > 500 || !Array.isArray(v.categories) || v.categories.length > 12 || !v.categories.every(c => typeof c === 'string' && /^[A-Za-z0-9-]{1,40}$/.test(c)) || typeof v.curated !== 'boolean' || typeof v.license !== 'string' || v.license.length > 200 || typeof v.componentId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}$/.test(v.componentId)) continue
+      if (this.data.apps.some(app => app.source.kind === 'apt' && app.source.packages.includes(v.package as string))) continue
+      const entry: CatalogEntry & { categories: string[]; license: string; storeComponent: string; curated: boolean } = { id: v.id as string, name: v.name, summary: v.summary, category: v.categories[0] ?? 'Other', categories: v.categories, curated: v.curated, license: v.license, storeComponent: v.componentId, packs: [], icon: '', desktopId: v.desktopId, fileTypes: { extensions: [], utTypes: [] }, source: { kind: 'apt', packages: [v.package] } }
+      if (!this.store.has(entry.id) && this.store.size >= 300) {
+        const evict = [...this.store.keys()].find(id => !this.states[id]?.installedVersion && !this.states[id]?.active && !this.progress.has(id))
+        if (!evict) break
+        this.store.delete(evict)
+      }
+      this.store.set(entry.id, entry); found.push(entry.id)
+    }
+    return found
+  }
+  async restore() {
+    if (!this.guest()) { this.restored = false; return }
+    if (!this.restored) {
+      this.restoring ??= this.loadStore({ restore: true }).then(() => { this.restored = true }).finally(() => { this.restoring = undefined })
+      await this.restoring
+    }
+  }
+  async discover(query: string) {
+    if (typeof query !== 'string' || query.length > 100 || /[\x00-\x1f]/.test(query)) throw new AgentInputError('Invalid search')
+    const release = this.lease()
+    try {
+      await this.restore()
+      const found = await this.loadStore(query)
+      const listing = await this.list()
+      return { apps: found.flatMap(id => { const app = listing.apps.find(item => item.id === id); return app ? [app] : [] }) }
+    } finally { release() }
+  }
   async list() {
-    if (this.guest()) this.states = parseStates(JSON.parse(await this.invoke('list', this.data.apps)), this.data.apps)
+    // A missing AppStream dependency must not hide the curated catalog.
+    try { await this.restore() } catch { /* retry on the next listing */ }
+    const apps = [...this.data.apps, ...this.store.values()]
+    if (this.guest()) this.states = parseStates(JSON.parse(await this.invoke('list', apps)), apps)
     if (!this.working && !this.observing && Object.values(this.states).some(state => state.active)) this.observe()
-    return { packs: this.data.packs, apps: this.data.apps.map(app => {
+    return { packs: this.data.packs, apps: apps.map(app => {
       const { operationId: _operationId, ...state } = this.states[app.id] ?? EMPTY
       const pinnedVersion = app.source.kind === 'deb' ? app.source.version : null
       const installedVersion = state.installedVersion
@@ -71,7 +118,7 @@ export class AppCatalog {
     }) }
   }
   private find(id: string): CatalogEntry {
-    const app = this.data.apps.find(item => item.id === id)
+    const app = this.data.apps.find(item => item.id === id) ?? this.store.get(id)
     if (!app) throw new AgentNotFoundError('Application not found in catalog')
     return app
   }

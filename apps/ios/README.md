@@ -43,12 +43,24 @@ the QR code with the iPhone's camera (or open its `caboose://connect?host=…&co
 the phone). The app trades the single-use code for its own token through `POST /v1/pair`
 (`Caboose/Host/Pairing.swift`) at the first of the link's addresses that answers. The
 sign-in screen also takes an address with a typed pairing code, or with a token, and older
-links that carry `token=` still work.
+links that carry `token=` still work. Under Computer settings, Remote Access adds or removes
+alternate HTTP or HTTPS addresses without replacing the phone's token or Files identity.
+The settings are available even when the host is unreachable. The app probes saved addresses
+at each wake without sending a token; an anonymous health response filters captive portals but
+does not authenticate the host.
 
 ## Test
 
 ```sh
 cd apps/ios/CabooseKit && swift test
+```
+
+Run the remote-address unit checks and paired-phone check:
+
+```sh
+swiftc Caboose/Host/Credentials.swift tests/RemoteAddresses.swift -o /tmp/caboose-remote-address-tests
+/tmp/caboose-remote-address-tests
+sh scripts/check-remote-access.sh
 ```
 
 The unit tests replay the compositor's golden vectors from `guest/display/vectors` (every
@@ -275,8 +287,7 @@ Restart, the wallpaper, and Change Computer. Beside the cog, the lifecycle menu 
 computer's state and offers Turn On, Park and Restart as they apply. Both use the host's
 management API (`docs/architecture.md`) and follow `computer.settings` events on the control
 socket. The Apps tab's Shelf offers optional applications from the computer's pinned
-catalog; Library groups them into packs and offers updates, rollback to a cached release,
-and removal.
+catalog and Debian's AppStream metadata. Library searches Debian applications, filters results by category, labels Caboose picks as curated, groups curated apps into packs, and offers updates, rollback to a cached release, and removal.
 
 The wallpaper lies behind every tab and the desktop, here and on a TV: the brand gradient,
 photographs that change every quarter hour, one photograph, or a picture of your own from
@@ -397,3 +408,8 @@ The bridge requires a recent touch; keyboard-only activation is not supported.
 
 Quick Look, WebKit isolation, actual file download/share, touch and VoiceOver require the app
 on a device; unit tests cover the pure policy and fence parsing.
+
+The shared keyboard header has Keys, Move and Symbols groups with six fixed controls each;
+Hide Keyboard stays at the top right. Hold Home or End for page navigation and symbol
+keys for related punctuation. Group changes retain active Ctrl/Alt modifiers. Verify the
+header in Terminal, desktop apps and Agents at narrow width and with the Duo sidebar.

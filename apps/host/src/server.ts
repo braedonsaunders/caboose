@@ -453,6 +453,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       await computer.park(closeSockets)
       return json(response, 200, { state: computer.state })
     }
+    if (request.method === 'GET' && path === '/v1/catalog/discover') return json(response, 200, await appCatalog.discover(new URL(request.url ?? '/', 'http://localhost').searchParams.get('q') ?? ''))
     if (request.method === 'GET' && path === '/v1/catalog') return json(response, 200, await appCatalog.list())
     const craftRun = /^\/v1\/catalog\/([^/]+)\/run$/.exec(path)
     if (request.method === 'POST' && craftRun?.[1]) {
@@ -488,9 +489,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const packInstall = /^\/v1\/catalog\/packs\/([^/]+)\/install$/.exec(path)
     if (request.method === 'POST' && packInstall?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
     const appAction = /^\/v1\/catalog\/([^/]+)\/(install|update|rollback)$/.exec(path)
-    if (request.method === 'POST' && appAction?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
+    if (request.method === 'POST' && appAction?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
     const removeApp = /^\/v1\/catalog\/([^/]+)$/.exec(path)
-    if (request.method === 'DELETE' && removeApp?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
+    if (request.method === 'DELETE' && removeApp?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
     if (request.method === 'GET' && path === '/v1/apps') {
       return json(response, 200, await computer.run(() => controller.apps()))
     }

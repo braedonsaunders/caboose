@@ -414,7 +414,7 @@ appended. The API and its limits are in `docs/architecture.md` § Notifications.
 ## Catalog and Craft jobs
 
 The pinned catalog in [`guest/catalog`](../../guest/catalog/README.md) is served at
-`GET /v1/catalog`. Install, update, rollback and removal are asynchronous; watch
+`GET /v1/catalog`. `GET /v1/catalog/discover?q=...` searches Debian AppStream desktop entries available to the guest architecture; results include categories and project licences. An empty query returns up to 100 entries, with Caboose picks identified as curated. `apps/host/scripts/check-store.sh` checks discovery, installation, installed state, the desktop launcher and restoration in a disposable Debian container; it requires Docker and network access. Install, update, rollback and removal are asynchronous; watch
 `catalog.progress` and `catalog.changed` on `/v1/control`. The guest downloads and verifies
 release packages before APT runs, and Debian packages come from the signed Debian 13
 repositories. Progress percentages describe measured release-download bytes only;
