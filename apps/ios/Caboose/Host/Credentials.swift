@@ -138,6 +138,14 @@ struct Credentials: Equatable, Codable, Identifiable {
     /// Forget the selected pairing without deleting any other explicitly paired computer.
     static func clear() throws {
         var collection = try loadCollection()
+        // The canonical collection already contains the migrated pairing. Erase the old
+        // storage too, so Forget cannot leave its pre-migration bearer behind.
+        for service in [service, addressesService] {
+            let status = SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service] as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else { throw StoreError(status: status) }
+        }
+        UserDefaults.standard.removeObject(forKey: hostKey)
+        UserDefaults.standard.removeObject(forKey: alternatesKey)
         let removedID = collection.activeID
         collection.computers.removeAll { $0.id == removedID }
         collection.activeID = collection.computers.first?.id
