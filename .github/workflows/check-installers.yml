@@ -58,9 +58,10 @@ jobs:
         run: |
           bash deploy/windows/build-rootfs.sh dist/windows
           tar -tzf dist/windows/caboose-wsl-rootfs-amd64.tar.gz > "$RUNNER_TEMP/rootfs-files"
-          for file in etc/wsl.conf usr/bin/dockerd usr/lib/systemd/systemd; do
+          for file in etc/wsl.conf usr/lib/systemd/systemd; do
             grep -Fx "$file" "$RUNNER_TEMP/rootfs-files"
           done
+          grep -Ex 'usr/(s)?bin/dockerd' "$RUNNER_TEMP/rootfs-files"
           tar -xOzf dist/windows/caboose-wsl-rootfs-amd64.tar.gz etc/wsl.conf | grep -Fx systemd=true
           (cd dist/windows && sha256sum -c caboose-wsl-rootfs-amd64.tar.gz.sha256)
   windows:
