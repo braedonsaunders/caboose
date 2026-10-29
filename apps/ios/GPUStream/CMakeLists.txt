@@ -48,6 +48,7 @@ target_link_libraries(caboose_gpu_stream PRIVATE
     gfxrecon_format
     gfxrecon_util
     gfxrecon_replay_event_plugin_abi
+    gfxrecon_replay_event_plugin_loader
     vulkan_registry
     platform_specific)
 
@@ -61,11 +62,12 @@ add_custom_command(OUTPUT "${merged}"
         $<TARGET_FILE:gfxrecon_graphics>
         $<TARGET_FILE:gfxrecon_format>
         $<TARGET_FILE:gfxrecon_util>
+        $<TARGET_FILE:gfxrecon_replay_event_plugin_loader>
         $<TARGET_FILE:spirv-reflect-static>
         $<TARGET_FILE:project_version>
         "${MOLTENVK_LIBRARY}"
     DEPENDS caboose_gpu_stream gfxrecon_decode gfxrecon_encode gfxrecon_graphics gfxrecon_format gfxrecon_util
-        spirv-reflect-static project_version "${MOLTENVK_LIBRARY}"
+        gfxrecon_replay_event_plugin_loader spirv-reflect-static project_version "${MOLTENVK_LIBRARY}"
     COMMENT "Merging libCabooseGPUStream.a"
     VERBATIM)
 add_custom_target(caboose_gpu_stream_merged ALL DEPENDS "${merged}")
