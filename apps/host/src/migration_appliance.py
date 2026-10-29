@@ -182,7 +182,7 @@ def pack_system_image(clone, output, work, *, guestfish='/usr/bin/guestfish',
                     'add-drive', str(scratch), 'format:raw', ':',
                     'set-network', 'false', ':', 'set-memsize', '1024', ':', 'run', ':',
                     'mount-options', 'ro', '/dev/sda3', '/', ':',
-                    'debug', 'sh', 'set -eu; for p in usr opt tmp; do test -d /sysroot/$p && test ! -L /sysroot/$p || exit 1; done; for p in var var/lib var/lib/caboose; do test ! -L /sysroot/$p || exit 1; done; test ! -e /sysroot/var/lib/caboose/system-overlay; test ! -L /sysroot/var/lib/caboose/system-overlay', ':',
+                    'debug', 'sh', 'set -eu; for p in usr opt tmp; do test -d /sysroot/$p && test ! -L /sysroot/$p || exit 1; done; for p in var var/lib var/lib/caboose; do test ! -L /sysroot/$p || exit 1; done; test ! -e /sysroot/var/lib/caboose/system-overlay; test ! -L /sysroot/var/lib/caboose/system-overlay; test ! -e /sysroot/.caboose-system; test ! -L /sysroot/.caboose-system', ':',
                     'mkfs', 'ext4', '/dev/sdb', ':', 'mount', '/dev/sdb', '/tmp', ':' , 'debug', 'sh', 'mkdir -p /tmp/caboose-libs', ':',
                     'debug-upload', str(mkfs), '/tmp/caboose-mkfs', '493', ':',
                     'debug-upload', str(fsck), '/tmp/caboose-fsck', '493', ':',
@@ -337,6 +337,12 @@ def rebuild_initramfs(hook_clone, source_clone, kernel_version, hook, output, wo
                  'test ! -e /sysroot/etc/caboose-split-system; test ! -L /sysroot/etc/caboose-split-system; '
                  'test ! -e /sysroot/etc/initramfs-tools/scripts/local-bottom/caboose-system; '
                  'test ! -L /sysroot/etc/initramfs-tools/scripts/local-bottom/caboose-system; '
+                 'if test -e /sysroot/etc/initramfs-tools/modules; then '
+                 'test -f /sysroot/etc/initramfs-tools/modules; '
+                 'test $(stat -c %h /sysroot/etc/initramfs-tools/modules) -eq 1; fi; '
+                 f'test -f /sysroot/boot/initrd.img-{kernel_version}; '
+                 f'test ! -L /sysroot/boot/initrd.img-{kernel_version}; '
+                 f'test $(stat -c %h /sysroot/boot/initrd.img-{kernel_version}) -eq 1; '
                  f'for p in usr usr/lib usr/lib/modules usr/lib/modules/{kernel_version}; '
                  'do test -d /sysroot/$p && test ! -L /sysroot/$p || exit 1; done')
     with _appliance_directory(work, '.migration-hook-', guard) as directory:
@@ -398,11 +404,16 @@ def prepare_system_disk(staged_clone, kernel_version, hook, initrd, work, *,
              'do test ! -L /sysroot/$p || exit 1; done; '
              'test ! -e /sysroot/var/lib/caboose/system-overlay; '
              'test ! -L /sysroot/var/lib/caboose/system-overlay; '
+             'test ! -e /sysroot/.caboose-system; test ! -L /sysroot/.caboose-system; '
              'test -d /sysroot/usr; test -d /sysroot/opt; '
              'test ! -e /sysroot/etc/caboose-split-system; test ! -L /sysroot/etc/caboose-split-system; '
              'test ! -e /sysroot/etc/initramfs-tools/scripts/local-bottom/caboose-system; '
              'test ! -L /sysroot/etc/initramfs-tools/scripts/local-bottom/caboose-system; '
-             f'test -f /sysroot{initrd_path}; test ! -L /sysroot{initrd_path}')
+             'if test -e /sysroot/etc/initramfs-tools/modules; then '
+             'test -f /sysroot/etc/initramfs-tools/modules; '
+             'test $(stat -c %h /sysroot/etc/initramfs-tools/modules) -eq 1; fi; '
+             f'test -f /sysroot{initrd_path}; test ! -L /sysroot{initrd_path}; '
+             f'test $(stat -c %h /sysroot{initrd_path}) -eq 1')
     with _appliance_directory(work, '.migration-layout-', guard) as directory:
         directory = Path(directory)
         args = _disk_commands(fish, staged_clone, False) + [

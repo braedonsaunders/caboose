@@ -626,8 +626,8 @@ computer is cold-stopped. Local snapshots, cold snapshot pointers and incomplete
 snapshot staging block migration; parked memory is never discarded. The tool
 requires root, Python 3, guestfish, supermin, QEMU, `erofs-utils`, and
 the pinned Cloud Hypervisor v54 binary. Set `CABOOSE_VMM_PATH` or pass `--vmm`
-if it is not `/usr/local/bin/cloud-hypervisor`. The appliance kernel must be
-installed and readable by root. The host must provide local OFD locking and
+if it is not `/usr/local/bin/cloud-hypervisor`. Use `--mkfs` and `--fsck`
+for nonstandard `erofs-utils` paths. The appliance kernel must be installed and readable by root. The host must provide local OFD locking and
 process visibility; other backends and noncooperating writers are unsupported.
 
 From the checkout or the native bundle's `app` directory, use the computer ID
