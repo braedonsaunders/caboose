@@ -131,17 +131,55 @@ The full contract between app, host and guest is [docs/architecture.md](docs/arc
 
 ## Run your own
 
-Choose the installation for your machine. Each runs the same host and web console, with
-accounts, separate computers and phone pairing.
+Paste the line for your machine into a terminal on it. Each installs the same host and web
+console, downloads a verified release and the computer's image, and starts at boot.
 
-| Machine | Install |
-| --- | --- |
-| Apple Silicon Mac, macOS 14+ | [Native Mac installer](deploy/macos/README.md): a menu bar app and host that starts at login, without Docker or administrator privileges. The Mac must stay awake and logged in. |
-| Linux PC, amd64 or arm64 | [Native Linux installer](deploy/linux/README.md): a systemd service, with `/dev/kvm` for microVMs or Docker for the GPU container runtime. |
-| Linux server with a domain | [Server installer](deploy/server/README.md): the host behind Caddy with automatic HTTPS, for households or teams. |
+**Linux PC** (amd64 or arm64, with systemd and `/dev/kvm`):
 
-Release installers download verified bundles and the matching computer image. To build
-the host from a checkout on Linux instead, use Docker and Compose with `/dev/kvm`:
+```sh
+curl -fsSL https://raw.githubusercontent.com/braedonsaunders/caboose/main/deploy/linux/install.sh | sudo bash
+```
+
+**Apple Silicon Mac** (macOS 14+; no Docker or administrator needed, and the Mac must stay
+awake and logged in):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/braedonsaunders/caboose/main/deploy/macos/install.sh | bash
+```
+
+**Linux server with a domain** (HTTPS from anywhere, for households or teams):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/braedonsaunders/caboose/main/deploy/server/install.sh \
+  | sudo bash -s -- --domain caboose.example.com --email you@example.com
+```
+
+When it finishes, the installer prints the console's address and a one-time setup link (the
+Mac opens it for you), and the Linux installers print a QR code for the iPhone:
+
+1. **Open the setup link** in any browser that reaches the machine, and make your account
+   and your household or team.
+2. **Sign in the iPhone.** Scan the installer's QR code with the Camera within 10 minutes,
+   or in the console open your computer under **Computers**, then **Phones › Sign in a
+   phone**.
+3. **Open Caboose on the iPhone.** The computer's image finishes downloading in the
+   background after the first start (a few GB); until then a wake shows its progress.
+
+The iOS app is built from source with XcodeGen ([apps/ios](apps/ios/README.md)).
+**New computer** in the console adds a computer for someone else, each with its own disk
+and phones; **People** invites other administrators by link, and **Tenants** adds more
+households or teams with quotas. Every option, upgrade and uninstall is in the installer's
+README: [Linux](deploy/linux/README.md), [Mac](deploy/macos/README.md),
+[server](deploy/server/README.md).
+
+For access away from home, use **Remote Access** in the console to connect Tailscale and
+enable Serve for HTTPS, or use the server installer with your domain. The Linux and Mac
+installers listen on the local network over plain HTTP, so use HTTPS before sending
+traffic over an untrusted network, and never forward the port from your router.
+
+### From a checkout
+
+To build the host yourself on Linux, use Docker and Compose with `/dev/kvm`:
 
 ```sh
 git clone https://github.com/braedonsaunders/caboose.git && cd caboose
@@ -151,29 +189,12 @@ docker compose -f deploy/compose.yaml up -d --build
 docker compose -f deploy/compose.yaml logs caboose-host
 ```
 
-Then:
-
-1. **Install the computer's image.** A release host fetches it on first start and verifies
-   it; until the first release is published, build it with `guest/image/build.sh`, which
-   writes `base.raw`, `vmlinux` and `initrd` to `/data/caboose/disks`, the host's disk root
-   ([guest/image](guest/image/README.md), [apps/host › Images](apps/host/README.md#images)).
-2. **Set it up** with the link the host prints on first start
-   (`Set up Caboose: http://…/setup?code=…`, also in `setup-code` in its state directory):
-   make your account and your household or team. Then open your computer under
-   **Computers**, and on **Phones** use **Sign in a phone**: scan the QR code with the
-   iPhone. **New computer** adds a computer for someone else, each with its own disk and
-   phones; **People** invites other administrators by link, and **Tenants** adds more
-   households or teams with quotas.
-3. **Build the iOS app** with XcodeGen ([apps/ios](apps/ios/README.md)).
-
-For access away from home, use **Remote Access** in the console to connect Tailscale and
-enable Serve for HTTPS, or use the server installer with your domain. Native installers
-listen on the local network; the Compose example publishes only to loopback. The host
-speaks plain HTTP, so use HTTPS before sending traffic over an untrusted network.
-The Compose container is privileged for KVM and TAP networking, so run it on a host you
-trust. All the details, including the GPU container runtime for
-WSL2 and NVIDIA, are in [apps/host](apps/host/README.md) and
-[guest/container](guest/container/README.md).
+A checkout build names no published computer image: build it with `guest/image/build.sh`,
+which writes `base.raw`, `vmlinux` and `initrd` to `/data/caboose/disks`, the host's disk
+root ([guest/image](guest/image/README.md), [apps/host › Images](apps/host/README.md#images)).
+The Compose container is privileged for KVM and TAP networking and publishes only to
+loopback, so run it on a host you trust. The GPU container runtime for WSL2 and NVIDIA is in
+[apps/host](apps/host/README.md) and [guest/container](guest/container/README.md).
 
 ## Repository
 

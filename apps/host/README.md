@@ -106,7 +106,7 @@ holds one directory, `caboose-host/`:
 | `node/` | Node v22.23.4 for the target, checked against nodejs.org's SHA-256. |
 | `app/` | The compiled host with its production dependencies (`ws` and `appkit-desk`, plain JavaScript), the console, and the guest assets the host installs. |
 | `defaults.env` | The release's pinned `CABOOSE_BASE_IMAGE` and `CABOOSE_CONTAINER_IMAGE`, used only when the environment does not set them. |
-| `VERSION` | The release, from `CABOOSE_VERSION` or `git describe`. |
+| `VERSION` | The release, from `CABOOSE_VERSION` or `git describe`. The launcher exports it as `CABOOSE_VERSION`, which `GET /v1/host` and the console report. |
 
 The release workflow attaches the `linux-amd64`, `linux-arm64` and `darwin-arm64` bundles and
 `SHA256SUMS` to each GitHub Release. `scripts/check-bundle.sh <bundle>` extracts one, starts it
@@ -188,8 +188,12 @@ docs/architecture.md). A release pins its images, so a host never moves to a new
 on its own, and a new base image reaches only new computers (see
 [`guest/image`](../../guest/image/README.md)).
 
-GHCR makes a new package private. After the first release, a maintainer must make each of
-the three packages public in its package settings before anonymous pulls work.
+With no image in its disk root and no reference to fetch one from, a wake is refused with
+409 and how to build it, and the console names the problem on Overview and Host.
+
+GHCR makes a new package private. The release workflow checks that each of the three images
+pulls anonymously before it attaches the bundles; on a first release it stops there until a
+maintainer makes each package public in its package settings and re-runs the job.
 
 ## Configuration
 

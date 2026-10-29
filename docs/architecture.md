@@ -119,7 +119,9 @@ reference and removes the old files.
 
 While the image is being fetched, `POST /v1/session` (and anything that wakes) answers 409
 with its progress ("Downloading the computer's image (42%)"). A failed fetch puts the
-computer in `error` with the reason in `lastError`, and the next wake retries it.
+computer in `error` with the reason in `lastError`, and the next wake retries it. When the
+image is absent and the host has no reference to fetch it from, a wake answers 409 with how
+to build it or which variable names a published one.
 
 ### Guest components
 
@@ -769,7 +771,8 @@ Management status:
   `lastError`.
 
 `GET /v1/host` returns `{ version, node, runtime, gpu, image, push, liveActivities,
-settings }`: the host package and Node versions, `"microvm"` or `"container"`, the
+settings }`: the host's version (the release it was built as, `CABOOSE_VERSION`, else the
+package version) and Node's version, `"microvm"` or `"container"`, the
 container's GPU kind (null for a microVM), the container image or the golden image path,
 whether APNs and Live Activities are configured, and `settings: [{ name, value, default }]`
 for the non-secret `CABOOSE_*` variables read at startup (container-only variables appear

@@ -118,10 +118,18 @@ function withImage(controller: Controller, provisioner: ImageProvisioner): Contr
     const status = provisioner.status()
     if (status.state === 'fetching') throw new ComputerConflictError(describeImage(status))
     if (status.state === 'failed') throw new Error(describeImage(status))
+    if (status.state === 'missing') throw new ComputerConflictError(missingImage())
     return controller.wake()
   }
   gated.stats = () => ({ ...(controller.stats() as object), image: provisioner.status() })
   return gated
+}
+
+/** What an owner does when the computer's image is absent and the host has none to fetch. */
+function missingImage(): string {
+  return deployment.runtime === 'container'
+    ? `The computer's image ${deployment.containerImage} is not in Docker. Build it with docker build -t ${deployment.containerImage} -f guest/container/Dockerfile guest, or set CABOOSE_CONTAINER_IMAGE to a published image.`
+    : `The computer's image is not installed. Build it into ${deployment.imageRoot} with guest/image/build.sh, or set CABOOSE_BASE_IMAGE to a published image.`
 }
 
 /** The disk a microVM computer uses on the host: its overlay and any parked memory. Unknown for a container. */
