@@ -41,5 +41,14 @@ python3 -m unittest discover -s guest/packages -v
 Run that command from the repository root. The real `.deb` round trip runs only
 where `dpkg-deb` is installed; other checks cover index hashes, by-hash contents,
 architecture selection, deterministic output and failure cleanup. Repository
-installation with a real APT client and signature verification require Linux and
-are separate integration checks.
+download with a real APT client and signature verification are checked on Linux:
+
+```sh
+bash guest/packages/check-repository.sh
+```
+
+It needs `dpkg-deb`, APT and GnuPG. It builds a tiny acceptance fixture, makes a
+throwaway signing key in a temporary directory, verifies both signatures,
+downloads the fixture through isolated APT state and checks that APT rejects a
+tampered signature. It never installs the fixture or modifies system APT state.
+The hosted `Check guest package repository` workflow runs both checks.
