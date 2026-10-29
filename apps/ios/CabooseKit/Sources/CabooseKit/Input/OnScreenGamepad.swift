@@ -163,7 +163,7 @@ public enum OnScreenGamepad {
         case (.playstation, .rightTrigger): return Label("R2")
         case (.playstation, .select): return Label("Create")
         case (.playstation, .start): return Label("Options", symbol: "line.3.horizontal")
-        case (.playstation, .home): return Label("PS", symbol: "logo.playstation")
+        case (.playstation, .home): return Label("PS", symbol: "house.fill")
         case (.playstation, .leftStick): return Label("L3")
         case (.playstation, .rightStick): return Label("R3")
         case (_, .up): return Label("Up")
