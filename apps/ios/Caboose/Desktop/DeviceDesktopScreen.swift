@@ -297,6 +297,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
     private let scrollDriver = ScrollDriver()
     private var scrolling = false
     private var scrollSuppressed = false
+    private var partialLift = false
     private var scrollOrigin = CGPoint.zero
     private var scrollOriginTime: TimeInterval = 0
 
@@ -390,6 +391,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
         scrolling = false
         if maxFingers == 0 {
             scrollSuppressed = false
+            partialLift = false
             began = event?.timestamp ?? 0
             travel = 0
             dragging = false
@@ -453,7 +455,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
             desktop?.trackSwitchHold(at: finger.location(in: self))
             return
         }
-        guard !contextOpened, !scrollSuppressed else { return }
+        guard !contextOpened, !scrollSuppressed, !partialLift else { return }
         if pansContent {
             guard let target = panWindow, let session, session === panSession,
                   session.state == .ready, session.windows[target.id] === target,
@@ -522,9 +524,9 @@ final class DesktopTouchSurface: RemoteTextInputView {
             scrollSuppressed = true
         }
         guard live(event).isEmpty, let desktop else {
-            // A partial lift must not restart a two-finger scroll with one finger
-            // or turn the remaining contact into a click/hold.
-            scrollSuppressed = true
+            // Do not begin scrolling with the remaining contact. Preserve the
+            // final two-finger tap: fingers normally lift at different times.
+            partialLift = true
             cancelHold()
             lastCentroid = centroid(live(event))
             return
