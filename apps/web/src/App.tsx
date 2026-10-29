@@ -14,6 +14,9 @@ import { Computers } from './pages/Computers.js'
 import { People } from './pages/People.js'
 import { Tenants } from './pages/Tenants.js'
 import { Host } from './pages/Host.js'
+import { Usage } from './pages/Usage.js'
+import { Security } from './pages/Security.js'
+import { PasswordRecovery } from './pages/PasswordRecovery.js'
 
 /** Every navigation entry routes client-side, so the shell never reloads the page. */
 const linkRender: LinkRender = ({ href, children, className, title, ariaCurrent, role }) => (
@@ -68,6 +71,7 @@ export function App() {
   let page: React.ReactNode
   if (route.page === 'setup') page = <Setup onDone={() => { signedIn({ kind: 'account' }); navigate('/', { replace: true }) }} />
   else if (route.page === 'invite') page = <AcceptInvite onDone={() => { signedIn({ kind: 'account' }); navigate('/', { replace: true }) }} />
+  else if (route.page === 'recover') page = <PasswordRecovery />
   else if (session === 'checking') page = <main className="flex min-h-screen items-center justify-center"><RollingWordmark label="Loading" /></main>
   else if (session === null) page = <SignIn onSignIn={signedIn} />
   else page = <Console session={session} onSignOut={signOut} />
@@ -100,20 +104,21 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
   const awake = computers.list?.computers.some(computer => computer.state !== 'parked') ?? false
 
   React.useEffect(() => {
-    const titles: Partial<Record<typeof route.page, string>> = { host: 'Host', computers: 'Computers', people: 'People', tenants: 'Tenants' }
+    const titles: Partial<Record<typeof route.page, string>> = { host: 'Host', computers: 'Computers', people: 'People', tenants: 'Tenants', usage: 'Usage', security: 'Account security' }
     if (route.page !== 'computer') document.title = titles[route.page] ? `${titles[route.page]} — Caboose` : 'Caboose'
   }, [route.page])
 
   // Tenants and Host are the operator's; anyone else who lands there goes to the Overview.
   React.useEffect(() => {
     if (me && !me.operator && (route.page === 'tenants' || route.page === 'host')) navigate('/', { replace: true })
-  }, [me, route.page])
+    if (me && session.kind !== 'account' && route.page === 'security') navigate('/', { replace: true })
+  }, [me, route.page, session.kind])
 
   if (!me) return <main className="flex min-h-screen items-center justify-center"><RollingWordmark label="Loading" /></main>
 
   return (
     <AppShell
-      groups={navigationGroups(operator)}
+      groups={navigationGroups(operator, session.kind === 'account')}
       pathname={sidebarPath(route)}
       navigationMode="sidebar"
       linkRender={linkRender}
@@ -150,6 +155,8 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
         </div>
       ) : null}
       {route.page === 'overview' ? <Overview computers={computers} host={host} me={me} /> : null}
+      {route.page === 'usage' ? <Usage client={client} me={me} onUnauthorized={onSignOut} /> : null}
+      {route.page === 'security' && session.kind === 'account' ? <Security onSignOut={onSignOut} /> : null}
       {route.page === 'computers' ? <Computers client={client} computers={computers} me={me} /> : null}
       {route.page === 'computer' ? (
         // Keyed by computer, so nothing one computer's tabs loaded is shown for another.

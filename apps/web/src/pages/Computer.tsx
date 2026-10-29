@@ -16,6 +16,7 @@ import { Files } from './computer/Files.js'
 import { Apps } from './computer/Apps.js'
 import { Phones } from './computer/Phones.js'
 import { Settings } from './computer/Settings.js'
+import { Backups } from './computer/Backups.js'
 
 /** One computer: its state and lifecycle actions above, and a tab for each thing an owner manages. */
 export function Computer({ client: hostClient, computers, id, host, me, tab, onUnauthorized }: {
@@ -134,6 +135,7 @@ export function Computer({ client: hostClient, computers, id, host, me, tab, onU
       {tab === 'files' ? <Files client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
       {tab === 'apps' ? <Apps client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
       {tab === 'phones' ? <Phones client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
+      {tab === 'backups' ? <Backups client={client} /> : null}
       {tab === 'settings' ? (
         <Settings
           client={client}

@@ -178,8 +178,17 @@ describe('navigation and actions', () => {
   })
 
   it('shows tenants and the host only to the operator', () => {
-    expect(navigationGroups(true).map(group => group.label)).toEqual(['Overview', 'Computers', 'People', 'Tenants', 'Host'])
-    expect(navigationGroups(false).map(group => group.label)).toEqual(['Overview', 'Computers', 'People'])
+    expect(navigationGroups(true).map(group => group.label)).toEqual(['Overview', 'Computers', 'Usage', 'People', 'Tenants', 'Host'])
+    expect(navigationGroups(false).map(group => group.label)).toEqual(['Overview', 'Computers', 'Usage', 'People'])
+  })
+
+  it('offers account security only for account sessions and preserves management links', () => {
+    expect(navigationGroups(true).some(group => group.label === 'Account security')).toBe(false)
+    expect(navigationGroups(false, true).some(group => group.label === 'Account security')).toBe(true)
+    for (const page of ['usage', 'security', 'recover'] as const) {
+      expect(parseRoute(routeHref({ page }))).toEqual({ page })
+    }
+    expect(parseRoute('/computers/owner/backups')).toEqual({ page: 'computer', id: 'owner', tab: 'backups' })
   })
 
   it('never sends account, tenant or invitation routes under a computer', async () => {
