@@ -951,7 +951,6 @@ single-use recovery codes and session revocation; see [administrator account sec
 Existing-account invitations require completed sign-in including MFA. Revocation revalidates
 open administrator sockets before returning; expiry is checked every thirty seconds.
 
-
 A request is from one of three kinds of caller:
 
 - **The owner token**, `Authorization: Bearer <owner token>`, compared as SHA-256 digests in

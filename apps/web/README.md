@@ -147,11 +147,7 @@ recovery API and AppKit controls.
 The `Capacity` view uses AppKit dashboard primitives and reads an authorized host
 or tenant snapshot every thirty seconds while visible. It acquires no computer
 leases. See [capacity and usage](../../docs/capacity.md) for metric semantics and tests.
-The computer Backups panel shows management recovery metadata, retention and operation
-results, captures a coherent parked disk on request, and requires typed confirmation before
-replacing its disk. It explains the distinction between local recovery, device-encrypted
-phone backups and independent whole-server backups. The panel uses the scoped management
-recovery API and AppKit controls.
+
 
 Administrator password recovery, authenticator enrollment and session management are
 documented in [account security](../../docs/account-security.md).

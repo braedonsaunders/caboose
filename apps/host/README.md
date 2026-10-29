@@ -744,17 +744,7 @@ image dependencies, secrets and isolated restore drills. Run its focused checks 
 The read-only host and tenant capacity endpoints expose allocations, measured OS
 resources and bounded storage scans. See [capacity and usage](../../docs/capacity.md)
 for authorization, units, unavailable categories and focused checks.
-## Console and whole-host recovery
 
-Administrators inspect and manually capture parked disks or confirm a local capture restore
-through the separate management recovery API documented in [architecture](../../docs/architecture.md#console-recovery).
-This uses the existing opt-in parked Files and disk-helper prerequisites. Phone vault keys
-remain on devices. Local captures are not independent server backups.
-
-The operator's [offline recovery procedure](scripts/RECOVERY.md) covers protected directory
-capture, bounded hash verification, restoration to empty staging, identity databases,
-image dependencies, secrets and isolated restore drills. Run its focused checks with
-`python3 scripts/tests/test-offline-recovery.py`.
 
 Administrator password recovery, authenticator enrollment and session management are
 documented in [account security](../../docs/account-security.md).
