@@ -133,3 +133,6 @@ tenant. Changing the tenant clears the selected person, and ownership saves the 
 and person together. Unassigned computers display “Assignment required”. An unclaimed
 host keeps a setup banner until the operator completes account setup; existing computers
 remain on the host.
+
+Computer creation and settings offer host-provided sizes alongside custom CPU and memory.
+GPU access uses the host GPU and is shared; availability reflects host configuration.

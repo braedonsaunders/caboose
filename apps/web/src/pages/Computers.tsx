@@ -111,12 +111,13 @@ function NewComputerDialog({ client, open, list, me, onClose, onCreate }: {
     )
     return () => { active = false }
   }, [client, draft.tenantId, open])
+  const [sizeId, setSizeId] = React.useState('custom')
   const [saving, setSaving] = React.useState(false)
   const [touched, setTouched] = React.useState(false)
 
   const wasOpen = React.useRef(false)
   React.useEffect(() => {
-    if (open && !wasOpen.current) { setDraft(initial()); setTouched(false) }
+    if (open && !wasOpen.current) { setDraft(initial()); setTouched(false); setSizeId('custom') }
     wasOpen.current = open
   }, [open, initial])
 
@@ -130,7 +131,11 @@ function NewComputerDialog({ client, open, list, me, onClose, onCreate }: {
     if (!validation.ok || !people.some(person => person.id === draft.personId && person.tenantId === draft.tenantId)) return
     setSaving(true)
     try {
-      await onCreate({ ...draft, name: draft.name.trim(), personId: draft.personId })
+      const input = { ...draft, name: draft.name.trim(), personId: draft.personId }
+      if (sizeId !== 'custom') {
+        const { memoryMb: _memory, vcpus: _cpus, ...rest } = input
+        await onCreate({ ...rest, size: sizeId } as NewComputer)
+      } else await onCreate(input)
     } catch (failure) {
       toast.error(errorMessage(failure))
     } finally {
@@ -184,10 +189,22 @@ function NewComputerDialog({ client, open, list, me, onClose, onCreate }: {
             </div>
           ) : null}
         </div>
+        {template?.sizes?.length ? <div className="space-y-1.5">
+          <Label htmlFor="new-computer-size">Size</Label>
+          <Select id="new-computer-size" value={sizeId} onChange={event => {
+            const id = event.target.value; setSizeId(id)
+            const size = template.sizes?.find(entry => entry.id === id)
+            if (size) update({ memoryMb: size.memoryMb, vcpus: size.vcpus })
+          }}>
+            <option value="custom">Custom</option>
+            {template.sizes.map(size => <option key={size.id} value={size.id} disabled={!size.available}>{size.name} · {formatMemoryMb(size.memoryMb)} · {size.vcpus} vCPUs{size.available ? '' : ' (unavailable)'}</option>)}
+          </Select>
+          <p className="text-xs text-fg-muted">GPU provides access to the host GPU when enabled; it is shared.</p>
+        </div> : null}
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="space-y-1.5">
             <Label htmlFor="new-computer-memory">Memory</Label>
-            <Select id="new-computer-memory" value={String(draft.memoryMb)} onChange={event => update({ memoryMb: Number(event.target.value) })}>
+            <Select id="new-computer-memory" value={String(draft.memoryMb)} onChange={event => { setSizeId('custom'); update({ memoryMb: Number(event.target.value) }) }}>
               {memoryChoices(limits.memoryMb.min, limits.memoryMb.max, draft.memoryMb).map(value => (
                 <option key={value} value={value}>{formatMemoryMb(value)}</option>
               ))}
@@ -204,7 +221,7 @@ function NewComputerDialog({ client, open, list, me, onClose, onCreate }: {
               step={1}
               value={draft.vcpus}
               aria-invalid={touched && errors.vcpus ? true : undefined}
-              onChange={event => update({ vcpus: event.target.valueAsNumber })}
+              onChange={event => { setSizeId('custom'); update({ vcpus: event.target.valueAsNumber }) }}
             />
           </div>
           <div className="space-y-1.5">

@@ -20,6 +20,7 @@ export function Settings({ client, computer, onDelete, assignment }: { client: C
   const { status } = computer
   const actions = useComputerActions(client, computer)
   const [draft, setDraft] = React.useState<ComputerSettings | null>(status?.settings ?? null)
+  const [sizeId, setSizeId] = React.useState('custom')
   const [saving, setSaving] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
   const baseline = React.useRef<ComputerSettings | null>(status?.settings ?? null)
@@ -45,7 +46,9 @@ export function Settings({ client, computer, onDelete, assignment }: { client: C
     if (!validation.ok || !dirty) return validation.ok
     setSaving(true)
     try {
-      const next = await client.updateSettings(patch)
+      const { memoryMb: _memory, vcpus: _cpus, ...other } = patch
+      const next = await client.updateSettings(sizeId === 'custom' ? patch : { ...other, size: sizeId })
+      setSizeId('custom')
       baseline.current = next.settings
       computer.setStatus(next)
       setDraft(next.settings)
@@ -89,7 +92,7 @@ export function Settings({ client, computer, onDelete, assignment }: { client: C
         description="Kept by the host in caboose.json. The name and auto-park apply at once; memory and vCPUs at the next restart."
         actions={
           <div className="flex gap-2">
-            <Button variant="ghost" disabled={!dirty || busy} onClick={() => setDraft(status.settings)}>Discard</Button>
+            <Button variant="ghost" disabled={!dirty || busy} onClick={() => { setDraft(status.settings); setSizeId('custom') }}>Discard</Button>
             <Button disabled={!dirty || !validation.ok || busy} onClick={() => void save()}>
               {saving ? 'Saving…' : 'Save'}
             </Button>
@@ -126,6 +129,16 @@ export function Settings({ client, computer, onDelete, assignment }: { client: C
         title="Resources"
         description="A memory snapshot keeps the machine it was taken from, so these apply on the next cold boot."
       >
+        {status.sizes?.length ? <SettingsRow title="Size" description="GPU access uses the host GPU and is shared." control={
+          <Select className="w-64" value={sizeId} onChange={event => {
+            const id = event.target.value; setSizeId(id)
+            const size = status.sizes?.find(entry => entry.id === id)
+            if (size) update({ memoryMb: size.memoryMb, vcpus: size.vcpus })
+          }}>
+            <option value="custom">Custom / current</option>
+            {status.sizes.map(size => <option key={size.id} value={size.id} disabled={!size.available}>{size.name} · {formatMemoryMb(size.memoryMb)} · {size.vcpus} vCPUs{size.available ? '' : ' (unavailable)'}</option>)}
+          </Select>
+        } /> : null}
         <SettingsRow
           title="Memory"
           description={errors.memoryMb ?? (status.activeResources ? `Running with ${formatMemoryMb(status.activeResources.memoryMb)}.` : undefined)}
@@ -133,7 +146,7 @@ export function Settings({ client, computer, onDelete, assignment }: { client: C
             <Select
               className="w-40"
               value={String(draft.memoryMb)}
-              onChange={event => update({ memoryMb: Number(event.target.value) })}
+              onChange={event => { setSizeId('custom'); update({ memoryMb: Number(event.target.value) }) }}
             >
               {memoryChoices(limits.memoryMb.min, limits.memoryMb.max, draft.memoryMb).map(value => (
                 <option key={value} value={value}>{formatMemoryMb(value)}</option>
@@ -154,7 +167,7 @@ export function Settings({ client, computer, onDelete, assignment }: { client: C
               step={1}
               value={draft.vcpus}
               aria-invalid={errors.vcpus ? true : undefined}
-              onChange={event => update({ vcpus: event.target.valueAsNumber })}
+              onChange={event => { setSizeId('custom'); update({ vcpus: event.target.valueAsNumber }) }}
             />
           }
         />
