@@ -65,7 +65,11 @@ fn same_mapping(image: &[Extent], base: &[Extent], start: u64, end: u64) -> bool
         match (extent_at(image, position), extent_at(base, position)) {
             (Err(image_next), Err(base_next)) => position = image_next.min(base_next),
             (Ok(i), Ok(b)) => {
-                if !i.shared || i.physical == u64::MAX || b.physical == u64::MAX || i.physical + (position - i.logical) != b.physical + (position - b.logical) {
+                if !i.shared
+                    || i.physical == u64::MAX
+                    || b.physical == u64::MAX
+                    || i.physical + (position - i.logical) != b.physical + (position - b.logical)
+                {
                     return false;
                 }
                 position = (i.logical + i.length).min(b.logical + b.length);
@@ -82,7 +86,12 @@ fn zero_chunk_hash(length: u64) -> [u8; 32] {
 }
 
 /// Per-chunk hashes of a base image and the SHA-256 of the whole file.
-pub fn base_map<V: Volume>(volume: &V, file: FileId, chunk_bytes: u64, cancel: &dyn Fn() -> bool) -> io::Result<BaseMap> {
+pub fn base_map<V: Volume>(
+    volume: &V,
+    file: FileId,
+    chunk_bytes: u64,
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<BaseMap> {
     let size = volume.identity(file)?.size;
     let extents = volume.extents(file)?;
     let mut whole = Sha256::new();
@@ -109,7 +118,13 @@ pub fn base_map<V: Volume>(volume: &V, file: FileId, chunk_bytes: u64, cancel: &
     Ok(BaseMap { size, chunk_bytes, sha256: whole.finalize().into(), chunks })
 }
 
-pub fn manifest<V: Volume>(volume: &V, image: FileId, base: Option<(FileId, &BaseMap)>, chunk_bytes: u64, cancel: &dyn Fn() -> bool) -> io::Result<Manifest> {
+pub fn manifest<V: Volume>(
+    volume: &V,
+    image: FileId,
+    base: Option<(FileId, &BaseMap)>,
+    chunk_bytes: u64,
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<Manifest> {
     let size = volume.identity(image)?.size;
     let image_extents = volume.extents(image)?;
     let base_extents = match base {
@@ -135,7 +150,10 @@ pub fn manifest<V: Volume>(volume: &V, image: FileId, base: Option<(FileId, &Bas
         }
         // The base holds a chunk of the same extent: equal when mapped to the same blocks
         // or when the bytes hash the same.
-        let base_chunk = base.and_then(|(_, map)| (end <= map.size || (start < map.size && end == size && map.size == size)).then(|| map.chunks[index as usize]));
+        let base_chunk = base.and_then(|(_, map)| {
+            (end <= map.size || (start < map.size && end == size && map.size == size))
+                .then(|| map.chunks[index as usize])
+        });
         if base_chunk.is_some() && same_mapping(&image_extents, &base_extents, start, end) {
             chunks.push(Chunk::Base);
             continue;
@@ -189,7 +207,13 @@ pub fn to_json(manifest: &Manifest) -> String {
 const MAGIC: &[u8; 8] = b"CBDKBAS1";
 
 /// A base map cached beside its source's identity, so each base is read in full once.
-pub fn cached_base_map<V: Volume>(volume: &V, file: FileId, chunk_bytes: u64, cache: &Path, cancel: &dyn Fn() -> bool) -> io::Result<BaseMap> {
+pub fn cached_base_map<V: Volume>(
+    volume: &V,
+    file: FileId,
+    chunk_bytes: u64,
+    cache: &Path,
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<BaseMap> {
     let identity = volume.identity(file)?;
     let prefix = format!("base-{}-{}-", identity.dev, identity.ino);
     let path = cache.join(format!("{prefix}{}-{}-{chunk_bytes}.map", identity.size, identity.mtime_ns));

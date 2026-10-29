@@ -41,7 +41,9 @@ fn main() -> ExitCode {
             None => return usage(),
         },
         Some("manifest") => match flag(&args, "--image") {
-            Some(image) => print_manifest(&image, flag(&args, "--base"), flag(&args, "--cache"), flag(&args, "--chunk-bytes")),
+            Some(image) => {
+                print_manifest(&image, flag(&args, "--base"), flag(&args, "--cache"), flag(&args, "--chunk-bytes"))
+            }
             None => return usage(),
         },
         Some("base-hash") => match (flag(&args, "--base"), flag(&args, "--cache")) {
@@ -67,7 +69,13 @@ fn main() -> ExitCode {
 
 fn chunk_bytes(value: Option<String>) -> io::Result<u64> {
     match value {
-        Some(value) => value.parse::<u64>().ok().filter(|n| n.is_power_of_two() && *n >= volume::BLOCK && *n <= 64 << 20).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "--chunk-bytes must be a power of two from 4096 to 64 MiB")),
+        Some(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|n| n.is_power_of_two() && *n >= volume::BLOCK && *n <= 64 << 20)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "--chunk-bytes must be a power of two from 4096 to 64 MiB")
+            }),
         None => Ok(manifest::DEFAULT_CHUNK_BYTES),
     }
 }
@@ -98,7 +106,8 @@ fn print_manifest(image: &str, base: Option<String>, cache: Option<String>, chun
         }
         None => None,
     };
-    let result = manifest::manifest(&volume, image, base.as_ref().map(|(file, map)| (*file, map)), chunk_bytes, &never)?;
+    let result =
+        manifest::manifest(&volume, image, base.as_ref().map(|(file, map)| (*file, map)), chunk_bytes, &never)?;
     let mut out = io::stdout().lock();
     out.write_all(manifest::to_json(&result).as_bytes())?;
     out.write_all(b"\n")?;
@@ -117,8 +126,13 @@ fn punch(path: &Path, verify: bool) -> io::Result<()> {
     for line in io::stdin().lock().lines() {
         let line = line?;
         let mut parts = line.split_whitespace().map(str::parse::<u64>);
-        let (Some(Ok(offset)), Some(Ok(length)), None) = (parts.next(), parts.next(), parts.next()) else { return Err(invalid("each line must be `offset length`")) };
-        let end = offset.checked_add(length).filter(|end| *end <= size).ok_or_else(|| invalid("range beyond the end of the file"))?;
+        let (Some(Ok(offset)), Some(Ok(length)), None) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(invalid("each line must be `offset length`"));
+        };
+        let end = offset
+            .checked_add(length)
+            .filter(|end| *end <= size)
+            .ok_or_else(|| invalid("range beyond the end of the file"))?;
         if offset % volume::BLOCK != 0 || (length % volume::BLOCK != 0 && end != size) || length == 0 {
             return Err(invalid("ranges must be block-aligned"));
         }
@@ -149,7 +163,7 @@ fn serve(state: &Path) -> io::Result<()> {
         index.insert(record);
     }
     let settings = dedupe::Settings::default();
-    // The id of the run to cancel; u64::MAX cancels everything (stdin closed).
+    // The id of the run to cancel. Closing stdin lets queued requests finish, then exits.
     let cancelled = Arc::new(AtomicU64::new(0));
     let (sender, receiver) = mpsc::channel::<Value>();
     {
@@ -166,24 +180,22 @@ fn serve(state: &Path) -> io::Result<()> {
                     break;
                 }
             }
-            cancelled.store(u64::MAX, Ordering::SeqCst);
         });
     }
     let mut out = io::stdout();
-    writeln!(out, "{}", json!({ "ready": true, "indexed": index.len() }))?;
+    writeln!(out, "{}", json!({ "ready": true, "indexed": index.keys().len() }))?;
     for command in receiver {
         let id = command["id"].as_u64().unwrap_or(0);
         let reply = match command["op"].as_str() {
             Some("run") => match parse_job(&command) {
                 Ok(job) => {
                     let mut volume = volume::LinuxVolume::new();
-                    let is_cancelled = || {
-                        let value = cancelled.load(Ordering::SeqCst);
-                        value == id || value == u64::MAX
-                    };
+                    let is_cancelled = || cancelled.load(Ordering::SeqCst) == id;
                     match dedupe::run(&mut volume, &mut index, &mut store, &job, &settings, &is_cancelled) {
                         Ok(report) => json!({ "id": id, "ok": true, "report": report }),
-                        Err(dedupe::RunError::Cancelled(report)) => json!({ "id": id, "ok": false, "error": "cancelled", "report": report }),
+                        Err(dedupe::RunError::Cancelled(report)) => {
+                            json!({ "id": id, "ok": false, "error": "cancelled", "report": report })
+                        }
                         Err(error) => {
                             let kind = match error {
                                 dedupe::RunError::Busy => "busy",
@@ -227,17 +239,28 @@ fn parse_job(command: &serde_json::Value) -> Result<dedupe::Job, String> {
         }
         Ok(path)
     };
-    let files = command["files"].as_array().ok_or("files is required")?.iter().map(path).collect::<Result<Vec<_>, _>>()?;
+    let files =
+        command["files"].as_array().ok_or("files is required")?.iter().map(path).collect::<Result<Vec<_>, _>>()?;
     if files.is_empty() || files.len() > 8 {
         return Err("files must list the disk and at most seven clones".into());
     }
     let mut sources = Vec::new();
     for source in command["sources"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
         let key = source["key"].as_str().filter(|key| persist::valid_key(key)).ok_or("invalid source key")?;
-        sources.push(dedupe::SourceSpec { key: key.into(), path: path(&source["path"])?, immutable: source["immutable"] == true });
+        sources.push(dedupe::SourceSpec {
+            key: key.into(),
+            path: path(&source["path"])?,
+            immutable: source["immutable"] == true,
+        });
     }
     let live = match command.get("live") {
-        Some(serde_json::Value::Array(keys)) => Some(keys.iter().map(|key| key.as_str().filter(|key| persist::valid_key(key)).map(String::from).ok_or("invalid live key")).collect::<Result<Vec<_>, _>>()?),
+        Some(serde_json::Value::Array(keys)) => Some(
+            keys.iter()
+                .map(|key| {
+                    key.as_str().filter(|key| persist::valid_key(key)).map(String::from).ok_or("invalid live key")
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
         Some(serde_json::Value::Null) | None => None,
         Some(_) => return Err("live must be a list".into()),
     };

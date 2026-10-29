@@ -81,14 +81,6 @@ impl Index {
         Self::default()
     }
 
-    pub fn len(&self) -> usize {
-        self.by_key.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.by_key.is_empty()
-    }
-
     pub fn keys(&self) -> Vec<String> {
         self.by_key.keys().cloned().collect()
     }
@@ -140,7 +132,11 @@ impl Index {
         for (index, slot) in self.slots.iter().enumerate() {
             let Some(slot) = slot else { continue };
             for (hash, block) in &slot.record.anchors {
-                self.map.entry(*hash).or_insert(Location { slot: index as u32, generation: slot.generation, block: *block });
+                self.map.entry(*hash).or_insert(Location {
+                    slot: index as u32,
+                    generation: slot.generation,
+                    block: *block,
+                });
             }
         }
         self.stale = 0;
@@ -255,7 +251,13 @@ struct Settled(Vec<(u64, u64)>);
 
 impl Settled {
     fn from_records<'a>(records: impl Iterator<Item = &'a Record>) -> Self {
-        let mut ranges: Vec<(u64, u64)> = records.flat_map(|record| record.extents.iter()).filter(|e| e.shared && e.physical != u64::MAX).map(|e| (e.physical, e.physical + e.length)).collect();
+        // Every block a source maps, shared or not when it was recorded: a primary mapping
+        // the same physical block already shares it with that source.
+        let mut ranges: Vec<(u64, u64)> = records
+            .flat_map(|record| record.extents.iter())
+            .filter(|e| e.physical != u64::MAX)
+            .map(|e| (e.physical, e.physical + e.length))
+            .collect();
         ranges.sort_unstable();
         let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
         for (start, end) in ranges {
@@ -281,7 +283,15 @@ impl Settled {
 /// (`settled`), the blocks to look up and the zero runs. A settled extent unchanged since
 /// `previous` keeps its old anchors: shared blocks cannot be written in place, so the same
 /// mapping means the same bytes.
-fn scan<V: Volume>(volume: &V, file: FileId, extents: &[Extent], previous: Option<&Record>, settled: Option<&Settled>, settings: &Settings, cancel: &dyn Fn() -> bool) -> Result<Scan, RunError> {
+fn scan<V: Volume>(
+    volume: &V,
+    file: FileId,
+    extents: &[Extent],
+    previous: Option<&Record>,
+    settled: Option<&Settled>,
+    settings: &Settings,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Scan, RunError> {
     let mut scan = Scan::default();
     let mut buffer = vec![0u8; (settings.read_blocks * BLOCK) as usize];
     for extent in extents {
@@ -295,7 +305,13 @@ fn scan<V: Volume>(volume: &V, file: FileId, extents: &[Extent], previous: Optio
             push_range(&mut scan.regions, first, end);
         }
         if let Some(old) = previous {
-            if !open && extent.shared && old.extents.binary_search_by_key(&extent.logical, |e| e.logical).is_ok_and(|at| old.extents[at] == *extent) {
+            if !open
+                && extent.shared
+                && old
+                    .extents
+                    .binary_search_by_key(&extent.logical, |e| e.logical)
+                    .is_ok_and(|at| old.extents[at] == *extent)
+            {
                 let from = old.anchors.partition_point(|(_, block)| *block < first);
                 let to = old.anchors.partition_point(|(_, block)| *block < end);
                 scan.anchors.extend_from_slice(&old.anchors[from..to]);
@@ -343,7 +359,15 @@ fn scan<V: Volume>(volume: &V, file: FileId, extents: &[Extent], previous: Optio
 }
 
 /// Blocks, from `(a, b)` forward, that are equal in both files; at most `limit`.
-fn equal_forward<V: Volume>(volume: &V, a: FileId, a_block: u64, b: FileId, b_block: u64, limit: u64, settings: &Settings) -> io::Result<u64> {
+fn equal_forward<V: Volume>(
+    volume: &V,
+    a: FileId,
+    a_block: u64,
+    b: FileId,
+    b_block: u64,
+    limit: u64,
+    settings: &Settings,
+) -> io::Result<u64> {
     let mut matched = 0;
     let mut left = vec![0u8; (settings.read_blocks * BLOCK) as usize];
     let mut right = left.clone();
@@ -364,7 +388,15 @@ fn equal_forward<V: Volume>(volume: &V, a: FileId, a_block: u64, b: FileId, b_bl
 }
 
 /// Blocks before `(a, b)` that are equal in both files; at most `limit`.
-fn equal_backward<V: Volume>(volume: &V, a: FileId, a_block: u64, b: FileId, b_block: u64, limit: u64, settings: &Settings) -> io::Result<u64> {
+fn equal_backward<V: Volume>(
+    volume: &V,
+    a: FileId,
+    a_block: u64,
+    b: FileId,
+    b_block: u64,
+    limit: u64,
+    settings: &Settings,
+) -> io::Result<u64> {
     let mut matched = 0;
     let mut left = vec![0u8; (settings.read_blocks * BLOCK) as usize];
     let mut right = left.clone();
@@ -397,8 +429,17 @@ fn open_error(error: io::Error) -> RunError {
 }
 
 /// One pass over one computer's disk.
-pub fn run<V: Volume>(volume: &mut V, index: &mut Index, store: &mut dyn RecordStore, job: &Job, settings: &Settings, cancel: &dyn Fn() -> bool) -> Result<Report, RunError> {
-    assert!(settings.sample.is_power_of_two() && settings.min_run > 0 && settings.max_call > 0 && settings.read_blocks > 0);
+pub fn run<V: Volume>(
+    volume: &mut V,
+    index: &mut Index,
+    store: &mut dyn RecordStore,
+    job: &Job,
+    settings: &Settings,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Report, RunError> {
+    assert!(
+        settings.sample.is_power_of_two() && settings.min_run > 0 && settings.max_call > 0 && settings.read_blocks > 0
+    );
     let mut report = Report::default();
     if let Some(live) = &job.live {
         let keep: HashSet<&str> = live.iter().map(String::as_str).chain([job.key.as_str()]).collect();
@@ -435,7 +476,11 @@ pub fn run<V: Volume>(volume: &mut V, index: &mut Index, store: &mut dyn RecordS
             }
         };
         let identity = volume.identity(file)?;
-        let current = index.get(&source.key).is_some_and(|record| record.identity.dev == identity.dev && record.identity.ino == identity.ino && (!source.immutable || record.identity == identity));
+        let current = index.get(&source.key).is_some_and(|record| {
+            record.identity.dev == identity.dev
+                && record.identity.ino == identity.ino
+                && (!source.immutable || record.identity == identity)
+        });
         if !current {
             if !source.immutable {
                 report.skipped_sources.push(source.key.clone());
@@ -446,7 +491,13 @@ pub fn run<V: Volume>(volume: &mut V, index: &mut Index, store: &mut dyn RecordS
                 RunError::Cancelled(_) => RunError::Cancelled(report.clone()),
                 other => other,
             })?;
-            let record = Record { key: source.key.clone(), path: source.path.clone(), identity, extents, anchors: scanned.anchors };
+            let record = Record {
+                key: source.key.clone(),
+                path: source.path.clone(),
+                identity,
+                extents,
+                anchors: scanned.anchors,
+            };
             store.save(&record)?;
             index.insert(record);
         }
@@ -491,12 +542,21 @@ pub fn run<V: Volume>(volume: &mut V, index: &mut Index, store: &mut dyn RecordS
         if source_block >= source_end {
             continue;
         }
-        let ahead = equal_forward(volume, source, source_block, primary, *block, (region.1 - block).min(source_end - source_block), settings)?;
+        let ahead = equal_forward(
+            volume,
+            source,
+            source_block,
+            primary,
+            *block,
+            (region.1 - block).min(source_end - source_block),
+            settings,
+        )?;
         if ahead == 0 {
             continue;
         }
         let floor = region.0.max(cursor);
-        let behind = equal_backward(volume, source, source_block, primary, *block, (block - floor).min(source_block), settings)?;
+        let behind =
+            equal_backward(volume, source, source_block, primary, *block, (block - floor).min(source_block), settings)?;
         let (start, source_start, length) = (block - behind, source_block - behind, behind + ahead);
         if length < settings.min_run {
             continue;
@@ -508,10 +568,13 @@ pub fn run<V: Volume>(volume: &mut V, index: &mut Index, store: &mut dyn RecordS
                 break 'candidates;
             }
             let piece = (length - done).min(settings.max_call);
-            let destinations: Vec<(FileId, u64)> = [primary].iter().chain(&siblings).map(|file| (*file, (start + done) * BLOCK)).collect();
+            let destinations: Vec<(FileId, u64)> =
+                [primary].iter().chain(&siblings).map(|file| (*file, (start + done) * BLOCK)).collect();
             let outcomes = match volume.dedupe(source, (source_start + done) * BLOCK, piece * BLOCK, &destinations) {
                 Ok(outcomes) => outcomes,
-                Err(error) if unsupported(&error) => return Err(RunError::Unsupported(format!("the filesystem cannot share these blocks: {error}"))),
+                Err(error) if unsupported(&error) => {
+                    return Err(RunError::Unsupported(format!("the filesystem cannot share these blocks: {error}")))
+                }
                 Err(error) => return Err(RunError::Io(error)),
             };
             match outcomes[0] {
@@ -557,7 +620,13 @@ pub fn run<V: Volume>(volume: &mut V, index: &mut Index, store: &mut dyn RecordS
         }
     }
 
-    let record = Record { key: job.key.clone(), path: primary_path.clone(), identity: volume.identity(primary)?, extents: volume.extents(primary)?, anchors: scanned.anchors };
+    let record = Record {
+        key: job.key.clone(),
+        path: primary_path.clone(),
+        identity: volume.identity(primary)?,
+        extents: volume.extents(primary)?,
+        anchors: scanned.anchors,
+    };
     store.save(&record)?;
     index.insert(record);
     if cancelled {
@@ -605,7 +674,10 @@ mod tests {
     }
 
     fn file(volume: &FakeVolume, path: &str, seeds: &[Option<u64>]) {
-        let blocks: Vec<Option<Vec<u8>>> = seeds.iter().map(|seed| seed.map(|seed| if seed == 0 { vec![0; BLOCK as usize] } else { block(seed) })).collect();
+        let blocks: Vec<Option<Vec<u8>>> = seeds
+            .iter()
+            .map(|seed| seed.map(|seed| if seed == 0 { vec![0; BLOCK as usize] } else { block(seed) }))
+            .collect();
         let refs: Vec<Option<&[u8]>> = blocks.iter().map(|b| b.as_deref()).collect();
         volume.add(path, &refs);
     }
@@ -614,7 +686,14 @@ mod tests {
         Job {
             key: key.into(),
             files: files.iter().map(PathBuf::from).collect(),
-            sources: sources.iter().map(|(key, path, immutable)| SourceSpec { key: (*key).into(), path: PathBuf::from(path), immutable: *immutable }).collect(),
+            sources: sources
+                .iter()
+                .map(|(key, path, immutable)| SourceSpec {
+                    key: (*key).into(),
+                    path: PathBuf::from(path),
+                    immutable: *immutable,
+                })
+                .collect(),
             live: None,
         }
     }
@@ -632,15 +711,49 @@ mod tests {
         let before = (volume.contents("/a"), volume.contents("/b"));
         let mut index = Index::new();
         let mut store = Memory::default();
-        let first = run(&mut volume, &mut index, &mut store, &job("computer:a", &["/a"], &[]), &settings(), &never).unwrap();
+        let first =
+            run(&mut volume, &mut index, &mut store, &job("computer:a", &["/a"], &[]), &settings(), &never).unwrap();
         assert_eq!(first.shared_bytes, 0);
         let allocated = volume.allocated_blocks();
-        let second = run(&mut volume, &mut index, &mut store, &job("computer:b", &["/b"], &[("computer:a", "/a", false)]), &settings(), &never).unwrap();
+        let second = run(
+            &mut volume,
+            &mut index,
+            &mut store,
+            &job("computer:b", &["/b"], &[("computer:a", "/a", false)]),
+            &settings(),
+            &never,
+        )
+        .unwrap();
         assert_eq!(second.shared_bytes, 3 * BLOCK);
         assert_eq!(volume.allocated_blocks(), allocated - 3);
         assert_eq!(volume.physical("/b", 2), volume.physical("/a", 2));
         assert_eq!((volume.contents("/a"), volume.contents("/b")), before);
         assert!(store.saved.contains_key("computer:b"));
+    }
+
+    #[test]
+    fn a_second_pass_over_shared_data_shares_nothing_more() {
+        let mut volume = FakeVolume::new();
+        file(&volume, "/a", &[Some(1), Some(2), Some(3)]);
+        file(&volume, "/b", &[Some(1), Some(2), Some(3)]);
+        let mut index = Index::new();
+        let mut store = Memory::default();
+        let sources = [("computer:a", "/a", false)];
+        run(&mut volume, &mut index, &mut store, &job("computer:a", &["/a"], &[]), &settings(), &never).unwrap();
+        assert_eq!(
+            run(&mut volume, &mut index, &mut store, &job("computer:b", &["/b"], &sources), &settings(), &never)
+                .unwrap()
+                .shared_bytes,
+            3 * BLOCK
+        );
+        let calls = *volume.dedupe_calls.borrow();
+        assert_eq!(
+            run(&mut volume, &mut index, &mut store, &job("computer:b", &["/b"], &sources), &settings(), &never)
+                .unwrap()
+                .shared_bytes,
+            0
+        );
+        assert_eq!(*volume.dedupe_calls.borrow(), calls);
     }
 
     #[test]
@@ -652,7 +765,15 @@ mod tests {
         let allocated = volume.allocated_blocks();
         let mut index = Index::new();
         let mut store = Memory::default();
-        let report = run(&mut volume, &mut index, &mut store, &job("computer:c", &["/disk", "/view"], &[("base:x", "/base", true)]), &settings(), &never).unwrap();
+        let report = run(
+            &mut volume,
+            &mut index,
+            &mut store,
+            &job("computer:c", &["/disk", "/view"], &[("base:x", "/base", true)]),
+            &settings(),
+            &never,
+        )
+        .unwrap();
         assert_eq!(report.shared_bytes, 2 * BLOCK);
         // Both references to the old blocks moved, so they were freed.
         assert_eq!(volume.allocated_blocks(), allocated - 2);
@@ -668,7 +789,15 @@ mod tests {
         let older = volume.contents("/older");
         let mut index = Index::new();
         let mut store = Memory::default();
-        let report = run(&mut volume, &mut index, &mut store, &job("computer:d", &["/disk", "/older"], &[]), &settings(), &never).unwrap();
+        let report = run(
+            &mut volume,
+            &mut index,
+            &mut store,
+            &job("computer:d", &["/disk", "/older"], &[]),
+            &settings(),
+            &never,
+        )
+        .unwrap();
         assert_eq!(report.punched_bytes, 3 * BLOCK);
         assert_eq!(volume.physical("/disk", 2), None);
         assert_eq!(volume.contents("/older"), older);
@@ -684,14 +813,25 @@ mod tests {
         let mut store = Memory::default();
         run(&mut volume, &mut index, &mut store, &job("computer:a", &["/a"], &[]), &settings(), &never).unwrap();
         volume.lock("/b", OpenMode::Primary);
-        assert!(matches!(run(&mut volume, &mut index, &mut store, &job("computer:b", &["/b"], &[]), &settings(), &never), Err(RunError::Busy)));
+        assert!(matches!(
+            run(&mut volume, &mut index, &mut store, &job("computer:b", &["/b"], &[]), &settings(), &never),
+            Err(RunError::Busy)
+        ));
         let mut volume2 = FakeVolume::new();
         file(&volume2, "/a", &[Some(1), Some(2)]);
         file(&volume2, "/b", &[Some(1), Some(2)]);
         let mut index2 = Index::new();
         run(&mut volume2, &mut index2, &mut store, &job("computer:a", &["/a"], &[]), &settings(), &never).unwrap();
         volume2.lock("/a", OpenMode::Primary);
-        let report = run(&mut volume2, &mut index2, &mut store, &job("computer:b", &["/b"], &[("computer:a", "/a", false)]), &settings(), &never).unwrap();
+        let report = run(
+            &mut volume2,
+            &mut index2,
+            &mut store,
+            &job("computer:b", &["/b"], &[("computer:a", "/a", false)]),
+            &settings(),
+            &never,
+        )
+        .unwrap();
         assert_eq!(report.shared_bytes, 0);
         assert_eq!(report.skipped_sources, vec!["computer:a".to_string()]);
     }
@@ -709,7 +849,15 @@ mod tests {
         volume.write_block("/a", 1, &block(41));
         volume.write_block("/a", 2, &block(42));
         let before = volume.contents("/b");
-        let report = run(&mut volume, &mut index, &mut store, &job("computer:b", &["/b"], &[("computer:a", "/a", false)]), &settings(), &never).unwrap();
+        let report = run(
+            &mut volume,
+            &mut index,
+            &mut store,
+            &job("computer:b", &["/b"], &[("computer:a", "/a", false)]),
+            &settings(),
+            &never,
+        )
+        .unwrap();
         assert_eq!(report.shared_bytes, 0);
         assert_eq!(volume.contents("/b"), before);
     }
@@ -723,9 +871,13 @@ mod tests {
         let mut index = Index::new();
         let mut store = Memory::default();
         let sources = [("base:x", "/base", true)];
-        let first = run(&mut volume, &mut index, &mut store, &job("computer:e", &["/disk"], &sources), &settings(), &never).unwrap();
+        let first =
+            run(&mut volume, &mut index, &mut store, &job("computer:e", &["/disk"], &sources), &settings(), &never)
+                .unwrap();
         assert_eq!(first.hashed_bytes, 4 * BLOCK);
-        let second = run(&mut volume, &mut index, &mut store, &job("computer:e", &["/disk"], &sources), &settings(), &never).unwrap();
+        let second =
+            run(&mut volume, &mut index, &mut store, &job("computer:e", &["/disk"], &sources), &settings(), &never)
+                .unwrap();
         // Only the block the computer owns is read again.
         assert_eq!(second.hashed_bytes, BLOCK);
         assert_eq!(index.get("computer:e").unwrap().anchors, store.saved["computer:e"].anchors);
@@ -745,13 +897,23 @@ mod tests {
             calls.set(calls.get() + 1);
             calls.get() > 5
         };
-        let result = run(&mut volume, &mut index, &mut store, &job("computer:b", &["/b"], &[("computer:a", "/a", false)]), &settings(), &after_one_call);
+        let result = run(
+            &mut volume,
+            &mut index,
+            &mut store,
+            &job("computer:b", &["/b"], &[("computer:a", "/a", false)]),
+            &settings(),
+            &after_one_call,
+        );
         let Err(RunError::Cancelled(report)) = result else { panic!("expected cancellation") };
         assert!(report.shared_bytes < 6 * BLOCK);
         assert!(index.get("computer:b").is_some());
         let always = || true;
         let previous = index.get("computer:b").cloned();
-        assert!(matches!(run(&mut volume, &mut index, &mut store, &job("computer:b", &["/b"], &[]), &settings(), &always), Err(RunError::Cancelled(_))));
+        assert!(matches!(
+            run(&mut volume, &mut index, &mut store, &job("computer:b", &["/b"], &[]), &settings(), &always),
+            Err(RunError::Cancelled(_))
+        ));
         assert_eq!(index.get("computer:b").cloned(), previous);
     }
 
@@ -773,7 +935,13 @@ mod tests {
 
     #[test]
     fn the_index_keeps_the_first_live_location_and_recovers_shadowed_ones_after_removal() {
-        let record = |key: &str, block: u64| Record { key: key.into(), path: PathBuf::from("/"), identity: Identity::default(), extents: vec![], anchors: vec![(7, block)] };
+        let record = |key: &str, block: u64| Record {
+            key: key.into(),
+            path: PathBuf::from("/"),
+            identity: Identity::default(),
+            extents: vec![],
+            anchors: vec![(7, block)],
+        };
         let mut index = Index::new();
         index.insert(record("a", 1));
         index.insert(record("b", 2));

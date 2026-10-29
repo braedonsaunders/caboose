@@ -65,7 +65,13 @@ pub trait Volume {
     /// Fill `buf` from `offset`; reads past the end are zero.
     fn read_at(&self, file: FileId, offset: u64, buf: &mut [u8]) -> io::Result<()>;
     /// Share `length` bytes of `source` at `offset` into each destination, one outcome each.
-    fn dedupe(&self, source: FileId, offset: u64, length: u64, destinations: &[(FileId, u64)]) -> io::Result<Vec<Outcome>>;
+    fn dedupe(
+        &self,
+        source: FileId,
+        offset: u64,
+        length: u64,
+        destinations: &[(FileId, u64)],
+    ) -> io::Result<Vec<Outcome>>;
     /// Deallocate a range that reads as zeros, keeping the file's size.
     fn punch(&self, file: FileId, offset: u64, length: u64) -> io::Result<()>;
 }
@@ -185,7 +191,12 @@ mod linux {
 
         fn identity(&self, id: FileId) -> io::Result<Identity> {
             let meta = self.file(id)?.metadata()?;
-            Ok(Identity { dev: meta.dev(), ino: meta.ino(), size: meta.size(), mtime_ns: meta.mtime() * 1_000_000_000 + meta.mtime_nsec() })
+            Ok(Identity {
+                dev: meta.dev(),
+                ino: meta.ino(),
+                size: meta.size(),
+                mtime_ns: meta.mtime() * 1_000_000_000 + meta.mtime_nsec(),
+            })
         }
 
         fn extents(&self, id: FileId) -> io::Result<Vec<Extent>> {
@@ -253,7 +264,13 @@ mod linux {
             Ok(())
         }
 
-        fn dedupe(&self, source: FileId, offset: u64, length: u64, destinations: &[(FileId, u64)]) -> io::Result<Vec<Outcome>> {
+        fn dedupe(
+            &self,
+            source: FileId,
+            offset: u64,
+            length: u64,
+            destinations: &[(FileId, u64)],
+        ) -> io::Result<Vec<Outcome>> {
             if destinations.is_empty() || destinations.len() > MAX_DESTINATIONS {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid destination count"));
             }
@@ -270,7 +287,10 @@ mod linux {
                 range.info[slot].dest_offset = *dest_offset;
             }
             let source = self.file(source)?;
-            if unsafe { libc::ioctl(source.as_raw_fd(), FIDEDUPERANGE as _, &mut range as *mut DedupeRange<MAX_DESTINATIONS>) } != 0 {
+            if unsafe {
+                libc::ioctl(source.as_raw_fd(), FIDEDUPERANGE as _, &mut range as *mut DedupeRange<MAX_DESTINATIONS>)
+            } != 0
+            {
                 return Err(io::Error::last_os_error());
             }
             Ok(range.info[..destinations.len()]
@@ -357,7 +377,7 @@ pub mod fake {
             state.next += 1;
             let id = state.next;
             state.physical.insert(id, (bytes, 1));
-            let old = std::mem::replace(&mut state.files.get_mut(&PathBuf::from(path)).unwrap()[block], Some(id));
+            let old = state.files.get_mut(&PathBuf::from(path)).unwrap()[block].replace(id);
             if let Some(old) = old {
                 release(&mut state, old);
             }
@@ -417,7 +437,8 @@ pub mod fake {
             let state = self.state.borrow();
             let path = &self.open[file];
             let map = &state.files[path];
-            let ino = path.to_string_lossy().bytes().fold(7u64, |hash, byte| hash.wrapping_mul(31).wrapping_add(byte as u64));
+            let ino =
+                path.to_string_lossy().bytes().fold(7u64, |hash, byte| hash.wrapping_mul(31).wrapping_add(byte as u64));
             let mtime = map.iter().flatten().fold(0i64, |sum, id| sum.wrapping_mul(17).wrapping_add(*id as i64));
             Ok(Identity { dev: 1, ino, size: map.len() as u64 * BLOCK, mtime_ns: mtime })
         }
@@ -432,7 +453,10 @@ pub mod fake {
                 let logical = index as u64 * BLOCK;
                 let physical = *id * BLOCK;
                 if let Some(last) = out.last_mut() {
-                    if last.logical + last.length == logical && last.physical + last.length == physical && last.shared == shared {
+                    if last.logical + last.length == logical
+                        && last.physical + last.length == physical
+                        && last.shared == shared
+                    {
                         last.length += BLOCK;
                         continue;
                     }
@@ -456,7 +480,13 @@ pub mod fake {
             Ok(())
         }
 
-        fn dedupe(&self, source: FileId, offset: u64, length: u64, destinations: &[(FileId, u64)]) -> io::Result<Vec<Outcome>> {
+        fn dedupe(
+            &self,
+            source: FileId,
+            offset: u64,
+            length: u64,
+            destinations: &[(FileId, u64)],
+        ) -> io::Result<Vec<Outcome>> {
             *self.dedupe_calls.borrow_mut() += 1;
             assert!(offset % BLOCK == 0 && length % BLOCK == 0 && length > 0);
             let mut outcomes = Vec::new();
@@ -482,7 +512,7 @@ pub mod fake {
                     };
                     state.physical.get_mut(&from).unwrap().1 += 1;
                     let slot = (dest_offset / BLOCK) as usize + block;
-                    let old = std::mem::replace(&mut state.files.get_mut(&dest_path).unwrap()[slot], Some(from));
+                    let old = state.files.get_mut(&dest_path).unwrap()[slot].replace(from);
                     if let Some(old) = old {
                         release(&mut state, old);
                     }

@@ -140,7 +140,9 @@ impl Reader<'_> {
     }
     fn count(&mut self, entry_bytes: usize) -> io::Result<usize> {
         let count = self.u64()?;
-        if count > MAX_ENTRIES || (count as usize).checked_mul(entry_bytes).is_none_or(|bytes| bytes > self.bytes.len() - self.at) {
+        if count > MAX_ENTRIES
+            || (count as usize).checked_mul(entry_bytes).is_none_or(|bytes| bytes > self.bytes.len() - self.at)
+        {
             return Err(invalid());
         }
         Ok(count as usize)
@@ -165,11 +167,17 @@ pub fn decode(bytes: &[u8]) -> io::Result<Record> {
         return Err(invalid());
     }
     let path = PathBuf::from(reader.string()?);
-    let identity = Identity { dev: reader.u64()?, ino: reader.u64()?, size: reader.u64()?, mtime_ns: reader.u64()? as i64 };
+    let identity =
+        Identity { dev: reader.u64()?, ino: reader.u64()?, size: reader.u64()?, mtime_ns: reader.u64()? as i64 };
     let extent_count = reader.count(32)?;
     let mut extents = Vec::with_capacity(extent_count);
     for _ in 0..extent_count {
-        extents.push(Extent { logical: reader.u64()?, physical: reader.u64()?, length: reader.u64()?, shared: reader.u64()? != 0 });
+        extents.push(Extent {
+            logical: reader.u64()?,
+            physical: reader.u64()?,
+            length: reader.u64()?,
+            shared: reader.u64()? != 0,
+        });
     }
     let anchor_count = reader.count(16)?;
     let mut anchors = Vec::with_capacity(anchor_count);
