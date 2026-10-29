@@ -322,3 +322,45 @@ it('runs only a whitelisted installed Craft app and publishes job progress', asy
   await vi.waitFor(() => expect(events.filter(e => e.type === 'job.progress').map(e => e.job?.status)).toEqual(['running', 'succeeded']))
   socket.close(); await once(socket, 'close')
 })
+
+it('serves the MCP Library to an authorized client without ever returning its keys', async () => {
+  const { SmitheryCatalog } = await import('./smithery.js')
+  const { listing } = await import('./smithery.test.js')
+  const dir = await mkdtemp(join(tmpdir(), 'caboose-mcp-server-'))
+  close.push(() => rm(dir, { recursive: true, force: true }))
+  const key = 'sk-owner-key-1234'
+  const answer = (body: unknown, status = 200) => ({ status, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)) })
+  const request = vi.fn(async (url: string, _max: number, init: { method?: string; body?: string } = {}) => {
+    const parsed = new URL(url)
+    if (parsed.hostname === 'registry.smithery.ai') return parsed.pathname === '/servers' ? answer({ servers: [listing('brave', 900)], pagination: { totalCount: 1 } }) : answer({ ...listing('brave', 900), tools: [] })
+    if (parsed.pathname === '/namespaces') return answer({ namespaces: [{ name: 'space' }], pagination: {} })
+    if (parsed.pathname === '/tokens') return answer({ token: 'svc-scoped-token-1', expiresAt: '2999-01-01T00:00:00Z' })
+    if (parsed.pathname.endsWith('/mcp')) { const body = JSON.parse(init.body!); return answer({ jsonrpc: '2.0', id: body.id, result: body.method === 'initialize' ? {} : { tools: [{ name: 'search' }] } }) }
+    if (init.method === 'PUT') return answer({ connectionId: 'x', name: 'Brave', mcpUrl: 'https://brave.run.tools', metadata: JSON.parse(init.body!).metadata, status: { state: 'connected' } }, 201)
+    return answer({ error: 'not found' }, 404)
+  })
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller, mcpLibraryFile: join(dir, 'mcp-library.json'),
+    library: { mcp: { catalog: new SmitheryCatalog(join(dir, 'catalog'), request as never), hostId: '0123456789abcdef', request: request as never } } })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening'); close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const req = (path: string, method = 'GET', body?: unknown) => fetch(base + path, { method, headers: { authorization: 'Bearer owner' }, ...(body ? { body: JSON.stringify(body) } : {}) })
+  expect((await fetch(base + '/v1/mcp/account')).status).toBe(401)
+  expect(await (await req('/v1/mcp/account')).json()).toEqual({ connected: false, namespace: null })
+  expect((await req('/v1/mcp/connections', 'POST', { server: 'brave' })).status).toBe(409)
+  expect(await (await req('/v1/mcp/account', 'PUT', { apiKey: key })).json()).toEqual({ connected: true, namespace: 'space' })
+  const storefront = await (await req('/v1/mcp/storefront')).json() as { groups: Array<{ id: string; servers: Array<Record<string, unknown>> }> }
+  expect(storefront.groups[0]?.servers[0]).toMatchObject({ id: 'brave', uses: 900, connection: null })
+  expect(storefront.groups[0]?.servers[0]).not.toHaveProperty('iconUrl')
+  const added = await (await req('/v1/mcp/connections', 'POST', { server: 'brave' })).json() as { id: string; status: unknown }
+  expect(added.status).toEqual({ state: 'connected', tools: 1 })
+  expect((await (await req('/v1/mcp/discover?q=brave')).json() as { servers: Array<{ connection: string }> }).servers[0]?.connection).toBe(added.id)
+  const everything = [await (await req('/v1/mcp/connections')).text(), await (await req('/v1/mcp/account')).text(), await (await req('/v1/mcp/storefront')).text()].join()
+  expect(everything).not.toContain(key)
+  expect(everything).not.toContain('svc-scoped-token-1')
+  expect((await req('/v1/mcp/connections/not-an-id', 'DELETE')).status).toBe(404)
+  expect((await req('/v1/mcp/icons/../../etc')).status).toBe(404)
+  expect((await req('/v1/mcp/discover?page=x')).status).toBe(400)
+  expect(await readFile(join(dir, 'mcp-library.json'), 'utf8')).toContain(key)
+})

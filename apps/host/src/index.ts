@@ -8,6 +8,7 @@ import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens, type ComputerRecord } fr
 import { createContainerController, DEPOT_VOLUME, securityArgs } from './container-driver.js'
 import { containerDepotRunner, RuntimeDepot } from './depot.js'
 import { FlathubIndex } from './flathub.js'
+import { SmitheryCatalog } from './smithery.js'
 import { CraftReleases } from './releases.js'
 import { createController, createDeskPool } from './driver.js'
 import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
@@ -66,7 +67,7 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
     ? createContainerController(deployment, { identity, settings: () => settings.get() })
     : createController(deployment, { identity, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
-  return { settings, profiles, openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  return { settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
@@ -75,9 +76,10 @@ for (const record of computers.list().filter(c => c.id !== OWNER_COMPUTER)) exis
 const guestArchitecture = process.arch === 'arm64' ? 'arm64' : 'amd64'
 const registry = new AgentRegistry({ platform: guestArchitecture === 'arm64' ? 'linux-aarch64' : 'linux-x86_64', url: deployment.agentRegistryUrl, cachePath: join(deployment.imageRoot, 'agent-registry.json') })
 const webRoot = process.env.CABOOSE_WEB_ROOT ? resolve(process.env.CABOOSE_WEB_ROOT) : fileURLToPath(new URL('../../web/dist', import.meta.url))
+const thisHost = await hostId(join(deployment.imageRoot, 'host-id'))
 const reach = new ReachService({
   bind: deployment.host, port: deployment.port, publicUrl: deployment.publicUrl, mdns: deployment.mdns,
-  id: await hostId(join(deployment.imageRoot, 'host-id')),
+  id: thisHost,
   // Phones list hosts by name, so an unnamed host is told apart by its machine's name.
   name: () => {
     const name = ownerComputer.settings.get().name
@@ -95,6 +97,8 @@ const library = {
   releases: new CraftReleases(join(deployment.imageRoot, 'releases'), flatpakArch),
   depot: new RuntimeDepot(depotRunner, join(deployment.imageRoot, 'depot.json')),
   arch: flatpakArch,
+  // MCP servers, from Smithery; each computer connects its own Smithery account.
+  mcp: { catalog: new SmitheryCatalog(join(deployment.imageRoot, 'smithery')), hostId: thisHost },
 }
 void library.flathub.ready().catch(error => console.error('Flathub index unavailable:', error instanceof Error ? error.message : error))
 const host = describeHost(deployment, process.env, { push: !!sender, liveActivities: !!(apns && sender) })

@@ -240,13 +240,13 @@ const REQUEST = '6f1c2a8e-1d2b-4c3d-8e4f-5a6b7c8d9e0f'
 const user = (turn: number, text = 'x') => ({ type: 'user', turn, text })
 const end = (turn: number, summary: string, stopReason = 'end_turn') => ({ type: 'turn_end', turn, stopReason, summary })
 
-function setup(options: { defaultAgent?: string | null; craftServers?: () => Promise<Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }>> } = {}) {
+function setup(options: { defaultAgent?: string | null; craftServers?: () => Promise<Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }>>; mcpLibrary?: () => Promise<boolean> } = {}) {
   const fake = fakeGuest()
   const events: AgentEvent[] = []
   const release = vi.fn()
   const acquire = vi.fn(() => release)
   const agents = resolver(options.defaultAgent === undefined ? 'stand-in' : options.defaultAgent)
-  const tasks = new AgentTasks(() => fake.guest, event => events.push(event), acquire, { resolver: agents, pollMs: 60_000, idleMs: 120_000, craftServers: options.craftServers })
+  const tasks = new AgentTasks(() => fake.guest, event => events.push(event), acquire, { resolver: agents, pollMs: 60_000, idleMs: 120_000, craftServers: options.craftServers, ...(options.mcpLibrary ? { mcpLibrary: options.mcpLibrary } : {}) })
   return { fake, events, release, acquire, agents, tasks }
 }
 
@@ -306,6 +306,21 @@ describe('AgentTasks', () => {
     expect(JSON.parse(fake.task(second.id).files.get('task.json')!).craftServers).toEqual([])
     expect(lookup).toHaveBeenCalledTimes(1)
     await expect(tasks.start({ prompt: 'edit', craftMcp: 'no' })).rejects.toThrow('craftMcp must be a boolean')
+  })
+
+  it('gives new chats the MCP Library while it has servers, recording only that, and starts without it when it fails', async () => {
+    let active: boolean | Error = true
+    const library = vi.fn(async () => { if (active instanceof Error) throw active; return active })
+    const { fake, tasks } = setup({ mcpLibrary: library })
+    const first = await tasks.start({ prompt: 'search' })
+    const config = fake.task(first.id).files.get('task.json')!
+    expect(JSON.parse(config).mcpLibrary).toBe(true)
+    expect(config).not.toMatch(/token|smithery/i)
+    active = false
+    expect(JSON.parse(fake.task((await tasks.start({ prompt: 'search' })).id).files.get('task.json')!).mcpLibrary).toBeUndefined()
+    active = new Error('Smithery is down')
+    expect(JSON.parse(fake.task((await tasks.start({ prompt: 'search' })).id).files.get('task.json')!).mcpLibrary).toBeUndefined()
+    expect(library).toHaveBeenCalledTimes(3)
   })
 
   it('starts a task through the runner, streams its transcript, and releases the lease when the turn ends', async () => {

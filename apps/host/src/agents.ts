@@ -128,6 +128,11 @@ export interface AgentTaskOptions {
   /** Enables profile tools only after a host-owned binding is persisted. */
   toolJournal?: () => Promise<AgentToolJournal | null>
   craftServers?: () => Promise<Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }>>
+  /**
+   * Brings the computer's MCP Library up to date before a runner starts, and says whether new
+   * chats get it (the `caboose-library` server). Its secrets never enter the task's records.
+   */
+  mcpLibrary?: () => Promise<boolean>
   pollMs?: number
   /** Starts the agent seat's display; defaults to the microVM's systemd unit. */
   ensureSeat?: () => Promise<void>
@@ -405,6 +410,7 @@ export class AgentTasks {
   private toolPolling = false
   private toolWork?: Promise<void>
   private readonly craftServers?: AgentTaskOptions["craftServers"]
+  private readonly mcpLibrary?: AgentTaskOptions["mcpLibrary"]
   private readonly pollMs: number
   private readonly ensureSeat?: () => Promise<void>
   private readonly idleMs: number
@@ -419,6 +425,7 @@ export class AgentTasks {
     this.resolver = options.resolver
     this.toolJournal = options.toolJournal
     this.craftServers = options.craftServers
+    this.mcpLibrary = options.mcpLibrary
     this.pollMs = options.pollMs ?? 1000
     this.ensureSeat = options.ensureSeat
     this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS
@@ -493,13 +500,15 @@ export class AgentTasks {
         await asCaboose(guest, 'mv -- "$1.part" "$1" && sync -f "$1"', [staged])
       }
       const craftServers = input.craftMcp === false ? [] : await this.craftServers?.() ?? []
+      // A Library that cannot be brought up to date is left out of this chat, not fatal to it.
+      const library = await this.mcpLibrary?.().catch(error => { console.error('MCP Library unavailable for a new chat:', error instanceof Error ? error.message : error); return false }) ?? false
       if (profile) {
         await asCaboose(guest, 'mkdir -p -- "$1"', [profile.workspace])
         await writeGuestFile(guest, `${staging}/profile-id`, Buffer.from(profile.id))
         await writeGuestFile(guest, `${staging}/profile-instructions.txt`, Buffer.from(profile.instructions))
       }
       const config = JSON.stringify({ agent: launch, model: requestedModel, cwd: profile?.workspace ?? dir, approvals, idleMs: this.idleMs, craftServers,
-        ...(profile ? { profileId: profile.id } : {}), ...(toolJournal ? { agentTools: true } : {}) })
+        ...(library ? { mcpLibrary: true } : {}), ...(profile ? { profileId: profile.id } : {}), ...(toolJournal ? { agentTools: true } : {}) })
       const message = JSON.stringify({ type: 'prompt', turn: 1, deliveryId: journal.intent!.id, text: prompt,
         ...(files.length ? { attachments: files.map((file, index) => ({ path: attachments[index], name: file.name, ...(file.type ? { mimeType: file.type } : {}) })) } : {}) })
       await writeGuestFile(guest, `${staging}/initial-prompt.json`, Buffer.from(message))
@@ -693,6 +702,8 @@ export class AgentTasks {
   /** The queue remains in the journal until positive claim/transcript evidence retires it. */
   private async sendTurn(entry: Tracked, cancelledCurrent = false): Promise<AgentTask> {
     if (entry.task.delivery) throw new AgentConflictError(entry.task.delivery.message)
+    // A runner this turn starts reads the Library's access then; keep it current.
+    await this.mcpLibrary?.().catch(() => false)
     if (entry.journal.intent) {
       const futureIntent = entry.journal.intent.turn > entry.task.turns
       await this.recoverDelivery(entry)

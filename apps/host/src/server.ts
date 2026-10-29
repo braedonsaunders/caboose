@@ -14,6 +14,8 @@ import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import type { Architecture } from './app-catalog-data.js'
 import type { FlathubIndex } from './flathub.js'
+import { McpLibrary } from './mcp-library.js'
+import type { SmitheryCatalog } from './smithery.js'
 import type { CraftReleases } from './releases.js'
 import type { RuntimeDepot } from './depot.js'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
@@ -85,7 +87,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
+export interface ComputerPieces { /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
 
 
 /**
@@ -106,7 +108,7 @@ function withAdmission(controller: Controller, admit: () => Promise<void>): Cont
 }
 
 /** The Library's host-wide parts, shared by every computer. */
-export interface Library { flathub?: FlathubIndex; releases?: CraftReleases; depot?: RuntimeDepot; arch?: Architecture }
+export interface Library { flathub?: FlathubIndex; releases?: CraftReleases; depot?: RuntimeDepot; arch?: Architecture; mcp?: { catalog: SmitheryCatalog; hostId: string; request?: import('./smithery.js').Requester } }
 
 function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; admit?: Admission; library?: Library }) {
   const { settings, push, activities } = pieces
@@ -138,9 +140,14 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const home = new HomeOwnership()
   const catalog = new AgentCatalog(shared.registry, () => controller.guest(), settings, home)
   const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire(), { ...shared.library, computer: id })
+  const mcp = shared.library?.mcp && pieces.mcpLibraryFile
+    ? new McpLibrary({ file: pieces.mcpLibraryFile, tag: `${shared.library.mcp.hostId}/${id}`, catalog: shared.library.mcp.catalog, guest: () => controller.guest(), emit: broadcast, ...(shared.library.mcp.request ? { request: shared.library.mcp.request } : {}) })
+    : undefined
   // Installed apps update once a day while the computer runs; a parked computer is not woken.
   const autoUpdates = setInterval(() => {
     if (computer.state === 'running' && !upgrading && !craftBusy) void appCatalog.autoUpdate().catch(error => console.error('Automatic app updates failed:', error))
+    // The MCP Library's day-long token is replaced well before it ends.
+    if (computer.state === 'running' && mcp) void mcp.sync().catch(error => console.error('MCP Library token refresh failed:', error instanceof Error ? error.message : error))
   }, 3600_000)
   autoUpdates.unref()
   let toolsError: string | null = null
@@ -155,7 +162,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (job && activities) void activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
   }, () => computer.acquire(), {
     ...(pieces.openToolJournal ? { toolJournal: async () => { const journal = await toolJournalReady; if (!journal) throw new AgentConflictError(toolsError ?? 'Agent tools are unavailable'); return journal } } : {}),
-    resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(shared.agentIdleMs !== undefined ? { idleMs: shared.agentIdleMs } : {}),
+    resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), ...(mcp ? { mcpLibrary: () => { mcp.forgetSync(); return mcp.sync() } } : {}), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(shared.agentIdleMs !== undefined ? { idleMs: shared.agentIdleMs } : {}),
   })
   let routineError: string | null = null
   const routineTask = (task: ReturnType<AgentTasks['list']>[number]): RoutineTask => ({
@@ -495,6 +502,57 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       if (appCatalog.busy || craftBusy) throw new ComputerConflictError('An application operation is in progress')
       await computer.park(closeSockets)
       return json(response, 200, { state: computer.state })
+    }
+    if (path.startsWith('/v1/mcp/')) {
+      if (!mcp || !shared.library?.mcp) throw new AgentNotFoundError('This host has no MCP Library')
+      const mcpCatalog = shared.library.mcp.catalog
+      const params = new URL(request.url ?? '/', 'http://localhost').searchParams
+      // Catalog entries as clients see them: an icon id in place of its source, and whether this computer has the server.
+      const view = async (servers: import('./smithery.js').McpServer[]) => {
+        const added = new Map((await mcp.connections()).connections.map(c => [c.server, c.id]))
+        return servers.map(({ iconUrl, ...server }) => ({ ...server, iconId: mcpCatalog.iconId(iconUrl), connection: added.get(server.id) ?? null }))
+      }
+      const guarded = async <T>(work: () => Promise<T>) => { try { return await work() } catch (error) { if (error instanceof RangeError) throw new AgentInputError(error.message); throw error } }
+      if (path === '/v1/mcp/account') {
+        if (request.method === 'GET') return json(response, 200, await mcp.account())
+        if (request.method === 'PUT') return json(response, 200, await mcp.connect((await readJson(request) as { apiKey?: unknown }).apiKey))
+        if (request.method === 'DELETE') return json(response, 200, await mcp.disconnect())
+      }
+      if (request.method === 'GET' && path === '/v1/mcp/storefront') {
+        let error: string | null = null
+        const groups = await mcpCatalog.storefront().catch(cause => { error = `Smithery could not be reached: ${cause instanceof Error ? cause.message : String(cause)}`.slice(0, 300); return [] })
+        return json(response, 200, { groups: await Promise.all(groups.map(async group => ({ ...group, servers: await view(group.servers) }))), error })
+      }
+      if (request.method === 'GET' && path === '/v1/mcp/discover') {
+        const page = params.get('page') ?? '1'
+        if (!/^\d{1,3}$/.test(page)) throw new AgentInputError('Invalid page')
+        const result = await guarded(() => mcpCatalog.search(params.get('q') ?? '', Number(page)))
+        return json(response, 200, { ...result, servers: await view(result.servers) })
+      }
+      const serverPath = /^\/v1\/mcp\/servers\/(.+)$/.exec(path)
+      if (request.method === 'GET' && serverPath?.[1]) {
+        const detail = await guarded(() => mcpCatalog.detail(decodeURIComponent(serverPath[1]!)))
+        const [server] = await view([detail])
+        return json(response, 200, { ...server, tools: detail.tools })
+      }
+      const icon = /^\/v1\/mcp\/icons\/([0-9a-f]{32})$/.exec(path)
+      if (request.method === 'GET' && icon?.[1]) {
+        const bytes = await mcpCatalog.icon(icon[1])
+        if (!bytes) throw new AgentNotFoundError('No icon')
+        response.writeHead(200, { 'content-type': bytes[0] === 0xff ? 'image/jpeg' : 'image/png', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' })
+        return response.end(bytes)
+      }
+      if (path === '/v1/mcp/connections') {
+        if (request.method === 'GET') return json(response, 200, params.get('refresh') === '1' ? await mcp.refresh() : await mcp.connections())
+        if (request.method === 'POST') return json(response, 201, await guarded(async () => mcp.add((await readJson(request) as { server?: unknown }).server)))
+      }
+      const connection = /^\/v1\/mcp\/connections\/(cb-[0-9a-f]{12}-[0-9a-f]{16})(\/check)?$/.exec(path)
+      if (connection?.[1]) {
+        if (request.method === 'POST' && connection[2]) return json(response, 200, await mcp.check(connection[1]))
+        if (request.method === 'PATCH' && !connection[2]) return json(response, 200, await mcp.configure(connection[1], (await readJson(request) as { values?: unknown }).values))
+        if (request.method === 'DELETE' && !connection[2]) return json(response, 200, await mcp.remove(connection[1]))
+      }
+      throw new AgentNotFoundError('Not found')
     }
     if (request.method === 'GET' && path === '/v1/catalog/discover') {
       const params = new URL(request.url ?? '/', 'http://localhost').searchParams
