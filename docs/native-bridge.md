@@ -241,5 +241,11 @@ The app answers `bridge.request` while it is in the foreground:
   from Control Center, the Lock Screen, AirPods and keyboard media keys. The app plays the
   computer's sound only while in the foreground, so this is Now Playing for the computer
   while Caboose is open.
-- **Share location with computer** (off by default) asks for When In Use location and sends
-  updates while the app is in the foreground; turning it off sends `DELETE`.
+- **Share Location with This Computer** (off by default) is consent for the paired
+  computer only: another computer, or the same phone paired again elsewhere, starts without
+  it. It asks for When In Use location and sends updates to that computer while the app is in
+  the foreground and connected; turning it off sends `DELETE`.
+- Each request, its upload and its answer go to the computer it came from. Signing out,
+  switching computers, losing the control connection or going to the background takes down
+  what is shown and drops what is waiting; the computer has already given those requests to
+  its own dialogs, and a picker that returns afterwards does nothing.

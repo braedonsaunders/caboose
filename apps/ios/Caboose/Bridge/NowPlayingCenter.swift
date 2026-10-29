@@ -4,103 +4,174 @@ import MediaPlayer
 import UIKit
 
 /// The computer's media in the system's Now Playing: Control Center, the Lock Screen,
-/// AirPods and keyboard media keys control the Linux player. It publishes only metadata
-/// and handles commands; the app's audio session is configured where the sound plays.
+/// AirPods and keyboard media keys control the Linux player. It publishes metadata and
+/// handles commands only while it shows a track and is not suspended; the app's audio
+/// session is configured where the sound plays.
 @MainActor
 final class NowPlayingCenter {
-    var control: (String, String, Double?) async throws -> Void = { _, _, _ in }
-    var suspended = false { didSet { if suspended { publish(nil) } else { publish(state) } } }
-    private var state: BridgeNowPlaying?
+    var suspended = false {
+        didSet {
+            guard suspended != oldValue else { return }
+            if suspended { release() } else if let shown { publish(shown.state) }
+        }
+    }
+    /// The track shown and the host it came from: commands go to that computer only.
+    private var shown: (state: BridgeNowPlaying, host: HostClient)?
     private var artwork: (url: URL, image: MPMediaItemArtwork)?
-    private var registered = false
+    private let loader = ArtworkLoader()
+    private var targets: [(MPRemoteCommand, Any)] = []
+    private var published = false
 
-    func show(_ next: BridgeNowPlaying) {
-        state = next
-        register()
-        publish(next)
+    func show(_ state: BridgeNowPlaying, host: HostClient) {
+        shown = (state, host)
+        guard !suspended else { return }
+        publish(state)
     }
 
     func stopped(_ id: String) {
-        guard state?.id == id else { return }
+        guard shown?.state.id == id else { return }
         clear()
     }
 
     func clear() {
-        state = nil
-        publish(nil)
+        shown = nil
+        artwork = nil
+        loader.cancel()
+        release()
     }
 
-    private func publish(_ shown: BridgeNowPlaying?) {
-        let center = MPNowPlayingInfoCenter.default()
+    /// Gives Now Playing back: our metadata and command handlers go; other players' stay.
+    private func release() {
         let commands = MPRemoteCommandCenter.shared()
-        guard let shown, !suspended else {
-            if registered { center.nowPlayingInfo = nil; center.playbackState = .stopped }
+        for (command, target) in targets { command.removeTarget(target) }
+        targets.removeAll()
+        if published {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
             for command in [commands.playCommand, commands.pauseCommand, commands.togglePlayPauseCommand, commands.nextTrackCommand,
                             commands.previousTrackCommand, commands.changePlaybackPositionCommand] { command.isEnabled = false }
-            return
+            published = false
         }
+    }
+
+    private func publish(_ state: BridgeNowPlaying) {
+        register()
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: shown.title.isEmpty ? shown.player : shown.title,
-            MPMediaItemPropertyArtist: shown.artist.isEmpty ? shown.player : shown.artist,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: shown.position(at: Date().timeIntervalSince1970 * 1000),
-            MPNowPlayingInfoPropertyPlaybackRate: shown.playbackRate,
+            MPMediaItemPropertyTitle: state.title.isEmpty ? state.player : state.title,
+            MPMediaItemPropertyArtist: state.artist.isEmpty ? state.player : state.artist,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: state.position(at: Date().timeIntervalSince1970 * 1000),
+            MPNowPlayingInfoPropertyPlaybackRate: state.playbackRate,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
         ]
-        if !shown.album.isEmpty { info[MPMediaItemPropertyAlbumTitle] = shown.album }
-        if let duration = shown.duration { info[MPMediaItemPropertyPlaybackDuration] = duration } else { info[MPNowPlayingInfoPropertyIsLiveStream] = true }
-        if let artwork, artwork.url == shown.artwork { info[MPMediaItemPropertyArtwork] = artwork.image }
-        center.nowPlayingInfo = info
-        center.playbackState = shown.paused ? .paused : .playing
-        commands.playCommand.isEnabled = shown.canPlay
-        commands.pauseCommand.isEnabled = shown.canPause
-        commands.togglePlayPauseCommand.isEnabled = shown.canPlay || shown.canPause
-        commands.nextTrackCommand.isEnabled = shown.canNext
-        commands.previousTrackCommand.isEnabled = shown.canPrevious
-        commands.changePlaybackPositionCommand.isEnabled = shown.canSeek && shown.duration != nil
-        if let url = shown.artwork, artwork?.url != url { load(url) }
-    }
-
-    private func load(_ url: URL) {
-        Task {
-            guard let (data, response) = try? await URLSession.shared.data(from: url), (response as? HTTPURLResponse)?.statusCode == 200,
-                  data.count <= 8 * 1024 * 1024, let image = UIImage(data: data) else { return }
-            let art = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-            artwork = (url, art)
-            if state?.artwork == url { publish(state) }
+        if !state.album.isEmpty { info[MPMediaItemPropertyAlbumTitle] = state.album }
+        if let duration = state.duration { info[MPMediaItemPropertyPlaybackDuration] = duration } else { info[MPNowPlayingInfoPropertyIsLiveStream] = true }
+        if let artwork, artwork.url == state.artwork { info[MPMediaItemPropertyArtwork] = artwork.image }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        MPNowPlayingInfoCenter.default().playbackState = state.paused ? .paused : .playing
+        published = true
+        let commands = MPRemoteCommandCenter.shared()
+        commands.playCommand.isEnabled = state.canPlay
+        commands.pauseCommand.isEnabled = state.canPause
+        commands.togglePlayPauseCommand.isEnabled = state.canPlay || state.canPause
+        commands.nextTrackCommand.isEnabled = state.canNext
+        commands.previousTrackCommand.isEnabled = state.canPrevious
+        commands.changePlaybackPositionCommand.isEnabled = state.canSeek && state.duration != nil
+        if let url = state.artwork, artwork?.url != url {
+            loader.load(url) { [weak self] image in
+                guard let self, let image, self.shown?.state.artwork == url else { return }
+                self.artwork = (url, MPMediaItemArtwork(boundsSize: image.size) { _ in image })
+                if !self.suspended, let shown = self.shown { self.publish(shown.state) }
+            }
         }
     }
 
     private func register() {
-        guard !registered else { return }
-        registered = true
+        guard targets.isEmpty else { return }
         let commands = MPRemoteCommandCenter.shared()
         let send = { [weak self] (action: String, position: Double?) -> MPRemoteCommandHandlerStatus in
-            guard let self, let id = self.state?.id else { return .noActionableNowPlayingItem }
-            Task { try? await self.control(id, action, position) }
+            // The track and computer shown now; a command never reaches another computer.
+            guard let self, !self.suspended, let (state, host) = self.shown else { return .noActionableNowPlayingItem }
+            Task { try? await host.nowPlayingControl(state.id, action: action, position: position) }
             return .success
         }
-        commands.playCommand.addTarget { _ in send("play", nil) }
-        commands.pauseCommand.addTarget { _ in send("pause", nil) }
-        commands.togglePlayPauseCommand.addTarget { _ in send("toggle", nil) }
-        commands.nextTrackCommand.addTarget { _ in send("next", nil) }
-        commands.previousTrackCommand.addTarget { _ in send("previous", nil) }
-        commands.changePlaybackPositionCommand.addTarget { event in
+        let simple: [(MPRemoteCommand, String)] = [
+            (commands.playCommand, "play"), (commands.pauseCommand, "pause"), (commands.togglePlayPauseCommand, "toggle"),
+            (commands.nextTrackCommand, "next"), (commands.previousTrackCommand, "previous"),
+        ]
+        for (command, action) in simple { targets.append((command, command.addTarget { _ in send(action, nil) })) }
+        let seek = commands.changePlaybackPositionCommand
+        targets.append((seek, seek.addTarget { event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             return send("seek", max(0, event.positionTime))
-        }
+        }))
     }
 }
 
-/// The phone's location for the computer's GeoClue, while the owner shares it and Caboose
-/// is in the foreground and connected.
+/// Fetches a track's artwork from the URL the computer's player names: untrusted, so one
+/// request at a time, no cookies or cache, no redirects, at most 2 MiB, images only.
+@MainActor
+private final class ArtworkLoader {
+    static let limit = 2 * 1024 * 1024
+    private var task: Task<Void, Never>?
+    private var loading: URL?
+    private let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 20
+        return URLSession(configuration: configuration, delegate: RefuseRedirects(), delegateQueue: nil)
+    }()
+
+    func load(_ url: URL, done: @escaping (UIImage?) -> Void) {
+        guard loading != url else { return }
+        cancel()
+        loading = url
+        task = Task { [session] in
+            let image = await Self.fetch(url, session: session)
+            guard !Task.isCancelled else { return }
+            self.loading = nil
+            done(image)
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        loading = nil
+    }
+
+    private nonisolated static func fetch(_ url: URL, session: URLSession) async -> UIImage? {
+        guard url.scheme == "https", let (bytes, response) = try? await session.bytes(from: url),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              http.mimeType?.hasPrefix("image/") == true, http.expectedContentLength <= Int64(limit) else { return nil }
+        var data = Data()
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count > limit { return nil }
+            }
+        } catch { return nil }
+        return UIImage(data: data)
+    }
+}
+
+private final class RefuseRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest) async -> URLRequest? { nil }
+}
+
+/// The phone's location for one computer's GeoClue, while the owner shares it with that
+/// computer and Caboose is in front and connected. A fix or an authorization answer that
+/// arrives after `stop` goes nowhere.
 @MainActor
 final class LocationSharing: NSObject, CLLocationManagerDelegate {
-    var host: () -> HostClient? = { nil }
     private let problem: (String?) -> Void
     private let manager = CLLocationManager()
     private var throttle = LocationThrottle()
-    private var running = false
+    private var target: (computer: String, host: HostClient)?
 
     init(problem: @escaping (String?) -> Void) {
         self.problem = problem
@@ -110,34 +181,29 @@ final class LocationSharing: NSObject, CLLocationManagerDelegate {
         manager.distanceFilter = 25
     }
 
-    func setRunning(_ run: Bool) {
-        guard run != running else { return }
-        running = run
-        if run {
-            switch manager.authorizationStatus {
-            case .notDetermined: manager.requestWhenInUseAuthorization()
-            case .authorizedWhenInUse, .authorizedAlways: problem(nil); manager.startUpdatingLocation()
-            default: problem("Allow Caboose to use your location in Settings to share it with the computer.")
-            }
-        } else {
-            manager.stopUpdatingLocation()
-            throttle.reset()
+    func start(for computer: String, host: HostClient) {
+        guard target?.computer != computer || target?.host.baseURL != host.baseURL else { return }
+        stop()
+        target = (computer, host)
+        switch manager.authorizationStatus {
+        case .notDetermined: manager.requestWhenInUseAuthorization()
+        case .authorizedWhenInUse, .authorizedAlways: problem(nil); manager.startUpdatingLocation()
+        default: problem("Allow Caboose to use your location in Settings to share it with the computer.")
         }
     }
 
-    /// The owner turned sharing off: the computer forgets the location.
-    func stopSharing() {
-        setRunning(false)
-        problem(nil)
-        guard let host = host() else { return }
-        Task { try? await host.deleteLocation() }
+    func stop() {
+        target = nil
+        manager.stopUpdatingLocation()
+        throttle.reset()
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
         Task { @MainActor in
-            guard self.running else { return }
-            switch manager.authorizationStatus {
-            case .authorizedWhenInUse, .authorizedAlways: self.problem(nil); manager.startUpdatingLocation()
+            guard self.target != nil else { return }
+            switch status {
+            case .authorizedWhenInUse, .authorizedAlways: self.problem(nil); self.manager.startUpdatingLocation()
             case .notDetermined: break
             default: self.problem("Allow Caboose to use your location in Settings to share it with the computer.")
             }
@@ -149,7 +215,8 @@ final class LocationSharing: NSObject, CLLocationManagerDelegate {
         let fix = LocationThrottle.Fix(latitude: last.coordinate.latitude, longitude: last.coordinate.longitude, accuracy: last.horizontalAccuracy)
         let altitude = last.verticalAccuracy >= 0 ? last.altitude : nil
         Task { @MainActor in
-            guard self.running, self.throttle.admit(fix, at: Date().timeIntervalSince1970), let host = self.host() else { return }
+            // Only to the computer sharing is on for now.
+            guard let (_, host) = self.target, self.throttle.admit(fix, at: Date().timeIntervalSince1970) else { return }
             try? await host.putLocation(latitude: fix.latitude, longitude: fix.longitude, accuracy: min(fix.accuracy, 100_000),
                                         altitude: altitude.map { min(100_000, max(-1000, $0)) })
         }

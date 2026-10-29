@@ -194,6 +194,8 @@ export class BridgeRelay {
   private timer: ReturnType<typeof setInterval> | undefined
   private polling = false
   private readonly outstanding = new Map<string, Outstanding>()
+  /** Bumped when the computer stops: work begun before then must not touch what follows. */
+  private generation = 0
   /** The phone's latest appearance, applied at every wake. */
   appearance: Appearance | null = null
 
@@ -227,6 +229,7 @@ export class BridgeRelay {
   /** The computer left the running state: the requests it had open are gone with it. */
   computerStopped(): void {
     this.setActive(false)
+    this.generation++
     this.outstanding.clear()
   }
 
@@ -234,8 +237,11 @@ export class BridgeRelay {
     const guest = this.guest()
     if (!guest || this.polling) return
     this.polling = true
+    const generation = this.generation
     try {
       const output = await bridgeCommand(guest, ['drain'], 10_000).catch(() => '')
+      // A drain that outlived its computer run delivers nothing: those requests went with it.
+      if (generation !== this.generation) return
       let parsed: unknown
       try { parsed = JSON.parse(output) } catch { return }
       const drained = record(parsed)
@@ -257,6 +263,7 @@ export class BridgeRelay {
         if (typeof id === 'string' && BRIDGE_ID.test(id)) {
           await bridgeCommand(guest, ['respond', JSON.stringify({ id, response: 'computer' })])
             .catch(error => console.error('Could not return a malformed bridge request to the computer:', message(error)))
+          if (generation !== this.generation) return
         }
       }
       for (const id of cancels) {
@@ -278,11 +285,13 @@ export class BridgeRelay {
     if (!guest) throw new AgentUnavailableError()
     // Taken now so a second answer to the same request is refused while this one is in flight.
     this.outstanding.delete(rawId)
+    const generation = this.generation
     let output: string
     try {
       output = await bridgeCommand(guest, ['respond', JSON.stringify(answer)])
     } catch (error) {
-      this.outstanding.set(rawId, request)
+      // Open again for a retry, unless the computer stopped meanwhile and took it with it.
+      if (generation === this.generation) this.outstanding.set(rawId, request)
       throw new AgentOperationError(`The computer did not take the answer: ${message(error)}`)
     }
     let result: Record<string, unknown> | null = null

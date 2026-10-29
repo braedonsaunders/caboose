@@ -184,6 +184,31 @@ describe('BridgeRelay', () => {
     expect(relay.pending(save.id)).toBe(false)
   })
 
+  it('delivers nothing from a drain that outlives the computer, and does not reopen a stopped request', async () => {
+    const fake = fakeGuest()
+    const events: BridgeEvent[] = []
+    let finishDrain: (output: string) => void = () => {}
+    const slow: AgentGuest = { run: (command, args) => args.includes('drain') ? new Promise(resolve => { finishDrain = resolve }) : fake.guest.run(command, args) }
+    const late = new BridgeRelay(() => slow, event => events.push(event), 60_000)
+    const polling = late.poll()
+    late.computerStopped()
+    finishDrain(JSON.stringify({ requests: [open], cancels: [] }))
+    await polling
+    expect(events).toEqual([])
+    expect(late.pending(open.id)).toBe(false)
+
+    let failRespond: (error: Error) => void = () => {}
+    const failing: AgentGuest = { run: (command, args) => args.includes('respond') ? new Promise((_, reject) => { failRespond = reject }) : fake.guest.run(command, args) }
+    const stopped = new BridgeRelay(() => failing, () => {}, 60_000)
+    fake.drain({ requests: [save], cancels: [] })
+    await stopped.poll()
+    const answering = stopped.answer(save.id, { response: 'cancel' })
+    stopped.computerStopped()
+    failRespond(new Error('Guest command failed: gone'))
+    await expect(answering).rejects.toThrow(AgentOperationError)
+    expect(stopped.pending(save.id)).toBe(false)
+  })
+
   it('applies the stored appearance', async () => {
     const fake = fakeGuest()
     const relay = new BridgeRelay(() => fake.guest, () => {}, 60_000)

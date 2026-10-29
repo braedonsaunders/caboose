@@ -1,5 +1,4 @@
 import CabooseKit
-import CoreLocation
 import Observation
 import SwiftUI
 import UIKit
@@ -8,19 +7,32 @@ import UniformTypeIdentifiers
 /// The phone's side of the native bridge (docs/native-bridge.md): answers the computer's
 /// file requests with iOS pickers, sends the phone's appearance and (when shared) location,
 /// and mirrors the computer's media in Now Playing.
+///
+/// Everything is bound to the computer it came from: a request, its upload and its answer
+/// use the host it arrived from, and `BridgeLifecycle` fences callbacks so nothing begun for
+/// one computer, connection or foreground acts after it.
 @MainActor @Observable
 final class NativeBridge {
+    /// The computer a request, a track or a location belongs to.
+    struct Computer {
+        let host: HostClient
+        /// The paired computer's identity (its File Provider domain).
+        let id: String
+        let documents: OpenDocumentCenter
+    }
+
     /// Why location cannot be shared, for the settings section.
     private(set) var locationProblem: String?
+    /// The computers the owner shares location with.
+    private(set) var locationConsent = LocationConsent(UserDefaults.standard.stringArray(forKey: BridgeSettings.locationKey) ?? [])
+    /// The computer currently paired, for the settings section.
+    private(set) var computerID: String?
 
-    @ObservationIgnored private var host: () -> HostClient? = { nil }
-    @ObservationIgnored private var domain: () -> String? = { nil }
-    @ObservationIgnored private var documents: () -> OpenDocumentCenter? = { nil }
-    @ObservationIgnored private var active = false
-    @ObservationIgnored private var connected = false
-    @ObservationIgnored private var generation = 0
-    @ObservationIgnored private var queue: [BridgeRequest] = []
-    @ObservationIgnored private var current: (request: BridgeRequest, controller: UIViewController?)?
+    @ObservationIgnored private var computer: () -> Computer? = { nil }
+    @ObservationIgnored private var window: () -> UIWindow? = { nil }
+    @ObservationIgnored private var life = BridgeLifecycle()
+    @ObservationIgnored private var requests: [String: (request: BridgeRequest, computer: Computer)] = [:]
+    @ObservationIgnored private var presented: (ticket: BridgeLifecycle.Ticket, controller: UIViewController)?
     @ObservationIgnored private var pickerDelegate: PickerDelegate?
     @ObservationIgnored private let appearance = AppearanceReporter()
     @ObservationIgnored private let nowPlaying = NowPlayingCenter()
@@ -28,52 +40,43 @@ final class NativeBridge {
 
     init() { BridgeSettings.register() }
 
-    func attach(host: @escaping () -> HostClient?, domain: @escaping () -> String?, documents: @escaping () -> OpenDocumentCenter?) {
-        self.host = host; self.domain = domain; self.documents = documents
+    /// `computer` is the paired computer now; `window` is the app's main shell window (never an
+    /// external display's), where sheets are presented and whose traits are the appearance.
+    func attach(computer: @escaping () -> Computer?, window: @escaping () -> UIWindow?) {
+        self.computer = computer
+        self.window = window
+        appearance.window = window
         appearance.send = { [weak self] look in
-            guard BridgeSettings.appearance, let host = self?.host() else { return }
+            guard BridgeSettings.appearance, let host = self?.computer()?.host else { return }
             try await host.putAppearance(look)
         }
-        nowPlaying.control = { [weak self] id, action, position in
-            try await self?.host()?.nowPlayingControl(id, action: action, position: position)
-        }
-        location.host = { [weak self] in self?.host() }
     }
 
-    /// The app is in the foreground (or not): requests are shown, location flows, only then.
+    /// The app is in the foreground (or not). The control connection closes in the
+    /// background, so the computer shows its own dialog for what was shown or waiting here.
     func setActive(_ active: Bool) {
-        self.active = active
-        location.setRunning(active && connected && BridgeSettings.location)
-        // In the background the control connection closes, so the computer shows its own
-        // dialog for anything still waiting here.
-        if active { showNext() } else { queue.removeAll() }
+        dismiss(life.setActive(active))
+        if !active { requests.removeAll() }
+        updateLocation()
+        if active { showNext() }
     }
 
-    /// A control connection to the computer opened: the computer gets the phone's appearance.
-    private func controlConnected() {
-        connected = true
-        appearance.resend()
-        location.setRunning(active && BridgeSettings.location)
-    }
-
-    /// The computer stopped running: what it asked for went to its own dialogs.
-    private func controlDisconnected() {
-        connected = false
-        queue.removeAll()
+    /// The control connection closed (AgentCenter's `onControlClosed`).
+    func controlClosed() {
+        dismiss(life.disconnect())
+        requests.removeAll()
         nowPlaying.clear()
-        location.setRunning(false)
+        updateLocation()
     }
 
-    /// Signed out or switched computers.
+    /// Signed out or switched computers: nothing from before may act.
     func reset() {
-        generation += 1
-        queue.removeAll()
-        if let controller = current?.controller { controller.presentingViewController?.dismiss(animated: true) }
-        current = nil
-        connected = false
+        dismiss(life.reset())
+        requests.removeAll()
+        computerID = nil
         appearance.forget()
         nowPlaying.clear()
-        location.setRunning(false)
+        location.stop()
     }
 
     /// While the phone plays a handed-off video itself, its player owns Now Playing.
@@ -85,149 +88,181 @@ final class NativeBridge {
     func handle(_ type: String, _ event: [String: Any]) {
         switch type {
         case "computer.state":
-            // Sent first on every control connection, and on each lifecycle change.
-            if event["state"] as? String == "running" { controlConnected() } else { controlDisconnected() }
+            // The first event on every control connection, and every lifecycle change.
+            if event["state"] as? String == "running" { connected() } else { controlClosed() }
         case "bridge.request":
             guard let raw = event["request"], JSONSerialization.isValidJSONObject(raw),
                   let data = try? JSONSerialization.data(withJSONObject: raw),
                   let request = try? JSONDecoder().decode(BridgeRequest.self, from: data),
-                  current?.request.id != request.id, !queue.contains(where: { $0.id == request.id }) else { return }
-            guard BridgeSettings.dialogs else { answer(request, .computer); return }
-            guard queue.count < 8 else { answer(request, .computer); return }
-            queue.append(request)
-            showNext()
+                  let computer = computer() else { return }
+            switch life.receive(request.id, dialogs: BridgeSettings.dialogs) {
+            case .queued:
+                requests[request.id] = (request, computer)
+                showNext()
+            case .declined: send(.computer, for: request, to: computer)
+            case .duplicate: break
+            }
         case "bridge.cancel":
             guard let id = event["id"] as? String else { return }
-            queue.removeAll { $0.id == id }
-            if current?.request.id == id { withdraw() }
+            dismiss(life.withdraw(id))
+            requests[id] = nil
         case "now-playing.changed":
-            guard BridgeSettings.nowPlaying, let raw = event["nowPlaying"], JSONSerialization.isValidJSONObject(raw),
+            guard BridgeSettings.nowPlaying, let host = computer()?.host, let raw = event["nowPlaying"], JSONSerialization.isValidJSONObject(raw),
                   let data = try? JSONSerialization.data(withJSONObject: raw),
                   let state = try? JSONDecoder().decode(BridgeNowPlaying.self, from: data) else { return }
-            nowPlaying.show(state)
+            nowPlaying.show(state, host: host)
         case "now-playing.stopped":
             if let id = event["id"] as? String { nowPlaying.stopped(id) }
         default: break
         }
     }
 
+    private func connected() {
+        life.connect()
+        computerID = computer()?.id
+        appearance.resend()
+        updateLocation()
+        showNext()
+    }
+
     // Settings ----------------------------------------------------------------------------
 
     func appearanceSettingChanged() { appearance.resend() }
     func nowPlayingSettingChanged() { if !BridgeSettings.nowPlaying { nowPlaying.clear() } }
-    func locationSettingChanged() {
-        if BridgeSettings.location {
-            location.setRunning(active && connected)
+
+    /// Whether this phone shares its location with the paired computer.
+    var sharesLocation: Bool { locationConsent.allows(computerID) }
+
+    func setSharesLocation(_ shared: Bool) {
+        guard let current = computer() else { return }
+        locationConsent.set(shared, for: current.id)
+        UserDefaults.standard.set(locationConsent.stored, forKey: BridgeSettings.locationKey)
+        if shared {
+            updateLocation()
         } else {
-            location.stopSharing()
+            location.stop()
+            locationProblem = nil
+            Task { try? await current.host.deleteLocation() }
         }
+    }
+
+    /// Location flows to the paired computer only while it has consent, the app is in front
+    /// and connected.
+    private func updateLocation() {
+        guard life.active, life.connected, let current = computer(), locationConsent.allows(current.id) else {
+            location.stop()
+            return
+        }
+        location.start(for: current.id, host: current.host)
     }
 
     // File requests -----------------------------------------------------------------------
 
+    /// Where sheets go: the top of the main shell window's presentations, while it is in front.
     private func topController() -> UIViewController? {
-        guard active, UIApplication.shared.applicationState == .active,
-              let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first(where: { $0.activationState == .foregroundActive }),
-              let window = scene.windows.first(where: \.isKeyWindow), var controller = window.rootViewController else { return nil }
+        guard life.active, UIApplication.shared.applicationState == .active, let window = window(),
+              window.windowScene?.activationState == .foregroundActive, var controller = window.rootViewController else { return nil }
         while let next = controller.presentedViewController, !next.isBeingDismissed { controller = next }
         return controller
     }
 
     private func showNext() {
-        guard current == nil, !queue.isEmpty, let presenter = topController() else { return }
-        let request = queue.removeFirst()
-        let controller: UIViewController
-        switch (request.type, request.directory) {
-        case (.open, false):
-            let types = request.contentTypes
-            let picker = UIDocumentPickerViewController(forOpeningContentTypes: types.isEmpty ? [.item] : types, asCopy: false)
-            picker.allowsMultipleSelection = request.multiple
-            let delegate = PickerDelegate { [weak self] urls in self?.picked(urls, for: request) }
-            picker.delegate = delegate
-            pickerDelegate = delegate
-            controller = picker
-        case (.open, true), (.save, _):
-            guard let host = host() else { answer(request, .computer); showNext(); return }
-            let sheet = BridgeFileSheet(request: request, host: host) { [weak self] answer in self?.finish(request, answer) }
-            let hosting = UIHostingController(rootView: sheet)
-            hosting.modalPresentationStyle = .pageSheet
-            hosting.sheetPresentationController?.detents = [.large()]
-            hosting.sheetPresentationController?.prefersGrabberVisible = true
-            hosting.isModalInPresentation = true
-            controller = hosting
+        guard presented == nil, let presenter = topController() else { return }
+        while let ticket = life.next() {
+            guard let (request, computer) = requests[ticket.request] else { _ = life.finish(ticket); continue }
+            let controller: UIViewController
+            switch (request.type, request.directory) {
+            case (.open, false):
+                let types = request.contentTypes
+                let picker = UIDocumentPickerViewController(forOpeningContentTypes: types.isEmpty ? [.item] : types, asCopy: false)
+                picker.allowsMultipleSelection = request.multiple
+                let delegate = PickerDelegate { [weak self] urls in self?.picked(urls, ticket: ticket) }
+                picker.delegate = delegate
+                pickerDelegate = delegate
+                controller = picker
+            case (.open, true), (.save, _):
+                let sheet = BridgeFileSheet(request: request, host: computer.host) { [weak self] answer in self?.finish(ticket, answer) }
+                let hosting = UIHostingController(rootView: sheet)
+                hosting.modalPresentationStyle = .pageSheet
+                hosting.sheetPresentationController?.detents = [.large()]
+                hosting.sheetPresentationController?.prefersGrabberVisible = true
+                hosting.isModalInPresentation = true
+                controller = hosting
+            }
+            presented = (ticket, controller)
+            presenter.present(controller, animated: true)
+            return
         }
-        current = (request, controller)
-        presenter.present(controller, animated: true)
     }
 
     /// The document picker returned: computer files answer with their own paths, others are
-    /// copied to the computer and kept in sync with their originals.
-    private func picked(_ urls: [URL], for request: BridgeRequest) {
+    /// copied to the computer the request came from and kept in sync with their originals.
+    private func picked(_ urls: [URL], ticket: BridgeLifecycle.Ticket) {
         pickerDelegate = nil
-        guard !urls.isEmpty else { finish(request, .cancel); return }
-        guard let host = host(), let domain = domain(), let documents = documents() else { finish(request, .computer); return }
-        let generation = generation
+        // A picker from before a reset, a lost connection or the background does nothing.
+        guard life.isCurrent(ticket), let (request, computer) = requests[ticket.request] else { return }
+        guard !urls.isEmpty else { finish(ticket, .cancel); return }
         let progress = UIHostingController(rootView: BridgeSendingView(count: urls.count))
         progress.modalPresentationStyle = .overFullScreen
         progress.modalTransitionStyle = .crossDissolve
         progress.view.backgroundColor = .clear
-        current = (request, progress)
+        presented = (ticket, progress)
         topController()?.present(progress, animated: true)
         Task {
             do {
                 var paths: [ComputerPath] = []
                 for url in urls {
-                    let relative = try await documents.computerPath(for: url, name: url.lastPathComponent, copyOnly: false, host: host, domain: domain)
+                    guard life.isCurrent(ticket) else { return }
+                    let relative = try await computer.documents.computerPath(for: url, name: url.lastPathComponent, copyOnly: false,
+                                                                             host: computer.host, domain: computer.id)
+                    guard life.isCurrent(ticket) else { return }
                     guard let path = ComputerPath(relative: relative) else { throw HostClient.Failure.unreachable("The file's computer location is not valid.") }
                     paths.append(path)
                 }
                 // Later edits on either side sync as for any opened document (fs.changed, foreground).
-                guard self.generation == generation, current?.request.id == request.id else { return }
-                finish(request, .chose(paths, filter: request.currentFilter))
+                finish(ticket, .chose(paths, filter: request.currentFilter))
             } catch {
-                guard self.generation == generation, current?.request.id == request.id else { return }
-                failed(request, error)
+                failed(ticket, error)
             }
         }
     }
 
-    private func failed(_ request: BridgeRequest, _ error: Error) {
-        dismissCurrent { [weak self] in
-            guard let self, let presenter = self.topController() else { self?.finish(request, .cancel); return }
+    private func failed(_ ticket: BridgeLifecycle.Ticket, _ error: Error) {
+        guard life.isCurrent(ticket) else { return }
+        replacePresented(for: ticket) { [weak self] in
+            guard let self, self.life.isCurrent(ticket), let presenter = self.topController() else { self?.finish(ticket, .cancel); return }
             let alert = UIAlertController(title: "Couldn’t Send to the Computer", message: error.localizedDescription, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "Use Computer Dialog", style: .default) { [weak self] _ in self?.finish(request, .computer) })
-            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in self?.finish(request, .cancel) })
-            self.current = (request, alert)
+            alert.addAction(UIAlertAction(title: "Use Computer Dialog", style: .default) { [weak self] _ in self?.finish(ticket, .computer) })
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in self?.finish(ticket, .cancel) })
+            self.presented = (ticket, alert)
             presenter.present(alert, animated: true)
         }
     }
 
-    private func finish(_ request: BridgeRequest, _ result: BridgeAnswer) {
-        guard current?.request.id == request.id else { answer(request, result); return }
-        dismissCurrent { [weak self] in
-            self?.current = nil
-            self?.answer(request, result)
-            self?.showNext()
-        }
+    /// Answers the shown request, to the computer it came from, once.
+    private func finish(_ ticket: BridgeLifecycle.Ticket, _ result: BridgeAnswer) {
+        guard life.finish(ticket), let (request, computer) = requests.removeValue(forKey: ticket.request) else { return }
+        send(result, for: request, to: computer)
+        dismiss(ticket)
     }
 
-    /// The computer withdrew the request being shown.
-    private func withdraw() {
+    private func send(_ answer: BridgeAnswer, for request: BridgeRequest, to computer: Computer) {
+        Task { _ = try? await computer.host.answerBridge(request.id, answer) }
+    }
+
+    /// Takes down what is shown for `ticket`, if anything, then shows the next request.
+    private func dismiss(_ ticket: BridgeLifecycle.Ticket?) {
+        guard let ticket, let shown = presented, shown.ticket == ticket else { return }
+        presented = nil
         pickerDelegate = nil
-        dismissCurrent { [weak self] in
-            self?.current = nil
-            self?.showNext()
-        }
+        guard shown.controller.presentingViewController != nil else { showNext(); return }
+        shown.controller.presentingViewController?.dismiss(animated: true) { [weak self] in self?.showNext() }
     }
 
-    private func dismissCurrent(_ then: @escaping () -> Void) {
-        guard let controller = current?.controller, controller.presentingViewController != nil else { then(); return }
-        controller.presentingViewController?.dismiss(animated: true, completion: then)
-    }
-
-    private func answer(_ request: BridgeRequest, _ answer: BridgeAnswer) {
-        guard let host = host() else { return }
-        Task { _ = try? await host.answerBridge(request.id, answer) }
+    /// Takes down what is shown for `ticket` to show something else for it.
+    private func replacePresented(for ticket: BridgeLifecycle.Ticket, then: @escaping () -> Void) {
+        guard let shown = presented, shown.ticket == ticket, shown.controller.presentingViewController != nil else { then(); return }
+        shown.controller.presentingViewController?.dismiss(animated: true, completion: then)
     }
 }
 
@@ -253,12 +288,14 @@ private struct BridgeSendingView: View {
     }
 }
 
-/// Sends the phone's appearance when it changes, and again for each new connection.
+/// Sends the main window's appearance when it changes, and again for each new connection.
 @MainActor
 private final class AppearanceReporter {
     var send: (BridgeAppearance) async throws -> Void = { _ in }
+    var window: () -> UIWindow? = { nil }
     private var last: BridgeAppearance?
     private var observing = false
+    private weak var observedWindow: UIWindow?
     private var sending = false
 
     func forget() { last = nil }
@@ -270,25 +307,25 @@ private final class AppearanceReporter {
     }
 
     private func observe() {
-        guard !observing else { return }
-        observing = true
-        let center = NotificationCenter.default
-        for name in [UIAccessibility.reduceMotionStatusDidChangeNotification, UIAccessibility.darkerSystemColorsStatusDidChangeNotification,
-                     UIContentSizeCategory.didChangeNotification, UIApplication.didBecomeActiveNotification] {
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.report() }
+        if !observing {
+            observing = true
+            for name in [UIAccessibility.reduceMotionStatusDidChangeNotification, UIAccessibility.darkerSystemColorsStatusDidChangeNotification,
+                         UIContentSizeCategory.didChangeNotification, UIApplication.didBecomeActiveNotification] {
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.report() }
+                }
             }
         }
-        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
-            scene.registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitAccessibilityContrast.self, UITraitPreferredContentSizeCategory.self]) { [weak self] (_: UIWindowScene, _: UITraitCollection) in
-                self?.report()
-            }
+        // The shell window's traits, not an external display's: re-registered if the window changes.
+        guard let window = window(), window !== observedWindow else { return }
+        observedWindow = window
+        window.registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitAccessibilityContrast.self, UITraitPreferredContentSizeCategory.self]) { [weak self] (_: UIWindow, _: UITraitCollection) in
+            self?.report()
         }
     }
 
-    private func current() -> BridgeAppearance {
-        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive }
-        let traits = scene?.traitCollection ?? UITraitCollection.current
+    private func current() -> BridgeAppearance? {
+        guard let traits = window()?.traitCollection else { return nil }
         var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
         UIColor.tintColor.resolvedColor(with: traits).getRed(&red, green: &green, blue: &blue, alpha: &alpha)
         return BridgeAppearance(dark: traits.userInterfaceStyle == .dark, accent: Double(red), Double(green), Double(blue),
@@ -297,8 +334,7 @@ private final class AppearanceReporter {
     }
 
     private func report() {
-        let look = current()
-        guard look != last, !sending else { return }
+        guard let look = current(), look != last, !sending else { return }
         sending = true
         Task {
             defer { sending = false }

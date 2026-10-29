@@ -96,6 +96,9 @@ final class AgentCenter {
     var onComputer: ((HostClient.ComputerStatus) -> Void)?
     /// Other control-socket events (`media.*`), for whoever handles them.
     var onEvent: ((String, [String: Any]) -> Void)?
+    /// The control connection closed: failed, or detached. Its next connection starts with
+    /// `computer.state` again.
+    var onControlClosed: (() -> Void)?
 
     private var attached = false
     private var control: URLSessionWebSocketTask?
@@ -116,8 +119,10 @@ final class AgentCenter {
 
     func detach() {
         attached = false
+        let open = control != nil
         control?.cancel(with: .goingAway, reason: nil)
         control = nil
+        if open { onControlClosed?() }
         seat?.disconnect()
         seat = nil
     }
@@ -538,6 +543,7 @@ final class AgentCenter {
                 switch result {
                 case .failure:
                     self.control = nil
+                    self.onControlClosed?()
                     try? await Swift.Task.sleep(for: .seconds(3))
                     guard self.attached else { return }
                     self.openControl()
