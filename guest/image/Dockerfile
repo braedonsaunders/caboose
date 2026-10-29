@@ -46,4 +46,5 @@ COPY --from=display /src/target/release/caboose-display /src/target/release/cabo
 COPY --from=gpu /out/caboose-gpu /builder/display/caboose-gpu
 COPY display/caboose-display-ready display/systemd/caboose-display.service display/systemd/caboose-display-agent.service /builder/display/
 COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs agentd/package.json agentd/install.sh /builder/agentd/
+COPY media-handoff /builder/media-handoff
 ENTRYPOINT ["/builder/build-inside.sh"]

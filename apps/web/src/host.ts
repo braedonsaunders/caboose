@@ -44,10 +44,29 @@ export interface MachineResources {
   disk: { totalBytes: number; freeBytes: number } | null
 }
 
+/** The computers' image (`GET /v1/health` `image`): present, downloading, failed, or absent with nothing to fetch. */
+export interface ImageStatus {
+  state: 'ready' | 'fetching' | 'failed' | 'missing'
+  reference: string | null
+  receivedBytes?: number
+  totalBytes?: number
+  message?: string
+}
+
 export type HealthStatus = (
   | { host: string; hypervisor?: 'virtualization' | 'cloud-hypervisor'; kvm: boolean; desk: DeskStats }
   | { host: string; runtime: 'container'; gpu: GpuKind; container: string; running: boolean }
-) & { machine?: MachineResources }
+) & { machine?: MachineResources; image?: ImageStatus }
+
+/** One line about the computers' image, for an owner. */
+export function imageLabel(image: ImageStatus): string {
+  switch (image.state) {
+    case 'ready': return 'Installed'
+    case 'missing': return 'Not installed, and this host has none to download'
+    case 'failed': return `Download failed: ${image.message ?? 'unknown error'}`
+    case 'fetching': return image.totalBytes ? `Downloading (${Math.floor(((image.receivedBytes ?? 0) / image.totalBytes) * 100)}%)` : 'Downloading'
+  }
+}
 
 /** The guest-components upgrade a host runs on wake, when it reports one (`GET /v1/computer` `upgrade`). */
 export interface ComponentsUpgrade {
@@ -72,6 +91,9 @@ export function gpuLabel(gpu: GpuKind | null): string {
 
 /** One line per fact the health route reports, whichever runtime answered. */
 export function healthFacts(health: HealthStatus): Array<{ label: string; value: string; problem?: boolean }> {
+  const image = health.image
+    ? [{ label: 'Computer image', value: imageLabel(health.image), ...(health.image.state === 'missing' || health.image.state === 'failed' ? { problem: true } : {}) }]
+    : []
   if ('desk' in health) {
     const desk = health.desk
     const when = (value: string | null) => value ? new Date(value).toLocaleString() : 'Never'
@@ -85,11 +107,13 @@ export function healthFacts(health: HealthStatus): Array<{ label: string; value:
       { label: 'Guest reconnects', value: desk.reconnects ? `${desk.reconnects}, last ${when(desk.lastReconnectAt)}` : 'None', problem: desk.reconnects > 2 },
       { label: 'Snapshot CPU fallbacks', value: String(desk.snapshotCpuFallbacks), problem: desk.snapshotCpuFallbacks > 0 },
       ...(desk.lastError ? [{ label: 'Desk error', value: desk.lastError, problem: true }] : []),
+      ...image,
     ]
   }
   return [
     { label: 'Container', value: health.container },
     { label: 'Container state', value: health.running ? 'Running' : 'Not running' },
+    ...image,
   ]
 }
 
@@ -104,10 +128,14 @@ export function upgradeLabel(upgrade: ComponentsUpgrade): string {
 
 /** A host problem worth showing above everything else, from what `/v1/health` reports. */
 export function healthProblems(health: HealthStatus): string[] {
-  if (!('desk' in health)) return []
+  const image = health.image?.state === 'missing'
+    ? ["The computer's image is not installed, so no computer can start. Install a release that includes it, or build it (guest/image/README.md)."]
+    : health.image?.state === 'failed' ? [`Downloading the computer's image failed: ${health.image.message ?? 'unknown error'}`] : []
+  if (!('desk' in health)) return image
   return [
     ...(health.hypervisor === 'virtualization' || health.kvm ? [] : ['/dev/kvm is not present, so the host cannot start a microVM.']),
     ...(health.desk.lastError ? [health.desk.lastError] : []),
+    ...image,
   ]
 }
 

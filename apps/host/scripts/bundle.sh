@@ -131,6 +131,10 @@ if [ -f "$here/defaults.env" ]; then
     [ "$present" = x ] || export "$name=$value"
   done <"$here/defaults.env"
 fi
+if [ -f "$here/VERSION" ] && [ -z "${CABOOSE_VERSION-}" ]; then
+  CABOOSE_VERSION=$(cat "$here/VERSION")
+  export CABOOSE_VERSION
+fi
 if [ -x "$here/bin/cloud-hypervisor" ] && [ -z "${CABOOSE_VMM_PATH-}" ]; then
   export CABOOSE_VMM_PATH="$here/bin/cloud-hypervisor"
 fi

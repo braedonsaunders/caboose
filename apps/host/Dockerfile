@@ -69,6 +69,7 @@ ENV CABOOSE_IMAGE_ROOT=/data/caboose/disks CABOOSE_BIND=0.0.0.0
 # fetches the one its runtime needs on first run. A local build leaves both to the operator.
 ARG CABOOSE_BASE_IMAGE=
 ARG CABOOSE_CONTAINER_IMAGE=caboose-computer:latest
-ENV CABOOSE_BASE_IMAGE=${CABOOSE_BASE_IMAGE} CABOOSE_CONTAINER_IMAGE=${CABOOSE_CONTAINER_IMAGE}
+ARG CABOOSE_VERSION=
+ENV CABOOSE_BASE_IMAGE=${CABOOSE_BASE_IMAGE} CABOOSE_CONTAINER_IMAGE=${CABOOSE_CONTAINER_IMAGE} CABOOSE_VERSION=${CABOOSE_VERSION}
 ENTRYPOINT ["/usr/local/bin/caboose-entrypoint"]
 CMD ["node", "apps/host/dist/index.js"]

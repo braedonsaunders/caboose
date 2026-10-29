@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/braedonsaunders/caboose/main/deploy
 At the end it prints the console's address, the setup link while the host is unclaimed,
 where to find the owner token, and a QR code.
 Scan the QR code with the iPhone's Camera within 10 minutes to sign the Caboose app in. Make a
-new code later from **Computers › Owner › Phones** in the console.
+new code later in the console: open your computer under **Computers**, then **Phones › Sign in a phone**.
 
 ## What you need
 
