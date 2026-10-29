@@ -118,7 +118,8 @@ jobs:
         timeout-minutes: 5
         run: |
           test -x apps/ios/build/gpu-stream/check-capture
-          xcrun lldb --batch -o run -o 'thread backtrace all' -o 'process status' -- \
+          xcrun lldb --batch -o 'settings set auto-confirm true' -o run \
+            -o 'thread backtrace all' -o 'process status' -o 'process kill' -- \
             apps/ios/build/gpu-stream/check-capture \
             apps/ios/GPUStream/tests/fixtures/vkcube.gfxr 300 2>&1 | tee gpu-check-logs/native-backtrace.log
       - name: Retain only crash reports from synthetic test processes
