@@ -32,6 +32,23 @@ headers, and fetches, at the commits of Vulkan SDK 1.4.363.0:
 on an M4 Pro), without the `VK_KHR_portability_subset` extension and without the BC texture
 formats, which iPhone GPUs do not sample.
 
+The images build it in their `gpu` stage. To build it for a computer of another architecture
+than the machine building, and copy it out (an amd64 bundle from an arm64 Mac runs under
+emulation and takes much longer):
+
+```sh
+docker build --platform linux/amd64 --target gpu --build-arg GPU_BUILD_JOBS=2 \
+  -t caboose-gpu-build:amd64 -f guest/container/Dockerfile guest
+id=$(docker create caboose-gpu-build:amd64)
+docker cp "$id:/out/caboose-gpu" ./caboose-gpu-amd64 && docker rm "$id"
+```
+
+At run time the bundle needs Vulkan's loader (`libvulkan1`) and `libxcb-keysyms1`, which guest
+components install. `caboose-gpu-run` uses the bundle only when its driver is built for the
+computer's architecture, and otherwise runs the application unchanged.
+
+`test_gpu_run.py` unit-tests the launcher (`python3 guest/gpu/test_gpu_run.py`).
+
 ## Running
 
 On the owner's display, with its launch environment:

@@ -102,6 +102,22 @@ def first_mode(sock):
         return None
 
 
+# ELF e_machine of each architecture the driver is built for.
+MACHINES = {'x86_64': 62, 'aarch64': 183}
+
+
+def built_here(lib=None):
+    """Whether the installed driver is built for this computer's architecture."""
+    try:
+        with open((lib or LIB) / 'libVkICD_mock_icd.so', 'rb') as f:
+            header = f.read(20)
+    except OSError:
+        return False
+    if header[:4] != b'\x7fELF' or len(header) < 20:
+        return False
+    return int.from_bytes(header[18:20], 'little') == MACHINES.get(os.uname().machine)
+
+
 def stream_env(fifo):
     """The environment that renders nothing here and streams every call to the client."""
     env = dict(os.environ)
@@ -142,7 +158,7 @@ def main(argv):
     name = pathlib.Path(command[0]).name
     socket_path = os.environ.get('CABOOSE_GAME_SOCKET')
     runtime = os.environ.get('XDG_RUNTIME_DIR')
-    if not socket_path or not runtime or not (LIB / 'icd.json').is_file():
+    if not socket_path or not runtime or not (LIB / 'icd.json').is_file() or not built_here():
         os.execvp(command[0], command)
     streams = pathlib.Path(runtime) / 'caboose-gpu'
     streams.mkdir(mode=0o700, exist_ok=True)
