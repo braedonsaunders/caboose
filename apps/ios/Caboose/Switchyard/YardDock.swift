@@ -1,13 +1,9 @@
 import CabooseKit
 import SwiftUI
 
-/// The Desktop tab's dock, under the tiles: the everyday apps on the left, then the track in
-/// miniature, one car per column, and Overview and All Apps.
-///
-/// A tap on an app goes to its window, or opens it. Slide along the cars
-/// to move along the track, tap one to go to that column. A swipe up on the dock opens
-/// Overview. Holding Overview opens Quick Switch: slide up to a window and let go to go to
-/// it, or let go anywhere else to stay.
+/// The Desktop tab's dock: each app appears once, followed by Overview and All Apps.
+/// Tapping opens or focuses the app; holding offers its window actions. A swipe up opens
+/// Overview. Holding Overview opens Quick Switch: slide to a window and release to select.
 struct YardDock: View {
     @Environment(AppModel.self) private var model
     @Environment(\.portraitDesktopChrome) private var portraitDesktop
@@ -16,54 +12,47 @@ struct YardDock: View {
 
     static let height: CGFloat = 58
     private let icon: CGFloat = 38
-    private var car: CGFloat { icon }
 
     var body: some View {
         let columns = yard.layout.columns
-        let visible = Set(yard.layout.visibleColumns(at: yard.scroll, in: yard.metrics))
-        let focusedColumn = yard.layout.focusedColumnIndex.map { columns[$0].id }
-        // As many apps as fit beside the cars and the two buttons.
-        let fixed = CGFloat(columns.count) * (car + 4) + 2 * 34 + 48 + (portraitDesktop ? 54 : 0)
-        let apps = Array(model.dockApps.prefix(max(2, Int((width - 32 - fixed) / (icon + 10)))))
+        let apps = model.dockApps
+        // Keep app icons full-sized; overflow scrolls without duplicating running apps.
+        let fixed: CGFloat = 2 * 34 + 1 + 3 * 10 + 24 + (portraitDesktop ? 54 : 0)
+        let appWidth = min(max(0, CGFloat(apps.count) * (icon + 10) - 10), max(icon, width - 32 - fixed))
         HStack(spacing: 10) {
-            ForEach(apps) { app in
-                // A tap goes to the app; holding it offers Open, Pin and Close. A menu with a
-                // primary action shows on the hold itself, so neither the dock's swipe nor the
-                // system's bottom edge can take the press from it.
-                Menu { DockAppActions(app: app) } label: {
-                    VStack(spacing: 3) {
-                        Group {
-                            if let image = model.appIcons[app.id] {
-                                Image(uiImage: image).resizable().scaledToFit()
-                            } else {
-                                Image(systemName: "app.dashed").font(.title2)
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(apps) { app in
+                        // A tap goes to the app; holding it offers Open, Pin and Close. A menu with a
+                        // primary action shows on the hold itself, so neither the dock's swipe nor the
+                        // system's bottom edge can take the press from it.
+                        Menu { DockAppActions(app: app) } label: {
+                            VStack(spacing: 3) {
+                                Group {
+                                    if let image = model.appIcons[app.id] {
+                                        Image(uiImage: image).resizable().scaledToFit()
+                                    } else {
+                                        Image(systemName: "app.dashed").font(.title2)
+                                    }
+                                }
+                                .frame(width: icon, height: icon)
+                                Circle()
+                                    .fill(.white.opacity(isRunning(app) ? 0.85 : 0))
+                                    .frame(width: 4, height: 4)
                             }
+                            .contentShape(Rectangle())
+                        } primaryAction: {
+                            model.openOnDesktop(app)
                         }
-                        .frame(width: icon, height: icon)
-                        Circle()
-                            .fill(.white.opacity(isRunning(app) ? 0.85 : 0))
-                            .frame(width: 4, height: 4)
-                    }
-                    .contentShape(Rectangle())
-                } primaryAction: {
-                    model.openOnDesktop(app)
-                }
-                .menuIndicator(.hidden)
-                .buttonStyle(.plain)
-                .accessibilityLabel(app.name)
-                .accessibilityHint("Hold for Open, Pin and Close.")
-            }
-            if !columns.isEmpty {
-                Divider().frame(height: 34).overlay(.white.opacity(0.3))
-                HStack(spacing: 4) {
-                    ForEach(columns) { column in
-                        Car(column: column, yard: yard, focused: column.id == focusedColumn, visible: visible.contains(column.id), size: car)
+                        .menuIndicator(.hidden)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(app.name)
+                        .accessibilityHint("Hold for Open, Pin and Close.")
                     }
                 }
-                .simultaneousGesture(scrub(columns: columns.count))
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Columns")
             }
+            .scrollIndicators(.hidden)
+            .frame(width: appWidth, height: icon + 7)
             Divider().frame(height: 34).overlay(.white.opacity(0.3))
             OverviewControl(yard: yard, enabled: !columns.isEmpty)
             button("All Apps", "square.grid.3x3.fill") { withAnimation(.smooth(duration: 0.3)) { yard.launcherOpen = true } }
@@ -81,7 +70,6 @@ struct YardDock: View {
                 withAnimation(.smooth(duration: 0.35)) { yard.overviewOpen = true }
             }
         )
-        .animation(.smooth(duration: 0.3), value: focusedColumn)
         .animation(.smooth(duration: 0.3), value: columns.map(\.id))
     }
 
@@ -99,22 +87,6 @@ struct YardDock: View {
         .buttonStyle(.plain)
         .foregroundStyle(.white)
         .accessibilityLabel(title)
-    }
-
-    /// Sliding along the cars slides the screen along the track, the whole track mapped onto
-    /// the cars' length.
-    private func scrub(columns: Int) -> some Gesture {
-        DragGesture(minimumDistance: 6)
-            .onChanged { value in
-                guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                yard.scrub(by: value.translation.width * ratio(columns))
-            }
-            .onEnded { value in yard.endScrub(velocity: value.velocity.width * ratio(columns)) }
-    }
-
-    private func ratio(_ columns: Int) -> CGFloat {
-        let track = yard.layout.trackWidth(in: yard.metrics)
-        return max(1, track / max(car, CGFloat(columns) * (car + 4)))
     }
 }
 
@@ -173,81 +145,6 @@ private struct OverviewControl: View {
     private func openOverview() {
         guard enabled else { return }
         withAnimation(.smooth(duration: 0.35)) { yard.overviewOpen = true }
-    }
-}
-
-/// One column on the dock: its apps' icons, lit while it is on screen, ringed while it has
-/// the keyboard. Tapped, the screen goes to it.
-private struct Car: View {
-    @Environment(AppModel.self) private var model
-    let column: YardLayout.Column
-    let yard: YardModel
-    let focused: Bool
-    let visible: Bool
-    let size: CGFloat
-
-    private var representativeWindow: Int? {
-        if let focused = yard.layout.focused, column.windows.contains(focused) { return focused }
-        return column.windows.first
-    }
-
-    var body: some View {
-        Menu {
-            ForEach(column.windows, id: \.self) { id in
-                if let window = model.session?.windows[id] {
-                    Section(window.title.isEmpty ? model.appName(for: window) : window.title) {
-                        Button("Open", systemImage: "arrow.up.forward.app") { yard.jump(to: id) }
-                        if let app = model.apps.first(where: { model.matches(window, $0) }) {
-                            let pinned = model.pinnedApps.contains { $0.id == app.id }
-                            Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
-                                model.togglePin(app)
-                            }
-                        }
-                        Button("Close", systemImage: "xmark", role: .destructive) {
-                            model.session?.close(window)
-                        }
-                    }
-                }
-            }
-        } label: {
-            VStack(spacing: 3) {
-                Group {
-                    if let id = representativeWindow,
-                       let window = model.session?.windows[id], let icon = model.icon(for: window) {
-                        Image(uiImage: icon).resizable().scaledToFit()
-                    } else {
-                        Image(systemName: "macwindow").resizable().scaledToFit().foregroundStyle(.white.opacity(0.8))
-                    }
-                }
-                .frame(width: size, height: size)
-                .overlay(alignment: .topTrailing) {
-                    if column.windows.count > 1 {
-                        Text("\(column.windows.count)")
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4).padding(.vertical, 2)
-                            .background(.black.opacity(0.8), in: Capsule())
-                            .accessibilityHidden(true)
-                    }
-                }
-                Circle()
-                    .fill(.white.opacity(visible ? 0.85 : 0))
-                    .frame(width: 4, height: 4)
-            }
-            .frame(width: size, height: size + 7)
-            .background(.white.opacity(visible ? 0.24 : 0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(focused ? AnyShapeStyle(YardStyle.ring) : AnyShapeStyle(.clear), lineWidth: 1.5)
-            }
-        } primaryAction: {
-            if let first = column.windows.first { yard.jump(to: first) }
-        }
-        .menuIndicator(.hidden)
-        .buttonStyle(.plain)
-        .accessibilityLabel(column.windows.compactMap { model.session?.windows[$0]?.title }.joined(separator: ", "))
-        .accessibilityAddTraits(focused ? .isSelected : [])
-        .accessibilityHint("Hold for window actions.")
     }
 }
 

@@ -1687,9 +1687,11 @@ the app card, and a detached view releases its layers.
   follow their parent's displayed scale and position, including nested menus; trees whose
   owner is offscreen, or is not the covering window, are hidden. A window
   whose own minimum is wider than its tile is shown whole, scaled to fit.
-  The dock stays along the bottom under the tiles: the everyday apps, one car per column
-  (tap to go to it, slide along them to move along the track), Overview (every window, tap
-  to go, swipe up to close) and All Apps. The side edges also move along the track.
+  The dock stays along the bottom under the tiles. Everyday and running apps appear once
+  each, with a dot for an open app; tapping focuses or opens it and holding exposes
+  its window actions. Icons keep their size and scroll horizontally when they do not fit.
+  Overview shows every window (tap to go, swipe up to close), alongside All Apps. The side
+  edges move along the track.
   ⌘⌥ with the arrows moves focus, with ⇧ moves the window, and R, F, ⇧F, W, O, A and
   Return cycle the width, toggle full screen, toggle full width, close, open Overview, open
   an app and open a terminal; ⌘⌥ reaches Linux as Ctrl+Alt, so plain ⌘ stays the apps' Ctrl. The layout

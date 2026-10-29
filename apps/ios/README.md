@@ -105,7 +105,7 @@ Run `sh scripts/check-desktop.sh` for the real-device checks, including external
 maximizing, browser controls and app-card toolbars on Duo and ordinary iPhones. The gestures
 and picture need a device with the computer awake. On the Desktop tab, with three apps open:
 
-1. Upright iPhone: one full-width column; the side edges and the dock's cars move between
+1. Upright iPhone: one full-width column; the side edges and Overview move between
    columns, and the lit car follows. Drag a title bar to the bottom quarter of another tile: they stack.
 2. Open a Duo, or turn a large phone on its side: two halves. Drag the gap: it ticks at ½ and ⅔ and settles
    on release; the apps redraw at the new width without a seam.
