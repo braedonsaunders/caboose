@@ -5,7 +5,7 @@ use crate::encode::{align_up, Backend, CpuImage};
 use crate::net::{ConnId, NetEvent};
 use crate::render::{Canvas, Rendered};
 use crate::state::State;
-use crate::stream::{Done, Job, MotionJob, MotionStream};
+use crate::stream::{CopyJob, Done, Job, MotionJob, MotionStream};
 use caboose_display_protocol::{self as proto, ByeReason, Codec, Message, Rect};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -35,6 +35,8 @@ pub struct Session {
     /// The client renders Vulkan streams, and this instance relays them.
     pub gpu: bool,
     pub scaled_motion: bool,
+    /// The client applies `frame.copy`, and this server sends them.
+    pub copy: bool,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
@@ -190,6 +192,7 @@ impl State {
                     if decoded_us < 0 {
                         w.stream.need_keyframe = true;
                         w.stream.dirty = true;
+                        w.stream.new_base();
                     }
                 }
             }
@@ -197,6 +200,7 @@ impl State {
                 if let Some(w) = self.windows.get_mut(id) {
                     w.stream.need_keyframe = true;
                     w.stream.dirty = true;
+                    w.stream.new_base();
                 }
             }
             Message::Configure(c) => self.configure_window(&c),
@@ -272,6 +276,8 @@ impl State {
             None
         };
         let webview = webview_grant.is_some();
+        // Copies come from the software encoders' record of what the client shows.
+        let copy = hello.copy && self.config.copy && matches!(backend, Backend::Software(_));
         self.net.send(
             conn,
             &Message::ServerHello(proto::ServerHello {
@@ -291,6 +297,9 @@ impl State {
                     );
                     if webview {
                         supported.push("webview".into());
+                    }
+                    if copy {
+                        supported.push("copy".into());
                     }
                     supported
                 },
@@ -312,6 +321,7 @@ impl State {
             webview_grant,
             gpu,
             scaled_motion: hello.scaled_motion,
+            copy,
         });
         self.games_session_changed();
         if audio {
@@ -436,6 +446,7 @@ impl State {
     pub fn render_streams(&mut self) {
         let Some(session) = self.session.as_ref().filter(|s| s.ready) else { return };
         let backend = session.backend.clone();
+        let copies = session.copy;
         let generation = self.generation;
         let align = backend.alignment();
         let now_us = self.now_us();
@@ -464,6 +475,8 @@ impl State {
                     settings: self.encoders.settings.clone(),
                     motion: None,
                     ends_motion: None,
+                    base: w.stream.base,
+                    copy: None,
                 };
                 w.stream.submit(job, &self.done_tx);
                 continue;
@@ -487,6 +500,7 @@ impl State {
             if !w.stream.canvas.as_ref().is_some_and(|c| c.matches(size, scale)) {
                 w.stream.canvas = Some(Canvas::new(size, scale));
                 w.stream.need_keyframe = true;
+                w.stream.new_base();
                 // The keyframe repaints everything; a motion region is found afresh.
                 w.stream.tracker = None;
                 w.stream.end_motion();
@@ -494,6 +508,7 @@ impl State {
             if w.stream.rect != rect || w.stream.crop != Rect::new(0, 0, pic_w, pic_h) {
                 w.stream.end_motion();
                 w.stream.tracker = None;
+                w.stream.new_base();
             }
             // A motion stream that ends: this picture puts its region back.
             let ending = w.stream.motion.as_ref().filter(|m| m.ending).map(|m| (m.id, m.rect));
@@ -581,6 +596,21 @@ impl State {
                         .map(|d| d.iter().map(|r| r.w.max(0) as u64 * r.h.max(0) as u64).sum::<u64>().min(picture))
                         .unwrap_or(picture);
                     let pts_us = w.stream.next_pts();
+                    if w.stream.need_keyframe {
+                        w.stream.new_base();
+                    }
+                    // A scroll can be a copy within the client's picture when the client shows
+                    // what the encoder last had, at the picture's own size (a copy in a
+                    // scaled picture would not land on whole pixels).
+                    let copy = (copies
+                        && ending.is_none()
+                        && (pic_w, pic_h) == (rect.w, rect.h)
+                        && w.stream.copy_ready()
+                        && w.stream.scrolling(now_us))
+                    .then(|| {
+                        let per_window_px = (pic_w as f64 / rect.w as f64, pic_h as f64 / rect.h as f64);
+                        CopyJob { hints: w.stream.scroll_hints(now_us, per_window_px) }
+                    });
                     let detect = !self.videos.streams.by_id.is_empty()
                         && self
                             .videos
@@ -607,6 +637,8 @@ impl State {
                             scaled: m.scaled,
                         }),
                         ends_motion: ending.map(|(id, _)| id),
+                        base: w.stream.base,
+                        copy,
                     };
                     w.stream.submit(job, &self.done_tx);
                 }
@@ -676,6 +708,7 @@ impl State {
                 );
                 w.stream.need_keyframe = true;
                 w.stream.dirty = true;
+                w.stream.new_base();
             }
             Some(Ok(encoded)) => {
                 refined = encoded.refined;
@@ -710,11 +743,31 @@ impl State {
                 });
                 self.net.send(conn, &message);
                 frame_sent = true;
+                w.stream.shown(done.base);
             }
             Some(Err(e)) => {
                 tracing::warn!("window {}: encode failed: {e}", done.window);
                 w.stream.need_keyframe = true;
+                w.stream.new_base();
             }
+        }
+        if let Some(c) = done.copy {
+            // The copy, then at once the tiles that complete it: together they turn what
+            // the client shows into the window's new content.
+            w.stream.refine_at_us = c.refine_in_ms.map(|ms| now_us + ms * 1000);
+            self.stats.copies += 1;
+            self.stats.tiles += c.tiles.len() as u64;
+            self.stats.encode_cpu_us += c.cpu_us;
+            tracing::trace!("window {}: copy {:?} to {:?}, {} tiles", done.window, c.src, c.dst, c.tiles.len());
+            self.net.send(conn, &Message::FrameCopy(proto::FrameCopy { id: done.window, src: c.src, dst: c.dst }));
+            for (rect, data) in c.tiles {
+                self.stats.bytes += data.len() as u64;
+                let tile = proto::Tile { id: done.window, rect, format: proto::TileFormat::Png, data };
+                self.net.send(conn, &Message::Tile(tile));
+            }
+            w.stream.copying = true;
+        } else if !refined && (frame_sent || done.tiles.is_some()) {
+            w.stream.copying = false;
         }
         if let Some(t) = done.tiles {
             w.stream.refine_at_us = t.refine_in_ms.map(|ms| now_us + ms * 1000);
@@ -830,6 +883,7 @@ impl State {
                         scaled,
                     }),
                 );
+                w.stream.new_base();
                 w.stream.motion = Some(MotionStream {
                     id,
                     rect: region,

@@ -11,7 +11,11 @@
 //!   slows to what the link and the client can show;
 //! - an encoder that refines says when its quiet areas are due (`refine_at_us`); a
 //!   window that has not changed by then gets one more picture of the same content,
-//!   sharper, under the same limits (a change first sharpens along the way).
+//!   sharper, under the same limits (a change first sharpens along the way);
+//! - a scroll goes as a copy within the client's picture and tiles for what it does not
+//!   reproduce, but only while the client shows exactly what the encoder last had: a
+//!   window's `base` counts every event that could break that, and a copy needs the
+//!   last picture sent to be of the current base and acknowledged.
 
 use crate::encode::{Backend, CpuImage, Encoder, Input, Settings, ShmPicture};
 use crate::motion;
@@ -49,6 +53,16 @@ pub struct Job {
     /// This picture puts the region of the motion stream with this id back into the
     /// window picture (its damage covers the region); the stream ends with it.
     pub ends_motion: Option<u64>,
+    /// The window's [`Stream::base`] when the job was made.
+    pub base: u64,
+    /// Try the update as a copy within the client's picture first; `None` when the client
+    /// may not show what the encoder last had, or does not apply copies.
+    pub copy: Option<CopyJob>,
+}
+
+pub struct CopyJob {
+    /// Shifts the window was just scrolled by: picture pixels, as the content moves.
+    pub hints: Vec<(i32, i32)>,
 }
 
 pub struct MotionJob {
@@ -139,6 +153,20 @@ pub struct Done {
     pub ends_motion: Option<u64>,
     /// Small changes sent as lossless tiles instead of a window picture.
     pub tiles: Option<TilesDone>,
+    /// A scroll sent as a copy and tiles instead of a window picture.
+    pub copy: Option<CopyDone>,
+    /// As in [`Job`].
+    pub base: u64,
+}
+
+pub struct CopyDone {
+    /// Picture pixels to copy, and where their top-left pixel lands.
+    pub src: Rect,
+    pub dst: [i32; 2],
+    /// The tiles that follow the copy: picture pixels, and the PNG.
+    pub tiles: Vec<(Rect, Vec<u8>)>,
+    pub refine_in_ms: Option<u64>,
+    pub cpu_us: u64,
 }
 
 pub struct TilesDone {
@@ -256,6 +284,8 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         motion: None,
         ends_motion: job.ends_motion,
         tiles: None,
+        copy: None,
+        base: job.base,
     };
     if job.refine && !reuse {
         // The encoder whose picture this sharpens is gone; the window starts over with
@@ -300,13 +330,58 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         }
     };
     let mut window_needed = job.refine || keyframe || window_damage.as_ref().is_none_or(|d| !d.is_empty());
+    let mut tiles_allowed = true;
+    // A scroll goes as a copy within the client's picture and tiles for what the copy does
+    // not reproduce. Not with a motion region: the encoder's record holds frozen pixels
+    // under it that the client does not show.
+    if let (Some(copy), true, false, false, None, None, Some(d)) =
+        (&job.copy, window_needed, job.refine, keyframe, job.ends_motion, &job.motion, window_damage.as_ref())
+    {
+        let cpu0 = thread_cpu_us();
+        let (_, enc) = encoders.window.as_mut().unwrap();
+        let input = match &job.shm {
+            Some(shm) => Input::Shm(shm),
+            None => Input::Cpu(&job.image),
+        };
+        match enc.copy(input, d, &copy.hints) {
+            Ok(Some(c)) => {
+                let tiles: Result<Vec<_>, String> =
+                    c.tiles.iter().map(|(r, rgb)| png(r.w as u32, r.h as u32, rgb).map(|p| (*r, p))).collect();
+                match tiles {
+                    Ok(tiles) => {
+                        done.changed = c.changed;
+                        done.copy = Some(CopyDone {
+                            src: c.src,
+                            dst: c.dst,
+                            tiles,
+                            refine_in_ms: c.refine_in_ms,
+                            cpu_us: thread_cpu_us().saturating_sub(cpu0),
+                        });
+                        window_needed = false;
+                    }
+                    // The new pixels are in the shadow and marked for the next picture, which
+                    // goes now; tiles would find nothing left to send.
+                    Err(e) => {
+                        tracing::warn!("window {}: copy tile: {e}; sending a picture", job.window);
+                        tiles_allowed = false;
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("window {}: copy: {e}", job.window),
+        }
+    }
     // A small change goes as tiles: a few lossless PNGs cost far less than coding the
     // whole picture. Not for a picture that ends a motion stream: the client keeps the
     // stream until a frame repaints its region.
     let tile_max_px = job.settings.tile_max_px;
-    if let (true, false, false, None, Some(d)) =
-        (window_needed && tile_max_px > 0, job.refine, keyframe, job.ends_motion, window_damage.as_ref())
-    {
+    if let (true, false, false, None, Some(d)) = (
+        window_needed && tiles_allowed && tile_max_px > 0,
+        job.refine,
+        keyframe,
+        job.ends_motion,
+        window_damage.as_ref(),
+    ) {
         let cpu0 = thread_cpu_us();
         let (_, enc) = encoders.window.as_mut().unwrap();
         let input = match &job.shm {
@@ -439,6 +514,8 @@ impl Worker {
                     let result = work(job, &mut encoders);
                     if let Some(ref tiles) = result.tiles {
                         refining = tiles.refine_in_ms.is_some();
+                    } else if let Some(ref copy) = result.copy {
+                        refining = copy.refine_in_ms.is_some();
                     } else if let Some(ref picture) = result.result {
                         refining = picture.as_ref().ok().is_some_and(|p| p.refine_in_ms.is_some());
                     }
@@ -484,7 +561,25 @@ pub struct Stream {
     pub motion: Option<MotionStream>,
     /// Watches for a motion region, at the picture size it was made for.
     pub tracker: Option<motion::Tracker>,
+    /// Counts the bases of the client's picture: bumped by everything after which the
+    /// client may not show what the encoder last had (a dropped or failed picture, a decode
+    /// failure or keyframe request, a keyframe, a new client, a change of size, crop or
+    /// scale, a motion stream starting or ending).
+    pub base: u64,
+    /// The base of the last picture sent; copies need it to be the current one.
+    pub shown_base: Option<u64>,
+    /// Pointer scrolls delivered to the window: monotonic µs, and the content's movement
+    /// in window pixels.
+    pub scrolls: VecDeque<(u64, f64, f64)>,
+    /// Monotonic µs of the last input that can scroll the window (a pointer scroll or a
+    /// touch drag).
+    pub scrolled_us: u64,
+    /// The last update went as a copy: a scroll is under way, kinetic or not.
+    pub copying: bool,
 }
+
+/// Scroll hints and scroll input count for this long.
+pub const SCROLL_WINDOW_US: u64 = 1_000_000;
 
 /// A `motion` video stream: a region of the window sent as its own video.
 pub struct MotionStream {
@@ -507,7 +602,64 @@ impl Stream {
         if let Some(m) = self.motion.as_mut() {
             m.ending = true;
             self.dirty = true;
+            self.new_base();
         }
+    }
+
+    /// The client may stop showing what the encoder last had: no copies until a picture
+    /// made after this is sent.
+    pub fn new_base(&mut self) {
+        self.base += 1;
+    }
+
+    /// A picture made on `base` was sent.
+    pub fn shown(&mut self, base: u64) {
+        if base == self.base {
+            self.shown_base = Some(base);
+        }
+    }
+
+    /// Whether the client shows exactly what the encoder last had, so an update can be a
+    /// copy of it: the last picture sent was made on the current base, every picture sent
+    /// has been acknowledged as decoded, and there is no motion region (the encoder keeps
+    /// frozen pixels under it) and no keyframe due.
+    pub fn copy_ready(&self) -> bool {
+        self.shown_base == Some(self.base) && self.in_flight.is_empty() && self.motion.is_none() && !self.need_keyframe
+    }
+
+    /// A pointer scroll was delivered: `dx`, `dy` as the content moves, in window pixels.
+    pub fn scrolled(&mut self, now_us: u64, dx: f64, dy: f64) {
+        self.scrolled_us = now_us;
+        while self.scrolls.front().is_some_and(|s| now_us.saturating_sub(s.0) > SCROLL_WINDOW_US)
+            || self.scrolls.len() >= 8
+        {
+            self.scrolls.pop_front();
+        }
+        self.scrolls.push_back((now_us, dx, dy));
+    }
+
+    /// Whether to look for a copy: the window was just scrolled or touched, or its last
+    /// update was a copy.
+    pub fn scrolling(&self, now_us: u64) -> bool {
+        self.copying || now_us.saturating_sub(self.scrolled_us) < SCROLL_WINDOW_US
+    }
+
+    /// Shifts to try, in picture pixels (`scale` = picture pixels per window pixel): the
+    /// latest recent scroll and all of them together.
+    pub fn scroll_hints(&self, now_us: u64, scale: (f64, f64)) -> Vec<(i32, i32)> {
+        let recent: Vec<_> = self.scrolls.iter().filter(|s| now_us.saturating_sub(s.0) <= SCROLL_WINDOW_US).collect();
+        let shift = |dx: f64, dy: f64| ((dx * scale.0).round() as i32, (dy * scale.1).round() as i32);
+        let mut hints = Vec::new();
+        if let Some(last) = recent.last() {
+            hints.push(shift(last.1, last.2));
+        }
+        let sum = recent.iter().fold((0.0, 0.0), |a, s| (a.0 + s.1, a.1 + s.2));
+        let sum = shift(sum.0, sum.1);
+        if !hints.contains(&sum) {
+            hints.push(sum);
+        }
+        hints.retain(|&h| h != (0, 0));
+        hints
     }
 
     pub fn motion_repainted(&mut self, id: u64, sent: bool) -> bool {
@@ -601,6 +753,9 @@ impl Stream {
         // That client's motion stream is gone with it; the next one finds its own.
         self.motion = None;
         self.tracker = None;
+        self.new_base();
+        self.shown_base = None;
+        self.copying = false;
     }
 
     /// Takes (or makes) a picture buffer of the coded size. A new buffer has no history,
@@ -707,6 +862,8 @@ mod tests {
             settings: Settings { threads: 1, refine_after_ms: 0, tile_max_px: 0, ..Settings::default() },
             motion,
             ends_motion: None,
+            base: 0,
+            copy: None,
         };
         let motion = || Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: false });
         let first = work(job(CpuImage::new(128, 96), motion(), false), &mut encoders);
@@ -739,6 +896,8 @@ mod tests {
             settings: Settings { threads: 1, refine_qp: 0, tile_max_px: 0, ..Settings::default() },
             motion: Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: false }),
             ends_motion: None,
+            base: 0,
+            copy: None,
         };
         let first = work(job(CpuImage::new(128, 96)), &mut encoders);
         assert!(first.result.unwrap().unwrap().keyframe);
@@ -769,6 +928,8 @@ mod tests {
             settings: Settings { threads: 1, refine_qp: 0, tile_max_px: 0, ..Settings::default() },
             motion: Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: true }),
             ends_motion: None,
+            base: 0,
+            copy: None,
         };
         let done = work(job(CpuImage::new(128, 96), None), &mut encoders);
         let picture = done.motion.unwrap().1.unwrap();
@@ -794,6 +955,118 @@ mod tests {
         let mut frame = ffmpeg_next::frame::Video::empty();
         decoder.receive_frame(&mut frame).unwrap();
         assert_eq!((frame.width(), frame.height()), (32, 32));
+    }
+
+    #[test]
+    fn a_scroll_goes_as_a_copy_only_when_the_job_allows_it() {
+        ffmpeg_next::init().unwrap();
+        let mut encoders = Encoders::default();
+        let (w, h) = (256i32, 512i32);
+        let job = |image, keyframe, copy: bool| Job {
+            window: 1,
+            generation: 1,
+            pts_us: 1,
+            image,
+            shm: None,
+            detect: false,
+            keyframe,
+            refine: false,
+            damage: Some(vec![Rect::new(0, 0, w, h)]),
+            rect: Rect::new(0, 0, w, h),
+            crop: Rect::new(0, 0, w, h),
+            backend: Backend::Software(caboose_display_protocol::Codec::H264),
+            settings: Settings { threads: 1, refine_qp: 0, ..Settings::default() },
+            motion: None,
+            ends_motion: None,
+            base: 1,
+            copy: copy.then(|| CopyJob { hints: Vec::new() }),
+        };
+        // Noise: every row is its own.
+        let mut image = CpuImage::new(w as u32, h as u32);
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let z = ((y as u64) << 32 | x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                let z = z ^ (z >> 29);
+                image.data[y * image.stride + x * 4..][..4].copy_from_slice(&[
+                    z as u8,
+                    (z >> 8) as u8,
+                    (z >> 16) as u8,
+                    0,
+                ]);
+            }
+        }
+        let first = work(job(image, true, true), &mut encoders);
+        assert!(first.copy.is_none() && first.result.unwrap().unwrap().keyframe, "a keyframe is never a copy");
+        let mut image = first.image;
+        image.data.rotate_left(image.stride * 18);
+        let done = work(job(image, false, true), &mut encoders);
+        assert!(done.result.is_none() && done.tiles.is_none());
+        let copy = done.copy.expect("a copy");
+        assert_eq!((copy.src, copy.dst), (Rect::new(0, 18, w, h - 18), [0, 0]));
+        assert!(!copy.tiles.is_empty() && copy.tiles.iter().all(|(_, png)| png.starts_with(b"\x89PNG")));
+        assert!(done.changed.contains(&Rect::new(0, 0, w, 496)));
+        // Without the job's leave, the same kind of scroll is a picture.
+        let mut image = done.image;
+        image.data.rotate_left(image.stride * 18);
+        let done = work(job(image, false, false), &mut encoders);
+        assert!(done.copy.is_none() && done.result.unwrap().is_ok());
+    }
+
+    #[test]
+    fn copies_wait_for_a_shown_and_acknowledged_base() {
+        let mut s = Stream::default();
+        assert!(!s.copy_ready(), "nothing shown yet");
+        // A keyframe starts a base; its picture is sent, then acknowledged.
+        s.new_base();
+        let keyframe = s.base;
+        s.in_flight.push_back(10);
+        s.shown(keyframe);
+        assert!(!s.copy_ready(), "the picture is not acknowledged yet");
+        assert!(s.ack(10));
+        assert!(s.copy_ready());
+        // A decode failure (or anything else that starts a base): a picture made before it
+        // does not restore copies, one made after it does.
+        s.new_base();
+        s.shown(keyframe);
+        assert!(!s.copy_ready());
+        s.shown(s.base);
+        assert!(s.copy_ready());
+        s.need_keyframe = true;
+        assert!(!s.copy_ready());
+        s.need_keyframe = false;
+        s.motion = Some(MotionStream {
+            id: 7,
+            rect: Rect::new(0, 0, 16, 16),
+            next_seq: 0,
+            in_flight: Default::default(),
+            need_keyframe: false,
+            ending: false,
+            scaled: false,
+        });
+        assert!(!s.copy_ready(), "the encoder keeps frozen pixels under a motion region");
+        s.end_motion();
+        s.motion = None;
+        assert!(!s.copy_ready(), "the repaint that ends a motion stream starts a base");
+        s.shown(s.base);
+        assert!(s.copy_ready());
+        s.reset_for_client();
+        s.need_keyframe = false;
+        assert!(!s.copy_ready(), "a new client has been shown nothing");
+    }
+
+    #[test]
+    fn scroll_hints_are_the_latest_scroll_and_the_sum_in_picture_pixels() {
+        let mut s = Stream::default();
+        assert!(!s.scrolling(5_000_000));
+        s.scrolled(1_000_000, 0.0, -10.0);
+        s.scrolled(1_100_000, 0.0, -8.0);
+        assert!(s.scrolling(1_500_000));
+        assert_eq!(s.scroll_hints(1_200_000, (1.0, 1.0)), vec![(0, -8), (0, -18)]);
+        assert_eq!(s.scroll_hints(1_200_000, (2.0, 2.0)), vec![(0, -16), (0, -36)]);
+        assert!(s.scroll_hints(3_000_000, (1.0, 1.0)).is_empty());
+        assert!(!s.scrolling(3_000_000));
+        s.copying = true;
+        assert!(s.scrolling(3_000_000), "a scroll that goes on after the input");
     }
 
     #[test]

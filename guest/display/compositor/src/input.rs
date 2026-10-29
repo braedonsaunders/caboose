@@ -133,6 +133,13 @@ impl State {
         if let Some(scroll) = &m.scroll {
             let display_scale =
                 self.windows.get(m.id).map(|w| self.displays.resolve(Some(w.display)).info.scale).unwrap_or(1.0);
+            // A hint for finding the scroll in the window's next picture (stream.rs): the
+            // content moves against the scroll, by about this many window pixels.
+            let step = if scroll.precise { 1.0 } else { WHEEL_STEP * display_scale };
+            let now_us = self.now_us();
+            if let Some(w) = self.windows.get_mut(m.id) {
+                w.stream.scrolled(now_us, -scroll.dx * step, -scroll.dy * step);
+            }
             let mut frame = AxisFrame::new(time);
             if scroll.precise {
                 frame = frame.source(AxisSource::Finger);
@@ -169,6 +176,11 @@ impl State {
                 }
                 TouchPhase::Motion => {
                     let window = self.input.touches.get(&p.slot).copied().unwrap_or(m.id);
+                    // A drag may scroll the window: its next pictures are searched for a copy.
+                    let now_us = self.now_us();
+                    if let Some(w) = self.windows.get_mut(window) {
+                        w.stream.scrolled_us = now_us;
+                    }
                     let Some((location, under)) = self.locate(window, p.x, p.y) else { continue };
                     touch.motion(self, under, &TouchMotionEvent { slot, location, time });
                 }

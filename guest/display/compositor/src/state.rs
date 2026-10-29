@@ -142,18 +142,21 @@ pub struct Stats {
     /// Updates sent as tiles instead of a picture, and the tiles.
     pub tile_pictures: u64,
     pub tiles: u64,
+    /// Scrolls sent as a copy within the client's picture (with their tiles).
+    pub copies: u64,
 }
 
 impl Stats {
     pub fn summary(&self) -> String {
         let per = |v: u64| if self.frames > 0 { v as f64 / self.frames as f64 / 1000.0 } else { 0.0 };
         format!(
-            "{} frames ({} sharpening) + {} motion frames + {} updates as {} tiles, {} kB, {} renders ({} direct from shm, {} unchanged), {:.0}% of pixels damaged; per frame: render {:.2} ms, encode {:.2} ms CPU on the worker thread (not counting x264's own threads)",
+            "{} frames ({} sharpening) + {} motion frames + {} updates as {} tiles + {} scrolls as copies, {} kB, {} renders ({} direct from shm, {} unchanged), {:.0}% of pixels damaged; per frame: render {:.2} ms, encode {:.2} ms CPU on the worker thread (not counting x264's own threads)",
             self.frames,
             self.refines,
             self.motion_frames,
             self.tile_pictures,
             self.tiles,
+            self.copies,
             self.bytes / 1000,
             self.renders,
             self.direct,

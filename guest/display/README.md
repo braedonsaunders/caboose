@@ -60,6 +60,19 @@ This directory is a Cargo workspace:
   updating more than 7 times in 500 ms (an animation, not typing) gets pictures, which
   video coding keeps far smaller. A damage report with no real change sends nothing.
   Software encoders only; `--tile-max-px 0` turns tiles off.
+- **Copies** (`src/encode/scroll.rs`). To a client that applies `frame.copy`, a scroll
+  goes as a copy within the picture the client shows plus lossless tiles, with no x264
+  pass. When a window that was just scrolled or touched (or whose last update was a copy)
+  damages at least 128×128 pixels, the encoder compares the new picture with the shadow:
+  a hash of every damaged row votes for the vertical shift, column hashes vote for a
+  sideways one after a horizontal scroll, and the scroll deltas themselves are tried too.
+  A shift is used only when an exact comparison finds at least 90% of the damaged
+  region's 16×16 blocks reproduced; every other block, the exposed edge included, follows
+  the copy as a tile, so the copy and its tiles give the new content byte for byte. The
+  shadow takes the new content and the copied area is marked stale, as for tiles.
+  Copies are made only while the client shows exactly what the encoder last had (every
+  picture sent acknowledged as decoded, no keyframe due, no motion stream) and for a
+  picture shown at its own size. Software encoders only; `--no-copy` turns them off.
 - **Sharpening.** Pictures are coded at `--crf` (23), which keeps updates small but
   leaves text soft. An area of a window that has not changed for `--refine-after` (300 ms)
   is coded once more at `--refine-qp` (12): it rides along in the next picture the window
@@ -265,6 +278,7 @@ summary.
 | `--renderer KIND` | `pixman` | The renderer (pixman is the only one) |
 | `--always-compose` | | Compose every window instead of reading single-buffer windows in place (for comparisons) |
 | `--no-motion` | | Keep regions that update at video rates in the window picture |
+| `--no-copy` | | Send scrolls as pictures, never as `frame.copy` and tiles (for comparisons) |
 | `--client-timeout SECS` | `30` | Close a client that has sent nothing for this long; `0` never |
 | `--encoder KIND` | `auto` | `auto`, `software` or `nvenc` |
 | `--crf N` | `23` | Encoder quality, lower is better |

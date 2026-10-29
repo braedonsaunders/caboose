@@ -15,7 +15,8 @@ wire contract, the Caboose Display Protocol.
  caboose-display   (headless Wayland compositor, Rust + Smithay, inside the computer)
    ├ one stream per toplevel, dialog, popup and X11 window
    ├ an encoder per stream: libx264, libx265, or NVENC (h264/hevc/av1_nvenc)
-   ├ changed-block detection, lossless tiles for small changes, sharpening of quiet areas
+   ├ changed-block detection, lossless tiles for small changes, scrolls as copies,
+   │ sharpening of quiet areas
    ├ video: codec passthrough (the VA-API driver) and detected motion, as their own streams
    ├ games: WebAssembly games handed off to the client, which runs them itself
    ├ pacing: frame callbacks released on the client's vsync, at most two frames in flight
@@ -228,7 +229,9 @@ order; a client relies on it only from such a server.
 when the server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
 `text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
-plays sound; `tiles` unless tiles are turned off; `wasm` when it hands games off (the
+plays sound; `tiles` unless tiles are turned off; `copy` when the client's hello says
+`copy: true`, its windows are coded with libx264 or libx265, and copies are not turned off
+(`--no-copy`); `wasm` when it hands games off (the
 owner's display) and the client's hello says `wasm: true`; and `gpu` when it relays GPU
 streams (the owner's display) and the client's hello says `gpu: true`; `webview` when the owner display and client support agent-app handoff.
 
@@ -352,7 +355,10 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
   apps turn a touch drag into a selection.
 
 caboose-display sends a subset of these messages. It sends named cursors (`cursor.named`)
-and no `cursor` images; tiles only as `png`; `video.create` and `video.update` without
+and no `cursor` images; tiles only as `png`; `frame.copy` only for a window whose picture
+is shown at its own size and whose every picture sent has been acknowledged as decoded,
+and only when at least 90% of the damaged region's 16×16 blocks are reproduced by the
+copy; `video.create` and `video.update` without
 `z`, `color` or `extradata`; and no `notification` (the computer's notifications reach
 the app through the host, from [guest/notifications](../guest/notifications)). It delivers
 `pencil` as tablet-unstable-v2 pen events: `hover` and `motion` move the pen (bringing it
