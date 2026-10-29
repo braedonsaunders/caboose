@@ -1004,6 +1004,28 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
   than filling a buffer; payloads are at most 1 MiB. With no client, a session's output is
   kept only in its 256 KiB replay.
 
+### MCP Library routes
+
+Per computer, authorized like the catalog's; none wakes the computer (§ MCP Library).
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` `PUT` `DELETE` | `/v1/mcp/account` | `{ connected, namespace }`. `PUT { apiKey }` connects a Smithery account (409 when Smithery refuses the key); `DELETE` removes this computer's servers from Smithery and forgets the key |
+| `GET` | `/v1/mcp/storefront` | `{ groups: [{ id, title, note, servers }], error }` |
+| `GET` | `/v1/mcp/discover?q=&page=` | `{ servers, total, page, pageSize }` (40 a page) |
+| `GET` | `/v1/mcp/servers/:name` | A server and its `tools: [{ name, description }]` |
+| `GET` | `/v1/mcp/icons/:id` | The icon a listing named by `iconId`, PNG or JPEG |
+| `GET` `POST` | `/v1/mcp/connections` | `{ account, limit, connections }`, `?refresh=1` asking Smithery for each status; `POST { server }` adds one (201; 409 past 20 or without an account) |
+| `PATCH` | `/v1/mcp/connections/:id` | `{ values }` for the fields its `needs-setup` status lists, and no others |
+| `POST` | `/v1/mcp/connections/:id/check` | Asks Smithery again |
+| `DELETE` | `/v1/mcp/connections/:id` | Removes it from Smithery and the computer |
+
+A server is `{ id, name, description, uses, verified, homepage, iconId, connection }`; a
+connection `{ id, server, name, iconId, addedAt, status }`, with `status` one of
+`connected { tools }`, `needs-sign-in { setupUrl }`, `needs-setup { fields: [{ key, where, label,
+description, required }], setupUrl }`, `failed { message }` or `checking`. Changes send
+`mcp.changed { id? }` on `/v1/control`.
+
 ### Catalog routes
 
 | Method | Path | Purpose |
@@ -1653,6 +1675,43 @@ catalog declares such servers for PhotoCraft, LightCraft, FilmCraft, VectorCraft
 EffectCraft, DesignCraft, WordCraft, GridCraft, DeckCraft, CADCraft, SoundCraft and
 FigCraft. `craftMcp: false` on task start omits them for that task and its replies. What an
 agent can use depends on its support for ACP MCP servers and on each application's tools.
+
+### MCP Library
+
+A computer's MCP Library is the MCP servers its owner added to it, as apps are added: every
+agent on the computer gets them, in new chats. There is no choosing per agent or teammate.
+
+- **Catalog.** Smithery's registry (`registry.smithery.ai`), remote servers only, through the
+  host's untrusted-input client (`safe-fetch.ts`: HTTPS only, every address the name resolves
+  to must be public, the connection pinned to the checked address, no redirects, bounded
+  bodies and time). The front page's rows are Popular (by Smithery's use counts, the only
+  popularity data offered), Verified, and labelled topic rows from Smithery's search; they are
+  cached on disk for six hours. Search is Smithery's, 40 at a time. Icons are served by the host
+  (`/v1/mcp/icons/:id`), PNG or JPEG up to 256 KiB and 1024 pixels a side, SVG rasterized by
+  resvg; the cache holds 64 MiB. Use counts and Smithery's verification describe the listing,
+  not the server's safety.
+- **Account.** The owner connects a Smithery account per computer with an API key. The host keeps
+  it in the computer's `mcp-library.json` (0600) and never returns it, logs it, puts it in a URL
+  or gives it to the computer. Connections live in the account's namespace, each tagged
+  `metadata.caboose = "<host id>/<computer id>"` and named `cb-<hash of that>-<hash of the
+  server>`; one belonging to another computer is never changed or removed.
+- **Adding.** The host asks Smithery Connect for the connection (`PUT /connect/{namespace}/{id}`).
+  Smithery's status decides what follows: settings it asks for become a form whose values go
+  to Smithery's write-only store (the host keeps no copy, and accepts only the fields asked
+  for); a sign-in opens Smithery's hosted page (`*.smithery.ai`); a connection counts as
+  connected only once it has answered `initialize` and listed tools. Messages from Smithery and
+  servers are never shown. A computer holds up to 20 servers.
+- **Agents.** A chat started while the Library has servers gets `mcpLibrary: true` in
+  `task.json` and the runner gives the agent `caboose-library` (`guest/agentd/library-mcp.mjs`),
+  a stdio server that forwards MCP messages to `https://mcp.smithery.run/{namespace}`, which
+  carries the computer's connected servers with tool names prefixed by connection. It reads
+  `~/.local/state/caboose/mcp-library.json` (0600) for every message: the endpoint and a
+  Smithery service token scoped to this computer's connections (read and execute, metadata
+  `caboose`, 24 hours), which the host writes before chats start and continue and replaces
+  every four hours while the computer runs. Which servers a chat reaches is the Library's at
+  each call: a server added later is there, and a removed one (deleted from Smithery at once)
+  is gone. A chat started without the Library never gets it; one whose Library is gone gets a
+  notice. No secret is written to a task's records or transcript.
 
 ### Screen tools
 

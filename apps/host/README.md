@@ -417,6 +417,14 @@ Live Activities; other producers can publish the generic job shape through
 `POST /v1/jobs/activity`. The sender uses the app topic with `.push-type.liveactivity`
 appended. The API and its limits are in `docs/architecture.md` § Notifications.
 
+## MCP Library
+
+`src/smithery.ts` is the catalog (Smithery's registry, cached in `CABOOSE_IMAGE_ROOT/smithery`),
+`src/mcp-library.ts` a computer's Library (its Smithery account, connections and the computer's
+access token, in the computer's `mcp-library.json`), and `src/safe-fetch.ts` the client for hosts
+named by untrusted metadata. Routes are under `/v1/mcp` (`docs/architecture.md` § MCP Library and
+§ HTTP API). Tests use a stand-in Smithery; nothing in them reaches the network.
+
 ## Catalog and Craft jobs
 
 The Library is the curated catalog in [`guest/catalog`](../../guest/catalog/README.md) followed
