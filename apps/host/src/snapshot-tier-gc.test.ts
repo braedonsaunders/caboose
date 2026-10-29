@@ -108,3 +108,21 @@ it('shutdown cancels a stalled remote deletion and retains its receipt', async (
     expect((await readdir(receipts)).length).toBe(1)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+it.skipIf(process.platform !== 'linux')('retains another PID namespace but reclaims a reused PID in the same namespace', async () => {
+  const { createHash } = await import('node:crypto')
+  const root = await mkdtemp(join(tmpdir(), 'snapshot-gc-')), snapshot = join(root, 'other.snapshot')
+  const key = 'snapshots/00000000-0000-4000-8000-000000000000/memory-ranges'
+  const store: SnapshotObjectStore = { async putStream() {}, async getStream() { throw new Error('unused') }, delete: vi.fn(async () => {}) }
+  try {
+    const receipts = `${snapshot}.cold-gc`, path = join(receipts, `${createHash('sha256').update(key).digest('hex')}.json`)
+    await mkdir(receipts)
+    const owner = await processReceipt(process.ppid)
+    await writeFile(path, JSON.stringify({ key, ...owner, ownerNamespace: 'pid:[999999]' }))
+    await collectSnapshotObjects(root, store, randomBytes(32))
+    expect(store.delete).not.toHaveBeenCalled()
+    await writeFile(path, JSON.stringify({ key, ...owner, ownerStart: '0' }))
+    await collectSnapshotObjects(root, store, randomBytes(32))
+    expect(store.delete).toHaveBeenCalledOnce()
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
