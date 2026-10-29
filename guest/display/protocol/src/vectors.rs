@@ -470,7 +470,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
             "A client accepts half-resolution motion without enabling passthrough video.",
             Message::ClientHello(ClientHello {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![Codec::H264], displays: vec![phone()],
-                video_decoders: None, audio_decoders: None, wasm: false, gpu: false, scaled_motion: true,
+                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true,
             }),
         ),
         one(
@@ -543,7 +543,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
             Message::ClientHello(ClientHello {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::H264], displays: vec![phone()],
-                video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false,
+                video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false, scaled_motion: false,
             }),
         ),
         one("vsync", "", Message::Vsync { display: 1, t_us: 5_000_008_333 }),
