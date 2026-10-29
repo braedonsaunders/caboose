@@ -3,7 +3,7 @@ import errno
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-from parked_quiesce import Unsupported, branch_states, cgroup_tree, check_mounts, check_processes, freeze, freeze_branches, freeze_filesystem, plan_freezer_branches, recovery_ancestry, thaw
+from parked_quiesce import Unsupported, branch_states, cgroup_tree, check_control_plane, check_mounts, check_processes, freeze, freeze_branches, freeze_filesystem, plan_freezer_branches, recovery_ancestry, thaw
 
 ROOT = '1 0 8:1 / / rw - ext4 /dev/vda rw\n'
 
@@ -21,9 +21,25 @@ class QuiesceChecks(unittest.TestCase):
             proc = Path(directory)
             (proc / 'self').mkdir()
             (proc / 'self' / 'mountinfo').write_text(ROOT)
-            with patch('parked_quiesce.cgroup_tree', return_value={}), patch('parked_quiesce.recovery_ancestry', return_value=[1]), patch('parked_quiesce.freeze_branches'), patch('parked_quiesce.freeze_filesystem', side_effect=OSError('unknown outcome')), patch('parked_quiesce.thaw') as recover:
+            with patch('parked_quiesce.cgroup_tree', return_value={}), patch('parked_quiesce.recovery_ancestry', return_value=[1]), patch('parked_quiesce.check_control_plane'), patch('parked_quiesce.freeze_branches'), patch('parked_quiesce.freeze_filesystem', side_effect=OSError('unknown outcome')), patch('parked_quiesce.thaw') as recover:
                 with self.assertRaises(OSError): freeze(recorded, proc=directory)
             recover.assert_called_once_with(branches=recorded)
+
+    def test_control_plane_rejects_writable_shared_home_device_mapping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            for pid in (1, 10, 11):
+                (proc / str(pid)).mkdir()
+                (proc / str(pid) / 'status').write_text('Uid:\t0\t0\t0\t0\n')
+                (proc / str(pid) / 'maps').write_text('1000-2000 rw-s 00000000 08:01 22 /home/caboose/a\n' if pid == 10 else '')
+            (proc / '10' / 'cmdline').write_bytes(b'/usr/bin/node\0/opt/desk-agent/desk-guest-agent.mjs\0')
+            (proc / '11' / 'cmdline').write_bytes(b'/usr/bin/python3\0/opt/caboose/files/parked_quiesce.py\0freeze\0')
+            with patch('parked_quiesce.os.readlink', return_value='/usr/lib/systemd/systemd'), patch('parked_quiesce.os.stat') as stat:
+                stat.return_value.st_dev = __import__('os').makedev(8, 1)
+                with self.assertRaises(Unsupported): check_control_plane([1, 10, 11], directory, pid=11)
+
+    def test_control_plane_rejects_unknown_ancestry(self):
+        with self.assertRaises(Unsupported): check_control_plane([1, 10, 11, 12], pid=11)
 
     def test_filesystem_freeze_syncs_before_ioctl_and_closes_descriptor(self):
         steps = []

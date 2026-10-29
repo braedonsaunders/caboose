@@ -176,10 +176,46 @@ def recovery_ancestry(proc='/proc', pid=None):
     return sorted(seen)
 
 
+def check_control_plane(trusted, proc='/proc', home='/home/caboose', pid=None):
+    """Allow only systemd, the packaged guest agent and this helper as control."""
+    helper = os.getpid() if pid is None else pid
+    if len(trusted) != 3 or 1 not in trusted or helper not in trusted:
+        raise Unsupported('unknown recovery control ancestry')
+    agent = next(p for p in trusted if p not in (1, helper))
+    try:
+        init_exe = os.readlink(Path(proc) / '1' / 'exe')
+        agent_args = (Path(proc) / str(agent) / 'cmdline').read_bytes().split(b'\0')
+        helper_args = (Path(proc) / str(helper) / 'cmdline').read_bytes().split(b'\0')
+        if not init_exe.endswith('/systemd') or agent_args[:2] != [b'/usr/bin/node', b'/opt/desk-agent/desk-guest-agent.mjs'] or len(helper_args) < 2 or helper_args[1] != b'/opt/caboose/files/parked_quiesce.py':
+            raise Unsupported('unknown recovery control ancestry')
+        device = os.stat(home).st_dev
+        home_device = (os.major(device), os.minor(device))
+        for process in trusted:
+            status = (Path(proc) / str(process) / 'status').read_text()
+            if not re.search(r'^Uid:\s+0\s+0\s+0\s+0\s*$', status, re.M):
+                raise Unsupported('recovery control process is not root')
+            maps = (Path(proc) / str(process) / 'maps').read_text()
+            for line in maps.splitlines():
+                fields = line.split(None, 5)
+                if len(fields) < 5 or not re.fullmatch(r'[r-][w-][x-][ps]', fields[1]):
+                    raise Unsupported('invalid control process mapping')
+                if fields[1][1] == 'w' and fields[1][3] == 's':
+                    parts = fields[3].split(':')
+                    if len(parts) != 2:
+                        raise Unsupported('invalid control process mapping device')
+                    major, minor = (int(part, 16) for part in parts)
+                    if (major, minor) == home_device:
+                        raise Unsupported('control process maps the home filesystem writable and shared')
+    except (OSError, UnicodeError, ValueError, StopIteration) as error:
+        raise Unsupported('control process inspection unavailable') from error
+
+
 def prepare(root='/sys/fs/cgroup', proc='/proc'):
     check_mounts((Path(proc) / 'self' / 'mountinfo').read_text())
     nodes = cgroup_tree(root)
-    return branch_states(nodes, recovery_ancestry(proc), root)
+    trusted = recovery_ancestry(proc)
+    check_control_plane(trusted, proc)
+    return branch_states(nodes, trusted, root)
 
 
 def freeze(recorded, root='/sys/fs/cgroup', proc='/proc'):
@@ -187,8 +223,10 @@ def freeze(recorded, root='/sys/fs/cgroup', proc='/proc'):
     check_mounts((Path(proc) / 'self' / 'mountinfo').read_text())
     nodes = cgroup_tree(root)
     trusted = recovery_ancestry(proc)
+    check_control_plane(trusted, proc)
     freeze_branches(nodes, trusted, recorded, root)
     try:
+        check_control_plane(trusted, proc)
         freeze_filesystem()
     except BaseException:
         # The ioctl may have succeeded before reporting an error. The host must
