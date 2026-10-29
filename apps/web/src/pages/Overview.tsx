@@ -63,7 +63,7 @@ export function Overview({ computers, host, me }: { computers: ComputersHandle; 
         ))}
         {attention > 0 ? <details className="rounded-lg border border-warning/30 bg-warning/5 px-4 py-3 text-sm"><summary className="cursor-pointer font-medium text-warning">{attention} {attention === 1 ? 'computer needs' : 'computers need'} attention <span className="font-normal">— review issues</span></summary><div className="mt-3 space-y-3">{list.computers.filter(computer => computer.lastError || computer.state === 'error' || computer.upgrade?.state === 'failed').map(computer => <div key={computer.id}><a className="font-medium underline underline-offset-4" href={`/computers/${computer.id}`}>{computer.settings.name}</a>{computer.lastError ? <p className="mt-1 break-words text-fg-muted">{computer.lastError}</p> : null}{computer.upgrade?.state === 'failed' ? <p className="mt-1 break-words text-fg-muted">{upgradeLabel(computer.upgrade)}{computer.upgrade.message ? `: ${computer.upgrade.message}` : ''}</p> : null}</div>)}</div></details> : null}
 
-        <div className={`grid gap-4 sm:grid-cols-2 ${me.operator ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
+        <div className={`grid grid-cols-2 gap-3 ${me.operator ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
           <DashboardMetricCard
             label="Computers"
             value={list.computers.length}
