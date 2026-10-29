@@ -22,3 +22,11 @@ where the host's app listing finds them.
 
 `apps/host/scripts/check-flathub.sh` exercises the remote, the depot and an install, run and
 removal in disposable containers (see the host README).
+
+`check-portal.py APP_ID --outer-seccomp` runs as the computer's unprivileged user under
+`dbus-run-session`. It checks the outer container's exact `setns` type restrictions,
+portal subprocesses with both `--sandbox --expose-pids` and `--sandbox --share-pids`,
+exit-status propagation, and the inner Flatpak seccomp denials in the app and its children.
+The installed app's runtime must include Python 3 and `flatpak-spawn`. Omit
+`--outer-seccomp` when checking portal behavior in a microVM. `check-flathub.sh` runs
+this check in its disposable guest; it needs no Steam account or graphical session.

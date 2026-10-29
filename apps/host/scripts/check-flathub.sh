@@ -14,7 +14,7 @@ volume=caboose-flathub-check-$$
 trap 'docker volume rm -f "$volume" >/dev/null 2>&1 || :' EXIT
 docker build -q -t "$image" - >/dev/null <<'DOCKERFILE'
 FROM debian:trixie-slim
-RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends flatpak gir1.2-flatpak-1.0 python3-gi ca-certificates >/dev/null && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends flatpak gir1.2-flatpak-1.0 python3-gi dbus-daemon ca-certificates >/dev/null && rm -rf /var/lib/apt/lists/*
 DOCKERFILE
 security=(--cpus 2 --memory 2g --security-opt "seccomp=$root/guest/container/caboose-seccomp.json")
 guest=(-v "$root/guest/flatpak:/opt/flatpak:ro" -v "$root/apps/host/src:/opt/host:ro")
@@ -53,24 +53,9 @@ flatpak list --installation=caboose-depot --runtime --columns=application,branch
 if touch /var/lib/caboose/depot/write-test 2>/dev/null; then echo 'FAIL: the depot is writable from a computer' >&2; exit 1; fi
 test -f "/var/lib/flatpak/exports/share/applications/$app.desktop"
 runuser -u caboose -- env XDG_RUNTIME_DIR=/tmp/caboose-runtime flatpak run --command=true "$app"
-# Without bwrap's sysctl lock (caboose-bwrap drops --disable-userns), Flatpak's seccomp filter
-# must still refuse an app every way to make or join a user namespace.
-runuser -u caboose -- env XDG_RUNTIME_DIR=/tmp/caboose-runtime flatpak run --command=python3 "$app" -c '
-import ctypes, os, platform, struct
-libc = ctypes.CDLL(None, use_errno=True)
-NEWUSER, SIGCHLD = 0x10000000, 17
-clone, clone3 = {"x86_64": (56, 435), "aarch64": (220, 435)}[platform.machine()]
-def refused(name, result):
-    if result == 0: os._exit(0)
-    if result != -1: raise SystemExit(f"{name} made a user namespace")
-    print(name, "refused:", os.strerror(ctypes.get_errno()))
-refused("unshare", libc.unshare(NEWUSER))
-refused("clone", libc.syscall(clone, NEWUSER | SIGCHLD, 0, 0, 0, 0))
-args = struct.pack("QQQQQQQQQQQ", NEWUSER, 0, 0, 0, SIGCHLD, 0, 0, 0, 0, 0, 0)
-refused("clone3", libc.syscall(clone3, ctypes.c_char_p(args), len(args)))
-fd = os.open("/proc/self/ns/user", os.O_RDONLY)
-refused("setns", libc.setns(fd, NEWUSER))
-'
+# The portal joins existing user/PID namespaces while each app keeps its own seccomp filter.
+runuser -u caboose -- env XDG_RUNTIME_DIR=/tmp/caboose-runtime dbus-run-session -- \
+  python3 /opt/flatpak/check-portal.py --outer-seccomp "$app"
 python3 /opt/host/guest-catalog.py remove "$entry"
 python3 - "$(python3 /opt/host/guest-catalog.py list '[]')" "$app" <<'PY'
 import json, sys

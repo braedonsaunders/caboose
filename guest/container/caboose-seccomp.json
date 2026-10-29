@@ -887,6 +887,34 @@
       ],
       "action": "SCMP_ACT_ALLOW",
       "comment": "Caboose: bubblewrap builds each Flatpak sandbox's root inside its own user and mount namespaces; without CAP_SYS_ADMIN the container cannot mount elsewhere"
+    },
+    {
+      "names": [
+        "setns"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 1,
+          "value": 268435456,
+          "op": "SCMP_CMP_EQ"
+        }
+      ],
+      "comment": "Caboose: Flatpak portal bubblewrap joins a sandbox CLONE_NEWUSER namespace; kernel namespace ownership checks still apply"
+    },
+    {
+      "names": [
+        "setns"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 1,
+          "value": 536870912,
+          "op": "SCMP_CMP_EQ"
+        }
+      ],
+      "comment": "Caboose: Flatpak portal bubblewrap joins a sandbox CLONE_NEWPID namespace; kernel namespace ownership checks still apply"
     }
   ]
 }

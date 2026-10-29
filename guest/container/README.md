@@ -122,9 +122,10 @@ starts every new container with `--security-opt seccomp=caboose-seccomp.json`, u
 `CABOOSE_CONTAINER_ARGS` names a seccomp policy of its own. The profile is the
 [Moby seccomp v0.2.1 default](https://github.com/moby/profiles/blob/seccomp/v0.2.1/seccomp/default.json)
 (Apache-2.0) with `clone` and `unshare` allowed for any namespace and `mount`, `umount2` and
-`pivot_root` allowed. The kernel still requires `CAP_SYS_ADMIN` in the namespace's owning user
-namespace, which the container's root does not hold, so these calls reach only namespaces a
-sandbox created for itself: the policy Debian applies to every unprivileged user. A container
+`pivot_root` allowed. `setns` is allowed only with exactly `CLONE_NEWUSER` or
+`CLONE_NEWPID` for Flatpak portal subprocesses; type zero, combined masks and other types
+remain denied without `CAP_SYS_ADMIN`. The kernel still checks namespace ownership and
+capabilities; the container's root cannot enter the host's namespaces. A container
 created before this profile keeps its own policy; recreate it (its home volume is kept) to
 run Flatpak apps. On hosts that confine containers with Docker's default AppArmor profile,
 which denies `mount`, Flatpak's sandbox cannot start; the Library says so beside each Flathub

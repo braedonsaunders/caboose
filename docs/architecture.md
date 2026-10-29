@@ -528,7 +528,11 @@ namespaces and gives the app its own `/proc`. A container computer gets them as 
 
 - The host creates containers with `guest/container/caboose-seccomp.json`, which allows the
   namespaces and the mounts inside them (the kernel still requires `CAP_SYS_ADMIN` in the
-  owning user namespace, which the container's root lacks).
+  owning user namespace, which the container's root lacks). The outer policy also permits
+  `setns` with exactly `CLONE_NEWUSER` or `CLONE_NEWPID`, so the Flatpak spawn portal can
+  join an app's existing namespaces for `--expose-pids` and `--share-pids`. Unspecified
+  namespace types, combined masks and other types remain denied without `CAP_SYS_ADMIN`;
+  the kernel still checks permission to enter the target namespace.
 - The kernel lets a sandbox mount a fresh `/proc` only where a fully visible one exists, and
   Docker masks parts of the container's. In container computers `/usr/bin/bwrap` is
   `guest/flatpak/caboose-bwrap` (the real one is diverted to `/usr/bin/bwrap.distrib`), which
@@ -538,8 +542,8 @@ namespaces and gives the app its own `/proc`. A container computer gets them as 
 - bubblewrap's own lock on nested user namespaces (`--disable-userns`, which writes
   `/proc/sys/user/max_user_namespaces`) needs that fresh `/proc`, so the wrapper drops it and
   `--assert-userns-disabled`. Flatpak's seccomp filter still refuses every app `unshare`,
-  `setns`, `clone` with `CLONE_NEWUSER` and `clone3`; `check-flathub.sh` proves each refusal
-  inside a running app.
+  `setns`, `clone` with `CLONE_NEWUSER` and `clone3`; `check-flathub.sh` proves these
+  refusals inside both the original app and portal-created sandbox children.
 - A sandbox root starts (Flatpak's own setup, such as `ldconfig`) begins in a user namespace
   of its own, since the container's root cannot make the others.
 
