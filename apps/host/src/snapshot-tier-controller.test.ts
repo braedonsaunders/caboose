@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { ComputerLifecycle } from './lifecycle.js'
-import type { Controller, Session } from './server.js'
+import { withAdmission, type Controller, type Session } from './server.js'
 import type { SnapshotObjectStore } from './snapshot-archive.js'
 import { SnapshotTier } from './snapshot-tier.js'
 import { tieredController } from './snapshot-tier-controller.js'
@@ -94,6 +94,26 @@ describe('cold-tier controller integration', () => {
       await wrapped.close()
       expect(aborted).toBe(true)
       expect(await readFile(join(snapshot, 'memory-ranges'), 'utf8')).toBe('memory')
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('checks admission before downloading cold memory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tier-controller-')), snapshot = join(root, 'vm.snapshot')
+    try {
+      await mkdir(snapshot); await writeFile(join(snapshot, 'memory-ranges'), 'memory')
+      const store = memoryStore(), key = randomBytes(32)
+      const source = new SnapshotTier(snapshot, store, key, async work => work(1), () => true)
+      await source.archive()
+      const get = vi.spyOn(store, 'getStream')
+      const original = { wake: async () => ({} as Session), hasSavedState: () => false } as unknown as Controller
+      const wrapped = tieredController(original, snapshot, { store, key, delayMs: 60_000 })
+      const lifecycle = new ComputerLifecycle(withAdmission(wrapped.controller, async () => { throw new Error('quota exceeded') }), 60_000)
+      wrapped.attach(lifecycle)
+      await expect(lifecycle.wake()).rejects.toThrow('quota exceeded')
+      expect(get).not.toHaveBeenCalled()
+      expect(await readFile(source.pointer, 'utf8')).toContain('entries')
+      await wrapped.close()
+      await source.discard(); await source.drainCleanup()
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 

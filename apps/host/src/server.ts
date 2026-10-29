@@ -101,7 +101,7 @@ export interface ComputerPieces { snapshotPath?: string; snapshotTier?: Snapshot
 type Admission = (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'>) => Promise<void>
 
 /** A controller whose wakes are admitted first. */
-function withAdmission(controller: Controller, admit: () => Promise<void>): Controller {
+export function withAdmission(controller: Controller, admit: () => Promise<void>): Controller {
   const gated = Object.create(controller) as Controller
   gated.wake = async mode => {
     await admit()
@@ -116,9 +116,9 @@ export interface Library { flathub?: FlathubIndex; releases?: CraftReleases; dep
 function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; freezeParkMs?: number; admit?: Admission; library?: Library; gpuEnabled: boolean; validateSize: (input: Record<string, unknown>) => Promise<void> }) {
   const { settings, push, activities } = pieces
   const admit = shared.admit
-  const admitted = admit ? withAdmission(pieces.controller, () => admit(id)) : pieces.controller
-  const tiering = pieces.snapshotPath ? tieredController(admitted, pieces.snapshotPath, pieces.snapshotTier) : undefined
-  const controller = tiering?.controller ?? admitted
+  const tiering = pieces.snapshotPath ? tieredController(pieces.controller, pieces.snapshotPath, pieces.snapshotTier) : undefined
+  const tiered = tiering?.controller ?? pieces.controller
+  const controller = admit ? withAdmission(tiered, () => admit(id)) : tiered
   const computer = new ComputerLifecycle(controller, settings.get().idleMs, shared.freezeParkMs)
   tiering?.attach(computer)
   const sockets = new Set<WebSocket>()
