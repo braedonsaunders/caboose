@@ -3,11 +3,28 @@ import errno
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-from parked_quiesce import Unsupported, branch_states, bridge_processes, cgroup_tree, check_control_plane, check_mounts, check_processes, freeze, freeze_branches, freeze_filesystem, plan_freezer_branches, recovery_ancestry, thaw
+from parked_quiesce import Unsupported, branch_states, bridge_processes, cgroup_tree, check_control_plane, check_mounts, check_processes, freeze, freeze_branches, freeze_filesystem, plan_freezer_branches, recovery_ancestry, thaw, userspace_tree
 
 ROOT = '1 0 8:1 / / rw - ext4 /dev/vda rw\n'
 
 class QuiesceChecks(unittest.TestCase):
+    def test_kernel_thread_flag_is_required_and_empty_userspace_cmdline_is_not_exempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            for pid, status in ((1, 'Kthread:\t0\n'), (2, 'Kthread:\t1\n'), (42, 'Kthread:\t0\n')):
+                (proc / str(pid)).mkdir()
+                (proc / str(pid) / 'status').write_text(status)
+                (proc / str(pid) / 'cmdline').write_bytes(b'')
+            tree = userspace_tree({'/': [1, 2, 42]}, directory)
+            self.assertEqual(tree, {'/': [1, 42]})
+            with self.assertRaises(Unsupported): plan_freezer_branches(tree, [1])
+            (proc / '42' / 'status').write_text('Name:\tworker\n')
+            with self.assertRaises(Unsupported): userspace_tree({'/': [1, 42]}, directory)
+            (proc / '42' / 'status').write_text('Kthread:\t1\nKthread:\t0\n')
+            with self.assertRaises(Unsupported): userspace_tree({'/': [42]}, directory)
+            (proc / '42' / 'status').unlink()
+            with self.assertRaises(Unsupported): userspace_tree({'/': [42]}, directory)
+
     def test_recovery_ancestry_rejects_missing_init(self):
         with tempfile.TemporaryDirectory() as directory:
             proc = Path(directory)
@@ -121,7 +138,7 @@ class QuiesceChecks(unittest.TestCase):
                 (root / name).mkdir()
                 (root / name / 'cgroup.events').write_text('frozen 0\n')
             recorded = branch_states(nodes, [1], directory)
-            with patch('parked_quiesce.cgroup_tree', return_value={'/': [1]}), patch('parked_quiesce.set_frozen') as set_freeze:
+            with patch('parked_quiesce.cgroup_tree', return_value={'/': [1]}), patch('parked_quiesce.userspace_tree', side_effect=lambda tree, proc: tree), patch('parked_quiesce.set_frozen') as set_freeze:
                 with self.assertRaises(Unsupported): freeze_branches(nodes, [1], recorded, directory)
                 self.assertEqual([call.args[1] for call in set_freeze.call_args_list], [True, True, False, False])
 

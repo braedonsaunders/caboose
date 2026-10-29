@@ -86,6 +86,28 @@ def cgroup_tree(root='/sys/fs/cgroup', max_groups=8192, max_pids=131072):
     return nodes
 
 
+def userspace_tree(nodes, proc='/proc'):
+    """Exclude only processes explicitly identified by the kernel as kernel threads.
+
+    Kernel threads can change while work queues drain; fsfreeze fences their
+    filesystem writes. A missing, repeated or malformed Kthread field fails closed.
+    """
+    result = {}
+    try:
+        for path, pids in nodes.items():
+            users = []
+            for pid in pids:
+                status = (Path(proc) / str(pid) / 'status').read_text()
+                fields = re.findall(r'^Kthread:\s*([^\s]+)\s*$', status, re.M)
+                if len(fields) != 1 or fields[0] not in ('0', '1'):
+                    raise Unsupported('process kernel-thread identity unavailable')
+                if fields[0] == '0': users.append(pid)
+            result[path] = users
+    except (OSError, UnicodeError) as error:
+        raise Unsupported('process kernel-thread identity unavailable') from error
+    return result
+
+
 def check_mounts(mountinfo, home='/home/caboose'):
     """Require home to live on the root ext4 mount, with no nested mounts."""
     mounts = []
@@ -253,7 +275,7 @@ def check_control_plane(trusted, proc='/proc', home='/home/caboose', pid=None, b
 
 def prepare(root='/sys/fs/cgroup', proc='/proc'):
     check_mounts((Path(proc) / 'self' / 'mountinfo').read_text())
-    nodes = cgroup_tree(root)
+    nodes = userspace_tree(cgroup_tree(root), proc)
     ancestry = recovery_ancestry(proc)
     bridge = bridge_processes(nodes, proc)
     check_control_plane(ancestry, proc, bridge=bridge)
@@ -269,14 +291,14 @@ def freeze(intent, root='/sys/fs/cgroup', proc='/proc'):
     check_mounts((Path(proc) / 'self' / 'mountinfo').read_text())
     if os.stat('/home/caboose').st_dev != intent['homeDevice']:
         raise Unsupported('home filesystem identity changed')
-    nodes = cgroup_tree(root)
+    nodes = userspace_tree(cgroup_tree(root), proc)
     ancestry = recovery_ancestry(proc)
     bridge = bridge_processes(nodes, proc)
     check_control_plane(ancestry, proc, bridge=bridge)
     trusted = sorted(set(ancestry + bridge))
-    freeze_branches(nodes, trusted, recorded, root)
+    freeze_branches(nodes, trusted, recorded, root, proc)
     try:
-        refreshed = cgroup_tree(root)
+        refreshed = userspace_tree(cgroup_tree(root), proc)
         if refreshed != nodes or bridge_processes(refreshed, proc) != bridge or recovery_ancestry(proc) != ancestry:
             raise Unsupported('recovery control plane changed during freeze')
         check_control_plane(ancestry, proc, bridge=bridge)
@@ -324,7 +346,7 @@ def branch_states(nodes, trusted, root='/sys/fs/cgroup'):
     return states
 
 
-def freeze_branches(nodes, trusted, recorded, root='/sys/fs/cgroup'):
+def freeze_branches(nodes, trusted, recorded, root='/sys/fs/cgroup', proc='/proc'):
     """Freeze planned branches and return those changed by this invocation.
 
     A caller must durably journal the branch list *before* calling this function
@@ -341,7 +363,7 @@ def freeze_branches(nodes, trusted, recorded, root='/sys/fs/cgroup'):
             if not entry['frozen']:
                 changed.append(branch)  # A failed write may still have reached the kernel.
                 set_frozen(directory, True)
-        if cgroup_tree(root) != nodes:
+        if userspace_tree(cgroup_tree(root), proc) != nodes:
             raise Unsupported('cgroup tree changed during freeze')
         return changed
     except BaseException as error:
