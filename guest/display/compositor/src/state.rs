@@ -40,8 +40,8 @@ use smithay::wayland::selection::primary_selection::{
     set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
 };
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
-use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState};
+use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
@@ -707,10 +707,10 @@ impl XdgDecorationHandler for State {
         }
     }
     fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: DecorationMode) {
-        self.new_decoration(toplevel);
+        XdgDecorationHandler::new_decoration(self, toplevel);
     }
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        self.new_decoration(toplevel);
+        XdgDecorationHandler::new_decoration(self, toplevel);
     }
 }
 

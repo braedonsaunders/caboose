@@ -6,10 +6,12 @@ Ordinary windows must have no GTK titlebar; an app's custom header and menus sta
 """
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def client(output, custom):
@@ -39,11 +41,14 @@ def client(output, custom):
             if isinstance(widget, Gtk.Container):
                 widget.forall(visit)
         visit(window)
-        Path(output).write_text(json.dumps({
+        pending = Path(output).with_suffix('.pending')
+        pending.write_text(json.dumps({
+            'window_mapped': window.get_mapped(),
             'automatic_titlebar': any(defaults),
             'menu_visible': menu.get_mapped() and menu.get_allocated_height() > 0,
             'custom_header': header is not None and header.get_mapped(),
         }))
+        pending.replace(output)
         window.destroy()
         Gtk.main_quit()
         return False
@@ -60,33 +65,43 @@ def main():
         root = Path(directory)
         token = root / 'token'
         token.write_text('private-decoration-test')
-        for backend in ('wayland', 'x11'):
-            for custom in (False, True):
-                output = root / 'result.json'
-                output.unlink(missing_ok=True)
-                env = dict(os.environ, XDG_RUNTIME_DIR=directory)
-                command = [str(binary), '--listen', '127.0.0.1:0', '--no-audio', '--token-file', str(token),
-                           '--', 'env', 'GDK_BACKEND=' + backend, sys.executable, str(Path(__file__).resolve()),
-                           str(output), 'custom' if custom else 'default']
-                proc = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        cases = [(backend, custom) for backend in ('wayland', 'x11')
+                 for custom in (False, True)]
+        for backend, custom in cases:
+            output = root / 'result.json'
+            output.unlink(missing_ok=True)
+            env = dict(os.environ, XDG_RUNTIME_DIR=directory)
+            command = [str(binary), '--listen', '127.0.0.1:0', '--no-audio', '--token-file', str(token),
+                       '--', 'env', 'GDK_BACKEND=' + backend, sys.executable, str(Path(__file__).resolve()),
+                       str(output), 'custom' if custom else 'default']
+            proc = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE, start_new_session=True)
+            try:
+                deadline = time.monotonic() + 15
+                while not output.exists() and proc.poll() is None and time.monotonic() < deadline:
+                    time.sleep(.1)
+            finally:
+                # Include Xwayland and the test client, even on failure.
                 try:
-                    import time
-                    deadline = time.monotonic() + 15
-                    while not output.exists() and proc.poll() is None and time.monotonic() < deadline:
-                        time.sleep(.1)
-                finally:
-                    proc.terminate()
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    _, errors = proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
                     try:
-                        _, errors = proc.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        _, errors = proc.communicate()
-                assert output.exists(), errors.decode(errors='replace')
-                result = json.loads(output.read_text())
-                assert not result['automatic_titlebar'], (backend, custom, result)
-                assert result['menu_visible'], result
-                assert result['custom_header'] == custom, result
-                print(f'{backend} {"custom header" if custom else "ordinary window"}: PASS')
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    _, errors = proc.communicate()
+            assert output.exists(), errors.decode(errors='replace')
+            result = json.loads(output.read_text())
+            assert result['window_mapped'], result
+            assert not result['automatic_titlebar'], (backend, custom, result)
+            assert result['menu_visible'], result
+            assert result['custom_header'] == custom, result
+            label = 'custom header' if custom else 'ordinary window'
+            print(f'{backend} {label}: PASS')
 
 
 if __name__ == '__main__':
