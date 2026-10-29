@@ -69,7 +69,7 @@ struct CatalogLibrary: View {
                     }
                 }
                 ForEach(catalog.storefront) { group in
-                    StoreShelf(title: group.title, seeAll: group.category, items: group.apps) { AppTile(app: $0, close: { dismiss() }) }
+                    StoreShelf(title: group.title, seeAll: group.category, items: group.apps) { LibraryAppTile(app: $0, close: { dismiss() }) }
                 }
                 if let error = catalog.storefrontError {
                     VStack(alignment: .leading, spacing: 8) {
@@ -88,7 +88,7 @@ struct CatalogLibrary: View {
 }
 
 /// An app in a row: its icon, name and what it is, and Get, its progress, or Open.
-private struct AppTile: View {
+private struct LibraryAppTile: View {
     @Environment(AppModel.self) private var model
     let app: CatalogApp
     let close: () -> Void
