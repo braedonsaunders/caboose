@@ -4,6 +4,19 @@ set -eu
 cat <<'CHECK'
 Open Chromium, Thunar and a terminal on a signed device paired to a real computer.
 
+Floating desktop snap chooser (iPad Free/Tablet and external display):
+1. Drag an app by its title bar beyond twelve points. A translucent chooser appears
+   above the windows. Sweep across full screen, halves, all four quarters, thirds,
+   and both two-thirds/one-third layouts. The preview matches the selected region.
+2. Release on each region. Check the resulting window bounds and app controls.
+   Place three windows into thirds and two into complementary two-thirds/one-third
+   regions: they meet without gaps or overlap. Pull them out to restore free sizing.
+3. Move out of the chooser and release in the desktop interior: no snap. Move to
+   an edge: existing half/corner/maximize snapping works. A minimum-size app cannot
+   select a dimmed destination. Dragging content or a resize corner shows no chooser.
+4. Repeat by touch and trackpad, with Reduce Motion, after rotation and relaunch.
+   Release or leave Desktop during a drag: no chooser remains on the next visit.
+
 Monitor/window/presentation contract (record results; this script does not claim a pass):
 1. Record xrandr --current and xdpyinfo for the owner display. Show/hide the keyboard,
    open/close app cards, fold and rotate. Monitor dimensions/DPI stay unchanged while

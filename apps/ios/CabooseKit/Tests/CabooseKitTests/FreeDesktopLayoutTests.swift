@@ -44,6 +44,55 @@ struct FreeDesktopLayoutTests {
         #expect(zone(756, 316, duo) == .right)
     }
 
+    @Test func thirdsPartitionOddOffsetWorkAreasExactly() {
+        let area = CGRect(x: 17, y: 43, width: 1001, height: 701)
+        let left = FreeDesktopLayout.rect(for: .leftThird, in: area)
+        let center = FreeDesktopLayout.rect(for: .centerThird, in: area)
+        let right = FreeDesktopLayout.rect(for: .rightThird, in: area)
+        #expect(left.maxX == center.minX && center.maxX == right.minX)
+        #expect(left.union(center).union(right) == area)
+        #expect(FreeDesktopLayout.rect(for: .leftTwoThirds, in: area).maxX == right.minX)
+        #expect(FreeDesktopLayout.rect(for: .rightTwoThirds, in: area).minX == left.maxX)
+        #expect(!FreeDesktopLayout.allows(.leftThird, in: area, minimum: CGSize(width: 334, height: 100)))
+        #expect(!FreeDesktopLayout.allows(.left, in: area, minimum: CGSize(width: 100, height: 702)))
+    }
+
+    @Test func paletteHitTestingMatchesEveryDrawnRegion() {
+        for area in [pad, upright, tv, CGRect(x: 31, y: 20, width: 390, height: 700)] {
+            let palette = FreeDesktopLayout.SnapPalette(in: area)
+            #expect(area.contains(palette.frame))
+            #expect(Set(palette.regions.map(\.snap)) == Set(FreeDesktopLayout.Snap.allCases))
+            for region in palette.regions {
+                #expect(palette.frame.contains(region.frame))
+                #expect(palette.selection(at: CGPoint(x: region.frame.midX, y: region.frame.midY)) == region.snap)
+            }
+            #expect(palette.selection(at: CGPoint(x: area.midX, y: area.maxY)) == nil)
+        }
+    }
+
+    @Test func paletteDisablesImpossibleSizesAndFitsShortScreens() {
+        let palette = FreeDesktopLayout.SnapPalette(in: pad, minimum: CGSize(width: 700, height: 500))
+        for region in palette.regions {
+            let selection = palette.selection(at: CGPoint(x: region.frame.midX, y: region.frame.midY))
+            #expect((selection != nil) == region.enabled)
+            if region.snap == .leftThird || region.snap == .topLeft { #expect(!region.enabled) }
+            if region.snap == .leftTwoThirds { #expect(region.enabled) }
+        }
+        #expect(FreeDesktopLayout.SnapPalette(in: CGRect(x: 0, y: 0, width: 400, height: 100)).regions.isEmpty)
+    }
+
+    @Test func thirdSnapsPersistAndRestoreAcrossRotation() {
+        for snap in [FreeDesktopLayout.Snap.leftThird, .centerThird, .rightThird, .leftTwoThirds, .rightTwoThirds] {
+            var layout = FreeDesktopLayout()
+            let original = CGRect(x: 180, y: 120, width: 600, height: 500)
+            layout.setSnap(1, snap, current: original, in: pad, app: "editor")
+            layout = FreeDesktopLayout.decoded(from: layout.encoded())
+            #expect(layout.frame(for: 1, app: "editor", in: upright) == FreeDesktopLayout.rect(for: snap, in: upright))
+            layout.setSnap(1, nil, current: .zero, in: upright, app: "editor")
+            #expect(layout.frame(for: 1, app: "editor", in: pad) == original)
+        }
+    }
+
     // MARK: Refitting
 
     @Test func refitKeepsEdgesAndCentresAcrossSizes() {

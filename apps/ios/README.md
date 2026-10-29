@@ -164,7 +164,12 @@ and picture need a device with the computer awake. On the Desktop tab, with thre
    keyboard and Return, and repeat after folding and rotating.
 6. iPad set to Free, and a TV: drag a title bar to the left edge, a corner and the top
    edge; an outline shows each snap and letting go takes it. Drag the window back out: it
-   returns to its own size under the finger. Drag one window beside another: their edges
+   returns to its own size under the finger. While dragging, slide over the layout chooser:
+   each miniature region previews its full-size placement above the windows. Release into
+   thirds and both two-thirds/one-third arrangements; adjacent regions meet exactly.
+   Move away before releasing: the preview clears and the window stays free. Large-minimum
+   apps have dimmed, unavailable regions. Repeat with touch, trackpad, Reduce Motion,
+   rotation and relaunch. Drag one window beside another: their edges
    meet. Arrange three windows, rotate, rotate back: every window is where it was. Relaunch
    the app: the same places. Close a window and open the app again: it gets a fresh place.
    Under a finger, Close, Minimize and Zoom show their symbols and each takes a tap at the

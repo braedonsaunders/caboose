@@ -2097,7 +2097,12 @@ the app card, and a detached view releases its layers.
   in a bar at least 32 points tall, with their symbols always shown.
   Dragging a title bar to a side edge snaps the window to that half, near a corner to that
   quarter (where quarters are at least 280 × 200 points), and to the top edge maximizes it,
-  with an outline of where it will go; elsewhere its edges pull onto the desktop's and its
+  with an outline of where it will go. After twelve points of title-bar movement, a
+  translucent layout chooser appears above the windows. Sliding across its miniature
+  regions previews full screen, halves, quarters, thirds and either two-thirds/one-third
+  arrangement; releasing applies the preview. Regions smaller than the app's minimum
+  are dimmed and cannot be selected. Leaving the chooser returns to edge snapping and
+  free placement. The preview follows Reduce Motion; elsewhere window edges pull onto the desktop's and its
   neighbours' within ten points. Pulled out of a snap, a window takes back its own size
   under the finger. Each window keeps a place (`FreeDesktopLayout`): the frame last given
   by hand and the work area it was given in, or a snap. Every other desktop size, after a

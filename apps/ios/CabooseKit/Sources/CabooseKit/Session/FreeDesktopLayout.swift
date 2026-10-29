@@ -16,9 +16,10 @@ import Foundation
 /// can name another window. Once the computer has announced its windows, places of windows it
 /// no longer has are dropped (`prune`).
 public struct FreeDesktopLayout: Codable, Equatable, Sendable {
-    /// A side, a corner or the whole work area, which the window keeps as the area changes.
+    /// A side, a corner, a third or the whole work area, which the window keeps as the area changes.
     public enum Snap: String, Codable, Sendable, CaseIterable {
         case left, right, maximized, topLeft, topRight, bottomLeft, bottomRight
+        case leftThird, centerThird, rightThird, leftTwoThirds, rightTwoThirds
     }
 
     public struct Place: Codable, Equatable, Sendable {
@@ -147,7 +148,18 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
         let halfWidth = (area.width / 2).rounded(.down), halfHeight = (area.height / 2).rounded(.down)
         let width = min(area.width, max(halfWidth, minimum.width))
         let height = min(area.height, max(halfHeight, minimum.height))
+        let third = (area.width / 3).rounded(.down)
+        let second = (area.width * 2 / 3).rounded(.down)
+        func column(_ low: CGFloat, _ high: CGFloat) -> CGRect {
+            let w = min(area.width, max(high - low, minimum.width))
+            return CGRect(x: min(area.minX + low, area.maxX - w), y: area.minY, width: w, height: area.height)
+        }
         switch snap {
+        case .leftThird: return column(0, third)
+        case .centerThird: return column(third, second)
+        case .rightThird: return column(second, area.width)
+        case .leftTwoThirds: return column(0, second)
+        case .rightTwoThirds: return column(third, area.width)
         case .maximized: return area
         case .left: return CGRect(x: area.minX, y: area.minY, width: width, height: area.height)
         case .right: return CGRect(x: area.maxX - width, y: area.minY, width: width, height: area.height)
@@ -161,12 +173,8 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     /// Whether a window of this minimum size can take the snap without covering more than
     /// the snap asks for.
     public static func allows(_ snap: Snap, in area: CGRect, minimum: CGSize) -> Bool {
-        let half = CGSize(width: area.width / 2, height: area.height / 2)
-        switch snap {
-        case .maximized: return true
-        case .left, .right: return minimum.width <= half.width
-        default: return minimum.width <= half.width && minimum.height <= half.height
-        }
+        let frame = rect(for: snap, in: area)
+        return minimum.width <= frame.width && minimum.height <= frame.height
     }
 
     /// The snap a title bar dragged to `point` would take: a side edge snaps to that half,
@@ -184,6 +192,53 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
         }
         if point.y <= area.minY + edge { return .maximized }
         return nil
+    }
+
+    /// Miniature layouts offered during a title-bar drag. Regions use the same geometry
+    /// as the eventual window placement; disabled regions never fall through to edge snaps.
+    public struct SnapPalette: Equatable, Sendable {
+        public struct Region: Equatable, Sendable {
+            public let snap: Snap
+            public let frame: CGRect
+            public let enabled: Bool
+        }
+        public let frame: CGRect
+        public let regions: [Region]
+
+        public init(in area: CGRect, scale: CGFloat = 1, minimum: CGSize = .zero) {
+            let scale = max(0.5, scale)
+            let gap = 10 * scale, inset = 12 * scale
+            let columns = area.width >= 900 * scale ? 6 : (area.width >= 600 * scale ? 3 : 2)
+            let width = min(960 * scale, max(0, area.width - 2 * inset))
+            let cardWidth = max(0, (width - 2 * inset - CGFloat(columns - 1) * gap) / CGFloat(columns))
+            let cardHeight = 88 * scale
+            let rows = 6 / columns
+            let header = 26 * scale
+            let height = header + 2 * inset + CGFloat(rows) * cardHeight + CGFloat(rows - 1) * gap
+            guard width > 0, height + 2 * inset <= area.height else {
+                frame = .zero; regions = []; return
+            }
+            frame = CGRect(x: area.midX - width / 2, y: area.minY + inset, width: width, height: height)
+            let layouts: [[Snap]] = [
+                [.maximized], [.left, .right], [.topLeft, .topRight, .bottomLeft, .bottomRight],
+                [.leftThird, .centerThird, .rightThird], [.leftTwoThirds, .rightThird], [.leftThird, .rightTwoThirds]
+            ]
+            var result: [Region] = []
+            for (index, layout) in layouts.enumerated() {
+                let card = CGRect(x: frame.minX + inset + CGFloat(index % columns) * (cardWidth + gap),
+                                  y: frame.minY + header + inset + CGFloat(index / columns) * (cardHeight + gap),
+                                  width: cardWidth, height: cardHeight)
+                for snap in layout {
+                    result.append(Region(snap: snap, frame: FreeDesktopLayout.rect(for: snap, in: card),
+                                         enabled: FreeDesktopLayout.allows(snap, in: area, minimum: minimum)))
+                }
+            }
+            regions = result
+        }
+
+        public func selection(at point: CGPoint) -> Snap? {
+            regions.first { $0.enabled && $0.frame.contains(point) }?.snap
+        }
     }
 
     /// `frame` from the work area `old` in the work area `new`: the same size where it fits,

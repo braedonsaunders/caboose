@@ -4,6 +4,7 @@ import SwiftUI
 /// The Mac-like desktop shown on an external display: floating Linux windows with native
 /// title bars, a dock of the computer's apps, and the cursor the phone's trackpad drives.
 struct DesktopView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppModel.self) private var model
     let desktop: DesktopModel
     /// A TV's desktop covers the whole screen; the phone's stays inside the bars.
@@ -17,17 +18,6 @@ struct DesktopView: View {
                 if fillsScreen { WallpaperView(store: WallpaperStore.shared) }
                 DesktopFilesView(desktop: desktop)
                     .frame(width: proxy.size.width, height: max(0, proxy.size.height - desktop.dockHeight))
-                // Where the window being dragged would snap if let go now.
-                if let preview = desktop.snapPreview {
-                    RoundedRectangle(cornerRadius: 12 * desktop.ui, style: .continuous)
-                        .fill(.white.opacity(0.12))
-                        .strokeBorder(.white.opacity(0.55), lineWidth: 1.5)
-                        .background(.ultraThinMaterial.opacity(0.6), in: RoundedRectangle(cornerRadius: 12 * desktop.ui, style: .continuous))
-                        .frame(width: preview.width, height: preview.height)
-                        .position(x: preview.midX, y: preview.midY)
-                        .allowsHitTesting(false)
-                        .transition(.opacity)
-                }
                 if let session = model.session {
                     if desktop.fullscreenWindow(in: session.windows) != nil {
                         Color.black.frame(width: proxy.size.width, height: proxy.size.height).allowsHitTesting(false)
@@ -38,6 +28,22 @@ struct DesktopView: View {
                             DesktopWindow(window: window, desktop: desktop, surface: surface, icon: model.icon(for: window))
                         }
                     }
+                }
+                // Where the window being dragged would snap if let go now.
+                if let preview = desktop.snapPreview {
+                    RoundedRectangle(cornerRadius: 12 * desktop.ui, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.12))
+                        .strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 2)
+                        .background(.ultraThinMaterial.opacity(0.6), in: RoundedRectangle(cornerRadius: 12 * desktop.ui, style: .continuous))
+                        .frame(width: preview.width, height: preview.height)
+                        .position(x: preview.midX, y: preview.midY)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+                if let palette = desktop.snapPalette, !palette.regions.isEmpty {
+                    DesktopSnapPalette(palette: palette, selected: desktop.pendingSnap, ui: desktop.ui)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
                 }
                 if desktop.launchpadOpen {
                     Launchpad(desktop: desktop)
@@ -58,6 +64,7 @@ struct DesktopView: View {
                         .allowsHitTesting(false)
                 }
             }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: desktop.snapPalette != nil)
             .coordinateSpace(name: "desktop")
             .task(id: ObjectIdentifier(desktop)) { desktop.quickSwitch = model.quickSwitch }
             .onAppear {
@@ -67,9 +74,13 @@ struct DesktopView: View {
                                                                  height: proxy.size.height * desktop.pixelsPerPoint))
                 }
             }
-            .onDisappear { if fillsScreen { WallpaperStore.shared.stop() } }
+            .onDisappear {
+                desktop.cancelWindowDrag()
+                if fillsScreen { WallpaperStore.shared.stop() }
+            }
             .onChange(of: proxy.size) { _, size in
                 guard !model.windowCardOwnsGeometry else { return }
+                desktop.cancelWindowDrag()
                 desktop.size = size
                 desktop.relayout(session: model.session)
             }
@@ -79,6 +90,43 @@ struct DesktopView: View {
         }
         .ignoresSafeArea(edges: fillsScreen ? .all : [])
         .clipped()
+    }
+}
+
+/// A translucent shelf of miniature destinations, drawn above the moving window.
+private struct DesktopSnapPalette: View {
+    let palette: FreeDesktopLayout.SnapPalette
+    let selected: FreeDesktopLayout.Snap?
+    let ui: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 20 * ui)
+                .fill(.regularMaterial)
+                .overlay { RoundedRectangle(cornerRadius: 20 * ui).strokeBorder(.white.opacity(0.25)) }
+                .shadow(color: .black.opacity(0.25), radius: 20 * ui, y: 8 * ui)
+                .frame(width: palette.frame.width, height: palette.frame.height)
+                .position(x: palette.frame.midX, y: palette.frame.midY)
+            Text(selected == nil ? "Drag into a layout" : "Release to snap")
+                .font(.system(size: 12 * ui, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: palette.frame.width, height: 26 * ui)
+                .position(x: palette.frame.midX, y: palette.frame.minY + 18 * ui)
+            ForEach(Array(palette.regions.enumerated()), id: \.offset) { _, region in
+                let active = region.enabled && selected == region.snap
+                RoundedRectangle(cornerRadius: 6 * ui)
+                    .fill(active ? Color.accentColor.opacity(0.85) : Color.primary.opacity(region.enabled ? 0.16 : 0.04))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6 * ui)
+                            .strokeBorder(active ? Color.white.opacity(0.9) : Color.primary.opacity(0.12), lineWidth: active ? 2 : 1)
+                    }
+                    .frame(width: max(0, region.frame.width - 4 * ui), height: max(0, region.frame.height - 4 * ui))
+                    .position(x: region.frame.midX, y: region.frame.midY)
+            }
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.18), value: selected)
+        .accessibilityHidden(true)
     }
 }
 

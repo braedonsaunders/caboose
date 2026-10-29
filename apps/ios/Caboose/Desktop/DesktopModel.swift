@@ -78,7 +78,8 @@ final class DesktopModel {
 
     /// Where a dragged title bar would snap the window if let go now, in desktop points.
     private(set) var snapPreview: CGRect?
-    private var pendingSnap: FreeDesktopLayout.Snap?
+    private(set) var snapPalette: FreeDesktopLayout.SnapPalette?
+    private(set) var pendingSnap: FreeDesktopLayout.Snap?
 
     /// A window's whole frame (title bar and content) in desktop points, as Linux pixels.
     func linuxFrame(_ chrome: CGRect) -> CGRect {
@@ -186,7 +187,17 @@ final class DesktopModel {
     /// leaves a session that is still ready. A dropped or replaced connection forgets nothing,
     /// since window ids survive reconnects and parking.
     func sync(with windows: [RemoteWindow], session: (any DisplaySession)? = nil) {
-        if session?.state != .ready || session.map(ObjectIdentifier.init) != liveWindows?.session { pointerClicks.cancel() }
+        if session?.state != .ready || session.map(ObjectIdentifier.init) != liveWindows?.session {
+            pointerClicks.cancel()
+            cancelWindowDrag()
+        }
+        if let drag {
+            switch drag.hit {
+            case .titleBar(let id), .resize(let id):
+                if !windows.contains(where: { $0.id == id }) { cancelWindowDrag() }
+            default: break
+            }
+        }
         let ids = Set(windows.map(\.id))
         stacking.removeAll { !ids.contains($0) }
         for window in windows.sorted(by: { $0.id < $1.id }) where !stacking.contains(window.id) {
@@ -460,8 +471,18 @@ final class DesktopModel {
         }
     }
 
+    /// Abandon native window placement when its desktop or connection goes away.
+    func cancelWindowDrag() {
+        guard let drag else { return }
+        switch drag.hit {
+        case .titleBar, .resize:
+            self.drag = nil; dragged = nil; snapPalette = nil; snapPreview = nil; pendingSnap = nil
+        default: break
+        }
+    }
+
     func endDrag(session: (any DisplaySession)?) {
-        defer { drag = nil; snapPreview = nil; pendingSnap = nil; dragged = nil }
+        defer { drag = nil; snapPalette = nil; snapPreview = nil; pendingSnap = nil; dragged = nil }
         guard let drag, let session else { return }
         switch drag.hit {
         case .content(let id, let pressedPoint):
@@ -474,7 +495,7 @@ final class DesktopModel {
             guard let window = session.windows[id], let frame = dragged else { return }
             // Where it was let go is where it returns to from a snap.
             layout.setPreferred(id, frame: frame, in: workArea, app: app(window))
-            if let snap = pendingSnap {
+            if let snap = pendingSnap, FreeDesktopLayout.allows(snap, in: workArea, minimum: minimumChrome(window)) {
                 layout.setSnap(id, snap, current: frame, in: workArea, app: app(window))
                 applyPlace(window, session)
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -512,15 +533,23 @@ final class DesktopModel {
             guard layout.snap(of: id) == nil else { return }
             var frame = start.chrome.offsetBy(dx: dx, dy: dy)
             frame.origin.y = min(max(area.minY, frame.minY), area.maxY - titleBarHeight)
-            let zone = FreeDesktopLayout.zone(at: cursor, in: area, edge: (directTouch ? 20 : 12) * ui)
-                .flatMap { FreeDesktopLayout.allows($0, in: area, minimum: minimumChrome(window)) ? $0 : nil }
+            if hypot(dx, dy) > 12 * ui {
+                snapPalette = FreeDesktopLayout.SnapPalette(in: area, scale: ui, minimum: minimumChrome(window))
+            }
+            let zone: FreeDesktopLayout.Snap?
+            if let palette = snapPalette, palette.frame.contains(cursor) {
+                zone = palette.selection(at: cursor)
+            } else {
+                zone = FreeDesktopLayout.zone(at: cursor, in: area, edge: (directTouch ? 20 : 12) * ui)
+                    .flatMap { FreeDesktopLayout.allows($0, in: area, minimum: minimumChrome(window)) ? $0 : nil }
+            }
             if zone == nil {
                 let others = stacking.filter { $0 != id && isVisible($0) }.compactMap { session.windows[$0] }
                     .filter { !$0.isAuxiliary && !$0.isFullscreen }.map { chromeRect($0) }
                 frame = FreeDesktopLayout.magnetized(frame, others: others, in: area, threshold: 10 * ui)
             }
             if zone != pendingSnap {
-                withAnimation(.snappy(duration: 0.2)) {
+                withAnimation(UIAccessibility.isReduceMotionEnabled ? nil : .snappy(duration: 0.2)) {
                     pendingSnap = zone
                     snapPreview = zone.map { FreeDesktopLayout.rect(for: $0, in: area, minimum: minimumChrome(window)) }
                 }
