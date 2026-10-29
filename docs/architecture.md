@@ -77,8 +77,9 @@ The image contains:
 - **Applications.** Chromium, Firefox ESR, VS Code, xfce4-terminal, Thunar, Mousepad,
   LibreOffice, Obsidian, Evince, KeePassXC, mpv and other document and media tools;
   developer tools including Git, Neovim, Lazygit, Lazydocker, btop, tmux, mise and modern
-  shell tools; Docker; and the Claude Code, Codex, OpenCode and Gemini CLIs, with desktop
-  launchers for terminal tools and agents. Mesa provides software Vulkan and OpenGL when the
+  shell tools; Docker; official Claude Desktop (including Claude Code) and ChatGPT
+  (including Codex); and the Claude Code, Codex, OpenCode and Gemini CLIs, with separate
+  desktop launchers for terminal tools and agents. Mesa provides software Vulkan and OpenGL when the
   computer has no GPU. Fonts are Inter, JetBrains Mono and Noto (including CJK and colour
   emoji). Optional applications come from the catalog (below).
 - **Caboose Display.** `caboose-display` and its units, installed but not enabled. The

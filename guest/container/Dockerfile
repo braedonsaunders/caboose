@@ -37,8 +37,8 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
       pulseaudio pulseaudio-utils gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools && \
     useradd -m -u 1000 -s /bin/bash caboose && usermod -aG sudo caboose && \
     printf 'caboose ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/caboose && chmod 0440 /etc/sudoers.d/caboose
-COPY image/apps.sh /tmp/caboose-apps.sh
-RUN bash /tmp/caboose-apps.sh
+COPY image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv /tmp/
+RUN bash /tmp/apps.sh && rm /tmp/apps.sh /tmp/desktop-apps.sh /tmp/desktop-apps.tsv
 COPY desktop-mcp /tmp/desktop-mcp
 RUN /tmp/desktop-mcp/install.sh
 COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /tmp/agentd/

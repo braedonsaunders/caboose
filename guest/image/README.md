@@ -16,6 +16,8 @@ components.
 | `build-inside.sh` | Inside the builder: partitions and formats the raw disk, runs debootstrap, chroots into `configure-guest.sh`, and extracts the kernel and initrd. |
 | `configure-guest.sh` | Inside the chroot: packages, the `caboose` user, every guest component, theme, fonts and boot configuration. |
 | `apps.sh` | The app lineup installer, shared with the container image and usable on a running computer. |
+| `desktop-apps.sh`, `desktop-apps.tsv` | Official desktop package installer and exact version/SHA-256 pins for both architectures. |
+| `check-desktop-apps.sh` | Disposable Debian install and desktop window check. |
 | `check-audio.sh` | A check for a running computer's sound. |
 
 ## Build
@@ -124,9 +126,19 @@ and registry integrity. Obsidian is proprietary software; amd64 uses its `.deb`,
 | Desktop tools | Xfce Terminal, Thunar, Evince, KeePassXC, File Roller, mpv |
 | Development | VS Code, Neovim, Git, GitHub CLI, delta, Docker and Compose, Lazygit, Lazydocker, btop, tmux, mise, Node 22, uv |
 | Shell | ripgrep, fd, bat, eza, fzf, zoxide, jq, tree, ncdu, htop, fastfetch, yt-dlp, tealdeer, ffmpeg, ImageMagick |
-| Agents | Claude Code, Codex, OpenCode, Gemini CLI |
+| Desktop AI | Claude Desktop (Claude Code), ChatGPT Linux preview (Codex) |
+| Agent CLIs | Claude Code CLI, Codex CLI, OpenCode, Gemini CLI |
 | Rendering | Mesa Vulkan and OpenGL software drivers |
 | Fonts | Inter, JetBrains Mono, Noto (core, CJK, colour emoji) |
+
+The official [Claude Desktop](https://code.claude.com/docs/en/desktop-linux) and
+[ChatGPT Linux preview](https://learn.chatgpt.com/docs/linux/linux-app) Debian packages
+are pinned in `desktop-apps.tsv` by version and SHA-256 for amd64 and arm64. The installer
+checks package identity and lets apt resolve dependencies. Vendor desktop entries, URI
+handlers, icons, sandbox settings and signed apt repository registration remain intact;
+subsequent system package updates can update the clients. The terminal launchers are
+named **Claude Code CLI** and **Codex CLI**. Each desktop client requires the owner's
+sign-in. Cowork's nested KVM/QEMU runtime is not included or supported by this image.
 
 The x86_64-only Craft packages are absent from the ARM64 catalog. Optional applications are installed from the host's catalog ([`guest/catalog`](../catalog/README.md)).
 
@@ -161,6 +173,16 @@ updated by the host itself through [`guest/components`](../components/README.md)
 [`guest/display`](../display/README.md) describes updating Caboose Display.
 
 ## Checks
+
+`bash guest/image/check-desktop-apps.sh` builds a disposable Debian 13 image on the native
+architecture, installs both pinned clients twice, validates their desktop entries and
+launches the vendor entries as an unprivileged user under Xvfb and D-Bus. It requires a
+visible window from each client, uses the container Chromium namespace seccomp policy,
+and removes its container and tagged test image on exit. Run on both native amd64 and
+arm64 hosts to cover both packages. This checks installation and first-window startup;
+it does not verify account sign-in, agent execution, or Caboose Display integration.
+It does not mount the owner's home or touch a running computer.
+
 
 `check-audio.sh`, run as root inside a running computer, checks that the owner's display is
 active, that its launch environment names a `PULSE_SERVER` that `pactl info` reaches, and,

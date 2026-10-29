@@ -1,0 +1,8 @@
+# Official signed apt Packages metadata, checked 2026-10-28.
+# Anthropic signing key: 31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE
+# OpenAI signing key: 3BFA0E4AE8B8CC16A2D9BA684A3B4A566C4660E4
+# Package	Version	Architecture	SHA256	Official URL
+claude-desktop	4.29.0	amd64	4aa0f763d6c05ac79502392dd50f5d7f5c455b2f0a405d5bdf1554acd8342a89	https://downloads.claude.ai/claude-desktop/apt/stable/pool/main/c/claude-desktop/claude-desktop_4.29.0_amd64.deb
+claude-desktop	4.29.0	arm64	978815b8110944805b50cf0dbeb9fde3ebd361c5b85fdec9dd741980545d10b0	https://downloads.claude.ai/claude-desktop/apt/stable/pool/main/c/claude-desktop/claude-desktop_4.29.0_arm64.deb
+chatgpt	26.1023.51421	amd64	4484dc2b54fc0978beb23b8d8d717494e4e0b4fbeab0a876739105e50b44de5a	https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.1023.51421_amd64.deb
+chatgpt	26.1023.51421	arm64	e7478d84f2938dd373fa61c52b0f200b07d610e48947052bd8ad74769b7fd3fb	https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.1023.51421_arm64.deb
