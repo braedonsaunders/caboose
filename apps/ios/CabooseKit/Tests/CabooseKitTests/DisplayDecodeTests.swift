@@ -101,6 +101,11 @@ import VideoToolbox
     }
 
     @Test(.enabled(if: AV1Decoder.isSupported)) func av1DecodesInHardware() throws {
+        // Decode directly first so a failure reports the VideoToolbox status rather
+        // than only the pipeline's failed acknowledgement.
+        let decoder = AV1Decoder()
+        for unit in try Self.av1TemporalUnits() { _ = try decoder.decode(unit) }
+        decoder.invalidate()
         let sent = Sent()
         let pipeline = FramePipeline(windowID: 1, width: 64, height: 64) { sent.append($0) }
         for (index, unit) in try Self.av1TemporalUnits().enumerated() {
