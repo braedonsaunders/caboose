@@ -494,20 +494,27 @@ final class AppModel {
         placedWindowIDs.removeAll()
         let url = host.socketURL(display.path)
         let session: any DisplaySession = CabooseDisplaySession(displayURL: url, token: host.token, password: display.token, capabilities: caps)
-        session.onClipboardText = { text in UIPasteboard.general.string = text }
-        session.clipboardProvider = { UIPasteboard.general.string }
-        session.onBell = { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
-        session.onOpenURL = { [weak self] url in self?.phone.open(url) }
-        session.onNotification = { note in Self.post(note) }
+        let isCurrent: () -> Bool = { [weak self, weak session] in
+            guard let self, let session else { return false }
+            return self.session === session
+        }
+        session.onClipboardText = { text in
+            guard isCurrent() else { return }
+            UIPasteboard.general.string = text
+        }
+        session.clipboardProvider = { isCurrent() ? UIPasteboard.general.string : nil }
+        session.onBell = { if isCurrent() { UINotificationFeedbackGenerator().notificationOccurred(.warning) } }
+        session.onOpenURL = { [weak self] url in if isCurrent() { self?.phone.open(url) } }
+        session.onNotification = { note in if isCurrent() { Self.post(note) } }
         // A window raised on the desktop stays on the desktop; only the phone's cards follow it.
         session.onRaise = { [weak self] wid in
-            guard let self else { return }
+            guard isCurrent(), let self else { return }
             if self.yardActive { self.yard.focus(wid) } else if !self.desktopActive { self.presentedWindowID = wid }
         }
         // A cached frame is shown only for the server epoch it came from; a computer that
         // restarted since (or a guest that sends no epoch) reuses ids for other windows.
         session.cachedFrame = { [weak self, weak session] wid in
-            guard let self, let epoch = self.frameCacheEpoch, epoch == (session as? CabooseDisplaySession)?.server?.epoch else { return nil }
+            guard isCurrent(), let self, let epoch = self.frameCacheEpoch, epoch == (session as? CabooseDisplaySession)?.server?.epoch else { return nil }
             return self.frameCache[wid]
         }
         self.session = session
