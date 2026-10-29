@@ -44,8 +44,9 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
     const network = vi.fn(async () => {})
     const config = { vmFreePageReporting: true, token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false }
     const desired = { name: 'My computer', memoryMb: 512, vcpus: 1, idleMs: 60000, defaultAgent: null }
-    const dependencies = { backend, network, deviceExists: () => true, snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} }, settings: () => desired }
+    const dependencies = { backend, network, deviceExists: () => true, parkedFilesEnabled: true, snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} }, settings: () => desired }
     const controller = createController(config, dependencies)
+    controller.bindParkedFilesGuard?.(() => () => true)
     // First-run provisioning happens after constructing the host pool.
     for (const file of ['base.raw', 'vmlinux', 'initrd']) await writeFile(join(root, file), '')
     const recovery = new ParkedFilesJournal(join(root, 'overlays', 'owner.snapshot.files-freeze'))
@@ -63,6 +64,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
     desired.memoryMb = 1024
     desired.vcpus = 2
     await controller.park()
+    expect(commands.some(command => command.includes('parked_quiesce.py prepare'))).toBe(false)
     supportsOwnerScope = false
     expect(createController(config, dependencies).activeResources()).toEqual({ memoryMb: 512, vcpus: 1 })
     const second = await controller.wake()

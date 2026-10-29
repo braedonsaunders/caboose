@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
 import { parseCraftRequest, runCraft } from './craft-jobs.js'
 import { proxyFiles, proxyWebview, type FileService } from './fs-proxy.js'
+import type { ParkedFilesView } from './parked-files-store.js'
 import { agentJob, parseJob, type ActivityService } from './activities.js'
 import { rm } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -55,6 +56,9 @@ import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUr
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string; actions: AppAction[] }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
 export interface Controller extends ComputerDriver<Session> {
+  /** Install the lifecycle fence used for optional parked Files publication. */
+  bindParkedFilesGuard?(guard: () => () => boolean): void
+  parkedFilesView?(): Promise<ParkedFilesView | undefined>
   componentsMode?: ComponentsMode
   componentsWarning?(): string | undefined
   stats(): unknown
@@ -120,6 +124,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const tiered = tiering?.controller ?? pieces.controller
   const controller = admit ? withAdmission(tiered, () => admit(id)) : tiered
   const computer = new ComputerLifecycle(controller, settings.get().idleMs, shared.freezeParkMs)
+  controller.bindParkedFilesGuard?.(() => computer.parkingGenerationGuard())
   tiering?.attach(computer)
   const sockets = new Set<WebSocket>()
   const controls = new Set<WebSocket>()

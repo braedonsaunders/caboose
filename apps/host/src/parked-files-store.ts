@@ -81,7 +81,8 @@ export class ParkedFilesStore {
 
   async invalidate(): Promise<void> {
     try { await unlink(this.pointer) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-    await syncDirectory(dirname(this.pointer))
+    try { await syncDirectory(dirname(this.pointer)) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
     // This directory is dedicated to this computer's staged clones. Reap
     // incomplete stages too, including those left by a host crash.
     let root

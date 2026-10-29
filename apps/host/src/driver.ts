@@ -13,6 +13,10 @@ import { selectSystemImage, usesSystemImage } from './system-image.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
 import { ownerScopeCommand } from './owner-scope.js'
 import { ParkedFilesJournal } from './parked-files-journal.js'
+import * as deskApi from '@braedonsaunders/appkit-desk'
+import { ParkedFilesController, type ParkedFilesHooks } from './parked-files-controller.js'
+import { ParkedFilesStore } from './parked-files-store.js'
+import { stageParkedDisk } from './parked-files-clone.js'
 
 /** Verify the Files service through vsock before choosing it for this guest. */
 export async function probeServiceVsock(desk: DeskHandle, timeoutMs = 2_000): Promise<boolean> {
@@ -110,6 +114,8 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   settings?: () => ComputerSettings
   splitImage?: string
   depotPath?: string
+  /** Enable only when a compatible parked Files reader is installed. */
+  parkedFilesEnabled?: boolean
 } = {}): Controller {
   const nativeMac = usesVirtualization(dependencies)
   const { id, slot } = dependencies.identity ?? OWNER
@@ -139,6 +145,14 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   const overlayPath = join(config.imageRoot, 'overlays', `${id}.raw`)
   const snapshotPath = join(config.imageRoot, 'overlays', `${id}.snapshot`)
   const parkedFilesJournal = new ParkedFilesJournal(`${snapshotPath}.files-freeze`)
+  const parkedFilesStaging = `${snapshotPath}.files-staging`
+  const parkedFilesStore = new ParkedFilesStore(snapshotPath, parkedFilesStaging)
+  let parkedFilesGuard: (() => () => boolean) | undefined
+  const parkHooksSupported = (deskApi as unknown as { DESK_PARK_HOOK_VERSION?: number }).DESK_PARK_HOOK_VERSION === 1
+  const parkedFiles = new ParkedFilesController(parkedFilesJournal,
+    async () => { await mkdir(parkedFilesStaging, { recursive: true, mode: 0o700 }); return stageParkedDisk(overlayPath, parkedFilesStaging, 512 * 1024 ** 3) },
+    stage => rm(stage.directory, { recursive: true, force: true }),
+    (stage, intent, snapshot, current) => parkedFilesStore.publish(stage, intent, snapshot, current))
   const bindingPath = join(config.imageRoot, 'overlays', `${id}.system-image.json`)
   const resourcesPath = join(config.imageRoot, 'overlays', `${id}.resources.json`)
   let resources: ComputerResources | null = null
@@ -192,6 +206,8 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'caboose-display' }, computer: { name: settings().name, image: 'Debian 13', ...(resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }) } }
   }
   const controller: Controller = {
+    bindParkedFilesGuard: guard => { parkedFilesGuard = guard },
+    parkedFilesView: () => parkedFilesStore.read(),
     componentsMode: 'vm',
     get displayUrl() { return endpoint(OWNER_DISPLAY_PORT, 'ws') },
     get agentDisplayUrl() { return endpoint(AGENT_DISPLAY_PORT, 'ws') },
@@ -209,6 +225,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     hasSavedState: () => Boolean(desk) || existsSync(snapshotPath) || existsSync(`${snapshotPath}.cold.json`),
     lastError: () => restartWarning,
     async wake(mode = 'interactive'): Promise<Session> {
+      await parkedFilesStore.invalidate()
       const desired = settings()
       if (dependencies.depotPath) {
         const probe = buildDeskLaunchPlan({ deskId: 'probe', kernelPath: '/kernel', baseImagePath: '/base', overlayPath: '/disk', vsockCid: 3,
@@ -304,7 +321,10 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     async park() {
       clearHeartbeat()
       await closeRelays()
-      await host.suspend(id)
+      if (!nativeMac && dependencies.parkedFilesEnabled && parkHooksSupported && parkedFilesGuard) {
+        const guard = parkedFilesGuard()
+        await parkedFiles.park(hooks => (host.suspend as unknown as (id: string, hooks: ParkedFilesHooks) => Promise<void>)(id, hooks), guard)
+      } else await host.suspend(id)
       desk = undefined
       displayToken = ''
       launchEnv = []
@@ -313,6 +333,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       }
     },
     async restart() {
+      await parkedFilesStore.invalidate()
       if (!nativeMac) invalidateNetwork(slot)
       restartWarning = null
       // A wedged guest still needs a restart. Try to flush briefly, then surface the
@@ -340,6 +361,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     },
     /** Deletes the computer: its memory, snapshot and disk, and its network. Nothing of it is kept. */
     async destroy() {
+      await parkedFilesStore.invalidate()
       clearHeartbeat()
       await closeRelays()
       await host.destroy(id).catch(error => console.error(`Desk ${id} could not be destroyed cleanly:`, error))
@@ -349,6 +371,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       // A computer parked before this host process started is unknown to appkit-desk.
       await rm(snapshotPath, { recursive: true, force: true })
       await rm(overlayPath, { force: true })
+      await rm(`${snapshotPath}.files-freeze`, { force: true })
       await rm(resourcesPath, { force: true })
       await rm(bindingPath, { force: true })
       if (!nativeMac) await (dependencies.removeNetwork ?? (() => removeNetwork(slot)))()
