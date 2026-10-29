@@ -745,6 +745,5 @@ The read-only host and tenant capacity endpoints expose allocations, measured OS
 resources and bounded storage scans. See [capacity and usage](../../docs/capacity.md)
 for authorization, units, unavailable categories and focused checks.
 
-
 Administrator password recovery, authenticator enrollment and session management are
 documented in [account security](../../docs/account-security.md).
