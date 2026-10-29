@@ -36,7 +36,9 @@ This directory is a Cargo workspace:
   the encoder reads the client's buffer in place, holding it until it is done, and only the
   client's own damage is looked at (a picture that needs encoder padding is copied, damage
   only). Other windows are rendered damage-tracked, straight into the encoder's input
-  image. The encoder keeps the previous picture and compares the damaged 16×16 blocks
+  image. After ten seconds without an encode job, a worker releases its encoders if no
+  refinement is pending; the next picture recreates them with keyframes. The image is
+  retained for damage-tracked rendering. The encoder keeps the previous picture and compares the damaged 16×16 blocks
   against it, converts only the blocks that really changed (applications often damage a
   whole widget for a blinking caret), and tells libx264 which macroblocks changed so it
   skips the rest. One picture per window is at the encoder at a time and the newest

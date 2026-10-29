@@ -342,8 +342,25 @@ impl Worker {
             .name(format!("encode-{window}"))
             .spawn(move || {
                 let mut encoders = Encoders::default();
-                while let Ok(job) = rx.recv() {
-                    if done.send(work(job, &mut encoders)).is_err() {
+                let mut refining = false;
+                loop {
+                    let job = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                        Ok(job) => job,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            if !refining {
+                                encoders = Encoders::default();
+                            }
+                            continue;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    let result = work(job, &mut encoders);
+                    if let Some(ref tiles) = result.tiles {
+                        refining = tiles.refine_in_ms.is_some();
+                    } else if let Some(ref picture) = result.result {
+                        refining = picture.as_ref().ok().is_some_and(|p| p.refine_in_ms.is_some());
+                    }
+                    if done.send(result).is_err() {
                         break;
                     }
                 }
@@ -601,6 +618,36 @@ mod tests {
         assert!(encoders.motion.is_some(), "refinement is not stream cessation");
         let next = work(job(sharp.image, motion(), false), &mut encoders);
         assert!(!next.motion.unwrap().1.unwrap().keyframe, "motion references survive base refinement");
+    }
+
+    #[test]
+    fn recreated_encoders_start_both_streams_with_keyframes() {
+        ffmpeg_next::init().unwrap();
+        let mut encoders = Encoders::default();
+        let job = |image| Job {
+            window: 1,
+            generation: 1,
+            pts_us: 1,
+            image,
+            shm: None,
+            detect: false,
+            keyframe: false,
+            refine: false,
+            damage: Some(vec![Rect::new(0, 0, 16, 16)]),
+            rect: Rect::new(0, 0, 128, 96),
+            crop: Rect::new(0, 0, 128, 96),
+            backend: Backend::Software(caboose_display_protocol::Codec::H264),
+            settings: Settings { threads: 1, refine_qp: 0, tile_max_px: 0, ..Settings::default() },
+            motion: Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false }),
+            ends_motion: None,
+        };
+        let first = work(job(CpuImage::new(128, 96)), &mut encoders);
+        assert!(first.result.unwrap().unwrap().keyframe);
+        assert!(first.motion.unwrap().1.unwrap().keyframe);
+        encoders = Encoders::default(); // idle eviction
+        let next = work(job(first.image), &mut encoders);
+        assert!(next.result.unwrap().unwrap().keyframe);
+        assert!(next.motion.unwrap().1.unwrap().keyframe);
     }
 
     #[test]
