@@ -16,7 +16,7 @@ struct YardDock: View {
 
     static let height: CGFloat = 58
     private let icon: CGFloat = 38
-    private let car: CGFloat = 30
+    private var car: CGFloat { icon }
 
     var body: some View {
         let columns = yard.layout.columns
@@ -186,6 +186,11 @@ private struct Car: View {
     let visible: Bool
     let size: CGFloat
 
+    private var representativeWindow: Int? {
+        if let focused = yard.layout.focused, column.windows.contains(focused) { return focused }
+        return column.windows.first
+    }
+
     var body: some View {
         Menu {
             ForEach(column.windows, id: \.self) { id in
@@ -205,19 +210,31 @@ private struct Car: View {
                 }
             }
         } label: {
-            VStack(spacing: 2) {
-                ForEach(column.windows.prefix(3), id: \.self) { id in
-                    Group {
-                        if let window = model.session?.windows[id], let icon = model.icon(for: window) {
-                            Image(uiImage: icon).resizable().scaledToFit()
-                        } else {
-                            Image(systemName: "macwindow").resizable().scaledToFit().foregroundStyle(.white.opacity(0.8))
-                        }
+            VStack(spacing: 3) {
+                Group {
+                    if let id = representativeWindow,
+                       let window = model.session?.windows[id], let icon = model.icon(for: window) {
+                        Image(uiImage: icon).resizable().scaledToFit()
+                    } else {
+                        Image(systemName: "macwindow").resizable().scaledToFit().foregroundStyle(.white.opacity(0.8))
                     }
-                    .frame(width: column.windows.count > 1 ? 13 : 20, height: column.windows.count > 1 ? 13 : 20)
                 }
+                .frame(width: size, height: size)
+                .overlay(alignment: .topTrailing) {
+                    if column.windows.count > 1 {
+                        Text("\(column.windows.count)")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4).padding(.vertical, 2)
+                            .background(.black.opacity(0.8), in: Capsule())
+                            .accessibilityHidden(true)
+                    }
+                }
+                Circle()
+                    .fill(.white.opacity(visible ? 0.85 : 0))
+                    .frame(width: 4, height: 4)
             }
-            .frame(width: size, height: 36)
+            .frame(width: size, height: size + 7)
             .background(.white.opacity(visible ? 0.24 : 0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
