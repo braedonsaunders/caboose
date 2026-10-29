@@ -44,19 +44,22 @@ final class NativeBridge {
     func setActive(_ active: Bool) {
         self.active = active
         location.setRunning(active && connected && BridgeSettings.location)
-        if active { showNext() }
+        // In the background the control connection closes, so the computer shows its own
+        // dialog for anything still waiting here.
+        if active { showNext() } else { queue.removeAll() }
     }
 
     /// A control connection to the computer opened: the computer gets the phone's appearance.
-    func controlConnected() {
+    private func controlConnected() {
         connected = true
         appearance.resend()
         location.setRunning(active && BridgeSettings.location)
     }
 
-    /// The computer's connection is gone: what it asked for cannot be answered any more.
-    func controlDisconnected() {
+    /// The computer stopped running: what it asked for went to its own dialogs.
+    private func controlDisconnected() {
         connected = false
+        queue.removeAll()
         nowPlaying.clear()
         location.setRunning(false)
     }
@@ -81,6 +84,9 @@ final class NativeBridge {
 
     func handle(_ type: String, _ event: [String: Any]) {
         switch type {
+        case "computer.state":
+            // Sent first on every control connection, and on each lifecycle change.
+            if event["state"] as? String == "running" { controlConnected() } else { controlDisconnected() }
         case "bridge.request":
             guard let raw = event["request"], JSONSerialization.isValidJSONObject(raw),
                   let data = try? JSONSerialization.data(withJSONObject: raw),

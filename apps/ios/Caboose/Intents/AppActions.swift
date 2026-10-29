@@ -63,7 +63,11 @@ struct AppActionsMenu: View {
             Section(app.name) {
                 ForEach(actions, id: \.id) { action in
                     Button {
-                        Task { try? await host.launch(app, action: action) }
+                        // A parked computer wakes for it; the app's window then arrives like any other.
+                        Task {
+                            _ = try? await host.wake(timeout: 120)
+                            try? await host.launch(app, action: action)
+                        }
                     } label: {
                         Label(action.name, systemImage: Self.symbol(for: action))
                     }

@@ -51,7 +51,7 @@ impl Surrounding {
     fn new(text: String, cursor: i32, anchor: i32) -> Option<Self> {
         let valid = |offset: i32| offset >= 0 && text.is_char_boundary(offset as usize);
         (text.len() <= MAX_SURROUNDING && valid(cursor) && valid(anchor))
-            .then(|| Surrounding { cursor: cursor as u32, anchor: anchor as u32, text })
+            .then_some(Surrounding { cursor: cursor as u32, anchor: anchor as u32, text })
     }
 
     pub fn wire(&self) -> caboose_display_protocol::Surrounding {
