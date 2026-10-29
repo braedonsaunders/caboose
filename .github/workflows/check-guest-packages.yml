@@ -1,0 +1,26 @@
+name: Check guest package repository
+
+on:
+  pull_request:
+    paths:
+      - 'guest/packages/**'
+      - '.github/workflows/check-guest-packages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guest-packages-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check repository generation and failure handling
+        run: python3 -m unittest discover -s guest/packages -v
+      - name: Verify signatures and download through real APT
+        run: bash guest/packages/check-repository.sh
