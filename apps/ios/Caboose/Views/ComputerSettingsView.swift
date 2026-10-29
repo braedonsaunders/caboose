@@ -213,8 +213,10 @@ struct ComputerSettingsView: View {
                 if let host = model.credentials?.hostURL.host() {
                     LabeledContent("Host", value: host)
                 }
-                if let latency = model.session?.latencyMs {
-                    LabeledContent("Latency", value: "\(Int(latency)) ms")
+                NavigationLink {
+                    ConnectionDiagnosticsView()
+                } label: {
+                    LabeledContent("Display", value: model.connectionSummary)
                 }
                 LabeledContent("Screens connected", value: "\(status.clients.display)")
                 LabeledContent("Agents working", value: "\(status.tasks.running + status.tasks.paused)")
