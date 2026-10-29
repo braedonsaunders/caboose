@@ -24,6 +24,13 @@ public struct LaunchpadLayout: Equatable, Sendable {
         rows = max(1, Int((size.height - top - dockHeight - 84 * ui) / rowHeight))
     }
 
+    /// A deliberate horizontal swipe advances one page; vertical movement and small drags do not.
+    public func pageAfterSwipe(_ page: Int, count: Int, translation: CGSize, predicted: CGSize) -> Int {
+        guard abs(translation.width) > 12, abs(translation.width) > abs(translation.height) * 1.3,
+              abs(translation.width) > 60 || abs(predicted.width) > 120 else { return clampedPage(page, count: count) }
+        return clampedPage(page + (translation.width < 0 ? 1 : -1), count: count)
+    }
+
     /// The grid's width, spacing included.
     public var width: CGFloat { CGFloat(columns) * column + CGFloat(columns - 1) * spacing }
 

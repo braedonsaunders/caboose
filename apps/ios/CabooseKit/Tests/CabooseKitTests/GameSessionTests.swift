@@ -550,3 +550,16 @@ import Testing
         #expect(delivered.count == 2)
     }
 }
+
+@Suite struct GamePresentationTests {
+    @Test func desktopHostsLiveGameWithoutRoutingInputThroughItsView() {
+        #expect(GamePresentation.hosts(interactive: false, desktop: true, contentEnabled: true, hasConnection: true, onScreen: true))
+        #expect(GamePresentation.hosts(interactive: true, desktop: false, contentEnabled: true, hasConnection: true, onScreen: true))
+    }
+    @Test func thumbnailsAndInactiveOwnersDoNotTakeTheGame() {
+        #expect(!GamePresentation.hosts(interactive: false, desktop: false, contentEnabled: true, hasConnection: true, onScreen: true))
+        #expect(!GamePresentation.hosts(interactive: false, desktop: true, contentEnabled: false, hasConnection: true, onScreen: true))
+        #expect(!GamePresentation.hosts(interactive: false, desktop: true, contentEnabled: true, hasConnection: false, onScreen: true))
+        #expect(!GamePresentation.hosts(interactive: false, desktop: true, contentEnabled: true, hasConnection: true, onScreen: false))
+    }
+}

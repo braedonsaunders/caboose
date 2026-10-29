@@ -150,6 +150,10 @@ it('signs a phone in to one computer only, and signing it out closes what it has
     expect((await host.call(path, { token: phone })).status, path).toBe(403)
   }
   expect((await host.call('/v1/computer', { token: 'cbp_not-a-token' })).status).toBe(401)
+  const chat = '11111111-1111-4111-8111-111111111111'
+  expect((await host.call(`/v1/computers/${OWNER_COMPUTER}/agent/tasks/${chat}`, { method: 'DELETE', token: phone, body: { stop: true } })).status).toBe(403)
+  expect(host.made.get(OWNER_COMPUTER)!.calls).toEqual([])
+
 
   // Notifications it registers are its computer's, and go when it is signed out.
   expect((await host.call('/v1/devices/push', { method: 'POST', token: phone, body: { token: 'ab'.repeat(32), environment: 'sandbox', kinds: ['task'] } })).status).toBe(200)

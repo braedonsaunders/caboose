@@ -123,7 +123,6 @@ final class AppModel {
 
     private var launchStartedAt: Date?
     private var knownWindowIDs = Set<Int>()
-    private var pasteboardChangeCount = UIPasteboard.general.changeCount
     private var observingWindows = false
 
     init() {
@@ -438,7 +437,6 @@ final class AppModel {
         documents.requestSync(model: self)
         Task { await desktopFiles.refresh(model: self) }
         showSharedDocumentIfAvailable()
-        offerPasteboardIfChanged()
         guard phase != .displayElsewhere else { return }
         switch link.status {
         case .reconnecting, .waitingForNetwork: return // already on it
@@ -1251,7 +1249,10 @@ final class AppModel {
     }
 
     /// Laptop keeps one workspace; other layouts present the selected window as an app card.
-    func show(windowID: Int) {
+    var windowCardBorderless = false
+
+    func show(windowID: Int, borderless: Bool = false) {
+        windowCardBorderless = borderless
         if laptopDesktopActive {
             presentedWindowID = nil
             desktop.activate(windowID, session: session)
@@ -1338,13 +1339,6 @@ final class AppModel {
     }
 
     // MARK: Clipboard and notifications
-
-    private func offerPasteboardIfChanged() {
-        let count = UIPasteboard.general.changeCount
-        guard count != pasteboardChangeCount else { return }
-        pasteboardChangeCount = count
-        if UIPasteboard.general.hasStrings, let text = UIPasteboard.general.string { session?.offerClipboard(text) }
-    }
 
     static func requestNotificationPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }

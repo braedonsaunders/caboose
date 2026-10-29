@@ -112,6 +112,8 @@ private struct ChatList: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
+    @State private var deleting: AgentCenter.Task?
+    @State private var deletionError: String?
 
     var body: some View {
         let agents = model.agents
@@ -139,6 +141,11 @@ private struct ChatList: View {
                         TaskStatusPill(task: task)
                     }
                 }
+                .disabled(agents.deletingChats.contains(task.id))
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button("Delete", role: .destructive) { deleting = task }
+                        .disabled(agents.deletingChats.contains(task.id))
+                }
                 .foregroundStyle(.primary)
                 .listRowBackground(task.id == agents.currentChat ? Color.accentColor.opacity(0.12) : nil)
             }
@@ -147,6 +154,22 @@ private struct ChatList: View {
             }
             .searchable(text: $search, prompt: "Search chats and agents")
             .refreshable { await agents.refresh() }
+            .confirmationDialog(deleting?.isRunning == true ? "Stop and delete this chat?" : "Delete this chat?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+                if let task = deleting {
+                    Button(task.isRunning ? "Stop and Delete" : "Delete Chat", role: .destructive) {
+                        Task {
+                            do { try await agents.deleteChat(task, stop: task.isRunning) }
+                            catch { deletionError = error.localizedDescription }
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) { deleting = nil }
+            } message: {
+                Text("The conversation and queued messages are permanently deleted from this computer. Files created by the agent are kept.")
+            }
+            .alert("Couldn’t Delete Chat", isPresented: Binding(get: { deletionError != nil }, set: { if !$0 { deletionError = nil } })) {
+                Button("OK", role: .cancel) { deletionError = nil }
+            } message: { Text(deletionError ?? "") }
             .navigationTitle("Chats")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

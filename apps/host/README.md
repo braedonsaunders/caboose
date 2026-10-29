@@ -593,3 +593,22 @@ Run `pnpm test -- src/guest-apps.test.ts` for copy, collision, traversal and sym
 Computer creation and settings accept the `micro`, `standard`, and `gpu` size presets;
 see [the architecture](../../docs/architecture.md) for resources and GPU availability.
 Custom CPU and memory settings remain available.
+
+Chat deletion is covered by `pnpm --filter caboose-host exec vitest run src/agents.test.ts src/agent-delete.test.ts src/server.test.ts src/fleet.test.ts`
+from the repository root. On a real Linux computer, create a chat that writes a file in
+its working directory and one outside it, then swipe Delete in Agents > Chats. Confirm
+Stop and Delete while running (repeat while paused and while awaiting approval). Verify
+both generated files remain, the runner group exits, and the chat stays absent after a
+host restart. A concurrent reply must either finish before deletion or fail without
+recreating history. If runner identity cannot be verified, deletion fails visibly.
+
+The runner-group deletion check uses a disposable Linux Node container with no network,
+128 MiB memory and one CPU. It creates its own detached runner wrappers, exercises
+running and paused deletion, verifies generated files and tombstones, and rejects an
+unrelated process group. From the repository root (with the Node image already present):
+
+```sh
+pnpm --filter caboose-host exec tsx -e "import {writeFileSync} from 'node:fs'; import {DELETE_TASK} from './src/agents.ts'; writeFileSync('/tmp/caboose-delete-task-code.js', DELETE_TASK)"
+docker run --rm --init --network none --memory 128m --cpus 1 -v "$PWD/apps/host/scripts/check-agent-delete.mjs:/check.mjs:ro" -v /tmp/caboose-delete-task-code.js:/delete-task.js:ro node:22-bookworm-slim node /check.mjs /delete-task.js
+rm /tmp/caboose-delete-task-code.js
+```

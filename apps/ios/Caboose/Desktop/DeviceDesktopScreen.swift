@@ -232,6 +232,7 @@ private struct DesktopStage: View {
                     ZStack {
                         DesktopView(desktop: model.desktop, fillsScreen: false, showsDock: !portraitDesktop)
                         DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
+                            .allowsHitTesting(!model.desktop.launchpadOpen)
                         DesktopKeyCommands(desktop: model.desktop)
                         if portraitDesktop, !model.desktop.detachedChrome,
                            let session = model.session, model.desktop.fullscreenWindow(in: session.windows) == nil {
