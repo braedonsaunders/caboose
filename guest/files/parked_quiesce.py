@@ -109,7 +109,7 @@ def userspace_tree(nodes, proc='/proc'):
 
 
 def check_mounts(mountinfo, home='/home/caboose'):
-    """Require home to live on the root ext4 mount, with no nested mounts."""
+    """Require ext4 home, allowing only the standard transient cache mount."""
     mounts = []
     for line in mountinfo.splitlines():
         fields = line.split()
@@ -125,7 +125,8 @@ def check_mounts(mountinfo, home='/home/caboose'):
     root = [fs for point, fs in mounts if point == '/']
     if root != ['ext4']:
         raise Unsupported('root is not a single ext4 mount')
-    if any(point != '/' and (within(home, point) or within(point, home)) for point, _ in mounts):
+    relevant = [(point, fs) for point, fs in mounts if point != '/' and (within(home, point) or within(point, home))]
+    if any(point != home + '/.cache' or fs != 'tmpfs' for point, fs in relevant) or len(relevant) > 1:
         raise Unsupported('home has an unsupported mount')
 
 

@@ -160,8 +160,13 @@ class QuiesceChecks(unittest.TestCase):
 
     def test_home_mount_is_refused(self):
         check_mounts(ROOT)
+        check_mounts(ROOT + '2 1 0:42 / /home/caboose/.cache rw - tmpfs tmpfs rw,uid=1000,gid=1000\n')
         with self.assertRaises(Unsupported):
             check_mounts(ROOT + '2 1 0:42 / /home/caboose/media rw - tmpfs tmpfs rw\n')
+        with self.assertRaises(Unsupported):
+            check_mounts(ROOT + '2 1 0:42 / /home/caboose/.cache rw - ext4 /dev/vdb rw\n')
+        with self.assertRaises(Unsupported):
+            check_mounts(ROOT + '2 1 0:42 / /home/caboose/.cache rw - tmpfs tmpfs rw\n3 2 0:43 / /home/caboose/.cache/other rw - tmpfs tmpfs rw\n')
         with self.assertRaises(Unsupported):
             check_mounts(ROOT.replace('ext4', 'overlay'))
 
