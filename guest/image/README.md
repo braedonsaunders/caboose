@@ -14,6 +14,7 @@ components.
 | `build.sh` | Builds the builder image and runs it. Entry point. |
 | `Dockerfile` | The builder: a first stage compiles Caboose Display and the VA-API passthrough driver; the second has debootstrap and copies the guest components. |
 | `build-inside.sh` | Inside the builder: partitions and formats the raw disk, runs debootstrap, chroots into `configure-guest.sh`, and extracts the kernel and initrd. |
+| `make-system-image.sh` | Packs a prepared root’s `/usr` and `/opt` into an uncompressed EROFS image without modifying the root. |
 | `configure-guest.sh` | Inside the chroot: packages, the `caboose` user, every guest component, theme, fonts and boot configuration. |
 | `apps.sh` | The app lineup installer, shared with the container image and usable on a running computer. |
 | `desktop-apps.sh`, `desktop-apps.tsv` | Official desktop package installer and exact version/SHA-256 pins for both architectures. |
@@ -207,3 +208,12 @@ The components have their own checks: `guest/desktop-mcp/check-a11y.sh` (Docker)
 `guest/notifications/check.sh` and `check-container.sh`, `guest/phone/check.sh`,
 `guest/game/check.sh`, `guest/media-handoff/check.sh`, `guest/files/check-service.py` and
 `guest/terminal/check-service.py`.
+
+## Building an EROFS system image
+
+On Linux with `erofs-utils` installed, `guest/image/make-system-image.sh ROOT OUTPUT`
+creates and checks an EROFS image containing the prepared root's `usr` and `opt`.
+It refuses to replace an existing output and leaves the source unchanged. The image
+contains uncompressed, non-inlined files; filesystem DAX additionally requires a
+DAX-capable device and guest kernel. The current microVM boot path does not attach
+this image.
