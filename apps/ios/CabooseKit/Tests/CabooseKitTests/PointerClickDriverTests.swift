@@ -4,8 +4,8 @@ import Testing
 @MainActor
 @Suite(.timeLimit(.minutes(1)))
 struct PointerClickDriverTests {
-    private final class Clock {
-        final class Wait {
+    @MainActor private final class Clock {
+        @MainActor final class Wait {
             let duration: UInt64
             private var continuation: CheckedContinuation<Void, any Error>?
 
