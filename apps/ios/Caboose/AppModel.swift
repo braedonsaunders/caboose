@@ -179,10 +179,10 @@ final class AppModel {
     }
 
     /// Change reachability without replacing the phone token or its Files identity.
-    func updateAddresses(_ updated: Credentials) {
+    func updateAddresses(_ updated: Credentials) throws {
         guard let current = credentials, current.hostURL == updated.hostURL,
               current.token == updated.token else { return }
-        updated.saveAddresses()
+        try updated.saveAddresses()
         credentials = updated
         if case .failed = phase { Task { await wake() } }
     }

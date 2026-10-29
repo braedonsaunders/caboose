@@ -45,8 +45,9 @@ the phone). The app trades the single-use code for its own token through `POST /
 sign-in screen also takes an address with a typed pairing code, or with a token, and older
 links that carry `token=` still work. Under Computer settings, Remote Access adds or removes
 alternate HTTP or HTTPS addresses without replacing the phone's token or Files identity.
-The settings are available even when the host is unreachable. The app tries saved addresses
-at each wake.
+The settings are available even when the host is unreachable. The app probes saved addresses
+at each wake without sending a token; an anonymous health response filters captive portals but
+does not authenticate the host.
 
 ## Test
 
@@ -54,7 +55,13 @@ at each wake.
 cd apps/ios/CabooseKit && swift test
 ```
 
-Run `sh scripts/check-remote-access.sh` for the paired-phone remote access check.
+Run the remote-address unit checks and paired-phone check:
+
+```sh
+swiftc Caboose/Host/Credentials.swift tests/RemoteAddresses.swift -o /tmp/caboose-remote-address-tests
+/tmp/caboose-remote-address-tests
+sh scripts/check-remote-access.sh
+```
 
 The unit tests replay the compositor's golden vectors from `guest/display/vectors` (every
 message decodes, re-encodes byte for byte and parses, and every client message the app

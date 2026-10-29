@@ -500,7 +500,9 @@ their SHA-256.
 
 How a phone finds and reaches the host. `GET /v1/host/reach` lists every address a phone can
 use, best first, and a pairing link carries them all: the first as `host=`, the rest as
-`alt=`. The app uses the first that answers. A paired phone can add or remove alternate
+`alt=`. The app probes the addresses without credentials and selects the first returning the
+host’s anonymous health response; this filters captive portals but does not authenticate the
+host. A paired phone can add or remove alternate
 addresses in Computer settings, including while offline, without changing its token or Files
 identity. It chooses among the saved addresses at each wake.
 
