@@ -1,3 +1,4 @@
+import { computerSizes, expandSize } from './sizes.js'
 import { createHash } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
 import { parseCraftRequest, runCraft } from './craft-jobs.js'
@@ -111,7 +112,7 @@ function withAdmission(controller: Controller, admit: () => Promise<void>): Cont
 /** The Library's host-wide parts, shared by every computer. */
 export interface Library { flathub?: FlathubIndex; releases?: CraftReleases; depot?: RuntimeDepot; arch?: Architecture; mcp?: { catalog: SmitheryCatalog; hostId: string; request?: import('./smithery.js').Requester } }
 
-function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; admit?: Admission; library?: Library }) {
+function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; admit?: Admission; library?: Library; gpuEnabled: boolean; validateSize: (input: Record<string, unknown>) => Promise<void> }) {
   const { settings, push, activities } = pieces
   const admit = shared.admit
   const controller = admit ? withAdmission(pieces.controller, () => admit(id)) : pieces.controller
@@ -309,7 +310,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const active = controller.activeResources()
     const tasks = agents.list()
     return {
-      state: computer.state, settings: desired, limits: settings.limits, activeResources: active,
+      state: computer.state, settings: desired, limits: settings.limits, sizes: computerSizes(shared.gpuEnabled), activeResources: active,
       restartRequired: controller.hasSavedState() && (!active || active.memoryMb !== desired.memoryMb || active.vcpus !== desired.vcpus),
       clients: { display: sockets.size - controls.size - terminals.size, control: controls.size, terminal: terminals.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
@@ -499,7 +500,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     }
     if (request.method === 'GET' && path === '/v1/computer') return json(response, 200, managementStatus())
     if (request.method === 'PATCH' && path === '/v1/computer/settings') {
-      const input = await readJson(request)
+      const rawInput = await readJson(request)
+      await shared.validateSize(rawInput)
+      const input = expandSize(rawInput, shared.gpuEnabled)
       if ('defaultAgent' in input) await catalog.ensureKnown(input.defaultAgent)
       if (admit && ('memoryMb' in input || 'vcpus' in input)) await admit(id, updateSettings(settings.get(), input, settings.limits))
       const updated = await settings.update(input)
@@ -972,6 +975,14 @@ export function createCabooseServer(options: ComputerPieces & {
   const throttle = new SignInThrottle()
   const shared = {
     registry: options.registry ?? new AgentRegistry(),
+    gpuEnabled: options.host?.runtime === 'container' && options.host.gpu !== null && options.host.gpu !== 'none',
+    validateSize: async (input: Record<string, unknown>) => {
+      if (!('size' in input) || !options.machine) return
+      const size = computerSizes(options.host?.runtime === 'container' && options.host.gpu !== null && options.host.gpu !== 'none').find(entry => entry.id === input.size)
+      if (!size) return
+      const machine = await options.machine()
+      if (size.memoryMb > machine.memoryMb || size.vcpus > machine.cpus) throw new ComputerConflictError('Computer size exceeds this host’s total memory or CPUs')
+    },
     ...(options.library ? { library: options.library } : {}),
     ...(options.agentIdleMs !== undefined ? { agentIdleMs: options.agentIdleMs } : {}),
     ...(identity ? { admit: (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'>) => admit(id, next, !next) } : {}),
@@ -1062,7 +1073,9 @@ export function createCabooseServer(options: ComputerPieces & {
   async function createComputer(input: Record<string, unknown>, principal: Principal): Promise<ComputerRuntime> {
     const fleet = options.fleet
     if (!fleet) throw new ComputerConflictError('This host serves one computer')
-    const { tenantId: requestedTenant, person: requestedPerson, personId: requestedPersonId, ...settingsInput } = input
+    const { tenantId: requestedTenant, person: requestedPerson, personId: requestedPersonId, ...rawSettings } = input
+    await shared.validateSize(rawSettings)
+    const settingsInput = expandSize(rawSettings, shared.gpuEnabled)
     if (!('name' in settingsInput)) throw new SettingsInputError('name is required')
     if ('defaultAgent' in settingsInput) throw new SettingsInputError('Unknown setting: defaultAgent')
     const initial = updateSettings({ name: 'Computer', defaultAgent: null, ...fleet.defaults }, settingsInput, settingsLimits())

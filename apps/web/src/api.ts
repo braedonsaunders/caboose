@@ -27,7 +27,10 @@ export interface ComputerResources {
   vcpus: number
 }
 
+export interface ComputerSize { id: string; name: string; memoryMb: number; vcpus: number; available: boolean }
+
 export interface ComputerStatus {
+  sizes?: ComputerSize[]
   state: ComputerState
   settings: ComputerSettings
   limits?: ComputerLimits
@@ -74,6 +77,7 @@ export interface NewComputer {
   memoryMb: number
   vcpus: number
   idleMs: number
+  size?: string
   /** Required on a host with accounts. */
   tenantId?: string
   personId?: string | null
@@ -245,6 +249,13 @@ export function computeSettingsPatch(
   if (next.vcpus !== current.vcpus) patch.vcpus = next.vcpus
   if (next.idleMs !== current.idleMs) patch.idleMs = next.idleMs
   return patch
+}
+
+/** Send a preset only when its resource values are part of the edit. */
+export function settingsSavePatch(patch: Partial<ComputerSettings>, sizeId: string): Partial<ComputerSettings> & { size?: string } {
+  if (sizeId === 'custom' || (!('memoryMb' in patch) && !('vcpus' in patch))) return patch
+  const { memoryMb: _memory, vcpus: _cpus, ...other } = patch
+  return { ...other, size: sizeId }
 }
 
 export function willRequireColdRestart(
@@ -535,7 +546,7 @@ export class CabooseClient {
     return this.request<ComputerStatus>('GET', '/v1/computer', { timeoutMs: 20_000 })
   }
 
-  updateSettings(patch: Partial<ComputerSettings>): Promise<ComputerStatus> {
+  updateSettings(patch: Partial<ComputerSettings> & { size?: string }): Promise<ComputerStatus> {
     return this.request<ComputerStatus>('PATCH', '/v1/computer/settings', { body: patch, timeoutMs: 20_000 })
   }
 

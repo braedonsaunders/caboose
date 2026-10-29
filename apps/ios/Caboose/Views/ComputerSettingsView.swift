@@ -8,6 +8,7 @@ struct ComputerSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var push = PushCoordinator.shared
     @State private var draft: HostClient.ComputerStatus.Settings?
+    @State private var sizeId = "custom"
     @State private var loadError: String?
     @State private var saveError: String?
     @State private var saving = false
@@ -146,18 +147,33 @@ struct ComputerSettingsView: View {
             }
 
             Section {
-                Picker("Memory", selection: binding(\.memoryMb)) {
+                if let sizes = status.sizes, !sizes.isEmpty {
+                    Picker("Size", selection: Binding(get: { sizeId }, set: { id in
+                        sizeId = id
+                        if let size = sizes.first(where: { $0.id == id && $0.available }) {
+                            draft?.memoryMb = size.memoryMb
+                            draft?.vcpus = size.vcpus
+                        }
+                    })) {
+                        Text("Custom / current").tag("custom")
+                        ForEach(sizes) { size in
+                            Text("\(size.name) · \(Self.memoryText(size.memoryMb)) · \(Self.coresText(size.vcpus))\(size.available ? "" : " (unavailable)")")
+                                .tag(size.id).disabled(!size.available)
+                        }
+                    }
+                }
+                Picker("Memory", selection: Binding(get: { draft!.memoryMb }, set: { draft?.memoryMb = $0; sizeId = "custom" })) {
                     ForEach(Self.memoryChoices(limits.memoryMb.range, current: draft?.memoryMb), id: \.self) {
                         Text(Self.memoryText($0)).tag($0)
                     }
                 }
-                Stepper(value: binding(\.vcpus), in: limits.vcpus.range) {
+                Stepper(value: Binding(get: { draft!.vcpus }, set: { draft?.vcpus = $0; sizeId = "custom" }), in: limits.vcpus.range) {
                     LabeledContent("Cores", value: "\(draft?.vcpus ?? 0)")
                 }
             } header: {
                 Text("Resources")
             } footer: {
-                Text("Memory and cores apply the next time your computer restarts.")
+                Text("Memory and cores apply the next time your computer restarts. GPU access uses the host GPU and is shared.")
             }
 
             Section {
@@ -302,8 +318,13 @@ struct ComputerSettingsView: View {
         var changes: [String: JSONValue] = [:]
         let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if name != saved.name { changes["name"] = .string(name) }
-        if draft.memoryMb != saved.memoryMb { changes["memoryMb"] = .int(draft.memoryMb) }
-        if draft.vcpus != saved.vcpus { changes["vcpus"] = .int(draft.vcpus) }
+        if draft.memoryMb != saved.memoryMb || draft.vcpus != saved.vcpus {
+            if sizeId != "custom" { changes["size"] = .string(sizeId) }
+            else {
+                if draft.memoryMb != saved.memoryMb { changes["memoryMb"] = .int(draft.memoryMb) }
+                if draft.vcpus != saved.vcpus { changes["vcpus"] = .int(draft.vcpus) }
+            }
+        }
         if draft.idleMs != saved.idleMs { changes["idleMs"] = .int(draft.idleMs) }
         return changes
     }
@@ -326,6 +347,7 @@ struct ComputerSettingsView: View {
         do {
             try await model.saveSettings(changes)
             draft = model.computerStatus?.settings
+            sizeId = "custom"
             saveError = nil
         } catch {
             saveError = error.localizedDescription

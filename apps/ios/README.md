@@ -846,3 +846,6 @@ the device; the live game stays visible and fits its window. In tablet portrait,
 window’s green Full Screen control hides the dock and chrome; the return handle restores
 controls. Swipe horizontally across All Apps to change pages; vertical drags and short
 taps do not page. Opening Caboose does not read the system pasteboard.
+
+Computer settings offer the sizes provided by the host and custom CPU and memory.
+GPU access uses the host GPU and is shared; availability reflects host configuration.
