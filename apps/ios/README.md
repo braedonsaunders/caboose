@@ -288,14 +288,18 @@ there; without it CabooseKit builds without `GPUStreamPlayer` and `GPUStreamView
 plays GPU streams. Ship the two licences with the app's acknowledgements.
 
 With the xcframework built, `swift test --filter GPUStreamPlayer` checks the player's ends
-(an empty stream, bytes that are not a capture, stopping, one replay at a time). Replay a
-real capture through MoltenVK into a layer on no screen with
+(an empty stream, bytes that are not a capture, stopping, one replay at a time, the offset a
+replay reports when what it has not taken is dropped). Replay a real capture through MoltenVK
+into a layer on no screen with
 
 ```sh
 CABOOSE_GPU_CAPTURE=~/cube.gfxr CABOOSE_GPU_CAPTURE_FRAMES=300 swift test --filter GPUStreamPlayer
 ```
 
-which requires every frame to replay without an error and prints the frame rate. A capture
+which requires every frame to replay without an error and prints the frame rate, and also
+replays it as a resumed replay does (fed again from the offset the replay accepted after
+half of it was handed over) and as a new replay from the device's copy does (its first half
+from a file, the rest fed). A capture
 of `vkcube --use_staging` against the Khronos mock driver (`GFXRECON_CAPTURE_FILE=cube.gfxr`,
 `GFXRECON_CAPTURE_COMPRESSION_TYPE=NONE`, `VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_gfxreconstruct`)
 has 300 frames.

@@ -75,6 +75,79 @@ struct GPUStreamPlayerTests {
         #expect(await second.waitUntilEnded() == .failed("The stream does not start with a GFXReconstruct file header"))
     }
 
+    private func discardPending(_ player: GPUStreamPlayer) async -> UInt64? {
+        await withCheckedContinuation { continuation in player.discardPending { continuation.resume(returning: $0) } }
+    }
+
+    /// A running replay that took nothing accepted offset 0; a stopped one cannot continue.
+    @Test func discardingReportsWhatTheReplayAccepted() async {
+        let player = GPUStreamPlayer(layer: CAMetalLayer(), queue: DispatchQueue(label: "gpu-stream-test"))
+        #expect(await discardPending(player) == 0)
+        player.stop()
+        _ = await player.waitUntilEnded()
+        #expect(await discardPending(player) == nil)
+    }
+
+    private static var capture: Data? {
+        ProcessInfo.processInfo.environment["CABOOSE_GPU_CAPTURE"].flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) }
+    }
+
+    private static func chunks(of data: Data, size: Int = 64 * 1024) -> [Data] {
+        stride(from: data.startIndex, to: data.endIndex, by: size).map { data.subdata(in: $0 ..< min($0 + size, data.endIndex)) }
+    }
+
+    /// Plays `player` to its end, checking every frame of the capture replays.
+    private func expectEveryFrame(_ player: GPUStreamPlayer, _ events: AsyncStream<GPUStreamPlayer.Event>) async {
+        var last: GPUStreamPlayer.Event?
+        for await event in events { last = event }
+        #expect(last == .ended(.finished))
+        #expect(player.state == .finished)
+        if let expected = ProcessInfo.processInfo.environment["CABOOSE_GPU_CAPTURE_FRAMES"].flatMap(UInt64.init) {
+            #expect(player.framesRendered == expected)
+        }
+    }
+
+    /// The resume path: bytes handed over but not taken are dropped, and feeding the stream again
+    /// from the offset the replay accepted replays every frame.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CABOOSE_GPU_CAPTURE"] != nil))
+    func aReplayContinuesFromWhatItAccepted() async throws {
+        let capture = try #require(Self.capture)
+        let (events, continuation) = AsyncStream.makeStream(of: GPUStreamPlayer.Event.self)
+        let player = GPUStreamPlayer(layer: CAMetalLayer(), queue: DispatchQueue(label: "gpu-stream-test")) { event in
+            continuation.yield(event)
+            if case .ended = event { continuation.finish() }
+        }
+        for chunk in Self.chunks(of: capture.prefix(capture.count / 2)) { player.feed(chunk) }
+        let accepted = try #require(await discardPending(player))
+        #expect(accepted <= UInt64(capture.count / 2))
+        for chunk in Self.chunks(of: capture.dropFirst(Int(accepted))) { player.feed(chunk) }
+        player.finish()
+        await expectEveryFrame(player, events)
+    }
+
+    /// The device's copy: the start of the stream from a file, at the replay's pace, then the
+    /// rest as from the connection.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CABOOSE_GPU_CAPTURE"] != nil))
+    func aReplayTakesTheStreamsStartFromAFile() async throws {
+        let capture = try #require(Self.capture)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("gpu-stream-\(UUID().uuidString)")
+        try capture.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let (events, continuation) = AsyncStream.makeStream(of: GPUStreamPlayer.Event.self)
+        let player = GPUStreamPlayer(layer: CAMetalLayer(), queue: DispatchQueue(label: "gpu-stream-test")) { event in
+            continuation.yield(event)
+            if case .ended = event { continuation.finish() }
+        }
+        let half = UInt64(capture.count / 2)
+        let accepted = await withCheckedContinuation { done in
+            player.feed(contentsOf: file, length: half) { done.resume(returning: $0) }
+        }
+        #expect(accepted == half)
+        for chunk in Self.chunks(of: capture.dropFirst(Int(half))) { player.feed(chunk) }
+        player.finish()
+        await expectEveryFrame(player, events)
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["CABOOSE_GPU_CAPTURE"] != nil))
     func aCaptureReplaysEveryFrame() async throws {
         let environment = ProcessInfo.processInfo.environment
