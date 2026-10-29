@@ -91,6 +91,7 @@ describe('shared storage', () => {
     storage.attach(a)
     await settle()
     expect(helper.jobs).toHaveLength(1)
+    expect(storage.status().running).toBe('a')
     const order: string[] = []
     helper.jobs[0]!.signal.addEventListener('abort', () => order.push('aborted'))
     const woken = a.lifecycle.wake().then(() => order.push('woken'))
@@ -99,7 +100,7 @@ describe('shared storage', () => {
     expect(stop).toBeTypeOf('function')
     await storage.idle()
     // A cancelled pass is not recorded as done: the next park tries again.
-    expect(storage.status().passes).toBe(0)
+    expect(storage.status()).toMatchObject({ passes: 0, running: null })
     await storage.close()
   })
 

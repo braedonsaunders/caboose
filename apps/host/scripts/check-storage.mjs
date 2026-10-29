@@ -4,7 +4,8 @@
 // computers (and on hosts with accounts a throwaway tenant), all deleted at the end:
 //
 //  - The same data written into both disks becomes shared storage, and reads back unchanged.
-//  - Waking a computer while its pass runs cancels the pass and wakes it intact.
+//  - Waking a computer while its pass runs (sharedStorage.running) cancels the pass, wakes it
+//    intact, and the next park passes the disk again.
 //  - A phone backup of one computer downloads only data chunks, each matching its hash; after
 //    the computer changes, restoring that backup (uploading every chunk) brings it back.
 import assert from 'node:assert/strict'
@@ -29,13 +30,13 @@ async function call(path, { method = 'GET', body, raw, headers = {}, bearer = to
 }
 const scoped = (id, path) => `/v1/computers/${id}${path.slice(3)}`
 const file = (operation, path) => `/v1/fs/${operation}?path=${encodeURIComponent(path)}`
-async function until(what, check, ms = 600_000) {
+async function until(what, check, ms = 600_000, everyMs = 2000) {
   const end = Date.now() + ms
   for (;;) {
     const value = await check()
     if (value) return value
     if (Date.now() > end) throw new Error(`Timed out waiting for ${what}`)
-    await sleep(2000)
+    await sleep(everyMs)
   }
 }
 const health = () => call('/v1/health')
@@ -89,20 +90,27 @@ try {
   }
   console.log('OK: both computers read the shared file back unchanged')
 
-  // A wake during a pass: give a's pass plenty to read, then wake it as the pass starts.
+  // A wake during a pass: give a's pass 2 GiB of its own data to read, and wake it while
+  // the host reports that pass running.
   const big = randomBytes(256 * MiB)
-  await write(a, 'storage-check-big.bin', big)
-  await park(a)
+  for (let part = 0; part < 8; part++) await write(a, `storage-check-big-${part}.bin`, big)
   await park(b)
   const passes = (await health()).sharedStorage.passes
-  await sleep(5_500)
-  const woke = Date.now()
-  await wake(a)
-  console.log(`OK: woke during a pass in ${((Date.now() - woke) / 1000).toFixed(1)} s`)
-  assert.equal(sha(await read(a, 'storage-check-big.bin')), sha(big), 'a file changed across a cancelled pass')
-  assert.equal((await health()).sharedStorage.lastError, null)
-  console.log(`OK: the computer is intact (passes before ${passes}, now ${(await health()).sharedStorage.passes})`)
   await park(a)
+  await until("a's pass to start", async () => (await health()).sharedStorage.running === a, 120_000, 100)
+  const woke = Date.now()
+  await call(scoped(a, '/v1/session'), { method: 'POST' })
+  const afterWake = (await health()).sharedStorage
+  assert.notEqual(afterWake.running, a, 'the pass still runs after the wake')
+  assert.equal(afterWake.passes, passes, 'the interrupted pass was recorded as complete')
+  assert.equal(afterWake.lastError, null)
+  console.log(`OK: woke in ${((Date.now() - woke) / 1000).toFixed(1)} s while its pass ran; the pass stopped and was not recorded`)
+  await wake(a)
+  for (let part = 0; part < 8; part++) assert.equal(sha(await read(a, `storage-check-big-${part}.bin`)), sha(big), 'a file changed across a cancelled pass')
+  console.log('OK: the computer is intact')
+  await park(a)
+  await until("a's pass to run again and finish", async () => (await health()).sharedStorage.passes > passes)
+  console.log('OK: the next park passed the disk again')
 
   // Phone backup of b.
   const { code } = await call(`/v1/computers/${b}/pairing`, { method: 'POST', expect: 201 })

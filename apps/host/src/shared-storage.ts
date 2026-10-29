@@ -32,10 +32,12 @@ export interface SharedStorageStatus {
   passes: number
   lastPassAt: string | null
   lastError: string | null
+  /** The computer whose disk a pass is reading now, if any. */
+  running: string | null
 }
 
 interface DiskStamp { ino: number; size: number; mtimeMs: number }
-interface State extends SharedStorageStatus { version: 1; disks: Record<string, DiskStamp> }
+interface State extends Omit<SharedStorageStatus, 'running'> { version: 1; disks: Record<string, DiskStamp> }
 
 interface Hold { signal: AbortSignal; release(): void }
 
@@ -83,6 +85,7 @@ export class SharedStorage {
   private state: State = { version: 1, sharedBytes: 0, punchedBytes: 0, passes: 0, lastPassAt: null, lastError: null, disks: {} }
   private readonly closing = new AbortController()
   private unsupported = false
+  private running: string | null = null
   private lastTrim = 0
   private trimTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -107,7 +110,7 @@ export class SharedStorage {
 
   status(): SharedStorageStatus {
     const { sharedBytes, punchedBytes, passes, lastPassAt, lastError } = this.state
-    return { sharedBytes, punchedBytes, passes, lastPassAt, lastError }
+    return { sharedBytes, punchedBytes, passes, lastPassAt, lastError, running: this.running }
   }
 
   attach(computer: StorageComputer): void {
@@ -207,10 +210,11 @@ export class SharedStorage {
         ...await Promise.all(holds.map(async ({ id: other }) => ({ key: `computer:${other}`, path: (await this.computers.get(other)!.computer.files()).disk }))),
       ]
       const signal = AbortSignal.any([primary.signal, this.closing.signal, ...holds.map(({ hold }) => hold.signal)])
+      this.running = id
       const result = await this.helper.run({
         key: `computer:${id}`, files: [files.disk, ...files.clones], sources,
         live: [...[...this.computers.keys()].map(key => `computer:${key}`), ...bases.keys()],
-      }, signal)
+      }, signal).finally(() => { this.running = null })
       await this.record(id, files.disk, result)
     } finally {
       for (const { hold } of holds) hold.release()
