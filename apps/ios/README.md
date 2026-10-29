@@ -666,7 +666,8 @@ works as a manual split on a sufficiently tall flat screen. The upper area shows
 app/desktop without the system toolbar. The lower-right control rail offers Keyboard,
 Trackpad, Keyboard & Trackpad or Gamepad from one input button, whose icon is the same in every mode,
 then window switching, settings, power and navigation. Opening a window from the Laptop
-desktop focuses it in that workspace; there is no separate Full Screen route or Exit App Full
+desktop focuses it in that workspace, and every app window fills the upper screen (one whose
+minimum size is larger keeps its own); there is no separate Full Screen route or Exit App Full
 Screen action. Keyboard fills the lower panel with Laptop's own keyboard under the shared
 shortcut header; Keyboard & Trackpad puts a full-width trackpad across the upper third and
 the same keyboard and header in the lower two-thirds. Neither opens the system keyboard: a

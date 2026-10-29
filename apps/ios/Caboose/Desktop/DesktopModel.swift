@@ -565,6 +565,22 @@ final class DesktopModel {
         return placedFrame(window) != nil
     }
 
+    /// Laptop's upper screen shows one app at a time, like a laptop's maximized windows: every
+    /// app window that can fill the desktop does, without changing which one is in front.
+    /// Their Tablet places are another arrangement and stay as they were.
+    func fillWorkArea(_ session: any DisplaySession) {
+        guard size.width > 0, size.height > 0 else { return }
+        var changed = false
+        for window in session.windows.values where !window.isAuxiliary && !window.isFullscreen && app(window) != nil
+            && layout.snap(of: window.id) != .maximized
+            && FreeDesktopLayout.allows(.maximized, in: workArea, minimum: minimumChrome(window)) {
+            layout.setSnap(window.id, .maximized, current: chromeRect(window), in: workArea, app: app(window))
+            changed = true
+            applyPlace(window, session)
+        }
+        if changed { save() }
+    }
+
     private func applyPlace(_ window: RemoteWindow, _ session: any DisplaySession) {
         guard let frame = placedFrame(window), window.frame != frame else { return }
         session.configure(window, frame: frame, state: ["maximized": false])

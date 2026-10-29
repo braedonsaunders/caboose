@@ -18,7 +18,9 @@ Laptop layout — signed app on the paired physical Duo:
    Hide the keyboard, rotate to portrait, and repeat; the full viewport returns.
    Laptop: no system sidebar or toolbar spans the upper half. All shell controls
    stay in the lower-right rail. The app fills the upper viewport without Caboose
-   title bars; the dock is at the top of the LOWER half.
+   title bars, edge to edge down to the hinge, with no wallpaper below it; the
+   dock is at the top of the LOWER half. Open a second app and switch between them:
+   each fills the upper screen. Return to Tablet: the windows are where they were.
    Choose Keyboard, Trackpad and Keyboard & Trackpad from the input button: its icon
    is the same in every mode, and the menu marks the current one. Only one keyboard
    header is shown, spanning the full width of the panel, with no scrolling or glass

@@ -1761,7 +1761,8 @@ the app card, and a detached view releases its layers.
   Keyboard & Trackpad and Gamepad choices behind one input button. Its trailing rail contains window switching, settings,
   power and navigation; the system-wide bars are hidden while Laptop is active. Opening
   a window from the Laptop desktop focuses it there, without a separate full-screen card
-  or Full Screen/Exit App Full Screen controls. Controls never move above the hinge.
+  or Full Screen/Exit App Full Screen controls. Every app window that can fills the whole
+  upper screen, as it is announced and whenever Laptop starts; Tablet keeps its own places. Controls never move above the hinge.
   Keyboard fills the lower panel with a custom keyboard under the shared shortcut header;
   Keyboard & Trackpad uses a full-width trackpad in the upper third of the lower panel and
   the same keyboard and header in its lower two thirds. The system keyboard opens only from

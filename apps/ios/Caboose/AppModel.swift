@@ -667,6 +667,7 @@ final class AppModel {
                 // Keep the fit pending until there is a real, usable placement.
                 if desktop.snap(front.id, .maximized, session) { laptopNeedsInitialFit = false }
             }
+            if laptopDesktopActive, !externalDisplayActive { desktop.fillWorkArea(session) }
             // Dialogs and tool windows: over their parent, or centred, never left at the origin.
             // Menus and tooltips (override-redirect) keep the place the app chose.
             for window in session.windows.values where window.isAuxiliary && !window.isOverrideRedirect && !placedWindowIDs.contains(window.id) {
