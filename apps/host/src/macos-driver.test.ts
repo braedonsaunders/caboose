@@ -34,7 +34,10 @@ it('relays native Mac guest ports only while awake and preserves the disk on par
     controller = createController(config({ CABOOSE_IMAGE_ROOT: root, CABOOSE_VMM_PATH: process.execPath }), {
       desks: host, backend: { hypervisor: 'virtualization' } as DeskBackend, network,
     })
-    await controller.wake()
+    await controller.wake('headless')
+    expect(commands.some(command => command.includes('systemctl start') && command.includes('caboose-display.service'))).toBe(false)
+    await controller.promote!()
+    expect(commands.some(command => command.includes('caboose-display.service'))).toBe(true)
     expect(network).not.toHaveBeenCalled()
     expect(start.mock.calls[0]?.[0]).not.toHaveProperty('network')
     expect(commands.some(command => command.includes('10.0.2.15/24'))).toBe(true)

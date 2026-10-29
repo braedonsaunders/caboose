@@ -97,7 +97,7 @@ if $monitor_running && [ "${1:-}" = restart ]; then
   rm -f "$monitor_pid"
   monitor_running=false
 fi
-if ! $monitor_running; then
+if ! $monitor_running && [ -S "$runtime/bus" ]; then
   runuser -u caboose -- touch /home/caboose/.cache/caboose-notifications.log
   runuser -u caboose -- env HOME=/home/caboose XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
     /bin/sh -c 'echo $$ > "$XDG_RUNTIME_DIR/caboose-notifications.pid"; exec /usr/bin/python3 /opt/caboose/notifications/monitor.py' \
@@ -121,5 +121,6 @@ if [ "${1:-}" = restart ] && [ -s "$bridge_pid" ]; then
       >>/home/caboose/.cache/caboose-bridge.log 2>&1 < /dev/null &
   fi
 fi
-if ! lpstat -r 2>/dev/null | grep -q 'scheduler is running'; then /usr/sbin/cupsd; fi
-/usr/local/libexec/caboose-phone-printer-setup
+if lpstat -r 2>/dev/null | grep -q 'scheduler is running'; then
+  /usr/local/libexec/caboose-phone-printer-setup
+fi

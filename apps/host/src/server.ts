@@ -102,9 +102,9 @@ type Admission = (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'
 /** A controller whose wakes are admitted first. */
 function withAdmission(controller: Controller, admit: () => Promise<void>): Controller {
   const gated = Object.create(controller) as Controller
-  gated.wake = async () => {
+  gated.wake = async mode => {
     await admit()
-    return controller.wake()
+    return controller.wake(mode)
   }
   return gated
 }
@@ -191,7 +191,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       },
       acquire: async () => {
         const release = computer.acquire()
-        try { await computer.wake(); await ensureFilesReady(); return release } catch (error) { release(); throw error }
+        try { await computer.wake('headless'); await ensureFilesReady(); return release } catch (error) { release(); throw error }
       },
       lookup: async taskId => {
         await agents.restore()
@@ -643,7 +643,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const match = /^\/v1\/apps\/([^/]+)\/launch$/.exec(path)
     if (request.method === 'POST' && match?.[1]) {
       const { action } = parseAppLaunch(await readJson(request))
-      await computer.run(async () => { await ensureKeyringReady(); await controller.launch(decodeURIComponent(match[1]!), undefined, action) })
+      await computer.wakeAndRun(async () => { await ensureKeyringReady(); await controller.launch(decodeURIComponent(match[1]!), undefined, action) })
       return json(response, 200, { launched: true })
     }
     if (request.method === 'GET' && path === '/v1/agents') return json(response, 200, await catalog.list())
@@ -676,7 +676,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (path === '/v1/agent/tasks' && request.method === 'POST') {
       const input = await readJson(request, TASK_BODY_LIMIT)
       const prepared = prepareProfileStart(pieces.profiles, input)
-      const task = await computer.run(() => agents.start(prepared.input, { profile: prepared.profile }))
+      const task = await computer.wakeAndRun(async () => { await ensureFilesReady(); return agents.start(prepared.input, { profile: prepared.profile }) }, 'headless')
       return json(response, 200, { id: task.id })
     }
     const transcript = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/transcript$/.exec(path)
@@ -686,7 +686,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const reply = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/reply$/.exec(path)
     if (request.method === 'POST' && reply?.[1]) {
       const input = await readJson(request, TASK_BODY_LIMIT)
-      return json(response, 200, { task: await computer.run(() => agents.reply(reply[1]!, input)) })
+      return json(response, 200, { task: await computer.wakeAndRun(async () => { await ensureFilesReady(); return agents.reply(reply[1]!, input) }, 'headless') })
     }
     const sendNow = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/send-now$/.exec(path)
     if (request.method === 'POST' && sendNow?.[1]) {
@@ -851,7 +851,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (path === '/v1/display' && !offered.includes('binary')) { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return }
     const release = computer.acquire()
     socket.once('close', release)
-    try {
+    const ready = path === '/v1/display' && url.searchParams.get('seat') !== 'agent' ? computer.wake() : Promise.resolve()
+    void ready.then(() => {
+      if (socket.destroyed) return
+      try {
       wss.handleUpgrade(request, socket, head, client => {
         sockets.add(client)
         if (principal.phoneId) phoneSockets.set(client, principal.phoneId)
@@ -876,14 +879,15 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         if (url.searchParams.get('seat') === 'agent') {
           // The agent seat starts on demand; hold the client until it is up.
           client.pause()
-          controller.ensureAgentSeat().then(
+          ensureFilesReady().then(() => controller.ensureAgentSeat()).then(
             () => { if (client.readyState === WebSocket.OPEN) relay(client, controller.agentDisplayUrl) },
             () => client.close(1011, 'agent seat unavailable'))
           return
         }
         relay(client, controller.displayUrl)
       })
-    } catch { release(); socket.destroy() }
+      } catch { release(); socket.destroy() }
+    }, () => { release(); socket.destroy() })
   }
 
   function disconnectPhone(phoneId: string): void {

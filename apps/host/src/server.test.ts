@@ -74,7 +74,9 @@ it('routes agent replies, approvals, files and links with the right status codes
     if (args[8]?.startsWith('// caboose delivery evidence')) return JSON.stringify({ journal: '', receipt: '', receiptExists: false, inbox: '', published: '', transcript: transcripts.get(args[7]!) ?? '', alive: true })
     return args[5]?.includes('while [ -e "$target" ]') ? '/home/caboose/Downloads/a.txt' : ''
   } }
-  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+  const session = { state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }
+  const wake = vi.fn(async () => session), promote = vi.fn(async () => session)
+  const controller: Controller = { wake, promote,
     park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch,
     displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest,
     fileService: () => ({ url: `http://127.0.0.1:${(fileServer.address() as AddressInfo).port}`, token: 'test' }) }
@@ -87,9 +89,14 @@ it('routes agent replies, approvals, files and links with the right status codes
   const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
   const post = (path: string, body: unknown) => fetch(base + path, { method: 'POST', headers: { authorization: 'Bearer owner' }, body: JSON.stringify(body) })
   const missing = '11111111-1111-4111-8111-111111111111'
-  expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(409)
+  const headlessTask = await post('/v1/agent/tasks', { prompt: 'headless' })
+  expect(headlessTask.status).toBe(200)
+  expect(wake).toHaveBeenCalledWith('headless')
+  expect(promote).not.toHaveBeenCalled()
+  expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(404)
   expect(await (await post('/v1/files', { name: 'a.txt', data: 'aGk=' })).json()).toEqual({ path: '/home/caboose/Downloads/a.txt' })
   await post('/v1/session', {})
+  expect(promote).toHaveBeenCalledOnce()
   expect((await post('/v1/fs/open', { path: 'Documents/a.psd', app: 'ai.storyteller.photocraft.desktop' })).status).toBe(200)
   expect(launch).toHaveBeenCalledWith('ai.storyteller.photocraft.desktop', 'Documents/a.psd')
   expect((await post('/v1/fs/open', { path: '../bad', app: 'a.desktop' })).status).toBe(400)

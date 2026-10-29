@@ -313,7 +313,7 @@ your LAN, never another computer.
 
 The host writes a random token to `/run/caboose/display-token` in the guest (mode 0600,
 owner `caboose`): the microVM gets a new one at every wake, a container when it is created,
-restarted, or first woken by a newly started host. At each wake the host then starts the
+restarted, or first woken by a newly started host. An interactive wake starts the
 file service and the owner's display
 (`caboose-display.service` in the microVM, `caboose-session start` and `ready` in a
 container) and waits until it answers a hello carrying the token and has written its
@@ -321,6 +321,11 @@ launch environment (`caboose-display-ready`). It then reads the launch environme
 `/run/caboose/display.env` (its Wayland socket, Xwayland's `DISPLAY` and `XAUTHORITY`,
 toolkit hints, `PULSE_SERVER`); apps, sign-in windows, opened files and the screen routes are
 started with it.
+
+Agent tasks and routines can wake headlessly: components and file service start, while the
+owner display starts on an interactive session, display connection or app launch. The agent
+display starts on a desktop tool call or an agent-seat display connection. A restored memory
+snapshot keeps any displays that were already running.
 
 `POST /v1/session` returns `{ state, display: { path: "/v1/display", token, protocol:
 "caboose-display" }, computer }`. `/v1/display` is a WebSocket (subprotocol `binary`) that

@@ -327,7 +327,7 @@ describe('AgentTasks', () => {
     const { fake, events, release, tasks } = setup()
     const task = await tasks.start({ prompt: 'Run the tests', agent: 'stand-in' })
     expect(task).toMatchObject({ status: 'running', turns: 1, approvals: 'auto', agent: 'stand-in', agentName: 'Stand-in' })
-    expect(fake.calls.some(call => call.join(' ').includes('caboose-display-agent.service'))).toBe(true)
+    expect(fake.calls.some(call => call.join(' ').includes('caboose-display-agent.service'))).toBe(false)
     const state = fake.task(task.id)
     expect(JSON.parse(state.files.get('task.json')!)).toEqual({
       agent: { id: 'stand-in', name: 'Stand-in', version: '1.0.0', distribution: 'npx', package: '@example/stand-in@1.0.0', args: [], env: {} },
@@ -391,12 +391,12 @@ describe('AgentTasks', () => {
     await expect(none.tasks.start({ prompt: 'x' })).rejects.toThrow('Choose an agent')
   })
 
-  it('starts the seat through the driver when it has its own way', async () => {
+  it('does not start the seat for a new task', async () => {
     const fake = fakeGuest()
     const ensureSeat = vi.fn(async () => {})
     const tasks = new AgentTasks(() => fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000, ensureSeat })
     await tasks.start({ prompt: 'hi' })
-    expect(ensureSeat).toHaveBeenCalledTimes(1)
+    expect(ensureSeat).not.toHaveBeenCalled()
     expect(fake.calls.some(call => call.join(' ').includes('systemctl'))).toBe(false)
   })
 

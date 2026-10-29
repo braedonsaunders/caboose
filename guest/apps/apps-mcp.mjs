@@ -10,6 +10,7 @@ import { readFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { ensureAgentSeat } from '../desktop-mcp/ensure-agent-seat.mjs'
 
 const run = promisify(execFile)
 const PROTOCOL = '2025-06-18'
@@ -88,6 +89,7 @@ const handlers = {
   async app_open({ id: value }) {
     const result = await runtime('check', appId(value))
     if (!result.ok) throw new Error(`${value} cannot open:\n- ${(result.errors ?? []).join('\n- ')}`)
+    Object.assign(seatEnv, await ensureAgentSeat(), { DISPLAY: DISPLAY ?? ':101' })
     const child = spawn(RUNTIME, ['run', value], { env: seatEnv, detached: true, stdio: 'ignore' })
     child.unref()
     return [{ type: 'text', text: `Opened ${result.manifest.name} on your display. Use list_windows or screenshot to see it. `

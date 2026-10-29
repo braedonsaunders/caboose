@@ -1,8 +1,10 @@
 /** Serializes a computer's transitions and keeps it resident while clients hold leases. */
 export type ComputerState = 'parked' | 'waking' | 'running' | 'parking' | 'restarting' | 'error'
+export type WakeMode = 'interactive' | 'headless'
 
 export interface ComputerDriver<T> {
-  wake(): Promise<T>
+  wake(mode?: WakeMode): Promise<T>
+  promote?(): Promise<T>
   park(): Promise<void>
   restart?(): Promise<T>
 }
@@ -19,6 +21,7 @@ export class ComputerLifecycle<T> {
   private restartPending = false
   private retired = false
   private failure: string | null = null
+  private mode: WakeMode = 'interactive'
 
   constructor(private readonly driver: ComputerDriver<T>, private idleMs: number) {
     if (!Number.isSafeInteger(idleMs) || idleMs < 1 || idleMs > 2_147_483_647) {
@@ -69,20 +72,30 @@ export class ComputerLifecycle<T> {
     this.idleTimer.unref()
   }
 
-  wake(): Promise<T> {
+  wake(mode: WakeMode = 'interactive'): Promise<T> {
     if (this.retired) return Promise.reject(new ComputerConflictError('Computer is being deleted'))
     this.clearIdle()
-    return this.serialize(() => this.wakeNow())
+    return this.serialize(() => this.wakeNow(mode))
   }
 
-  private async wakeNow(): Promise<T> {
+  private async wakeNow(mode: WakeMode = 'interactive'): Promise<T> {
     if (this.current === 'running' && this.value !== undefined) {
+      if (mode === 'interactive' && this.mode === 'headless' && this.driver.promote) {
+        try {
+          this.value = await this.driver.promote()
+          this.mode = 'interactive'
+        } catch (error) {
+          this.armIdle()
+          throw error
+        }
+      }
       this.armIdle()
       return this.value
     }
     this.setState('waking')
     try {
-      this.value = await this.driver.wake()
+      this.value = await this.driver.wake(mode)
+      this.mode = mode
       this.failure = null
       this.setState('running')
       this.armIdle()
@@ -95,12 +108,12 @@ export class ComputerLifecycle<T> {
   }
 
   /** Wake and perform an operation in the same lifecycle turn, holding a lease throughout. */
-  wakeAndRun<R>(work: () => Promise<R>): Promise<R> {
+  wakeAndRun<R>(work: () => Promise<R>, mode: WakeMode = 'interactive'): Promise<R> {
     if (this.retired) return Promise.reject(new ComputerConflictError('Computer is being deleted'))
     if (this.restartPending) return Promise.reject(new ComputerConflictError('Computer is restarting'))
     const release = this.acquire()
     return this.serialize(async () => {
-      await this.wakeNow()
+      await this.wakeNow(mode)
       return work()
     }).finally(release)
   }
@@ -127,6 +140,7 @@ export class ComputerLifecycle<T> {
       try {
         await before()
         this.value = await this.driver.restart!()
+        this.mode = 'interactive'
         this.failure = null
         this.setState('running')
         this.armIdle()

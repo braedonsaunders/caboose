@@ -34,8 +34,13 @@ control by id rather than by guessed coordinates.
 A failure comes back as a tool error with a sentence the model can act on; an id that no
 longer resolves says to list the window again.
 
+Run `node --test guest/desktop-mcp/ensure-agent-seat.test.mjs` and
+`node guest/desktop-mcp/selftest.mjs` from the repository root to check startup coordination
+and the MCP protocol. The real display checks below exercise the guest on Linux.
+
 caboose-agentd passes the server to every agent in ACP `session/new` (and on resume and
-load) as `caboose-desktop`, with the seat's launch environment from
+load) as `caboose-desktop`. The first GUI tool call starts the agent seat through the
+guest's privileged seat helper, then reads its launch environment from
 `/run/caboose/agent-display.env`: `CABOOSE_AGENT_DISPLAY` (its X display, default `:101`),
 `WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
 `DBUS_SESSION_BUS_ADDRESS`, the toolkit backends and the video passthrough variables. The

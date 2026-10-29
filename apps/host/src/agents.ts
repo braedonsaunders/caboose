@@ -933,8 +933,6 @@ export class AgentTasks {
 
   private async prepareSeat(guest: AgentGuest): Promise<void> {
     await this.home?.ensure(guest)
-    if (this.ensureSeat) await this.ensureSeat().catch(error => console.error('Agent seat did not start:', error))
-    else await guest.run('/bin/sh', ['-c', 'systemctl start caboose-display-agent.service || true'], 30_000)
   }
 
   /**

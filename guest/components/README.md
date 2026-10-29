@@ -4,7 +4,8 @@ The manifest lists the exact files shipped by the host. `version.py` and the hos
 ordered file names and bytes identically. `install.sh` installs missing dependencies,
 updates system-owned files (including the agent runner and its pinned npm dependencies), configures services and writes the version marker only after
 success. It never modifies the owner's home. Both image builders call it in image mode;
-the host calls it through root guest exec in `vm` or `container` mode after display readiness.
+the host calls it through root guest exec in `vm` or `container` mode after wake, including
+headless wakes.
 The installer provides AppStream and its Python introspection bindings, which rediscover Debian apps installed through the Library's earlier AppStream search, and Flatpak with its introspection bindings for Flathub apps ([`guest/flatpak`](../flatpak/README.md)). It also provides GTK 3's introspection data for `caboose-game-run` ([guest/game](../game/README.md)). It refreshes APT metadata after adding AppStream.
 The installer preserves working `node` and `npm` commands, including npm bundled with
 NodeSource's `nodejs`. It installs Node when unusable, then checks npm again before

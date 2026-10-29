@@ -5,6 +5,17 @@ import { authenticate } from './auth.js'
 afterEach(() => vi.useRealTimers())
 
 describe('computer lifecycle', () => {
+  it('serializes headless wake and interactive promotion, retrying a failed promotion', async () => {
+    const driver = { wake: vi.fn(async () => 'headless'), park: vi.fn(async () => {}), promote: vi.fn().mockRejectedValueOnce(new Error('display unavailable')).mockResolvedValue('interactive') }
+    const computer = new ComputerLifecycle<string>(driver, 10000)
+    expect(await computer.wake('headless')).toBe('headless')
+    await expect(computer.wake()).rejects.toThrow('display unavailable')
+    expect(computer.state).toBe('running')
+    expect(await Promise.all([computer.wake(), computer.wake()])).toEqual(['interactive', 'interactive'])
+    expect(driver.wake).toHaveBeenCalledOnce()
+    expect(driver.promote).toHaveBeenCalledTimes(2)
+    await computer.park()
+  })
   it('wakes for an operation and holds the computer until the operation finishes', async () => {
     vi.useFakeTimers()
     let finish!: () => void

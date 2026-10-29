@@ -131,6 +131,15 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   async function startDisplay(service: string, port: number): Promise<void> {
     await command('/bin/sh', ['-c', 'systemctl start "$1" && caboose-display-ready 60 "$2"', 'sh', service, String(port)], 240_000)
   }
+  async function ownerDisplay(): Promise<void> {
+    await command('/bin/sh', ['-c', 'systemctl start caboose-phone-printer.service'], 60_000).catch(error => console.error('Printing unavailable:', error))
+    await startDisplay('caboose-display.service', OWNER_DISPLAY_PORT)
+    launchEnv = parseEnvFile(await command('/bin/cat', [DISPLAY_ENV_PATH]))
+    if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
+  }
+  function session(): Session {
+    return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'caboose-display' }, computer: { name: settings().name, image: 'Debian 13', ...(resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }) } }
+  }
   const controller: Controller = {
     componentsMode: 'vm',
     get displayUrl() { return endpoint(OWNER_DISPLAY_PORT, 'ws') },
@@ -138,8 +147,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     fileService: () => ({ url: endpoint(14700, 'http'), token: displayToken }),
     terminalService: () => ({ url: endpoint(TERMINAL_PORT, 'http'), token: displayToken }),
     async ensureAgentSeat() {
-      // Same per-wake token and user as the owner's display; started only when wanted.
-      await startDisplay('caboose-display-agent.service', AGENT_DISPLAY_PORT)
+      await command('/usr/local/libexec/caboose-agent-seat', [], 180_000)
     },
     guest() {
       if (!desk) return undefined
@@ -149,7 +157,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     activeResources: () => desk || existsSync(snapshotPath) ? resources : null,
     hasSavedState: () => Boolean(desk) || existsSync(snapshotPath),
     lastError: () => restartWarning,
-    async wake(): Promise<Session> {
+    async wake(mode = 'interactive'): Promise<Session> {
       const desired = settings()
       await Promise.all([
         ...(nativeMac || dependencies.deviceExists ? [] : [access('/dev/kvm', constants.R_OK | constants.W_OK)]),
@@ -178,15 +186,13 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         }
         displayToken = randomBytes(32).toString('hex')
         await command('/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
-        await startDisplay('caboose-display.service', OWNER_DISPLAY_PORT)
-        launchEnv = parseEnvFile(await command('/bin/cat', [DISPLAY_ENV_PATH]))
-        if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
+        if (mode === 'interactive') await ownerDisplay()
         clearHeartbeat()
         heartbeat = setInterval(() => {
           try { desk?.renewLease(APPKIT_LEASE_MS) } catch (error) { console.error('Desk lease renewal failed:', error) }
         }, 20_000)
         heartbeat.unref()
-        return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'caboose-display' }, computer: { name: settings().name, image: 'Debian 13', ...(resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }) } }
+        return session()
       } catch (error) {
         clearHeartbeat()
         await closeRelays().catch(failure => console.error('Failed to close guest relays:', failure))
@@ -195,12 +201,14 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         throw error
       }
     },
+    async promote() { await ownerDisplay(); return session() },
     async park() {
       clearHeartbeat()
       await closeRelays()
       await host.suspend(id)
       desk = undefined
       displayToken = ''
+      launchEnv = []
       if (!existsSync(snapshotPath)) {
         throw new Error(host.stats().lastError ?? 'Memory snapshot was not created')
       }

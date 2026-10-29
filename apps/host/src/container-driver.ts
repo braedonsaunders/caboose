@@ -191,6 +191,18 @@ export function createContainerController(config: Config, dependencies: { docker
     }
   }
 
+  async function ownerDisplay(): Promise<void> {
+    await guardContainerPrinting({ run: (cmd, args, timeout) => exec('root', cmd, args, timeout) }).catch(error => console.error('Container printing guard unavailable:', error))
+    await exec('root', '/usr/local/bin/caboose-session', ['start'], 240_000)
+    await exec('root', '/usr/local/bin/caboose-session', ['ready'], 240_000)
+    launchEnv = parseEnvFile(await exec('root', '/bin/cat', [DISPLAY_ENV_PATH]))
+    if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
+  }
+  function session(): Session {
+    const size = resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }
+    return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'caboose-display' }, computer: { name: settings().name, image: gpu === 'none' ? 'Debian 13' : 'Debian 13 · GPU', ...size } }
+  }
+
   const controller: Controller = {
     componentsMode: 'container',
     componentsWarning: () => filesPortWarning,
@@ -199,7 +211,7 @@ export function createContainerController(config: Config, dependencies: { docker
     fileService: () => ({ url: `http://127.0.0.1:${place.ports.files}`, token: displayToken }),
     terminalService: () => ({ url: terminalUrl, token: displayToken }),
     async ensureAgentSeat() {
-      await exec('root', '/usr/local/bin/caboose-session', ['start-agent'], 120_000)
+      await exec('root', '/usr/local/libexec/caboose-agent-seat', [], 180_000)
     },
     guest() {
       if (!running) return undefined
@@ -209,7 +221,7 @@ export function createContainerController(config: Config, dependencies: { docker
     activeResources: () => resources,
     hasSavedState: () => resources !== null,
     lastError: () => lastError,
-    async wake(): Promise<Session> {
+    async wake(mode = 'interactive'): Promise<Session> {
       await ensureNetwork()
       const current = await state()
       if (current === 'missing') {
@@ -231,18 +243,14 @@ export function createContainerController(config: Config, dependencies: { docker
           displayToken = randomBytes(32).toString('hex')
           await exec('root', '/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
         }
-        await guardContainerPrinting({ run: (cmd, args, timeout) => exec('root', cmd, args, timeout) }).catch(error => console.error('Container printing guard unavailable:', error))
-        await exec('root', '/usr/local/bin/caboose-session', ['start'], 240_000)
-        await exec('root', '/usr/local/bin/caboose-session', ['ready'], 240_000)
-        launchEnv = parseEnvFile(await exec('root', '/bin/cat', [DISPLAY_ENV_PATH]))
-        if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
-        const size = resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }
-        return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'caboose-display' }, computer: { name: settings().name, image: gpu === 'none' ? 'Debian 13' : 'Debian 13 · GPU', ...size } }
+        if (mode === 'interactive') await ownerDisplay()
+        return session()
       } catch (error) {
         running = false
         throw error
       }
     },
+    async promote() { await ownerDisplay(); return session() },
     async park() {
       if ((await state()) === 'running') await docker(['pause', name], 60_000)
       running = false
