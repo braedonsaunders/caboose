@@ -343,7 +343,11 @@ final class DesktopModel {
             quickSwitch?.present(recent: recentWindows(session), desktop: switchTarget(session: session))
             return
         default:
-            break
+            // A click anywhere else while the strip is open closes it, and nothing else.
+            if quickSwitch?.owner == .desktop {
+                quickSwitch?.cancel()
+                return
+            }
         }
         if case .launcherPage(let direction) = hit {
             launcherFrames = [:]
