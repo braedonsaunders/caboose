@@ -159,4 +159,22 @@ describe('snapshot cold tier', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
+  it('cancels source verification when a wake is admitted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'snapshot-tier-')), snapshot = join(root, 'vm.snapshot')
+    try {
+      await mkdir(snapshot); await writeFile(join(snapshot, 'memory-ranges'), 'memory')
+      const { store } = storage()
+      let tier!: SnapshotTier
+      let checked = false
+      tier = new SnapshotTier(snapshot, store, randomBytes(32), async work => work(1), () => {
+        if (!checked) { checked = true; setImmediate(() => tier.cancel()) }
+        return true
+      })
+      await expect(tier.archive()).rejects.toThrow()
+      expect(await readFile(join(snapshot, 'memory-ranges'), 'utf8')).toBe('memory')
+      await expect(readFile(tier.pointer)).rejects.toMatchObject({ code: 'ENOENT' })
+      await tier.drainCleanup()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
 })
