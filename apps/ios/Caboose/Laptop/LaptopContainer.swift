@@ -86,6 +86,11 @@ struct LaptopContainer<Content: View>: View {
             .onChange(of: physicalPanel, initial: true) { _, panel in
                 if !isCard { model.laptopPhysicalPanelChanged(to: panel) }
             }
+            // Binding another computer clears its transient monitor mode even when
+            // this physical panel remains mounted at exactly the same size.
+            .onChange(of: model.credentials?.fileDomainIdentifier) { _, _ in
+                if !isCard { model.laptopPhysicalPanelChanged(to: physicalPanel) }
+            }
             .onChange(of: frames, initial: true) { _, frames in
                 updatePointerArea(active: active, frames: frames)
             }
@@ -118,7 +123,10 @@ struct LaptopContainer<Content: View>: View {
                 LaptopPointer.shared.clear()
             }
             .onAppear {
-                if !isCard { model.setLaptopDesktop(active) }
+                if !isCard {
+                    model.setLaptopDesktop(active)
+                    model.laptopPhysicalPanelChanged(to: physicalPanel)
+                }
                 updatePointerArea(active: active, frames: frames)
             }
             .onChange(of: ObjectIdentifier(model.desktop)) { _, _ in

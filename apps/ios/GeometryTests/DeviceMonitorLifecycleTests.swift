@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import SwiftUI
 @testable import Caboose
 @testable import CabooseKit
 
@@ -113,6 +114,64 @@ final class DeviceMonitorLifecycleTests: XCTestCase {
         let base = try XCTUnwrap(app.displayCapabilities())
         XCTAssertEqual(base.desktopWidth, base.desktopHeight)
         XCTAssertEqual(base.dpi, laptop.dpi)
+    }
+
+    /// Retain the same hosted Laptop and panel size while the bound computer changes.
+    /// Replacing the model avoids pairing/keychain writes and starts no connections.
+    func testMountedLaptopReplaysUnchangedPanelForAnotherComputer() throws {
+        let suite = "DeviceMonitorLifecycleTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(LaptopLayout.Mode.laptop.rawValue, forKey: "caboose.laptop.mode")
+        func app(_ name: String, dpi: Int, scale: Double) throws -> AppModel {
+            let computers = collection(name)
+            let identity = try XCTUnwrap(computers.active?.fileDomainIdentifier)
+            var policy = MonitorPolicy()
+            policy.bind(computer: identity, saved: nil)
+            let selected = try XCTUnwrap(MonitorPolicy.Selection(capabilities:
+                ClientCapabilities(desktopWidth: 1800, desktopHeight: 1800, dpi: dpi), renderScale: scale))
+            policy.attach(selected)
+            defaults.set(try XCTUnwrap(policy.saved()), forKey: "monitor.device." + identity)
+            return AppModel(collection: computers, monitorDefaults: defaults, startsConnections: false)
+        }
+        let first = try app("first", dpi: 151, scale: 2)
+        let second = try app("second", dpi: 120, scale: 1.5)
+        func root(_ model: AppModel) -> some View {
+            LaptopContainer { _ in Color.clear }
+                .environment(model)
+                .defaultAppStorage(defaults)
+                .ignoresSafeArea()
+        }
+        let host = UIHostingController(rootView: root(first))
+        host.safeAreaRegions = []
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 656, height: 932))
+        window.rootViewController = host
+        window.isHidden = false
+        defer { window.isHidden = true; window.rootViewController = nil }
+        func layout() {
+            window.layoutIfNeeded()
+            host.view.layoutIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            window.layoutIfNeeded()
+            host.view.layoutIfNeeded()
+        }
+        layout()
+        let initial = try XCTUnwrap(first.displayCapabilities())
+        XCTAssertEqual(initial.desktopWidth, 1312)
+        XCTAssertEqual(initial.desktopHeight, 932)
+        XCTAssertEqual(initial.dpi, 151)
+        XCTAssertEqual(second.displayCapabilities()?.desktopWidth, 1800)
+        host.rootView = root(second) // same view identity, unchanged physical measurement
+        layout()
+        let rebound = try XCTUnwrap(second.displayCapabilities())
+        XCTAssertEqual(rebound.desktopWidth, 984)
+        XCTAssertEqual(rebound.desktopHeight, 699)
+        XCTAssertEqual(rebound.dpi, 120)
+        XCTAssertEqual(second.pixelsPerPoint, 1.5)
+        // Persisted base dimensions and DPI remain specific to the new computer.
+        let resumed = AppModel(collection: collection("second"), monitorDefaults: defaults, startsConnections: false)
+        XCTAssertEqual(resumed.displayCapabilities()?.desktopWidth, 1800)
+        XCTAssertEqual(resumed.displayCapabilities()?.dpi, 120)
     }
 
 }
