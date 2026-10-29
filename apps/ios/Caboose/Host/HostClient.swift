@@ -182,13 +182,19 @@ struct HostClient: Sendable {
 
     private func send(_ method: String, _ path: String, body: [String: JSONValue]?, accept: String,
                       timeout: TimeInterval) async throws -> Data {
+        try await send(method, path, payload: try body.map { try JSONEncoder().encode($0) }, contentType: "application/json", accept: accept, timeout: timeout)
+    }
+
+    /// A request with a body already encoded: JSON from a Codable value, or raw bytes.
+    func send(_ method: String, _ path: String, payload: Data?, contentType: String, accept: String,
+              timeout: TimeInterval) async throws -> Data {
         var request = URLRequest(url: endpoint(path), timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(accept, forHTTPHeaderField: "Accept")
-        if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(body)
+        if let payload {
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+            request.httpBody = payload
         }
         let data: Data, response: URLResponse
         do {
@@ -202,7 +208,7 @@ struct HostClient: Sendable {
             return data
         case 401, 403:
             throw Failure.unauthorized
-        case 409 where path.hasPrefix("/v1/agent/profiles") || path.hasPrefix("/v1/agent/routines") || path.hasPrefix("/v1/computer") || path.hasPrefix("/v1/catalog") || path.hasPrefix("/v1/mcp/") || path == "/v1/session/park":
+        case 409 where path.hasPrefix("/v1/agent/profiles") || path.hasPrefix("/v1/agent/routines") || path.hasPrefix("/v1/computer") || path.hasPrefix("/v1/catalog") || path.hasPrefix("/v1/mcp/") || path.hasPrefix("/v1/backup") || path == "/v1/session/park":
             let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"]
             throw Failure.server(status, message)
         case 409:
