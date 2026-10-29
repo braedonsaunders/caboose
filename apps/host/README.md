@@ -212,6 +212,7 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks. |
 | `CABOOSE_VM_COW` | `off` | `on` enables Cloud Hypervisor copy-on-write snapshot restore. |
 | `CABOOSE_VM_FREE_PAGE_REPORTING` | `off` | `on` enables a zero-size virtio-balloon with free-page reporting on new Cloud Hypervisor boots. |
+| `CABOOSE_PARKED_FILES` | `off` | `on` opts Linux microVMs into parked read-only Files views when the guest, AppKit backend, reflink filesystem and libguestfs appliance support them; unsupported requests wake the computer. |
 | `CABOOSE_SNAPSHOT_TIER` | `off` | `on` archives parked Linux microVM memory to the configured private S3-compatible store after four hours. |
 | `CABOOSE_SNAPSHOT_KEY_FILE` | unset | Absolute path to a host-owned mode 0600 file containing a 32-byte encryption key as lowercase hex. Required when tiering is on. |
 | `APPKIT_STORAGE_ENDPOINT`, `APPKIT_STORAGE_BUCKET`, `APPKIT_STORAGE_ACCESS_KEY_ID`, `APPKIT_STORAGE_SECRET_ACCESS_KEY` | unset | S3-compatible storage connection used for cold snapshots. Required when tiering is on. |

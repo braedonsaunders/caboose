@@ -2499,8 +2499,10 @@ The extension enumerates its home through `/v1/fs`, downloads on demand, and upl
 `If-Match` and `If-None-Match`. It keeps stable item identifiers in its extension storage
 across moves, signals the working set when the app receives `fs.changed`, and
 re-enumerates after an expired anchor. The system generates previews for downloaded files;
-there are no server-side thumbnails. Files access wakes a parked computer, and an
-unreachable host is reported to Files as unreachable.
+there are no server-side thumbnails. On an opted-in supported Linux microVM, Files can
+read a sealed parked view through a read-only libguestfs appliance. Unsupported paths,
+metadata, change feeds and all mutations wake the computer. An unreachable host is
+reported to Files as unreachable.
 
 ### Open in place
 
