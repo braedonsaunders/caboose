@@ -447,3 +447,11 @@ The shared keyboard header has Keys, Move and Symbols groups with six fixed cont
 Hide Keyboard stays at the top right. Hold Home or End for page navigation and symbol
 keys for related punctuation. Group changes retain active Ctrl/Alt modifiers. Verify the
 header in Terminal, desktop apps and Agents at narrow width and with the Duo sidebar.
+
+For dock and toolbar verification on the Duo: hold both a pinned app icon and a running
+column icon. Each running window offers Open and Close, and a known application offers
+Pin or Unpin. A stacked column lists each window separately. A normal tap still focuses
+its column and dragging the column strip still scrolls the desktop. In Agents, only the
+system overflow remains; Stop, Copy Answer and Connect a Model join its regular actions.
+Open the power control and confirm its popover appears beside that control on both Duo
+screens. Dismiss it without parking or restarting when checking placement only.

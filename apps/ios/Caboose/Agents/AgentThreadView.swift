@@ -90,17 +90,17 @@ struct AgentThreadView: View {
                 Button("Watch", systemImage: "eye") { model.presentAgentWindow(window.id) }
             }
         }
-        ToolbarItem(placement: .topBarTrailing) {
-            Menu {
-                if task.isRunning {
-                    Button("Stop", systemImage: "stop", role: .destructive) { Task { await agents.cancel(task) } }
-                } else if let summary = task.summary, !summary.isEmpty {
-                    Button("Copy Answer", systemImage: "doc.on.doc") { UIPasteboard.general.string = summary }
-                }
-                Button("Connect a Model…", systemImage: "key") { connectingModel = true }
-            } label: {
-                Label("More", systemImage: "ellipsis")
+        if task.isRunning {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Stop", systemImage: "stop", role: .destructive) { Task { await agents.cancel(task) } }
             }
+        } else if let summary = task.summary, !summary.isEmpty {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Copy Answer", systemImage: "doc.on.doc") { UIPasteboard.general.string = summary }
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button("Connect a Model…", systemImage: "key") { connectingModel = true }
         }
     }
 }

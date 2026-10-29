@@ -42,31 +42,6 @@ struct MainTabs: View {
             set: { if !$0 { model.presentedAgentWindowID = nil } })) {
             AgentWindowScreen().environment(model)
         }
-        .confirmationDialog("Computer", isPresented: $model.lifecycleActionsPresented, titleVisibility: .visible) {
-            if let upgrade = model.computerStatus?.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
-                // The detail is in Computer settings, held to a few lines there.
-                Button(title, systemImage: upgrade.state == "failed" ? "exclamationmark.triangle" : "arrow.down.circle") {
-                    model.settingsPresented = true
-                }
-            }
-            Group {
-                switch model.phase {
-                case .ready:
-                    Button("Park", systemImage: "moon.zzz") { Task { try? await model.parkComputer() } }
-                        .disabled(model.parking)
-                    if model.computerStatus?.capabilities.restart == true {
-                        Button("Restart…", systemImage: "arrow.clockwise", role: .destructive) { model.restartConfirmationPresented = true }
-                    }
-                case .parked, .failed:
-                    Button("Turn On", systemImage: "power") { Task { await model.wake() } }
-                case .displayElsewhere:
-                    Button("Show Here", systemImage: "iphone") { Task { await model.wake() } }
-                    Button("Park", systemImage: "moon.zzz") { Task { try? await model.parkComputer() } }
-                case .waking, .connecting, .restarting, .needsSetup:
-                    EmptyView()
-                }
-            }
-        }
         .confirmationDialog("Restart your computer?", isPresented: $model.restartConfirmationPresented, titleVisibility: .visible) {
             Button("Restart", role: .destructive) { Task { await model.restartComputer() } }
         } message: {
@@ -137,9 +112,10 @@ private struct ComputerSettingsButton: View {
 /// The host has no power-off: Park is the computer at rest.
 struct LifecycleMenu: View {
     @Environment(AppModel.self) private var model
+    @State private var showingActions = false
 
     var body: some View {
-        Button { model.lifecycleActionsPresented = true } label: {
+        Button { showingActions = true } label: {
             Label {
                 Text(state.title)
             } icon: {
@@ -149,6 +125,52 @@ struct LifecycleMenu: View {
             }
         }
         .accessibilityLabel("Computer: \(state.title)")
+        .popover(isPresented: $showingActions, attachmentAnchor: .rect(.bounds)) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Computer").font(.headline)
+                if let upgrade = model.computerStatus?.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
+                    Button(title, systemImage: upgrade.state == "failed" ? "exclamationmark.triangle" : "arrow.down.circle") {
+                        showingActions = false
+                        model.settingsPresented = true
+                    }
+                }
+                switch model.phase {
+                case .ready:
+                    Button("Park", systemImage: "moon.zzz") {
+                        showingActions = false
+                        Task { try? await model.parkComputer() }
+                    }.disabled(model.parking)
+                    if model.computerStatus?.capabilities.restart == true {
+                        Button("Restart…", systemImage: "arrow.clockwise", role: .destructive) {
+                            showingActions = false
+                            model.restartConfirmationPresented = true
+                        }
+                    }
+                case .parked, .failed:
+                    Button("Turn On", systemImage: "power") {
+                        showingActions = false
+                        Task { await model.wake() }
+                    }
+                case .displayElsewhere:
+                    Button("Show Here", systemImage: "iphone") {
+                        showingActions = false
+                        Task { await model.wake() }
+                    }
+                    Button("Park", systemImage: "moon.zzz") {
+                        showingActions = false
+                        Task { try? await model.parkComputer() }
+                    }
+                case .waking, .connecting, .restarting, .needsSetup:
+                    Text(state.title).foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.borderless)
+            .labelStyle(.titleAndIcon)
+            .padding(20)
+            .frame(minWidth: 220, alignment: .leading)
+            .presentationCompactAdaptation(.popover)
+        }
+        .onDisappear { showingActions = false }
 
     }
 

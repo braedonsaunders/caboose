@@ -59,7 +59,7 @@ struct YardDock: View {
                         Car(column: column, yard: yard, focused: column.id == focusedColumn, visible: visible.contains(column.id), size: car)
                     }
                 }
-                .gesture(scrub(columns: columns.count))
+                .simultaneousGesture(scrub(columns: columns.count))
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Columns")
             }
@@ -185,8 +185,23 @@ private struct Car: View {
     let size: CGFloat
 
     var body: some View {
-        Button {
-            if let first = column.windows.first { yard.jump(to: first) }
+        Menu {
+            ForEach(column.windows, id: \.self) { id in
+                if let window = model.session?.windows[id] {
+                    Section(window.title.isEmpty ? model.appName(for: window) : window.title) {
+                        Button("Open", systemImage: "arrow.up.forward.app") { yard.jump(to: id) }
+                        if let app = model.apps.first(where: { model.matches(window, $0) }) {
+                            let pinned = model.pinnedApps.contains { $0.id == app.id }
+                            Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
+                                model.togglePin(app)
+                            }
+                        }
+                        Button("Close", systemImage: "xmark", role: .destructive) {
+                            model.session?.close(window)
+                        }
+                    }
+                }
+            }
         } label: {
             VStack(spacing: 2) {
                 ForEach(column.windows.prefix(3), id: \.self) { id in
@@ -206,10 +221,14 @@ private struct Car: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(focused ? AnyShapeStyle(YardStyle.ring) : AnyShapeStyle(.clear), lineWidth: 1.5)
             }
+        } primaryAction: {
+            if let first = column.windows.first { yard.jump(to: first) }
         }
+        .menuIndicator(.hidden)
         .buttonStyle(.plain)
         .accessibilityLabel(column.windows.compactMap { model.session?.windows[$0]?.title }.joined(separator: ", "))
         .accessibilityAddTraits(focused ? .isSelected : [])
+        .accessibilityHint("Hold for window actions.")
     }
 }
 

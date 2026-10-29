@@ -1774,8 +1774,9 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   clear of the edges; one uniform background covers both inset and grid. The keyboard opens
   when entering Terminal and still reduces the grid's height. A single tap in the middle
   hides it for reading; another tap shows it again. Links and double-tap selection retain
-  their actions. Sessions and computer lifecycle actions open system action dialogs, so
-  the Duo's toolbar overflow does not constrain a nested menu's height.
+  their actions. Sessions open a system action dialog. Computer lifecycle actions open a
+  popover anchored to the power button, including on compact screens, so the actions stay
+  beside their control without nesting inside the Duo's toolbar overflow.
 - **Input.** A key row above the keyboard has Esc, Tab, sticky Ctrl and Alt (for the row's
   keys and the keyboard's next one), arrows that repeat while held, `` | ~ / - _ ` \ : * $ ``,
   Home, End, Page Up and Page Down, and Hide Keyboard. Unmodified arrows follow the
