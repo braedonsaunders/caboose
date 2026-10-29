@@ -86,7 +86,7 @@ struct CatalogLibrary: View {
                         } header: { Text("Updates") } footer: { Text("Apps update on their own. Update Now gets a new version right away.") }
                     }
                 }
-                Section(listTitle) {
+                Section {
                     ForEach(catalog.library) { app in
                         LibraryRow(app: app, close: { dismiss() }, remove: { remove = $0 })
                             .onAppear { if app.id == catalog.library.last?.id { Task { await catalog.loadMore() } } }
@@ -101,6 +101,10 @@ struct CatalogLibrary: View {
                     } else if catalog.libraryLoaded && catalog.library.isEmpty {
                         Text("No apps found.").foregroundStyle(.secondary)
                     }
+                } header: {
+                    Text(listTitle)
+                } footer: {
+                    if let notice = catalog.libraryNotice { Text(notice) }
                 }
             }
             .safeAreaInset(edge: .top) {

@@ -107,6 +107,8 @@ final class CatalogCenter {
     private(set) var libraryLoading = false
     private(set) var libraryLoaded = false
     var libraryError: String?
+    /// Why the Library shows only Caboose's apps: the host could not reach Flathub.
+    private(set) var libraryNotice: String?
     private var nextOffset: Int?
     private var failedOffset = 0
     private var libraryGeneration = 0
@@ -159,13 +161,14 @@ final class CatalogCenter {
         let generation = libraryGeneration, hostVersion = hostGeneration
         libraryLoading = true; libraryError = nil
         do {
-            struct Page: Decodable { let apps: [CatalogApp]; let total: Int; let offset: Int; let categories: [String] }
+            struct Page: Decodable { let apps: [CatalogApp]; let total: Int; let offset: Int; let categories: [String]; let error: String? }
             let page: Page = try await host.request("GET", libraryQuery.path(offset: offset), timeout: 60)
             guard libraryGeneration == generation && hostGeneration == hostVersion else { return }
             let live = Dictionary(apps.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let fresh = page.apps.map { live[$0.id] ?? $0 }
             library = (page.offset == 0 ? [] : library).appendingPage(fresh)
             categories = page.categories
+            libraryNotice = page.error
             nextOffset = LibraryQuery.nextOffset(after: page.offset, count: page.apps.count, total: page.total)
             libraryLoading = false; libraryLoaded = true
         } catch {

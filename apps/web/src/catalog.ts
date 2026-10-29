@@ -73,6 +73,8 @@ export interface CatalogPage {
   limit: number
   /** The display categories, in the host's order. */
   categories: string[]
+  /** Why only Caboose's apps are listed: the host could not reach Flathub. */
+  error: string | null
 }
 
 export interface DiscoverQuery {

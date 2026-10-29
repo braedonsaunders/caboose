@@ -24,6 +24,7 @@ interface Library {
   apps: CatalogApp[]
   next: number | null
   total: number
+  notice: string | null
 }
 
 export function Apps({ client, computer, onUnauthorized }: { client: CabooseClient; computer: ComputerHandle; onUnauthorized: () => void }) {
@@ -77,6 +78,7 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
         apps: appendPage(offset > 0 && current ? current.apps : [], page.apps),
         next: nextOffset(page),
         total: page.total,
+        notice: page.error,
       }))
       setCategories(page.categories)
     } catch (failure) {
@@ -230,6 +232,7 @@ export function Apps({ client, computer, onUnauthorized }: { client: CabooseClie
             </AlertDescription>
           </Alert>
         ) : null}
+        {library?.notice ? <p className="mb-3 text-sm text-fg-muted">{library.notice}</p> : null}
         {!library ? (
           libraryError ? null : <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Reading the Library…</div>
         ) : rows.length === 0 ? (
