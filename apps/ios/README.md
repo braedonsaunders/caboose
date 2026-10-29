@@ -206,6 +206,20 @@ two-finger tap or a stationary half-second hold right-clicks immediately, and ta
 hold and move drags. Individual pointer taps retain their timing for double-clicks. A trackpad or
 mouse hovers, clicks and right-clicks precisely.
 
+Emulated scrolling shares `CabooseKit/Input/ScrollPhysics.swift`: fractional deltas are
+coalesced once per display frame, and release velocity decays independently of refresh
+rate. Desktop two-finger scrolling and the phone trackpad use the same inertia. New
+input, context actions, leaving the surface, losing the target and backgrounding stop
+client inertia; native Wayland touch keeps the application's own fling behavior.
+Run `swift test --filter ScrollPhysicsTests` in `apps/ios/CabooseKit` for deterministic
+checks of distance at 30/60/90/120 Hz, fractional input, cancellation, stale release,
+reversal and display stalls. On a real host, check slow and fast swipes in a native
+Wayland app and an Xwayland app, then two-finger desktop/trackpad scrolling. Confirm
+that a new touch stops the fling, a held finger stops before release, pinches still
+zoom, drawing and selection still work, context clicks do not fling, and changing
+windows or backgrounding never sends old scroll input to the next window.
+
+
 With the desktop on a TV the phone is a trackpad: one finger moves the cursor, tap clicks,
 two fingers scroll, a two-finger tap right-clicks, two quick taps double-click and tap then
 touch and move drags. Those rules live in `CabooseKit/Input/TrackpadGestures.swift` and are

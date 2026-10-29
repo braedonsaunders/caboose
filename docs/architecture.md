@@ -1831,7 +1831,11 @@ not account discovery.
   the touch sequence and sends a right-click with a brief amber ring and haptic. Xwayland windows get pointer
   gestures: tap, drag and long press, with a two-finger tap or a long press for a right
   click (an amber ring blooms where it lands, with a tick) and swipes that scroll with
-  momentum. Pointer taps are sent individually, retaining their real timing for double
+  momentum. Emulated scrolling uses fractional deltas paced to display refresh, with
+  time-based deceleration shared by window swipes, desktop two-finger scrolling and the
+  phone trackpad. A new touch, context action, target change, detach or app backgrounding
+  stops client inertia. Native touch leaves fling and gesture interpretation to the Linux app.
+  Pointer taps are sent individually, retaining their real timing for double
   clicks. A stationary half-second hold opens context immediately at the held point;
   lifting or cancellation cannot send another click. Tap then hold and move drags with
   the primary button. A tap shows the keyboard when the app

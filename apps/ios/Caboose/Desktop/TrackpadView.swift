@@ -127,6 +127,10 @@ final class TrackpadSurface: RemoteTextInputView {
     private var point = CGPoint(x: 0.5, y: 0.5)
     private var focusTask: Task<Void, Never>?
 
+    private let scrollDriver = ScrollDriver()
+    private var scrolling = false
+    private var inputTime: TimeInterval = 0
+    private var scrollOriginTime: TimeInterval = 0
     private var gestures = TrackpadGestures()
     private var zoomGesture = TrackpadZoom()
     private let haptics = UIImpactFeedbackGenerator(style: .light)
@@ -164,20 +168,31 @@ final class TrackpadSurface: RemoteTextInputView {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        scrollDriver.cancel()
+        scrolling = false
+        inputTime = event?.timestamp ?? ProcessInfo.processInfo.systemUptime
+        scrollOriginTime = inputTime
         perform(gestures.began(touches: max(1, liveTouches(event)), centroid: centroid(event), at: event?.timestamp ?? 0, spread: spread(event)))
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        inputTime = event?.timestamp ?? ProcessInfo.processInfo.systemUptime
         guard let point = centroid(event) else { return }
         perform(gestures.moved(touches: liveTouches(event), centroid: point, at: event?.timestamp ?? 0, spread: spread(event)))
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if scrolling {
+            scrollDriver.end(at: event?.timestamp ?? ProcessInfo.processInfo.systemUptime)
+            scrolling = false
+        }
         zoomGesture.reset()
         perform(gestures.ended(remaining: liveTouches(event), centroid: centroid(event), at: event?.timestamp ?? 0, spread: spread(event)))
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        scrollDriver.cancel()
+        scrolling = false
         zoomGesture.reset()
         perform(gestures.cancelled())
     }
@@ -189,6 +204,12 @@ final class TrackpadSurface: RemoteTextInputView {
             self?.model?.openOnDesktop(app)
         }
         for action in actions {
+            if case .scroll(let delta) = action {
+                scroll(delta, at: inputTime)
+                continue
+            }
+            scrollDriver.cancel()
+            scrolling = false
             switch action {
             case .workspace(let direction): performWorkspace(direction); continue
             case .zoom(let delta): performZoom(delta); continue
@@ -217,6 +238,44 @@ final class TrackpadSurface: RemoteTextInputView {
                 checkDesktopTextFocus()
             }
         }
+    }
+
+    private func scroll(_ delta: CGPoint, at time: TimeInterval) {
+        if !scrolling {
+            guard let session else { return }
+            let window: RemoteWindow
+            let anchor: CGPoint
+            let scale: CGFloat
+            if let target {
+                window = target
+                anchor = CGPoint(x: point.x * target.frame.width, y: point.y * target.frame.height)
+                scale = 1 // TrackpadGestures supplies the existing target pixel gain.
+            } else {
+                guard let desktop, case .content(let id, let local) = desktop.hitTest(desktop.cursor, windows: session.windows),
+                      let found = session.windows[id] else { return }
+                window = found
+                anchor = local
+                scale = desktop.pixelsPerPoint
+            }
+            let directTarget = target
+            let originalDesktop = desktop
+            scrolling = true
+            session.resetScroll()
+            scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak window, weak directTarget, weak originalDesktop] delta in
+                guard let self, let session, let window, self.window != nil,
+                      self.inputEnabled, self.pointerEnabled, self.session === session,
+                      session.state == .ready, session.windows[window.id] === window else { return false }
+                if let directTarget {
+                    guard self.target === directTarget else { return false }
+                } else {
+                    guard self.target == nil, let desktop = originalDesktop, self.desktop === desktop,
+                          case .content(let id, _) = desktop.hitTest(desktop.cursor, windows: session.windows), id == window.id else { return false }
+                }
+                session.scroll(in: window, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
+                return true
+            }
+        }
+        scrollDriver.append(delta, at: time)
     }
 
     /// Laptop control uses the same trackpad gestures, aimed at the card/focused tile.
@@ -311,6 +370,8 @@ final class TrackpadSurface: RemoteTextInputView {
     }
 
     func endInteraction() {
+        scrollDriver.cancel()
+        scrolling = false
         zoomGesture.reset()
         focusTask?.cancel()
         focusTask = nil

@@ -12,7 +12,9 @@ import UIKit
 public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDelegate {
     public override static var layerClass: AnyClass { CAMetalLayer.self }
 
-    public weak var session: (any DisplaySession)?
+    public weak var session: (any DisplaySession)? {
+        willSet { if session !== newValue { cancelTouches() } }
+    }
     /// The session whose pictures this view shows, told of each refresh of the screen it is
     /// on so the server paces the window to it. Set it on display-only views too; it is
     /// `session` when nil.
@@ -34,7 +36,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     public var pixelsPerPoint: CGFloat = 2
     /// When false the view only displays (thumbnails, previews).
     public var isInteractive = true {
-        didSet { gestureRecognizers?.forEach { $0.isEnabled = isInteractive } }
+        didSet {
+            if !isInteractive { cancelTouches() }
+            gestureRecognizers?.forEach { $0.isEnabled = isInteractive }
+        }
     }
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
@@ -42,9 +47,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var presentedGeneration: UInt64 = .max
     private var lastPointer = CGPoint.zero
     private var dragging = false
-    private var scrollRemainder = CGPoint.zero
-    private var momentum = CGPoint.zero
-    private var momentumLink: CADisplayLink?
+    private let scrollDriver = ScrollDriver()
+    private var scrollUsesDirectTouch = false
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
     private weak var contextTouchGesture: UILongPressGestureRecognizer?
 
@@ -64,6 +68,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         metalLayer.presentsWithTransaction = false
         backgroundColor = .black
         isMultipleTouchEnabled = true
+        NotificationCenter.default.addObserver(self, selector: #selector(cancelTouches),
+            name: UIApplication.willResignActiveNotification, object: nil)
         installGestures()
         attach(window)
     }
@@ -319,6 +325,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     @objc private func handlePointerClick(_ gesture: UITapGestureRecognizer) {
+        stopMomentum()
         click(at: gesture.location(in: self))
         tapped()
     }
@@ -349,6 +356,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     @objc private func handleSecondaryClick(_ gesture: UITapGestureRecognizer) {
+        stopMomentum()
         if gesture === secondaryTouchGesture { cancelTouches() }
         click(at: gesture.location(in: self), button: 3)
     }
@@ -390,6 +398,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let point = gesture.location(in: self)
         switch gesture.state {
         case .began:
+            stopMomentum()
             move(to: point)
             session.pointerButton(in: window, button: 1, pressed: true, at: lastPointer)
         case .changed:
@@ -442,6 +451,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        stopMomentum()
         let native = touches.filter(routesNatively)
         nativeTouches.formUnion(native.map(ObjectIdentifier.init))
         if !native.isEmpty {
@@ -538,7 +548,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     /// Lifts every finger the app still thinks is down, e.g. when the view leaves the screen.
-    private func cancelTouches() {
+    @objc private func cancelTouches() {
+        stopMomentum()
         if let window = remoteWindow, let session {
             if !activeTouches.isEmpty {
                 session.touch(activeTouches.values.map { TouchPoint(slot: $0.slot, phase: .cancel, x: Double($0.point.x), y: Double($0.point.y)) },
@@ -561,56 +572,49 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         return degrees < 0 ? degrees + 360 : degrees
     }
 
-    /// Swiping scrolls, like any iOS app: content follows the finger, with momentum after release.
+    /// Native touch retains the application's own gestures and fling. Emulated pans
+    /// send precise deltas once per display frame, followed by client-side inertia.
     @objc private func handleScroll(_ gesture: UIPanGestureRecognizer) {
+        let now = CACurrentMediaTime()
         switch gesture.state {
         case .began:
             stopMomentum()
-            scrollRemainder = .zero
-            session?.resetScroll()
+            guard let session, let remoteWindow else { return }
+            session.resetScroll()
             move(to: gesture.location(in: self))
+            scrollUsesDirectTouch = gesture.numberOfTouches > 0
+            let anchor = lastPointer
+            let scale = pixelsPerPoint
+            scrollDriver.begin(at: now - 1.0 / 120) { [weak self, weak session, weak remoteWindow] delta in
+                guard let self, let session, let remoteWindow, self.isInteractive,
+                      self.window != nil, self.session === session, self.remoteWindow === remoteWindow,
+                      session.state == .ready, session.windows[remoteWindow.id] === remoteWindow else { return false }
+                session.scroll(in: remoteWindow, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
+                return true
+            }
+            appendScroll(gesture, at: now)
         case .changed:
-            let translation = gesture.translation(in: self)
-            gesture.setTranslation(.zero, in: self)
-            scrollBy(CGPoint(x: -translation.x, y: -translation.y))
+            appendScroll(gesture, at: now)
         case .ended:
+            appendScroll(gesture, at: now)
             let velocity = gesture.velocity(in: self)
-            startMomentum(CGPoint(x: -velocity.x, y: -velocity.y))
-        default:
-            break
+            // Indirect hardware scrolling already includes OS momentum.
+            scrollDriver.end(at: now, velocity: CGPoint(x: -velocity.x, y: -velocity.y), coast: scrollUsesDirectTouch)
+        case .cancelled, .failed:
+            stopMomentum()
+        default: break
         }
     }
 
-    private func scrollBy(_ points: CGPoint) {
-        guard let window = remoteWindow, let session else { return }
-        let delta = CGPoint(x: points.x * pixelsPerPoint + scrollRemainder.x, y: points.y * pixelsPerPoint + scrollRemainder.y)
-        // Send whole pixels and carry the fraction, so slow drags still scroll.
-        let whole = CGPoint(x: delta.x.rounded(.towardZero), y: delta.y.rounded(.towardZero))
-        scrollRemainder = CGPoint(x: delta.x - whole.x, y: delta.y - whole.y)
-        if whole != .zero { session.scroll(in: window, dx: whole.x, dy: whole.y, at: lastPointer) }
+    private func appendScroll(_ gesture: UIPanGestureRecognizer, at time: TimeInterval) {
+        let translation = gesture.translation(in: self)
+        gesture.setTranslation(.zero, in: self)
+        if translation != .zero {
+            scrollDriver.append(CGPoint(x: -translation.x, y: -translation.y), at: time)
+        }
     }
 
-    private func startMomentum(_ velocity: CGPoint) {
-        guard hypot(velocity.x, velocity.y) > 120 else { return }
-        momentum = velocity
-        let link = CADisplayLink(target: DisplayLinkTarget(self), selector: #selector(DisplayLinkTarget.momentumTick(_:)))
-        link.add(to: .main, forMode: .common)
-        momentumLink = link
-    }
-
-    fileprivate func momentumStep(_ duration: CFTimeInterval) {
-        let dt = CGFloat(min(duration, 1.0 / 30))
-        scrollBy(CGPoint(x: momentum.x * dt, y: momentum.y * dt))
-        let decay = pow(0.135, dt) // UIScrollView's normal deceleration, per second
-        momentum = CGPoint(x: momentum.x * decay, y: momentum.y * decay)
-        if hypot(momentum.x, momentum.y) < 20 { stopMomentum() }
-    }
-
-    private func stopMomentum() {
-        momentumLink?.invalidate()
-        momentumLink = nil
-        momentum = .zero
-    }
+    private func stopMomentum() { scrollDriver.cancel() }
 
     // MARK: Keyboard — the software keyboard through UITextInput, hardware keys through presses.
 
@@ -726,11 +730,6 @@ private final class DisplayLinkTarget: NSObject {
         view.checkFocus()
         view.layoutVideos()
         view.present()
-    }
-
-    @MainActor @objc func momentumTick(_ link: CADisplayLink) {
-        guard let view else { link.invalidate(); return }
-        view.momentumStep(link.targetTimestamp - link.timestamp)
     }
 }
 #endif
