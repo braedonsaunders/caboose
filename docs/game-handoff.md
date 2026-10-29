@@ -16,7 +16,7 @@ It is the compute counterpart of [codec passthrough](codec-passthrough.md). The 
 | `caboose-game-run`, the launcher, and the bundles Caboose ships | [guest/game](../guest/game/README.md) |
 | The game socket and the binding to a window | caboose-display, `compositor/src/game.rs` |
 | `game.create` and `game.destroy` | [display.md, "Game handoff"](display.md#game-handoff) |
-| The game surface, `caboose-game://`, save sync | CabooseKit, `Sources/CabooseKit/Game` |
+| The game surface, its loopback origin, save sync | CabooseKit, `Sources/CabooseKit/Game` |
 | Catalog games | [guest/catalog](../guest/catalog/README.md) |
 
 ## Bundles
@@ -128,18 +128,36 @@ know `game.decline` skips it).
 CabooseKit lays a `WKWebView` over the window's content in `RemoteWindowView`, sharing the
 window's chrome, title bar, resizing and Stage Manager placement. The web view uses a
 non-persistent website data store, so the computer is the only place a game's state lives.
-It loads `caboose-game://<id>/<entry>`.
+It loads `http://127.0.0.1:<port>/<token>/<entry>` from the game's own server on the device,
+and navigates nowhere else: a link or a window to any other address opens nothing.
 
-**Files.** `CabooseGameSchemeHandler` serves `caboose-game://<id>/<path>`: `<path>` is
-resolved against `root` (a `..` that leaves `root` is refused with 403) and served through
-the host's `/v1/fs/stat` and `/v1/fs/content`. Each file is kept in
-`Caches/CabooseGames`, keyed by the computer, its path and its `etag`, so a file that has not
-changed loads from the device on the next launch. A request with a `Range` header is answered
-206 from a cached file, and passed to the host when the file is not cached. Every response
+**Files.** Each game has a `GameServer`: an HTTP/1.1 server listening on `127.0.0.1` (the
+loopback interface only, on a port the system picks) from before its page loads until the
+game ends, the page is declined or the session ends, when the listener and every connection
+close. The page is served over loopback HTTP rather than a custom URL scheme because WebKit
+makes only http(s) origins cross-origin isolated, which threaded WebAssembly
+(`SharedArrayBuffer`) needs, and `127.0.0.1` is a potentially trustworthy origin, so the page
+is a secure context. Its own port gives each game its own origin.
+
+The server answers only requests whose `Host` is exactly `127.0.0.1:<port>` and whose first
+path component is the game's token, 128 random bits in hex, compared in constant time;
+anything else is 404 (a wrong `Host` is 400). Only `GET` and `HEAD` are served (405
+otherwise), read-only and without directory listings. A request head is at most 16 KiB
+(431), must arrive within 10 seconds, and has no body; at most 32 connections are open at
+once, each carries one request (`Connection: close`), and a response that makes no progress
+for 60 seconds is cut off. The rest of the path is resolved against `root` (a `..` that
+leaves `root` is refused with 403) and served through the host's `/v1/fs/stat` and
+`/v1/fs/content`, with the host's bearer token, which never appears in a URL or a response.
+Each file is kept in `Caches/CabooseGames`, keyed by the computer, its path and its `etag`,
+so a file that has not changed loads from the device on the next launch; a file not cached
+streams to the page as it arrives. A request with a single `Range` is answered 206 (or 416)
+from a cached file, and passed to the host when the file is not cached; any other `Range` is
+answered with the whole file. Every response, the page's, its workers' and every other,
 carries `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy:
-require-corp` and `Cross-Origin-Resource-Policy: same-origin`, which threaded WebAssembly
-(`SharedArrayBuffer`) needs, and a `Content-Type` from the file's extension
-(`application/wasm` for `.wasm`, so it compiles while it streams).
+require-corp`, `Cross-Origin-Resource-Policy: same-origin`, `Cache-Control: no-store` (the
+cache is the app's) and a `Content-Type` from the file's extension (`application/wasm` for
+`.wasm`, so it compiles while it streams). The system can close the listener while the app is
+suspended; the server then listens on the same port again, so the page keeps its origin.
 
 **Saves.** Before the page loads, the client lists every save `path` on the computer
 recursively and downloads its files. A user script at document start (`window.cabooseFS`)
@@ -163,6 +181,18 @@ Resizing, fullscreen, focus and closing the window still go to caboose-display a
 **Pictures.** The window's picture, which Home and the window strip show, is a snapshot of the
 web view, taken when the game's view leaves the screen.
 
+**Declining.** The client declines a game (see "Declining" above) when its page stops on an
+uncaught error while it is not cross-origin isolated, when WebKit ends the page's content
+process a second time within a minute (the first time, the page loads again from the saves
+written so far), or when the device cannot start the game's server. The page stops at once,
+the game's window says "Running this game on the computer instead…", the saves still on
+their way are written (for up to five seconds), and then `game.decline` goes with the reason,
+at most 200 UTF-8 bytes. It goes only while the game is still its window's game on the
+current connection, once per game; a game declined while the connection is down is declined
+when the same server announces it again. When no `game.destroy` follows within ten seconds,
+the window says "This game cannot run on this device, and the computer did not take it back.
+Close the window."
+
 ## Catalog games
 
 A catalog app whose `source.kind` is `game` is a pinned web build plus a bundle Caboose
@@ -180,4 +210,5 @@ the desktop entry and keeps the saves.
 - **One device.** A game runs on one client at a time, like the display. When another device
   takes the display, the game restarts there from its last synchronised saves.
 - **WebKit decides what runs.** WebGPU, threads, pointer lock and the Gamepad API are what the
-  device's WebKit offers; a game that needs more fails in the web view and shows its error.
+  device's WebKit offers. A game that needs more fails in the web view and shows its error,
+  unless its failure is one the client declines the game for.

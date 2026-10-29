@@ -63,10 +63,39 @@ protocol GameFileService: Sendable {
     func delete(_ path: String, ifMatch: String?) async throws
 }
 
+/// Where a game's files come from as its origin serves them (`GameFileResponder`): the
+/// computer's `/v1/fs`, or a stand-in, so serving can be checked without a computer.
+protocol GameFileSource: Sendable {
+    /// Names the computer in the game cache (`GameHostAccess.computerKey`).
+    var computerKey: String { get }
+    /// One item; nil when it does not exist.
+    func stat(_ path: String) async throws -> GameFileItem?
+    /// The file's bytes as they arrive, `range` sent as its `Range` header, each chunk written
+    /// to `teeInto` (when given) before it is yielded.
+    func stream(_ path: String, range: String?, teeInto file: URL?) -> any GameTransfer
+}
+
+/// A file on its way from the computer: its response, then its bytes. Ending the iteration of
+/// `events` stops the transfer.
+protocol GameTransfer: AnyObject, Sendable {
+    var events: AsyncThrowingStream<GameTransferEvent, Error> { get }
+    /// The file each chunk is written to, if any.
+    var stagedFile: URL? { get }
+    /// Whether every chunk reached `stagedFile`; read once `events` has ended.
+    var teed: Bool { get }
+}
+
+enum GameTransferEvent {
+    case response(HTTPURLResponse)
+    case data(Data)
+}
+
 /// `/v1/fs` over the host's HTTP API.
-struct GameFileClient: GameFileService {
+struct GameFileClient: GameFileService, GameFileSource {
     var host: GameHostAccess
     var session: URLSession = .shared
+
+    var computerKey: String { host.computerKey }
 
     func stat(_ path: String) async throws -> GameFileItem? {
         let (data, status, _) = try await send(host.request("stat", path: path))
@@ -127,7 +156,7 @@ struct GameFileClient: GameFileService {
     }
 
     /// A `GET /v1/fs/content`, its bytes relayed as they arrive.
-    func stream(_ path: String, range: String?, teeInto file: URL?) -> GameDownload {
+    func stream(_ path: String, range: String?, teeInto file: URL?) -> any GameTransfer {
         var request = host.request("content", path: path)
         if let range { request.setValue(range, forHTTPHeaderField: "Range") }
         return GameDownload(request: request, teeInto: file)
@@ -158,23 +187,16 @@ struct GameFileClient: GameFileService {
 
 /// One `GET /v1/fs/content` whose response and bytes arrive as `events`, each chunk written
 /// to `teeInto` (when given) before it is yielded. Ending the iteration cancels the request.
-final class GameDownload: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-    enum Event {
-        case response(HTTPURLResponse)
-        case data(Data)
-    }
-
-    let events: AsyncThrowingStream<Event, Error>
-    private let continuation: AsyncThrowingStream<Event, Error>.Continuation
+final class GameDownload: NSObject, URLSessionDataDelegate, GameTransfer, @unchecked Sendable {
+    let events: AsyncThrowingStream<GameTransferEvent, Error>
+    private let continuation: AsyncThrowingStream<GameTransferEvent, Error>.Continuation
     private var file: FileHandle?
     private var task: URLSessionDataTask?
-    /// The file each chunk is written to, if any.
     let stagedFile: URL?
-    /// Whether every chunk reached the file; read once `events` has ended.
     private(set) var teed: Bool
 
     init(request: URLRequest, teeInto url: URL?) {
-        let (events, continuation) = AsyncThrowingStream<Event, Error>.makeStream()
+        let (events, continuation) = AsyncThrowingStream<GameTransferEvent, Error>.makeStream()
         self.events = events
         self.continuation = continuation
         stagedFile = url

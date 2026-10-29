@@ -61,11 +61,34 @@ public struct GameHostAccess: Equatable, Sendable {
 /// many views show the window.
 @MainActor
 public final class RemoteGame: Identifiable {
+    public enum State: Equatable, Sendable {
+        case running
+        /// The page cannot run on this device: its saves are being written, and then the
+        /// computer is asked to run the game instead (`onDecline`).
+        case declined
+        /// The computer did not take the game back within `declineAnswerTime` of being asked.
+        case declineUnanswered
+    }
+
     public nonisolated let id: Int
     public let descriptor: GameDescriptor
     /// Where the game's files are; replaced when the session resumes through another address.
     public internal(set) var host: GameHostAccess?
     public private(set) var isEnded = false
+    public private(set) var state = State.running
+    /// Why the game was declined, once it was.
+    public private(set) var declineReason: String?
+    /// Asks the computer to run the game instead (`game.decline`), with why. Called once, after
+    /// the saves still on their way are written (for up to `declineSaveWait`).
+    public var onDecline: ((String) -> Void)?
+    /// Whether `game.decline` went to the computer; the session sends it once.
+    var isDeclineSent = false
+    /// How long, after asking, the computer has to take the game back (`game.destroy`).
+    var declineAnswerTime: Duration = .seconds(10)
+    /// How long a decline waits for the saves still on their way, in seconds.
+    var declineSaveWait: Double = 5
+    /// The UI's surface, told when `state` changes.
+    var stateSink: (() -> Void)?
     /// The window's picture, which a snapshot of the game seeds for Home and the window strip.
     let picture: WindowSurface
     /// The UI's live surface for this game, if one was made.
@@ -97,15 +120,6 @@ public final class RemoteGame: Identifiable {
         self.picture = picture
     }
 
-    /// `caboose-game://<id>/<entry>`.
-    public var entryURL: URL? {
-        var components = URLComponents()
-        components.scheme = CabooseGameScheme.name
-        components.host = String(id)
-        components.path = "/" + descriptor.entry.split(separator: "/").joined(separator: "/")
-        return components.url
-    }
-
     /// Runs `body` once the game ends (at once if it already has).
     func onEnd(_ body: @escaping () -> Void) {
         if isEnded { body() } else { endHandlers.append(body) }
@@ -118,7 +132,30 @@ public final class RemoteGame: Identifiable {
         endHandlers.removeAll()
         savesFlusher = nil
         gamepadSink = nil
+        stateSink = nil
+        onDecline = nil
         for handler in handlers { handler() }
+    }
+
+    /// The page cannot run on this device: the game is declined, once. The saves still on
+    /// their way are written first (for up to `declineSaveWait`), then `onDecline` asks the
+    /// computer to run it; a game the computer has not ended `declineAnswerTime` later is
+    /// `declineUnanswered`.
+    func decline(_ reason: String) {
+        guard !isEnded, state == .running else { return }
+        state = .declined
+        declineReason = reason
+        stateSink?()
+        Task { [weak self] in
+            guard let self else { return }
+            await flushSaves(within: declineSaveWait)
+            guard !isEnded else { return }
+            onDecline?(reason)
+            try? await Task.sleep(for: declineAnswerTime)
+            guard !isEnded, state == .declined else { return }
+            state = .declineUnanswered
+            stateSink?()
+        }
     }
 
     /// Waits, for at most `seconds`, for the saves still waiting to go to the computer. The
@@ -144,11 +181,6 @@ public final class RemoteGame: Identifiable {
         guard !isEnded, picture.pixelSize.width > 0, picture.pixelSize.height > 0 else { return }
         picture.upload(image: image, into: CGRect(origin: .zero, size: picture.pixelSize))
     }
-}
-
-/// The URL scheme game pages load from.
-public enum CabooseGameScheme {
-    public static let name = "caboose-game"
 }
 
 /// Resumes a continuation the first time it is asked to.

@@ -67,6 +67,8 @@ import Testing
         #expect(headers["Content-Length"] == "1234")
         #expect(headers["Content-Range"] == "bytes 0-1233/5000")
         #expect(headers["Accept-Ranges"] == "bytes")
+        #expect(headers["Cache-Control"] == "no-store")
+        #expect(headers["X-Content-Type-Options"] == "nosniff")
         #expect(GameFiles.responseHeaders(for: "index.html", length: nil)["Content-Length"] == nil)
     }
 
@@ -127,10 +129,6 @@ import Testing
         #expect(secure.computerKey != GameHostAccess(baseURL: secure.baseURL, token: "other").computerKey)
     }
 
-    @MainActor @Test func theEntryLoadsFromTheGamesOrigin() {
-        let game = RemoteGame(GameDescriptor(id: 4, window: 7, root: "web", entry: "pages/index.html"), host: nil, picture: WindowSurface())
-        #expect(game.entryURL?.absoluteString == "caboose-game://4/pages/index.html")
-    }
 }
 
 @Suite struct GameCacheTests {

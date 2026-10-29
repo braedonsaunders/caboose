@@ -3,25 +3,35 @@ import UIKit
 import WebKit
 
 /// The live game of a window (docs/game-handoff.md, "The client"): a `WKWebView` that loads
-/// `caboose-game://<id>/<entry>` once the game's saves are down from the computer.
+/// `http://127.0.0.1:<port>/<token>/<entry>` from the game's own `GameServer` once the game's
+/// saves are down from the computer.
 ///
 /// There is one per game, kept on its `RemoteGame`: whichever `RemoteWindowView` runs the
 /// window's game lays it over the window's picture, so moving between views never restarts
 /// the game. The web view has its own, non-persistent website data, so the computer is the
-/// only place the game's state lives. Touch, keys, the pointer and game controllers go to the
-/// page. When the view leaves the screen (or the app stops being active) a snapshot of the
-/// game becomes the window's picture, for Home and the window strip.
+/// only place the game's state lives, and it navigates nowhere but the game's origin. Touch,
+/// keys, the pointer and game controllers go to the page. When the view leaves the screen (or
+/// the app stops being active) a snapshot of the game becomes the window's picture, for Home
+/// and the window strip.
+///
+/// A page that cannot run here (it stops on an error while not cross-origin isolated, WebKit
+/// ends it twice within a minute, or its server cannot start) declines the game
+/// (`RemoteGame.decline`): the page stops, and the surface says the computer runs the game
+/// instead.
 @MainActor
 final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDelegate {
     private(set) weak var game: RemoteGame?
     let webView: WKWebView
-    private let handler: CabooseGameSchemeHandler
+    private let server: GameServer
+    /// The origin the page was loaded from, once it was.
+    private var origin: GameOrigin?
     private let saves: GameSaveSync
     private let content: WKUserContentController
     private let message = UILabel()
     private let progress = UIActivityIndicatorView(style: .large)
     private var loading: Task<Void, Never>?
-    private var resignObserver: NSObjectProtocol?
+    private var terminations = GameTerminations()
+    private var observers: [NSObjectProtocol] = []
 
     /// The game's surface, made the first time it is asked for.
     static func surface(for game: RemoteGame) -> GameSurfaceView {
@@ -33,13 +43,14 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
 
     private init(game: RemoteGame) {
         self.game = game
-        handler = CabooseGameSchemeHandler(game: game)
+        server = GameServer(root: game.descriptor.root, responder: GameFileResponder(source: { [weak game] in
+            game?.host.map { GameFileClient(host: $0) }
+        }))
         let device = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
         saves = GameSaveSync(saves: game.descriptor.saves, device: device, host: { [weak game] in game?.host })
         content = WKUserContentController()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
-        configuration.setURLSchemeHandler(handler, forURLScheme: CabooseGameScheme.name)
         configuration.userContentController = content
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
@@ -77,18 +88,23 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
         addSubview(message)
         game.savesFlusher = { [weak saves] in await saves?.flush() }
         game.gamepadSink = { [weak self] state in self?.send(gamepad: state) }
+        game.stateSink = { [weak self] in self?.showState() }
         game.onEnd { [weak self] in self?.end() }
-        resignObserver = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil,
-                                                                queue: .main) { [weak self] _ in
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { if self?.window != nil { self?.capturePicture() } }
-        }
+        })
+        // The system can take the server's socket back while the app is suspended.
+        observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.listenAgain() }
+        })
         load()
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     deinit {
-        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
     }
 
     override func layoutSubviews() {
@@ -116,16 +132,25 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
 
     // MARK: Loading
 
-    /// Brings the saves down, then loads the page with them.
+    /// Starts the game's origin and brings the saves down, then loads the page with them.
     private func load() {
         loading?.cancel()
         message.isHidden = true
         progress.startAnimating()
         loading = Task { [weak self] in
             guard let self else { return }
+            let origin: GameOrigin
+            do {
+                origin = try await server.start()
+            } catch {
+                guard !Task.isCancelled else { return }
+                return decline(GameDecline.notServed(error))
+            }
             do {
                 let seed = try await saves.load()
-                guard !Task.isCancelled, let game, !game.isEnded, let url = game.entryURL else { return }
+                guard !Task.isCancelled, let game, !game.isEnded, game.state == .running,
+                      let url = origin.url(game.descriptor.entry) else { return }
+                self.origin = origin
                 content.removeAllUserScripts()
                 content.addUserScript(WKUserScript(source: GameFSScript.source(seed: seed), injectionTime: .atDocumentStart,
                                                    forMainFrameOnly: true, in: .page))
@@ -146,21 +171,33 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
         message.isHidden = false
     }
 
+    /// Whether the game is still this device's to run.
+    private var isRunning: Bool { game.map { !$0.isEnded && $0.state == .running } ?? false }
+
+    /// The server went down while the app was suspended: it listens on its port again.
+    private func listenAgain() {
+        guard origin != nil, isRunning else { return }
+        Task { [server] in _ = try? await server.start() }
+    }
+
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
-        // The page cannot leave the game: other schemes are only loaded inside frames.
-        let url = navigationAction.request.url
-        let isGame = url?.scheme == CabooseGameScheme.name || (url == Self.blank && game?.isEnded != false)
-        return isGame || navigationAction.targetFrame?.isMainFrame == false ? .allow : .cancel
+        // The page goes nowhere but the game's origin, in a frame or not; a link elsewhere opens
+        // nothing. A frame may be blank, and so may the page once the game has stopped.
+        guard let url = navigationAction.request.url, navigationAction.targetFrame != nil else { return .cancel }
+        if let origin, origin.contains(url) { return .allow }
+        guard url.scheme == "about", url.absoluteString == "about:blank" || url.absoluteString == "about:srcdoc" else { return .cancel }
+        return !isRunning || navigationAction.targetFrame?.isMainFrame == false ? .allow : .cancel
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
-        if navigationResponse.isForMainFrame, let response = navigationResponse.response as? HTTPURLResponse, response.statusCode >= 400 {
+        if navigationResponse.isForMainFrame, isRunning, let response = navigationResponse.response as? HTTPURLResponse, response.statusCode >= 400 {
             show("The game's page could not be loaded from the computer (\(response.statusCode)).")
         }
         return .allow
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard isRunning else { return }
         progress.stopAnimating()
         if let gamepad = game?.gamepad { send(gamepad: gamepad) }
     }
@@ -174,16 +211,51 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
     }
 
     private func failed(_ error: Error) {
-        if (error as NSError).domain == NSURLErrorDomain, (error as NSError).code == NSURLErrorCancelled { return }
+        if !isRunning || (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled { return }
         show("The game could not be loaded. \(error.localizedDescription)")
     }
 
-    /// WebKit ended the page (memory pressure, for one): start again from the saves written so far.
+    /// WebKit ended the page (memory pressure, for one): start again from the saves written so
+    /// far. A second time within a minute, the device cannot run the game.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard isRunning else { return }
+        if terminations.record(Date()) { return decline(GameDecline.terminatedTwice) }
         Task { [weak self] in
             await self?.saves.flush()
-            self?.load()
+            guard let self, self.isRunning else { return }
+            self.load()
         }
+    }
+
+    // MARK: Declining
+
+    /// The page cannot run here: it stops, and the game goes back to the computer.
+    private func decline(_ reason: String) {
+        guard let game, !game.isEnded, game.state == .running else { return }
+        game.decline(reason)
+        stopPage()
+    }
+
+    /// Says where a declined game is.
+    private func showState() {
+        switch game?.state {
+        case .declined:
+            show("Running this game on the computer instead…")
+        case .declineUnanswered:
+            show("This game cannot run on this device, and the computer did not take it back. Close the window.")
+        case .running, nil:
+            break
+        }
+    }
+
+    /// The page and its origin stop; the saves it wrote still go to the computer.
+    private func stopPage() {
+        loading?.cancel()
+        server.stop()
+        webView.stopLoading()
+        // The blank page ends the game's scripts and sound now.
+        webView.load(URLRequest(url: Self.blank))
+        content.removeAllUserScripts()
     }
 
     // MARK: The page
@@ -196,8 +268,7 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
                   saves.saves.contains(where: { $0.mount == mount }) else { return }
             saves.record(GameSaveSync.changes(list, mount: mount))
         case "isolation":
-            let reason = (body["message"] as? String).flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
-            show("The game stopped\(reason). Its page is not cross-origin isolated, so games that use threads cannot run in it.")
+            decline(GameDecline.notIsolated(body["message"] as? String ?? ""))
         case "failure":
             show(body["message"] as? String ?? "The game's saves could not be connected.")
         default:
@@ -216,7 +287,7 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
 
     /// A snapshot of the game becomes the window's picture.
     private func capturePicture() {
-        guard let game, !game.isEnded, webView.url != nil, bounds.width > 0, bounds.height > 0 else { return }
+        guard let game, isRunning, webView.url != nil, bounds.width > 0, bounds.height > 0 else { return }
         let configuration = WKSnapshotConfiguration()
         configuration.afterScreenUpdates = false
         webView.takeSnapshot(with: configuration) { [weak game] image, _ in
@@ -227,14 +298,9 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
 
     private static let blank = URL(string: "about:blank")!
 
-    /// The game ended: the page stops at once, and the saves it wrote still go to the computer.
+    /// The game ended: the page and its origin stop at once, and the saves it wrote still go to the computer.
     private func end() {
-        loading?.cancel()
-        handler.invalidate()
-        webView.stopLoading()
-        // The blank page ends the game's scripts and sound now, not when the view goes.
-        webView.load(URLRequest(url: Self.blank))
-        content.removeAllUserScripts()
+        stopPage()
         content.removeAllScriptMessageHandlers()
         removeFromSuperview()
         game?.surface = nil

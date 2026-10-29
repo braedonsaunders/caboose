@@ -2,9 +2,9 @@ import CryptoKit
 import Foundation
 
 /// How a handed-off game's URLs, files and saves map onto the computer's home: the pure rules
-/// `CabooseGameSchemeHandler` and `GameSaveSync` follow (docs/game-handoff.md).
+/// `GameServer`, `GameFileResponder` and `GameSaveSync` follow (docs/game-handoff.md).
 public enum GameFiles {
-    /// Where `caboose-game://<id>/<path>` points under `root`.
+    /// Where `http://127.0.0.1:<port>/<token>/<path>` points under `root`.
     public enum Resolution: Equatable, Sendable {
         /// The home-relative path to serve.
         case file(String)
@@ -60,6 +60,7 @@ public enum GameFiles {
 
     /// The headers of every game response: cross-origin isolation, which threaded WebAssembly
     /// (`SharedArrayBuffer`) needs, the type from the extension, the length, and byte ranges.
+    /// WebKit keeps none of it (`GameCache` is the device's copy) and sniffs no other type.
     public static func responseHeaders(for path: String, length: Int?, contentRange: String? = nil) -> [String: String] {
         var headers = [
             "Cross-Origin-Opener-Policy": "same-origin",
@@ -67,6 +68,8 @@ public enum GameFiles {
             "Cross-Origin-Resource-Policy": "same-origin",
             "Content-Type": contentType(of: path),
             "Accept-Ranges": "bytes",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
         ]
         if let length { headers["Content-Length"] = String(length) }
         if let contentRange { headers["Content-Range"] = contentRange }

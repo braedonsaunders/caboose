@@ -40,7 +40,8 @@ struct GameSeed: Equatable {
 /// callbacks fire asynchronously in IndexedDB's order, `oncomplete` after every request's.
 /// When a read-write transaction that changed something completes, its changes go to the
 /// app through the `cabooseFS` message handler. A page that is not cross-origin isolated,
-/// which threaded WebAssembly needs, reports the first error it stops on, so the app can say why.
+/// which threaded WebAssembly needs, reports the first error it stops on, so the app can
+/// decline the game.
 enum GameFSScript {
     static let handlerName = "cabooseFS"
 
@@ -350,7 +351,7 @@ enum GameFSScript {
       Object.defineProperty(window, "cabooseFS", { value: Object.freeze({ mounts: Array.from(mounts) }) });
 
       // Without cross-origin isolation there is no SharedArrayBuffer, which threaded WebAssembly
-      // needs: when the page then stops on an error, the app says why.
+      // needs: when the page then stops on an error, the app declines the game.
       if (!window.crossOriginIsolated) {
         let reported = false;
         const stopped = (message) => {

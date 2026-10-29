@@ -240,6 +240,117 @@ import Testing
         #expect(session.gameHost == GameHostAccess(baseURL: URL(string: "https://computer.example")!, token: "owner"))
     }
 
+    // MARK: Declining
+
+    func declines(_ frames: [DisplayFrame]) -> [DisplayFrame] {
+        frames.filter { $0.type == DisplayProtocol.ClientType.gameDecline.rawValue }
+    }
+
+    @Test func aDeclineGoesOnceForTheWindowsCurrentGame() async throws {
+        let session = makeSession()
+        session.connect()
+        try await resume.handshake(session, epoch: "e1", windows: [7])
+        resume.streams.last.server([(.gameCreate, game(1, window: 7))])
+        try await helpers.until("game") { session.windows[7]?.game != nil }
+        let game = try #require(session.windows[7]?.game)
+        _ = resume.streams.last.take()
+        session.declineGame(game, reason: "the page is not cross-origin isolated")
+        session.declineGame(game, reason: "again")
+        let sent = declines(resume.streams.last.take())
+        #expect(sent.map { $0.body["id"]?.int } == [1])
+        #expect(sent.first?.body["reason"] == "the page is not cross-origin isolated")
+        session.disconnect()
+    }
+
+    @Test func aDeclineIsOnlyForTheGameTheWindowRunsNow() async throws {
+        let session = makeSession()
+        session.connect()
+        try await resume.handshake(session, epoch: "e1", windows: [7])
+        resume.streams.last.server([(.gameCreate, game(1, window: 7))])
+        try await helpers.until("game") { session.windows[7]?.game != nil }
+        let first = try #require(session.windows[7]?.game)
+        resume.streams.last.server([(.gameCreate, game(2, window: 7))])
+        try await helpers.until("second") { session.windows[7]?.game?.id == 2 }
+        _ = resume.streams.last.take()
+        session.declineGame(first, reason: "replaced")
+        #expect(declines(resume.streams.last.take()).isEmpty)
+
+        let second = try #require(session.windows[7]?.game)
+        session.disconnect()
+        session.declineGame(second, reason: "gone")
+        #expect(declines(resume.streams.last.take()).isEmpty)
+    }
+
+    /// The saves are written before the computer is asked, and the game shows it is going back.
+    @Test func aDeclinedGameWritesItsSavesThenAsks() async throws {
+        let session = makeSession()
+        session.connect()
+        try await resume.handshake(session, epoch: "e1", windows: [7])
+        resume.streams.last.server([(.gameCreate, game(1, window: 7))])
+        try await helpers.until("game") { session.windows[7]?.game != nil }
+        let game = try #require(session.windows[7]?.game)
+        _ = resume.streams.last.take()
+        var flushed = false
+        game.savesFlusher = {
+            try? await Task.sleep(for: .milliseconds(50))
+            flushed = true
+        }
+        var states: [RemoteGame.State] = []
+        game.stateSink = { states.append(game.state) }
+        game.decline("WebKit ended the page twice within a minute")
+        game.decline("twice")
+        #expect(game.state == .declined && states == [.declined])
+        #expect(declines(resume.streams.last.take()).isEmpty) // not before the saves
+        var sent: [DisplayFrame] = []
+        try await helpers.until("decline") {
+            sent += declines(resume.streams.last.take())
+            return !sent.isEmpty
+        }
+        #expect(flushed)
+        #expect(sent.map { $0.body["reason"] } == ["WebKit ended the page twice within a minute"])
+        resume.streams.last.server([(.gameDestroy, ["id": 1])])
+        try await helpers.until("taken back") { game.isEnded }
+        #expect(game.state == .declined)
+    }
+
+    @Test func aDeclineTheComputerDoesNotAnswerSaysSo() async throws {
+        let game = RemoteGame(GameDescriptor(id: 1, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSurface())
+        game.declineAnswerTime = .milliseconds(50)
+        var asked: [String] = []
+        game.onDecline = { asked.append($0) }
+        game.decline("why")
+        try await helpers.until("unanswered") { game.state == .declineUnanswered }
+        #expect(asked == ["why"])
+        #expect(game.declineReason == "why")
+
+        let ended = RemoteGame(GameDescriptor(id: 2, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSurface())
+        ended.end()
+        ended.decline("late")
+        #expect(ended.state == .running)
+    }
+
+    @Test func aGameDeclinedWhileTheConnectionIsDownSaysSoOnTheNextOne() async throws {
+        let session = makeSession()
+        session.connect()
+        try await resume.handshake(session, epoch: "e1", windows: [7])
+        resume.streams.last.server([(.gameCreate, game(1, window: 7))])
+        try await helpers.until("game") { session.windows[7]?.game != nil }
+        let game = try #require(session.windows[7]?.game)
+        try await resume.dropAndResume(session)
+        game.decline("the page is not cross-origin isolated")
+        try await helpers.until("declined") { game.declineReason != nil }
+        try await Task.sleep(for: .milliseconds(30))
+        let marker = try #require(try await resume.handshake(session, epoch: "e1", windows: [7]))
+        resume.streams.last.server([(.gameCreate, self.game(1, window: 7)), (.pong, ["t_us": CBOR(marker)])])
+        var sent: [DisplayFrame] = []
+        try await helpers.until("decline") {
+            sent += declines(resume.streams.last.take())
+            return !sent.isEmpty
+        }
+        #expect(sent.map { $0.body["id"]?.int } == [1])
+        session.disconnect()
+    }
+
     @Test func theGamepadReachesTheLivePageOnChange() {
         let game = RemoteGame(GameDescriptor(id: 1, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSurface())
         var delivered: [GameGamepadState?] = []

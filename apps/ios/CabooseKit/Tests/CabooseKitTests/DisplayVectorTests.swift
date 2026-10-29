@@ -343,6 +343,7 @@ import Testing
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], gpu: true),
         "gpu-ack": .gpuAck(id: 1, offset: 65536),
+        "game-decline": .gameDecline(id: 1, reason: "the page is not cross-origin isolated"),
         "client-hello-wasm": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], wasm: true),
