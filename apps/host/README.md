@@ -544,3 +544,14 @@ Stop and Delete while running (repeat while paused and while awaiting approval).
 both generated files remain, the runner group exits, and the chat stays absent after a
 host restart. A concurrent reply must either finish before deletion or fail without
 recreating history. If runner identity cannot be verified, deletion fails visibly.
+
+The runner-group deletion check uses a disposable Linux Node container with no network,
+128 MiB memory and one CPU. It creates its own detached runner wrappers, exercises
+running and paused deletion, verifies generated files and tombstones, and rejects an
+unrelated process group. From the repository root (with the Node image already present):
+
+```sh
+pnpm --filter caboose-host exec tsx -e "import {writeFileSync} from 'node:fs'; import {DELETE_TASK} from './src/agents.ts'; writeFileSync('/tmp/caboose-delete-task-code.js', DELETE_TASK)"
+docker run --rm --init --network none --memory 128m --cpus 1 -v "$PWD/apps/host/scripts/check-agent-delete.mjs:/check.mjs:ro" -v /tmp/caboose-delete-task-code.js:/delete-task.js:ro node:22-bookworm-slim node /check.mjs /delete-task.js
+rm /tmp/caboose-delete-task-code.js
+```

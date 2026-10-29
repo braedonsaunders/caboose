@@ -901,7 +901,7 @@ export class AgentTasks {
     entry.pending = entry.pending.filter(request => request.id !== requestId)
     this.syncPending(entry)
     if (out.trim() !== 'resolved') return false
-    this.emit({ type: 'agent.task.approval.resolved', id, requestId, allow: input.allow })
+    this.emit({ type: 'agent.task.approval.resolved', id, requestId, allow: input.allow === true })
     return true
     })
   }
