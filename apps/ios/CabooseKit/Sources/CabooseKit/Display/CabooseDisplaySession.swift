@@ -444,12 +444,17 @@ public final class CabooseDisplaySession: DisplaySession {
         if let kind = fields.kind { entry.kind = kind }
         if fields.parent != nil { entry.parent = fields.parent }
         if let geometry = fields.geometry {
-            // An older answer while a newer request is in flight (for up to a second) is skipped;
-            // the answer to the request, or anything after that second, is taken.
+            // Keep a newer requested position for up to a second. Content size always
+            // follows the server; a client is allowed to constrain the request.
             let stale = pendingGeometry[fields.id].map { geometry != $0.geometry && CACurrentMediaTime() - $0.at < 1 } ?? false
             if !stale {
                 pendingGeometry[fields.id] = nil
                 entry.geometry = geometry
+            } else {
+                // A client may constrain or refuse a requested size. Its reported size
+                // is also the coordinate space of its controls, even while a newer
+                // placement request is in flight.
+                entry.geometry.size = geometry.size
             }
         }
         placement[fields.id] = entry
@@ -576,7 +581,10 @@ public final class CabooseDisplaySession: DisplaySession {
             if entry.kind != .toplevel, let parent = entry.parent.flatMap({ windows[$0] }) {
                 geometry = rounded.offsetBy(dx: -parent.frame.minX, dy: -parent.frame.minY)
             }
-            entry.geometry = geometry
+            // Placement can follow the finger immediately; size must follow the app.
+            // Fixed-size dialogs may never answer a resize with another geometry event.
+            // Pretending they accepted it stretches their picture and misroutes taps.
+            entry.geometry.origin = geometry.origin
             placement[window.id] = entry
         }
         pendingGeometry[window.id] = (geometry, CACurrentMediaTime())

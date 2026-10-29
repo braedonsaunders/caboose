@@ -184,6 +184,10 @@ for byte.
 - A toplevel's `geometry` is relative to its display's origin. A popup's or dialog's is
   relative to its parent's geometry origin and may be negative. Geometry is the xdg window
   geometry: client-side shadows are outside it and are cropped out of the stream.
+- A configure size is a request. The client keeps the server-reported size for the
+  picture's layout and input coordinates until the app reports a new size; fixed-size
+  windows may decline a request without sending another geometry update. Placement can
+  move immediately, but an in-flight placement never suppresses a reported size change.
 - `frame.rect` is window-local display pixels (origin = the window's geometry origin).
   `frame.crop` is the visible part of the decoded picture in picture pixels (encoders pad,
   for example NVENC 2160 → 2176). When the two sizes differ the client scales, which also

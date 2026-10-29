@@ -15,7 +15,8 @@ public final class RemoteWindow: Identifiable {
     /// The app asked to cover the whole screen (a video player, a game, a slideshow).
     public internal(set) var isFullscreen = false
     public internal(set) var hasAlpha = false
-    /// Position and size in the server's pixel space.
+    /// Position and size in the server's pixel space. Position may follow an in-flight
+    /// placement request; size remains the size reported by the server.
     public internal(set) var frame: CGRect
     public internal(set) var minimumSize: CGSize?
     public internal(set) var maximumSize: CGSize?

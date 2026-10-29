@@ -112,7 +112,9 @@ and picture need a device with the computer awake. On the Desktop tab, with thre
 3. iPad: thirds, the Tiled/Free choice in the toolbar, and ⌘⌥←/→, ⌘⌥⇧←/→, ⌘⌥R, ⌘⌥O on a
    hardware keyboard (hold ⌘ to see them listed). Plain ⌘C still copies in the app.
 4. Open a menu and a dialog in a tile: both appear over that tile. Park and wake: the same
-   columns come back.
+   columns come back. Open a fixed-size dialog (such as a keyring prompt) as an app card:
+   it keeps its aspect ratio, tapping Cancel lands on Cancel, and rotating the phone does
+   not stretch the dialog or move its touch targets away from the visible controls.
 5. Every tile has a title bar above its app, with red Close and green Full Screen at its
    leading edge: the app's own top row (tabs, menus, address bar) is whole below it, and
    a menu opened from that row lands where it was tapped. Tap a tile to focus it, then use

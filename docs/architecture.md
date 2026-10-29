@@ -2348,3 +2348,8 @@ resumes its conversation with the new runner and applies the choice before promp
 Synthetic mouse clicks from app cards, the desktop and its trackpad retain a 100 ms button-down interval and a 20 ms up interval between queued clicks. This lets frame-sampled desktop interfaces observe both edges. A drag or detached input view cancels pending clicks and releases the active button; queued input is fenced to the original session connection and window. Native touch sequences retain their original phases.
 
 An app card reasserts its measured viewport when the guest resizes the window after opening, including onboarding transitions. Corrections are limited to two per one-second burst so an app enforcing a minimum size does not cause a configure loop; a later app resize or viewport change starts a new burst.
+
+Window content and input retain the server-reported size while a resize is pending.
+Apps can constrain or decline a requested size without answering again; such windows
+remain fitted at their actual aspect ratio. Optimistic placement moves the window's
+origin only, and a reported content size is applied even during placement reconciliation.

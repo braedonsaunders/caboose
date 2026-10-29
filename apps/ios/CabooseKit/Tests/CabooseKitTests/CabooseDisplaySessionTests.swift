@@ -185,10 +185,32 @@ final class FakeDecoder: PictureDecoder {
         let configure = try #require(stream.take().first)
         #expect(configure.type == DisplayProtocol.ClientType.configure.rawValue)
         #expect(configure.body["geometry"]?.ints == [500, 300, 600, 400])
-        #expect(dialog.frame == CGRect(x: 500, y: 300, width: 600, height: 400))
+        #expect(dialog.frame == CGRect(x: 500, y: 300, width: 800, height: 500))
+        stream.server([(.windowUpdate, ["id": 10, "geometry": [500, 300, 600, 400]])])
+        try await until("accepted dialog size") { dialog.frame.size == CGSize(width: 600, height: 400) }
 
         stream.server([(.windowDestroy, ["id": 9])])
         try await until("destroyed") { session.windows[9] == nil }
+    }
+
+    @Test func aFixedSizeWindowKeepsItsInputGeometryUntilTheAppResizes() async throws {
+        let session = try await ready()
+        defer { session.disconnect() }
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 752, 556]))])
+        try await until("window") { session.windows[7] != nil }
+        let remote = try #require(session.windows[7])
+        let requested = CGRect(x: 24, y: 32, width: 932, height: 1356)
+        session.configure(remote, frame: requested)
+        #expect(remote.frame == CGRect(x: 24, y: 32, width: 752, height: 556))
+        #expect(stream.take().last?.body["geometry"] == [24, 32, 932, 1356])
+
+        // An app may send no answer at all when its size is unchanged. A constrained
+        // answer that does arrive must be taken even during the stale-placement fence.
+        stream.server([(.windowUpdate, ["id": 7, "geometry": [0, 0, 800, 600]])])
+        try await until("constrained size") { remote.frame.size == CGSize(width: 800, height: 600) }
+        #expect(remote.frame.origin == requested.origin)
+        stream.server([(.windowUpdate, ["id": 7, "geometry": [24, 32, 932, 1356]])])
+        try await until("accepted size") { remote.frame == requested }
     }
 
     @Test func nativeWaylandWindowsTakeTouchAndXwaylandOnesDoNot() async throws {
@@ -345,7 +367,9 @@ final class FakeDecoder: PictureDecoder {
         #expect(configure.body["fullscreen"] == .bool(false))
         #expect(configure.body["maximized"] == .bool(false))
         #expect(configure.body["geometry"] == [0, 0, 466, 678])
-        #expect(remote.frame == target && !remote.isFullscreen)
+        #expect(remote.frame.size == CGSize(width: 1000, height: 678) && !remote.isFullscreen)
+        stream.server([(.windowUpdate, ["id": 7, "geometry": [0, 0, 466, 678]])])
+        try await until("fullscreen exit size") { remote.frame == target }
     }
 
     @Test func editsBecomeOneTextMessage() async throws {
@@ -493,17 +517,17 @@ final class FakeDecoder: PictureDecoder {
         #expect(session.windows.isEmpty)
     }
 
-    @Test func aStaleUpdateDoesNotSnapADraggedWindowBack() async throws {
+    @Test func aStalePositionDoesNotSnapADraggedWindowBackButItsSizeIsAuthoritative() async throws {
         let session = try await ready()
         stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100]))])
         try await until("window") { session.windows[7] != nil }
         let dragged = try #require(session.windows[7])
-        session.configure(dragged, frame: CGRect(x: 0, y: 0, width: 300, height: 300))
+        session.configure(dragged, frame: CGRect(x: 100, y: 80, width: 300, height: 300))
         #expect(dragged.surface.pixelSize == CGSize(width: 100, height: 100)) // the surface waits for the server
         stream.server([(.windowUpdate, ["id": 7, "geometry": [0, 0, 200, 200]]), (.windowCreate, window(8, geometry: [0, 0, 10, 10]))])
         try await until("handled") { session.windows[8] != nil }
-        #expect(dragged.frame.size == CGSize(width: 300, height: 300))
-        stream.server([(.windowUpdate, ["id": 7, "geometry": [0, 0, 300, 300]]), (.windowUpdate, ["id": 7, "geometry": [0, 0, 310, 300]])])
+        #expect(dragged.frame == CGRect(x: 100, y: 80, width: 200, height: 200))
+        stream.server([(.windowUpdate, ["id": 7, "geometry": [100, 80, 300, 300]]), (.windowUpdate, ["id": 7, "geometry": [100, 80, 310, 300]])])
         try await until("confirmed") { dragged.frame.width == 310 } // after the answer, the server's word is final
         try await until("surface") { dragged.surface.pixelSize == CGSize(width: 310, height: 300) }
     }
