@@ -8,6 +8,7 @@ import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_S
 import { TERMINAL_PORT } from './terminal.js'
 import { configureGuest, ensureNetwork, networkSlot, removeNetwork } from './network.js'
 import type { App, Controller, Session } from './server.js'
+import { guestLaunch } from './guest-apps.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
 
 export interface ComputerResources { memoryMb: number; vcpus: number }
@@ -122,9 +123,9 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     if (result.exitCode !== 0 || result.truncated) throw new Error(`Guest command failed: ${result.stderr || result.exitCode}`)
     return result.stdout
   }
-  async function guestApps(action: string, id?: string, path?: string): Promise<string> {
+  async function guestApps(...args: string[]): Promise<string> {
     const script = await readFile(new URL('./guest-apps.py', import.meta.url), 'utf8')
-    return command('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/env', ...launchEnv, '/usr/bin/python3', '-c', script, action, ...(id ? [id] : []), ...(path ? [path] : [])], 60_000)
+    return command('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/env', ...launchEnv, '/usr/bin/python3', '-c', script, ...args], 60_000)
   }
   /** A caboose-display instance is ready once it answers a hello carrying this wake's token (the image's probe). */
   async function startDisplay(service: string, port: number): Promise<void> {
@@ -251,7 +252,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         if (page.length < 10) return apps
       }
     },
-    async launch(id: string, path?: string): Promise<void> { await guestApps('launch', id, path) },
+    async launch(id: string, path?: string, action?: string): Promise<void> { await guestLaunch(args => guestApps(...args), id, path, action) },
   }
   return controller
 }

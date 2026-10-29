@@ -3,6 +3,7 @@ import configparser
 import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 
@@ -37,7 +38,38 @@ def read(path):
     except (OSError, ValueError, KeyError, configparser.Error):
         return None
 
-if sys.argv[1] == 'launch':
+# Desktop action identifiers are [A-Za-z0-9-] (Desktop Entry Specification, Additional
+# applications actions); the bounds keep a listing small whatever an entry declares.
+ACTION_ID = re.compile(r'[A-Za-z0-9-]{1,64}')
+MAX_ACTIONS = 16
+MAX_ACTION_NAME = 100
+
+def actions(section):
+    """The entry's launchable actions, in declared order: those with a group and a Name, and
+    an Exec unless the application is D-Bus activated (then GLib activates the action)."""
+    found, seen = [], set()
+    dbus = section.get('DBusActivatable', '').strip() == 'true'
+    for ident in section.get('Actions', '').split(';'):
+        ident = ident.strip()
+        if not ACTION_ID.fullmatch(ident) or ident in seen:
+            continue
+        seen.add(ident)
+        group = f'Desktop Action {ident}'
+        if not section.parser.has_section(group):
+            continue
+        action = section.parser[group]
+        name = action.get('Name', '').strip()
+        if not name or not (dbus or action.get('Exec', '').strip()):
+            continue
+        found.append({'id': ident, 'name': name[:MAX_ACTION_NAME]})
+        if len(found) == MAX_ACTIONS:
+            break
+    return found
+
+# `launch <id> [home-relative file]` starts an entry; `action <id> <action>` starts one of its actions.
+if sys.argv[1] in ('launch', 'action'):
+    if sys.argv[1] == 'action' and len(sys.argv) != 4:
+        raise SystemExit('Usage: action <id> <action>')
     if os.environ.get('CABOOSE_GPU') == 'wsl':
         os.environ.setdefault('GALLIUM_DRIVER', 'd3d12')
     # Craft's winit GUI must use X11, including Caboose Display's Xwayland DISPLAY.
@@ -52,8 +84,12 @@ if sys.argv[1] == 'launch':
         os.environ['GDK_BACKEND'] = 'x11'
         os.environ['QT_QPA_PLATFORM'] = 'xcb'
     entry = entries().get(sys.argv[2])
-    if not entry or read(entry) is None:
+    section = read(entry) if entry else None
+    if section is None:
         raise SystemExit('Application not found')
+    action = sys.argv[3] if sys.argv[1] == 'action' else None
+    if action is not None and action not in {item['id'] for item in actions(section)}:
+        raise SystemExit('Application action not found')
     # GLib handles desktop field codes and does not interpret the Exec as shell; this is
     # what `gio launch` does, without needing the CLI (libglib2.0-bin) in the image.
     import gi
@@ -69,13 +105,18 @@ if sys.argv[1] == 'launch':
     for fd in (0, 1, 2):
         os.dup2(devnull, fd)
     try:
-        files = []
-        if len(sys.argv) > 3:
-            relative = sys.argv[3]
-            if not relative or relative.startswith('/') or any(part in ('', '.', '..') for part in relative.split('/')) or '\0' in relative:
-                raise ValueError('Invalid file path')
-            files = [Gio.File.new_for_path(str(pathlib.Path.home() / relative))]
-        launched = info.launch(files, None)
+        if action is not None:
+            # GLib runs the action's Exec, or activates it over D-Bus; it reports no result.
+            info.launch_action(action, None)
+            launched = True
+        else:
+            files = []
+            if len(sys.argv) > 3:
+                relative = sys.argv[3]
+                if not relative or relative.startswith('/') or any(part in ('', '.', '..') for part in relative.split('/')) or '\0' in relative:
+                    raise ValueError('Invalid file path')
+                files = [Gio.File.new_for_path(str(pathlib.Path.home() / relative))]
+            launched = info.launch(files, None)
     finally:
         os.dup2(saved, 2)
     if not launched:
@@ -113,5 +154,6 @@ else:
             _, png = icon.save_to_bufferv('png', [], [])
             icon_url = 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
         apps.append({'id': ident, 'name': section['Name'], 'icon': icon_url,
-                     'categories': [s for s in section.get('Categories', '').split(';') if s], 'exec': section['Exec']})
+                     'categories': [s for s in section.get('Categories', '').split(';') if s], 'exec': section['Exec'],
+                     'actions': actions(section)})
     print(json.dumps(apps))

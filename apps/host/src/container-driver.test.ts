@@ -122,6 +122,10 @@ describe('createContainerController', () => {
     expect(fake.calls.at(-1)).toEqual(['exec', '-u', 'root', 'caboose-owner', '/usr/local/bin/caboose-session', 'start-agent'])
     expect(await controller.apps()).toEqual([])
     expect(fake.calls.at(-1)?.slice(0, 4)).toEqual(['exec', '-u', 'caboose', 'caboose-owner'])
+    await controller.launch('gimp.desktop', 'Pictures/a.png')
+    expect(fake.calls.at(-1)?.slice(-3)).toEqual(['launch', 'gimp.desktop', 'Pictures/a.png'])
+    await controller.launch('firefox.desktop', undefined, 'new-private-window')
+    expect(fake.calls.at(-1)?.slice(-3)).toEqual(['action', 'firefox.desktop', 'new-private-window'])
   })
 })
 

@@ -6,6 +6,7 @@ import { readFile, rm } from 'node:fs/promises'
 import type { Config, GpuKind } from './config.js'
 import type { ComputerIdentity, ComputerResources } from './driver.js'
 import type { App, Controller, Session } from './server.js'
+import { guestLaunch } from './guest-apps.js'
 import type { ComputerSettings } from './settings.js'
 import { fenceBridge, unfenceBridge } from './network.js'
 import { TERMINAL_PORT } from './terminal.js'
@@ -142,9 +143,9 @@ export function createContainerController(config: Config, dependencies: { docker
     return docker(['exec', '-u', user, name, command, ...args], timeoutMs)
   }
 
-  async function guestApps(action: string, id?: string, path?: string): Promise<string> {
+  async function guestApps(...args: string[]): Promise<string> {
     const script = await readFile(new URL('./guest-apps.py', import.meta.url), 'utf8')
-    return exec('caboose', '/usr/bin/env', [...launchEnv, 'HOME=/home/caboose', '/usr/bin/python3', '-c', script, action, ...(id ? [id] : []), ...(path ? [path] : [])], 60_000)
+    return exec('caboose', '/usr/bin/env', [...launchEnv, 'HOME=/home/caboose', '/usr/bin/python3', '-c', script, ...args], 60_000)
   }
 
   /**
@@ -268,7 +269,7 @@ export function createContainerController(config: Config, dependencies: { docker
         if (page.length < 10) return apps
       }
     },
-    async launch(id: string, path?: string): Promise<void> { await guestApps('launch', id, path) },
+    async launch(id: string, path?: string, action?: string): Promise<void> { await guestLaunch(args => guestApps(...args), id, path, action) },
   }
   return controller
 }

@@ -22,7 +22,7 @@ function fakeController(id: string, displayUrl = 'ws://127.0.0.1:1') {
     park: async () => { calls.push('park') },
     destroy: async () => { calls.push('destroy') },
     activeResources: () => null, hasSavedState: () => false, stats: () => ({ host: 'caboose-host' }),
-    apps: async () => [{ id: `${id}.desktop`, name: id, icon: '', categories: [], exec: id }], launch: async () => {},
+    apps: async () => [{ id: `${id}.desktop`, name: id, icon: '', categories: [], exec: id, actions: [] }], launch: async () => {},
     displayUrl, agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined,
   }
   return { controller, calls }

@@ -119,6 +119,10 @@ it('serves the owner display and starts the agent seat on demand', async () => {
     expect(commands.at(-1)).toContain('WAYLAND_DISPLAY=wayland-caboose-0')
     expect(commands.at(-1)).toContain('DISPLAY=:110')
     expect(commands.at(-1)).toContain('XAUTHORITY=/run/user/1000/caboose-xauth')
+    await controller.launch('firefox.desktop', undefined, 'new-private-window')
+    expect(commands.at(-1)).toMatch(/ action firefox\.desktop new-private-window$/)
+    await controller.launch('firefox.desktop')
+    expect(commands.at(-1)).toMatch(/ launch firefox\.desktop$/)
     await controller.park()
   } finally { await rm(root, { recursive: true, force: true }) }
 })
