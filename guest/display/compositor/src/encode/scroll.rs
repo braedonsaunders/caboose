@@ -237,7 +237,7 @@ impl Shift {
     /// Whether row `y`, columns `x0..x1`, shows `new`'s pixels after the copy.
     fn row_matches(&self, shown: Plane<'_>, new: Plane<'_>, y: usize, x0: usize, x1: usize) -> bool {
         let after = new.row(y, x0, x1);
-        if y < self.y0 || y >= self.y1 {
+        if !(self.y0..self.y1).contains(&y) {
             return after == shown.row(y, x0, x1);
         }
         // Columns x0..cs and ce..x1 keep what the client showed; cs..ce are copied.

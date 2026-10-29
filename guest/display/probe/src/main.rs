@@ -405,7 +405,7 @@ fn save_png(
         pixels.extend_from_slice(&rgb.data(0)[start..start + cw as usize * 3]);
     }
     // Tiles and copies applied since the picture, in order, as the client shows them.
-    let inside = |x: i32, y: i32| x >= 0 && y >= 0 && x < cw as i32 && y < ch as i32;
+    let inside = |x: i32, y: i32| (0..cw as i32).contains(&x) && (0..ch as i32).contains(&y);
     for paint in paints {
         match paint {
             Paint::Tile(r, tile) => {
