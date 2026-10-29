@@ -178,6 +178,15 @@ final class AppModel {
         Task { await wake() }
     }
 
+    /// Change reachability without replacing the phone token or its Files identity.
+    func updateAddresses(_ updated: Credentials) {
+        guard let current = credentials, current.hostURL == updated.hostURL,
+              current.token == updated.token else { return }
+        updated.saveAddresses()
+        credentials = updated
+        if case .failed = phase { Task { await wake() } }
+    }
+
     func signOut() {
         fileSearchTask?.cancel()
         ComputerSearch.clear()
@@ -229,7 +238,7 @@ final class AppModel {
     /// Wakes the computer and opens the display. `quiet` keeps the current screen in place,
     /// for reconnects the person should not have to notice.
     func wake(quiet: Bool = false) async {
-        if let credentials, credentials.candidates.count > 1 {
+        if let credentials {
             let reached = await credentials.reachableURL()
             if reached != activeHostURL { activeHostURL = reached }
         }
