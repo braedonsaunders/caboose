@@ -348,8 +348,8 @@ public final class CabooseDisplaySession: DisplaySession {
             case .gameDestroy(let id): endGame(of: windows.values.first { $0.game?.id == id })
             case .gpuCreate(let id, let window): createGPUStream(id, window: window)
             case .gpuDestroy(let id): endGPUStream(of: windows.values.first { $0.gpuStream?.id == id })
-            case .frame, .tile, .videoFrame, .videoPresent, .audio, .unknown, .malformed:
-                continue // pictures were routed on the socket's queue; sound and unknown types are not used yet
+            case .frame, .tile, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
+                continue // pictures and streams were routed on the socket's queue; unknown types are not used
             }
         }
     }
