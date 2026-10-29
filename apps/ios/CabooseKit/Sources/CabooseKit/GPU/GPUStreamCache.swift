@@ -35,9 +35,13 @@ public final class GPUStreamCache: @unchecked Sendable {
     private var streamLimitBytes: UInt64
     /// Bytes every stream's data takes, once counted.
     private var total: UInt64?
-    /// Open streams by key, with how many times each is open; eviction leaves them alone.
+    /// Exclusive writer token by key; eviction leaves these streams alone.
     private var open: [String: Int] = [:]
-    /// Bumped by `removeAll()`: a stream opened before it records nothing more.
+    /// Accounted file lengths, including growth reserved before a write completes.
+    private var accounted: [String: UInt64] = [:]
+    // Internal I/O boundary permits deterministic partial-write failure checks.
+    var writeData: (FileHandle, Data) throws -> Void = { try $0.write(contentsOf: $1) }
+    /// Monotonic writer token: removal invalidates only the writer that owned that key.
     private var generation = 0
 
     /// - Parameters:
@@ -88,6 +92,8 @@ public final class GPUStreamCache: @unchecked Sendable {
         let key = Self.key(epoch: epoch, id: id)
         lock.lock()
         defer { lock.unlock() }
+        // A second writer could truncate or replace a file the first replay is using.
+        guard open[key] == nil else { return nil }
         countIfNeeded()
         let fresh = Record(epoch: epoch, id: id, nonce: nonce, length: 0)
         var record = fresh
@@ -108,9 +114,11 @@ public final class GPUStreamCache: @unchecked Sendable {
             let before = dataSize(key) ?? 0
             try handle.truncate(atOffset: record.length)
             total = (total ?? 0) - min(total ?? 0, before) + record.length
+            accounted[key] = record.length
             if record == fresh { try write(record, key) }
             touch(url)
-            open[key, default: 0] += 1
+            generation += 1
+            open[key] = generation
             return Stream(cache: self, key: key, record: record, handle: handle, generation: generation)
         } catch {
             removeFiles(key)
@@ -122,7 +130,11 @@ public final class GPUStreamCache: @unchecked Sendable {
     /// replayed.
     public func remove(epoch: String, id: Int) {
         guard Self.isUsable(epoch: epoch) else { return }
-        lock.withLock { removeFiles(Self.key(epoch: epoch, id: id)) }
+        lock.withLock {
+            let key = Self.key(epoch: epoch, id: id)
+            open[key] = nil
+            removeFiles(key)
+        }
     }
 
     /// Removes every stream of every epoch but `epoch` (all of them for nil): ids and nonces name
@@ -131,18 +143,10 @@ public final class GPUStreamCache: @unchecked Sendable {
         lock.withLock {
             let epochs = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
             for other in epochs where other != epoch {
-                let keys = open.keys.filter { $0.hasPrefix(other + "/") }
-                if keys.isEmpty {
-                    if let size = directorySize(directory.appendingPathComponent(other)), let counted = total {
-                        total = counted - min(counted, size)
-                    }
-                    try? FileManager.default.removeItem(at: directory.appendingPathComponent(other))
-                } else {
-                    // An open stream of that epoch keeps its files until it closes.
-                    for name in (try? FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent(other).path)) ?? [] {
-                        let key = other + "/" + (name.hasSuffix(".json") ? String(name.dropLast(5)) : name)
-                        if open[key] == nil { removeFiles(key) }
-                    }
+                for name in (try? FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent(other).path)) ?? [] {
+                    let key = other + "/" + (name.hasSuffix(".json") ? String(name.dropLast(5)) : name)
+                    open[key] = nil
+                    removeFiles(key)
                 }
             }
         }
@@ -152,6 +156,8 @@ public final class GPUStreamCache: @unchecked Sendable {
     public func removeAll() {
         lock.withLock {
             generation += 1
+            open.removeAll()
+            accounted.removeAll()
             try? FileManager.default.removeItem(at: directory)
             total = 0
         }
@@ -166,7 +172,7 @@ public final class GPUStreamCache: @unchecked Sendable {
     /// within the budget once the least recently used streams that are not open are removed.
     fileprivate func reserve(_ bytes: UInt64, for key: String, length: UInt64, generation: Int) -> Bool {
         lock.withLock {
-            guard generation == self.generation, length + bytes <= streamLimitBytes else { return false }
+            guard open[key] == generation, length + bytes <= streamLimitBytes else { return false }
             countIfNeeded()
             var used = total ?? 0
             if used + bytes > budgetBytes {
@@ -178,6 +184,7 @@ public final class GPUStreamCache: @unchecked Sendable {
             }
             guard used + bytes <= budgetBytes else { return false }
             total = used + bytes
+            accounted[key, default: length] += bytes
             return true
         }
     }
@@ -185,32 +192,34 @@ public final class GPUStreamCache: @unchecked Sendable {
     /// Records `record` for stream `key` atomically: a temporary file renamed over the record.
     fileprivate func commit(_ record: Record, for key: String, generation: Int) throws {
         try lock.withLock {
-            guard generation == self.generation else { throw CocoaError(.fileNoSuchFile) }
+            guard open[key] == generation else { throw CocoaError(.fileNoSuchFile) }
             try write(record, key)
         }
     }
 
     /// Stream `key` stopped growing at `length`: its data shrinks to that.
-    fileprivate func settle(_ key: String, at length: UInt64, previous: UInt64) {
+    fileprivate func settle(_ key: String, at length: UInt64, previous: UInt64, generation: Int) {
         lock.withLock {
+            guard open[key] == generation else { return }
             if let counted = total, previous > length { total = counted - min(counted, previous - length) }
+            accounted[key] = length
         }
     }
 
     /// Stream `key`, opened in `generation`, closes; with `discard`, what is kept of it goes too,
-    /// unless it was cleared meanwhile (another stream may hold its place since) or someone else
-    /// has it open.
+    /// unless its ownership was invalidated meanwhile (another stream may hold its place).
     fileprivate func close(_ key: String, discard: Bool, generation: Int) {
         lock.withLock {
-            if let count = open[key] { open[key] = count > 1 ? count - 1 : nil }
-            if discard, generation == self.generation, open[key] == nil { removeFiles(key) }
+            guard open[key] == generation else { return }
+            open[key] = nil
+            if discard { removeFiles(key) }
         }
     }
 
     /// What is kept of stream `key`, still open once by the caller, goes.
     fileprivate func discard(_ key: String, generation: Int) {
         lock.withLock {
-            if generation == self.generation, open[key] ?? 0 <= 1 { removeFiles(key) }
+            if open[key] == generation { removeFiles(key) }
         }
     }
 
@@ -227,15 +236,8 @@ public final class GPUStreamCache: @unchecked Sendable {
         (try? FileManager.default.attributesOfItem(atPath: dataURL(key).path)[.size] as? NSNumber)?.uint64Value
     }
 
-    private func directorySize(_ url: URL) -> UInt64? {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else { return nil }
-        return names.filter { !$0.hasSuffix(".json") }.reduce(0) { sum, name in
-            sum + ((try? FileManager.default.attributesOfItem(atPath: url.appendingPathComponent(name).path)[.size] as? NSNumber)?.uint64Value ?? 0)
-        }
-    }
-
     private func removeFiles(_ key: String) {
-        if let size = dataSize(key), let counted = total { total = counted - min(counted, size) }
+        if let size = accounted.removeValue(forKey: key), let counted = total { total = counted - min(counted, size) }
         try? FileManager.default.removeItem(at: dataURL(key))
         try? FileManager.default.removeItem(at: recordURL(key))
         let epoch = dataURL(key).deletingLastPathComponent()
@@ -264,9 +266,8 @@ public final class GPUStreamCache: @unchecked Sendable {
 
     private func countIfNeeded() {
         guard total == nil else { return }
-        total = ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).reduce(0) { sum, epoch in
-            sum + (directorySize(directory.appendingPathComponent(epoch)) ?? 0)
-        }
+        for (key, _) in leastRecentlyUsed() { accounted[key] = dataSize(key) ?? 0 }
+        total = accounted.values.reduce(0, +)
     }
 }
 
@@ -301,6 +302,8 @@ extension GPUStreamCache {
             cached = record.length
         }
 
+        deinit { close() }
+
         /// Whether what arrives is still being kept.
         public var isKeeping: Bool { lock.withLock { handle != nil } }
 
@@ -320,7 +323,7 @@ extension GPUStreamCache {
                 }
                 do {
                     try handle.seek(toOffset: offset)
-                    try handle.write(contentsOf: data)
+                    try cache.writeData(handle, data)
                 } catch {
                     return stop(discard: true)
                 }
@@ -371,8 +374,10 @@ extension GPUStreamCache {
         /// Stops keeping: what is recorded stays unless `discard`, and the data shrinks to it.
         private func stop(discard: Bool) {
             guard let handle else { return }
-            if !discard, (try? handle.truncate(atOffset: record.length)) != nil {
-                cache.settle(key, at: record.length, previous: length)
+            var discard = discard
+            if !discard, (try? handle.truncate(atOffset: record.length)) == nil { discard = true }
+            if !discard {
+                cache.settle(key, at: record.length, previous: length, generation: generation)
                 length = record.length
             }
             try? handle.close()

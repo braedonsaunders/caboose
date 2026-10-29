@@ -168,4 +168,95 @@ import Testing
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cache.directory.appendingPathComponent("e1").path)
         #expect(try #require(cache.open(epoch: "e1", id: 1, nonce: "n1")).cached == 0)
     }
+
+    @Test func clearingFencesOldWritersFromNewAccountingAndOwnership() throws {
+        let cache = makeCache(budget: 100, commitInterval: 1000)
+        defer { try? FileManager.default.removeItem(at: cache.directory) }
+        let old = try #require(cache.open(epoch: "e1", id: 1, nonce: "old"))
+        old.write(bytes(80), at: 0) // Not yet committed.
+        cache.removeAll()
+        let current = try #require(cache.open(epoch: "e1", id: 1, nonce: "new"))
+        current.write(bytes(60), at: 0)
+        old.write(bytes(1), at: 80) // Settling an old inode must not reduce the new total.
+        old.close() // Nor can it release the current stream's eviction protection.
+        #expect(cache.usedBytes == 60)
+        let other = try #require(cache.open(epoch: "e1", id: 2, nonce: "other"))
+        other.write(bytes(50), at: 0)
+        #expect(!other.isKeeping)
+        #expect(current.isKeeping && exists(cache, "e1/1"))
+        other.close()
+        current.close()
+    }
+
+    @Test func aSecondWriterCannotTruncateAnOpenStream() throws {
+        let cache = makeCache(commitInterval: 1000)
+        defer { try? FileManager.default.removeItem(at: cache.directory) }
+        let first = try #require(cache.open(epoch: "e1", id: 1, nonce: "first"))
+        first.write(bytes(80), at: 0)
+        #expect(cache.open(epoch: "e1", id: 1, nonce: "first") == nil)
+        #expect(cache.open(epoch: "e1", id: 1, nonce: "other") == nil)
+        #expect(try Data(contentsOf: first.dataURL) == bytes(80))
+        first.close()
+        let reopened = try #require(cache.open(epoch: "e1", id: 1, nonce: "first"))
+        #expect(reopened.cached == 80)
+        reopened.close()
+    }
+    /// Requested growth is accounted before I/O; neither zero nor partial progress can leak
+    /// that reservation or subtract bytes belonging to an independent open stream.
+    @Test func failedAndPartialWritesReleaseExactlyTheirReservation() throws {
+        for partial in [0, 7, 39] {
+            let cache = makeCache(budget: 100, commitInterval: 1000)
+            defer { try? FileManager.default.removeItem(at: cache.directory) }
+            let other = try #require(cache.open(epoch: "e1", id: 2, nonce: "other"))
+            other.write(bytes(60), at: 0)
+            let failed = try #require(cache.open(epoch: "e1", id: 1, nonce: "failed"))
+            cache.writeData = { handle, data in
+                try handle.write(contentsOf: data.prefix(partial))
+                throw CocoaError(.fileWriteOutOfSpace)
+            }
+            failed.write(bytes(40), at: 0)
+            #expect(!failed.isKeeping)
+            #expect(!exists(cache, "e1/1"))
+            #expect(cache.usedBytes == 60)
+            failed.discard() // Cleanup must not release the same reservation twice.
+            #expect(cache.usedBytes == 60)
+            cache.writeData = { try $0.write(contentsOf: $1) }
+            let replacement = try #require(cache.open(epoch: "e1", id: 1, nonce: "new"))
+            replacement.write(bytes(40), at: 0)
+            #expect(replacement.isKeeping && cache.usedBytes == 100)
+            #expect(try Data(contentsOf: other.dataURL) == bytes(60))
+            replacement.close()
+            other.close()
+        }
+    }
+
+    @Test func removalInvalidatesTheWriterBeforeItsReplacementOpens() throws {
+        let cache = makeCache(budget: 100, commitInterval: 1000)
+        defer { try? FileManager.default.removeItem(at: cache.directory) }
+        let old = try #require(cache.open(epoch: "e1", id: 1, nonce: "old"))
+        old.write(bytes(80), at: 0)
+        cache.remove(epoch: "e1", id: 1)
+        let current = try #require(cache.open(epoch: "e1", id: 1, nonce: "new"))
+        current.write(bytes(60), at: 0)
+        old.commit()
+        old.discard()
+        #expect(cache.usedBytes == 60)
+        #expect(try Data(contentsOf: current.dataURL) == bytes(60))
+        current.close()
+        let reopened = try #require(cache.open(epoch: "e1", id: 1, nonce: "new"))
+        #expect(reopened.cached == 60)
+        reopened.close()
+    }
+
+    @Test func releasingAStreamClosesItsWriter() throws {
+        let cache = makeCache()
+        defer { try? FileManager.default.removeItem(at: cache.directory) }
+        var stream: GPUStreamCache.Stream? = try #require(cache.open(epoch: "e1", id: 1, nonce: "n"))
+        stream?.write(bytes(10), at: 0)
+        stream = nil
+        let reopened = try #require(cache.open(epoch: "e1", id: 1, nonce: "n"))
+        #expect(reopened.cached == 10)
+        reopened.close()
+    }
+
 }
