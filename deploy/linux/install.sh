@@ -304,10 +304,21 @@ elif [[ $bind != 127.* && $bind != localhost && $bind != ::1 ]]; then
   addresses+=("$url")
 fi
 
+# In WSL, NAT networking (its default) puts Linux on a virtual network only Windows reaches,
+# so its addresses are no use to a phone. Mirrored networking gives Linux the PC's own.
+windows_setup="irm https://raw.githubusercontent.com/$REPO/main/deploy/windows/setup-wsl.ps1 -OutFile setup-wsl.ps1; powershell -ExecutionPolicy Bypass -File setup-wsl.ps1 -Port $port -Restart"
+wsl_nat=0
+if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null && [[ $(wslinfo --networking-mode 2>/dev/null) != mirrored ]]; then
+  wsl_nat=1
+  addresses=()
+fi
+
 echo
 say "Caboose $installed_version is running."
 if [[ ${#addresses[@]} -gt 0 ]]; then
   echo "  Console:      ${addresses[0]}  (also $url on this machine)"
+elif [[ $wsl_nat == 1 ]]; then
+  echo "  Console:      $url (on this PC)"
 else
   echo "  Console:      $url (this machine only: --bind is $bind)"
 fi
@@ -331,6 +342,12 @@ if [[ ${#addresses[@]} -gt 0 ]]; then
     echo "  $link"
     echo "  A new code: Computers › Owner › Phones in the console."
   fi
+fi
+if [[ $wsl_nat == 1 ]]; then
+  echo
+  warn "WSL is using NAT networking, so phones cannot reach Caboose. In an administrator PowerShell on Windows, run:"
+  echo "  $windows_setup"
+  echo "  It switches WSL to mirrored networking (deploy/windows/README.md) and restarts WSL; then pair a phone from Computers › Owner › Phones in the console."
 fi
 echo
 if [[ $runtime == microvm ]] && ! grep -q '^CABOOSE_BASE_IMAGE=.' "$env_file" /opt/caboose/current/defaults.env; then

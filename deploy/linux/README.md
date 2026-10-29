@@ -37,7 +37,9 @@ for the QR code) with apt, dnf, pacman or zypper.
 | `/var/lib/caboose/disks` | The computer, its snapshots, and the host's state, including the generated `owner-token` (0600). When the filesystem cannot make reflink clones, it is a sparse XFS image, `/var/lib/caboose/disks.xfs.img`, mounted through `/etc/fstab`. |
 
 The host listens on every address on port 7310 by default, so a phone on the same network
-reaches it. Traffic is plain HTTP on that network. To use Caboose away from home, use
+reaches it. In WSL on Windows that needs mirrored networking, which
+[deploy/windows](../windows/README.md) sets up; under WSL's default NAT networking the
+installer prints the command for it instead of a pairing link. Traffic is plain HTTP on that network. To use Caboose away from home, use
 Tailscale or a server with a domain and HTTPS (`--domain`, [deploy/server](../server)).
 Never forward the port from your router.
 
