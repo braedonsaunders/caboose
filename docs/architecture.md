@@ -1565,7 +1565,7 @@ the app card, and a detached view releases its layers.
   hidden and fills the screen. A swipe inward from the toolbar edge reveals the native
   toolbar over the card; a swipe outward on its controls or the Hide window controls button
   hides it. The toolbar uses the selected wallpaper as its background, with the shell's
-  dusk colours while no photograph is available. The opposite edge switches to the
+  dusk colours while no wallpaper picture is available. The opposite edge switches to the
   neighbouring app; where there is no vertical toolbar, either edge switches apps.
   Back, the app switcher, Keyboard and Window Options use the system toolbar. The window
   title is in the switcher; Options includes Ask Agent, redraw and close. The switcher and
@@ -1789,11 +1789,14 @@ Pinned and recent apps are kept on the phone per computer.
   Mirroring; the app then claims the external display as a desktop.
 - **Wallpaper.** The desktop's wallpaper is the phone's, not the guest's (the compositor
   draws no desktop), so one choice covers every tab and the desktop on the phone and on a
-  TV: the brand gradient, photographs that change every quarter hour, one photograph, or the
-  owner's own picture from Photos, kept on the phone. It is chosen from Computer settings,
-  the Desktop's overflow menu or a long press on Home's background. On the phone a sheer of
-  the brand gradient lies over a photograph, which extends under the bars. The last
-  photograph is cached so no screen starts black.
+  TV: the brand gradient, wallpapers that change every quarter hour, one wallpaper, or the
+  owner's own picture from Photos, kept on the phone. The wallpapers are twelve named
+  scenes the phone draws itself (`WallpaperRenderer`): layered gradients and glows under
+  soft large-scale noise, deterministic per scene id, rendered at the display's pixel size
+  and cached in Caches; nothing is fetched. The choice is made from Computer settings, the
+  Desktop's overflow menu or a long press on Home's background. On the phone a sheer of
+  the brand gradient lies over a wallpaper, which extends under the bars. The last
+  wallpaper is cached so no screen starts black.
 - **Computer settings.** The Computer sheet edits the management settings, shows
   `restartRequired`, parks, restarts after confirmation and chooses the wallpaper.
 

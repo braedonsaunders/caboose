@@ -354,8 +354,9 @@ socket. The Apps tab's Shelf offers optional applications from the computer's pi
 catalog and Debian's AppStream metadata. Library searches Debian applications, filters results by category, labels Caboose picks as curated, groups curated apps into packs, and offers updates, rollback to a cached release, and removal.
 
 The wallpaper lies behind every tab and the desktop, here and on a TV: the brand gradient,
-photographs that change every quarter hour, one photograph, or a picture of your own from
-Photos. Choose it in Computer settings, from the Desktop's overflow menu, or with a long
+wallpapers that change every quarter hour, one wallpaper, or a picture of your own from
+Photos. The wallpapers are twelve scenes drawn on the device (`Desktop/Wallpapers.swift`),
+rendered once per screen size and cached; nothing is downloaded. Choose it in Computer settings, from the Desktop's overflow menu, or with a long
 press on Home's background.
 
 The same sheet shows the progress and any failure of a guest component update the host

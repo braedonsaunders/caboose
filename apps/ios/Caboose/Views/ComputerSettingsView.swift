@@ -275,7 +275,7 @@ struct ComputerSettingsView: View {
         switch WallpaperStore.shared.choice {
         case .gradient: "Gradient"
         case .rotating: "Rotating"
-        case .photo: "Photograph"
+        case .photo(let id): Wallpaper.scene(id)?.name ?? "Wallpaper"
         case .custom: "Your Photo"
         }
     }

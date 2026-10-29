@@ -3,7 +3,7 @@ import PhotosUI
 import SwiftUI
 
 /// Chooses the background of the app and the computer's desktop at once: the brand gradient,
-/// photographs that change every quarter hour, one photograph, or the owner's own picture.
+/// wallpapers that change every quarter hour, one wallpaper, or the owner's own picture.
 struct BackgroundPicker: View {
     @Environment(AppModel.self) private var model
     @State private var picked: PhotosPickerItem?
@@ -43,17 +43,14 @@ struct BackgroundPicker: View {
                     .buttonStyle(.plain)
                 }
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Photographs").font(.title3.weight(.bold))
+                    Text("Wallpapers").font(.title3.weight(.bold))
                     LazyVGrid(columns: columns, spacing: 12) {
-                        ForEach(Wallpaper.library, id: \.id) { wallpaper in
-                            option(wallpaper.author, selected: store.choice == .photo(wallpaper.id)) {
+                        ForEach(Wallpaper.library) { wallpaper in
+                            option(wallpaper.name, selected: store.choice == .photo(wallpaper.id)) {
                                 thumbnail(wallpaper)
                             } action: { store.choose(.photo(wallpaper.id)) }
                         }
                     }
-                    Text("Photographs from Unsplash, through Lorem Picsum.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
             .padding(20)
@@ -109,10 +106,25 @@ struct BackgroundPicker: View {
     }
 
     private func thumbnail(_ wallpaper: Wallpaper) -> some View {
-        AsyncImage(url: wallpaper.url(width: 450, height: 300)) { image in
-            image.resizable().scaledToFill()
-        } placeholder: {
+        WallpaperThumbnail(wallpaper: wallpaper)
+    }
+}
+
+/// A small rendering of one wallpaper, drawn off the main thread the first time it is shown.
+private struct WallpaperThumbnail: View {
+    let wallpaper: Wallpaper
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
             Backdrop()
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill().transition(.opacity)
+            }
+        }
+        .task(id: wallpaper.id) {
+            let drawn = await WallpaperStore.shared.thumbnail(wallpaper, size: CGSize(width: 450, height: 300))
+            withAnimation(.easeInOut(duration: 0.25)) { image = drawn }
         }
     }
 }
