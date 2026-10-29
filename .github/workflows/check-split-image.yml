@@ -1,0 +1,57 @@
+# Disposable native split-image validation. It never logs into a registry or publishes images.
+name: Check split microVM image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  split-image:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install image inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y erofs-utils initramfs-tools-core
+      - name: Make room for the disposable build
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Build the split image
+        env:
+          CABOOSE_SPLIT_SYSTEM: '1'
+          OUT_DIR: ${{ runner.temp }}/split-image
+        run: ./guest/image/build.sh
+      - name: Check EROFS and writable overlay
+        run: |
+          sudo ./guest/image/check-system-image.sh
+          sudo ./guest/image/check-system-overlay.sh
+      - name: Inspect the built image and initramfs
+        env:
+          IMAGE_DIR: ${{ runner.temp }}/split-image
+        run: |
+          set -euo pipefail
+          for file in base.raw vmlinux initrd system.erofs; do test -s "$IMAGE_DIR/$file"; done
+          fsck.erofs "$IMAGE_DIR/system.erofs"
+          lsinitramfs "$IMAGE_DIR/initrd" > "$RUNNER_TEMP/initramfs-files"
+          grep -Fx 'scripts/local-bottom/caboose-system' "$RUNNER_TEMP/initramfs-files"
+          root="$RUNNER_TEMP/split-root"
+          lower="$RUNNER_TEMP/split-lower"
+          mkdir -p "$root" "$lower"
+          cleanup() { sudo umount "$lower" 2>/dev/null || true; sudo umount "$root" 2>/dev/null || true; }
+          trap cleanup EXIT
+          sudo mount -t ext4 -o ro,loop,offset=3145728 "$IMAGE_DIR/base.raw" "$root"
+          sudo mount -t erofs -o ro,loop "$IMAGE_DIR/system.erofs" "$lower"
+          sudo test -f "$root/etc/caboose-split-system"
+          test -z "$(sudo find "$root/usr" "$root/opt" -mindepth 1 -print -quit)"
+          sudo test -x "$lower/usr/bin/python3"
+          sudo test -d "$lower/opt"
+          echo 'Split image and initramfs inspected successfully.'
