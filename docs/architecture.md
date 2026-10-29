@@ -1690,8 +1690,12 @@ the app card, and a detached view releases its layers.
   and each app's hand-chosen width are kept per computer (window ids survive reconnects
   and parking). The layout engine is `CabooseKit/Switchyard` and is unit-tested.
 - **Lifecycle.** The display socket closes when the app goes to the background; the
-  computer parks on idle and resumes on the next foreground. The last frame of every window
-  is cached, so reopening is instant while the stream reconnects.
+  computer parks on idle and resumes on the next foreground. As the app leaves, the last
+  picture of each window is kept for the reconnect, reduced on the GPU to at most 1024
+  pixels on its long edge and read back off the main thread, most recently raised windows
+  first within a 24 MiB budget; windows past the budget are not kept. Reopening paints the
+  kept picture scaled over the whole window until its keyframe lands. Home's kept pictures
+  (`HomeFrames`) are taken the same way at 640 pixels.
 
 ### Shell
 
