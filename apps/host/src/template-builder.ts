@@ -11,7 +11,7 @@ import { readBundle } from './components.js'
 
 const exec = promisify(execFile)
 interface Compatibility {
-  vmmVersion: string; vmmPath: string; cpuSignature: string; baseImagePath: string; kernelPath: string; initramfsPath: string; attachmentPaths: string[]
+  vmmVersion: string; vmmPath: string; cpuSignature: string; componentVersion: string; baseImagePath: string; kernelPath: string; initramfsPath: string; attachmentPaths: string[]
 }
 interface TemplateApi {
   DESK_TEMPLATE_VERSION: number
@@ -86,7 +86,7 @@ export async function buildTemplateSource(options: TemplateBuildOptions): Promis
     await host.suspend('source')
     stopped = true
     for (const file of [disk, ...['config.json', 'state.json', 'memory-ranges'].map(name => join(snapshot, name))]) await chmod(file, 0o400)
-    await api.registerDeskTemplate(snapshot, disk, { vmmVersion: version, vmmPath: options.vmmPath, cpuSignature: await api.hostCpuSignature(),
+    await api.registerDeskTemplate(snapshot, disk, { vmmVersion: version, vmmPath: options.vmmPath, cpuSignature: await api.hostCpuSignature(), componentVersion: expectedComponents,
       baseImagePath: options.baseImage, kernelPath: options.kernel, initramfsPath: options.initramfs,
       attachmentPaths: (options.attachments ?? []).map(item => item.path) })
     const marker = await open(readyPath, 'wx', 0o600)

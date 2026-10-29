@@ -58,7 +58,7 @@ try {
   console.log('PASS isolated template guest')
   await host.suspend('source')
   for (const file of [disk, ...['config.json', 'state.json', 'memory-ranges'].map(name => join(snapshot, name))]) await chmod(file, 0o400)
-  const compatibility = { vmmVersion: 'v54.0', vmmPath: '/usr/local/bin/cloud-hypervisor', cpuSignature: await hostCpuSignature(), baseImagePath: required('TEMPLATE_CHECK_GOLDEN'), kernelPath: kernel, initramfsPath: initrd, attachmentPaths: [] }
+  const compatibility = { vmmVersion: 'v54.0', vmmPath: '/usr/local/bin/cloud-hypervisor', cpuSignature: await hostCpuSignature(), componentVersion: 'diagnostic', baseImagePath: required('TEMPLATE_CHECK_GOLDEN'), kernelPath: kernel, initramfsPath: initrd, attachmentPaths: [] }
   const quick = process.env.TEMPLATE_CHECK_QUICK === '1'
   if (!quick) await registerDeskTemplate(snapshot, disk, compatibility)
   async function startChild(id: string, tap: string, address: string, network: any) {

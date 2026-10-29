@@ -4,6 +4,7 @@ import { access, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import * as deskApi from '@braedonsaunders/appkit-desk'
 import { templateFork } from './template-fork.js'
+import { readBundle } from './components.js'
 import { vmPaths } from './vm-paths.js'
 import { buildDeskLaunchPlan, createDeskHost, createCloudHypervisorBackend, createVirtualizationBackend, listenDeskPort, type DeskHandle, type DeskBackend, type DeskHost, type DeskHostOptions } from '@braedonsaunders/appkit-desk'
 import type { Config } from './config.js'
@@ -250,7 +251,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
             for await (const chunk of createReadStream(path)) digest.update(chunk as Buffer)
             identity.update(path).update('\0').update(digest.digest('hex')).update('\0')
           }
-          identity.update(JSON.stringify([await api.hostCpuSignature!(), config.vmmPath, desired.memoryMb, desired.vcpus, Boolean(config.vmFreePageReporting)]))
+          identity.update(JSON.stringify([await api.hostCpuSignature!(), (await readBundle()).version, config.vmmPath, desired.memoryMb, desired.vcpus, Boolean(config.vmFreePageReporting)]))
           sourceId = identity.digest('hex')
         }
         const templates = join(config.imageRoot, 'templates')

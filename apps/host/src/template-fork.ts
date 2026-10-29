@@ -8,9 +8,10 @@ import { parseExecResult } from '@braedonsaunders/appkit-desk'
 import { buildTemplateSource, type TemplateBuildOptions } from './template-builder.js'
 import { networkSlot } from './network.js'
 import { templateNetworkFence } from './template-network.js'
+import { readBundle } from './components.js'
 
 const exec = promisify(execFile)
-interface Compatibility { vmmVersion: string; vmmPath: string; cpuSignature: string; baseImagePath: string; kernelPath: string; initramfsPath: string; attachmentPaths: string[] }
+interface Compatibility { vmmVersion: string; vmmPath: string; cpuSignature: string; componentVersion: string; baseImagePath: string; kernelPath: string; initramfsPath: string; attachmentPaths: string[] }
 interface TemplateApi {
   hostCpuSignature(): Promise<string>
   forkDeskTemplate(snapshot: string, childDirectory: string, identity: { deskId: string; tap: string; mac: string; vsockCid: number; vsockSocket: string }, compatibility: Compatibility): Promise<unknown>
@@ -45,10 +46,10 @@ export function templateFork(options: TemplateForkOptions) {
     if (result.exitCode !== 0 || result.truncated) throw new Error(`Template guest command failed: ${result.stderr || result.exitCode}`)
     return result.stdout
   }
-  const compatibility = async (api: Partial<TemplateApi>): Promise<Compatibility> => {
+  const compatibility = async (api: Partial<TemplateApi>, componentVersion?: string): Promise<Compatibility> => {
     if (typeof api.hostCpuSignature !== 'function') throw new Error('Template forks require a compatible AppKit desk release')
     const version = (await exec(options.vmmPath, ['--version'], { timeout: 15_000 })).stdout.trim()
-    return { vmmVersion: version, vmmPath: options.vmmPath, cpuSignature: await api.hostCpuSignature(), baseImagePath: options.baseImage,
+    return { vmmVersion: version, vmmPath: options.vmmPath, cpuSignature: await api.hostCpuSignature(), componentVersion: componentVersion ?? (await readBundle()).version, baseImagePath: options.baseImage,
       kernelPath: options.kernel, initramfsPath: options.initramfs, attachmentPaths: (options.attachments ?? []).map(item => item.path) }
   }
   const identity = (plan: DeskLaunchPlan) => {
@@ -73,7 +74,10 @@ export function templateFork(options: TemplateForkOptions) {
       if (plan.hypervisor !== 'cloud-hypervisor') throw new Error('Template forks require Cloud Hypervisor')
       const api = desk as unknown as Partial<TemplateApi>
       if (typeof api.verifyDeskTemplateCompatibility !== 'function') throw new Error('Template resume requires image verification')
-      await api.verifyDeskTemplateCompatibility(options.childDirectory, await compatibility(api))
+      const binding = JSON.parse(await readFile(join(options.childDirectory, '.template-binding.json'), 'utf8')) as { compatibility?: { componentVersion?: unknown } }
+      const savedVersion = binding.compatibility?.componentVersion
+      if (typeof savedVersion !== 'string' || !savedVersion) throw new Error('Template component identity is missing')
+      await api.verifyDeskTemplateCompatibility(options.childDirectory, await compatibility(api, savedVersion))
       const saved: unknown = JSON.parse(await readFile(join(plan.snapshot.dir, 'config.json'), 'utf8'))
       assertSavedTemplateConfig(saved, plan, options.kernel, options.initramfs, options.attachments ?? [])
     },

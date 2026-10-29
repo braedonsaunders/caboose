@@ -210,7 +210,7 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
 | `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks. |
-| `CABOOSE_VM_TEMPLATE` | `off` | `on` opts new Linux microVM computers into a sterile shared memory template. Existing computers keep their disks and snapshots. Requires Cloud Hypervisor v54.0 and a guest image containing the template helper; cannot be combined with the microVM depot. |
+| `CABOOSE_VM_TEMPLATE` | `off` | `on` opts new Linux microVM computers into a sterile shared memory template. Existing computers keep their disks and snapshots. Requires Cloud Hypervisor v54.0 and a golden image with the current complete guest component bundle; cannot be combined with the microVM depot. |
 | `CABOOSE_VM_RESTORE_MODE` | `copy` | Linux Cloud Hypervisor snapshot restore: `copy`, `copyonwrite`, or `ondemand`. On-demand requires access to Linux userfaultfd and fails rather than falling back if unavailable. It cannot be combined with templates or the microVM depot. |
 | `CABOOSE_VM_COW` | `off` | `on` selects copy-on-write restore; conflicts with a different explicit restore mode. |
 | `CABOOSE_VM_FREE_PAGE_REPORTING` | `off` | `on` enables a zero-size virtio-balloon with free-page reporting on new Cloud Hypervisor boots. |
