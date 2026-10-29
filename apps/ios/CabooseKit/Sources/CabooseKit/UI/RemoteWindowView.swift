@@ -19,8 +19,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// on so the server paces the window to it. Set it on display-only views too; it is
     /// `session` when nil.
     public weak var pacer: (any DisplaySession)?
-    /// Which of the session's displays this view is on, for vsync pacing.
-    public var displayID = 0
+    /// Explicit output for pacing, or nil for the session's primary output. Only an
+    /// unselected bootstrap session resolves nil from the retained server hello.
+    public var displayID: Int?
     /// Whether this view plays the window's videos. A video plays in one view at a time, so
     /// thumbnails leave it to the window's main view.
     public var showsVideo = true {

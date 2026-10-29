@@ -1,8 +1,8 @@
 import CabooseKit
 import SwiftUI
 
-/// One Linux app, full screen, sized to the phone: the window is configured to exactly
-/// the space it is shown in, so the app lays itself out for this screen. A swipe in from
+/// One Linux app presented on the phone. Resizable windows fit the viewport within their
+/// size hints; fullscreen windows retain their monitor geometry. A swipe in from
 /// either side edge goes to the next or previous open app, in the order they opened.
 struct WindowScreen: View {
     @Environment(AppModel.self) private var model
@@ -139,6 +139,8 @@ struct WindowScreen: View {
                         .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
                         .onAppear { fitDialog(popup, over: window, in: size) }
                         .onChange(of: size) { _, size in fitDialog(popup, over: window, in: size) }
+                        .onChange(of: popup.minimumSize) { _, _ in fitDialog(popup, over: window, in: size) }
+                        .onChange(of: popup.maximumSize) { _, _ in fitDialog(popup, over: window, in: size) }
                 }
             }
         }
@@ -149,11 +151,15 @@ struct WindowScreen: View {
         .overlay { cardEdges(from: window, width: size.width) }
         .onChange(of: window.isFullscreen) { _, fullscreen in
             withAnimation(.snappy) { chromeVisible = !fullscreen }
+            cardFit = CardWindowFit()
+            fit(window, to: size)
         }
         .onAppear { fit(window, to: size) }
         .onChange(of: size) { _, size in fit(window, to: size) }
         .onChange(of: window.id) { _, _ in cardFit = CardWindowFit(); fit(window, to: size) }
         .onChange(of: window.frame) { _, _ in fit(window, to: size) }
+        .onChange(of: window.minimumSize) { _, _ in fit(window, to: size) }
+        .onChange(of: window.maximumSize) { _, _ in fit(window, to: size) }
     }
 
     // MARK: Swiping between apps
@@ -345,29 +351,30 @@ struct WindowScreen: View {
     private func fit(_ window: RemoteWindow, to size: CGSize) {
         guard model.presentedWindowID == window.id, size.width > 0, size.height > 0, let session = model.session else { return }
         model.windowCardResized(to: size)
-        let target = DeviceViewport.guestFrame(size: size, pixelsPerPoint: model.pixelsPerPoint)
-        if cardFit.shouldCorrect(frame: window.frame, target: target, now: ProcessInfo.processInfo.systemUptime) {
-            var state = ["maximized": false]
-            if model.externalDisplayActive && window.isFullscreen { state["fullscreen"] = false }
-            session.configure(window, frame: target, state: state)
-        }
         session.focus(window)
+        guard let target = WindowSizePolicy.request(
+            DeviceViewport.guestFrame(size: size, pixelsPerPoint: model.pixelsPerPoint),
+            minimum: window.minimumSize, maximum: window.maximumSize, fullscreen: window.isFullscreen)
+        else { return }
+        if cardFit.shouldCorrect(frame: window.frame, target: target, now: ProcessInfo.processInfo.systemUptime) {
+            session.configure(window, frame: target, state: ["maximized": false])
+        }
     }
 
-    /// A dialog (not a menu or tooltip) is moved, and shrunk if it must be, to sit centred in
-    /// the shown area: apps size and place dialogs for a desktop, and half of one off the
-    /// edge of a phone cannot be reached. The server is told, so clicks land where it shows.
+    /// Center dialogs within their size hints. A minimum larger than the viewport is
+    /// retained; popup presentation fits the whole picture and its input transform.
     private func fitDialog(_ dialog: RemoteWindow, over parent: RemoteWindow, in size: CGSize) {
         guard model.presentedWindowID == parent.id, !dialog.isOverrideRedirect, let session = model.session,
               size.width > 0, size.height > 0 else { return }
         let scale = model.pixelsPerPoint
         let margin = 12 * scale
         let area = CGSize(width: size.width * scale, height: size.height * scale)
-        let width = min(dialog.frame.width, area.width - 2 * margin)
-        let height = min(dialog.frame.height, area.height - 2 * margin)
-        let target = CGRect(x: parent.frame.minX + (area.width - width) / 2,
-                            y: parent.frame.minY + (area.height - height) / 2,
-                            width: width, height: height).integral
+        let proposed = CGRect(x: 0, y: 0, width: max(1, min(dialog.frame.width, area.width - 2 * margin)),
+                              height: max(1, min(dialog.frame.height, area.height - 2 * margin)))
+        guard var target = WindowSizePolicy.request(proposed, minimum: dialog.minimumSize,
+            maximum: dialog.maximumSize, fullscreen: dialog.isFullscreen) else { return }
+        target.origin = CGPoint(x: (parent.frame.minX + (area.width - target.width) / 2).rounded(),
+                                y: (parent.frame.minY + (area.height - target.height) / 2).rounded())
         if dialog.frame != target { session.configure(dialog, frame: target) }
         session.focus(dialog)
     }

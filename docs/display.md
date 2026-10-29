@@ -196,6 +196,29 @@ for byte.
   picture's layout and input coordinates until the app reports a new size; fixed-size
   windows may decline a request without sending another geometry update. Placement can
   move immediately, but an in-flight placement never suppresses a reported size change.
+- Monitor dimensions are independent of a window's presentation viewport. The iOS client
+  retains its full-device square output and the DPI chosen on device attachment, including
+  an active desktop's UI scale. A validated per-computer local preference restores the
+  device mode/DPI/render scale before start or resume. Without one, Home announces an
+  empty display set, retaining the server's current/default output until a real measured
+  device attachment. A view with no assigned output paces the retained hello's primary
+  ID during that bootstrap; explicit pacing IDs are never redirected. Pictures and
+  acknowledgements do not depend on the client selecting a replacement output.
+  Card, keyboard, fold and stage changes resize ordinary
+  window requests without changing that output. External monitors use their own mode and
+  DPI without overwriting the device preference; explicit owner zoom can change DPI.
+  An unchanged monitor sends no `displays` message. Desktop content uses the model's
+  shown rectangle directly for rendering and input, without a second inner fit.
+- Ordinary card and dialog requests respect positive per-axis minimum/maximum hints;
+  inconsistent maxima cannot override minima. Fullscreen geometry belongs to the
+  compositor's monitor and is not fitted by a card request. Its complete reported picture
+  uses the same aspect-fit transform for presentation and input. Explicit fullscreen exit
+  resumes ordinary window fitting. No application-specific or fixed minimum output mode
+  is inferred from a small phone viewport.
+- The session applies size hints at the common configure boundary for every layout.
+  Desktop pointer positions and scroll deltas use the shown surface rectangle and
+  committed remote size. An active desktop trackpad scroll cancels when that mapping
+  changes; a captured pointer drag still releases its original target at the surface edge.
 - `frame.rect` is window-local display pixels (origin = the window's geometry origin).
   `frame.crop` is the visible part of the decoded picture in picture pixels (encoders pad,
   for example NVENC 2160 → 2176). When the two sizes differ the client scales, which also

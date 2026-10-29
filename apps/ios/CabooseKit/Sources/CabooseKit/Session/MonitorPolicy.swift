@@ -1,0 +1,85 @@
+import CoreGraphics
+import Foundation
+
+/// The device's selected output and presentation pixel density, local to one computer.
+/// Home can connect without choosing either; only a real presentation attaches a mode.
+public struct MonitorPolicy {
+    public struct Selection: Codable, Equatable, Sendable {
+        public let capabilities: ClientCapabilities
+        public let renderScale: Double
+
+        public init?(capabilities: ClientCapabilities, renderScale: Double) {
+            guard Self.valid(capabilities, renderScale) else { return nil }
+            self.capabilities = capabilities
+            self.renderScale = renderScale
+        }
+
+        private static func valid(_ c: ClientCapabilities, _ scale: Double) -> Bool {
+            // Persistence is untrusted. Bound arithmetic and protocol dimensions; these
+            // are validation limits, not a minimum desktop resolution or a chosen DPI.
+            (1...32768).contains(c.desktopWidth) && (1...32768).contains(c.desktopHeight)
+                && (1...960).contains(c.dpi) && (1...1000).contains(c.refreshRate)
+                && scale.isFinite && (0.25...8).contains(scale)
+        }
+
+        fileprivate var isValid: Bool { Self.valid(capabilities, renderScale) }
+    }
+
+    private struct Saved: Codable {
+        let version: Int
+        let computer: String
+        let selection: Selection
+    }
+
+    public private(set) var computer: String?
+    public private(set) var selection: Selection?
+    public var device: ClientCapabilities? { selection?.capabilities }
+    public init() {}
+
+    /// Call before start/resume and before attaching a presentation. A different
+    /// computer never inherits this computer's output, including malformed saved data.
+    public mutating func bind(computer: String?, saved: Data?) {
+        guard self.computer != computer else { return }
+        self.computer = computer
+        selection = nil
+        guard let computer, !computer.isEmpty, let saved, saved.count <= 4096,
+              let record = try? JSONDecoder().decode(Saved.self, from: saved),
+              record.version == 1, record.computer == computer, record.selection.isValid else { return }
+        selection = record.selection
+    }
+
+    public func saved() -> Data? {
+        guard let computer, !computer.isEmpty, let selection else { return nil }
+        return try? JSONEncoder().encode(Saved(version: 1, computer: computer, selection: selection))
+    }
+
+    /// Selection is explicit, unlike resolving Home's capabilities. Repeated layout
+    /// callbacks and later cards do not replace a desktop's chosen DPI or render scale.
+    @discardableResult public mutating func attach(_ candidate: Selection) -> Bool {
+        guard computer != nil, selection == nil, candidate.isValid else { return false }
+        selection = candidate
+        return true
+    }
+
+    public func resolve(external: ClientCapabilities? = nil) -> ClientCapabilities? {
+        external ?? device
+    }
+
+    public static func fullDevice(screen: CGSize, pixelsPerPoint: CGFloat, dpi: Int,
+                                  refreshRate: Int) -> ClientCapabilities {
+        let side = max(screen.width, screen.height)
+        return ClientCapabilities(desktopWidth: Int(side * pixelsPerPoint),
+                                  desktopHeight: Int(side * pixelsPerPoint),
+                                  dpi: dpi, refreshRate: refreshRate)
+    }
+
+    /// Only an explicit owner zoom changes the retained device DPI.
+    public mutating func zoomDevice(by factor: Double) {
+        guard factor.isFinite, factor > 0, let selected = selection else { return }
+        var value = selected.capabilities
+        let dpi = (Double(value.dpi) * factor).rounded()
+        guard dpi.isFinite, dpi >= 1, dpi <= 960 else { return }
+        value.dpi = Int(dpi)
+        selection = Selection(capabilities: value, renderScale: selected.renderScale)
+    }
+}

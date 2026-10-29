@@ -17,7 +17,7 @@ public struct DeviceViewport {
 
     public mutating func dismissCard() { owner = .desktop }
 
-    /// Returns whether the active display needs to adopt the new size.
+    /// Returns whether the active desktop viewport changed; this is not a monitor mode.
     @discardableResult public mutating func updateDesktop(_ size: CGSize) -> Bool {
         guard Self.valid(size) else { return false }
         let changed = size != desktopSize

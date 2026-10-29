@@ -108,9 +108,9 @@ public final class CabooseDisplaySession: DisplaySession {
     ///   - displayURL: the host's `/v1/display` WebSocket.
     ///   - token: the host's bearer token.
     ///   - password: the per-wake display token from `/v1/session`, sent in hello.
-    public convenience init(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities, computerIdentity: String? = nil) {
+    public convenience init(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities?, computerIdentity: String? = nil) {
         self.init(stream: { WebSocketStream(url: displayURL, token: token) }, token: password,
-                  displays: [DisplayInfo(capabilities)], decoders: Self.hardwareDecoders)
+                  displays: capabilities.map { [DisplayInfo($0)] } ?? [], decoders: Self.hardwareDecoders)
         gameHost = GameHostAccess(displayURL: displayURL, token: token, computerIdentity: computerIdentity)
     }
 
@@ -183,12 +183,12 @@ public final class CabooseDisplaySession: DisplaySession {
     /// of the host's addresses, perhaps) with the display token from a new `/v1/session`.
     /// The windows stay on screen with their last pictures; the server's hello decides
     /// whether they are still the same windows (see `resume(stream:password:displays:)`).
-    public func resume(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities, computerIdentity: String? = nil) {
+    public func resume(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities?, computerIdentity: String? = nil) {
         guard isClosed, !isReplaced else { return }
         gameHost = GameHostAccess(displayURL: displayURL, token: token, computerIdentity: computerIdentity ?? gameHost?.webviewComputerKey)
         for window in windows.values { window.game?.host = gameHost }
         resume(stream: { WebSocketStream(url: displayURL, token: token) }, password: password,
-               displays: [DisplayInfo(capabilities)])
+               displays: capabilities.map { [DisplayInfo($0)] } ?? [])
     }
 
     /// Reconnects a closed session. A window keeps its object, its picture and its place
@@ -704,7 +704,18 @@ public final class CabooseDisplaySession: DisplaySession {
     // MARK: Windows
 
     public func configure(_ window: RemoteWindow, frame: CGRect, state: [String: Bool] = [:]) {
-        let rounded = frame.integral
+        let fullscreen = state["fullscreen"] ?? window.isFullscreen
+        // All layouts share this boundary. Fullscreen sizing belongs to the
+        // compositor; only explicit state transitions travel without geometry.
+        if fullscreen {
+            if state["fullscreen"] == true {
+                send(.configure(window: window.id, geometry: nil, fullscreen: true, maximized: state["maximized"]))
+                window.isFullscreen = true
+            }
+            return
+        }
+        guard let rounded = WindowSizePolicy.request(frame, minimum: window.minimumSize,
+            maximum: window.maximumSize, fullscreen: false) else { return }
         var geometry = rounded
         if var entry = placement[window.id] {
             if entry.kind != .toplevel, let parent = entry.parent.flatMap({ windows[$0] }) {
@@ -755,7 +766,9 @@ public final class CabooseDisplaySession: DisplaySession {
     public func refresh(_ window: RemoteWindow) { send(.requestKeyframe(window: window.id)) }
 
     public func reconfigure(_ capabilities: ClientCapabilities) {
-        displays = [DisplayInfo(capabilities)]
+        let next = [DisplayInfo(capabilities)]
+        guard displays != next else { return }
+        displays = next
         lastVsync.removeAll()
         // Before the hello, the new screen goes in the hello itself.
         if state == .ready || state == .authenticating { send(.displays(displays)) }
@@ -769,8 +782,12 @@ public final class CabooseDisplaySession: DisplaySession {
 
     // MARK: Pacing
 
-    public func displayWillRefresh(_ display: Int, targetTimestamp: CFTimeInterval) {
+    public func displayWillRefresh(_ displayID: Int?, targetTimestamp: CFTimeInterval) {
         guard state == .ready, has("vsync"), targetTimestamp > 0 else { return }
+        // Explicit IDs are never redirected. An unassigned view uses our announced
+        // primary, or the retained server primary only during empty-set bootstrap.
+        let ids = displays.isEmpty ? (server?.displays ?? []) : displays.map(\.id)
+        guard let display = displayID ?? ids.first, ids.contains(display) else { return }
         let micros = UInt64(targetTimestamp * 1_000_000)
         // Every window view on a screen ticks with the same timestamp; send each refresh once.
         if let last = lastVsync[display], micros < last + 1000 { return }

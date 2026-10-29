@@ -119,6 +119,59 @@ final class FakeDecoder: PictureDecoder {
         #expect(sent.first?.body["displays"]?.array?.first?["refresh_hz"] == .double(120))
     }
 
+    @Test func unselectedBootstrapAndResumePaceRetainedIDsAndDecodePictures() async throws {
+        let decoder = self.decoder, initial = stream
+        let session = CabooseDisplaySession(stream: { initial }, token: "wake-token", displays: [],
+            decoders: [.hevc], makeDecoder: { _ in decoder })
+        defer { session.disconnect() }
+        session.connect()
+        initial.deliver(.opened)
+        try await until("bootstrap hello") { session.state == .authenticating }
+        #expect(initial.take().first?.body["displays"]?.array == [])
+        initial.server([(.hello, ["version": 0, "displays": [7], "encoders": ["hevc"], "features": ["vsync", "ack"]])])
+        try await until("bootstrap ready") { session.state == .ready }
+        _ = initial.take()
+        session.displayWillRefresh(nil, targetTimestamp: 10)
+        session.displayWillRefresh(7, targetTimestamp: 10.0002) // same output/refresh deduplicates
+        session.displayWillRefresh(0, targetTimestamp: 10.1) // explicit missing ID is not redirected
+        let ticks = initial.take().filter { $0.type == DisplayProtocol.ClientType.vsync.rawValue }
+        #expect(ticks.count == 1)
+        #expect(ticks.first?.body["display"]?.int == 7)
+        initial.server([(.windowCreate, window(7, geometry: [0, 0, 8, 8])), (.frame, frame(7, pts: 1000))])
+        var ack: DisplayFrame?
+        try await until("bootstrap frame ack") {
+            ack = initial.take().first { $0.type == DisplayProtocol.ClientType.ack.rawValue }
+            return ack != nil
+        }
+        #expect((ack?.body["decoded_us"]?.int ?? -1) >= 0)
+        #expect(decoder.decoded == 1)
+        #expect(session.windows[7]?.surface.generation ?? 0 > 0)
+
+        initial.deliver(.closed(nil))
+        try await until("closed bootstrap") { if case .closed = session.state { true } else { false } }
+        let next = MockStream()
+        session.resume(stream: { next }, password: "next-wake", displays: [])
+        next.deliver(.opened)
+        try await until("resume hello") { session.state == .authenticating }
+        #expect(next.take().first?.body["displays"]?.array == [])
+        next.server([(.hello, ["version": 0, "displays": [19], "encoders": ["hevc"], "features": ["vsync"]])])
+        try await until("resume ready") { session.state == .ready }
+        _ = next.take()
+        session.displayWillRefresh(nil, targetTimestamp: 20)
+        session.displayWillRefresh(7, targetTimestamp: 21)
+        let resumed = next.take().filter { $0.type == DisplayProtocol.ClientType.vsync.rawValue }
+        #expect(resumed.count == 1)
+        #expect(resumed.first?.body["display"]?.int == 19)
+        // A real attachment announces ID0; do not retain the bootstrap routing.
+        session.reconfigure(.init(desktopWidth: 1886, desktopHeight: 1886, dpi: 151))
+        _ = next.take()
+        session.displayWillRefresh(nil, targetTimestamp: 22)
+        session.displayWillRefresh(19, targetTimestamp: 23)
+        let attached = next.take().filter { $0.type == DisplayProtocol.ClientType.vsync.rawValue }
+        #expect(attached.count == 1)
+        #expect(attached.first?.body["display"]?.int == 0)
+    }
+
     @Test func byeClosesWithAReason() async throws {
         let session = try await ready()
         stream.server([(.bye, ["reason": "auth"])])
@@ -211,6 +264,45 @@ final class FakeDecoder: PictureDecoder {
         #expect(remote.frame.origin == requested.origin)
         stream.server([(.windowUpdate, ["id": 7, "geometry": [24, 32, 932, 1356]])])
         try await until("accepted size") { remote.frame == requested }
+    }
+
+    @Test func everyLayoutHonorsLateSizeHintsAtTheConfigureBoundary() async throws {
+        let session = try await ready()
+        defer { session.disconnect() }
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 752, 556]))])
+        try await until("window") { session.windows[7] != nil }
+        let remote = try #require(session.windows[7])
+        stream.server([(.windowUpdate, ["id": 7, "min": [1000, 700], "max": [1200, 700]])])
+        try await until("hints") { remote.maximumSize == CGSize(width: 1200, height: 700) }
+        _ = stream.take()
+        session.configure(remote, frame: CGRect(x: 20, y: 30, width: 500, height: 900))
+        #expect(stream.take().last?.body["geometry"] == [20, 30, 1000, 700])
+        #expect(remote.frame.size == CGSize(width: 752, height: 556))
+        stream.server([(.windowUpdate, ["id": 7, "geometry": [20, 30, 1000, 700]])])
+        try await until("committed") { remote.frame.size == CGSize(width: 1000, height: 700) }
+    }
+
+    @Test func fullscreenIgnoresViewportGeometryUntilExplicitExit() async throws {
+        let session = try await ready()
+        defer { session.disconnect() }
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 1800, 1600]))])
+        try await until("window") { session.windows[7] != nil }
+        let remote = try #require(session.windows[7])
+        stream.server([(.windowUpdate, ["id": 7, "fullscreen": true])])
+        try await until("fullscreen") { remote.isFullscreen }
+        _ = stream.take()
+        for viewport in [CGRect(x: 0, y: 0, width: 1062, height: 1886),
+                         CGRect(x: 0, y: 0, width: 1062, height: 900),
+                         CGRect(x: 0, y: 0, width: 2204, height: 1702)] {
+            session.configure(remote, frame: viewport, state: ["maximized": false])
+        }
+        #expect(stream.take().isEmpty)
+        #expect(remote.frame.size == CGSize(width: 1800, height: 1600))
+        let restored = CGRect(x: 20, y: 30, width: 800, height: 600)
+        session.configure(remote, frame: restored, state: ["fullscreen": false])
+        #expect(stream.take().last?.body["geometry"] == [20, 30, 800, 600])
+        #expect(!remote.isFullscreen)
+        #expect(remote.frame.size == CGSize(width: 1800, height: 1600))
     }
 
     @Test func nativeWaylandWindowsTakeTouchAndXwaylandOnesDoNot() async throws {
@@ -318,6 +410,8 @@ final class FakeDecoder: PictureDecoder {
         #expect(sent.type == DisplayProtocol.ClientType.displays.rawValue)
         #expect(sent.body["displays"]?.array?.first?["width"]?.int == 3840)
         #expect(sent.body["displays"]?.array?.first?["scale"] == .double(2))
+        session.reconfigure(ClientCapabilities(desktopWidth: 3840, desktopHeight: 2160, dpi: 192, refreshRate: 60))
+        #expect(stream.take().isEmpty)
     }
 
     // MARK: Input

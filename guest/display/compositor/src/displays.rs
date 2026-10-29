@@ -138,3 +138,27 @@ fn configure(output: &Output, info: &proto::Display, origin: Point<i32, Logical>
     output.change_current_state(Some(m), Some(Transform::Normal), Some(Scale::Fractional(info.scale)), Some(origin));
     output.set_preferred(m);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::reexports::wayland_server::Display;
+
+    #[test]
+    fn empty_client_announcement_retains_default_and_previous_output() {
+        let server: Display<State> = Display::new().unwrap();
+        let handle = server.handle();
+        let mut displays = Displays::default();
+        for (id, width, height, scale) in [(0, 1920, 1080, 1.0), (7, 1886, 1886, 151.0 / 96.0)] {
+            let selected = proto::Display { id, width, height, scale, refresh_hz: 60.0, hdr: false };
+            displays.replace(&handle, &[selected.clone()]);
+            let output = displays.primary().output.clone();
+            let change = displays.replace(&handle, &[]);
+            assert!(change.removed.is_empty());
+            assert!(change.changed.is_empty());
+            assert_eq!(displays.ids(), vec![id]);
+            assert_eq!(displays.primary().info, selected);
+            assert_eq!(displays.primary().output, output);
+        }
+    }
+}
