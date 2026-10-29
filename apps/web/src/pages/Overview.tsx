@@ -1,10 +1,10 @@
 import { PageHeader, DashboardMetricCard, DashboardPanel, ResourceMeter } from '../components/console-ui.js'
 
-import { AnimatedNumber, Alert, AlertDescription, AlertTitle, Button, PageContainer } from '@braedonsaunders/appkit-ui'
-import { ArrowUpRight, Cpu, HardDrive, MemoryStick, Monitor, Users, Server, ChartNoAxesCombined } from 'lucide-react'
+import { Alert, AlertDescription, AlertTitle, Button, PageContainer } from '@braedonsaunders/appkit-ui'
+import { Cpu, HardDrive, MemoryStick, Monitor } from 'lucide-react'
 import { formatMemoryMb, type Me } from '../api.js'
 import { ComputersTable } from '../components/ComputersTable.js'
-import { formatBytes } from '../files.js'
+import { capacityValue } from '../capacity.js'
 import { fleetTotals, healthProblems, sharePercent, upgradeLabel } from '../host.js'
 import { navigate } from '../navigation.js'
 import type { ComputersHandle } from '../useComputer.js'
@@ -42,6 +42,7 @@ export function Overview({ computers, host, me }: { computers: ComputersHandle; 
       <div className="space-y-4">
         <PageHeader
           title="Overview"
+          actions={<><Button size="sm" variant="outline" onClick={() => navigate('/people')}>People & access</Button><Button size="sm" variant="outline" onClick={() => navigate('/usage')}>Resource usage</Button>{me.operator ? <Button size="sm" variant="outline" onClick={() => navigate('/host')}>Host</Button> : null}</>}
           description={!me.operator
             ? `The computers of ${me.tenants.map(tenant => tenant.name).join(', ') || 'your households and teams'}.`
             : info ? `caboose-host ${info.version}, running computers as ${info.runtime === 'container' ? 'containers' : 'microVMs'}.` : 'This host and the computers it runs.'}
@@ -60,26 +61,13 @@ export function Overview({ computers, host, me }: { computers: ComputersHandle; 
             <AlertDescription className="break-words">{problem}</AlertDescription>
           </Alert>
         ))}
-        {list.computers.flatMap(computer => [
-          computer.lastError ? (
-            <Alert key={`${computer.id}:error`} variant="destructive">
-              <AlertTitle>{computer.settings.name}: last lifecycle error</AlertTitle>
-              <AlertDescription className="font-mono text-xs break-all">{computer.lastError}</AlertDescription>
-            </Alert>
-          ) : null,
-          computer.upgrade?.state === 'failed' ? (
-            <Alert key={`${computer.id}:upgrade`} variant="warning">
-              <AlertTitle>{computer.settings.name}: {upgradeLabel(computer.upgrade)}</AlertTitle>
-              {computer.upgrade.message ? <AlertDescription className="break-words">{computer.upgrade.message}</AlertDescription> : null}
-            </Alert>
-          ) : null,
-        ])}
+        {attention > 0 ? <details className="rounded-lg border border-warning/30 bg-warning/5 px-4 py-3 text-sm"><summary className="cursor-pointer font-medium text-warning">{attention} {attention === 1 ? 'computer needs' : 'computers need'} attention <span className="font-normal">— review issues</span></summary><div className="mt-3 space-y-3">{list.computers.filter(computer => computer.lastError || computer.state === 'error' || computer.upgrade?.state === 'failed').map(computer => <div key={computer.id}><a className="font-medium underline underline-offset-4" href={`/computers/${computer.id}`}>{computer.settings.name}</a>{computer.lastError ? <p className="mt-1 break-words text-fg-muted">{computer.lastError}</p> : null}{computer.upgrade?.state === 'failed' ? <p className="mt-1 break-words text-fg-muted">{upgradeLabel(computer.upgrade)}{computer.upgrade.message ? `: ${computer.upgrade.message}` : ''}</p> : null}</div>)}</div></details> : null}
 
         <div className={`grid gap-4 sm:grid-cols-2 ${me.operator ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
           <DashboardMetricCard
             label="Computers"
             value={list.computers.length}
-            detail={totals.running ? `${totals.running} running` : 'None running'}
+            detail={`${totals.running} running · ${parked} parked / sleeping`}
             icon={<Monitor className="size-4" aria-hidden />}
           />
           <DashboardMetricCard
@@ -97,30 +85,18 @@ export function Overview({ computers, host, me }: { computers: ComputersHandle; 
           />
           {me.operator ? <DashboardMetricCard
             label="Disk free"
-            value={machine?.disk ? formatBytes(machine.disk.freeBytes) : '—'}
-            detail={machine?.disk ? `of ${formatBytes(machine.disk.totalBytes)}` : undefined}
+            value={machine?.disk ? capacityValue({ value: machine.disk.freeBytes }, 'bytes') : '—'}
+            detail={machine?.disk ? `of ${capacityValue({ value: machine.disk.totalBytes }, 'bytes')}` : undefined}
             icon={<HardDrive className="size-4" aria-hidden />}
           /> : null}
         </div>
 
-        <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-          <DashboardPanel title="Fleet at a glance" icon={<Monitor className="size-4" aria-hidden />}>
-            <div className="grid grid-cols-3 divide-x divide-border pb-4">
-              {([[totals.running, 'Running'], [parked, 'Parked / sleeping'], [attention, 'Need attention']] as const).map(([value, label]) => <div key={label} className="px-3 first:pl-0"><p className="text-3xl font-semibold tracking-tight tabular-nums"><AnimatedNumber value={value} /></p><p className="mt-2 text-xs text-fg-muted">{label}</p></div>)}
-            </div>
-            <div className="space-y-4 border-t border-border pt-4">
-              <ResourceMeter label="Memory allocation" value={totals.memoryMb} total={machine?.memoryMb ?? quota?.memoryMb} detail={<>{formatMemoryMb(totals.memoryMb)}{machine ? ` / ${formatMemoryMb(machine.memoryMb)} host` : quota?.memoryMb ? ` / ${formatMemoryMb(quota.memoryMb)} quota` : ' assigned'}</>} />
-              <ResourceMeter label="Virtual processors" value={totals.vcpus} total={machine?.cpus ?? quota?.vcpus} detail={<>{totals.vcpus}{machine ? ` / ${machine.cpus} host CPUs` : quota?.vcpus ? ` / ${quota.vcpus} quota` : ' assigned'}</>} />
-              <p className="text-xs leading-relaxed text-fg-muted">Allocations reflect configured computer sizes, including parked computers. They are not measured memory or CPU use.</p>
-            </div>
-          </DashboardPanel>
-          <DashboardPanel title="Manage your workspace">
-            {[
-              { href: '/people', title: 'People & access', detail: 'Computer owners, administrators and invitations', Icon: Users },
-              { href: '/usage', title: 'Resource usage', detail: 'Allocations, quotas and measured storage', Icon: ChartNoAxesCombined },
-              ...(me.operator ? [{ href: '/host', title: 'Host configuration', detail: 'Runtime, health and remote access', Icon: Server }] : []),
-            ].map(({ href, title, detail, Icon }) => <a key={href} href={href} className="console-link-row" onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(href) }}><Icon className="size-5 shrink-0 text-fg-muted" aria-hidden /><span className="min-w-0 flex-1"><span className="block text-sm font-medium">{title}</span><span className="mt-1 block text-xs leading-relaxed text-fg-muted">{detail}</span></span><ArrowUpRight className="size-4 shrink-0 text-fg-muted" aria-hidden /></a>)}
-          </DashboardPanel>
+        <div className="rounded-xl border border-border bg-surface px-4 py-3">
+          <div className="grid gap-4 md:grid-cols-2 md:gap-8">
+            <ResourceMeter label="Memory allocation" value={totals.memoryMb} total={machine?.memoryMb ?? quota?.memoryMb} detail={<>{formatMemoryMb(totals.memoryMb)}{machine ? ` / ${formatMemoryMb(machine.memoryMb)} host` : quota?.memoryMb ? ` / ${formatMemoryMb(quota.memoryMb)} quota` : ' assigned'}</>} />
+            <ResourceMeter label="Virtual processors" value={totals.vcpus} total={machine?.cpus ?? quota?.vcpus} detail={<>{totals.vcpus}{machine ? ` / ${machine.cpus} host CPUs` : quota?.vcpus ? ` / ${quota.vcpus} quota` : ' assigned'}</>} />
+          </div>
+          <p className="mt-3 text-xs text-fg-muted">Configured allocations, including parked computers; not measured memory or CPU use.</p>
         </div>
 
         <DashboardPanel
