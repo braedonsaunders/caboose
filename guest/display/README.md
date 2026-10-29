@@ -75,6 +75,11 @@ This directory is a Cargo workspace:
   client that connects after a field was focused); deletions are BackSpace/Delete
   presses, one per grapheme cluster. Surfaces without text-input-v3 (X11 apps, many
   terminals) get the commit as key presses.
+- **Reconnecting.** Every hello carries the process's random `epoch` (16 hex characters,
+  from `/dev/urandom` at start), so a client can tell that window ids still name the same
+  windows. A hello's `window.create` messages are all written before the next client
+  message is read, so the `pong` to a ping sent after the hello follows them. A new hello
+  replaces the previous connection, which may be the same client's dead one.
 - **Clipboard** (text). The phone's `clipboard` becomes the selection Wayland and X11
   applications paste; what they copy reaches the phone (and a new client is sent the
   current text on connect). Copying between Wayland and X11 applications on the computer

@@ -201,6 +201,8 @@ pub struct State {
     pub audio_tx: smithay::reexports::calloop::channel::Sender<crate::audio::Packet>,
     /// Bumped per client session; stale encoder results are discarded.
     pub generation: u64,
+    /// Random for this process, sent in every hello: window ids are unique within it.
+    pub epoch: String,
     pub stats: Stats,
     /// The cursor last sent, so it is re-sent to a new client.
     pub cursor: Option<proto::Message>,

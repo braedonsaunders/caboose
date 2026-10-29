@@ -187,8 +187,10 @@ for byte.
   for example NVENC 2160 → 2176). When the two sizes differ the client scales, which also
   covers a scale-1 Xwayland window on a scale-3 display. Input `x`/`y` are window-local,
   with the same origin as `rect`.
-- Window ids are unique for the server's lifetime and survive reconnects, so a client can
-  keep a last-frame cache per id.
+- Window ids are unique for the server's lifetime and survive reconnects. A new server
+  process starts its ids again, so a client keeps a window's last picture across a
+  reconnect only when the hello's `epoch` (random for each server process) is the one it
+  had; a hello without an epoch proves nothing.
 
 ### Handshake
 
@@ -198,8 +200,14 @@ hello. On a mismatch it sends `bye { reason: "auth" }` and closes; on an unsuppo
 version, `bye { reason: "version" }`; when none of its encoders is in the client's
 `decoders`, `bye { reason: "protocol" }`. Otherwise it answers `hello` with the display
 ids it accepted, `encoders` = its encoders ∩ the client's decoders in the server's
-preference order, and its `features`; then sends `window.create` for every live window,
-followed by a keyframe of each.
+preference order, its `features` and its `epoch`; then sends `window.create` for every
+live window, followed by a keyframe of each.
+
+The server writes every `window.create` of a hello before it reads the client's next
+message, and answers `ping` on the same ordered connection. A `pong` to a ping sent after
+the hello therefore follows the last `window.create` of that hello: at that point the
+client's windows are exactly the server's. A server that sends `epoch` guarantees this
+order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
 `cursor-named`, `tiles`, `audio`, `xwayland`, `video`. A feature is listed only when the
@@ -237,7 +245,7 @@ Server → client (`0x01`–`0x7F`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x01` | `hello` | `version: uint`, `displays: [uint]`, `encoders: [codec]`, `features: [text]` |
+| `0x01` | `hello` | `version: uint`, `displays: [uint]`, `encoders: [codec]`, `features: [text]`, `epoch?: text` (1–64 bytes; caboose-display sends 16 hex characters) |
 | `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool` |
 | `0x03` | `window.update` | `id` plus any `window.create` field that changed |
 | `0x04` | `window.destroy` | `id` |

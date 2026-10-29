@@ -141,6 +141,9 @@ pub struct ServerHello {
     /// The server's encoders that the client can decode, in preference order.
     pub encoders: Vec<Codec>,
     pub features: Vec<String>,
+    /// Random for each server process. Window ids are unique within one epoch, so a client
+    /// may keep a window's last picture across a reconnect only when the epoch matches.
+    pub epoch: Option<String>,
 }
 
 /// `window.create` (0x02).
@@ -616,6 +619,7 @@ impl Message {
                 .put("displays", Value::Array(m.displays.iter().map(|d| Value::from(*d)).collect()))
                 .put("encoders", codecs_value(&m.encoders))
                 .put("features", m.features.clone())
+                .opt("epoch", m.epoch.clone())
                 .build(),
             Message::WindowCreate(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -814,6 +818,7 @@ impl Message {
                 displays: f.req("displays", |v| fields::as_array(v)?.iter().map(fields::as_u32).collect())?,
                 encoders: codecs_from(&f, "encoders")?,
                 features: f.strings("features")?,
+                epoch: f.opt_string("epoch")?,
             }),
             WINDOW_CREATE => Message::WindowCreate(WindowCreate {
                 id: f.u64("id")?,
