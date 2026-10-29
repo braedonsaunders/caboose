@@ -47,7 +47,12 @@ class Transport(unittest.TestCase):
         conn = self.connect()
         self.server.close()
         self.assertFalse(os.path.exists(self.path))
-        self.assertEqual(conn.recv(1), b'')
+        # A connection still in the accept backlog is reset when its listener
+        # closes on Linux; an accepted connection observes orderly shutdown.
+        try:
+            self.assertEqual(conn.recv(1), b'')
+        except ConnectionResetError:
+            pass
 
 
 class Grants(unittest.TestCase):
