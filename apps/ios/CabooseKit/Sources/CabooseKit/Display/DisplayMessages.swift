@@ -625,9 +625,9 @@ public struct GPUResume: Equatable, Sendable {
 
     var cbor: CBOR {
         let streams: [CBOR] = streams.map { stream in
-            .map([("id", CBOR(stream.id)), ("nonce", CBOR(stream.nonce)), ("offset", CBOR(stream.offset))])
+            .map([(.text("id"), CBOR(stream.id)), (.text("nonce"), CBOR(stream.nonce)), (.text("offset"), CBOR(stream.offset))])
         }
-        return .map([("epoch", CBOR(epoch)), ("streams", .array(streams))])
+        return .map([(.text("epoch"), CBOR(epoch)), (.text("streams"), .array(streams))])
     }
 }
 

@@ -30,11 +30,16 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Record source and toolchain
         run: |
           bash apps/ios/GPUStream/tests/check_pipeline.sh
           mkdir -p .gpu-check-logs
+          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > .gpu-check-logs/requested-source.txt
           git rev-parse HEAD > .gpu-check-logs/source.txt
+          git rev-parse 'HEAD^{tree}' > .gpu-check-logs/source-tree.txt
+          test "$(cat .gpu-check-logs/requested-source.txt)" = "$(cat .gpu-check-logs/source.txt)"
           xcodebuild -version > .gpu-check-logs/toolchain.txt
           swift --version >> .gpu-check-logs/toolchain.txt
       - name: Check the full Swift suite without the native player
@@ -57,11 +62,16 @@ jobs:
       JOBS: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Verify toolchain and synthetic fixture
         run: |
           bash apps/ios/GPUStream/tests/check_pipeline.sh
           mkdir -p .gpu-check-logs
+          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > .gpu-check-logs/requested-source.txt
           git rev-parse HEAD > .gpu-check-logs/source.txt
+          git rev-parse 'HEAD^{tree}' > .gpu-check-logs/source-tree.txt
+          test "$(cat .gpu-check-logs/requested-source.txt)" = "$(cat .gpu-check-logs/source.txt)"
           test "$(uname -m)" = arm64
           xcodebuild -version | tee .gpu-check-logs/toolchain.txt
           swift --version | tee -a .gpu-check-logs/toolchain.txt
@@ -107,11 +117,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Record source
         run: |
           bash apps/ios/GPUStream/tests/check_pipeline.sh
           mkdir -p .gpu-check-logs
+          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > .gpu-check-logs/requested-source.txt
           git rev-parse HEAD > .gpu-check-logs/source.txt
+          git rev-parse 'HEAD^{tree}' > .gpu-check-logs/source-tree.txt
+          test "$(cat .gpu-check-logs/requested-source.txt)" = "$(cat .gpu-check-logs/source.txt)"
       - name: Build the display test environment
         run: docker build -t caboose-display-dev guest/display 2>&1 | tee .gpu-check-logs/build.log
       - name: Check protocol and relay
