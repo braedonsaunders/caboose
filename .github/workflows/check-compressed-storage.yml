@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Check boot hook admission logic
+        run: python3 guest/image/test_boot_check.py
       - name: Install disposable storage check tools
         run: |
           sudo apt-get update -qq
