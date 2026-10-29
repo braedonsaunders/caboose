@@ -44,7 +44,7 @@ export function AcceptInvite({ onDone }: { onDone: () => void }) {
     }
   }
 
-  if (invite?.accountExists && !signedIn) return <SignIn onSignIn={session => { if (session.kind === 'account') setSignedIn(true) }} />
+  if (invite?.accountExists && !signedIn) return <SignIn accountOnly onSignIn={session => { if (session.kind === 'account') setSignedIn(true) }} />
 
   return (
     <main className="flex min-h-screen items-center justify-center p-6">
@@ -80,6 +80,7 @@ export function AcceptInvite({ onDone }: { onDone: () => void }) {
               ) : (
                 <p className="text-sm text-fg-muted">Accept as {invite.email}. Your completed sign-in is required.</p>
               )}
+              {!newAccount && <Button type="button" variant="ghost" onClick={() => { setSignedIn(false); setError(null) }}>Sign in with a different account</Button>}
               {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
               <Button type="submit" className="w-full" disabled={saving || !ready}>{saving ? 'Joining…' : 'Accept invitation'}</Button>
             </form>

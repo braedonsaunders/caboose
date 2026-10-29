@@ -10,7 +10,7 @@ import { errorMessage } from '../components/common.js'
  * the installers and for a host whose accounts are out of reach; it is checked against the
  * host before it is kept, only for this tab, and never put in a URL.
  */
-export function SignIn({ onSignIn }: { onSignIn: (session: { kind: 'account' } | { kind: 'token'; token: string }) => void }) {
+export function SignIn({ onSignIn, accountOnly = false }: { accountOnly?: boolean; onSignIn: (session: { kind: 'account' } | { kind: 'token'; token: string }) => void }) {
   const [challenge, setChallenge] = React.useState(false)
   const [recoveryCode, setRecoveryCode] = React.useState(false)
   const [code, setCode] = React.useState('')
@@ -113,14 +113,14 @@ export function SignIn({ onSignIn }: { onSignIn: (session: { kind: 'account' } |
             </Button>
           </form>
           {recoveryAvailable && <a className="block text-sm text-primary" href="/recover">Forgot password?</a>}
-          <Button
+          {!accountOnly && <Button
             variant="ghost"
             size="sm"
             className="w-full"
             onClick={() => { setMode(mode === 'account' ? 'token' : 'account'); setChallenge(false); setCode(''); setError(null) }}
           >
             {mode === 'account' ? 'Use the owner token instead' : 'Sign in with an account instead'}
-          </Button>
+          </Button>}
         </CardContent>
       </Card>
     </main>
