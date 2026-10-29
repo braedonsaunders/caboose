@@ -3,6 +3,12 @@ import Testing
 @testable import CabooseKit
 
 struct DesktopGeometryTests {
+    @Test func externalResolutionRespectsScreenAndRenderLimit() {
+        #expect(DesktopGeometry.externalPixelsPerPoint(width: 1920, scale: 2, fullResolution: false) == 2560.0 / 1920.0)
+        #expect(DesktopGeometry.externalPixelsPerPoint(width: 1920, scale: 2, fullResolution: true) == 2)
+        #expect(DesktopGeometry.externalPixelsPerPoint(width: 3000, scale: 2, fullResolution: false) == 1)
+        #expect(DesktopGeometry.externalPixelsPerPoint(width: 800, scale: 1, fullResolution: false) == 1)
+    }
     private let viewport = CGRect(x: 0, y: 0, width: 900, height: 700)
 
     @Test func popupFollowsFittedParentAndCenteringInset() {

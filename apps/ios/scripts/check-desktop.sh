@@ -79,6 +79,11 @@ Switchyard (Desktop tab, no external display):
    Long Recent Files names/paths truncate inside the same column.
 
 External display, then iPad Desktop set to Free:
+   Connect a USB-C monitor before launch and while the app is open. Its external
+   scene shows Desktop automatically and the phone shows the trackpad, without
+   selecting an AirPlay route. Disconnect and reconnect; the device desktop and
+   app cards still own their geometry correctly. Repeat with AirPlay, and resize
+   the external scene if supported. Verify window placement and input each time.
 8. Use the green title-bar button to maximize Chromium. The title bar meets the
    top edge; left/right edges fill the desktop; the bottom clears the dock.
    The address bar, refresh button and window buttons remain visible. Restore:
@@ -95,6 +100,15 @@ Native Terminal tab:
     Open the keyboard: the grid ends above its accessory keys. Hide it: the grid
     fills the height again. Repeat unfolded and rotated; the session menu stays
     accessible. On devices with horizontal bars, the grid stays between the bars.
+    With the sidebar on either side, verify the shared accessory spans the keyboard,
+    its controls remain in two horizontal rows and all keys scroll into view. Check
+    Terminal, an app card and Desktop, including folded and rotated layouts.
+    Open All Apps from the desktop dock and from an empty desktop; both grids show
+    the same apps, scroll to the end and open a selection. Close the overlay with
+    its close button and by tapping outside it.
+   On the external desktop, open Launchpad with more apps than fit on one page;
+   use the trackpad and pointer to move forward and back, and open an app on the
+   final page. Close and reopen it, then repeat after changing the display size.
 
 Shared keyboard accessory:
 12. In app cards, tiled/free Desktop, external-display trackpad and Terminal on

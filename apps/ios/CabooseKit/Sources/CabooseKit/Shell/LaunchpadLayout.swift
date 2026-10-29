@@ -26,4 +26,11 @@ public struct LaunchpadLayout: Equatable, Sendable {
 
     /// The grid's width, spacing included.
     public var width: CGFloat { CGFloat(columns) * column + CGFloat(columns - 1) * spacing }
+
+    public func pageRange(_ page: Int, count: Int) -> Range<Int> {
+        let capacity = max(1, columns * rows)
+        let last = max(0, (max(0, count) - 1) / capacity)
+        let start = min(max(0, page), last) * capacity
+        return start..<min(max(0, count), start + capacity)
+    }
 }

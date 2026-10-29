@@ -44,12 +44,12 @@ public final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         scroll.addSubview(stack)
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 88),
-            header.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 8),
-            header.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             header.topAnchor.constraint(equalTo: topAnchor),
             header.heightAnchor.constraint(equalToConstant: 44),
-            scroll.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             scroll.topAnchor.constraint(equalTo: header.bottomAnchor),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 8),

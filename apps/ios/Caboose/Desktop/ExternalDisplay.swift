@@ -61,6 +61,13 @@ final class ExternalSceneDelegate: UIResponder, UIWindowSceneDelegate {
             window = nil
         }
     }
+
+    func windowScene(_ windowScene: UIWindowScene, didUpdate previousCoordinateSpace: UICoordinateSpace,
+                     interfaceOrientation previousInterfaceOrientation: UIInterfaceOrientation,
+                     traitCollection previousTraitCollection: UITraitCollection) {
+        let screen = windowScene.screen
+        AppModel.shared.externalDisplayConnected(size: screen.bounds.size, scale: screen.scale)
+    }
 }
 
 extension View {
@@ -96,6 +103,8 @@ private struct ExternalDesktopContent: View {
                 }
             }
             .onAppear { model.externalDisplayConnected(size: proxy.size, scale: scale) }
+            .onChange(of: proxy.size) { _, size in model.externalDisplayConnected(size: size, scale: scale) }
+            .onChange(of: scale) { _, scale in model.externalDisplayConnected(size: proxy.size, scale: scale) }
             .onDisappear { model.externalDisplayDisconnected() }
         }
         .ignoresSafeArea()
