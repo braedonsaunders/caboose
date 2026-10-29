@@ -273,3 +273,39 @@ it('closes a live administrator control socket when its session is revoked', asy
     expect((await fetch(`${base}/v1/me`, { headers: accountHeaders })).status).toBe(401)
   } finally { socket.terminate() }
 }, 15_000)
+
+it('fences the former tenant socket on a move and admits the destination administrator', async () => {
+  const ownerHeaders = { authorization: 'Bearer owner-token-for-tests', origin: base, 'content-type': 'application/json' }
+  const tenants = (await (await fetch(`${base}/v1/tenants`, { headers: ownerHeaders })).json()).tenants as Array<{ id: string; name: string }>
+  const family = tenants.find(tenant => tenant.name === 'Family')!
+  const home = tenants.find(tenant => tenant.name === 'Home')!
+  const records = (await (await fetch(`${base}/v1/computers`, { headers: ownerHeaders })).json()).computers as Array<{ id: string; tenantId: string; personId: string }>
+  const target = records.find(record => record.tenantId === family.id)!
+  const homePerson = (await (await fetch(`${base}/v1/tenants/${home.id}/people`, { headers: ownerHeaders })).json()).people[0]
+  const signedIn = await fetch(`${base}/v1/auth/sign-in/email`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ email: 'parent@example.com', password: 'parent password' }) })
+  expect(signedIn.status).toBe(200)
+  const oldCookie = signedIn.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+  expect((await fetch(`${base}/v1/computers/${target.id}/session`, { method: 'POST', headers: { cookie: oldCookie, origin: base, 'content-type': 'application/json' }, body: '{}' })).status).toBe(200)
+  const invitation = await (await fetch(`${base}/v1/tenants/${home.id}/invites`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ email: 'move-admin@example.com' }) })).json()
+  const accepted = await fetch(`${base}/v1/invites/${invitation.token}/accept`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Move administrator', password: 'move admin password' }) })
+  expect(accepted.status).toBe(200)
+  const newCookie = accepted.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+  const socketURL = `${base.replace('http:', 'ws:')}/v1/computers/${target.id}/control`
+  const oldSocket = new WebSocket(socketURL, { headers: { cookie: oldCookie }, handshakeTimeout: 5_000 })
+  let newSocket: WebSocket | undefined
+  try {
+    await once(oldSocket, 'open')
+    const closed = once(oldSocket, 'close')
+    const moved = await fetch(`${base}/v1/computers/${target.id}`, { method: 'PATCH', headers: ownerHeaders, body: JSON.stringify({ tenantId: home.id, personId: homePerson.id }) })
+    expect(moved.status).toBe(200)
+    await closed
+    expect(oldSocket.readyState).toBe(WebSocket.CLOSED)
+    expect((await fetch(`${base}/v1/computers/${target.id}`, { headers: { cookie: oldCookie } })).status).toBe(404)
+    newSocket = new WebSocket(socketURL, { headers: { cookie: newCookie }, handshakeTimeout: 5_000 })
+    await once(newSocket, 'open')
+    expect(newSocket.readyState).toBe(WebSocket.OPEN)
+  } finally {
+    oldSocket.terminate(); newSocket?.terminate()
+    await fetch(`${base}/v1/computers/${target.id}`, { method: 'PATCH', headers: ownerHeaders, body: JSON.stringify({ tenantId: family.id, personId: target.personId }) })
+  }
+}, 20_000)
