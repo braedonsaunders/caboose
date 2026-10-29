@@ -174,9 +174,25 @@ window and game; replacing any of them cancels that close.
 
 **Input.** Touch, the hardware keyboard, the pointer and game controllers (the Gamepad API,
 from GameController) go to the web view on the device; none of it is sent to the computer.
-An on-screen controller the app draws appears to the page as one more gamepad.
-Resizing, fullscreen, focus and closing the window still go to caboose-display as
-`configure` and `close`.
+An on-screen controller the app draws appears to the page as one more gamepad. The app's
+own controls aimed at the window (Laptop's trackpad and keyboard, the key bar) reach the
+page as DOM events through `window.cabooseInput`, a script the client adds at document
+start:
+
+- The pointer is `pointer*` then `mouse*` events at the element under it (the element a
+  button went down on, while one is held), with `over`/`enter`/`out`/`leave` as it crosses
+  elements, `click`, `dblclick` and `contextmenu`, and `wheel` in CSS pixels. Positions are
+  sent as fractions of the window and scaled by the page's viewport.
+- Keys are `keydown`, `keypress` for a key that types, and `keyup` at the focused element,
+  with `key`, `code` (a US layout), `keyCode`, `which` and `charCode`. A key typed with
+  modifiers presses and releases them around it; text is typed key by key.
+- What is held is released (keys up, buttons cancelled with `pointercancel` then `mouseup`)
+  when another window takes the input, the connection goes, the game's view leaves the
+  screen, or the app stops being active.
+
+These events are untrusted (`isTrusted` is false), so a page that ignores untrusted input
+takes only touch, hardware keys and controllers. Resizing, fullscreen, focus and closing the
+window still go to caboose-display as `configure` and `close`.
 
 **Pictures.** The window's picture, which Home and the window strip show, is a snapshot of the
 web view, taken when the game's view leaves the screen.

@@ -91,6 +91,9 @@ public final class CabooseDisplaySession: DisplaySession {
     private var announcedGames = Set<Int>()
     private var buttons = 0
     private var focusedWindow: Int?
+    /// The game that last took input from the app's controls; it releases what it holds when
+    /// another window takes the input or the connection goes.
+    private weak var gameHoldingInput: RemoteGame?
     /// What the server said about each window: geometry is relative to the parent for
     /// popups and dialogs, so their frames follow the parent.
     private var placement: [Int: (kind: WindowKind, parent: Int?, geometry: CGRect)] = [:]
@@ -233,6 +236,9 @@ public final class CabooseDisplaySession: DisplaySession {
         watchdog = nil
         if isClosed { return }
         closeCause = cause
+        // What a game held from the app's controls is released with the connection.
+        gameHoldingInput?.releaseInput()
+        gameHoldingInput = nil
         // State first: an observer that sees windows go while the state is still `.ready`
         // takes it for the window really closing.
         state = .closed(reason: reason)
@@ -696,6 +702,10 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     public func focus(_ window: RemoteWindow?) {
+        if let game = gameHoldingInput, game !== window?.game {
+            game.releaseInput()
+            gameHoldingInput = nil
+        }
         guard let window else {
             if let focusedWindow { send(.configure(window: focusedWindow, geometry: nil, activated: false)) }
             focusedWindow = nil
@@ -755,31 +765,54 @@ public final class CabooseDisplaySession: DisplaySession {
     // MARK: Input — positions are in the window's own pixels.
     //
     // A window whose game runs on this device takes its input there: none addressed to it
-    // goes to the computer (docs/game-handoff.md, "Input").
+    // goes to the computer (docs/game-handoff.md, "Input"). Touch and Pencil on the window are
+    // the page's own; pointer, scroll, keys and text from the app's other controls (a
+    // trackpad, its keyboard) go to the page as DOM events.
 
     public func pointerMove(in window: RemoteWindow, to point: CGPoint, modifiers: [String] = []) {
-        guard window.game == nil else { return }
+        if let game = window.game { return game.pointerMove(to: point, in: window.frame.size) }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil))
     }
 
     public func pointerButton(in window: RemoteWindow, button: Int, pressed: Bool, at point: CGPoint, modifiers: [String] = []) {
+        if let game = window.game {
+            if pressed { focusInput(on: window) }
+            return game.pointerButton(button, pressed: pressed, at: point, in: window.frame.size)
+        }
         let bit = PointerButtons.bit(forXButton: button)
-        guard bit != 0, window.game == nil else { return }
+        guard bit != 0 else { return }
         if pressed { buttons |= bit } else { buttons &= ~bit }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil))
     }
 
     /// Wayland scrolls by any amount, so every swipe is precise.
     public func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, modifiers: [String] = []) {
-        guard dx != 0 || dy != 0, window.game == nil else { return }
+        guard dx != 0 || dy != 0 else { return }
+        if let game = window.game { return game.scroll(dx: dx, dy: dy, at: point, in: window.frame.size) }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons,
                       scroll: (Double(dx), Double(dy), true)))
     }
 
     public func resetScroll() {}
 
+    /// The window keys and text go to: `window`, or the focused window when none is named.
+    private func inputTarget(_ window: RemoteWindow?) -> RemoteWindow? {
+        window ?? focusedWindow.flatMap { windows[$0] }
+    }
+
+    /// Input goes to `window` now: a game window focuses on the computer like any other, and
+    /// the game that had the input before releases what it held.
+    private func focusInput(on window: RemoteWindow) {
+        if let game = gameHoldingInput, game !== window.game { game.releaseInput() }
+        gameHoldingInput = window.game
+        if focusedWindow != window.id { focus(window) }
+    }
+
     public func key(_ stroke: KeyStroke, pressed: Bool, in window: RemoteWindow?, extraModifiers: [String] = []) {
-        guard window?.game == nil else { return }
+        if let target = inputTarget(window), let game = target.game {
+            if pressed { focusInput(on: target) }
+            return game.key(stroke, pressed: pressed, extraModifiers: extraModifiers)
+        }
         if let window {
             // A modifier alone draws nothing, so it would wait for a picture that never comes.
             if pressed, !Self.isModifier(stroke.keyval) { echo.keySent(window.id) }
@@ -791,13 +824,20 @@ public final class CabooseDisplaySession: DisplaySession {
 
     /// Text goes as a text-input-v3 commit; the server types it as keys into apps without one.
     public func type(_ text: String, in window: RemoteWindow?) {
-        guard !text.isEmpty, window?.game == nil else { return }
+        guard !text.isEmpty else { return }
+        if let target = inputTarget(window), let game = target.game {
+            focusInput(on: target)
+            return game.type(text)
+        }
         prepareText(for: window)
         sendCommittedText(text)
     }
 
     public func edit(_ edits: [TypingBuffer.Edit], in window: RemoteWindow?) {
-        guard window?.game == nil else { return }
+        if let target = inputTarget(window), let game = target.game {
+            focusInput(on: target)
+            return game.edit(edits)
+        }
         var deleteBefore = 0
         var commit = ""
         for edit in edits {
@@ -858,8 +898,9 @@ public final class CabooseDisplaySession: DisplaySession {
         return focusedWindow == nil || textInput.window == focusedWindow
     }
 
+    /// A game page takes text as keys: a composition reaches it once committed, as an edit.
     public func compose(_ text: String, selection: NSRange, in window: RemoteWindow?) {
-        guard window?.game == nil else { return }
+        guard inputTarget(window)?.game == nil else { return }
         if text.isEmpty {
             guard preedit != nil else { return } // already ended by its commit
             preedit = nil

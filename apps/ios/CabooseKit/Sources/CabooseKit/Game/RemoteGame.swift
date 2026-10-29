@@ -105,6 +105,11 @@ public final class RemoteGame: Identifiable {
     }
     /// Hands `gamepad` to the live page.
     var gamepadSink: ((GameGamepadState?) -> Void)?
+    /// The input from controls that are not touches on the page (a trackpad, the app's
+    /// keyboard), and what of it is held.
+    private var input = GameInput()
+    /// Hands input events to the live page.
+    var inputSink: (([GameInputEvent]) -> Void)?
     private var endHandlers: [() -> Void] = []
 
     /// Whether this build can run games: UIKit with WebKit.
@@ -135,6 +140,7 @@ public final class RemoteGame: Identifiable {
         endHandlers.removeAll()
         savesFlusher = nil
         gamepadSink = nil
+        inputSink = nil
         stateSink = nil
         onDecline = nil
         for handler in handlers { handler() }
@@ -178,6 +184,42 @@ public final class RemoteGame: Identifiable {
                 once.resume()
             }
         }
+    }
+
+    // MARK: Input — positions in the window's own pixels, `size` the window's pixel size.
+
+    public func pointerMove(to point: CGPoint, in size: CGSize) { deliver(input.move(to: point, in: size)) }
+
+    public func pointerButton(_ button: Int, pressed: Bool, at point: CGPoint, in size: CGSize) {
+        deliver(input.button(button, pressed: pressed, at: point, in: size))
+    }
+
+    public func scroll(dx: CGFloat, dy: CGFloat, at point: CGPoint, in size: CGSize) {
+        deliver(input.scroll(dx: dx, dy: dy, at: point, in: size))
+    }
+
+    public func key(_ stroke: KeyStroke, pressed: Bool, extraModifiers: [String] = []) {
+        deliver(input.key(stroke, pressed: pressed, extraModifiers: extraModifiers))
+    }
+
+    public func type(_ text: String) { deliver(input.type(text)) }
+
+    public func edit(_ edits: [TypingBuffer.Edit]) {
+        for edit in edits {
+            switch edit {
+            case .backspace(let count): deliver(input.backspace(count))
+            case .type(let text): deliver(input.type(text))
+            }
+        }
+    }
+
+    /// The page loses this input (focus went elsewhere, the connection or the view went):
+    /// every key and button still held is released.
+    public func releaseInput() { deliver(input.release()) }
+
+    private func deliver(_ events: [GameInputEvent]) {
+        guard !events.isEmpty, !isEnded, state == .running else { return }
+        inputSink?(events)
     }
 
     /// Paints a snapshot of the game over the whole window picture.

@@ -223,6 +223,35 @@ import Testing
         #expect(!resume.streams.last.take().contains { input.contains($0.type) })
         session.configure(window, frame: CGRect(x: 0, y: 0, width: 640, height: 400))
         #expect(resume.streams.last.take().contains { $0.type == DisplayProtocol.ClientType.configure.rawValue })
+        session.disconnect()
+    }
+
+    /// The trackpad and keyboard aimed at a game window reach its page; what it holds is
+    /// released when another window takes the input and when the connection goes.
+    @Test func theAppsControlsReachTheGamesPageAndLetGo() async throws {
+        let session = makeSession()
+        session.connect()
+        try await resume.handshake(session, epoch: "e1", windows: [7, 8])
+        resume.streams.last.server([(.gameCreate, game(1, window: 7))])
+        try await helpers.until("game") { session.windows[7]?.game != nil }
+        let window = try #require(session.windows[7])
+        let game = try #require(window.game)
+        var delivered: [GameInputEvent] = []
+        game.inputSink = { delivered += $0 }
+        let size = window.frame.size
+        session.pointerMove(in: window, to: CGPoint(x: size.width / 2, y: size.height / 4))
+        session.pointerButton(in: window, button: 1, pressed: true, at: CGPoint(x: size.width / 2, y: size.height / 4))
+        session.key(Keysyms.special["Right"]!, pressed: true, in: window)
+        session.type("z", in: nil)
+        #expect(delivered.map(\.kind) == [.pointerMove, .pointerDown, .keyDown, .keyDown, .keyUp])
+        #expect(delivered.first?.x == 0.5 && delivered.first?.y == 0.25)
+        delivered.removeAll()
+        session.focus(try #require(session.windows[8]))
+        #expect(delivered.map(\.kind) == [.keyUp, .pointerCancel])
+        session.key(Keysyms.special["Right"]!, pressed: true, in: window)
+        delivered.removeAll()
+        session.disconnect()
+        #expect(delivered.map(\.kind) == [.keyUp])
     }
 
     @Test func theWaitForSavesIsBounded() async {

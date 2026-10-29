@@ -10,7 +10,8 @@ import WebKit
 /// window's game lays it over the window's picture, so moving between views never restarts
 /// the game. The web view has its own, non-persistent website data, so the computer is the
 /// only place the game's state lives, and it navigates nowhere but the game's origin. Touch,
-/// keys, the pointer and game controllers go to the page. When the view leaves the screen (or
+/// keys, the pointer and game controllers go to the page, and so does the input of the app's
+/// own controls (a trackpad, its keyboard) aimed at the window, as DOM events (`GameInput`). When the view leaves the screen (or
 /// the app stops being active) a snapshot of the game becomes the window's picture, for Home
 /// and the window strip.
 ///
@@ -88,11 +89,16 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
         addSubview(message)
         game.savesFlusher = { [weak saves] in await saves?.flush() }
         game.gamepadSink = { [weak self] state in self?.send(gamepad: state) }
+        game.inputSink = { [weak self] events in self?.send(input: events) }
         game.stateSink = { [weak self] in self?.showState() }
         game.onEnd { [weak self] in self?.end() }
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { if self?.window != nil { self?.capturePicture() } }
+            MainActor.assumeIsolated {
+                // Keys and buttons held when the app leaves the screen are not held any more.
+                self?.game?.releaseInput()
+                if self?.window != nil { self?.capturePicture() }
+            }
         })
         // The system can take the server's socket back while the app is suspended.
         observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
@@ -127,7 +133,10 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
 
     override func willMove(toWindow newWindow: UIWindow?) {
         super.willMove(toWindow: newWindow)
-        if newWindow == nil, window != nil { capturePicture() }
+        if newWindow == nil, window != nil {
+            game?.releaseInput()
+            capturePicture()
+        }
     }
 
     // MARK: Loading
@@ -155,6 +164,8 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
                 content.addUserScript(WKUserScript(source: GameFSScript.source(seed: seed), injectionTime: .atDocumentStart,
                                                    forMainFrameOnly: true, in: .page))
                 content.addUserScript(WKUserScript(source: GameGamepadScript.source, injectionTime: .atDocumentStart,
+                                                   forMainFrameOnly: true, in: .page))
+                content.addUserScript(WKUserScript(source: GameInputScript.source, injectionTime: .atDocumentStart,
                                                    forMainFrameOnly: true, in: .page))
                 webView.load(URLRequest(url: url))
             } catch {
@@ -280,6 +291,13 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
     private func send(gamepad state: GameGamepadState?) {
         guard webView.url != nil else { return }
         let call = GameGamepadScript.call(state)
+        webView.callAsyncJavaScript(call.body, arguments: call.arguments, in: nil, in: .page, completionHandler: nil)
+    }
+
+    /// Input from the app's own controls, to the page's `window.cabooseInput`, in order.
+    private func send(input events: [GameInputEvent]) {
+        guard webView.url != nil else { return }
+        let call = GameInputScript.call(events)
         webView.callAsyncJavaScript(call.body, arguments: call.arguments, in: nil, in: .page, completionHandler: nil)
     }
 
