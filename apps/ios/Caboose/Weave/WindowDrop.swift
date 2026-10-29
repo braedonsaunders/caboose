@@ -2,82 +2,114 @@ import CabooseKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// A drop is an explicit user action. Text goes to the chosen window; files use the
-/// computer's normal default application after being saved in Downloads.
+/// Drops from iOS into the Linux application under the finger (docs/display.md, Drag and
+/// drop). While the drag hovers over a window, the computer drags the same types over
+/// that application, and whether it accepts decides whether iOS offers the drop. When the
+/// finger lifts, the files are uploaded to the computer's transfer area first; only then
+/// is the computer's drag released, so the application finds the content ready. Failures
+/// are shown on the phone.
 struct WindowDrop: ViewModifier {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
-    @State private var error: String?
+    @State private var progress = DropProgress()
 
     func body(content: Content) -> some View {
         content
-            .onDrop(of: [UTType.fileURL, .image, .plainText, .data], isTargeted: nil) { providers, point in
-                let accepted = providers.compactMap { provider -> (NSItemProvider, DropPolicy.Representation)? in
-                    DropPolicy.representation(for: provider.registeredTypeIdentifiers).map { (provider, $0) }
-                }
-                guard !accepted.isEmpty, let host = model.host else { return false }
-                for (provider, representation) in accepted {
-                    switch representation {
-                    case .text:
-                        _ = provider.loadObject(ofClass: NSString.self) { value, failure in
-                            Task { @MainActor in
-                                guard let text = value as? String else { error = failure?.localizedDescription ?? "Could not read the dropped text."; return }
-                                guard let session = model.session, session.windows[window.id] != nil else { error = "The window is no longer connected."; return }
-                                session.focus(window)
-                                let position = CGPoint(x: point.x * pixelsPerPoint, y: point.y * pixelsPerPoint)
-                                session.pointerButton(in: window, button: 1, pressed: true, at: position)
-                                session.pointerButton(in: window, button: 1, pressed: false, at: position)
-                                session.type(text, in: window)
-                            }
-                        }
-                    case .fileURL:
-                        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { value, failure in
-                            let url = (value as? URL) ?? (value as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
-                            guard let url, url.isFileURL else {
-                                Task { @MainActor in error = failure?.localizedDescription ?? "Could not read the dropped file." }
-                                return
-                            }
-                            let scoped = url.startAccessingSecurityScopedResource()
-                            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                            send(url, name: provider.suggestedName ?? url.lastPathComponent, host: host)
-                        }
-                    case .file(let type):
-                        provider.loadFileRepresentation(forTypeIdentifier: type) { url, failure in
-                            guard let url else {
-                                Task { @MainActor in error = failure?.localizedDescription ?? "Could not read the dropped file." }
-                                return
-                            }
-                            send(url, name: provider.suggestedName ?? url.lastPathComponent, host: host)
-                        }
+            .onDrop(of: [UTType.item], delegate: WindowDropDelegate(model: model, window: window, pixelsPerPoint: pixelsPerPoint, progress: progress))
+            .overlay {
+                if progress.sending {
+                    VStack(spacing: 12) {
+                        ProgressView("Sending to \(window.title.isEmpty ? "the app" : window.title)…")
+                        Button("Cancel", role: .cancel) { progress.task?.cancel() }
                     }
+                    .padding(20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-                return true
             }
-            .alert("Drop failed", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-                Button("OK") { error = nil }
-            } message: { Text(error ?? "") }
+            .alert("Drop failed", isPresented: Binding(get: { progress.error != nil }, set: { if !$0 { progress.error = nil } })) {
+                Button("OK") { progress.error = nil }
+            } message: { Text(progress.error ?? "") }
+    }
+}
+
+@MainActor @Observable
+final class DropProgress {
+    /// The types offered for the drag over this window.
+    var types: [String] = []
+    /// The drop happened; the drag's exit that follows is not a leave.
+    var performing = false
+    var sending = false
+    var error: String?
+    var task: Task<Void, Never>?
+}
+
+@MainActor
+struct WindowDropDelegate: DropDelegate {
+    let model: AppModel
+    let window: RemoteWindow
+    let pixelsPerPoint: CGFloat
+    let progress: DropProgress
+
+    private var session: (any DisplaySession)? { model.session }
+
+    private func point(_ info: DropInfo) -> CGPoint {
+        CGPoint(x: info.location.x * pixelsPerPoint, y: info.location.y * pixelsPerPoint)
     }
 
-    private func send(_ url: URL, name: String, host: HostClient) {
-        do {
-            let size = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            guard size.isRegularFile == true, let count = size.fileSize, count <= DropPolicy.maxFileBytes else {
-                throw DropError.invalidFile
+    private func types(_ info: DropInfo) -> [String] {
+        DropPolicy.dropTypes(for: info.itemProviders(for: [.item]).map(\.registeredTypeIdentifiers))
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        !progress.sending && session != nil && !types(info).isEmpty
+    }
+
+    func dropEntered(info: DropInfo) {
+        progress.types = types(info)
+        progress.performing = false
+        session?.dropEnter(window, at: point(info), types: progress.types)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        session?.dropMove(window, at: point(info))
+        // Until the application has answered, the drop is offered; once it refuses, not.
+        return DropProposal(operation: session?.dropAccepted == false ? .forbidden : .copy)
+    }
+
+    func dropExited(info: DropInfo) {
+        if !progress.performing { session?.dropLeave() }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let session, let host = model.host else { return false }
+        let providers = info.itemProviders(for: [.item])
+        let types = progress.types
+        progress.performing = true
+        progress.sending = true
+        let progress = progress
+        progress.task = Task {
+            defer { progress.sending = false }
+            do {
+                let items = try await StagedItems.read(providers, imageAsFile: true)
+                defer { items.removeTemporaryFiles() }
+                let files = try await items.upload(to: host)
+                try Task.checkCancellation()
+                // Only what the drop announced: the computer offered the application these.
+                let all = ClipboardPolicy.content(text: items.text, images: items.images, files: files)
+                guard let content = all.flatMap({ ClipboardContent($0.entries.filter { types.contains($0.mime) }) }) else {
+                    session.dropLeave()
+                    progress.error = "Nothing in the drop could be sent."
+                    return
+                }
+                session.dropPerform(content)
+            } catch is CancellationError {
+                session.dropLeave()
+            } catch {
+                session.dropLeave()
+                progress.error = error.localizedDescription
             }
-            let data = try Data(contentsOf: url)
-            guard data.count <= DropPolicy.maxFileBytes else { throw DropError.invalidFile }
-            Task { @MainActor in
-                do { _ = try await host.sendFile(name: name, data: data, open: true) }
-                catch { self.error = error.localizedDescription }
-            }
-        } catch {
-            Task { @MainActor in self.error = error.localizedDescription }
         }
-    }
-
-    private enum DropError: LocalizedError {
-        case invalidFile
-        var errorDescription: String? { "Choose a regular file no larger than 50 MB." }
+        return true
     }
 }

@@ -56,6 +56,15 @@ struct RootView: View {
             if model.phase == .ready, !model.externalDisplayActive, [.desktop, .apps].contains(model.selectedTab) { ApprovalBanner() }
         }
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
+        // Drag and drop with the computer: the phone's target while a Linux app drags,
+        // and what was taken from it.
+        .overlay(alignment: .bottom) {
+            VStack {
+                DragShelfView()
+                DragOutTarget()
+            }
+        }
+        .animation(.snappy, value: model.session?.computerDrag != nil)
         .sheet(item: Binding(get: { model.phase == .ready ? model.documents.pending : nil }, set: { _ in })) { item in
             OpenDocumentPicker(item: item).environment(model).interactiveDismissDisabled()
         }

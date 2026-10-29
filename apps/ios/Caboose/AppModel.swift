@@ -89,7 +89,8 @@ final class AppModel {
 
     private var launchStartedAt: Date?
     private var knownWindowIDs = Set<Int>()
-    private let pasteboard = PasteboardBridge()
+    /// The pasteboard, and what the phone takes from computer drags.
+    let pasteboard = PasteboardBridge()
     private var observingWindows = false
 
     init() {

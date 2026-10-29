@@ -261,8 +261,15 @@ OpenRouter key and see goose become the default and answer.
   kept in sync with the original; if both copies changed, you choose which to keep. After
   changing catalog file types, run `python3 apps/ios/scripts/document-types.py --write` and
   `python3 apps/ios/scripts/test-document-types.py`.
-- **Drop into Linux.** Dropped text is typed at the drop point; a dropped file or image (up
-  to 50 MiB) is saved in `~/Downloads` and opened with Linux's default handler.
+- **Clipboard.** Text, PNG and JPEG images and files copy both ways between the phone's
+  pasteboard and Linux applications (`Weave/PasteboardBridge.swift`); files go through the
+  computer's transfer area one way and `/v1/fs` downloads the other, with bounded,
+  redirect-refusing transfers (`CabooseKit/Files/BoundedTransfer.swift`).
+- **Drag and drop.** A drop on a window is a real drag over the Linux application under the
+  finger, which decides whether it is accepted; files are uploaded before the drop is
+  released (`Weave/WindowDrop.swift`). While a Linux application drags, a target at the
+  bottom of the screen takes the drag to the phone, onto a shelf to drag on into other apps,
+  share or copy (`Weave/DragShelf.swift`).
 - **Open, share and print from Linux.** `caboose-open URL` opens a supported link on the
   phone after confirmation; Thunar's **Share to iPhone** and `caboose-share FILE` hand a file
   to the share sheet; the **iPhone** printer sends a PDF to the print dialog (10 MiB limit;
@@ -316,9 +323,18 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   unavailable without discarding an offline edit, and that a conflicting Linux edit is not
   overwritten.
 - **Open in place.** Run `apps/ios/scripts/check-open-in-place.sh` and follow its checks.
+- **Clipboard.** Copy a photo in Photos and paste it into GIMP or a Chromium page; copy an
+  image in Chromium and paste it in Messages; copy two files in Files and paste them in
+  Thunar; copy files in Thunar and paste them in Files. A copy of more than 1 GB shows an
+  error.
 - **Drops.** On an iPad, drop selected text into a Linux text editor, then an image from
-  Photos and a document from Files, in both the full-screen and desktop layouts; a file over
-  50 MiB shows an error.
+  Photos and a document from Files onto a Chromium page and onto Thunar, in both the
+  full-screen and desktop layouts: the drop is offered only where the app accepts it, the
+  upload shows progress and can be cancelled, and the app receives the content. Drop onto
+  an X11 app (`GDK_BACKEND=x11 gedit`) too.
+- **Drag out.** Drag a file from Thunar and an image from a Chromium page to the target at
+  the bottom of the screen: the shelf shows it; drag it from the shelf into Files (iPad
+  Split View) and share it. A drag released elsewhere drops on Linux as before.
 - **Open, share and print.** Run `caboose-open 'mailto:person@example.com'` in a terminal
   and confirm only after checking the URL; share a photo from Thunar; print to iPhone. Repeat
   with the phone backgrounded: nothing happens without a tap, and queued requests arrive when

@@ -1922,19 +1922,25 @@ app group and a Keychain access group.
 - **Share extension.** `CabooseShare` takes pages, text, photos and files from the iOS
   share sheet: `POST /v1/open` for a page, an upload into Downloads (optionally opened on
   the computer), or a new agent task with them attached.
-- **Drop.** Text dropped on an owner window focuses it, clicks at the drop point and types
-  the text through the display session. A dropped file or image (at most 50 MiB) is saved
-  to `~/Downloads` with `POST /v1/files` and opened with Linux's default handler, which is
-  not necessarily the window it was dropped on. Transfer failures are shown on the phone.
-  Dropping a file into a specific Linux application, and dragging out of Linux, are not
-  supported.
+- **Drop.** Text, an image or files dragged over a window are dragged over the Linux
+  application under the finger too ([display.md § Drag and drop](display.md#drag-and-drop)):
+  iOS shows the drop as allowed until that application refuses it. On drop the app uploads
+  the files (an image also as its file) to the transfer area, at most 512 MB each and 1 GB
+  together, showing progress with Cancel, and then releases the drag on the application,
+  which receives text, a PNG or JPEG, and the files as `file://` URIs. A refused,
+  unfinished or failed drop is shown in an alert.
+- **Drag out.** While a Wayland application on the computer drags text, an image or files,
+  the app shows a drop target at the bottom of the screen; lifting the finger over it brings
+  the drag to the phone instead of dropping it on the computer. iOS cannot hand a drag in
+  progress to another app, so the items land on a shelf, from which they can be dragged on
+  into any app, shared or copied; files under the computer's home (at most 256 MB together)
+  are downloaded first. Drags started by X11 applications stay on the computer.
 - **Clipboard.** The app's hello asks for images and files as well as text. A copy on the
   computer replaces the pasteboard with its text and image; files it names under the
   computer's home (at most 256 MB together) are downloaded through `/v1/fs` first and put
   on the pasteboard as files with their names, and files outside the home are reported,
   not copied. When the app becomes active after a copy on the phone, it sends the text,
-  the image (PNG or JPEG as copied, otherwise converted to JPEG, or PNG when it has
-  transparency) and the files, which it uploads to the transfer area first (at most 512 MB
+  the image (PNG or JPEG as copied, otherwise converted to JPEG) and the files, which it uploads to the transfer area first (at most 512 MB
   each and 1 GB together; an image too large for the clipboard goes as a file). The app's
   own pasteboard writes are not sent back. Failures are shown in an alert.
 - **Phone handoff.** The app opens its foreground control socket with `?phone=1`. It
