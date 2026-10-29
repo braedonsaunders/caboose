@@ -16,7 +16,6 @@ struct ChatComposer: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
     let task: AgentCenter.Task?
-    var connectModel: () -> Void = {}
     @AppStorage(AskTarget.key) private var target = ""
     @AppStorage("caboose.agent.askFirst") private var askFirst = true
     @AppStorage("caboose.agent.craftMcp") private var craftMcp = true
@@ -189,18 +188,21 @@ struct ChatComposer: View {
         let agents = model.agents
         return Menu {
             if let task {
-                let others = agents.installedAgents.filter { $0.id != task.agent }
-                if !others.isEmpty {
-                    Menu("Ask Another Agent", systemImage: "arrow.triangle.branch") {
-                        ForEach(others) { agent in Button(agent.name) { Task { await agents.retry(task, with: agent.id) } } }
+                Section("Switch Agent") {
+                    ForEach(agents.installedAgents) { agent in
+                        Button(agent.name, systemImage: agent.id == task.agent ? "checkmark" : "person.crop.circle") {
+                            if agent.id != task.agent { agents.selectAgent(agent.id) }
+                        }
                     }
                 }
             } else {
-                Section("Teammate") {
-                    ForEach(agents.library.activeProfiles) { profile in
-                        Button(profile.name, systemImage: agents.library.selectedProfileId == profile.id ? "checkmark.circle.fill" : "person.crop.circle") { agents.library.selectedProfileId = profile.id }
+                if !agents.library.activeProfiles.isEmpty {
+                    Section("Teammate") {
+                        ForEach(agents.library.activeProfiles) { profile in
+                            Button(profile.name, systemImage: agents.library.selectedProfileId == profile.id ? "checkmark.circle.fill" : "person.crop.circle") { agents.library.selectedProfileId = profile.id }
+                        }
+                        Button("Without a Teammate") { agents.library.selectedProfileId = nil }
                     }
-                    Button("Without a Teammate") { agents.library.selectedProfileId = nil }
                 }
                 if let profile = agents.library.selectedProfile {
                     Section("Teammate Settings") {
@@ -212,12 +214,13 @@ struct ChatComposer: View {
                         Text("Default Agent").tag("")
                         ForEach(agents.installedAgents) { Text($0.name).tag($0.id) }
                     }
-                    Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
-                    Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
+                    Section("New Chat") {
+                        Toggle(isOn: $askFirst) { Label("Ask Before Acting", systemImage: "hand.raised") }
+                        Toggle(isOn: $craftMcp) { Label("Use Craft App Tools", systemImage: "wrench.and.screwdriver") }
+                    }
                 }
             }
             Section {
-                Button(action: connectModel) { Label("Connect a Model…", systemImage: "key") }
                 Button { model.showAgentSettings = true } label: { Label("Agent Settings", systemImage: "slider.horizontal.3") }
             }
         } label: {
@@ -343,7 +346,6 @@ struct TaskCard: View {
     let task: AgentCenter.Task
     /// Kept for callers that pass the task's flattened output; the card reads the thread.
     var lines: [AgentCenter.Line] = []
-    var connectModel: () -> Void = {}
 
     var body: some View {
         let agents = model.agents
@@ -392,7 +394,7 @@ struct TaskCard: View {
             }
             // A signed-out agent: sign in on the computer's screen, use a key, or hand the request to another model.
             if let methods = task.signIn, !methods.isEmpty, !task.isRunning {
-                SignInRow(task: task, methods: methods, connectModel: connectModel)
+                SignInRow(task: task, methods: methods)
             }
         }
         .padding(14)
@@ -487,7 +489,6 @@ struct SignInRow: View {
     @Environment(AppModel.self) private var model
     let task: AgentCenter.Task
     let methods: [SignInMethod]
-    var connectModel: () -> Void = {}
     @State private var signingIn: SignInMethod?
     @State private var signedIn = false
 
@@ -512,11 +513,11 @@ struct SignInRow: View {
                 }
                 Menu {
                     ForEach(others) { agent in
-                        Button(agent.name) { Task { await agents.retry(task, with: agent.id) } }
+                        Button(agent.name) { agents.selectAgent(agent.id) }
                     }
-                    Section { Button("Use Another Model…", systemImage: "key", action: connectModel) }
+                    Section { Button("Agent Settings", systemImage: "slider.horizontal.3") { model.showAgentSettings = true } }
                 } label: {
-                    Label("Ask Another", systemImage: "arrow.triangle.branch")
+                    Label("Switch Agent", systemImage: "arrow.triangle.branch")
                 }
                 .buttonStyle(.glass)
             }

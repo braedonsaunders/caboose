@@ -34,7 +34,7 @@ struct ConnectModelView: View {
                 } header: {
                     Text("Provider")
                 } footer: {
-                    Text("Runs \(agentName(provider)) on your computer with your key. Signing in to an account works too: Agents… in the composer's menu.")
+                    Text("Runs \(agentName(provider)) on your computer with your key. To use an account instead, choose an agent in Agent Settings and sign in.")
                 }
                 Section {
                     NativeTextInput("\(provider.keyVariable)", text: $key, secure: true, capitalization: .none, correction: false, monospaced: true)

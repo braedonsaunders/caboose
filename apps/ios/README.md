@@ -352,17 +352,18 @@ names each chat from its first message (`ChatTitler`); nothing you say goes thro
 The chat shows what the agent does as it does it (`AgentThreadView`, folded by
 `AgentThread` in CabooseKit): its answers, collapsible thoughts, tool calls, its plan as a
 checklist, the permissions it asked for, and how much context it has used, read from the
-host's transcript route and then live. Stop it, watch its window on the agent seat, or ask
-another agent the same thing in a new chat. **Ask Before Acting** makes the agent stop
+host's transcript route and then live. Stop it or watch its window on the agent seat.
+**Switch Agent** selects the recipient of a new chat without sending anything or replaying
+the previous request. The previous conversation and its unsent draft remain in Chats. **Ask Before Acting** makes the agent stop
 before each action until you tap Allow (or its always-allow option) or Deny, in the chat, on
 Home or on the banner over any screen. **Use Craft App Tools** controls whether new chats
 offer installed catalog MCP servers to the agent.
 
-**Connect a Model** uses an API key instead of an account: an OpenRouter key and any of its
+**Agent Settings → Connect a Model** uses an API key instead of an account: an OpenRouter key and any of its
 tool-using models (run by the registry's goose), or an Anthropic or OpenAI key (Claude Agent
 or Codex). The app installs the agent, puts the key in its environment in the computer, and
-makes it the default. A chat whose agent is signed out offers **Sign In** and **Ask
-Another** (another agent, or Connect a Model). Settings › Agents installs and updates any
+makes it the default. A chat whose agent is signed out offers **Sign In** and **Switch
+Agent**. Agent Settings also installs and updates any
 registry agent, signs in to them, edits their environment, and sets the default.
 
 Signing in happens on the phone (`AgentSignInView`). The computer runs the agent's own
@@ -721,7 +722,8 @@ For dock and toolbar verification on the Duo: hold both a pinned app icon and a 
 column icon. Each running window offers Open and Close, and a known application offers
 Pin or Unpin. A stacked column lists each window separately. A normal tap still focuses
 its column and dragging the column strip still scrolls the desktop. In Agents, only the
-system overflow remains; Stop, Copy Answer and Connect a Model join its regular actions.
+system overflow remains; Stop and Copy Answer join its regular actions. Agent Settings
+contains Connect a Model; it is not repeated in the composer or chat toolbar.
 Open the power control and confirm its popover appears beside that control on both Duo
 screens. Dismiss it without parking or restarting when checking placement only.
 
@@ -863,3 +865,9 @@ the device; the live game stays visible and fits its window. In tablet portrait,
 window’s green Full Screen control hides the dock and chrome; the return handle restores
 controls. Swipe horizontally across All Apps to change pages; vertical drags and short
 taps do not page. Opening Caboose does not read the system pasteboard.
+
+Agent selection check: open a chat whose last message is “hey”, open the composer agent
+menu and select another agent. The empty/new composer names the selected agent; no chat or
+message is created until Send. The previous chat and its unsent draft remain in Chats. Repeat
+from a signed-out chat’s Switch Agent action. Open Agent Settings and connect/sign-in
+controls there; the composer and toolbar contain no separate Connect a Model action.
