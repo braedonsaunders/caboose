@@ -311,7 +311,7 @@ struct LiveWindowTile: View {
     var body: some View {
         let size = HomeToday.previewSize(window: window.frame.size, height: height, maximumWidth: width ?? 320)
         let previewWidth = size.width
-        Button(action: openWindow) label: {
+        Button(action: openWindow) {
             VStack(alignment: .leading, spacing: 8) {
                 RemoteWindowPreview(window: window, width: previewWidth)
                     .frame(width: previewWidth, height: size.height, alignment: .topLeading)
