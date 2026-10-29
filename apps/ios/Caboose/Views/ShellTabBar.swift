@@ -209,16 +209,23 @@ final class SoftwareKeyboard {
 /// Tells `SoftwareKeyboard` which window is the shell's: the one this invisible view is in.
 struct ShellWindowProbe: UIViewRepresentable {
     var sizeChanged: (CGSize) -> Void = { _ in }
+    var bottomInsetChanged: (CGFloat) -> Void = { _ in }
     func makeUIView(context: Context) -> Probe {
         let view = Probe()
         view.sizeChanged = sizeChanged
+        view.bottomInsetChanged = bottomInsetChanged
         return view
     }
-    func updateUIView(_ view: Probe, context: Context) { view.sizeChanged = sizeChanged }
+    func updateUIView(_ view: Probe, context: Context) {
+        view.sizeChanged = sizeChanged
+        view.bottomInsetChanged = bottomInsetChanged
+    }
 
     final class Probe: UIView {
         var sizeChanged: (CGSize) -> Void = { _ in }
+        var bottomInsetChanged: (CGFloat) -> Void = { _ in }
         private var lastSize: CGSize = .zero
+        private var lastBottomInset: CGFloat?
 
         override func layoutSubviews() {
             super.layoutSubviews()
@@ -226,10 +233,25 @@ struct ShellWindowProbe: UIViewRepresentable {
         }
 
         private func reportSize() {
-            guard let size = window?.bounds.size, size != lastSize else { return }
-            lastSize = size
+            guard let window else { return }
+            let size = window.bounds.size
             // Window bounds do not change when keyboard or system bars appear.
-            DispatchQueue.main.async { [weak self] in self?.sizeChanged(size) }
+            if size != lastSize {
+                lastSize = size
+                DispatchQueue.main.async { [weak self] in self?.sizeChanged(size) }
+            }
+            // UIWindow's safe area describes system chrome, not the keyboard avoidance
+            // added to SwiftUI's descendant geometry.
+            let bottom = window.safeAreaInsets.bottom
+            if bottom != lastBottomInset {
+                lastBottomInset = bottom
+                DispatchQueue.main.async { [weak self] in self?.bottomInsetChanged(bottom) }
+            }
+        }
+
+        override func safeAreaInsetsDidChange() {
+            super.safeAreaInsetsDidChange()
+            reportSize()
         }
 
         override func didMoveToWindow() {
@@ -245,6 +267,7 @@ extension EnvironmentValues {
     /// The Desktop-only override, measured from the shell window before keyboard insets.
     @Entry var portraitDesktopChrome = false
     @Entry var shellWallpaperWidth: CGFloat = 0
+    @Entry var shellBottomInset: CGFloat = 0
     /// Where the shell's tabs sit, so a tab can place its own bottom control beside them.
     @Entry var shellTabPlacement: HomeToday.TabPlacement = .system
 }

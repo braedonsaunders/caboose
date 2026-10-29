@@ -12,13 +12,15 @@ struct SwitchyardView: View {
     static let space = "switchyard"
 
     @Environment(AppModel.self) private var model
+    @Environment(\.shellBottomInset) private var shellBottomInset
     let yard: YardModel
     @State private var askingAbout: RemoteWindow?
 
     var body: some View {
         GeometryReader { proxy in
             // The dock keeps the bottom, just clear of the home indicator; tiles have the rest.
-            let bottom = max(6, proxy.safeAreaInsets.bottom - 10)
+            let bottom = DesktopChrome.dockBottomPadding(contentInset: proxy.safeAreaInsets.bottom,
+                                                          windowInset: shellBottomInset)
             let area = DesktopChrome.workspaceSize(in: proxy.size, dockHeight: YardDock.height, bottomInset: bottom)
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {

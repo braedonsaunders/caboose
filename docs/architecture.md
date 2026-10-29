@@ -1754,7 +1754,9 @@ the app card, and a detached view releases its layers.
   compact viewports keep the ordinary layout. The system keyboard's measured intersection
   with that view takes precedence over the fold, so it cannot cover the upper app.
   Outside Laptop, the shell's keyboard-adjusted viewport is used directly, without
-  subtracting the keyboard a second time. The
+  subtracting the keyboard a second time. The tiled dock's bottom padding is limited
+  to the shell window's system safe area; a descendant's keyboard inset never becomes
+  space reserved below the dock. The
   lower panel owns the existing `RemoteTextInputView`/`KeyBar`, with Keyboard, Trackpad,
   Keyboard & Trackpad and Gamepad choices behind one input button. Its trailing rail contains window switching, settings,
   power and navigation; the system-wide bars are hidden while Laptop is active. Opening

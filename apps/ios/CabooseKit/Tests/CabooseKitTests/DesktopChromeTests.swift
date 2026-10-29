@@ -3,6 +3,20 @@ import Testing
 @testable import CabooseKit
 
 struct DesktopChromeTests {
+    @Test func keyboardSafeAreaNeverBecomesDockPadding() {
+        let visible = CGSize(width: 930, height: 380)
+        for keyboardInset in [CGFloat(0), 34, 290, 430] {
+            let bottom = DesktopChrome.dockBottomPadding(contentInset: keyboardInset, windowInset: 34)
+            let workspace = DesktopChrome.workspaceSize(in: visible, dockHeight: 64, bottomInset: bottom)
+            #expect(bottom <= 24)
+            #expect(workspace.height >= 286)
+            #expect(workspace.height + 64 + 6 + bottom == visible.height)
+        }
+        #expect(DesktopChrome.dockBottomPadding(contentInset: 430, windowInset: 0) == 6)
+        #expect(DesktopChrome.dockBottomPadding(contentInset: 0, windowInset: 34) == 6)
+        #expect(DesktopChrome.dockBottomPadding(contentInset: 34, windowInset: 34) == 24)
+    }
+
     @Test func desktopKeepsNavigationUnlessLaptopProvidesItsReplacement() {
         for tab in ShellTab.allCases {
             #expect(!DesktopChrome.hidesShell(tab: tab, laptopDesktop: false, laptopTerminal: false))

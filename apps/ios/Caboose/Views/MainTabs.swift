@@ -12,6 +12,7 @@ struct MainTabs: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var width: CGFloat = 0
     @State private var windowSize: CGSize = .zero
+    @State private var windowBottomInset: CGFloat = 0
 
     var body: some View {
         @Bindable var model = model
@@ -45,7 +46,8 @@ struct MainTabs: View {
         .toolbarVisibility(desktopHidesBars || placement != .system ? .hidden : .visible, for: .tabBar)
         .environment(\.shellTabPlacement, placement)
         .environment(\.portraitDesktopChrome, portraitDesktop)
-        .background { ShellWindowProbe(sizeChanged: { windowSize = $0 }).allowsHitTesting(false).accessibilityHidden(true) }
+        .environment(\.shellBottomInset, windowBottomInset)
+        .background { ShellWindowProbe(sizeChanged: { windowSize = $0 }, bottomInsetChanged: { windowBottomInset = $0 }).allowsHitTesting(false).accessibilityHidden(true) }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .tint(Brand.amber)
         .onChange(of: model.selectedTab) { _, _ in model.updateDeviceDesktop() }

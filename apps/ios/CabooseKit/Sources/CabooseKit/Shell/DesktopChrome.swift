@@ -3,6 +3,13 @@ import CoreGraphics
 /// Desktop chrome follows the shell window, never the keyboard-reduced content area.
 /// Wide portrait windows use the dock panel; a closed phone keeps its native shell bar.
 public enum DesktopChrome {
+    /// The dock clears the home indicator. A descendant's safe area can include the
+    /// software keyboard even when its proposed height has already been shortened.
+    /// Only the part belonging to the window's system chrome can become dock padding.
+    public static func dockBottomPadding(contentInset: CGFloat, windowInset: CGFloat) -> CGFloat {
+        max(6, min(max(0, contentInset), max(0, windowInset)) - 10)
+    }
+
     /// Fullscreen Linux content stays inside Desktop's workspace. Only Laptop supplies
     /// replacement shell controls; app cards are presented outside the tab shell.
     public static func hidesShell(tab: ShellTab, laptopDesktop: Bool, laptopTerminal: Bool) -> Bool {
