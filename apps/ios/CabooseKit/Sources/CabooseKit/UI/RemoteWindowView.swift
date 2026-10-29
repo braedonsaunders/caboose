@@ -377,8 +377,12 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             session.focus(window)
             session.pointerButton(in: window, button: 1, pressed: true, at: lastPointer)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        case .changed: move(to: point)
+        case .changed:
+            move(to: point)
+            session.trackDragOut(at: convert(point, to: nil))
         case .ended, .cancelled, .failed:
+            // A computer drag released on the phone's own target is the phone's.
+            if gesture.state == .ended { session.takeDragIfOver(convert(point, to: nil)) }
             if dragging { session.pointerButton(in: window, button: 1, pressed: false, at: pixelPoint(point)) }
             dragging = false
         default: break
@@ -394,7 +398,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             session.pointerButton(in: window, button: 1, pressed: true, at: lastPointer)
         case .changed:
             move(to: point)
+            session.trackDragOut(at: convert(point, to: nil))
         default:
+            if gesture.state == .ended { session.takeDragIfOver(convert(point, to: nil)) }
             session.pointerButton(in: window, button: 1, pressed: false, at: pixelPoint(point))
         }
     }
@@ -515,6 +521,13 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             } else {
                 activeTouches[key] = (slot, point)
             }
+        }
+        // A computer drag follows the finger to the phone's own target; lifted there, it is
+        // the phone's, taken before the lift reaches the computer.
+        if session.computerDrag != nil, let finger = touches.first(where: { $0.type != .pencil }) {
+            let location = convert(finger.location(in: self), to: nil)
+            if phase == .motion { session.trackDragOut(at: location) }
+            if phase == .up { session.takeDragIfOver(location) }
         }
         if !points.isEmpty { session.touch(points, in: window) }
     }

@@ -483,6 +483,44 @@ final class FakeDecoder: PictureDecoder {
         #expect(sent.first?.body["alternatives"]?.array?.first?["mime"]?.string == ClipboardPolicy.png)
     }
 
+    @Test func dropsFollowTheComputersAnswer() async throws {
+        let session = try await ready(features: ["vsync", "ack", "clipboard", "clipboard-types", "drop", "drag"])
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100]))])
+        try await until("window") { session.windows[7] != nil }
+        let target = try #require(session.windows[7])
+        _ = stream.take()
+        session.dropEnter(target, at: CGPoint(x: 10, y: 20), types: [ClipboardPolicy.uriList])
+        session.dropMove(target, at: CGPoint(x: 12, y: 22))
+        #expect(stream.take().map(\.type) == [0xA1, 0xA2])
+        #expect(session.dropAccepted == nil)
+        stream.server([(.dropStatus, ["accepted": false])])
+        try await until("status") { session.dropAccepted == false }
+        var results: [Bool] = []
+        session.onDropResult = { ok, _ in results.append(ok) }
+        stream.server([(.dropResult, ["ok": false, "reason": "rejected"])])
+        try await until("result") { results == [false] }
+        #expect(session.dropAccepted == nil)
+    }
+
+    @Test func aComputerDragIsTakenOnlyOverThePhonesTarget() async throws {
+        let session = try await ready(features: ["vsync", "ack", "clipboard", "clipboard-types", "drop", "drag"])
+        session.dragOutFrame = CGRect(x: 0, y: 500, width: 300, height: 80)
+        #expect(!session.takeDragIfOver(CGPoint(x: 10, y: 520)))
+        stream.server([(.dragStart, ["mimes": [CBOR(ClipboardPolicy.text)]])])
+        try await until("drag") { session.computerDrag == [ClipboardPolicy.text] }
+        session.trackDragOut(at: CGPoint(x: 10, y: 520))
+        #expect(session.dragOutHovering)
+        #expect(!session.takeDragIfOver(CGPoint(x: 10, y: 100)))
+        #expect(stream.take().isEmpty)
+        #expect(session.takeDragIfOver(CGPoint(x: 10, y: 520)))
+        #expect(stream.take().map(\.type) == [0xA5])
+        var taken: [String?] = []
+        session.onDragData = { taken.append($0.text) }
+        stream.server([(.dragData, ["mime": "text/plain;charset=utf-8", "data": .bytes(Data("dragged".utf8))]), (.dragEnd, ["taken": true])])
+        try await until("end") { session.computerDrag == nil }
+        #expect(taken == ["dragged"])
+    }
+
     @Test func pongMeasuresTheRoundTrip() async throws {
         let session = try await ready()
         let sent = UInt64(CabooseDisplaySession.monotonicMicros()) - 4000

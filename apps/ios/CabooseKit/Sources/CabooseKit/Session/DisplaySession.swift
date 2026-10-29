@@ -52,6 +52,21 @@ public protocol DisplaySession: AnyObject {
     /// or the computer's own coming back, is not sent.
     func offerClipboard(_ content: ClipboardContent)
 
+    // MARK: Drag and drop (docs/display.md, Drag and drop)
+
+    var dropAccepted: Bool? { get }
+    var onDropResult: ((Bool, String?) -> Void)? { get set }
+    var computerDrag: [String]? { get }
+    var dragOutFrame: CGRect? { get set }
+    var dragOutHovering: Bool { get }
+    var onDragData: ((ClipboardContent) -> Void)? { get set }
+    func dropEnter(_ window: RemoteWindow, at point: CGPoint, types: [String])
+    func dropMove(_ window: RemoteWindow, at point: CGPoint)
+    func dropLeave()
+    func dropPerform(_ content: ClipboardContent)
+    func trackDragOut(at windowPoint: CGPoint)
+    @discardableResult func takeDragIfOver(_ windowPoint: CGPoint) -> Bool
+
     // MARK: Input
 
     func pointerMove(in window: RemoteWindow, to point: CGPoint, modifiers: [String])

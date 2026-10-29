@@ -25,6 +25,11 @@ public enum DisplayProtocol {
         case textInput = 0x22
         case clipboard = 0x30
         case notification = 0x31
+        case dropStatus = 0x32
+        case dropResult = 0x33
+        case dragStart = 0x34
+        case dragEnd = 0x35
+        case dragData = 0x36
         case audio = 0x40
         case pong = 0x7E
         case bye = 0x7F
@@ -46,6 +51,11 @@ public enum DisplayProtocol {
         case key = 0x93
         case text = 0x94
         case clipboard = 0xA0
+        case dropEnter = 0xA1
+        case dropMotion = 0xA2
+        case dropLeave = 0xA3
+        case dropPerform = 0xA4
+        case dragTake = 0xA5
         case ping = 0xFE
     }
 }
@@ -302,6 +312,16 @@ public enum ServerMessage: Sendable {
     case cursorNamed(String)
     case textInput(window: Int, enabled: Bool, purpose: String?)
     case clipboard(ClipboardContent)
+    /// Whether the application under a drop from the phone accepts it.
+    case dropStatus(accepted: Bool)
+    /// A drop from the phone ended: taken, or why not.
+    case dropResult(ok: Bool, reason: String?)
+    /// An application on the computer started dragging these types.
+    case dragStart(types: [String])
+    /// The application's drag ended.
+    case dragEnd(taken: Bool)
+    /// What the phone took from the drag.
+    case dragData(ClipboardContent)
     case notification(id: Int, app: String, summary: String, body: String)
     case audio(AudioPacket)
     case pong(micros: UInt64)
@@ -337,6 +357,11 @@ public enum ServerMessage: Sendable {
         case .textInput:
             parsed = body["id"]?.int.map { .textInput(window: $0, enabled: body["enabled"]?.bool ?? false, purpose: body["purpose"]?.string) }
         case .clipboard: parsed = ClipboardContent(cbor: body).map(ServerMessage.clipboard)
+        case .dropStatus: parsed = body["accepted"]?.bool.map { .dropStatus(accepted: $0) }
+        case .dropResult: parsed = body["ok"]?.bool.map { .dropResult(ok: $0, reason: body["reason"]?.string) }
+        case .dragStart: parsed = body["mimes"]?.array.map { .dragStart(types: $0.compactMap(\.string)) }
+        case .dragEnd: parsed = body["taken"]?.bool.map { .dragEnd(taken: $0) }
+        case .dragData: parsed = ClipboardContent(cbor: body).map(ServerMessage.dragData)
         case .notification:
             parsed = body["id"]?.int.map {
                 .notification(id: $0, app: body["app"]?.string ?? "", summary: body["summary"]?.string ?? "", body: body["body"]?.string ?? "")
@@ -471,6 +496,14 @@ public enum ClientMessage: Sendable {
     case key(keysym: Int, pressed: Bool, modifiers: [String])
     case text(commit: String?, preedit: String? = nil, cursor: (Int, Int)? = nil, deleteBefore: Int? = nil, deleteAfter: Int? = nil)
     case clipboard(ClipboardContent)
+    /// The phone drags something over a window, offering these clipboard types.
+    case dropEnter(window: Int, x: Double, y: Double, types: [String])
+    case dropMotion(window: Int, x: Double, y: Double)
+    case dropLeave
+    /// The phone dropped: the content, files already in the transfer area.
+    case dropPerform(ClipboardContent)
+    /// The phone takes the application's drag in progress.
+    case dragTake
     case ping(micros: UInt64)
     /// A video frame is decoded and queued for display.
     case videoAck(video: Int, seq: Int)
@@ -541,6 +574,17 @@ public enum ClientMessage: Sendable {
             ]))
         case .clipboard(let content):
             return DisplayFrame(type: T.clipboard.rawValue, body: content.cbor)
+        case .dropEnter(let window, let x, let y, let types):
+            return DisplayFrame(type: T.dropEnter.rawValue, body: map([("id", CBOR(window)), ("x", CBOR(x)), ("y", CBOR(y)),
+                                                                       ("mimes", .array(types.map { CBOR($0) }))]))
+        case .dropMotion(let window, let x, let y):
+            return DisplayFrame(type: T.dropMotion.rawValue, body: map([("id", CBOR(window)), ("x", CBOR(x)), ("y", CBOR(y))]))
+        case .dropLeave:
+            return DisplayFrame(type: T.dropLeave.rawValue, body: .map([]))
+        case .dropPerform(let content):
+            return DisplayFrame(type: T.dropPerform.rawValue, body: content.cbor)
+        case .dragTake:
+            return DisplayFrame(type: T.dragTake.rawValue, body: .map([]))
         case .ping(let micros):
             return DisplayFrame(type: T.ping.rawValue, body: map([("t_us", CBOR(micros))]))
         }
