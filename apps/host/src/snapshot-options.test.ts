@@ -23,6 +23,8 @@ it('selects explicit restore modes and rejects incompatible combinations', () =>
   expect(config({ CABOOSE_VM_RESTORE_MODE: 'ondemand' })).toMatchObject({ vmRestoreMode: 'ondemand', vmCow: false })
   expect(() => config({ CABOOSE_VM_RESTORE_MODE: 'lazy' })).toThrow('CABOOSE_VM_RESTORE_MODE')
   expect(() => config({ CABOOSE_VM_COW: 'on', CABOOSE_VM_RESTORE_MODE: 'ondemand' })).toThrow('conflicts')
+  expect(() => config({ CABOOSE_VM_COW: 'on', CABOOSE_VM_RESTORE_MODE: 'copy' })).toThrow('conflicts')
+  expect(config({ CABOOSE_VM_COW: 'on', CABOOSE_VM_RESTORE_MODE: 'copyonwrite' }).vmRestoreMode).toBe('copyonwrite')
   expect(() => config({ CABOOSE_VM_TEMPLATE: 'on', CABOOSE_VM_RESTORE_MODE: 'ondemand' })).toThrow('cannot be combined')
   expect(() => config({ CABOOSE_VM_DEPOT: '/depot', CABOOSE_VM_RESTORE_MODE: 'ondemand' })).toThrow('cannot be combined')
   expect(() => config({ CABOOSE_RUNTIME: 'container', CABOOSE_VM_RESTORE_MODE: 'ondemand' })).toThrow('microVM')
