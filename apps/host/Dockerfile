@@ -37,6 +37,12 @@ RUN case "$TARGETARCH" in \
     tar -xzf /desk-vmm.tar.gz -C /desk-vmm && cd /desk-vmm && sha256sum -c SHA256SUMS && \
     chmod 0755 cloud-hypervisor ch-remote
 
+# caboose-disk: shared storage and backup manifests (apps/host/disk).
+FROM rust:1.94-slim-bookworm AS disk
+WORKDIR /src
+COPY apps/host/disk ./
+RUN cargo build --release --locked && cp target/release/caboose-disk /caboose-disk
+
 FROM node:22-bookworm-slim
 ARG TARGETARCH
 RUN case "$TARGETARCH" in amd64) kernel=linux-image-amd64; qemu=qemu-system-x86 ;; arm64) kernel=linux-image-arm64; qemu=qemu-system-arm ;; *) exit 1 ;; esac && \
@@ -44,6 +50,7 @@ RUN case "$TARGETARCH" in amd64) kernel=linux-image-amd64; qemu=qemu-system-x86 
 WORKDIR /app
 COPY --from=vmm /desk-vmm /usr/local/lib/desk-vmm
 RUN ln -s /usr/local/lib/desk-vmm/cloud-hypervisor /usr/local/bin/cloud-hypervisor
+COPY --from=disk /caboose-disk /usr/local/bin/caboose-disk
 COPY --from=host-deps /src/node_modules ./node_modules
 COPY --from=host-deps /src/apps/host/node_modules ./apps/host/node_modules
 COPY --from=host-deps /src/apps/host/package.json ./apps/host/package.json

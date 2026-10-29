@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds a self-contained caboose-host for a native install: the host, its production
 # dependencies, the web console, the guest assets it installs, a pinned Node 22 and, on
-# Linux, a pinned Cloud Hypervisor. Nothing on the target machine is needed but a shell.
+# Linux, a pinned Cloud Hypervisor and caboose-disk (built with cargo and rustup). Nothing
+# on the target machine is needed but a shell.
 #
 #   apps/host/scripts/bundle.sh <linux|darwin> <amd64|arm64> <outdir>
 #
@@ -114,6 +115,15 @@ if [[ $os == linux ]]; then
   ln -s ../lib/desk-vmm/cloud-hypervisor "$root/bin/cloud-hypervisor"
 fi
 
+if [[ $os == linux ]]; then
+  # A static build, so the bundle runs on any glibc.
+  target=$([[ $arch == amd64 ]] && echo x86_64-unknown-linux-musl || echo aarch64-unknown-linux-musl)
+  echo "Building caboose-disk ($target)"
+  rustup target add "$target" >/dev/null
+  cargo build --quiet --release --locked --manifest-path "$repo/apps/host/disk/Cargo.toml" --target "$target" --target-dir "$work/disk"
+  cp "$work/disk/$target/release/caboose-disk" "$root/bin/caboose-disk"
+fi
+
 if [[ $os == darwin ]]; then
   [[ $(uname -s) == Darwin && $arch == arm64 ]] || { echo 'Build the macOS bundle on Apple Silicon' >&2; exit 1; }
   helper=$(bash "$repo/apps/host/node_modules/@braedonsaunders/appkit-desk/vz/build.sh")
@@ -145,6 +155,9 @@ if [ -f "$here/VERSION" ] && [ -z "${CABOOSE_VERSION-}" ]; then
 fi
 if [ -x "$here/bin/cloud-hypervisor" ] && [ -z "${CABOOSE_VMM_PATH-}" ]; then
   export CABOOSE_VMM_PATH="$here/bin/cloud-hypervisor"
+fi
+if [ -x "$here/bin/caboose-disk" ] && [ -z "${CABOOSE_DISK_HELPER-}" ]; then
+  export CABOOSE_DISK_HELPER="$here/bin/caboose-disk"
 fi
 if [ -x "$here/bin/appkit-desk-vz" ] && [ -z "${CABOOSE_VMM_PATH-}" ]; then
   export CABOOSE_VMM_PATH="$here/bin/appkit-desk-vz"

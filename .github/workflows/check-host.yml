@@ -44,3 +44,19 @@ jobs:
           python3 apps/host/scripts/tests/check-host-lock.py
       - run: pnpm --filter caboose-web test
       - run: pnpm --filter caboose-web build
+
+  disk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/host/disk
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq xfsprogs
+      - name: Share, punch and describe blocks on a real XFS filesystem
+        run: sudo scripts/check-reflink.sh target/release/caboose-disk xfs
