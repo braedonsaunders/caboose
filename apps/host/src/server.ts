@@ -12,7 +12,7 @@ import { NOT_FOUND, json, readJson } from './http.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import { loadCatalog } from './app-catalog-data.js'
-import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
+import { AgentConflictError, AgentIdentityError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest, type AgentProfileSnapshot } from './agents.js'
 import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWNLOADS } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
 import { HomeOwnership } from './home.js'
@@ -38,7 +38,7 @@ import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenTy
 import { agentAutomation } from './agent-automation.js'
 import { type AgentToolJournal, type ToolDispatcher } from './agent-tools-journal.js'
 import { type AgentRoutines, type RoutineOptions, type RoutineTask } from './agent-routines.js'
-import { AgentProfiles, prepareProfileStart } from './agent-profiles.js'
+import { AgentProfiles, prepareProfileStart, profileContext } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
@@ -98,6 +98,19 @@ function withAdmission(controller: Controller, admit: () => Promise<void>): Cont
   return gated
 }
 
+/** Ordinary chats use their agent's default identity on this computer; an archived one is restored by the owner, never implicitly. */
+export function defaultIdentity(profiles: AgentProfiles, changed: () => void): (agent: string, agentName: string) => Promise<AgentProfileSnapshot> {
+  return async (agent, agentName) => {
+    let result
+    try { result = await profiles.ensureDefault(agent, agentName) } catch (error) {
+      throw new AgentIdentityError(`Cannot create the ${agentName} identity for memory and routines: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (result.created) changed()
+    if (result.profile.archived) throw new AgentIdentityError(`${result.profile.name}, the identity of ${agentName} chats, is archived. Restore it in agent profiles to use its memories and routines.`)
+    return { id: result.profile.id, instructions: profileContext(result.profile) }
+  }
+}
+
 function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; admit?: Admission; guestArchitecture?: 'amd64' | 'arm64' }) {
   const { settings, push, activities } = pieces
   const admit = shared.admit
@@ -140,6 +153,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (job && activities) void activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
   }, () => computer.acquire(), {
     ...(pieces.openToolJournal ? { toolJournal: async () => { const journal = await toolJournalReady; if (!journal) throw new AgentConflictError(toolsError ?? 'Agent tools are unavailable'); return journal } } : {}),
+    ...(pieces.openToolJournal && pieces.profiles ? { defaultIdentity: defaultIdentity(pieces.profiles, () => broadcast({ type: 'agent.profiles.changed' })) } : {}),
     resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(shared.agentIdleMs !== undefined ? { idleMs: shared.agentIdleMs } : {}),
   })
   let routineError: string | null = null
