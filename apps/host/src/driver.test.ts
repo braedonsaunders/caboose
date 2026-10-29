@@ -12,6 +12,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
   try {
     const commands: string[] = []
     let failSync = false
+    let supportsOwnerScope = true
     const restores: boolean[] = []
     const backend: DeskBackend = {
       async boot(plan, hooks) {
@@ -23,6 +24,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
           deskId: plan.deskId,
           async request(command) {
             if (command.op === 'exec') commands.push([command.command, ...(command.args ?? [])].join(' '))
+            if (command.op === 'exec' && command.command === '/usr/bin/test' && command.args?.[1] === '/usr/local/libexec/caboose-owner-run') return { exitCode: supportsOwnerScope ? 0 : 1, signal: null, stdout: '', stderr: '', truncated: false }
             if (command.op === 'exec' && command.command === '/bin/cat') return { exitCode: 0, signal: null, stdout: DISPLAY_ENV, stderr: '', truncated: false }
             if (failSync && command.op === 'exec' && command.command === '/bin/sync') {
               return { exitCode: 1, signal: null, stdout: '', stderr: 'guest is unresponsive', truncated: false }
@@ -48,11 +50,16 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
     expect(first.display.token).toMatch(/^[a-f0-9]{64}$/)
     expect(first.computer.name).toBe('My computer')
     expect(commands.some(command => command.includes('/run/caboose/display-token'))).toBe(true)
+    await controller.guest()!.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/bin/echo', 'first'])
+    expect(commands).toContain('/usr/local/libexec/caboose-owner-run /bin/echo first')
     desired.memoryMb = 1024
     desired.vcpus = 2
     await controller.park()
+    supportsOwnerScope = false
     expect(createController(config, dependencies).activeResources()).toEqual({ memoryMb: 512, vcpus: 1 })
     const second = await controller.wake()
+    await controller.guest()!.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/bin/echo', 'second'])
+    expect(commands).toContain('/usr/sbin/runuser -u caboose -- /bin/echo second')
     expect(second.computer.memoryMb).toBe(512)
     expect(controller.activeResources()).toEqual({ memoryMb: 512, vcpus: 1 })
     expect(second.display.token).not.toBe(first.display.token)

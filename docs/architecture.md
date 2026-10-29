@@ -172,7 +172,9 @@ The bundle does not include Caboose Display or its units, which come with the im
 
 VM images place Caboose owner service units in `caboose-workloads.slice` and install
 `caboose-owner-run`, which enters a scope in that slice before switching to the owner.
-Other owner processes can still run outside that slice.
+The microVM command transport uses that launcher for standard owner commands when it
+is installed, and uses `runuser` on older guests. Other owner processes can still run
+outside that slice.
 
 ### Owner credential store
 

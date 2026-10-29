@@ -11,6 +11,7 @@ import type { App, Controller, Session } from './server.js'
 import { guestLaunch } from './guest-apps.js'
 import { selectSystemImage, usesSystemImage } from './system-image.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
+import { ownerScopeCommand } from './owner-scope.js'
 
 /** Verify the Files service through vsock before choosing it for this guest. */
 export async function probeServiceVsock(desk: DeskHandle, timeoutMs = 2_000): Promise<boolean> {
@@ -150,6 +151,9 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   }
   /** What an app launched onto the owner's display needs; caboose-display's, read at each wake. */
   let launchEnv: string[] = []
+  // A missing wrapper is expected on guests awaiting their component upgrade.
+  // Never retry an admitted command after it has started: it may have side effects.
+  let ownerScopeAvailable: boolean | undefined
   const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs, defaultAgent: null }
   function clearHeartbeat(): void {
     if (heartbeat) clearInterval(heartbeat)
@@ -157,7 +161,14 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   }
   async function command(command: string, args: string[], timeoutMs = 30_000): Promise<string> {
     if (!desk) throw new Error('Computer is not running')
-    const result = await desk.exec({ command, args, timeoutMs })
+    const routed = await ownerScopeCommand(command, args, async () => {
+      if (ownerScopeAvailable === undefined) {
+        const probe = await desk!.exec({ command: '/usr/bin/test', args: ['-x', '/usr/local/libexec/caboose-owner-run'], timeoutMs: 5_000 })
+        ownerScopeAvailable = probe.exitCode === 0 && !probe.truncated
+      }
+      return ownerScopeAvailable
+    })
+    const result = await desk.exec({ ...routed, timeoutMs })
     if (result.exitCode !== 0 || result.truncated) throw new Error(`Guest command failed: ${result.stderr || result.exitCode}`)
     return result.stdout
   }
@@ -222,6 +233,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       await mkdir(join(config.imageRoot, 'runtime'), { recursive: true })
       if (!nativeMac) await (dependencies.network ?? (() => ensureNetwork(slot)))()
       const restoring = existsSync(snapshotPath)
+      ownerScopeAvailable = undefined
       const wasResident = Boolean(desk)
       desk = await host.start({ deskId: id, baseImage: join(imageDirectory, 'base.raw'), overlayPath,
         ...(dependencies.depotPath ? { shares: [{ tag: 'caboose-depot', path: dependencies.depotPath, readOnly: true }] } : {}),
