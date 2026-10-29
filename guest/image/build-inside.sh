@@ -88,7 +88,16 @@ fi
 sync
 for p in dev/pts dev proc sys; do umount -l "$work/root/$p" 2>/dev/null || true; done
 umount "$work/root"
+if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
+  # Deleted /usr and /opt are free blocks, but remain allocated in a raw file.
+  # Zero those blocks before making a sparse copy so clones do not carry them.
+  zerofree "$loop"
+fi
 losetup -d "$loop"; loop=
+if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
+  cp --sparse=always "$work/base.raw" "$work/base.sparse"
+  mv "$work/base.sparse" "$work/base.raw"
+fi
 mv "$work/initrd" /output/initrd
 mv "$work/vmlinux" /output/vmlinux
 mv "$work/base.raw" /output/base.raw
