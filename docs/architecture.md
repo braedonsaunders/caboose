@@ -1904,7 +1904,9 @@ interface (WebKit isolates only http(s) origins, and threaded WebAssembly needs 
 through `GameFileResponder`, from a least-recently-used cache in `Caches/CabooseGames`,
 bounded at 1 GiB and keyed by computer, path and etag. A page that cannot run on the device
 declines its game: `RemoteGame.decline` writes the saves still on their way, and the session
-sends `game.decline` for the window's current game on the current connection, once. Save sync
+sends `game.decline` only after that connection announces the window's current game, once per
+connection. If the connection drops before the computer withdraws the game, its reannouncement
+on the next connection retries the decline after the save wait has finished. Save sync
 writes IDBFS changes within two seconds and retries every five seconds while the game runs.
 An on-screen controller reaches the page's Gamepad API through `RemoteGame.gamepad`.
 

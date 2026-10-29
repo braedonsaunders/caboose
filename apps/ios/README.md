@@ -77,7 +77,7 @@ sends matches its vector), drive `CabooseDisplaySession` over a mocked transport
 and reconnecting: epoch-checked window resume, the post-hello announcement marker, stale
 streams and pipelines, the watchdog, the retry policy and the measured metrics, and game
 handoff: `game.create` and `game.destroy`, games kept across a resume, saves flushed before
-`close` and before `game.decline`, declines sent once and only for the current game, and no
+`close` and before `game.decline`, declines sent once per connection and only for its announced current game, and no
 input to a game window reaching the computer), check the game rules (path resolution,
 ranges, content types, the cache and its eviction, conflict names, the save planner and
 save sync against an in-memory file service), check the game's loopback origin (request

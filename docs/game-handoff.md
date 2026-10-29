@@ -114,7 +114,7 @@ server process's lifetime. While its game is shown on a client, the window sends
 ### Declining
 
 A client that finds it cannot run a game it was given (its page needs threads WebKit will not
-give it, or its web content keeps crashing) sends `game.decline { id, reason }` once, after
+give it, or its web content keeps crashing) sends `game.decline { id, reason }` once per connection, after
 writing the saves still on their way. caboose-display takes it only for a game it announced
 to that client and not yet withdrawn, once: it sends `game.destroy`, the window sends its
 pictures again, and the launcher hears `local` with `declined`, so the bundle's native build
@@ -188,8 +188,9 @@ written so far), or when the device cannot start the game's server. The page sto
 the game's window says "Running this game on the computer instead…", the saves still on
 their way are written (for up to five seconds), and then `game.decline` goes with the reason,
 at most 200 UTF-8 bytes. It goes only while the game is still its window's game on the
-current connection, once per game; a game declined while the connection is down is declined
-when the same server announces it again. When no `game.destroy` follows within ten seconds,
+current connection, after that connection announces it, once per connection. A game declined
+while disconnected, or whose decline was unanswered when the connection dropped, is declined
+when the same server announces it again. Reconnecting never skips the pending save wait. When no `game.destroy` follows within ten seconds,
 the window says "This game cannot run on this device, and the computer did not take it back.
 Close the window."
 
