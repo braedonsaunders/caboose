@@ -1,4 +1,5 @@
 import { once } from 'node:events'
+import { WebSocket } from 'ws'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -249,3 +250,26 @@ describe('a host with accounts and tenants', () => {
     expect((await parent('/v1/me')).status).toBe(200)
   })
 })
+
+
+it('closes a live administrator control socket when its session is revoked', async () => {
+  const signedIn = await fetch(`${base}/v1/auth/sign-in/email`, {
+    method: 'POST', headers: { origin: base, 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'owner@example.com', password: 'correct horse' }),
+  })
+  expect(signedIn.status).toBe(200)
+  const cookie = signedIn.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+  const accountHeaders = { cookie, origin: base, 'content-type': 'application/json' }
+  const current = await (await fetch(`${base}/v1/auth/get-session`, { headers: accountHeaders })).json()
+  expect((await fetch(`${base}/v1/session`, { method: 'POST', headers: accountHeaders, body: '{}' })).status).toBe(200)
+  const socket = new WebSocket(`${base.replace('http:', 'ws:')}/v1/control`, { headers: { cookie }, handshakeTimeout: 5_000 })
+  try {
+    await once(socket, 'open')
+    const closed = once(socket, 'close')
+    const revoked = await fetch(`${base}/v1/auth/revoke-session`, { method: 'POST', headers: accountHeaders, body: JSON.stringify({ id: current.session.id }) })
+    expect(revoked.status).toBe(200)
+    await closed
+    expect(socket.readyState).toBe(WebSocket.CLOSED)
+    expect((await fetch(`${base}/v1/me`, { headers: accountHeaders })).status).toBe(401)
+  } finally { socket.terminate() }
+}, 15_000)
