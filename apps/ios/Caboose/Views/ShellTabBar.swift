@@ -48,7 +48,7 @@ struct ShellTabChrome: ViewModifier {
             case .sidebar:
                 GeometryReader { proxy in
                     content
-                        .environment(\.shellBackgroundHosted, true)
+                        .environment(\.shellWallpaperWidth, proxy.size.width)
                         .frame(width: max(0, proxy.size.width - (immersive ? 0 : 76)), height: proxy.size.height)
                         .frame(width: proxy.size.width, alignment: .leading)
                         .overlayPreferenceValue(ShellRailActionsKey.self) { actions in
@@ -256,7 +256,7 @@ struct ShellWindowProbe: UIViewRepresentable {
 extension EnvironmentValues {
     /// The Desktop-only override, measured from the shell window before keyboard insets.
     @Entry var portraitDesktopChrome = false
-    @Entry var shellBackgroundHosted = false
+    @Entry var shellWallpaperWidth: CGFloat = 0
     /// Where the shell's tabs sit, so a tab can place its own bottom control beside them.
     @Entry var shellTabPlacement: HomeToday.TabPlacement = .system
 }

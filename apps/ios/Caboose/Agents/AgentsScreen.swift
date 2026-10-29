@@ -7,6 +7,7 @@ import SwiftUI
 /// chat list holds the earlier ones. Other chats still working are pinned along the top.
 struct AgentsScreen: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.shellTabPlacement) private var placement
     @State private var connectingModel = false
     @State private var showingChats = false
     @State private var showingLibrary = false
@@ -36,6 +37,7 @@ struct AgentsScreen: View {
             .safeAreaBar(edge: .top) { LiveStrip(excluding: chat?.id) { agents.currentChat = $0 } }
             .background { ShellBackground() }
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarVisibility(placement == .sidebar ? .hidden : .automatic, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Chats", systemImage: "list.bullet") { showingChats = true }

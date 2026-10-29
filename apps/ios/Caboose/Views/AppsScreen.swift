@@ -55,6 +55,7 @@ struct AppsScreen: View {
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 ComputerToolbar()
             }
+            .toolbarVisibility(placement == .sidebar ? .hidden : .automatic, for: .navigationBar)
             .shellRailActions {
                 Button("Library", systemImage: "books.vertical") { showLibrary = true }
             }

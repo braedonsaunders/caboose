@@ -83,6 +83,7 @@ struct HomeScreen: View {
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 ComputerToolbar()
             }
+            .toolbarVisibility(placement == .sidebar ? .hidden : .automatic, for: .navigationBar)
             .shellRailActions {
                 Button("AirPlay", systemImage: "airplayvideo") { showingAirPlay = true }
             }

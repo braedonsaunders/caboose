@@ -8,6 +8,7 @@ import SwiftUI
 /// adds the session menu. Like Desktop, the grid fills the space beside a vertical sidebar.
 struct TerminalScreen: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.shellTabPlacement) private var placement
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
     @State private var terminal = TerminalModel.shared
@@ -48,7 +49,8 @@ struct TerminalScreen: View {
         .toolbar {
             if computerAvailable { ToolbarItem(placement: .topBarTrailing) { sessionMenu } }
         }
-        .shellRailActions { if computerAvailable { sessionMenu } }
+        .toolbarVisibility(placement == .sidebar ? .hidden : .automatic, for: .navigationBar)
+            .shellRailActions { if computerAvailable { sessionMenu } }
         .confirmationDialog("Terminal", isPresented: $sessionsPresented, titleVisibility: .visible) {
             Button("New Session") { terminal.newSession() }
             ForEach(terminal.sessions) { session in

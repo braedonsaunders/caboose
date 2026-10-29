@@ -376,22 +376,23 @@ final class WallpaperStore {
 struct ShellBackground: View {
     @Environment(AppModel.self) private var model
     @Environment(\.displayScale) private var scale
-    @Environment(\.shellBackgroundHosted) private var hosted
+    @Environment(\.shellWallpaperWidth) private var wallpaperWidth
     var store = WallpaperStore.shared
 
     var body: some View {
-        if !hosted { wallpaper }
+        wallpaper
     }
 
     private var wallpaper: some View {
         GeometryReader { proxy in
+            let size = CGSize(width: max(proxy.size.width, wallpaperWidth), height: proxy.size.height)
             ZStack {
                 Backdrop()
                 if let image = store.image {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
-                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .frame(width: size.width, height: size.height)
                         .id(store.current?.id ?? -1)
                         .transition(.opacity)
                     Backdrop().opacity(0.38)
@@ -399,11 +400,11 @@ struct ShellBackground: View {
                                    startPoint: .top, endPoint: .bottom)
                 }
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
+            .frame(width: size.width, height: size.height)
             .clipped()
             // The TV, when one is connected, sets the size wallpapers are drawn at.
-            .onAppear { if !model.externalDisplayActive { store.show(pixelSize: pixels(proxy.size)) } }
-            .onChange(of: proxy.size) { _, size in if !model.externalDisplayActive { store.show(pixelSize: pixels(size)) } }
+            .onAppear { if !model.externalDisplayActive { store.show(pixelSize: pixels(size)) } }
+            .onChange(of: size) { _, size in if !model.externalDisplayActive { store.show(pixelSize: pixels(size)) } }
         }
         .ignoresSafeArea()
     }
