@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { lstat, open, readdir, rename, rm, unlink } from 'node:fs/promises'
+import { lstat, open, readdir, rename, rm, rmdir, unlink } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { ParkedFreezeIntent } from './parked-files-journal.js'
 
@@ -93,5 +93,11 @@ export class ParkedFilesStore {
       if (entry.isDirectory() && /^\.parked-files-[A-Za-z0-9]+$/.test(entry.name)) await rm(join(this.stagingRoot, entry.name), { recursive: true, force: true })
     }
     await syncDirectory(this.stagingRoot)
+    // Remove the empty per-computer directory too. Preserve unexpected entries.
+    try { await rmdir(this.stagingRoot) }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && code !== 'ENOTEMPTY') throw error
+    }
   }
 }
