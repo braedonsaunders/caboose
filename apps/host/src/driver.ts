@@ -154,7 +154,8 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   const overlayPath = paths.disk
   const snapshotPath = paths.snapshot
   const initializedPath = join(paths.directory, '.initialized')
-  const coldStartPath = join(paths.directory, '.cold-start')  const parkedFilesJournal = new ParkedFilesJournal(`${snapshotPath}.files-freeze`)
+  const coldStartPath = join(paths.directory, '.cold-start')
+  const parkedFilesJournal = new ParkedFilesJournal(`${snapshotPath}.files-freeze`)
   const parkedFilesStaging = `${snapshotPath}.files-staging`
   const parkedFilesStore = new ParkedFilesStore(snapshotPath, parkedFilesStaging)
   let parkedFilesGuard: (() => () => boolean) | undefined
