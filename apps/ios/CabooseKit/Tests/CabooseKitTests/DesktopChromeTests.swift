@@ -18,8 +18,8 @@ struct DesktopChromeTests {
 
     @Test func unknownOrInvalidWindowDoesNotSelectPortrait() {
         for size in [CGSize.zero, CGSize(width: 0, height: 844),
-                     CGSize(width: -1, height: 844), CGSize(width: 390, height: .infinity),
-                     CGSize(width: .nan, height: 844)] {
+                     CGSize(width: -1, height: 844), CGSize(width: 390, height: CGFloat.infinity),
+                     CGSize(width: CGFloat.nan, height: 844)] {
             #expect(!DesktopChrome.usesCompactPanel(size: size))
         }
     }
