@@ -142,10 +142,11 @@ connection could say so stays until one of these, or eviction, removes it.
 
 ## Limits
 
-- **The driver answers, not the client's GPU.** Fences and semaphores signal at once, and
-  queries and memory the GPU writes read back as zeros, so an application that reads
-  occlusion queries or GPU results back to the CPU draws as if nothing were visible or
-  computed.
+- **The driver fabricates completion.** Fences, waits and queries do not report execution
+  on the client's GPU. GPU-written memory and query results are absent or uninitialized;
+  zero is not guaranteed. Applications that depend on live GPU feedback, including
+  occlusion queries and CPU readback of GPU computations, cannot rely on those results.
+  GPU streaming is experimental and does not provide that feedback path.
 - **Vulkan only, X11 window.** Applications render through Vulkan: native Vulkan, or
   Direct3D through DXVK and vkd3d-proton under Wine or Proton. OpenGL applications are not
   streamed.
