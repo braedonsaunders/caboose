@@ -1,0 +1,5 @@
+[Unit]
+Description=Isolated Caboose template preparation
+Requires=desk-guest-agent.service desk-vsock-bridge.service
+After=desk-guest-agent.service desk-vsock-bridge.service
+AllowIsolate=yes

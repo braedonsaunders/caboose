@@ -206,11 +206,13 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_PORT` | `7310` | Listen port. |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Guest image, overlays, snapshots and the host's state files. |
 | `CABOOSE_SPLIT_IMAGE` | unset | Directory containing a separately built split microVM image. New Linux computers bind to its immutable version; existing disks remain unchanged. Keep all four version files for those computers. |
-| `CABOOSE_VM_DEPOT` | unset | Linux host directory for a shared Flatpak runtime depot, mounted read-only in microVMs using virtio-fs. Requires Docker, the computer container image, and virtiofsd 1.13 or later; cannot be combined with `CABOOSE_VM_COW=on`. |
+| `CABOOSE_VM_DEPOT` | unset | Linux host directory for a shared Flatpak runtime depot, mounted read-only in microVMs using virtio-fs. Requires Docker, the computer container image, and virtiofsd 1.13 or later; cannot be combined with template cloning or a non-copy restore mode. |
 | `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
 | `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks. |
-| `CABOOSE_VM_COW` | `off` | `on` enables Cloud Hypervisor copy-on-write snapshot restore. |
+| `CABOOSE_VM_TEMPLATE` | `off` | `on` opts new Linux microVM computers into a sterile shared memory template. Existing computers keep their disks and snapshots. Requires Cloud Hypervisor v54.0 and a golden image with the current complete guest component bundle; cannot be combined with the microVM depot. |
+| `CABOOSE_VM_RESTORE_MODE` | `copy` | Linux Cloud Hypervisor snapshot restore: `copy`, `copyonwrite`, or `ondemand`. On-demand requires access to Linux userfaultfd and fails rather than falling back if unavailable. It cannot be combined with templates or the microVM depot. |
+| `CABOOSE_VM_COW` | `off` | `on` selects copy-on-write restore; conflicts with a different explicit restore mode. |
 | `CABOOSE_VM_FREE_PAGE_REPORTING` | `off` | `on` enables a zero-size virtio-balloon with free-page reporting on new Cloud Hypervisor boots. |
 | `CABOOSE_PARKED_FILES` | `off` | `on` opts Linux microVMs into parked read-only Files views when the guest, AppKit backend, reflink filesystem and libguestfs appliance support them; unsupported requests wake the computer. |
 | `CABOOSE_SNAPSHOT_TIER` | `off` | `on` archives parked Linux microVM memory to the configured private S3-compatible store after four hours. |

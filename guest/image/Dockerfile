@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eat
 COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv image/make-system-image.sh /builder/
 COPY image/initramfs/caboose-system /builder/caboose-system
 COPY components /builder/components
+COPY template/caboose-template.py template/caboose-template.target /builder/template/
 COPY keyring /builder/keyring
 COPY container/caboose-session /builder/container/
 COPY files /builder/files

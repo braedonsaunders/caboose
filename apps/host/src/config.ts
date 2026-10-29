@@ -38,6 +38,8 @@ export interface Config {
   publicUrl: string | null
   /** Cloud Hypervisor snapshot and memory options. */
   vmCow?: boolean
+  vmRestoreMode?: 'copy' | 'copyonwrite' | 'ondemand'
+  vmTemplate?: boolean
   vmFreePageReporting?: boolean
   /** Opt in to the read-only parked Files appliance on supported Linux VMs. */
   parkedFiles?: boolean
@@ -61,11 +63,18 @@ function integer(value: string | undefined, fallback: number, name: string, max:
 }
 export function config(env: NodeJS.ProcessEnv): Config {
   const selectedRuntime = runtime(env.CABOOSE_RUNTIME)
-  const vmCow = toggle(env.CABOOSE_VM_COW, 'CABOOSE_VM_COW')
+  const cowAlias = toggle(env.CABOOSE_VM_COW, 'CABOOSE_VM_COW')
+  const requestedMode = env.CABOOSE_VM_RESTORE_MODE
+  if (requestedMode !== undefined && !['copy', 'copyonwrite', 'ondemand'].includes(requestedMode)) throw new Error('CABOOSE_VM_RESTORE_MODE must be copy, copyonwrite or ondemand')
+  if (cowAlias && requestedMode !== undefined && requestedMode !== 'copyonwrite') throw new Error('CABOOSE_VM_COW=on conflicts with CABOOSE_VM_RESTORE_MODE')
+  const vmRestoreMode = (requestedMode ?? (cowAlias ? 'copyonwrite' : 'copy')) as 'copy' | 'copyonwrite' | 'ondemand'
+  const vmCow = vmRestoreMode === 'copyonwrite'
+  const vmTemplate = toggle(env.CABOOSE_VM_TEMPLATE, 'CABOOSE_VM_TEMPLATE')
   const vmFreePageReporting = toggle(env.CABOOSE_VM_FREE_PAGE_REPORTING, 'CABOOSE_VM_FREE_PAGE_REPORTING')
   const parkedFiles = toggle(env.CABOOSE_PARKED_FILES, 'CABOOSE_PARKED_FILES')
-  if (vmCow && env.CABOOSE_VM_DEPOT?.trim()) throw new Error('CABOOSE_VM_COW cannot be combined with the microVM depot')
-  if (selectedRuntime === 'container' && (vmCow || vmFreePageReporting)) throw new Error('Cloud Hypervisor memory options require the microVM runtime')
+  if (vmTemplate && vmRestoreMode === 'ondemand') throw new Error('CABOOSE_VM_TEMPLATE cannot be combined with ondemand restore')
+  if ((vmRestoreMode !== 'copy' || vmTemplate) && env.CABOOSE_VM_DEPOT?.trim()) throw new Error('CABOOSE_VM_COW and CABOOSE_VM_TEMPLATE cannot be combined with the microVM depot')
+  if (selectedRuntime === 'container' && (vmRestoreMode !== 'copy' || vmFreePageReporting || vmTemplate)) throw new Error('Cloud Hypervisor memory options require the microVM runtime')
   return {
     token: env.CABOOSE_OWNER_TOKEN || null,
     host: env.CABOOSE_BIND ?? '127.0.0.1',
@@ -90,6 +99,8 @@ export function config(env: NodeJS.ProcessEnv): Config {
     publicUrl: publicUrl(env.CABOOSE_PUBLIC_URL),
     mdns: mdns(env.CABOOSE_MDNS),
     vmCow,
+    vmRestoreMode,
+    vmTemplate,
     vmFreePageReporting,
     parkedFiles,
   }

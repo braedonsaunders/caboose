@@ -63,6 +63,8 @@ if [[ "$mode" = *container ]]; then
 else
   install -Dm644 "$root/components/caboose-workloads.slice" /etc/systemd/system/caboose-workloads.slice
   install -Dm755 "$root/components/caboose-owner-run" /usr/local/libexec/caboose-owner-run
+  install -Dm755 "$root/template/caboose-template.py" /usr/local/libexec/caboose-template
+  install -Dm644 "$root/template/caboose-template.target" /etc/systemd/system/caboose-template.target
   install -Dm755 "$root/components/caboose-vsock-services.py" /opt/caboose/vsock/caboose-vsock-services.py
   install -Dm644 "$root/components/caboose-vsock-services.service" /etc/systemd/system/caboose-vsock-services.service
   mkdir -p /var/lib/systemd/linger

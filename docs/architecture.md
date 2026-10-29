@@ -212,6 +212,32 @@ On Linux, operators can opt into Cloud Hypervisor copy-on-write restore and
 virtio-balloon free-page reporting. Copy-on-write restore retires the old
 snapshot before the VM can write and keeps its source unchanged until the VMM
 exits; an interrupted VM can leave a source file requiring verified cleanup.
+Operators may instead select on-demand restore, which requires Linux userfaultfd
+and fails closed if the kernel or permissions cannot support it. On-demand
+restore retains its source while the VMM can use it and cannot be combined
+with a shared memory template or the microVM depot.
+
+Linux hosts can opt new microVM computers into a memory template with
+`CABOOSE_VM_TEMPLATE=on`. A dedicated source boots directly into an isolated
+systemd target from a copy of the golden image. The host pins a read-only
+memory inode shared by descendants, gives each computer its own writable disk
+and device identities, and retains the source inode while descendants exist.
+The host administrator and source owner keep that read-only inode unchanged;
+writing or truncating it while a descendant runs corrupts the guest.
+The source registration binds the VMM, CPU, golden image, kernel, initramfs and
+read-only attachments. Before resuming, the host verifies that the VMM privately
+maps the complete memory file; a fallback to eager copying is rejected. Before
+exposing a fork, the host blocks its TAP, the
+guest refreshes vsock and virtio-rng devices, reseeds its kernel, changes its
+machine ID and MAC, and restarts the private agent to discard its copied
+userspace random state. It then starts its normal services; the host releases the fence
+only after the private Files and terminal services are ready. The guest runtime-masks
+networkd wait-online because the host configures its network directly. An interrupted
+strict restore remains fenced and requires
+recovery. Existing non-template computers keep their original paths and restore
+behavior. A fork retains the source kernel boot ID until its next cold boot.
+Copy-on-write mode may fall back for unsupported Cloud Hypervisor configurations;
+template preparation rejects those configurations.
 
 An optional S3-compatible cold tier compresses and encrypts a parked snapshot
 after four hours. It verifies the remote archive before replacing the local

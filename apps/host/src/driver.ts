@@ -1,7 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { constants, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
+import { constants, createReadStream, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
 import { access, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import * as deskApi from '@braedonsaunders/appkit-desk'
+import { templateFork } from './template-fork.js'
+import { readBundle } from './components.js'
+import { vmPaths } from './vm-paths.js'
 import { buildDeskLaunchPlan, createDeskHost, createCloudHypervisorBackend, createVirtualizationBackend, listenDeskPort, type DeskHandle, type DeskBackend, type DeskHost, type DeskHostOptions } from '@braedonsaunders/appkit-desk'
 import type { Config } from './config.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
@@ -84,7 +88,10 @@ function macRuntimeDirectory(imageRoot: string): string {
  */
 export function createDeskPool(config: Config, dependencies: DeskPoolDependencies = {}): DeskHost {
   const nativeMac = usesVirtualization(dependencies)
-  if (nativeMac && (config.vmCow || config.vmFreePageReporting)) throw new Error('Cloud Hypervisor memory options are unavailable on macOS')
+  const restoreMode = config.vmRestoreMode ?? (config.vmCow ? 'copyonwrite' : 'copy')
+  if (nativeMac && (restoreMode !== 'copy' || config.vmFreePageReporting || config.vmTemplate)) throw new Error('Cloud Hypervisor memory options are unavailable on macOS')
+  const modes = (deskApi as unknown as { DESK_MEMORY_RESTORE_MODES?: readonly string[] }).DESK_MEMORY_RESTORE_MODES
+  if (restoreMode === 'ondemand' && (!Array.isArray(modes) || !modes.includes('ondemand'))) throw new Error('On-demand restore requires a compatible AppKit desk release')
   const backend = dependencies.backend ?? (nativeMac
     ? createVirtualizationBackend({ helperPath: config.vmmPath, connectTimeoutMs: 120_000 })
     : createCloudHypervisorBackend({ connectTimeoutMs: 120_000, serviceVsock: true }))
@@ -100,7 +107,7 @@ export function createDeskPool(config: Config, dependencies: DeskPoolDependencie
     ...(nativeMac ? { guestNetwork: { guestAddress: '10.0.2.15', gatewayAddress: '10.0.2.2', prefixLength: 24, allowLan: false } } : {}),
     ...(dependencies.deviceExists ? { deviceExists: dependencies.deviceExists } : {}),
     ...dependencies.snapshotSignature,
-    parkWithMemory: true, ...(config.vmCow ? { memoryRestoreMode: 'copyonwrite' as const } : {}), idleSuspendMs: APPKIT_LEASE_MS, defaultLeaseMs: APPKIT_LEASE_MS, capacity: config.maxRunning,
+    parkWithMemory: true, ...(restoreMode !== 'copy' ? ({ memoryRestoreMode: restoreMode } as unknown as Pick<DeskHostOptions, 'memoryRestoreMode'>) : {}), idleSuspendMs: APPKIT_LEASE_MS, defaultLeaseMs: APPKIT_LEASE_MS, capacity: config.maxRunning,
     ports: { onEvent: () => {}, audit: () => {} },
   })
 }
@@ -142,9 +149,11 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   }
   let displayToken = ''
   let restartWarning: string | null = null
-  const overlayPath = join(config.imageRoot, 'overlays', `${id}.raw`)
-  const snapshotPath = join(config.imageRoot, 'overlays', `${id}.snapshot`)
-  const parkedFilesJournal = new ParkedFilesJournal(`${snapshotPath}.files-freeze`)
+  const paths = vmPaths(config.imageRoot, id, config.vmTemplate)
+  const overlayPath = paths.disk
+  const snapshotPath = paths.snapshot
+  const initializedPath = join(paths.directory, '.initialized')
+  const coldStartPath = join(paths.directory, '.cold-start')  const parkedFilesJournal = new ParkedFilesJournal(`${snapshotPath}.files-freeze`)
   const parkedFilesStaging = `${snapshotPath}.files-staging`
   const parkedFilesStore = new ParkedFilesStore(snapshotPath, parkedFilesStaging)
   let parkedFilesGuard: (() => () => boolean) | undefined
@@ -222,11 +231,17 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     },
     stats: () => ({ host: 'caboose-host', hypervisor: nativeMac ? 'virtualization' : 'cloud-hypervisor', kvm: existsSync('/dev/kvm'), desk: host.stats() }),
     activeResources: () => desk || existsSync(snapshotPath) || existsSync(`${snapshotPath}.cold.json`) ? resources : null,
-    hasSavedState: () => Boolean(desk) || existsSync(snapshotPath) || existsSync(`${snapshotPath}.cold.json`),
+    hasSavedState: () => Boolean(desk) || existsSync(snapshotPath) || existsSync(`${snapshotPath}.cold.json`) || (paths.template && existsSync(paths.directory)),
     lastError: () => restartWarning,
     async wake(mode = 'interactive'): Promise<Session> {
       await parkedFilesStore.invalidate()
       const desired = settings()
+      if (paths.template && config.vmRestoreMode === 'ondemand') throw new Error('Template computers cannot use on-demand restore')
+      if (paths.template && nativeMac) throw new Error('Template computers require Cloud Hypervisor')
+      const api = deskApi as unknown as { DESK_TEMPLATE_VERSION?: number; forkDeskTemplate?: unknown; hostCpuSignature?: () => Promise<string> }
+      if (paths.template && (api.DESK_TEMPLATE_VERSION !== 3 || typeof api.forkDeskTemplate !== 'function' || typeof api.hostCpuSignature !== 'function')) throw new Error('Template computers require a compatible AppKit desk release')
+      const coldStart = paths.template && !desk && existsSync(initializedPath) && !existsSync(snapshotPath) && existsSync(coldStartPath)
+      if (paths.template && !desk && existsSync(initializedPath) && !existsSync(snapshotPath) && !coldStart) throw new Error('Template computer memory is missing; recovery is required')
       if (dependencies.depotPath) {
         const probe = buildDeskLaunchPlan({ deskId: 'probe', kernelPath: '/kernel', baseImagePath: '/base', overlayPath: '/disk', vsockCid: 3,
           ...{ shares: [{ tag: 'caboose-depot', path: '/depot', readOnly: true }], virtiofsdPath: '/virtiofsd' } },
@@ -254,12 +269,34 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       const restoring = existsSync(snapshotPath)
       ownerScopeAvailable = undefined
       const wasResident = Boolean(desk)
+      let templateOptions: ReturnType<typeof templateFork> | undefined
+      if (paths.template && !coldStart) {
+        const base = join(imageDirectory, 'base.raw'), kernel = join(imageDirectory, 'vmlinux'), initramfs = join(imageDirectory, 'initrd')
+        const attachments = systemImage ? [{ path: join(imageDirectory, 'system.erofs'), sha256: systemImage.hashes['system.erofs'], kind: 'block' as const }] : []
+        let sourceId = 'existing'
+        if (!existsSync(initializedPath) && !existsSync(join(paths.directory, '.prepared'))) {
+          const identity = createHash('sha256')
+          for (const path of [config.vmmPath, base, kernel, initramfs, ...attachments.map(item => item.path)]) {
+            const digest = createHash('sha256')
+            for await (const chunk of createReadStream(path)) digest.update(chunk as Buffer)
+            identity.update(path).update('\0').update(digest.digest('hex')).update('\0')
+          }
+          identity.update(JSON.stringify([await api.hostCpuSignature!(), (await readBundle()).version, config.vmmPath, desired.memoryMb, desired.vcpus, Boolean(config.vmFreePageReporting)]))
+          sourceId = identity.digest('hex')
+        }
+        const templates = join(config.imageRoot, 'templates')
+        await mkdir(templates, { recursive: true, mode: 0o700 })
+        templateOptions = templateFork({ directory: join(templates, sourceId), childDirectory: paths.directory, deskId: id, slot,
+          baseImage: base, kernel, initramfs, vmmPath: config.vmmPath, memoryMb: desired.memoryMb, vcpus: desired.vcpus, freePageReporting: config.vmFreePageReporting, attachments })
+      }
+      const mac = [6, 0, (slot >>> 24) & 255, (slot >>> 16) & 255, (slot >>> 8) & 255, slot & 255].map(value => value.toString(16).padStart(2, '0')).join(':')
       desk = await host.start({ deskId: id, baseImage: join(imageDirectory, 'base.raw'), overlayPath,
         ...(dependencies.depotPath ? { shares: [{ tag: 'caboose-depot', path: dependencies.depotPath, readOnly: true }] } : {}),
         ...(systemImage ? { kernelPath: join(imageDirectory, 'vmlinux'), initramfsPath: join(imageDirectory, 'initrd'), readOnlyAttachments: [{ path: join(imageDirectory, 'system.erofs'), sha256: systemImage.hashes['system.erofs'], kind: 'block' as const }] } : {}),
         ...(config.vmFreePageReporting ? { freePageReporting: true } : {}),
         memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS,
-        ...(nativeMac ? {} : { network: { tapDevice: address.tap, guestAddress: address.guest } }),
+        ...(nativeMac ? {} : { network: { tapDevice: address.tap, guestAddress: address.guest, ...(paths.template ? { macAddress: mac } : {}) } }),
+        ...(paths.template ? { vsockCid: 0x80000000 + slot, strictMemoryRestore: true, memoryRestoreMode: 'copyonwrite' as const, ...(templateOptions ? { template: templateOptions } : {}) } : {}),
       }).catch(error => { if (!nativeMac) invalidateNetwork(slot); throw error })
       let recoveryFailed = false
       try {
@@ -273,6 +310,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
           recoveryFailed = true
           throw error
         }
+        if (coldStart) await rm(coldStartPath, { force: true })
         if (restoring && host.stats().lastError?.includes('could not resume from its snapshot')) {
           throw new Error(host.stats().lastError ?? 'Snapshot restore failed')
         }
@@ -351,6 +389,8 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       // deleting the computer may do.
       await closeRelays()
       await host.shutdown(id)
+      if (paths.template && existsSync(`${snapshotPath}.restore-pending`)) throw new Error('The computer has an interrupted memory restore; recovery is required')
+      if (paths.template) await writePrivateJson(coldStartPath, { approved: true })
       desk = undefined
       displayToken = ''
       // A computer parked before this host process started is unknown to appkit-desk,
@@ -364,7 +404,10 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       await parkedFilesStore.invalidate()
       clearHeartbeat()
       await closeRelays()
-      await host.destroy(id).catch(error => console.error(`Desk ${id} could not be destroyed cleanly:`, error))
+      if (paths.template) {
+        await host.destroy(id)
+        if (existsSync(`${snapshotPath}.restore-pending`)) throw new Error('The computer has an interrupted memory restore; recovery is required')
+      } else await host.destroy(id).catch(error => console.error(`Desk ${id} could not be destroyed cleanly:`, error))
       desk = undefined
       displayToken = ''
       resources = null
@@ -372,6 +415,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       await rm(snapshotPath, { recursive: true, force: true })
       await rm(overlayPath, { force: true })
       await rm(`${snapshotPath}.files-freeze`, { force: true })
+      if (paths.template) await rm(paths.directory, { recursive: true, force: true })
       await rm(resourcesPath, { force: true })
       await rm(bindingPath, { force: true })
       if (!nativeMac) await (dependencies.removeNetwork ?? (() => removeNetwork(slot)))()

@@ -1,3 +1,4 @@
+import { vmPaths } from './vm-paths.js'
 import { usesSystemImage, validateDepotRestoreOptions } from './system-image.js'
 import { prepareKeyring } from './keyring.js'
 import { AgentToolJournal } from './agent-tools-journal.js'
@@ -81,8 +82,9 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
     ? createContainerController(deployment, { identity, settings: () => settings.get() })
     : createController(deployment, { identity, splitImage, depotPath: vmDepot, parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
-  const snapshotPath = join(deployment.imageRoot, 'overlays', `${record.id}.snapshot`)
-  return { ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), join(deployment.imageRoot, 'overlays', `${record.id}.raw`), snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  const paths = vmPaths(deployment.imageRoot, record.id, deployment.vmTemplate)
+  const snapshotPath = paths.snapshot
+  return { ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
@@ -174,8 +176,8 @@ function missingImage(): string {
 /** The disk a microVM computer uses on the host: its overlay and any parked memory. Unknown for a container. */
 async function diskBytes(record: ComputerRecord): Promise<number | null> {
   if (deployment.runtime !== 'microvm') return null
-  const overlays = join(deployment.imageRoot, 'overlays')
-  return await allocated(join(overlays, `${record.id}.raw`)) + await allocated(join(overlays, `${record.id}.snapshot`))
+  const paths = vmPaths(deployment.imageRoot, record.id, deployment.vmTemplate)
+  return await allocated(paths.disk) + await allocated(paths.snapshot)
 }
 
 /** Bytes allocated to a file or directory tree (sparse files count only what they hold). */

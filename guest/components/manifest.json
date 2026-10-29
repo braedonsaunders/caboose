@@ -2,6 +2,8 @@
   "components/install.sh",
   "components/caboose-workloads.slice",
   "components/caboose-owner-run",
+  "template/caboose-template.py",
+  "template/caboose-template.target",
   "components/caboose-vsock-services.py",
   "components/caboose-vsock-services.service",
   "components/container-services.sh",
