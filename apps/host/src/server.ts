@@ -676,6 +676,12 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       const task = await computer.run(() => agents.start(prepared.input, { profile: prepared.profile }))
       return json(response, 200, { id: task.id })
     }
+    const deleteTask = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})$/.exec(path)
+    if (request.method === 'DELETE' && deleteTask?.[1]) {
+      const input = await readJson(request)
+      if (input.stop !== undefined && typeof input.stop !== 'boolean') throw new AgentInputError('stop must be a boolean')
+      return json(response, 200, { deleted: await computer.run(() => agents.delete(deleteTask[1]!, input.stop === true)) })
+    }
     const transcript = /^\/v1\/agent\/tasks\/([0-9a-f-]{36})\/transcript$/.exec(path)
     if (request.method === 'GET' && transcript?.[1]) {
       return json(response, 200, await computer.run(() => agents.transcript(transcript[1]!)))

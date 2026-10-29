@@ -100,6 +100,9 @@ final class AgentCenter {
     /// `computer.state` again.
     var onControlClosed: (() -> Void)?
 
+    private var generation = UUID()
+    private var deletedChats: Set<String> = []
+    private(set) var deletingChats: Set<String> = []
     private var attached = false
     private var control: URLSessionWebSocketTask?
     var selectedModels: [String: String] = [:]
@@ -129,6 +132,12 @@ final class AgentCenter {
 
     /// Forgets the computer entirely: a different one, or none, is next.
     func reset() {
+        generation = UUID()
+        deletedChats = []
+        deletingChats = []
+        loadingThreads = []
+        pendingEntries = [:]
+        focusedTask = nil
         library.reset()
         tookOver = false
         pausedForTakeover = []
@@ -151,16 +160,21 @@ final class AgentCenter {
 
     func refresh() async {
         guard let host else { return }
+        let generation = self.generation
         do {
-            tasks = try await host.agentTasks()
+            let fetched = try await host.agentTasks()
+            guard generation == self.generation else { return }
+            tasks = fetched.filter { !deletedChats.contains($0.id) }
             tasksError = nil
             LiveActivityCoordinator.shared.sync(tasks)
             available = true
             if !tasks.isEmpty { openSeatIfNeeded() }
         } catch HostClient.Failure.server(404, _) {
+            guard generation == self.generation else { return }
             available = false // a host without the agents API
             tasksError = "Update caboose-host to list conversations."
         } catch {
+            guard generation == self.generation else { return }
             tasksError = error.localizedDescription
             lastError = error.localizedDescription
         }
@@ -198,6 +212,7 @@ final class AgentCenter {
     /// Starts a task and returns its id, or nil when it could not start (`lastError` says why).
     func start(_ prompt: String, agent: String?, askFirst: Bool = false, attachments: [Attachment] = [], profileId: String? = nil) async -> String? {
         guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let generation = self.generation
         let approvals = askFirst ? "ask" : "auto"
         do {
             let id: String
@@ -206,6 +221,7 @@ final class AgentCenter {
             } else {
                 id = try await host.startAgentTask(prompt: prompt, agent: agent, approvals: approvals, attachments: attachments, craftMcp: UserDefaults.standard.object(forKey: "caboose.agent.craftMcp") as? Bool ?? true, model: (agent ?? defaultAgent).flatMap { selectedModels[$0] })
             }
+            guard generation == self.generation, !deletedChats.contains(id) else { return nil }
             if !tasks.contains(where: { $0.id == id }) {
                 let profile = library.profiles.first { $0.id == profileId }
                 let chosen = profile?.agent ?? agent ?? defaultAgent ?? ""
@@ -237,7 +253,12 @@ final class AgentCenter {
     /// Stops the agent's turn and sends what was waiting right away.
     func sendNow(_ task: Task) async {
         guard let host else { return }
-        do { replace(try await host.sendQueuedAgentReplies(task.id)) }
+        let generation = self.generation
+        do {
+            let updated = try await host.sendQueuedAgentReplies(task.id)
+            guard generation == self.generation, !deletedChats.contains(task.id) else { return }
+            replace(updated)
+        }
         catch { lastError = error.localizedDescription }
     }
 
@@ -255,8 +276,10 @@ final class AgentCenter {
 
     /// Names a new chat from its first message with the iPhone's own model, when it has one.
     private func nameChat(_ id: String, from prompt: String) {
+        let generation = self.generation
         Swift.Task {
             guard let title = await ChatTitler.title(for: prompt) else { return }
+            guard generation == self.generation, !deletedChats.contains(id) else { return }
             titles[id] = title
             let kept = Set(tasks.map(\.id))
             titles = titles.filter { kept.contains($0.key) || $0.key == id }
@@ -269,17 +292,21 @@ final class AgentCenter {
     /// Reads a task's whole conversation from the host. Live entries that arrive meanwhile are kept.
     func loadThread(_ id: String) async {
         guard let host, let task = tasks.first(where: { $0.id == id }), !loadingThreads.contains(id) else { return }
+        guard !deletedChats.contains(id) else { return }
+        let generation = self.generation
         loadingThreads.insert(id)
         pendingEntries[id] = []
-        defer { loadingThreads.remove(id); pendingEntries[id] = nil }
+        defer { if generation == self.generation { loadingThreads.remove(id); pendingEntries[id] = nil } }
         do {
             let read = try await host.agentTranscript(id)
+            guard generation == self.generation, !deletedChats.contains(id) else { return }
             var thread = AgentThread(entries: read.entries, prompt: task.prompt, truncated: read.truncated)
             let recent = read.entries.suffix(64)
             for entry in pendingEntries[id] ?? [] where !recent.contains(entry) { thread.append(entry) }
             if let previous = threads[id] { thread.retainCompletedTurns(from: previous) }
             threads[id] = thread
         } catch {
+            guard generation == self.generation, !deletedChats.contains(id) else { return }
             // A parked computer or an older host: the live entries and the task's summary stand in.
             if threads[id] == nil { threads[id] = AgentThread(entries: [], prompt: task.prompt) }
         }
@@ -291,6 +318,7 @@ final class AgentCenter {
     private var pendingEntries: [String: [TranscriptEntry]] = [:]
 
     private func record(_ entry: TranscriptEntry, for id: String) {
+        guard !deletedChats.contains(id) else { return }
         if loadingThreads.contains(id) { pendingEntries[id, default: []].append(entry) }
         if threads[id] == nil, let task = tasks.first(where: { $0.id == id }) { threads[id] = AgentThread(entries: [], prompt: task.prompt) }
         threads[id]?.append(entry)
@@ -403,8 +431,10 @@ final class AgentCenter {
     @discardableResult
     func reply(to task: Task, _ prompt: String, attachments: [Attachment] = []) async -> Bool {
         guard let host, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let generation = self.generation
         do {
             let updated = try await host.replyToAgentTask(task.id, prompt: prompt, attachments: attachments)
+            guard generation == self.generation, !deletedChats.contains(task.id) else { return false }
             let started = (updated.turns ?? 1) > (tasks.first { $0.id == task.id }?.turns ?? task.turns ?? 1)
             preserveAnswer(of: task)
             replace(updated)
@@ -440,12 +470,40 @@ final class AgentCenter {
     }
 
     private func replace(_ task: Task) {
+        guard !deletedChats.contains(task.id) else { return }
         if let index = tasks.firstIndex(where: { $0.id == task.id }) { tasks[index] = task } else { tasks.insert(task, at: 0) }
     }
 
     private func clearApproval(_ id: String, _ requestID: String) {
         guard let index = tasks.firstIndex(where: { $0.id == id }), tasks[index].pendingApproval?.id == requestID else { return }
         tasks[index].pendingApproval = nil
+    }
+
+    func deleteChat(_ task: Task, stop: Bool) async throws {
+        guard let host else { throw HostClient.Failure.unreachable("Connect to your computer first.") }
+        guard !deletingChats.contains(task.id) else { return }
+        let generation = self.generation
+        deletingChats.insert(task.id)
+        defer { if generation == self.generation { deletingChats.remove(task.id) } }
+        try await host.deleteAgentTask(task.id, stop: stop)
+        guard generation == self.generation else { return }
+        forgetChat(task.id)
+    }
+
+    private func forgetChat(_ id: String) {
+        deletedChats.insert(id)
+        tasks.removeAll { $0.id == id }
+        threads[id] = nil
+        output[id] = nil
+        composerDrafts[id] = nil
+        titles[id] = nil
+        pendingEntries[id] = nil
+        loadingThreads.remove(id)
+        pausedForTakeover.remove(id)
+        if currentChat == id { currentChat = nil }
+        if focusedTask == id { focusedTask = nil }
+        UserDefaults.standard.set(titles, forKey: Self.titlesKey)
+        LiveActivityCoordinator.shared.sync(tasks)
     }
 
     func cancel(_ task: Task) async {
@@ -578,6 +636,8 @@ final class AgentCenter {
         if type == "agent.profiles.changed" { Swift.Task { await library.refreshProfiles() }; return }
         if type == "agent.routines.changed" { Swift.Task { await library.refreshRoutines(); await library.refreshHistory(); await refresh() }; return }
         guard let id = event["id"] as? String else { return }
+        if type == "agent.task.deleted" { forgetChat(id); return }
+        guard !deletedChats.contains(id) else { return }
         switch type {
         case "agent.task.started":
             if !tasks.contains(where: { $0.id == id }) {
@@ -686,6 +746,11 @@ extension HostClient {
         if let option { body["optionId"] = .string(option) }
         let result: [String: Bool] = try await request("POST", "/v1/agent/tasks/\(id)/approvals/\(requestID)", body: body, timeout: 20)
         guard result["resolved"] == true else { throw Failure.server(409, "This approval is no longer waiting for an answer.") }
+    }
+
+    func deleteAgentTask(_ id: String, stop: Bool) async throws {
+        let result: [String: Bool] = try await request("DELETE", "/v1/agent/tasks/\(id)", body: ["stop": .bool(stop)], timeout: 60)
+        guard result["deleted"] == true else { throw Failure.server(409, "The chat could not be deleted. Try again.") }
     }
 
     func cancelAgentTask(_ id: String) async throws {

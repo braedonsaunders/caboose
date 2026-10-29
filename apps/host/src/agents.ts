@@ -74,6 +74,7 @@ export interface AgentTask {
 export type AgentEvent =
   | { type: 'agent.task.started'; id: string; agent: string; agentName?: string; prompt: string }
   | { type: 'agent.task.output'; id: string; kind: 'text' | 'tool' | 'error'; text: string }
+  | { type: 'agent.task.deleted'; id: string }
   | { type: 'agent.task.paused'; id: string }
   | { type: 'agent.task.resumed'; id: string }
   | { type: 'agent.task.finished'; id: string; status: TaskStatus; summary: string; signIn?: SignInMethod[] }
@@ -159,6 +160,35 @@ for(let i=0;i<50;i++){try{const stat=fs.readFileSync('/proc/'+pid+'/stat','utf8'
 throw Error('The previous agent session is still stopping; try again');
 })().catch(e=>{console.error(e.message);process.exitCode=1});`
 
+/** Durably unpublish history only after the identified runner group has exited. */
+export const DELETE_TASK = `// delete-agent-task
+const fs=require('fs'),p=require('path'),d=process.argv[1],gone=p.join(p.dirname(d),'.deleted-'+p.basename(d));
+function exists(f){try{return fs.lstatSync(f)}catch(e){if(e.code==='ENOENT')return null;throw e}}
+function members(group){return fs.readdirSync('/proc').filter(n=>/^\\d+$/.test(n)).filter(n=>{try{const s=fs.readFileSync('/proc/'+n+'/stat','utf8');const f=s.slice(s.lastIndexOf(')')+2).split(' ');return Number(f[2])===group&&f[0]!=='Z'}catch(e){if(e.code==='ENOENT'||e.code==='ESRCH')return false;throw e}})}
+(async()=>{
+if(exists(d)){
+if(!exists(d).isDirectory()||exists(d).isSymbolicLink())throw Error('Invalid chat directory');
+let pid;try{pid=Number(fs.readFileSync(d+'/pid','utf8').trim())}catch(e){if(e.code!=='ENOENT')throw e}
+if(pid!==undefined){
+if(!Number.isSafeInteger(pid)||pid<2)throw Error('Invalid runner pid');
+const live=members(pid);
+if(live.length){
+let args,cwd;try{args=fs.readFileSync('/proc/'+pid+'/cmdline','utf8');cwd=fs.readlinkSync('/proc/'+pid+'/cwd')}catch{throw Error('Cannot identify this chat runner')}
+if(!args.includes('caboose-agentd.mjs run')||cwd!==d)throw Error('Cannot identify this chat runner');
+for(const signal of ['SIGTERM','SIGCONT'])try{process.kill(-pid,signal)}catch(e){if(e.code!=='ESRCH')throw e}
+for(let i=0;i<50&&members(pid).length;i++)await new Promise(r=>setTimeout(r,100));
+if(members(pid).length)throw Error('The agent is still stopping; try again');
+}}
+fs.mkdirSync(gone,{recursive:true});const fd=fs.openSync(p.dirname(d),'r');try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}
+}
+if(exists(gone)&&exists(d)){
+if(!exists(gone).isDirectory()||exists(gone).isSymbolicLink())throw Error('Invalid deleted chat directory');
+for(const name of ['prompt.txt','task.json','transcript.jsonl','draft.json','delivery.json','initial-prompt.json','session','models.json','requested-model.json','agent.log','stderr.log','pid','exit-code','agent','agent-name','approval-mode','turns','profile-id','profile-instructions.txt','tool-turn','tool-mailbox','inbox','approvals','receipts','deliveries'])fs.rmSync(p.join(d,name),{recursive:true,force:true});
+for(const name of fs.readdirSync(d))if(/^(?:\\.delivery-input-[0-9a-f-]{36}\\.json|delivery\\.json\\.[0-9a-f-]{36}\\.tmp|\\.(?:models|draft)\\.json\\.[0-9]+\\.tmp)$/.test(name))fs.rmSync(p.join(d,name),{force:true});
+const fd=fs.openSync(d,'r');try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}
+}
+})().catch(e=>{console.error(e.message);process.exitCode=1});`
+
 const HOME = '/home/caboose'
 const RUNUSER = '/usr/sbin/runuser'
 export const AGENTD = '/opt/caboose/agentd/caboose-agentd.mjs'
@@ -202,6 +232,7 @@ const LAUNCH = [
  */
 export const START_SCRIPT = [
   'set -e',
+  '[ ! -e "$(dirname \"$1\")/.deleted-$(basename \"$1\")" ] || { echo "task was deleted" >&2; exit 1; }',
   'mkdir -p "${11}/inbox" "${11}/approvals"',
   'cd "${11}"',
   'printf %s "$2" > prompt.txt && printf %s "$3" > agent && printf %s "$4" > agent-name && printf %s "$5" > approval-mode && printf 1 > turns',
@@ -397,6 +428,7 @@ interface Tracked {
   journal: DeliveryJournal
   journalError?: string
   completedTurn?: number
+  deleting?: boolean
   replyChain?: Promise<unknown>
 }
 
@@ -586,7 +618,10 @@ export class AgentTasks {
   }
 
   private serial<T>(entry: Tracked, step: () => Promise<T>): Promise<T> {
-    const operation = (entry.replyChain ?? Promise.resolve()).catch(() => {}).then(step)
+    const operation = (entry.replyChain ?? Promise.resolve()).catch(() => {}).then(() => {
+      if (this.tracked.get(entry.task.id) !== entry) throw new AgentNotFoundError()
+      return step()
+    })
     entry.replyChain = operation
     return operation
   }
@@ -899,6 +934,28 @@ export class AgentTasks {
     return this.serial(entry, () => this.cancelTurn(entry, true))
   }
 
+  /** Removes this computer's history; a live chat requires explicit stop-and-delete. */
+  async delete(id: string, stop = false): Promise<boolean> {
+    if (!TASK_ID.test(id)) throw new AgentNotFoundError()
+    await this.restore()
+    const entry = this.tracked.get(id)
+    const remove = async () => {
+      const guest = this.guest()
+      if (!guest) throw new AgentUnavailableError()
+      if (entry && (isLive(entry.task.status) || entry.queue.length) && !stop) throw new AgentConflictError('Stop the agent before deleting this chat')
+      if (entry) entry.deleting = true
+      try {
+        await this.toolWork
+        await asCaboose(guest, 'exec node -e "$2" "$1"', [`${HOME}/Agents/${id}`, DELETE_TASK], 20_000)
+        this.tracked.delete(id)
+        this.releases.get(id)?.(); this.releases.delete(id)
+        this.emit({ type: 'agent.task.deleted', id })
+        return true
+      } finally { if (entry) entry.deleting = false }
+    }
+    return entry ? this.serial(entry, remove) : remove()
+  }
+
   private async cancelTurn(entry: Tracked, drop: boolean): Promise<boolean> {
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
@@ -1083,7 +1140,7 @@ export class AgentTasks {
         ? [{ id: task.id, profileId: task.profileId, turn: task.turns }] : [])
       await pollAgentTools(guest, journal, live, task => {
         const current = this.tracked.get(task.id)?.task
-        return Boolean(this.timer && current?.status === 'running' && current.profileId === task.profileId && current.turns === task.turn)
+        return Boolean(!this.tracked.get(task.id)?.deleting && this.timer && current?.status === 'running' && current.profileId === task.profileId && current.turns === task.turn)
       })
     } catch (error) { console.error('Agent tool mailbox failed:', error) }
     finally { this.toolPolling = false }
@@ -1109,7 +1166,7 @@ export class AgentTasks {
       for (const entry of live) {
         const report = reports.get(entry.task.id)
         const version = versions.get(entry.task.id)!
-        if (report && isLive(entry.task.status) && entry.task.turns === version.turn && entry.offset === version.offset) this.apply(entry, report, chunk)
+        if (report && !entry.deleting && this.tracked.get(entry.task.id) === entry && isLive(entry.task.status) && entry.task.turns === version.turn && entry.offset === version.offset) this.apply(entry, report, chunk)
         if (!entry.replying) await entry.replyChain
       }
     } finally {
@@ -1388,6 +1445,7 @@ const TRANSCRIPT_SCRIPT = [
 const RESTORE_SCRIPT = [
   'cd "$1" 2>/dev/null || exit 0',
   'for d in ${2:-$(ls -1t)}; do',
+  '  [ ! -e ".deleted-$d" ] || continue',
   '  [ -f "$d/prompt.txt" ] || continue',
   '  pid=$(cat "$d/pid" 2>/dev/null); alive=0; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && alive=1',
   '  resumable=0; [ -f "$d/task.json" ] && resumable=1',

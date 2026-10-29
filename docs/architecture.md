@@ -2578,3 +2578,15 @@ Window content and input retain the server-reported size while a resize is pendi
 Apps can constrain or decline a requested size without answering again; such windows
 remain fitted at their actual aspect ratio. Optimistic placement moves the window's
 origin only, and a reported content size is applied even during placement reconciliation.
+
+Chat deletion uses `DELETE /v1/agent/tasks/:id` with `{ "stop": true }` for an
+explicit stop-and-delete operation; omitting `stop` rejects a running, paused, or queued
+chat with 409. The per-computer host retires only a runner whose process identity and
+working directory match the chat, and verifies its process group has exited before
+removing history. A durable `.deleted-<id>` marker prevents restoration and reuse of
+that task ID. Caboose removes its conversation, queued messages, approval records and
+runner state; attachments and generated files remain at their original paths, including
+files in the task directory. Provider-side conversation retention is unchanged.
+`agent.task.deleted` informs connected phones. Agents > Chats offers native swipe Delete
+with confirmation; active chats show Stop and Delete. Successful deletion clears the
+selection, drafts, title and cached transcript, and fences late responses for that chat.

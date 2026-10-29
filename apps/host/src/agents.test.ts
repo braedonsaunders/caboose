@@ -140,6 +140,7 @@ function fakeGuest() {
         const model = state.files.get('requested-model.json')
         return JSON.stringify({ ...JSON.parse(state.files.get('models.json') ?? '{}'), ...(model ? { requestedModel: JSON.parse(model) } : {}) })
       }
+      if (rest[1]?.startsWith('// delete-agent-task')) { tasks.delete(idOf(rest[0]!)); return '' }
       if (rest[1]?.startsWith('// retire-model-runner')) { task(idOf(rest[0]!)).alive = false; return '' }
       if (script.includes('requested-model.json.part')) {
         task(idOf(rest[0]!)).files.set('requested-model.json', rest[1]!)
@@ -251,6 +252,62 @@ function setup(options: { defaultAgent?: string | null; craftServers?: () => Pro
 }
 
 describe('AgentTasks', () => {
+  it('requires explicit stop for live deletion, releases the lease, and survives restore', async () => {
+    const { tasks, fake, events, release } = setup()
+    const task = await tasks.start({ prompt: 'hello' })
+    await expect(tasks.delete(task.id)).rejects.toThrow('Stop the agent')
+    expect(tasks.list()).toHaveLength(1)
+    await expect(tasks.delete(task.id, true)).resolves.toBe(true)
+    expect(tasks.list()).toEqual([])
+    expect(release).toHaveBeenCalledOnce()
+    expect(events.at(-1)).toEqual({ type: 'agent.task.deleted', id: task.id })
+    await expect(tasks.reply(task.id, { prompt: 'late reply' })).rejects.toThrow(AgentNotFoundError)
+    const restored = new AgentTasks(() => fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000 })
+    await restored.restore()
+    expect(restored.list()).toEqual([])
+    tasks.pause(); restored.pause()
+  })
+
+  it('fences a reply queued behind deletion and leaves another computer untouched', async () => {
+    const first = setup(), second = setup()
+    const id = '11111111-1111-4111-8111-111111111111'
+    await first.tasks.start({ prompt: 'first computer' }, { id })
+    await second.tasks.start({ prompt: 'second computer' }, { id })
+    let entered!: () => void, release!: () => void
+    const deleting = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const run = first.fake.guest.run.bind(first.fake.guest)
+    first.fake.guest.run = async (command, args, timeout) => {
+      if (args.some(arg => arg.startsWith('// delete-agent-task'))) { entered(); await gate }
+      return run(command, args, timeout)
+    }
+    const removal = first.tasks.delete(id, true)
+    await deleting
+    const reply = first.tasks.reply(id, { prompt: 'late message' })
+    const rejected = expect(reply).rejects.toThrow(AgentNotFoundError)
+    release()
+    await removal; await rejected
+    expect(first.tasks.list()).toEqual([])
+    expect(second.tasks.list().map(task => task.prompt)).toEqual(['second computer'])
+    first.tasks.pause(); second.tasks.pause()
+  })
+
+  it('retains the chat and lease when runner retirement fails', async () => {
+    const { tasks, fake, events, release } = setup()
+    const task = await tasks.start({ prompt: 'hello' })
+    const run = fake.guest.run.bind(fake.guest)
+    fake.guest.run = async (command, args, timeout) => {
+      if (args.some(arg => arg.startsWith('// delete-agent-task'))) throw new Error('Cannot identify this chat runner')
+      return run(command, args, timeout)
+    }
+    await expect(tasks.delete(task.id, true)).rejects.toThrow('Cannot identify')
+    expect(tasks.list()).toHaveLength(1)
+    expect(release).not.toHaveBeenCalled()
+    expect(events.some(event => event.type === 'agent.task.deleted')).toBe(false)
+    tasks.pause()
+  })
+
+
   it('persists requested models and fences stable task retries by model', async () => {
     const { fake, tasks } = setup()
     const id = '11111111-1111-4111-8111-111111111111'

@@ -536,3 +536,11 @@ or environment variables. See `guest/agentd/README.md` for persistence and ACP n
 the Desktop directory cannot be a symlink, and publication never overwrites an existing item.
 The copy includes `X-Caboose-AppId` for the native app's installed-ID launch route.
 Run `pnpm test -- src/guest-apps.test.ts` for copy, collision, traversal and symlink checks.
+
+Chat deletion is covered by `pnpm exec vitest run apps/host/src/agents.test.ts apps/host/src/agent-delete.test.ts`
+from the repository root. On a real Linux computer, create a chat that writes a file in
+its working directory and one outside it, then swipe Delete in Agents > Chats. Confirm
+Stop and Delete while running (repeat while paused and while awaiting approval). Verify
+both generated files remain, the runner group exits, and the chat stays absent after a
+host restart. A concurrent reply must either finish before deletion or fail without
+recreating history. If runner identity cannot be verified, deletion fails visibly.
