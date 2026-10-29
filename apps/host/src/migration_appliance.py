@@ -26,6 +26,11 @@ def trusted_executable(path, *, owners=(0,)):
     info = path.stat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid not in owners or info.st_mode & 0o022:
         raise ApplianceError(f'Tool has an untrusted owner or writable permissions: {path}')
+    for directory in path.parents:
+        parent = directory.stat()
+        sticky_root = parent.st_uid == 0 and bool(parent.st_mode & stat.S_ISVTX)
+        if parent.st_uid not in owners or (parent.st_mode & 0o022 and not sticky_root):
+            raise ApplianceError(f'Tool path has an untrusted directory: {directory}')
     return path
 
 
@@ -54,7 +59,7 @@ def _guestfish(args, env, log_path, timeout, size_limit, guard):
         raise ApplianceError('A durable preparation guard and inherited host lock are required')
     supervisor = Path(__file__).with_name('migration_appliance_guard.py')
     command = [sys.executable, str(supervisor), str(guard['journal']), guard['computer'],
-               str(timeout), str(size_limit), str(log_path.parent), *args]
+               str(timeout), str(size_limit), str(log_path.parent), str(os.getpid()), *args]
     with open(log_path, 'wb') as log:
         proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                 env=env, start_new_session=True, pass_fds=guard['fds'])
@@ -69,7 +74,13 @@ def _guestfish(args, env, log_path, timeout, size_limit, guard):
             try:
                 proc.wait(timeout=30)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                # The guard still owns this private group; stop it and its
+                # children before reaping the group leader. The journal stays
+                # running and requires explicit recovery.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 proc.wait()
             raise ApplianceError('Migration appliance guard timed out') from error
         except BaseException:
@@ -78,7 +89,10 @@ def _guestfish(args, env, log_path, timeout, size_limit, guard):
                 try:
                     proc.wait(timeout=30)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     proc.wait()
             raise
     if status:

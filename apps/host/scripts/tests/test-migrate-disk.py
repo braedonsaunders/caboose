@@ -105,6 +105,36 @@ class MigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Invalid preparation journal'):
             m.prepare_quiescent(self.tx)
 
+    def test_running_preparation_refuses_live_or_unverifiable_appliance(self):
+        from types import SimpleNamespace
+        real_read, real_stat = Path.read_text, m.os.stat
+        def read(path, *args, **kwargs):
+            if str(path) == '/proc/sys/kernel/random/boot_id':
+                return '12345678-1234-1234-1234-123456789abc\n'
+            return real_read(path, *args, **kwargs)
+        def stat(path, *args, **kwargs):
+            if str(path) == '/proc/self/ns/pid':
+                return SimpleNamespace(st_ino=42)
+            return real_stat(path, *args, **kwargs)
+        store = self.tx.dir.parent / 'migration-images' / 'owner-abc' / 'appliance'
+        journal = {'version': 1, 'operation': 'prepare', 'computer': 'owner', 'phase': 'running',
+                   'boot_id': '12345678-1234-1234-1234-123456789abc', 'pid_namespace': 42, 'process_group': 123,
+                   'appliance_dir': str(store), 'appliance_disks': [str(self.tx.staged)]}
+        self.tx.journal.write_text(json.dumps(journal))
+        with patch.object(Path, 'read_text', read), patch.object(m.os, 'stat', stat), \
+             patch.object(m, 'members', return_value=[123]), patch.object(m, 'references', return_value=set()):
+            with self.assertRaisesRegex(RuntimeError, 'still running'):
+                m.prepare_quiescent(self.tx)
+        with patch.object(Path, 'read_text', read), patch.object(m.os, 'stat', stat), \
+             patch.object(m, 'members', return_value=[]), patch.object(m, 'references', return_value={456}):
+            with self.assertRaisesRegex(RuntimeError, 'references'):
+                m.prepare_quiescent(self.tx)
+        journal['pid_namespace'] = 99
+        self.tx.journal.write_text(json.dumps(journal))
+        with patch.object(Path, 'read_text', read), patch.object(m.os, 'stat', stat):
+            with self.assertRaisesRegex(RuntimeError, 'another PID namespace'):
+                m.prepare_quiescent(self.tx)
+
     def test_backend_digest_must_be_known(self):
         binary = self.tx.dir / 'cloud-hypervisor'
         binary.write_bytes(b'unknown')

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 path = Path(__file__).resolve().parents[2] / 'src/migration_appliance.py'
 spec = importlib.util.spec_from_file_location('migration_appliance', path)
@@ -25,6 +25,19 @@ class ApplianceTests(unittest.TestCase):
     def test_appliance_launch_requires_durable_guard(self):
         with self.assertRaisesRegex(m.ApplianceError, 'durable preparation guard'):
             m._guestfish(['/guestfish'], {}, self.root / 'log', 1, 1024, None)
+
+    def test_guard_inherits_host_and_disk_descriptors(self):
+        journal = self.root / 'journal'
+        journal.write_text(json.dumps({'operation': 'prepare', 'computer': 'owner', 'phase': 'idle'}))
+        process = Mock()
+        process.wait.return_value = 0
+        process.poll.return_value = 0
+        guard = {'journal': journal, 'computer': 'owner', 'fds': (7, 8)}
+        with patch.object(m.subprocess, 'Popen', return_value=process) as spawn:
+            m._guestfish(['/guestfish'], {}, self.root / 'log', 1, 1024, guard)
+        self.assertEqual(spawn.call_args.kwargs['pass_fds'], (7, 8))
+        self.assertTrue(spawn.call_args.kwargs['start_new_session'])
+        self.assertIn('migration_appliance_guard.py', spawn.call_args.args[0][1])
 
     def test_pack_uses_readonly_clone_and_network_disabled_vm(self):
         calls = []

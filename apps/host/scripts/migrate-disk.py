@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -161,7 +162,10 @@ def prepare_quiescent(tx):
         raise RuntimeError('Invalid preparation journal')
     if record['phase'] == 'running':
         boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-        if record.get('boot_id') == boot:
+        recorded_boot = record.get('boot_id')
+        if not isinstance(recorded_boot, str) or not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', recorded_boot):
+            raise RuntimeError('Invalid appliance boot identity')
+        if recorded_boot == boot:
             if record.get('pid_namespace') != os.stat('/proc/self/ns/pid').st_ino:
                 raise RuntimeError('Cannot verify appliance in another PID namespace')
             group = record.get('process_group')
@@ -181,8 +185,6 @@ def prepare_quiescent(tx):
                 raise RuntimeError('Invalid appliance disk paths')
             if references([directory, *disks], (os.getpid(),)):
                 raise RuntimeError('An unverified process still references the appliance')
-        elif not isinstance(record.get('boot_id'), str) or not record['boot_id']:
-            raise RuntimeError('Invalid appliance boot identity')
 
 
 def image_store(root):
