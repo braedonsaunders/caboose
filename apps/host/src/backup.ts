@@ -172,6 +172,9 @@ async function readObject(request: IncomingMessage, limit: number): Promise<Reco
 export class ComputerBackups {
   private readonly root: string
   private capturing: Promise<void> | undefined
+  private managementDone: Promise<void> | undefined
+  private phoneMutations = 0
+  private managementBusy = false
   private pending = false
   private restoring = false
   private readonly closing = new AbortController()
@@ -184,6 +187,49 @@ export class ComputerBackups {
 
   private get now(): number { return this.host.now?.() ?? Date.now() }
   private path(...parts: string[]): string { return join(this.root, ...parts) }
+
+  /** Metadata only: never exports manifests, chunks, device keys or host paths. */
+  async recoveryStatus() {
+    let lastOperation: { kind: string; state: string; startedAt: string; finishedAt?: string; error?: string } | null = null
+    try { lastOperation = JSON.parse(await readFile(this.path('management.json'), 'utf8')) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    if (lastOperation?.state === 'running' && !this.managementBusy) lastOperation = { ...lastOperation, state: 'interrupted', error: 'The host stopped before this operation completed. Inspect the computer before retrying.' }
+    const reason = this.host.unavailable ?? (this.closing.signal.aborted ? 'The host is stopping' : null)
+    return { available: !reason, reason, capturing: Boolean(this.capturing), restoring: this.restoring,
+      busy: this.managementBusy, captureReady: !reason && !this.managementBusy && !this.capturing && !this.restoring && this.computer.lifecycle.state === 'parked',
+      captureReason: reason ?? (this.computer.lifecycle.state !== 'parked' ? 'Park this computer before capturing it.' : null),
+      retention: { newest: 2, downloadingPhoneCapturesPinned: true }, lastOperation,
+      captures: (await this.captures()).reverse().map(record => ({ id: record.info.id, createdAt: record.info.createdAt, diskBytes: record.info.diskBytes })),
+    }
+  }
+
+  /** Synchronous admission fences management against phone mutations and automatic captures. */
+  async manageRecovery(kind: 'capture' | 'restore', context: RestoreContext, captureId?: string): Promise<void> {
+    if (this.host.unavailable || this.closing.signal.aborted) throw new ComputerConflictError(this.host.unavailable ?? 'The host is stopping')
+    if (this.managementBusy || this.phoneMutations || this.capturing || this.restoring) throw new ComputerConflictError('A backup operation is already running')
+    this.managementBusy = true
+    let finish!: () => void
+    this.managementDone = new Promise<void>(resolve => { finish = resolve })
+    const operation = { kind, state: 'running', startedAt: new Date(this.now).toISOString() }
+    try {
+      await writePrivateJson(this.path('management.json'), operation)
+      if (kind === 'capture') {
+        if (this.computer.lifecycle.state !== 'parked') throw new ComputerConflictError('Park this computer before capturing it')
+        await this.capture(true)
+      } else {
+        const record = await this.findCapture(captureId!)
+        // Preserve any phone's in-progress restore instead of deleting its staging area.
+        if ((await readdir(this.path('restores')).catch(() => [])).length) throw new ComputerConflictError('A phone restore is staged; complete or abandon it first')
+        const staged = await this.beginRestore({ image: record.info.image, manifest: record.manifest })
+        await this.applyRestore(staged.id, context)
+      }
+      await writePrivateJson(this.path('management.json'), { ...operation, state: 'succeeded', finishedAt: new Date(this.now).toISOString() })
+    } catch (error) {
+      await writePrivateJson(this.path('management.json'), { ...operation, state: 'failed', finishedAt: new Date(this.now).toISOString(), error: kind === 'capture' ? 'Capture failed. Check parked Files readiness and host storage; see operator logs for details.' : 'Restore failed. Check image availability and the computer recovery state; see operator logs for details.' })
+      throw error
+    } finally { this.managementBusy = false; finish(); this.managementDone = undefined }
+  }
 
   /** Remove incomplete captures, expired packs and abandoned restores left by a crash. */
   async open(): Promise<void> {
@@ -203,6 +249,7 @@ export class ComputerBackups {
   /** The computer is deleted: everything of its backups on the host goes too. */
   async destroy(): Promise<void> {
     this.close()
+    await this.managementDone
     await this.capturing?.catch(() => {})
     await rm(this.root, { recursive: true, force: true })
   }
@@ -268,28 +315,29 @@ export class ComputerBackups {
 
   /** Capture when a phone wants backups and the newest capture is old (or a phone asked). */
   async captureIfDue(force: boolean): Promise<void> {
-    if (this.host.unavailable || this.closing.signal.aborted) return
+    if (this.host.unavailable || this.closing.signal.aborted || this.managementBusy) return
     if (force) this.pending = true
     if (this.capturing) return this.capturing
     if (!Object.keys((await this.devices()).devices).length) return
     const newest = (await this.captures()).at(-1)
     const due = this.pending || !newest || Date.parse(newest.info.createdAt) + (this.host.captureIntervalMs ?? 6 * 3_600_000) <= this.now
     if (!due || this.computer.lifecycle.state !== 'parked') return
+    if (this.managementBusy || this.capturing) return
     this.capturing = this.capture().catch(error => {
       if (!this.closing.signal.aborted) console.error(`Could not capture a backup of ${this.computer.id}:`, error)
     }).finally(() => { this.capturing = undefined })
     return this.capturing
   }
 
-  private async capture(): Promise<void> {
+  private async capture(required = false): Promise<void> {
     const hold = await holdParked(this.computer.lifecycle, 5_000)
-    if (!hold) return
+    if (!hold) { if (required) throw new ComputerConflictError('The computer is no longer parked'); return }
     const id = randomUUID()
     const partial = this.path('captures', `${id}.raw.partial`)
     let binding: SystemImageBinding | null
     try {
       const view = await this.computer.parkedView()
-      if (!view) return
+      if (!view) { if (required) throw new ComputerConflictError('No coherent parked disk is available; wake and park this computer first'); return }
       binding = await this.computer.binding()
       await mkdir(this.path('captures'), { recursive: true, mode: 0o700 })
       // A reflink clone: instant, and it shares every block with the disk until either changes.
@@ -538,15 +586,24 @@ export class ComputerBackups {
       const rebuilt = await serially(() => diskManifest(this.host.helper, disk, { path: target.base, cache: this.host.cacheDirectory }, { chunkBytes: state.manifest.chunkBytes }))
       const expected = chunks, actual = expandChunks(rebuilt)
       if (rebuilt.diskBytes !== state.manifest.diskBytes || actual.length !== expected.length || actual.some((chunk: Chunk, at) => chunk !== expected[at])) throw new Error('The rebuilt disk does not match the backup')
+      if (this.closing.signal.aborted) throw new ComputerConflictError('The host is stopping')
       await context.checkDisk({ image: disk, binding: target.binding })
       await context.restart(async () => context.replaceDisk({ image: disk, binding: target.binding }))
       await rm(directory, { recursive: true, force: true })
     } finally { this.restoring = false }
   }
 
-  /** `/v1/backup…` for this computer. Nothing here wakes it. */
   async handle(request: IncomingMessage, response: ServerResponse, path: string, principal: Principal, context: RestoreContext): Promise<void> {
+    if (this.managementBusy && request.method !== 'GET') throw new ComputerConflictError('A management recovery operation is running')
+    if (request.method !== 'GET') this.phoneMutations++
+    try { await this.handlePhone(request, response, path, principal, context) }
+    finally { if (request.method !== 'GET') this.phoneMutations-- }
+  }
+
+  /** `/v1/backup…` for this computer. Nothing here wakes it. */
+  private async handlePhone(request: IncomingMessage, response: ServerResponse, path: string, principal: Principal, context: RestoreContext): Promise<void> {
     const method = request.method
+    if (this.managementBusy && method !== 'GET') throw new ComputerConflictError('A management recovery operation is running')
     const phone = () => {
       if (principal.kind !== 'phone') throw new SettingsInputError('Backups are kept by a signed-in phone')
       return principal.phoneId

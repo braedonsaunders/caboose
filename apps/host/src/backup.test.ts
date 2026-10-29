@@ -1,3 +1,4 @@
+import { recoveryRoute } from './recovery.js'
 import { createHash, randomBytes } from 'node:crypto'
 import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
@@ -80,7 +81,7 @@ describe('computer backups', () => {
     await backups.open()
     server = createServer((req, res) => {
       const path = new URL(req.url ?? '/', 'http://x').pathname
-      backups.handle(req, res, path, phone, context).catch(error => {
+      (path.startsWith('/v1/recovery') ? recoveryRoute(backups, req, res, path, { kind: 'owner' }, context) : backups.handle(req, res, path, phone, context)).catch(error => {
         const status = error instanceof SettingsInputError ? 400 : error instanceof AgentNotFoundError ? 404 : error instanceof ComputerConflictError ? 409 : 500
         if (status === 500) console.error(error)
         res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: error.message }))
@@ -95,6 +96,52 @@ describe('computer backups', () => {
     backups.close()
     await new Promise(resolve => server.close(resolve))
     await rm(root, { recursive: true, force: true })
+  })
+
+  it('binds destructive confirmation to the selected capture', async () => {
+    await backups.manageRecovery('capture', context)
+    const capture = (await backups.recoveryStatus()).captures[0]!
+    expect((await request('POST', `/v1/recovery/captures/${capture.id}/restore`, { confirm: true })).status).toBe(400)
+    expect(restarts).toHaveLength(0)
+    expect((await request('POST', `/v1/recovery/captures/${capture.id}/restore`, { confirm: capture.id })).status).toBe(200)
+    expect(restarts).toHaveLength(1)
+  })
+
+  it('manually captures without enrolling a phone and restores verified host data', async () => {
+    await backups.manageRecovery('capture', context)
+    const status = await backups.recoveryStatus()
+    expect(status.captures).toHaveLength(1)
+    expect(status.lastOperation?.state).toBe('succeeded')
+    expect((await request('GET', '/v1/backup')).body.devices).toEqual([])
+    await backups.manageRecovery('restore', context, status.captures[0]!.id)
+    expect(restarts[0]!.content.equals(disk)).toBe(true)
+  })
+
+  it('rejects running captures and records failure durably', async () => {
+    await lifecycle.wake()
+    await expect(backups.manageRecovery('capture', context)).rejects.toThrow('Park this computer')
+    expect((await backups.recoveryStatus()).lastOperation?.state).toBe('failed')
+    expect(JSON.parse(await readFile(join(root, 'overlays', 'c1.backup', 'management.json'), 'utf8')).state).toBe('failed')
+    expect((await backups.recoveryStatus()).captures).toEqual([])
+  })
+
+  it('rejects overlapping management work and leaves a staged phone restore intact', async () => {
+    const first = backups.manageRecovery('capture', context)
+    await expect(backups.manageRecovery('capture', context)).rejects.toThrow('already running')
+    await first
+    const capture = (await backups.recoveryStatus()).captures[0]!
+    const { info, manifest } = (await request('GET', `/v1/backup/captures/${capture.id}`)).body
+    const stage = await request('POST', '/v1/backup/restores', { image: info.image, manifest })
+    await expect(backups.manageRecovery('restore', context, capture.id)).rejects.toThrow('phone restore is staged')
+    expect((await request('GET', `/v1/backup/restores/${stage.body.id}`)).status).toBe(200)
+    expect(restarts).toHaveLength(0)
+  })
+
+  it('does not restart when a captured image dependency changed', async () => {
+    await backups.manageRecovery('capture', context)
+    await writeFile(join(root, 'images', 'vmlinux'), 'different kernel')
+    await expect(backups.manageRecovery('restore', context, (await backups.recoveryStatus()).captures[0]!.id)).rejects.toThrow()
+    expect(restarts).toHaveLength(0)
   })
 
   it('captures a parked computer once a phone turns backups on, describing only its own chunks', async () => {

@@ -1,4 +1,5 @@
 import type { Capacity } from '../../../packages/capacity/types.js'
+import type { RecoveryStatus } from './recovery.js'
 import type { CatalogOperation, CatalogPage, CatalogResponse, CatalogStorefront, DiscoverQuery } from './catalog.js'
 import { fsQuery, joinPath, numberedName, type FileItem } from './files.js'
 import type { ComponentsUpgrade, HealthStatus, HostInfo } from './host.js'
@@ -347,6 +348,10 @@ export class CabooseClient {
     /** The computer this client's computer routes go to; the owner token's own computer when absent. */
     readonly computerId?: string,
   ) {}
+
+  recovery(): Promise<RecoveryStatus> { return this.request('GET', '/v1/recovery') }
+  captureRecovery(): Promise<RecoveryStatus> { return this.request('POST', '/v1/recovery/capture', { timeoutMs: 3_600_000 }) }
+  restoreRecovery(id: string): Promise<RecoveryStatus> { return this.request('POST', `/v1/recovery/captures/${encodeURIComponent(id)}/restore`, { body: { confirm: id }, timeoutMs: 3_600_000 }) }
 
   /** The same client, with its computer routes sent to `/v1/computers/<id>/…`. */
   forComputer(id: string): CabooseClient {
