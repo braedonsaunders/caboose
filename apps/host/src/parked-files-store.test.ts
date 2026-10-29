@@ -47,3 +47,15 @@ it('removes only managed stages when invalidating a view', async () => {
     expect(await readFile(join(staging, 'unrelated', 'kept'), 'utf8')).toBe('safe')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+it('removes an empty staging root and permits repeated invalidation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'parked-store-'))
+  try {
+    const staging = join(root, 'stages')
+    await mkdir(join(staging, '.parked-files-abc123'), { recursive: true, mode: 0o700 })
+    const store = new ParkedFilesStore(join(root, 'snapshot'), staging)
+    await store.invalidate()
+    await expect(lstat(staging)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(store.invalidate()).resolves.toBeUndefined()
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
