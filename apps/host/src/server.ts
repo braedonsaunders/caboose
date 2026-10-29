@@ -8,7 +8,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
-import { NOT_FOUND, json, readJson } from './http.js'
+import { NOT_FOUND, RequestTooLargeError, json, readJson } from './http.js'
 import { dropUntrustedForwarding, type TrustedProxies } from './proxies.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
@@ -69,6 +69,8 @@ export interface Controller extends ComputerDriver<Session> {
 
 /** Body limits: base64 inflates by a third, plus room for the JSON around it. */
 const TASK_BODY_LIMIT = 15 * 1024 * 1024
+/** `POST /v1/files` holds its whole file in memory as base64; larger files stream through `PUT /v1/fs/content`. */
+const FILE_BODY_LIMIT = 16 * 1024 * 1024
 
 
 /** Who a request is from: the owner (the host's own token), or a phone signed in to one computer. */
@@ -579,7 +581,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const phoneFile = /^\/v1\/phone\/files\/([^/]+)$/.exec(path)
     if (request.method === 'GET' && phoneFile?.[1]) return json(response, 200, await leased(() => readPhoneFile(controller.guest(), phoneFile[1]!)))
     if (request.method === 'POST' && path === '/v1/files') {
-      const input = await readJson(request, Number.MAX_SAFE_INTEGER)
+      const input = await readJson(request, FILE_BODY_LIMIT)
       if (typeof input.name !== 'string' || !input.name.trim()) throw new AgentInputError('name is required')
       if (input.open !== undefined && typeof input.open !== 'boolean') throw new AgentInputError('open must be a boolean')
       const data = decodeBase64(input.data, 'data')
@@ -1043,6 +1045,7 @@ export function createCabooseServer(options: ComputerPieces & {
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError || error instanceof IdentityNotFoundError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError || error instanceof IdentityConflictError || error instanceof ReachUnavailableError) return json(response, 409, { error: error.message })
+      if (error instanceof RequestTooLargeError) return json(response, 413, { error: error.message })
       if (error instanceof PairingRateLimitError) return json(response, 429, { error: error.message })
       if (error instanceof AgentOperationError || error instanceof TerminalServiceError) return json(response, 502, { error: error.message })
       console.error('Caboose request failed:', error)

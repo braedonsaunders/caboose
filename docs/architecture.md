@@ -668,7 +668,7 @@ session storage and sends it only as an `Authorization` header.
 ### Conventions
 
 Request and response bodies are JSON unless stated. A JSON body must be an object of at
-most 64 KiB (15 MiB for task start and reply). Errors are `{ error: string }`:
+most 64 KiB (15 MiB for task start and reply, 16 MiB for `POST /v1/files`). Errors are `{ error: string }`:
 
 | Status | Meaning |
 | --- | --- |
@@ -677,6 +677,7 @@ most 64 KiB (15 MiB for task start and reply). Errors are `{ error: string }`:
 | 403 | A phone, or an administrator who is not the operator, on a route that is not theirs |
 | 404 | Unknown route, task, agent, element or device |
 | 409 | The computer is not running (or is restarting, or being deleted), its display is not ready, a conflicting operation is in progress, or a tenant's quota would be exceeded |
+| 413 | A JSON body beyond the route's limit |
 | 429 | Too many wrong pairing codes, or sign-in attempts |
 | 502 | The guest or the agent registry failed an operation; the message says why |
 | 503 | Push or Live Activities are not configured |
@@ -826,7 +827,8 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   that pairs the old and new path.
 - While the computer runs and at least one control socket is connected, the host polls the
   journal every second and broadcasts `fs.changed { anchor }` when something changed.
-- `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
+- `POST /v1/files` holds the whole body in memory, so it accepts at most 16 MiB and answers
+  413 beyond that; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.
 
