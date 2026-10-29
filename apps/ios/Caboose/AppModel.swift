@@ -80,7 +80,8 @@ final class AppModel {
     private(set) var desktop = DesktopModel(pixelsPerPoint: 1)
     private var externalSize: CGSize = .zero
     private var placedWindowIDs = Set<Int>()
-    /// Last frames of the computer's windows, by window id, for instant resume.
+    /// Last frames of the computer's windows, by window id, for instant resume: reduced
+    /// pictures, since they are held through the whole time in the background.
     private var frameCache: [Int: CGImage] = [:]
     /// The server epoch the cached frames belong to: ids name the same windows only within one.
     private var frameCacheEpoch: String?
@@ -97,6 +98,14 @@ final class AppModel {
     /// The connection and server epoch `placedWindowIDs` were placed for.
     private var placedConnection = 0
     private var placedEpoch: String?
+
+    /// Which gathering of frames the cache belongs to, so pictures still arriving from the GPU
+    /// after the cache was cleared or gathered again are dropped.
+    private var frameCacheGeneration = 0
+    /// Reduced to this long edge: ample for seeding a window until its keyframe lands.
+    private static let frameCacheLongEdge = 1024
+    /// At most this many bytes of pictures, most recently raised windows first.
+    private static let frameCacheBudget = 24 << 20
     private var fileSearchTask: Task<Void, Never>?
     private var sceneActive = true
 
@@ -359,17 +368,47 @@ final class AppModel {
         phone.setActive(false)
         wakes.invalidate()
         link.stop()
-        if let session {
-            frameCache = session.windows.reduce(into: [:]) { cache, entry in
-                if let image = entry.value.surface.snapshot() { cache[entry.key] = image }
-            }
-            frameCacheEpoch = (session as? CabooseDisplaySession)?.server?.epoch
-        }
+        if let session { cacheFrames(of: session) }
         session?.disconnect()
         session = nil
         agents.detach()
         knownWindowIDs.removeAll()
         if case .ready = phase { phase = .waking }
+    }
+
+    /// Keeps reduced pictures of the windows most recently raised, as many as fit the budget,
+    /// gathered off the main thread: the scene may be suspended within seconds of leaving the
+    /// screen, and a desktop's windows at full size would be hundreds of megabytes held through
+    /// the background. Those over the budget are dropped; they show once their keyframe lands.
+    private func cacheFrames(of session: any DisplaySession) {
+        frameCacheEpoch = session.epoch
+        frameCacheGeneration += 1
+        frameCache.removeAll()
+        let generation = frameCacheGeneration
+        var budget = Self.frameCacheBudget
+        var chosen: [Int: WindowSurface] = [:]
+        for window in session.windows.values.sorted(by: { $0.raisedAt > $1.raisedAt }) {
+            let size = window.surface.pixelSize
+            guard size.width > 0, size.height > 0 else { continue }
+            let scale = min(1, CGFloat(Self.frameCacheLongEdge) / max(size.width, size.height))
+            let bytes = Int((size.width * scale).rounded()) * Int((size.height * scale).rounded()) * 4
+            guard bytes <= budget else { break }
+            budget -= bytes
+            chosen[window.id] = window.surface
+        }
+        guard !chosen.isEmpty else { return }
+        WindowSurface.snapshots(of: chosen, longEdgeAtMost: Self.frameCacheLongEdge) { [weak self] images in
+            Task { @MainActor in
+                guard let self, self.frameCacheGeneration == generation else { return }
+                self.frameCache = images
+            }
+        }
+    }
+
+    private func clearFrameCache() {
+        frameCacheEpoch = nil
+        frameCacheGeneration += 1
+        frameCache.removeAll()
     }
 
     private var lastDisplay: HostClient.Session.Display?
@@ -807,8 +846,7 @@ final class AppModel {
         guard let host else { return }
         settingsPresented = false
         closeDisplay()
-        frameCache.removeAll() // the apps behind these frames are gone
-        frameCacheEpoch = nil
+        clearFrameCache() // the apps behind these frames are gone
         phase = .restarting
         do {
             computerStatus = try await host.restart()

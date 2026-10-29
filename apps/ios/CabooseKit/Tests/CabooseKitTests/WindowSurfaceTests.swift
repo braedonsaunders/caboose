@@ -38,6 +38,40 @@ import Testing
         #expect(pixel(image, 1, 1) == [0, 0, 0, 0])
     }
 
+    @Test func reducedSnapshotScalesOnTheGPUWithoutBlocking() async throws {
+        let surface = WindowSurface()
+        surface.resize(width: 64, height: 32)
+        fill(surface, x: 0, y: 0, width: 64, height: 32, bgra: [0, 0, 255, 255])
+        fill(surface, x: 32, y: 0, width: 32, height: 32, bgra: [0, 255, 0, 255])
+        let image = try #require(await surface.snapshot(longEdgeAtMost: 16))
+        #expect(image.width == 16)
+        #expect(image.height == 8)
+        #expect(pixel(image, 2, 4) == [0, 0, 255, 255])
+        #expect(pixel(image, 13, 4) == [0, 255, 0, 255])
+    }
+
+    @Test func reducedSnapshotNeverScalesUp() async throws {
+        let surface = WindowSurface()
+        surface.resize(width: 6, height: 4)
+        fill(surface, x: 0, y: 0, width: 6, height: 4, bgra: [1, 2, 3, 255])
+        let image = try #require(await surface.snapshot(longEdgeAtMost: 1024))
+        #expect(image.width == 6)
+        #expect(image.height == 4)
+        #expect(pixel(image, 5, 3) == [1, 2, 3, 255])
+    }
+
+    @Test func gatheredSnapshotsLeaveOutEmptyWindows() async throws {
+        let painted = WindowSurface()
+        painted.resize(width: 8, height: 8)
+        fill(painted, x: 0, y: 0, width: 8, height: 8, bgra: [4, 4, 4, 255])
+        let empty = WindowSurface()
+        let images = await withCheckedContinuation { continuation in
+            WindowSurface.snapshots(of: [1: painted, 2: empty], longEdgeAtMost: 4) { continuation.resume(returning: $0) }
+        }
+        #expect(images.keys.sorted() == [1])
+        #expect(images[1]?.width == 4)
+    }
+
     @Test func resizeKeepsTheOverlap() throws {
         let surface = WindowSurface()
         surface.resize(width: 4, height: 4)

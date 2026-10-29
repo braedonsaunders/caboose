@@ -51,21 +51,41 @@ final class HomeFrames {
         }
     }
 
-    /// Takes the open windows' pictures now, while the display still holds them.
+    /// Which capture is the latest; an earlier one still gathering its pictures stands down.
+    private var captureEpoch = 0
+
+    /// Takes the open windows' pictures now, while the display still holds them. The pictures
+    /// are reduced on the GPU and arrive off the main thread, so leaving the screen never
+    /// waits for a full-size readback of every window.
     func capture(_ model: AppModel) {
-        guard let key = model.credentials?.fileDomainIdentifier else { return }
+        guard let key = model.credentials?.fileDomainIdentifier, let directory = directory(for: key) else { return }
         let running = model.phase == .ready
-        var frames: [Frame] = []
-        var images: [Int: UIImage] = [:]
-        if running {
-            for window in model.appWindows.prefix(Self.limit) {
-                guard let picture = window.surface.snapshot() else { continue }
-                frames.append(Frame(id: window.id, title: window.title, app: model.appName(for: window),
-                                    width: window.frame.width, height: window.frame.height))
-                images[window.id] = Self.scaled(picture)
+        captureEpoch += 1
+        let epoch = captureEpoch
+        guard running else {
+            keep(key: key, directory: directory, running: false, frames: [], images: [:])
+            return
+        }
+        let windows = Array(model.appWindows.prefix(Self.limit))
+        let frames = windows.map { window in
+            Frame(id: window.id, title: window.title, app: model.appName(for: window),
+                  width: window.frame.width, height: window.frame.height)
+        }
+        let surfaces = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.surface) })
+        WindowSurface.snapshots(of: surfaces, longEdgeAtMost: Self.longestEdge) { [weak self] pictures in
+            Task { @MainActor in
+                guard let self, self.captureEpoch == epoch else { return }
+                self.keep(key: key, directory: directory, running: true,
+                          frames: frames.filter { pictures[$0.id] != nil },
+                          images: pictures.mapValues { UIImage(cgImage: $0) })
             }
         }
-        guard let directory = directory(for: key) else { return }
+    }
+
+    /// Small enough for a tile on any phone at 3×, and for eight of them to load at once.
+    private static let longestEdge = 640
+
+    private func keep(key: String, directory: URL, running: Bool, frames: [Frame], images: [Int: UIImage]) {
         switch HomeToday.keptUpdate(running: running, pictures: frames.count) {
         case .leave:
             return
@@ -95,19 +115,5 @@ final class HomeFrames {
     private func directory(for computer: String?) -> URL? {
         guard let computer, let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
         return caches.appending(path: "HomeFrames", directoryHint: .isDirectory).appending(path: computer, directoryHint: .isDirectory)
-    }
-
-    /// Small enough for a tile on any phone at 3×, and for eight of them to load at once.
-    private static func scaled(_ picture: CGImage) -> UIImage {
-        let longest: CGFloat = 640
-        let width = CGFloat(picture.width), height = CGFloat(picture.height)
-        let scale = min(1, longest / max(width, height))
-        let size = CGSize(width: (width * scale).rounded(), height: (height * scale).rounded())
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        format.opaque = true
-        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
-            UIImage(cgImage: picture).draw(in: CGRect(origin: .zero, size: size))
-        }
     }
 }

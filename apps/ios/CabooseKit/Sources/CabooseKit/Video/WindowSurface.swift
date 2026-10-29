@@ -173,6 +173,10 @@ public final class WindowSurface: @unchecked Sendable {
     }
 
     /// The current pixels as an image, for showing a window instantly before its stream resumes.
+    ///
+    /// Waits for the GPU and reads the whole window back on the calling thread; for one
+    /// window on demand. Pictures of every window at once go through
+    /// `snapshot(longEdgeAtMost:completion:)`, which neither blocks nor reads at full size.
     public func snapshot() -> CGImage? {
         guard let texture else { return nil }
         // Reading on the CPU needs every queued write to have landed.
@@ -180,6 +184,90 @@ public final class WindowSurface: @unchecked Sendable {
             fence.commit()
             fence.waitUntilCompleted()
         }
+        return Self.image(of: texture)
+    }
+
+    /// A reduced copy of the current pixels, its long edge at most `longEdge` pixels, delivered
+    /// off the calling thread once every write queued before it has landed. The reduction is
+    /// a GPU scale into a small texture, so the CPU never touches the full window: the last
+    /// pictures of a 4K desktop's windows, kept while the app is in the background, would
+    /// otherwise cost hundreds of megabytes and a stalled main thread at the moment the
+    /// system gives the app the least of both. Never scales up; nil for an empty window.
+    public func snapshot(longEdgeAtMost longEdge: Int, completion: @escaping @Sendable (CGImage?) -> Void) {
+        guard longEdge > 0, let texture, let commands = renderer.queue.makeCommandBuffer() else {
+            completion(nil)
+            return
+        }
+        let scale = min(1, Double(longEdge) / Double(max(texture.width, texture.height)))
+        let width = max(1, Int((Double(texture.width) * scale).rounded()))
+        let height = max(1, Int((Double(texture.height) * scale).rounded()))
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .shared
+        guard let reduced = renderer.device.makeTexture(descriptor: descriptor) else {
+            completion(nil)
+            return
+        }
+        if width == texture.width, height == texture.height {
+            guard let blit = commands.makeBlitCommandEncoder() else {
+                completion(nil)
+                return
+            }
+            blit.copy(from: texture, to: reduced)
+            blit.endEncoding()
+        } else {
+            // Without a transform the scaler maps the whole source onto the whole destination.
+            MPSImageBilinearScale(device: renderer.device).encode(commandBuffer: commands, sourceTexture: texture, destinationTexture: reduced)
+        }
+        commands.addCompletedHandler { _ in
+            // Metal's completion thread is for bookkeeping; the readback goes elsewhere.
+            DispatchQueue.global(qos: .userInitiated).async { completion(Self.image(of: reduced)) }
+        }
+        commands.commit()
+    }
+
+    /// `snapshot(longEdgeAtMost:completion:)` awaited.
+    public func snapshot(longEdgeAtMost longEdge: Int) async -> CGImage? {
+        await withCheckedContinuation { continuation in
+            snapshot(longEdgeAtMost: longEdge) { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// Reduced pictures of several windows at once, keyed as `surfaces` is, all delivered
+    /// together when the last has landed. Windows with nothing to show are left out.
+    public static func snapshots(of surfaces: [Int: WindowSurface], longEdgeAtMost longEdge: Int,
+                                 completion: @escaping @Sendable ([Int: CGImage]) -> Void) {
+        let gathering = Gathering(expected: surfaces.count, completion: completion)
+        for (key, surface) in surfaces {
+            surface.snapshot(longEdgeAtMost: longEdge) { image in gathering.add(image, for: key) }
+        }
+    }
+
+    /// Collects pictures arriving on background threads and reports once, when all are in.
+    private final class Gathering: @unchecked Sendable {
+        private let lock = NSLock()
+        private var remaining: Int
+        private var images: [Int: CGImage] = [:]
+        private let completion: @Sendable ([Int: CGImage]) -> Void
+
+        init(expected: Int, completion: @escaping @Sendable ([Int: CGImage]) -> Void) {
+            remaining = expected
+            self.completion = completion
+            if expected == 0 { completion([:]) }
+        }
+
+        func add(_ image: CGImage?, for key: Int) {
+            lock.lock()
+            if let image { images[key] = image }
+            remaining -= 1
+            let done = remaining == 0 ? images : nil
+            lock.unlock()
+            if let done { completion(done) }
+        }
+    }
+
+    /// Reads a shared-storage texture whose writes have all landed into an opaque BGRA image.
+    private static func image(of texture: MTLTexture) -> CGImage? {
         let rowBytes = texture.width * 4
         var pixels = [UInt8](repeating: 0, count: rowBytes * texture.height)
         texture.getBytes(&pixels, bytesPerRow: rowBytes, from: MTLRegionMake2D(0, 0, texture.width, texture.height), mipmapLevel: 0)

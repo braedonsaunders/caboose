@@ -75,10 +75,11 @@ final class FramePipeline: @unchecked Sendable {
         }
     }
 
-    /// Paints a cached frame, unless a live picture has already landed.
+    /// Paints a cached frame over the whole window, unless a live picture has already landed.
+    /// The kept picture is reduced, so it is scaled to the window's size rather than placed.
     func seed(_ image: CGImage) {
         queue.async { [self] in
-            if !showsLivePicture, !isRetired { surface.upload(image: image, x: 0, y: 0) }
+            if !showsLivePicture, !isRetired { surface.upload(image: image, into: CGRect(origin: .zero, size: surface.pixelSize)) }
         }
     }
 

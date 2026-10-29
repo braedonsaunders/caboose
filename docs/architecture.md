@@ -1698,7 +1698,9 @@ the app card, and a detached view releases its layers.
 - **Lifecycle.** The display socket closes when the app goes to the background; the
   computer parks on idle and resumes on the next foreground. The last frame of every window
   is cached with the server's `epoch`, and shown on reopening only when the new hello has
-  the same epoch.
+  the same epoch. Pictures are reduced on the GPU to a 1024-pixel long edge and read back
+  off the main thread, most recently raised first within a 24 MiB budget. Home's kept
+  pictures use a 640-pixel long edge. Cache generations discard late readbacks.
 - **Connection recovery.** While the app is in use, one display connection is open at a
   time, and one wake (`POST /v1/session`) runs at a time; other callers for the same
   computer wait for it. Pairing with another computer, signing out, parking, restarting or
