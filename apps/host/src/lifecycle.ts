@@ -133,27 +133,33 @@ export class ComputerLifecycle<T> {
   }
 
   private async wakeNow(mode: WakeMode = 'interactive'): Promise<T> {
-    if (this.current === 'frozen') {
+    const thawing = this.current === 'frozen'
+    if (thawing) {
       try {
         await this.driver.thaw!()
         this.failure = null
-        this.setState('running')
       } catch (error) {
         this.failure = error instanceof Error ? error.message : String(error)
         this.armIdle()
         throw error
       }
     }
-    if (this.current === 'running' && this.value !== undefined) {
+    if ((this.current === 'running' || thawing) && this.value !== undefined) {
       if (mode === 'interactive' && this.mode === 'headless' && this.driver.promote) {
         try {
           this.value = await this.driver.promote()
           this.mode = 'interactive'
+          this.failure = null
         } catch (error) {
+          this.failure = error instanceof Error ? error.message : String(error)
+          // The VM resumed successfully; retain headless mode so the next
+          // interactive request retries promotion without resuming it twice.
+          if (thawing) this.setState('running')
           this.armIdle()
           throw error
         }
       }
+      if (thawing) this.setState('running')
       this.armIdle()
       return this.value
     }

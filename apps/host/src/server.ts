@@ -705,7 +705,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       }
       if (agentAction[2] === 'sign-in/callback') return json(response, 200, await leased(() => catalog.signInCallback(id, input)))
       if (agentAction[2] === 'sign-in/cancel') return json(response, 200, await leased(() => catalog.cancelSignIn(id, input)))
-      return json(response, 200, await leased(() => catalog.signIn(id, input)))
+      return json(response, 200, await computer.wakeAndRun(() => catalog.signIn(id, input), input.on === 'phone' ? 'headless' : 'interactive'))
     }
     const agentModels = /^\/v1\/agents\/([^/]+)\/models$/.exec(path)
     if (request.method === 'POST' && agentModels?.[1]) return json(response, 200, await leased(() => catalog.models(decodeURIComponent(agentModels[1]!))))

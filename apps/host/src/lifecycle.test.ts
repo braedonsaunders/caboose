@@ -152,9 +152,37 @@ describe('computer lifecycle', () => {
     expect(await computer.wake('headless')).toBe('headless')
     await expect(computer.wake()).rejects.toThrow('display unavailable')
     expect(computer.state).toBe('running')
+    expect(computer.lastError).toBe('display unavailable')
     expect(await Promise.all([computer.wake(), computer.wake()])).toEqual(['interactive', 'interactive'])
+    expect(computer.lastError).toBeNull()
     expect(driver.wake).toHaveBeenCalledOnce()
     expect(driver.promote).toHaveBeenCalledTimes(2)
+    await computer.park()
+  })
+  it('publishes thawed running state after interactive promotion and reports promotion failure', async () => {
+    vi.useFakeTimers()
+    const events: string[] = []
+    const driver = { wake: async () => 'headless', park: async () => {}, canFreeze: () => true,
+      freeze: async () => {}, thaw: vi.fn(async () => { events.push('thaw') }),
+      promote: vi.fn(async () => { events.push('promote'); return 'interactive' }) }
+    const computer = new ComputerLifecycle(driver, 10000)
+    await computer.wake('headless')
+    await vi.advanceTimersByTimeAsync(3000)
+    computer.subscribe(state => events.push(state))
+    driver.promote.mockRejectedValueOnce(new Error('display unavailable'))
+    await expect(computer.wake()).rejects.toThrow('display unavailable')
+    expect(computer.state).toBe('running')
+    expect(computer.lastError).toBe('display unavailable')
+    expect(await computer.wake()).toBe('interactive')
+    expect(driver.thaw).toHaveBeenCalledOnce()
+    expect(computer.lastError).toBeNull()
+    await computer.park()
+
+    await computer.wake('headless')
+    await vi.advanceTimersByTimeAsync(3000)
+    events.length = 0
+    expect(await computer.wake()).toBe('interactive')
+    expect(events).toEqual(['thaw', 'promote', 'running'])
     await computer.park()
   })
   it('wakes for an operation and holds the computer until the operation finishes', async () => {
