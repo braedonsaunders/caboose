@@ -490,7 +490,9 @@ downloads each runtime once, for every computer: none is installed ahead of an a
 - **One installation, read-only everywhere.** The depot is a Flatpak installation owned by the
   host: the Docker volume `caboose-depot` on the container runtime, or the directory named
   by `CABOOSE_VM_DEPOT` on Linux microVM hosts. The latter is shared with read-only virtio-fs.
-  Both mount read-only at `/var/lib/caboose/depot` in each computer. `/etc/flatpak/installations.d/caboose-depot.conf`
+  Both mount read-only at `/var/lib/caboose/depot` in each computer. Virtio-fs needs shared
+  guest memory, which Cloud Hypervisor restores eagerly; `CABOOSE_VM_DEPOT` and
+  `CABOOSE_VM_COW=on` cannot be enabled together. `/etc/flatpak/installations.d/caboose-depot.conf`
   names it; the installer adds it as the dependency source of every app transaction, so an app
   installs into its own computer and runs on the depot's runtime in place.
 - **Written only by the host's builder.** Before a Flathub install or update, the host adds the

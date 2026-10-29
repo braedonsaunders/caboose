@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { expect, it } from 'vitest'
-import { selectSystemImage, usesSystemImage } from './system-image.js'
+import { selectSystemImage, usesSystemImage, validateDepotRestoreOptions } from './system-image.js'
 
 it('binds only a new disk and retains the selected image across configuration changes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'caboose-system-'))
@@ -21,4 +21,11 @@ it('binds only a new disk and retains the selected image across configuration ch
     await rm(disk); await mkdir(snapshot)
     expect(await selectSystemImage(binding, disk, snapshot, second)).toBeNull()
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('rejects a depot with copy-on-write restore because virtio-fs requires shared memory', () => {
+  expect(() => validateDepotRestoreOptions('/depot', 'on')).toThrow(/requires shared memory/)
+  expect(() => validateDepotRestoreOptions('/depot', 'off')).not.toThrow()
+  expect(() => validateDepotRestoreOptions('/depot', undefined)).not.toThrow()
+  expect(() => validateDepotRestoreOptions(undefined, 'on')).not.toThrow()
 })

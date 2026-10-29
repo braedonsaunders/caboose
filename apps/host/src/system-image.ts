@@ -8,6 +8,13 @@ const files = ['base.raw', 'vmlinux', 'initrd', 'system.erofs'] as const
 type ImageFile = typeof files[number]
 export interface SystemImageBinding { version: 1; directory: string; hashes: Record<ImageFile, string> }
 
+/** Cloud Hypervisor restores shared-memory virtio-fs guests eagerly. */
+export function validateDepotRestoreOptions(depotPath: string | undefined, copyOnWrite: string | undefined): void {
+  if (depotPath && copyOnWrite === 'on') {
+    throw new Error('CABOOSE_VM_DEPOT cannot be combined with CABOOSE_VM_COW=on: virtio-fs requires shared memory and Cloud Hypervisor restores it eagerly')
+  }
+}
+
 async function exists(path: string): Promise<boolean> {
   try { await access(path); return true } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false

@@ -1,4 +1,4 @@
-import { usesSystemImage } from './system-image.js'
+import { usesSystemImage, validateDepotRestoreOptions } from './system-image.js'
 import { prepareKeyring } from './keyring.js'
 import { AgentToolJournal } from './agent-tools-journal.js'
 import { AgentRoutines } from './agent-routines.js'
@@ -56,6 +56,7 @@ const phones = await PhoneTokens.open(join(deployment.imageRoot, 'phones.json'))
 const desks = deployment.runtime === 'microvm' ? createDeskPool(deployment) : undefined
 const splitImage = process.env.CABOOSE_SPLIT_IMAGE || undefined
 const vmDepot = deployment.runtime === 'microvm' && process.env.CABOOSE_VM_DEPOT ? resolve(process.env.CABOOSE_VM_DEPOT) : undefined
+validateDepotRestoreOptions(vmDepot, process.env.CABOOSE_VM_COW)
 if (vmDepot && /[:\n\r]/.test(vmDepot)) throw new Error('CABOOSE_VM_DEPOT cannot contain a colon or newline')
 if (vmDepot && process.platform !== 'linux') throw new Error('CABOOSE_VM_DEPOT requires a Linux microVM host')
 if (vmDepot) await mkdir(vmDepot, { recursive: true, mode: 0o755 })

@@ -206,7 +206,7 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_PORT` | `7310` | Listen port. |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Guest image, overlays, snapshots and the host's state files. |
 | `CABOOSE_SPLIT_IMAGE` | unset | Directory containing a separately built split microVM image. New Linux computers bind to its immutable version; existing disks remain unchanged. Keep all four version files for those computers. |
-| `CABOOSE_VM_DEPOT` | unset | Linux host directory for a shared Flatpak runtime depot, mounted read-only in microVMs using virtio-fs. Requires Docker, the computer container image, and virtiofsd 1.13 or later. |
+| `CABOOSE_VM_DEPOT` | unset | Linux host directory for a shared Flatpak runtime depot, mounted read-only in microVMs using virtio-fs. Requires Docker, the computer container image, and virtiofsd 1.13 or later; cannot be combined with `CABOOSE_VM_COW=on`. |
 | `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
 | `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks. |
@@ -462,7 +462,9 @@ runtime the depot is the Docker volume `caboose-depot` and its builder runs `src
 in a throwaway container from `CABOOSE_CONTAINER_IMAGE`. Linux microVM hosts can set
 `CABOOSE_VM_DEPOT` to share a host directory read-only via virtio-fs; otherwise each
 computer installs its own runtimes. A snapshot taken before the share was enabled uses
-its local runtimes until a cold restart attaches the share.
+its local runtimes until a cold restart attaches the share. Virtio-fs requires shared guest memory; Cloud
+Hypervisor restores shared memory eagerly, so the host rejects enabling both the depot and
+`CABOOSE_VM_COW=on`.
 
 Install, update and removal are asynchronous; watch `catalog.progress` and `catalog.changed` on
 `/v1/control`. Installed applications update once a day while their computer runs. The guest
