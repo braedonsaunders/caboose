@@ -689,6 +689,7 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_PUBLIC_URL` | unset | Where phones reach the host from anywhere (an `http(s)` URL, optionally with a path, without credentials, query or fragment); first in `/v1/host/reach`, and the console auth base URL (auth defaults to loopback when unset) |
 | `CABOOSE_MDNS` | `on` | `off` stops the LAN advertisement ([Reachability](#reachability)) |
 | `CABOOSE_SHARED_STORAGE` | `off` | `on` shares identical blocks across parked microVM disks on a Linux host ([Shared storage](#shared-storage)) |
+| `CABOOSE_SHARED_STORAGE_DELAY_MS` | `1800000` | How long a computer stays parked before shared storage passes its disk |
 | `CABOOSE_DISK_HELPER` | `caboose-disk` on `PATH` (bundles: their own) | The `apps/host/disk` helper for shared storage and phone backups |
 | `CABOOSE_WEB_ROOT` | `apps/web/dist` | The built web console |
 | `CABOOSE_APNS_KEY_PATH`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC` | unset | APNs provider; all four or none |
@@ -1169,8 +1170,8 @@ or a hash collision costs one refused call and never changes what a disk reads a
 64 KiB or more of zeros are deallocated. A disk's clones (its parked Files view and backup
 captures) are shared and deallocated with it; a clone that has diverged keeps its data.
 
-- A computer is passed when it has been parked for 30 minutes and its disk changed since its
-  last pass. One pass runs at a time on the host.
+- A computer is passed when it has been parked for 30 minutes (`CABOOSE_SHARED_STORAGE_DELAY_MS`)
+  and its disk changed since its last pass. One pass runs at a time on the host.
 - The pass holds the computer, and every parked computer whose disk it may share from, in
   parked-exclusive work. A wake, restart or delete of any of them cancels the pass between
   kernel calls, then proceeds. The helper also takes an open file description lock on the disk

@@ -52,6 +52,8 @@ function toggle(value: string | undefined, name: string): boolean {
 export function openStorage(deployment: Config, env: NodeJS.ProcessEnv): Promise<HostStorage> {
   const helper = env.CABOOSE_DISK_HELPER || 'caboose-disk'
   const shared = toggle(env.CABOOSE_SHARED_STORAGE, 'CABOOSE_SHARED_STORAGE')
+  const delayMs = env.CABOOSE_SHARED_STORAGE_DELAY_MS === undefined ? 30 * 60_000 : Number(env.CABOOSE_SHARED_STORAGE_DELAY_MS)
+  if (!Number.isSafeInteger(delayMs) || delayMs < 1000 || delayMs > 2_147_483_647) throw new Error('CABOOSE_SHARED_STORAGE_DELAY_MS must be an integer from 1000 to 2147483647')
   const linuxVm = process.platform === 'linux' && deployment.runtime === 'microvm'
   const installed = linuxVm && spawnSync(helper, ['--version'], { stdio: 'ignore' }).status === 0
   if (shared && !linuxVm) throw new Error('CABOOSE_SHARED_STORAGE requires a Linux microVM host')
@@ -65,7 +67,7 @@ export function openStorage(deployment: Config, env: NodeJS.ProcessEnv): Promise
   const dedupe = shared ? new DedupeHelper(helper, join(root, 'shared-storage')) : undefined
   const storage = dedupe ? new SharedStorage(dedupe, {
     statePath: join(root, 'shared-storage.json'),
-    delayMs: 30 * 60_000,
+    delayMs,
     // Return freed blocks to the device below (a sparse XFS image, or an SSD).
     trim: () => new Promise((resolve, reject) => {
       const child = spawn('fstrim', [root], { stdio: 'ignore' })
