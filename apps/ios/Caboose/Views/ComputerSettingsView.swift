@@ -236,24 +236,16 @@ struct ComputerSettingsView: View {
 
     private var connectionAddressSection: some View {
         Section {
-            TextField("Remote address", text: $alternateAddress)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
+            NativeTextInput("Remote address", text: $alternateAddress, keyboard: .URL, capitalization: .none, correction: false, contentType: .URL)
             Button("Save Remote Address") {
-                let text = alternateAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard let components = URLComponents(string: text),
-                      let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
-                      components.host != nil, components.user == nil, components.password == nil,
-                      components.query == nil, components.fragment == nil, let url = components.url,
-                      var credentials = model.credentials else {
+                guard var credentials = model.credentials,
+                      let url = Credentials.normalizedAddress(alternateAddress) else {
                     addressError = "Enter an HTTP or HTTPS address without a username, password, query, or fragment."
                     return
                 }
-                if url != credentials.hostURL && !credentials.alternateURLs.contains(url) {
-                    credentials.alternateURLs.append(url)
-                    model.updateAddresses(credentials)
-                }
+                credentials.addAlternate(url)
+                do { try model.updateAddresses(credentials) }
+                catch { addressError = error.localizedDescription; return }
                 alternateAddress = ""
                 addressError = nil
             }
@@ -264,7 +256,8 @@ struct ComputerSettingsView: View {
                     Button("Remove", role: .destructive) {
                         guard var credentials = model.credentials else { return }
                         credentials.alternateURLs.removeAll { $0 == url }
-                        model.updateAddresses(credentials)
+                        do { try model.updateAddresses(credentials) }
+                        catch { addressError = error.localizedDescription }
                     }
                 }
             }

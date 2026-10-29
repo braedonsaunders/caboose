@@ -54,8 +54,39 @@ struct Credentials: Equatable {
     }
 
     /// Update only addresses; leave the existing Keychain token untouched.
-    func saveAddresses() {
-        Self.write(Self.addressesService, candidates.map(\.absoluteString).joined(separator: "\n"))
+    func saveAddresses() throws {
+        let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: Self.addressesService]
+        let data = Data(candidates.map(\.absoluteString).joined(separator: "\n").utf8)
+        var status = SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var item = query
+            item[kSecValueData] = data
+            item[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
+            status = SecItemAdd(item as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { throw AddressSaveError(status: status) }
+    }
+
+    struct AddressSaveError: LocalizedError {
+        let status: OSStatus
+        var errorDescription: String? { "Could not save the remote address (Keychain error \(status))." }
+    }
+
+    static func normalizedAddress(_ text: String) -> URL? {
+        guard var parts = URLComponents(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = parts.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil,
+              parts.query == nil, parts.fragment == nil else { return nil }
+        parts.scheme = scheme
+        parts.host = host.lowercased()
+        if (scheme == "http" && parts.port == 80) || (scheme == "https" && parts.port == 443) { parts.port = nil }
+        while parts.path.hasSuffix("/") { parts.path.removeLast() }
+        return parts.url
+    }
+
+    mutating func addAlternate(_ url: URL) {
+        let known = candidates.compactMap { Self.normalizedAddress($0.absoluteString) }
+        if !known.contains(url) { alternateURLs.append(url) }
     }
 
     static func clear() {
@@ -93,20 +124,23 @@ struct Credentials: Equatable {
     }
 
     /// The first address that answers, tried together: on the home network the LAN address
-    /// normally wins, away from it only the VPN address answers. Any HTTP response counts.
+    /// normally wins, away from it only the VPN address answers. The anonymous health
+    /// response filters captive portals, but does not authenticate the host.
     func reachableURL(timeout: TimeInterval = 2.5) async -> URL {
         let candidates = candidates
         guard candidates.count > 1 else { return hostURL }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
         configuration.waitsForConnectivity = false
-        let session = URLSession(configuration: configuration)
+        let session = URLSession(configuration: configuration, delegate: NoProbeRedirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         return await withTaskGroup(of: URL?.self) { group in
             for url in candidates {
                 group.addTask {
                     let probe = URLRequest(url: url.appendingPathComponent("v1/health"), timeoutInterval: timeout)
-                    guard let (_, response) = try? await session.data(for: probe), response is HTTPURLResponse else { return nil }
+                    guard let (data, response) = try? await session.data(for: probe),
+                          let http = response as? HTTPURLResponse,
+                          Self.isHealthResponse(status: http.statusCode, data: data) else { return nil }
                     return url
                 }
             }
@@ -118,6 +152,12 @@ struct Credentials: Equatable {
             }
             return hostURL
         }
+    }
+
+    static func isHealthResponse(status: Int, data: Data) -> Bool {
+        guard status == 401,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return false }
+        return object["error"] == "unauthorized"
     }
 
     private static func read(_ service: String) -> String? {
@@ -136,5 +176,13 @@ struct Credentials: Equatable {
               let token = Bundle.main.object(forInfoDictionaryKey: "CabooseDevelopmentToken") as? String, !token.isEmpty,
               let url = URL(string: host) else { return nil }
         return Credentials(hostURL: url, token: token)
+    }
+}
+
+/// Never let a captive portal redirect a health probe to another origin.
+private final class NoProbeRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 }
