@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Waiting for native touch</title>
+<style>
+html { background: #182234; color: white; font: 24px sans-serif; }
+body { margin: 0; }
+section { height: 160px; padding: 20px; box-sizing: border-box; border-bottom: 1px solid #567; }
+</style>
+<script>
+addEventListener('DOMContentLoaded', () => {
+  for (let i = 0; i < 100; i++) {
+    const row = document.createElement('section');
+    row.textContent = `Native scrolling row ${i}`;
+    document.body.append(row);
+  }
+});
+// Observe the browser's real scrolling without cancelling or implementing gestures.
+addEventListener('touchstart', () => {
+  const started = performance.now();
+  const samples = [];
+  function sample() {
+    const t = performance.now() - started;
+    samples.push([Math.round(t), Math.round(scrollY)]);
+    if (t < 1600) requestAnimationFrame(sample);
+    else document.title = 'scroll:' + JSON.stringify(samples);
+  }
+  requestAnimationFrame(sample);
+}, {passive: true, once: true});
+</script>

@@ -46,6 +46,7 @@ OPTIONS:
                            then commit), copy:STRING (the phone's clipboard), tap:X,Y,
                            click:X,Y, wait:MS, maximize (fill the display),
                            scroll:X,Y,DY (precise, DY pixels), resize:W,H
+                           finger-down:X,Y, finger-move:X,Y, finger-up:X,Y (16 ms apart)
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -421,6 +422,18 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 })
                 .to_vec()
         }
+        "finger-down" | "finger-move" | "finger-up" => {
+            let (x, y) = point(arg)?;
+            let phase = match verb {
+                "finger-down" => proto::TouchPhase::Down,
+                "finger-move" => proto::TouchPhase::Motion,
+                _ => proto::TouchPhase::Up,
+            };
+            vec![Message::Touch(proto::Touch {
+                id,
+                points: vec![proto::TouchPoint { slot: 0, phase, x, y, force: None, radius: None }],
+            })]
+        }
         "click" => {
             let (x, y) = point(arg)?;
             [proto::buttons::LEFT, 0]
@@ -548,7 +561,7 @@ fn run(args: Args) -> Result<bool, String> {
         if let (Some(id), Some(action)) = (target, pending.front().cloned()) {
             if now >= next_action {
                 pending.pop_front();
-                next_action = now + Duration::from_millis(300);
+                next_action = now + Duration::from_millis(if action.starts_with("finger-") { 16 } else { 300 });
                 for m in action_messages(id, &action)? {
                     if let Message::Ping { t_us } = m {
                         next_action = now + Duration::from_millis(t_us);

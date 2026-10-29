@@ -188,6 +188,28 @@ def check_chromium_text_input():
                                    f"--app={PAGES}/input.html"], run)
 
 
+
+def check_chromium_touch_fling():
+    def run(proc, token):
+        time.sleep(2)
+        # Eight native motion samples, then release; no client-generated wheel inertia.
+        actions = ["wait:400", "finger-down:400,600"]
+        actions += [f"finger-move:400,{600 - step * 35}" for step in range(1, 9)]
+        actions += ["finger-up:400,320"]
+        r = probe(["--token-file", token, "--duration", "5", "--windows", "1",
+                   "--display", "900x800@60x1", "--actions", ";".join(actions)])
+        title = r["windows"][0]["title"]
+        if not title.startswith("scroll:"):
+            raise Failed(f"native touch never started sampling: {title!r}")
+        samples = json.loads(title[len("scroll:"):])
+        early = next((y for t, y in samples if t >= 300), None)
+        late = samples[-1][1] if samples else None
+        if early is None or late is None or early < 100 or late - early < 50:
+            raise Failed(f"no sustained native fling: y at 300ms={early}, final={late}; samples={samples}")
+        return f"native touch scrolls to {early}px by 300ms, coasts to {late}px after release; " + summary(r)
+    return with_server(CHROMIUM + ["--window-size=900,800", f"--app={PAGES}/scroll.html"], run)
+
+
 def check_reconnect():
     def run(proc, token):
         a = probe(["--token-file", token, "--duration", "2", "--windows", "1"])
@@ -705,6 +727,7 @@ CHECKS = [
     ("two-windows", check_two_windows),
     ("chromium", check_chromium_motion),
     ("chromium-text-input", check_chromium_text_input),
+    ("chromium-touch-fling", check_chromium_touch_fling),
     ("reconnect", check_reconnect),
     ("reconnect-idle", check_reconnect_idle),
     ("replace", check_replace),

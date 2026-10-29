@@ -164,6 +164,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `two-windows` | two applications stream as two windows |
 | `chromium` | Chromium as a native Wayland client animates at ≥ 55 fps |
 | `chromium-text-input` | touch reaches the page; text-input-v3 is enabled and its commit arrives exactly |
+| `chromium-touch-fling` | a timed native finger swipe scrolls a real Chromium page, then continues after release without client-generated wheel events |
 | `reconnect` | window ids survive a reconnect and each window restarts with a keyframe |
 | `reconnect-idle` | a window streamed in place from its shm buffer that draws nothing between two clients gives the second client the same picture |
 | `replace` | a second client takes over; the first gets `bye(replaced)` |
