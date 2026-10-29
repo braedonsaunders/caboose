@@ -1540,6 +1540,13 @@ device has a hardware decoder, AV1, and ImageIO for PNG and WebP tiles. Every wr
 window's texture is a blit on one shared Metal queue, which runs command buffers in commit
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
+
+The iOS app negotiates whole-window video by default: it omits `video_decoders`, so the
+computer encodes video into the same window picture as its controls and returns unsupported
+passthrough streams to server decoding. The layered-video client remains explicitly
+negotiated for protocol checks. PCM playback uses decoded sample durations to join adjacent
+packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
+
 The window picture and its video layers use the same mapping from the confirmed surface
 size to the view's bounds, including while a resize stretches the previous picture.
 Resize metadata does not change that pixel basis until the replacement keyframe decodes.

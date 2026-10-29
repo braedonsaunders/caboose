@@ -44,6 +44,7 @@ public final class CabooseDisplaySession: DisplaySession {
     private let displayToken: String
     private var displays: [DisplayInfo]
     private let decoders: [DisplayCodec]
+    private let videoDecoders: [DisplayCodec]
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private var stream: ByteStream?
     /// This connection's windows' decode pipelines; a new connection gets new ones, so nothing
@@ -76,11 +77,12 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     init(stream: @escaping () -> ByteStream, token: String, displays: [DisplayInfo], decoders: [DisplayCodec],
-         makeDecoder: @escaping (DisplayCodec) -> PictureDecoder = FramePipeline.hardwareDecoder) {
+         videoDecoders: [DisplayCodec] = [], makeDecoder: @escaping (DisplayCodec) -> PictureDecoder = FramePipeline.hardwareDecoder) {
         makeStream = stream
         displayToken = token
         self.displays = displays
         self.decoders = decoders
+        self.videoDecoders = videoDecoders
         self.makeDecoder = makeDecoder
     }
 
@@ -175,7 +177,7 @@ public final class CabooseDisplaySession: DisplaySession {
 
     private func sendHello() {
         state = .authenticating
-        send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: decoders,
+        send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil))
     }
 

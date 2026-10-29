@@ -185,12 +185,23 @@ import Testing
         try await base.until("pruned") { window.retiringVideos.isEmpty }
     }
 
-    @Test func helloOffersTheSameDecodersForVideo() async throws {
+    @Test func ordinarySessionsKeepVideoInTheWindowPicture() async throws {
         let base = CabooseDisplaySessionTests()
         let session = base.makeSession()
         session.connect()
         base.stream.deliver(.opened)
         try await base.until("hello") { session.state == .authenticating }
-        #expect(base.stream.take().first?.body["video_decoders"] == ["hevc", "h264"])
+        #expect(base.stream.take().first?.body["video_decoders"] == nil)
     }
+    @Test func layeredVideoRequiresExplicitDecoderNegotiation() async throws {
+        let base = CabooseDisplaySessionTests()
+        let session = CabooseDisplaySession(stream: { base.stream }, token: "test", displays: [base.display],
+                                            decoders: [.hevc, .h264], videoDecoders: [.h264])
+        session.connect()
+        base.stream.deliver(.opened)
+        try await base.until("hello") { session.state == .authenticating }
+        #expect(base.stream.take().first?.body["video_decoders"] == ["h264"])
+        session.disconnect()
+    }
+
 }

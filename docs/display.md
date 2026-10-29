@@ -320,6 +320,13 @@ shared audio timeline, and an idle live video renderer cannot hold audio preroll
 
 ### Video streams
 
+The iOS app negotiates whole-window video by default: it omits `video_decoders`, so the
+computer encodes video into the same window picture as its controls and returns unsupported
+passthrough streams to server decoding. The layered-video client remains explicitly
+negotiated for protocol checks. PCM playback uses decoded sample durations to join adjacent
+packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
+
+
 A video stream is layered into a window (`window`) by the client: it decodes it with its
 own decoder and draws it at `rect` (window-local display pixels, the whole picture,
 scaled to fit), showing only `clip` when present (a scrolled or cropped player, or an

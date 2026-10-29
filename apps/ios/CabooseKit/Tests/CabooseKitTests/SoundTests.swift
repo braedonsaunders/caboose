@@ -121,6 +121,35 @@ import Testing
     }
 }
 
+@Suite struct AudioPacketTimelineTests {
+    @Test func burstyCaptureTimestampsProduceContiguousSamples() {
+        var timeline = AudioPacketTimeline()
+        let first: Int64 = 90_000_000_000
+        // Captured pipe reads can cluster, then stall for two packet durations.
+        let jitter: [Int64] = [0, 20_000, 141, 22_075, 0, -10_000, 10_000]
+        for index in 0 ..< 300 {
+            let expected = first + Int64(index) * 20_000
+            #expect(timeline.place(server: expected + jitter[index % jitter.count], frames: 960) == expected)
+        }
+    }
+
+    @Test func durationComesFromDecodedSamples() {
+        var timeline = AudioPacketTimeline()
+        #expect(timeline.place(server: 1_000_000, frames: 480) == 1_000_000)
+        #expect(timeline.place(server: 1_015_000, frames: 2880) == 1_010_000)
+        #expect(timeline.place(server: 1_065_000, frames: 960) == 1_070_000)
+    }
+
+    @Test func silenceDiscontinuitiesAndResetKeepTheServerTimeline() {
+        var timeline = AudioPacketTimeline()
+        #expect(timeline.place(server: 1_000_000, frames: 960) == 1_000_000)
+        #expect(timeline.place(server: 6_000_000, frames: 960) == 6_000_000)
+        #expect(timeline.place(server: 2_000_000, frames: 960) == 2_000_000)
+        timeline.reset()
+        #expect(timeline.place(server: 2_050_000, frames: 960) == 2_050_000)
+    }
+}
+
 /// Opus packets of a 1 kHz tone, made with the system's encoder.
 enum Tone {
     static func packets(_ count: Int, channels: Int = 2, frequency: Double = 1000) throws -> [Data] {

@@ -525,3 +525,11 @@ workspace intact. Book posture and compact screens keep the ordinary layout in A
 
 Run `sh apps/ios/scripts/check-laptop.sh` for the physical Duo, keyboard and monitor checks.
 Pure fold/keyboard geometry is covered by `swift test --filter LaptopLayoutTests` in CabooseKit.
+
+## Media playback checks
+
+The app renders moving video inside the window stream by default. It does not negotiate
+separate motion or passthrough layers. Test an ordinary video page through resize,
+fullscreen/exit, minimize/restore and Laptop/Tablet transitions: one picture must move
+with its window. Audio packets play on a continuous sample timeline; test sustained
+speech/music, pause/resume and an audio-session interruption without choppy gaps.

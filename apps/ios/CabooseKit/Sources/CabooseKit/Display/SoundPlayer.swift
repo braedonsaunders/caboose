@@ -67,6 +67,7 @@ final class SoundPlayer: @unchecked Sendable {
     private var format: CMAudioFormatDescription?
     private var sessionActive = false
     private var interrupted = false
+    private var timeline = AudioPacketTimeline()
     private var interruptionObserver: NSObjectProtocol?
     private(set) var played = 0
     private(set) var failed = 0
@@ -99,6 +100,7 @@ final class SoundPlayer: @unchecked Sendable {
         queue.async { [self] in
             interrupted = value
             sessionActive = false
+            timeline.reset()
             renderer.flush()
             clock.stop()
         }
@@ -120,9 +122,10 @@ final class SoundPlayer: @unchecked Sendable {
                     renderer.flush()
                     clock.stop()
                 }
-                let placement = clock.place(audio: Int64(packet.ptsMicros))
+                let pts = timeline.place(server: Int64(packet.ptsMicros), frames: Int(pcm.frameLength))
+                let placement = clock.place(audio: pts)
                 if case .restart = placement { renderer.flush() }
-                renderer.enqueue(try sample(pcm, decoder: decoder, pts: Int64(packet.ptsMicros)))
+                renderer.enqueue(try sample(pcm, decoder: decoder, pts: pts))
                 switch placement {
                 case .play: break
                 case .start(let time), .restart(let time): clock.start(at: time)
@@ -136,6 +139,7 @@ final class SoundPlayer: @unchecked Sendable {
 
     func stop() {
         queue.async { [self] in
+            timeline.reset()
             renderer.flush()
             clock.stop()
         }
@@ -178,4 +182,25 @@ final class SoundPlayer: @unchecked Sendable {
         try activate()
         sessionActive = true
     }
+}
+
+/// PCM is contiguous even when an older server timestamps each pipe read rather than
+/// each sample. Small capture-time jitter must not create audible holes or overlaps.
+/// A real silence gap or discontinuity reanchors to the server instead of filling it.
+struct AudioPacketTimeline {
+    private var next: Int64?
+    static let maximumJitter: Int64 = 200_000
+
+    mutating func place(server: Int64, frames: Int) -> Int64 {
+        let pts: Int64
+        if let next, server >= next - Self.maximumJitter, server <= next + Self.maximumJitter {
+            pts = next
+        } else {
+            pts = server
+        }
+        next = pts + Int64(frames) * 1_000_000 / 48_000
+        return pts
+    }
+
+    mutating func reset() { next = nil }
 }
