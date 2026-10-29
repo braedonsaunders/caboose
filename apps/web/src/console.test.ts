@@ -175,11 +175,13 @@ describe('navigation and actions', () => {
     expect(parseRoute('/setup?code=abc')).toEqual({ page: 'setup' })
     expect(parseRoute('/invite?token=abc')).toEqual({ page: 'invite' })
     expect(routeHref({ page: 'tenants' })).toBe('/tenants')
+    expect(parseRoute('/usage')).toEqual({ page: 'usage' })
+    expect(routeHref({ page: 'usage' })).toBe('/usage')
   })
 
   it('shows tenants and the host only to the operator', () => {
-    expect(navigationGroups(true).map(group => group.label)).toEqual(['Overview', 'Computers', 'People', 'Tenants', 'Host'])
-    expect(navigationGroups(false).map(group => group.label)).toEqual(['Overview', 'Computers', 'People'])
+    expect(navigationGroups(true).map(group => group.label)).toEqual(['Overview', 'Computers', 'Usage', 'People', 'Tenants', 'Host'])
+    expect(navigationGroups(false).map(group => group.label)).toEqual(['Overview', 'Computers', 'Usage', 'People'])
   })
 
   it('never sends account, tenant or invitation routes under a computer', async () => {

@@ -13,6 +13,7 @@ import { Computer } from './pages/Computer.js'
 import { Computers } from './pages/Computers.js'
 import { People } from './pages/People.js'
 import { Tenants } from './pages/Tenants.js'
+import { Usage } from './pages/Usage.js'
 import { Host } from './pages/Host.js'
 
 /** Every navigation entry routes client-side, so the shell never reloads the page. */
@@ -100,7 +101,7 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
   const awake = computers.list?.computers.some(computer => computer.state !== 'parked') ?? false
 
   React.useEffect(() => {
-    const titles: Partial<Record<typeof route.page, string>> = { host: 'Host', computers: 'Computers', people: 'People', tenants: 'Tenants' }
+    const titles: Partial<Record<typeof route.page, string>> = { usage: 'Usage', host: 'Host', computers: 'Computers', people: 'People', tenants: 'Tenants' }
     if (route.page !== 'computer') document.title = titles[route.page] ? `${titles[route.page]} — Caboose` : 'Caboose'
   }, [route.page])
 
@@ -149,6 +150,7 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
           </Alert>
         </div>
       ) : null}
+      {route.page === 'usage' ? <Usage client={client} me={me} onUnauthorized={onSignOut} /> : null}
       {route.page === 'overview' ? <Overview computers={computers} host={host} me={me} /> : null}
       {route.page === 'computers' ? <Computers client={client} computers={computers} me={me} /> : null}
       {route.page === 'computer' ? (

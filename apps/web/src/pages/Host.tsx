@@ -45,7 +45,7 @@ export function Host({ host, client, onUnauthorized }: { host: HostHandle; clien
           <DashboardPanel title="Machine" icon={<MemoryStick className="size-4" aria-hidden />}>
             <dl className="grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-2 text-sm">
               <dt className="text-fg-muted">Memory</dt>
-              <dd>{machine ? `${formatMemoryMb(machine.memoryMb)}, ${formatMemoryMb(machine.availableMemoryMb)} available` : '—'}</dd>
+              <dd>{machine ? `${formatMemoryMb(machine.memoryMb)}, ${formatMemoryMb(machine.availableMemoryMb)} OS free (excludes reclaimable caches)` : '—'}</dd>
               <dt className="text-fg-muted">CPUs</dt>
               <dd>{machine ? machine.cpus : '—'}</dd>
               <dt className="text-fg-muted">Disk</dt>

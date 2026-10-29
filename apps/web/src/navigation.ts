@@ -12,6 +12,7 @@ export type Route =
   | { page: 'people' }
   | { page: 'tenants' }
   | { page: 'host' }
+  | { page: 'usage' }
   /** Pages outside the console: setting the host up, and accepting an invitation. */
   | { page: 'setup' }
   | { page: 'invite' }
@@ -44,6 +45,7 @@ export function navigationGroups(operator: boolean): SidebarNavGroup[] {
   return [
     { href: '/', label: 'Overview', icon: icon(Gauge), exact: true, mobile: true },
     { href: '/computers', label: 'Computers', icon: icon(Monitor), mobile: true },
+    { href: '/usage', label: 'Usage', icon: icon(Gauge), mobile: true },
     { href: '/people', label: 'People', icon: icon(Users), mobile: true },
     ...(operator ? [
       { href: '/tenants', label: 'Tenants', icon: icon(Building2), mobile: true },
@@ -61,6 +63,7 @@ export function parseRoute(raw: string): Route {
   if (clean === '/host' || clean === '/system' || clean.startsWith('/system/')) return { page: 'host' }
   if (clean === '/computers') return { page: 'computers' }
   if (clean === '/people') return { page: 'people' }
+  if (clean === '/usage') return { page: 'usage' }
   if (clean === '/tenants') return { page: 'tenants' }
   if (clean === '/setup') return { page: 'setup' }
   if (clean === '/invite') return { page: 'invite' }
@@ -76,6 +79,7 @@ export function routeHref(route: Route): string {
     case 'overview': return '/'
     case 'computers': return '/computers'
     case 'host': return '/host'
+    case 'usage': return '/usage'
     case 'people': return '/people'
     case 'tenants': return '/tenants'
     case 'setup': return '/setup'
