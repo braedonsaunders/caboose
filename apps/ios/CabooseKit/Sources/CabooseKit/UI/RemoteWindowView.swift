@@ -494,7 +494,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             if drag {
                 holdingDirectDrag = true
                 focusCheck = nil
-                if let remoteWindow { session?.focus(remoteWindow) }
+                session.focus(window)
                 sendDirectDrag(directDrag.begin(at: point, translation: .zero))
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } else {
