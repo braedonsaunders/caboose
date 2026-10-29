@@ -34,11 +34,27 @@ class Failed(Exception):
     pass
 
 
+LAST_LOG = None
+
+
+def log_tail(lines=60, needle=None):
+    """The end of the last compositor's log (lines containing `needle`), for a failure."""
+    try:
+        text = open(LAST_LOG, errors="replace").read().splitlines()
+    except (TypeError, OSError):
+        return ""
+    if needle:
+        text = [t for t in text if needle in t]
+    return "\n".join(text[-lines:])
+
+
 def compositor(command, token_file, extra=()):
     env = dict(os.environ)
     env.setdefault("XDG_RUNTIME_DIR", tempfile.mkdtemp(prefix="xdg-"))
     os.chmod(env["XDG_RUNTIME_DIR"], 0o700)
-    log = open(os.path.join(env["XDG_RUNTIME_DIR"], "caboose-display.log"), "w")
+    global LAST_LOG
+    LAST_LOG = os.path.join(env["XDG_RUNTIME_DIR"], "caboose-display.log")
+    log = open(LAST_LOG, "w")
     proc = subprocess.Popen(
         [os.path.join(BIN, "caboose-display"), "--listen", f"127.0.0.1:{PORT}", "--token-file", token_file, *extra, "--", *command],
         env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -524,6 +540,85 @@ def check_clipboard_files():
         shutil.rmtree(transfer, ignore_errors=True)
 
 
+def staged_file(name, content):
+    """A file in the transfer area, as the phone uploads it before a copy or a drop."""
+    transfer = os.path.join(os.path.expanduser("~"), ".cache/caboose/transfers", os.urandom(16).hex())
+    os.makedirs(transfer, mode=0o700)
+    path = os.path.join(transfer, name)
+    open(path, "w").write(content)
+    return transfer, path
+
+
+def dnd_page(x11=False):
+    browser = [a for a in CHROMIUM if not a.startswith("--ozone-platform")]
+    return browser + [f"--ozone-platform={'x11' if x11 else 'wayland'}", "--window-size=900,600", f"--app={PAGES}/dnd.html"]
+
+
+def drop_into(x11):
+    # The phone drags a file it uploaded over the page's drop zone: the page (through a
+    # real Wayland drag, or XDND for X11) accepts it, and the drop hands it the file.
+    # Then text, then a drop over the part of the page that refuses drops.
+    transfer, staged = staged_file("report.txt", "uploaded")
+    os.environ["CABOOSE_DISPLAY_LOG"] = "caboose_display=debug"
+    def run(proc, token):
+        time.sleep(4)
+        files = probe(["--token-file", token, "--duration", "6", "--windows", "1", *IMAGE_TYPES, "--actions",
+                       "drop-enter:text/uri-list@100,300;wait:300;drop-move:130,310;wait:300;drop-move:160,320;wait:800;"
+                       f"drop-files:{staged};wait:2500"])
+        title, events = files["windows"][0]["title"], files["dnd"]
+        if not (title.startswith("drop:") and "Files" in title.split(":")[1] and title.endswith(":report.txt=8")):
+            raise Failed(f"the page shows {title!r} after the file drop (events {events})\n{log_tail(80, 'dnd') or log_tail(40)}")
+        if "status:true" not in events or events[-1] != "result:ok":
+            raise Failed(f"the drop was not accepted while hovering and finished: {events}")
+        text = probe(["--token-file", token, "--duration", "6", "--windows", "1", "--actions",
+                      "drop-enter:text@100,300;wait:400;drop-move:120,310;wait:1000;"
+                      "drop-text:dropped ✓;wait:3000"])
+        if text["windows"][0]["title"] != "drop:text/plain:dropped ✓" or text["dnd"][-1] != "result:ok":
+            raise Failed(f"the text drop gave {text['windows'][0]['title']!r}, {text['dnd']}\n{log_tail(60, 'ERROR')}\n{log_tail(30, 'WARN')}")
+        refused = probe(["--token-file", token, "--duration", "8", "--windows", "1", "--actions",
+                         "drop-enter:text@700,150;wait:400;drop-move:710,160;wait:1000;"
+                         "drop-text:refused;wait:4500"])
+        if refused["dnd"][-1:] != ["result:rejected"]:
+            raise Failed(f"a drop on the refusing part was {refused['dnd']}")
+        if refused["windows"][0]["title"] != "drop:text/plain:dropped ✓":
+            raise Failed(f"the refused drop reached the page: {refused['windows'][0]['title']!r}")
+        return ("a file and text from the phone drop into the page under the finger, accepted as they hover; "
+                "a drop where the page refuses is rejected")
+    try:
+        return with_server(dnd_page(x11), run)
+    finally:
+        os.environ.pop("CABOOSE_DISPLAY_LOG", None)
+        shutil.rmtree(transfer, ignore_errors=True)
+
+
+def check_drop_wayland():
+    return drop_into(False)
+
+
+def check_drop_x11():
+    return drop_into(True)
+
+
+def check_drag_out():
+    # The page's draggable is dragged with the pointer; the phone takes it before the
+    # release: it gets the text, the drag ends as taken, and the page's own drop zone,
+    # where the release happens, receives nothing.
+    def run(proc, token):
+        time.sleep(4)
+        r = probe(["--token-file", token, "--duration", "6", "--windows", "1", *IMAGE_TYPES, "--actions",
+                   "press:700,450;move:705,455;move:720,470;move:600,400;move:300,300;wait:600;"
+                   "drag-take;release:300,300;wait:2000"])
+        events, title = r["dnd"], r["windows"][0]["title"]
+        if not any(e.startswith("start:") and "text/plain;charset=utf-8" in e for e in events):
+            raise Failed(f"the phone was not told of the drag: {events}")
+        if "data:text/plain;charset=utf-8=dragged from Linux" not in events or events[-1] != "end:taken":
+            raise Failed(f"the phone did not take the drag: {events}")
+        if title.startswith("drop:"):
+            raise Failed(f"the taken drag was also dropped on the page: {title!r}")
+        return "a drag from Chromium reaches the phone when it takes it, and drops nowhere on the computer"
+    return with_server(dnd_page(), run)
+
+
 def check_audio():
     # A 440 Hz tone played into the session's default output arrives as Opus the probe
     # decodes, at the right level; the silence before it is not sent.
@@ -869,6 +964,9 @@ CHECKS = [
     ("clipboard-image-x11", check_clipboard_image_x11),
     ("clipboard-x11-large", check_clipboard_x11_large),
     ("clipboard-files", check_clipboard_files),
+    ("drop-wayland", check_drop_wayland),
+    ("drop-x11", check_drop_x11),
+    ("drag-out", check_drag_out),
     ("audio", check_audio),
     ("refine", check_refine),
     ("motion", check_motion),

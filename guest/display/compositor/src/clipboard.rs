@@ -55,7 +55,7 @@ pub struct Offer {
 
 impl Offer {
     /// The offer for a copy that passed [`types::validate`].
-    fn new(content: &proto::Clipboard) -> Self {
+    pub fn new(content: &proto::Clipboard) -> Self {
         let mut offered = Vec::new();
         for (mime, data) in content.entries() {
             let data = Arc::new(data.to_vec());
@@ -79,6 +79,20 @@ impl Offer {
         Self { types: offered }
     }
 
+    /// The types applications are offered for content in the protocol's `types`.
+    pub fn app_types(types: &[String]) -> Vec<String> {
+        let mut out = Vec::new();
+        for t in types {
+            match t.as_str() {
+                TEXT => out.extend(TEXT_MIMES.iter().map(|m| m.to_string())),
+                URI_LIST => out.extend([URI_LIST.to_string(), GNOME_FILES.to_string()]),
+                PNG | JPEG => out.push(t.clone()),
+                _ => {}
+            }
+        }
+        out
+    }
+
     pub fn mime_types(&self) -> Vec<String> {
         self.types.iter().map(|(m, _)| m.clone()).collect()
     }
@@ -91,8 +105,19 @@ impl Offer {
     /// Writes the bytes for `mime` to a reader's descriptor without blocking the loop;
     /// a type that is not offered closes the descriptor.
     pub fn send(&self, mime: &str, fd: OwnedFd) {
-        if let Some(data) = self.data(mime) {
-            std::thread::spawn(move || pipes::write_bounded(fd, &data, WRITE_TIMEOUT));
+        self.send_then(mime, fd, || {});
+    }
+
+    /// As `send`, calling `done` once the reader has everything (or gave up).
+    pub fn send_then(&self, mime: &str, fd: OwnedFd, done: impl FnOnce() + Send + 'static) {
+        match self.data(mime) {
+            Some(data) => {
+                std::thread::spawn(move || {
+                    pipes::write_bounded(fd, &data, WRITE_TIMEOUT);
+                    done();
+                });
+            }
+            None => done(),
         }
     }
 }
@@ -100,15 +125,15 @@ impl Offer {
 /// One representation of a copy to read from an application: the type it offers, the
 /// protocol type it becomes, and the most it may take.
 #[derive(Debug, Clone, PartialEq)]
-struct Wanted {
-    offered: String,
-    mime: &'static str,
-    limit: usize,
+pub struct Wanted {
+    pub offered: String,
+    pub mime: &'static str,
+    pub limit: usize,
 }
 
 /// The representations worth reading from a copy offering `offered`: its best text, its
 /// best image and its files, within the clipboard's limit together.
-fn wanted(offered: &[String]) -> Vec<Wanted> {
+pub fn wanted(offered: &[String]) -> Vec<Wanted> {
     let has = |m: &str| offered.iter().any(|o| o == m);
     let mut wanted = Vec::new();
     if let Some(m) = TEXT_MIMES.iter().find(|m| has(m)) {
@@ -148,7 +173,7 @@ fn normalize(offered: &str, data: Vec<u8>) -> Vec<u8> {
 
 /// A copy from a set of representations read from an application: the valid ones, in
 /// the protocol's order, or None if none is.
-fn assemble(read: Vec<(&'static str, Vec<u8>)>) -> Option<proto::Clipboard> {
+pub fn assemble(read: Vec<(&'static str, Vec<u8>)>) -> Option<proto::Clipboard> {
     let mut entries: Vec<ClipboardEntry> = types::TYPES
         .iter()
         .filter_map(|t| read.iter().find(|(m, _)| m == t))
@@ -187,9 +212,22 @@ pub fn for_client(content: &proto::Clipboard, takes: &[String]) -> Option<proto:
 /// A representation read from an application, for the copy numbered `serial`; None
 /// when it could not be read in time or within its limit.
 pub struct Read {
-    serial: u64,
-    mime: &'static str,
-    data: Option<Vec<u8>>,
+    pub serial: u64,
+    pub mime: &'static str,
+    pub data: Option<Vec<u8>>,
+}
+
+/// What to read of a copy (or a drag) offering `offered`: each type to ask for, with
+/// where its bytes go once read, tagged `serial`.
+pub fn sinks(serial: u64, offered: &[String], done: &Sender<Read>) -> Vec<(String, Sink)> {
+    wanted(offered).into_iter().map(|w| (w.offered.clone(), Sink { serial, wanted: w, done: done.clone() })).collect()
+}
+
+/// Whether every file a copy names is in the transfer area, where the phone's files are.
+pub fn files_in_transfer_area(content: &proto::Clipboard) -> bool {
+    let Some((_, list)) = content.entries().find(|(m, _)| *m == URI_LIST) else { return true };
+    let home = crate::transfers::home();
+    types::file_paths(list).is_ok_and(|paths| paths.iter().all(|p| crate::transfers::open(&home, p).is_some()))
 }
 
 /// A copy being read.
@@ -218,13 +256,10 @@ impl Clipboard {
     /// where its bytes go. Reads of an older copy still in flight are ignored.
     fn begin(&mut self, offered: &[String]) -> Vec<(String, Sink)> {
         self.serial += 1;
-        let wanted = wanted(offered);
+        let sinks = sinks(self.serial, offered, &self.done);
         self.pending =
-            (!wanted.is_empty()).then(|| Pending { serial: self.serial, expected: wanted.len(), read: Vec::new() });
-        wanted
-            .into_iter()
-            .map(|w| (w.offered.clone(), Sink { serial: self.serial, wanted: w, done: self.done.clone() }))
-            .collect()
+            (!sinks.is_empty()).then(|| Pending { serial: self.serial, expected: sinks.len(), read: Vec::new() });
+        sinks
     }
 }
 
@@ -241,8 +276,13 @@ impl Sink {
         self.wanted.limit
     }
 
+    /// The protocol type this representation becomes.
+    pub fn mime(&self) -> &'static str {
+        self.wanted.mime
+    }
+
     /// Reads from the pipe's read end on a thread.
-    fn read_from(self, read: OwnedFd) {
+    pub fn read_from(self, read: OwnedFd) {
         std::thread::spawn(move || {
             let data =
                 pipes::read_bounded(read, self.wanted.limit, READ_TIMEOUT).map(|d| normalize(&self.wanted.offered, d));
@@ -250,7 +290,7 @@ impl Sink {
         });
     }
 
-    fn failed(self) {
+    pub fn failed(self) {
         let _ = self.done.send(Read { serial: self.serial, mime: self.wanted.mime, data: None });
     }
 }
@@ -263,13 +303,9 @@ impl State {
             return;
         }
         // Files from the phone are the ones it uploaded to the transfer area, nothing else.
-        if let Some((_, list)) = c.entries().find(|(m, _)| *m == URI_LIST) {
-            let home = crate::transfers::home();
-            let paths = types::file_paths(list).unwrap_or_default();
-            if paths.iter().any(|p| crate::transfers::open(&home, p).is_none()) {
-                tracing::warn!("clipboard: refused the phone's copy: a file is not in the transfer area");
-                return;
-            }
+        if !files_in_transfer_area(&c) {
+            tracing::warn!("clipboard: refused the phone's copy: a file is not in the transfer area");
+            return;
         }
         let offer = Arc::new(Offer::new(&c));
         self.clipboard.serial += 1;

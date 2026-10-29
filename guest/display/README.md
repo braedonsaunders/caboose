@@ -85,6 +85,14 @@ This directory is a Cargo workspace:
   without following links before they are offered. Copying between Wayland and X11 applications on the computer
   works through Xwayland's window manager. When a focused window closes, focus returns to
   the window focused before it.
+- **Drag and drop** (`src/dnd.rs`, `src/xdnd.rs`). A drop from the phone becomes a real
+  drag over the application under the finger: a compositor-owned Wayland drag on the seat's
+  pointer, or an XDND session from the compositor's own X client for an X11 window. Its
+  acceptance goes back as `drop.status`; the content (files in the transfer area) is
+  offered only after `drop.perform`, then the drag is released. A Wayland application's
+  drag is announced with `drag.start`; on `drag.take` the compositor moves it off every
+  window, reads it as it reads a copy while the phone's input waits, sends `drag.data`,
+  and lets the release end it as not dropped.
 - **Sound.** The compositor runs its own PulseAudio on a private socket with a null sink
   as the only, so default, output, and gives launched applications `PULSE_SERVER`. While a
   client that plays Opus is connected (`hello.audio_decoders`), `parec` records the sink and
@@ -184,6 +192,9 @@ probe. Every check asserts on what arrived, not on a picture:
 | `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
 | `clipboard-image-wayland` | a PNG copied with wl-copy reaches a phone that takes images byte for byte (and not a text-only phone); the phone's PNG pastes with wl-paste byte for byte |
 | `clipboard-image-x11` | the same through Xwayland with xclip |
+| `drop-wayland` | a file the phone uploaded, then text, dropped on a Chromium page's drop zone (a real Wayland drag): accepted while hovering, received by the page; a drop where the page refuses is rejected and never reaches it. The text part fails in about one run in five: Chromium on Wayland sometimes gives its page the dropped text empty |
+| `drop-x11` | the same with Chromium on X11, through XDND |
+| `drag-out` | a pointer drag of a Chromium page's draggable text that the phone takes: the phone is told of it, receives the text, and the release drops nothing on the page |
 | `clipboard-files` | a file manager's copy (`x-special/gnome-copied-files`) reaches the phone as a `text/uri-list`; a file the phone uploaded to the transfer area pastes as both lists, and a file outside it is refused |
 | `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
 | `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer; a blinking caret costs at most 4 extra pictures in 6 s, not one per blink |

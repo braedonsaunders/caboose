@@ -35,7 +35,7 @@ const BUTTONS: [(u32, u32); 5] = [
 const WHEEL_STEP: f64 = 15.0;
 
 /// A surface and its origin in the logical space.
-type Focus = (WlSurface, Point<f64, Logical>);
+pub(crate) type Focus = (WlSurface, Point<f64, Logical>);
 
 #[derive(Default)]
 pub struct InputState {
@@ -63,7 +63,7 @@ impl InputState {
 impl State {
     /// The logical position of a window-local display-pixel point, and the surface
     /// under it with that surface's origin.
-    fn locate(&self, id: u64, x: f64, y: f64) -> Option<(Point<f64, Logical>, Option<Focus>)> {
+    pub(crate) fn locate(&self, id: u64, x: f64, y: f64) -> Option<(Point<f64, Logical>, Option<Focus>)> {
         let w = self.windows.get(id)?;
         let display = self.displays.resolve(Some(w.display));
         let origin = self.windows.logical_origin(id, &self.displays).to_f64();

@@ -47,7 +47,12 @@ OPTIONS:
                            then commit), copy:STRING (the phone's clipboard),
                            copy-file:MIME:PATH (the file's bytes as MIME on the
                            phone's clipboard), copy-files:PATH[,PATH...] (the files as
-                           the phone's text/uri-list), tap:X,Y,
+                           the phone's text/uri-list), tap:X,Y, press:X,Y,
+                           move:X,Y, release:X,Y (the left button),
+                           drop-enter:TYPE[|TYPE...]@X,Y (`text` for UTF-8 text),
+                           drop-move:X,Y, drop-leave,
+                           drop-text:STRING, drop-files:PATH[,PATH...] (a drop from
+                           the phone), drag-take (the phone takes a drag),
                            click:X,Y, wait:MS, maximize (fill the display),
                            scroll:X,Y,DY (precise, DY pixels), resize:W,H
     --check                exit 0 as soon as the server answers hello (readiness probe)
@@ -450,6 +455,46 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 })
                 .to_vec()
         }
+        // press, move and release drive the left button separately, as a drag does.
+        "press" | "move" | "release" => {
+            let (x, y) = point(arg)?;
+            let buttons = if verb == "release" { 0 } else { proto::buttons::LEFT };
+            vec![Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None })]
+        }
+        // drop-enter:TYPES@X,Y starts a drop from the phone offering TYPES (`|`-separated;
+        // `text` stands for text/plain;charset=utf-8, whose `;` would end the action).
+        "drop-enter" => {
+            let (types, at) = arg.split_once('@').ok_or_else(|| format!("bad drop-enter {arg}"))?;
+            let (x, y) = point(at)?;
+            vec![Message::DropEnter(proto::DropEnter {
+                id,
+                x,
+                y,
+                mimes: types
+                    .split('|')
+                    .map(|t| if t == "text" { proto::clipboard::TEXT.to_owned() } else { t.to_owned() })
+                    .collect(),
+            })]
+        }
+        "drop-move" => {
+            let (x, y) = point(arg)?;
+            vec![Message::DropMotion { id, x, y }]
+        }
+        "drop-leave" => vec![Message::DropLeave],
+        "drop-text" => vec![Message::DropPerform(proto::Clipboard {
+            mime: proto::clipboard::TEXT.into(),
+            data: arg.as_bytes().to_vec(),
+            alternatives: Vec::new(),
+        })],
+        "drop-files" => {
+            let paths: Vec<&str> = arg.split(',').collect();
+            vec![Message::DropPerform(proto::Clipboard {
+                mime: proto::clipboard::URI_LIST.into(),
+                data: proto::clipboard::uri_list(&paths),
+                alternatives: Vec::new(),
+            })]
+        }
+        "drag-take" => vec![Message::DragTake],
         "click" => {
             let (x, y) = point(arg)?;
             [proto::buttons::LEFT, 0]
@@ -564,6 +609,9 @@ fn run(args: Args) -> Result<bool, String> {
     let mut videos: BTreeMap<u64, VideoStats> = BTreeMap::new();
     let mut clipboard: Option<String> = None;
     let mut clipboard_entries: Vec<(String, usize, u64)> = Vec::new();
+    // Drag and drop as the server reported it, in order: "status:true", "result:ok",
+    // "result:rejected", "start:TYPES", "data:MIME=TEXT_OR_SIZE", "end:taken".
+    let mut dnd_events: Vec<String> = Vec::new();
     let mut sound = AudioStats::default();
     let mut ping_sent: Option<u64> = None;
     let mut rtt_us: Option<u64> = None;
@@ -774,6 +822,23 @@ fn run(args: Args) -> Result<bool, String> {
                         .map(|(_, d)| String::from_utf8_lossy(d).into_owned());
                     clipboard_entries = c.entries().map(|(m, d)| (m.to_owned(), d.len(), fnv1a(d))).collect();
                 }
+                Message::DropStatus { accepted } => dnd_events.push(format!("status:{accepted}")),
+                Message::DropResult { ok, reason } => dnd_events
+                    .push(format!("result:{}", if ok { "ok" } else { reason.map(|r| r.as_str()).unwrap_or("failed") })),
+                Message::DragStart { mimes } => dnd_events.push(format!("start:{}", mimes.join("|"))),
+                Message::DragEnd { taken } => {
+                    dnd_events.push(format!("end:{}", if taken { "taken" } else { "not-taken" }))
+                }
+                Message::DragData(c) => {
+                    for (mime, data) in c.entries() {
+                        let shown = if mime == proto::clipboard::TEXT || mime == proto::clipboard::URI_LIST {
+                            String::from_utf8_lossy(data).trim_end().to_owned()
+                        } else {
+                            format!("{} bytes", data.len())
+                        };
+                        dnd_events.push(format!("data:{mime}={shown}"));
+                    }
+                }
                 Message::Audio(a) => sound.packet(&a),
                 Message::VideoCreate(c) => {
                     videos.insert(
@@ -921,7 +986,7 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"clipboard_entries\":[{}],\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"clipboard_entries\":[{}],\"dnd\":[{}],\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
             videos
                 .iter()
                 .map(|(id, v)| format!(
@@ -959,6 +1024,7 @@ fn run(args: Args) -> Result<bool, String> {
                 .map(|(mime, bytes, hash)| format!("{{\"mime\":{mime:?},\"bytes\":{bytes},\"fnv1a\":\"{hash:016x}\"}}"))
                 .collect::<Vec<_>>()
                 .join(","),
+            dnd_events.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(","),
             sound.packets,
             sound.bytes,
             sound.decoded,

@@ -34,7 +34,8 @@ pub struct Session {
 
 /// Features this server implements (docs/display.md, Handshake).
 pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool) -> Vec<String> {
-    let mut f = vec!["vsync", "ack", "touch", "text-input-v3", "cursor-named", "clipboard", "clipboard-types"];
+    let mut f =
+        vec!["vsync", "ack", "touch", "text-input-v3", "cursor-named", "clipboard", "clipboard-types", "drop", "drag"];
     if xwayland {
         f.push("xwayland");
     }
@@ -114,6 +115,7 @@ impl State {
     }
 
     fn end_session(&mut self) {
+        self.dnd_session_ended();
         self.video_session_ended();
         if let Some(a) = self.audio.as_mut() {
             a.stop_capture();
@@ -147,6 +149,16 @@ impl State {
         if !matches!(message, Message::Vsync { .. } | Message::Ack { .. }) {
             tracing::debug!("connection {conn}: {message:?}");
         }
+        // While a taken drag's content is read, the phone's input waits (it holds the lift
+        // that ends the drag).
+        let message = if matches!(message, Message::Touch(_) | Message::Pointer(_) | Message::Key(_)) {
+            match self.defer_input(message) {
+                Some(m) => m,
+                None => return,
+            }
+        } else {
+            message
+        };
         match message {
             Message::Vsync { display, t_us: _ } => self.on_vsync(display),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -173,9 +185,7 @@ impl State {
             Message::Configure(c) => self.configure_window(&c),
             Message::Close { id } => self.close_window(id),
             Message::Displays { displays } => self.set_displays(&displays),
-            Message::Touch(t) => self.touch(&t),
-            Message::Pointer(p) => self.pointer(&p),
-            Message::Key(k) => self.key(&k),
+            Message::Touch(_) | Message::Pointer(_) | Message::Key(_) => self.apply_input(message),
             Message::Text(t) => self.text(&t),
             Message::VideoKeyframe { id } => {
                 let motion = self.windows.iter_mut().find(|w| w.stream.motion.as_ref().is_some_and(|m| m.id == id));
@@ -192,10 +202,26 @@ impl State {
                 }
             }
             Message::ClientClipboard(c) => self.clipboard_from_phone(c),
+            Message::DropEnter(e) => self.drop_enter(e),
+            Message::DropMotion { id, x, y } => self.drop_motion(id, x, y),
+            Message::DropLeave => self.drop_leave(),
+            Message::DropPerform(c) => self.drop_perform(c),
+            Message::DragTake => self.drag_take(),
             Message::Pencil(_) => {
                 // Pencil input is not supported; `pencil` is absent from the hello's features.
             }
             other => tracing::debug!("connection {conn}: ignoring {}", other.name()),
+        }
+    }
+
+    /// Pointer, touch and key input from the client. The pointer waits while it drives a
+    /// drop from the phone.
+    pub fn apply_input(&mut self, message: Message) {
+        match message {
+            Message::Touch(t) => self.touch(&t),
+            Message::Pointer(p) if !self.dnd.drops() => self.pointer(&p),
+            Message::Key(k) => self.key(&k),
+            _ => {}
         }
     }
 
@@ -341,6 +367,7 @@ impl State {
             self.release_frame_callbacks(id);
         }
         self.motion_tick();
+        self.dnd_tick();
         let session_conn = self.session.as_ref().map(|s| s.conn);
         let timeout = self.config.client_timeout;
         if let Some(conn) =
