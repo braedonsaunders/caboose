@@ -18,9 +18,12 @@ public struct QuickSwitch: Equatable, Sendable {
 
     public private(set) var isOpen = false
     public var selection: Int? { index.map { windows[$0] } }
+    /// Opened for a finger to slide through: the strip's rows stay where they are whatever
+    /// is selected, so the row under the finger is the one it selects.
+    public private(set) var holding = false
 
-    /// Opens on `recent` with nothing selected.
-    public mutating func present(_ recent: [Int]) {
+    /// Opens on `recent` with nothing selected; `holding` for a finger sliding through it.
+    public mutating func present(_ recent: [Int], holding: Bool = false) {
         guard !recent.isEmpty else {
             close()
             return
@@ -28,6 +31,7 @@ public struct QuickSwitch: Equatable, Sendable {
         windows = recent
         index = nil
         isOpen = true
+        self.holding = holding
     }
 
     /// Nothing selected: closing now goes nowhere.
@@ -43,6 +47,7 @@ public struct QuickSwitch: Equatable, Sendable {
         windows = recent
         index = recent.count == 1 ? 0 : (reverse ? recent.count - 1 : 1)
         isOpen = true
+        holding = false
     }
 
     public mutating func advance(reverse: Bool = false) {
@@ -68,6 +73,7 @@ public struct QuickSwitch: Equatable, Sendable {
         if windows.isEmpty {
             index = nil
             isOpen = false
+            holding = false
             return
         }
         guard let selected, let before else { return }
@@ -80,6 +86,7 @@ public struct QuickSwitch: Equatable, Sendable {
             windows = []
             index = nil
             isOpen = false
+            holding = false
         }
         return selection
     }
@@ -88,7 +95,9 @@ public struct QuickSwitch: Equatable, Sendable {
 
     /// The strip's measurements for `count` windows on a screen `height` points tall: as
     /// large as `maximumItem`, smaller until all fit, and never below `minimumItem`, past
-    /// which only the windows around the selection are shown.
+    /// which only the windows around the selection are shown. While a finger holds it, the
+    /// shown windows are the most recent that fit and do not follow the selection; the rest
+    /// are reached from the keyboard, by choosing, or from Overview.
     public struct Strip: Equatable, Sendable {
         public let item: CGFloat
         public let spacing: CGFloat
@@ -128,7 +137,7 @@ public struct QuickSwitch: Equatable, Sendable {
         let item = min(maximumItem, max(minimumItem, fitting.rounded(.down)))
         let fits = max(1, Int((room + spacing) / (item + spacing)))
         guard fits < count else { return Strip(item: item, spacing: spacing, padding: padding, visible: 0..<count) }
-        let selected = index ?? 0
+        let selected = holding ? 0 : index ?? 0
         let start = min(max(0, selected - fits / 2), count - fits)
         return Strip(item: item, spacing: spacing, padding: padding, visible: start..<(start + fits))
     }

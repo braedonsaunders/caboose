@@ -134,7 +134,9 @@ and picture need a device with the computer awake. On the Desktop tab, with thre
    Overview opens. Hold Overview until the strip appears, slide up the screen: the window
    level with your finger is selected, named beside it, and the track slides to it while the
    apps keep their size and place. Let go on a row: that window is focused. Hold again and
-   let go back on the dock: nothing changes, and Overview does not open. With VoiceOver,
+   let go back on the dock: nothing changes, and Overview does not open. With more windows
+   open than the strip shows, slide slowly up and down it: the rows never move under the
+   finger. With VoiceOver,
    Overview's actions include Switch Windows; choose a window or Stay Here. On iPad Free, do
    the same holding Launchpad. On a TV, two-finger tap Launchpad on the phone's trackpad,
    then tap a row or Stay Here. While a strip is open, background the app, open a card, or

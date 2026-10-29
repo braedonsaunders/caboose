@@ -1597,7 +1597,9 @@ the app card, and a detached view releases its layers.
   holding the dock's Overview (Switchyard) or Launchpad (the floating desktop) opens the strip
   with nothing selected: sliding up selects the window level with the finger, letting go goes
   to it, and letting go off the strip, or a cancelled touch, stays; a tap on Overview still
-  opens Overview. VoiceOver's Switch Windows action on Overview, and a secondary click on
+  opens Overview. A held strip's rows stay put whatever is selected, so the row under the
+  finger is the one it selects; when more windows than fit are open, the hold reaches the
+  most recent that fit, and the rest are reached from the keyboard, by choosing, or Overview. VoiceOver's Switch Windows action on Overview, and a secondary click on
   Launchpad (the way a TV's trackpad reaches it), open the strip to choose from, with Stay
   Here; on the floating desktop and a TV the strip's rows are hit-tested by the desktop like
   the dock. While the strip is open nothing is configured: Switchyard's track slides without

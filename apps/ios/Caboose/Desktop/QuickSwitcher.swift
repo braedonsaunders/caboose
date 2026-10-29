@@ -75,7 +75,7 @@ final class QuickSwitcher {
     /// A finger held on the dock: open with nothing selected, for `track` and `release`.
     func hold(recent: [Int], desktop: Desktop) {
         begin(desktop)
-        state.present(recent)
+        state.present(recent, holding: true)
         guard state.isOpen else { return end() }
         mode = .hold
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()

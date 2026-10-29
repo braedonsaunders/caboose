@@ -100,4 +100,26 @@ struct QuickSwitchTests {
         #expect(strip.index(atY: 223) == nil)
         #expect(strip.index(atY: -40) == nil)
     }
+
+    @Test func aHeldStripKeepsItsRowsUnderTheFinger() {
+        var quick = QuickSwitch()
+        quick.present(Array(0..<30), holding: true)
+        let first = quick.strip(height: 500)
+        #expect(first.visible == 0..<11 && quick.holding)
+        // Sliding down the rows selects each in turn; none of them moves.
+        for id in first.visible {
+            quick.select(id)
+            let strip = quick.strip(height: 500)
+            #expect(strip == first)
+            #expect(strip.index(atY: strip.frame(of: id)!.midY) == id)
+        }
+        quick.deselect()
+        #expect(quick.strip(height: 500) == first)
+        // Keys and choosing still follow the selection.
+        quick.open(Array(0..<30))
+        for _ in 0..<19 { quick.advance() }
+        #expect(!quick.holding && quick.strip(height: 500).visible.contains(20))
+        quick.close()
+        #expect(!quick.holding)
+    }
 }
