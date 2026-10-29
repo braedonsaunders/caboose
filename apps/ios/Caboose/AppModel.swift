@@ -569,6 +569,7 @@ final class AppModel {
         withObservationTracking {
             _ = session.state
             _ = session.windows.count
+            _ = session.windowsAnnounced
         } onChange: { [weak self] in
             Task { @MainActor in
                 self?.sessionChanged()
