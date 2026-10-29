@@ -176,6 +176,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `chromium-touch-fling` | a timed native finger swipe scrolls a real Chromium page, then continues after release without client-generated wheel events |
 | `reconnect` | window ids survive a reconnect and each window restarts with a keyframe |
 | `reconnect-idle` | a window streamed in place from its shm buffer that draws nothing between two clients gives the second client the same picture |
+| `encoder-eviction` | a quiet Chromium window changes after encoder eviction; its new keyframe decodes on the same connection |
 | `replace` | a second client takes over; the first gets `bye(replaced)` |
 | `storm` | 48 broken connections while a window animates (closed at once, left silent, handshakes cut short, a wrong token, clients killed mid-stream): the next client streams normally, and the server's threads and memory are back where they were |
 | `takeover` | six clients take the display from each other in turn: each starts with a keyframe, each one replaced gets `bye(replaced)` |

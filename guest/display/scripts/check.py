@@ -240,6 +240,18 @@ def check_reconnect_idle():
     return with_server(["xterm", "-geometry", "80x24", "-e", "sh", "-c", "ls -l /usr/bin | head -20; exec sleep 600"], run)
 
 
+def check_encoder_eviction():
+    # One connection stays alive through refinement, ten seconds of quiet, and a
+    # small change. A new keyframe must decode even though the update was partial.
+    def run(proc, token):
+        r = probe(["--token-file", token, "--duration", "19", "--windows", "1"])
+        w = r["windows"][0]
+        if w["keyframes"] < 2 or w["decode_errors"] or w["frames"] < 3:
+            raise Failed(f"idle recreation did not decode from a fresh keyframe: {w}")
+        return f"{w['frames']} pictures, {w['keyframes']} keyframes, no decode errors across idle eviction"
+    return with_server(CHROMIUM + ["--window-size=900,600", f"--app={PAGES}/eviction.html"], run)
+
+
 def check_replace():
     def run(proc, token):
         first = subprocess.Popen(
@@ -730,6 +742,7 @@ CHECKS = [
     ("chromium-touch-fling", check_chromium_touch_fling),
     ("reconnect", check_reconnect),
     ("reconnect-idle", check_reconnect_idle),
+    ("encoder-eviction", check_encoder_eviction),
     ("replace", check_replace),
     ("storm", check_storm),
     ("takeover", check_takeover),
