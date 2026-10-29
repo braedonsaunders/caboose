@@ -257,6 +257,8 @@ struct WindowStats {
     /// Tiles that did not decode or came before any picture.
     tile_errors: u64,
     copies: u64,
+    /// Distinct observed picture displacements, bounded for long-running probes.
+    copy_shifts: Vec<[i32; 2]>,
     /// Copies that came before any picture.
     copy_errors: u64,
 }
@@ -726,6 +728,10 @@ fn run(args: Args) -> Result<bool, String> {
                 Message::FrameCopy(c) => {
                     let s = windows.entry(c.id).or_default();
                     s.copies += 1;
+                    let shift = [c.dst[0] - c.src.x, c.dst[1] - c.src.y];
+                    if s.copy_shifts.len() < 16 && !s.copy_shifts.contains(&shift) {
+                        s.copy_shifts.push(shift);
+                    }
                     match decoders.get_mut(&c.id) {
                         Some(d) if d.last.is_some() => d.paints.push(Paint::Copy(c.src, c.dst)),
                         _ => s.copy_errors += 1,
@@ -999,7 +1005,7 @@ fn run(args: Args) -> Result<bool, String> {
                     _ => 0.0,
                 };
                 format!(
-                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{},\"copies\":{},\"copy_errors\":{}}}",
+                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{},\"copies\":{},\"copy_errors\":{},\"copy_shifts\":{:?}}}",
                     w.title,
                     w.kind,
                     w.parent.map(|p| p.to_string()).unwrap_or("null".into()),
@@ -1027,7 +1033,8 @@ fn run(args: Args) -> Result<bool, String> {
                     w.tile_bytes,
                     w.tile_errors,
                     w.copies,
-                    w.copy_errors
+                    w.copy_errors,
+                    w.copy_shifts
                 )
             })
             .collect();

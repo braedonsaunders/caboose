@@ -35,14 +35,11 @@ class Failed(Exception):
 def compositor(command, token_file, extra=()):
     env = dict(os.environ)
     env.setdefault("XDG_RUNTIME_DIR", tempfile.mkdtemp(prefix="xdg-"))
-    if os.environ.get("CABOOSE_COPY_CHECK_DEBUG"):
-        env["CABOOSE_DISPLAY_LOG"] = "caboose_display=debug"
     os.chmod(env["XDG_RUNTIME_DIR"], 0o700)
     log = open(os.path.join(env["XDG_RUNTIME_DIR"], "caboose-display.log"), "w")
     proc = subprocess.Popen(
         [os.path.join(BIN, "caboose-display"), "--listen", f"127.0.0.1:{PORT}", "--token-file", token_file, *extra, "--", *command],
         env=env, stdout=log, stderr=subprocess.STDOUT)
-    proc.caboose_log = log.name
     for _ in range(100):
         if probe(["--check", "--token-file", token_file], check=False, json_out=False).returncode == 0:
             return proc
@@ -738,13 +735,16 @@ def check_tiles():
 
 
 def check_copies():
-    # Scrolling an article in Chromium at a phone's size, 120 px at a time, for a client
+    # Scrolling an article in Chromium at a phone's size for a client
     # that applies frame.copy: scrolls must go as copies with their tiles (every tile
     # decodes, no copy arrives before a picture), the window must send fewer pictures and
     # the server must spend less than with --no-copy. That a copy and its tiles give the
     # new picture exactly is what the compositor's unit tests check (encode/scroll.rs);
     # here both final pictures are lossy, so how closely they agree is only reported.
-    actions = ";".join(["maximize", "wait:1500"] + [f"scroll:589,1278,{dy}" for dy in [120] * 16 + [-120] * 8]
+    # Chromium maps this precise input delta to twelve times as many picture
+    # pixels on the test display. Request 10, then report the actual copy shifts;
+    # requesting 120 moves 1440 pixels, outside the detector's half-region limit.
+    actions = ";".join(["maximize", "wait:1500"] + [f"scroll:589,1278,{dy}" for dy in [10] * 16 + [-10] * 8]
                        + ["wait:600"])
     runs = {}
     for name, extra in (("copies", ()), ("pictures", ("--no-copy",))):
@@ -753,8 +753,6 @@ def check_copies():
             r = probe(["--token-file", token, "--duration", "14", "--windows", "1", "--display", "1179x2556@120x3",
                        "--copy", "--actions", actions, "--server-pid", str(proc.pid), "--save", out])
             print(f"copies check {name}: {json.dumps(r)}", flush=True)
-            if name == "copies" and r["windows"][0]["copies"] < 8:
-                print(open(proc.caboose_log).read(), flush=True)
             return r, os.path.join(out, "window-1.png")
         runs[name] = with_server(CHROMIUM + [f"--app={PAGES}/article.html"], run, extra=extra)
     (r, picture), (plain, plain_picture) = runs["copies"], runs["pictures"]
@@ -769,7 +767,7 @@ def check_copies():
     cpu, plain_cpu = r["server_cpu_ms"], plain["server_cpu_ms"]
     if cpu >= plain_cpu:
         raise Failed(f"server CPU {cpu} ms with copies, {plain_cpu} ms without")
-    return (f"24 scrolls at 1179x2556: {w['copies']} copies, {w['tiles']} tiles ({w['tile_bytes'] // 1000} kB) and "
+    return (f"24 scrolls at 1179x2556, requested deltas ±10, observed picture shifts {w['copy_shifts']}: {w['copies']} copies, {w['tiles']} tiles ({w['tile_bytes'] // 1000} kB) and "
             f"{w['frames']} pictures, against {p['frames']} pictures; server {cpu} ms against {plain_cpu} ms; "
             f"final pictures {psnr(picture, plain_picture):.1f} dB apart")
 

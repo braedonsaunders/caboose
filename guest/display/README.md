@@ -64,8 +64,7 @@ This directory is a Cargo workspace:
   goes as a copy within the picture the client shows plus lossless tiles, with no x264
   pass. When a window that was just scrolled or touched (or whose last update was a copy)
   damages at least 128×128 pixels, the encoder compares the new picture with the shadow:
-  hashes of every damaged row and its middle half vote for the vertical shift (fixed
-  side pixels do not hide document motion), column hashes vote for a
+  a hash of every damaged row votes for the vertical shift, column hashes vote for a
   sideways one after a horizontal scroll, and the scroll deltas themselves are tried too.
   A shift is used only when an exact comparison finds at least 90% of the damaged
   region's 16×16 blocks reproduced; every other block, the exposed edge included, follows
@@ -211,7 +210,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `motion` | Chromium plays a 480×270 canvas "video" in a page of text for 8 s: it becomes one `motion` stream at the canvas, every frame decodes with a pts, the window stream sends at most half as many pictures beside it, the stream ends after the video stops, and the final window picture matches the one streamed with `--no-motion` (≥ 40 dB) |
 | `scaled-motion` | Chromium motion decodes at half size and retains its placement when the client advertises `scaled_motion` |
 | `tiles` | 31 characters typed into Chromium at 1179×2556 go as tiles: every tile decodes, at most a third of the pictures of a run without tiles, the server spends at most 60% of the CPU, and the final picture (frame plus tiles, as the client paints it) matches the one without tiles (≥ 40 dB); a 250×250 animation at 60 Hz stays video |
-| `copies` | 24 precise scrolls of an article in Chromium at 1179×2556, with a probe that applies `frame.copy`: at least 8 go as copies, every tile decodes, no copy comes before a picture, and the window sends fewer pictures and the server spends less CPU than with `--no-copy`. How far the two final pictures are apart is reported, not asserted: both are lossy, and that a copy and its tiles give the new picture exactly is checked by the unit tests in `src/encode/scroll.rs` |
+| `copies` | 24 precise scrolls (requested deltas ±10; actual picture shifts are reported) of an article in Chromium at 1179×2556, with a probe that applies `frame.copy`: at least 8 go as copies, every tile decodes, no copy comes before a picture, and the window sends fewer pictures and the server spends less CPU than with `--no-copy`. How far the two final pictures are apart is reported, not asserted: both are lossy, and that a copy and its tiles give the new picture exactly is checked by the unit tests in `src/encode/scroll.rs` |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 For the `passthrough` check's cross-check against the driver's reference detector, mount

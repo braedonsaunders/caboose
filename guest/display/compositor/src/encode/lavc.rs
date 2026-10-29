@@ -464,19 +464,7 @@ impl LavcEncoder {
         }
         let shown = scroll::Plane { data: &self.shadow, stride: row };
         let new = scroll::Plane { data: src.data, stride: src.stride };
-        let Some(plan) = scroll::plan(shown, new, self.width, self.height, damage, hints) else {
-            if let Ok(directory) = std::env::var("CABOOSE_COPY_DUMP") {
-                static DUMP: std::sync::Once = std::sync::Once::new();
-                DUMP.call_once(|| {
-                    let path = std::path::Path::new(&directory);
-                    let _ = std::fs::write(path.join("copy-before.bgrx"), &self.shadow);
-                    let _ = std::fs::write(path.join("copy-after.bgrx"), src.data);
-                    let _ = std::fs::write(path.join("copy-layout.txt"), format!("{} {} {} {} {hints:?} {damage:?}", self.width, self.height, row, src.stride));
-                });
-            }
-            tracing::debug!("copy: no exact plan for {}x{}, hints {hints:?}, damage {damage:?}", self.width, self.height);
-            return Ok(None);
-        };
+        let Some(plan) = scroll::plan(shown, new, self.width, self.height, damage, hints) else { return Ok(None) };
         let tiles = plan.tiles.iter().map(|r| (*r, rgb(src, *r))).collect();
         // After the copy and the tiles the client shows the input: everywhere they change
         // (`stale`) the shadow takes it, and the next picture codes it.
