@@ -135,7 +135,7 @@ export function Computer({ client: hostClient, computers, id, host, me, tab, onU
       {tab === 'files' ? <Files client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
       {tab === 'apps' ? <Apps client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
       {tab === 'phones' ? <Phones client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
-      {tab === 'backups' ? <Backups client={client} /> : null}
+      {tab === 'backups' ? <Backups client={client} onUnauthorized={onUnauthorized} /> : null}
       {tab === 'settings' ? (
         <Settings
           client={client}

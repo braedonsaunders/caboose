@@ -1,19 +1,25 @@
 import * as React from 'react'
 import { Alert, AlertDescription, AlertTitle, Button, SettingsSection, promptDialog } from '@braedonsaunders/appkit-ui'
-import type { CabooseClient } from '../../api.js'
+import { CabooseApiError, type CabooseClient } from '../../api.js'
 import type { RecoveryStatus } from '../../recovery.js'
 
-export function Backups({ client }: { client: CabooseClient }) {
+export function Backups({ client, onUnauthorized }: { client: CabooseClient; onUnauthorized: () => void }) {
   const [status, setStatus] = React.useState<RecoveryStatus | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState(false)
   React.useEffect(() => {
-    let active = true
-    const refresh = () => client.recovery().then(value => { if (active) setStatus(value) }).catch(failure => { if (active) setError(String(failure.message ?? failure)) })
+    let active = true, pending = false
+    const refresh = async () => {
+      if (pending || document.visibilityState === 'hidden') return
+      pending = true
+      try { const value = await client.recovery(); if (active) { setStatus(value); setError(null) } }
+      catch (failure) { if (active) { setStatus(null); if (failure instanceof CabooseApiError && failure.isUnauthorized) onUnauthorized(); else setError(failure instanceof Error ? failure.message : String(failure)) } }
+      finally { pending = false }
+    }
     void refresh()
     const timer = setInterval(() => void refresh(), 5000)
     return () => { active = false; clearInterval(timer) }
-  }, [client])
+  }, [client, onUnauthorized])
   async function run(action: () => Promise<RecoveryStatus>) {
     setBusy(true); setError(null)
     try { setStatus(await action()) } catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)) }
@@ -27,7 +33,7 @@ export function Backups({ client }: { client: CabooseClient }) {
   return <div className="space-y-6">
     <SettingsSection title="Host recovery captures" description="Local captures share this server’s storage and failure domain. They are not an independent server backup. Phone backups remain encrypted with keys held by the person’s devices; this console cannot read them.">
       {error ? <Alert variant="destructive"><AlertTitle>Recovery request failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
-      {!status ? <p>Loading recovery status…</p> : <div className="space-y-4">
+      {!status ? <p>{error ? 'Recovery status is unavailable.' : 'Loading recovery status…'}</p> : <div className="space-y-4">
         <p>{status.reason ?? status.captureReason ?? 'Capture a coherent parked disk without waking the computer.'}</p>
         <p>Retention: newest {status.retention.newest} captures, plus captures a phone is downloading. Deleting the computer deletes its local captures.</p>
         <Button disabled={busy || !status.captureReady} onClick={() => void run(() => client.captureRecovery())}>{busy || status.capturing ? 'Working…' : 'Capture parked disk'}</Button>
