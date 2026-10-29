@@ -9,6 +9,8 @@ final class StubServer: URLProtocol, @unchecked Sendable {
         var headers: [String: String] = [:]
         var chunks: [Data] = []
         var redirect: URL?
+        /// Send the chunks and never finish, as a stalled server does.
+        var hangs = false
     }
 
     nonisolated(unsafe) static var replies: [String: Reply] = [:]
@@ -39,7 +41,7 @@ final class StubServer: URLProtocol, @unchecked Sendable {
         let response = HTTPURLResponse(url: request.url!, statusCode: reply.status, httpVersion: "HTTP/1.1", headerFields: reply.headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         for chunk in reply.chunks { client?.urlProtocol(self, didLoad: chunk) }
-        client?.urlProtocolDidFinishLoading(self)
+        if !reply.hangs { client?.urlProtocolDidFinishLoading(self) }
     }
 
     override func stopLoading() {}
@@ -122,6 +124,54 @@ final class StubServer: URLProtocol, @unchecked Sendable {
             _ = try await BoundedTransfer.upload(request, fromFile: file, configuration: StubServer.configuration())
         }
         #expect(!StubServer.requests.contains { $0.url?.host == "elsewhere.test" })
+    }
+
+    @Test func aTransferCancelledBeforeItStartsSendsNothing() async throws {
+        StubServer.replies["/never"] = .init(status: 200, chunks: [Data(count: 4)])
+        StubServer.requests.removeAll()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("never")
+        let configuration = StubServer.configuration()
+        let outcome = await Task { () -> Error? in
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await BoundedTransfer.download(URLRequest(url: URL(string: "https://host.test/never")!), to: destination,
+                                                       limit: 10, configuration: configuration)
+                return nil
+            } catch { return error }
+        }.value
+        #expect(outcome is CancellationError)
+        #expect(StubServer.requests.isEmpty)
+        #expect(leftovers().isEmpty)
+    }
+
+    @Test func aTransferCancelledMidwayEndsAndLeavesNothing() async throws {
+        StubServer.replies["/stalls"] = .init(status: 200, headers: ["Content-Length": "8"], chunks: [Data(count: 4)], hangs: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("stalls")
+        let configuration = StubServer.configuration()
+        let task = Task { () -> Error? in
+            do {
+                _ = try await BoundedTransfer.download(URLRequest(url: URL(string: "https://host.test/stalls")!), to: destination,
+                                                       limit: 10, configuration: configuration)
+                return nil
+            } catch { return error }
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        task.cancel()
+        #expect(await task.value is CancellationError)
+        #expect(leftovers().isEmpty)
+    }
+
+    @Test func metadataAnswersAreBounded() async throws {
+        StubServer.replies["/stat"] = .init(status: 200, chunks: Array(repeating: Data(count: 32 * 1024), count: 3))
+        await #expect(throws: BoundedTransfer.Failure.tooLarge) {
+            _ = try await BoundedTransfer.fetch(URLRequest(url: URL(string: "https://host.test/stat")!), configuration: StubServer.configuration())
+        }
+        StubServer.replies["/small"] = .init(status: 404, chunks: [Data("{}".utf8)])
+        let (data, status) = try await BoundedTransfer.fetch(URLRequest(url: URL(string: "https://host.test/small")!),
+                                                             configuration: StubServer.configuration())
+        #expect(status == 404 && data == Data("{}".utf8))
     }
 
     @Test func contentRangesMustDescribeTheStart() {

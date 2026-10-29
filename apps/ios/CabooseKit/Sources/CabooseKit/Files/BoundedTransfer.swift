@@ -1,8 +1,9 @@
 import Foundation
 
 /// Authenticated file transfers with the host that cannot be steered or overrun: no
-/// redirect is followed (the bearer token and the file never go anywhere else), a
-/// download is streamed to disk and stopped the moment it passes its limit, and nothing
+/// redirect is followed (the bearer token and the file never go anywhere else), every
+/// response body has a hard byte limit enforced as it arrives, a download is streamed to
+/// disk, cancellation (even before the request starts) ends the transfer, and nothing
 /// partial is left behind.
 public enum BoundedTransfer {
     public enum Failure: Error, Equatable {
@@ -16,6 +17,9 @@ public enum BoundedTransfer {
         /// than the server announced.
         case incomplete
     }
+
+    /// The most a metadata answer (a stat, an upload's reply) may be.
+    public static let metadataLimit: Int64 = 64 * 1024
 
     /// An ephemeral configuration: no cookies, no cache, nothing kept on disk.
     public static func configuration() -> URLSessionConfiguration {
@@ -31,22 +35,16 @@ public enum BoundedTransfer {
     /// exactly the start of a file no larger than `limit`, and a 200 is cut off past it.
     public static func download(_ request: URLRequest, to destination: URL, limit: Int64,
                                 configuration: URLSessionConfiguration = configuration()) async throws -> Int64 {
+        try Task.checkCancellation()
         var request = request
         request.setValue("bytes=0-\(limit)", forHTTPHeaderField: "Range")
         guard FileManager.default.createFile(atPath: destination.path, contents: nil),
               let handle = try? FileHandle(forWritingTo: destination) else { throw CocoaError(.fileWriteUnknown) }
-        let receiver = Receiver(limit: limit, handle: handle)
+        let receiver = Receiver(limit: limit, file: handle, ranged: true)
         let session = URLSession(configuration: configuration, delegate: receiver, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         do {
-            let size = try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
-                    receiver.continuation = continuation
-                    session.dataTask(with: request).resume()
-                }
-            } onCancel: {
-                session.invalidateAndCancel()
-            }
+            let (_, _, size) = try await receiver.run { session.dataTask(with: request) }
             try handle.close()
             return size
         } catch {
@@ -56,24 +54,24 @@ public enum BoundedTransfer {
         }
     }
 
-    /// A small request (a stat, a delete) without following redirects; returns the body and status.
+    /// A small request (a stat, a delete): its body (at most `metadataLimit`) and status.
     public static func fetch(_ request: URLRequest, configuration: URLSessionConfiguration = configuration()) async throws -> (Data, Int) {
-        let session = URLSession(configuration: configuration, delegate: RefuseRedirects(), delegateQueue: nil)
+        try Task.checkCancellation()
+        let receiver = Receiver(limit: metadataLimit, file: nil, ranged: false)
+        let session = URLSession(configuration: configuration, delegate: receiver, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
-        let (data, response) = try await session.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if (300 ..< 400).contains(status) { throw Failure.redirected }
+        let (data, status, _) = try await receiver.run { session.dataTask(with: request) }
         return (data, status)
     }
 
-    /// Uploads a file without following redirects; returns the body and status.
+    /// Uploads a file; returns the reply (at most `metadataLimit`) and status.
     public static func upload(_ request: URLRequest, fromFile file: URL,
                               configuration: URLSessionConfiguration = configuration()) async throws -> (Data, Int) {
-        let session = URLSession(configuration: configuration, delegate: RefuseRedirects(), delegateQueue: nil)
+        try Task.checkCancellation()
+        let receiver = Receiver(limit: metadataLimit, file: nil, ranged: false)
+        let session = URLSession(configuration: configuration, delegate: receiver, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
-        let (data, response) = try await session.upload(for: request, fromFile: file)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if (300 ..< 400).contains(status) { throw Failure.redirected }
+        let (data, status, _) = try await receiver.run { session.uploadTask(with: request, fromFile: file) }
         return (data, status)
     }
 
@@ -87,22 +85,61 @@ public enum BoundedTransfer {
         return total > limit || end == total - 1 ? total : nil
     }
 
-    private final class RefuseRedirects: NSObject, URLSessionTaskDelegate {
-        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                        newRequest request: URLRequest) async -> URLRequest? { nil }
-    }
-
+    /// Receives one task's answer within a limit, into a file or memory. Its continuation
+    /// is resumed exactly once; cancellation before or after the task starts ends it.
     private final class Receiver: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-        let limit: Int64
-        let handle: FileHandle
-        var continuation: CheckedContinuation<Int64, Error>?
+        private let limit: Int64
+        private let file: FileHandle?
+        private let ranged: Bool
+        private let lock = NSLock()
+        // Guarded by `lock`.
+        private var continuation: CheckedContinuation<(Data, Int, Int64), Error>?
+        private var task: URLSessionTask?
+        private var cancelled = false
+        // Touched only on the session's delegate queue.
+        private var body = Data()
         private var received: Int64 = 0
         private var expected: Int64 = -1
+        private var status = 0
         private var failure: Error?
 
-        init(limit: Int64, handle: FileHandle) {
+        init(limit: Int64, file: FileHandle?, ranged: Bool) {
             self.limit = limit
-            self.handle = handle
+            self.file = file
+            self.ranged = ranged
+        }
+
+        func run(_ makeTask: @escaping () -> URLSessionTask) async throws -> (Data, Int, Int64) {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    lock.lock()
+                    if cancelled {
+                        lock.unlock()
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    self.continuation = continuation
+                    let task = makeTask()
+                    self.task = task
+                    lock.unlock()
+                    task.resume()
+                }
+            } onCancel: {
+                lock.lock()
+                cancelled = true
+                let task = self.task
+                lock.unlock()
+                task?.cancel()
+            }
+        }
+
+        private func finish(_ result: Result<(Data, Int, Int64), Error>) {
+            lock.lock()
+            let continuation = self.continuation
+            self.continuation = nil
+            let outcome = cancelled ? .failure(CancellationError()) : result
+            lock.unlock()
+            continuation?.resume(with: outcome)
         }
 
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -114,21 +151,25 @@ public enum BoundedTransfer {
         func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
             let http = response as? HTTPURLResponse
-            switch http?.statusCode ?? 0 {
-            case 200:
-                expected = response.expectedContentLength
-                if expected > limit { failure = Failure.tooLarge }
-            case 206:
+            status = http?.statusCode ?? 0
+            switch status {
+            case 300 ..< 400:
+                failure = failure ?? Failure.redirected
+            case 206 where ranged:
                 if let total = BoundedTransfer.rangeTotal(http?.value(forHTTPHeaderField: "Content-Range"), limit: limit) {
                     expected = total
                     if total > limit { failure = Failure.tooLarge }
                 } else {
                     failure = Failure.incomplete
                 }
-            case 300 ..< 400:
-                failure = failure ?? Failure.redirected
-            case let status:
+            case 200 where ranged:
+                expected = response.expectedContentLength
+                if expected > limit { failure = Failure.tooLarge }
+            case _ where ranged:
                 failure = Failure.status(status)
+            default:
+                // A metadata answer of any status goes back to the caller, within the limit.
+                if response.expectedContentLength > limit { failure = Failure.tooLarge }
             }
             completionHandler(failure == nil ? .allow : .cancel)
         }
@@ -141,19 +182,21 @@ public enum BoundedTransfer {
                 dataTask.cancel()
                 return
             }
-            do { try handle.write(contentsOf: data) } catch {
-                failure = error
-                dataTask.cancel()
+            if let file {
+                do { try file.write(contentsOf: data) } catch {
+                    failure = error
+                    dataTask.cancel()
+                }
+            } else {
+                body.append(data)
             }
         }
 
         func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-            let continuation = self.continuation
-            self.continuation = nil
-            if let failure { continuation?.resume(throwing: failure) }
-            else if let error { continuation?.resume(throwing: error) }
-            else if expected >= 0, received != expected { continuation?.resume(throwing: Failure.incomplete) }
-            else { continuation?.resume(returning: received) }
+            if let failure { finish(.failure(failure)) }
+            else if let error { finish(.failure(error)) }
+            else if ranged, expected >= 0, received != expected { finish(.failure(Failure.incomplete)) }
+            else { finish(.success((body, status, received))) }
         }
     }
 }
