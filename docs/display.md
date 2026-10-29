@@ -338,7 +338,9 @@ then adjusts playback continuously with pitch preservation. This accommodates vi
 machines whose clocks run at a different rate without repeatedly discarding sound.
 The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
 only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
-playback resets the clock and estimator.
+playback resets the clock and estimator. Rate corrections change only the rendering
+rate, without resetting the timebase position; explicit time/host anchors are used only
+when playback starts or restarts.
 
 
 A video stream is layered into a window (`window`) by the client: it decodes it with its

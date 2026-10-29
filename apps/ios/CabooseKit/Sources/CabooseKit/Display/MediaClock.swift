@@ -78,7 +78,10 @@ public final class MediaClock: @unchecked Sendable {
             // chase clock drift loses real sound on every correction.
             anchor = (media: now, host: micros)
             playbackRate = rate
-            synchronizer.setRate(Float(rate), time: CMTime(value: now, timescale: 1_000_000), atHostTime: host)
+            // A rate correction must not seek the timebase. Repeated explicit time/host
+            // anchors make the audio renderer restart its processing, producing a gap
+            // at every adjustment even though no buffer was flushed.
+            synchronizer.setRate(Float(rate), time: .invalid)
         } else if now == nil {
             _ = recovery.observe(pts: pts, host: micros, ahead: playout.delay, target: playout.delay)
         }
