@@ -169,3 +169,17 @@ describe('sign-in throttling', () => {
     expect(isSignInAttempt('POST', '/v1/auth/sign-out')).toBe(false)
   })
 })
+
+
+it('socket authorization reads do not refresh session lifetime', async () => {
+  const signedIn = await identity.signIn('owner@example.com', 'correct horse', new Headers())
+  const headers = new Headers({ cookie: cookieFrom(signedIn) })
+  const principal = await identity.principal(headers)
+  const expires = new Date(Date.now() + 60 * 60 * 1000)
+  await database.pool.query("UPDATE sessions SET expires_at=$1, updated_at=now()-interval '2 days' WHERE user_id=$2", [expires, principal!.userId])
+  expect(await identity.principal(headers, { disableRefresh: true })).toBeDefined()
+  const rows = await database.pool.query('SELECT expires_at FROM sessions WHERE user_id=$1', [principal!.userId])
+  expect(rows.rows.every(row => row.expires_at.getTime() === expires.getTime())).toBe(true)
+  await database.pool.query("UPDATE sessions SET expires_at=now()-interval '1 second' WHERE user_id=$1", [principal!.userId])
+  expect(await identity.principal(headers, { disableRefresh: true })).toBeUndefined()
+})

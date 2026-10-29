@@ -301,9 +301,9 @@ export class Identity {
 
   // --- Sessions ---------------------------------------------------------------
 
-  async principal(headers: Headers): Promise<AdminPrincipal | undefined> {
+  async principal(headers: Headers, options: { disableRefresh?: boolean } = {}): Promise<AdminPrincipal | undefined> {
     if (!headers.get('cookie')) return undefined
-    const session = await this.authFor(headers).api.getSession({ headers }).catch(() => null)
+    const session = await this.authFor(headers).api.getSession({ headers, query: { disableRefresh: options.disableRefresh } }).catch(() => null)
     const user = session?.user as { id: string; name: string; email: string; isActive?: boolean; isSuperAdmin?: boolean } | undefined
     if (!user || user.isActive === false) return undefined
     const rows = await this.db.select({ tenantId: memberships.tenantId }).from(memberships)

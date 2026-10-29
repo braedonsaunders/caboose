@@ -1407,7 +1407,7 @@ export function createCabooseServer(options: ComputerPieces & {
     if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
     if (principal.kind === 'admin') {
       const remove = accountSockets.add(async () => {
-        const current = await principalOf(request)
+        const current = await identity?.principal(webHeaders(request), { disableRefresh: true })
         return current?.kind === 'admin' && current.userId === principal.userId && manages(current, routed.runtime.id)
       }, () => socket.destroy())
       socket.once('close', remove)

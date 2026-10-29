@@ -22,7 +22,7 @@ Session listings contain IDs, browser, address and timestamps, never bearer toke
 Revocation checks ownership using the signed-in account. Session cookie caching is disabled,
 so revoked sessions cannot authorize subsequent requests. Open administrator sockets are
 revalidated before a successful account-security or membership-removal response returns;
-expired sessions are checked every 30 seconds. A failed authorization read closes the
+expired sessions are checked every 30 seconds without refreshing their lifetime. A failed authorization read closes the
 connection. Each revalidation sweep has a five-second deadline; an unavailable database
 closes affected connections rather than stalling revocation. Owner-token and phone sockets keep their separate authorization behavior.
 
