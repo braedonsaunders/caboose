@@ -41,6 +41,8 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
 
     public private(set) var places: [Int: Place] = [:]
     private var clock = 0
+    /// The display server lifetime the ids belong to, when the computer reports one.
+    public private(set) var epoch: String?
 
     public init() {}
 
@@ -62,7 +64,8 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     /// The owner moved or resized the window to `frame`: it is the window's frame now, unsnapped.
     public mutating func setPreferred(_ id: Int, frame: CGRect, in area: CGRect, app: String?) {
         clock += 1
-        let minimized = places[id]?.minimized
+        // Minimized only carries over from this window's own place, never another app's.
+        let minimized = place(for: id, app: app)?.minimized
         places[id] = Place(preferred: frame, area: area, snap: nil, app: app?.lowercased(), minimized: minimized, touched: clock)
         trim()
     }
@@ -87,6 +90,15 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     }
 
     public mutating func remove(_ id: Int) { places[id] = nil }
+
+    /// The display server the windows come from. A new lifetime (the computer cold-booted,
+    /// or its display restarted) numbers its windows afresh, so every place kept by id is
+    /// dropped before anything is placed. A server that reports no epoch changes nothing.
+    public mutating func enter(epoch: String?) {
+        guard let epoch, epoch != self.epoch else { return }
+        if self.epoch != nil { places.removeAll() }
+        self.epoch = epoch
+    }
 
     /// Keeps only the places of these windows: the computer's complete set, once it has
     /// announced them after connecting.

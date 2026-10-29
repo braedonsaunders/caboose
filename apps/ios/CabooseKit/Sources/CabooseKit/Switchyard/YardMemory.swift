@@ -7,12 +7,25 @@ import Foundation
 /// Window ids survive reconnects and parking, so a saved layout lays the same windows out
 /// again; windows that have since closed are pruned when the computer's windows arrive. Apps
 /// are keyed by their window class, which is stable where window ids are not (a restart).
+/// A new display server lifetime numbers its windows afresh, so its first windows find an
+/// empty track rather than another lifetime's columns (`enter(epoch:)`).
 public struct YardMemory: Codable, Equatable, Sendable {
     public var layout = YardLayout()
     /// Hand-chosen widths by app class, as fractions of the screen.
     public private(set) var widths: [String: CGFloat] = [:]
+    /// The display server lifetime the layout's window ids belong to, when it reports one.
+    public private(set) var epoch: String?
 
     public init() {}
+
+    /// Clears the track for a new display server lifetime, keeping the hand-chosen widths,
+    /// which belong to apps rather than windows. A server that reports no epoch, or the same
+    /// one again, changes nothing.
+    public mutating func enter(epoch: String?) {
+        guard let epoch, epoch != self.epoch else { return }
+        if self.epoch != nil { layout = YardLayout() }
+        self.epoch = epoch
+    }
 
     /// The width a new window of `appClass` opens at, if it was ever chosen by hand.
     public func width(for appClass: String?) -> CGFloat? {

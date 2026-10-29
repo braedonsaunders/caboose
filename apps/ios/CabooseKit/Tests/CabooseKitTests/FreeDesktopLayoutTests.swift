@@ -135,6 +135,10 @@ struct FreeDesktopLayoutTests {
         #expect(layout.frame(for: 6, app: "Thunar", in: pad) == chosen)
         layout.setMinimized(6, false)
         #expect(!layout.isMinimized(6, app: "Thunar"))
+        // Another app given the id keeps none of the old window's state.
+        layout.setMinimized(6, true)
+        layout.setPreferred(6, frame: chosen, in: pad, app: "Mousepad")
+        #expect(!layout.isMinimized(6, app: "Mousepad") && layout.places[6]?.minimized == nil)
         // A window without a place keeps nothing.
         layout.setMinimized(99, true)
         #expect(layout.places[99] == nil)
@@ -192,6 +196,25 @@ struct FreeDesktopLayoutTests {
         #expect(layout.frame(for: 10, app: nil, in: pad) == nil && layout.frame(for: 10, app: "Thunar", in: pad) == nil)
         layout.remove(9)
         #expect(layout.places.keys.sorted() == [10])
+    }
+
+    @Test func aNewDisplayLifetimeDropsEveryPlace() {
+        var layout = FreeDesktopLayout()
+        layout.enter(epoch: "a")
+        layout.setPreferred(3, frame: CGRect(x: 0, y: 0, width: 300, height: 200), in: pad, app: "Chromium")
+        // A reconnect to the same lifetime, or a server that reports none, keeps them.
+        layout.enter(epoch: "a")
+        layout.enter(epoch: nil)
+        #expect(layout.frame(for: 3, app: "Chromium", in: pad) != nil)
+        // A cold boot: the same app may be given the same id, but it is a new window.
+        layout.enter(epoch: "b")
+        #expect(layout.places.isEmpty && layout.epoch == "b")
+        // The first epoch seen adopts the places kept before epochs were reported.
+        var older = FreeDesktopLayout()
+        older.setPreferred(1, frame: CGRect(x: 0, y: 0, width: 300, height: 200), in: pad, app: "Code")
+        older.enter(epoch: "x")
+        #expect(older.places.count == 1)
+        #expect(FreeDesktopLayout.decoded(from: layout.encoded()) == layout)
     }
 
     @Test func theAnnouncedWindowsAreTheOnlyOnesKept() {

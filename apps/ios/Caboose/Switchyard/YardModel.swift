@@ -180,6 +180,22 @@ final class YardModel {
         }
     }
 
+    /// The display server the windows come from: a new lifetime numbers its windows afresh,
+    /// so the track of the last one is cleared (hand-chosen widths stay). Call it before
+    /// syncing a ready session's windows.
+    func enter(epoch: String?) {
+        let before = memory
+        memory.enter(epoch: epoch)
+        guard memory != before else { return }
+        if before.epoch != nil {
+            scroll = 0
+            zoomed = nil
+            coverProgress = 0
+            invalidate()
+        }
+        save()
+    }
+
     /// The display was reconnected or reconfigured: everything is sent afresh.
     func invalidate() {
         sent.removeAll()

@@ -139,6 +139,21 @@ final class DesktopModel {
 
     init(pixelsPerPoint: CGFloat) { self.pixelsPerPoint = pixelsPerPoint }
 
+    /// The display server the windows come from: a new lifetime numbers its windows afresh,
+    /// so every place, the stacking and the minimized windows of the last one are dropped
+    /// before anything is placed. Call it before placing a ready session's windows.
+    func enter(epoch: String?) {
+        let before = layout
+        layout.enter(epoch: epoch)
+        guard layout != before else { return }
+        if before.epoch != nil {
+            stacking.removeAll()
+            minimized.removeAll()
+            liveWindows = nil
+        }
+        save()
+    }
+
     /// The computer has announced every window it has: places of windows it no longer has
     /// (closed while away, or from before a cold boot) are dropped.
     func windowsAnnounced(_ ids: Set<Int>) {

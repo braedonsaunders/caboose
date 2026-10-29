@@ -339,6 +339,20 @@ struct SwitchyardTests {
         #expect(Set(layout.columns.map(\.id)).count == layout.columns.count)
     }
 
+    @Test func aNewDisplayLifetimeClearsTheTrackButKeepsWidths() {
+        var memory = YardMemory()
+        memory.enter(epoch: "a")
+        memory.layout = layout([1, 2], in: pad)
+        memory.layout.setWidth(twoThirds, column: memory.layout.columns[0].id, in: pad)
+        memory.learnWidths { $0 == 1 ? "Code" : nil }
+        memory.enter(epoch: "a")
+        memory.enter(epoch: nil)
+        #expect(memory.layout.windows.sorted() == [1, 2])
+        memory.enter(epoch: "b")
+        #expect(memory.layout.isEmpty && memory.width(for: "code") != nil && memory.epoch == "b")
+        #expect(YardMemory.decoded(from: memory.encoded()) == memory)
+    }
+
     // MARK: Title bars
 
     @Test func aTileIsItsTitleBarAndTheWindowBelowIt() {
