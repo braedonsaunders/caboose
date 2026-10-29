@@ -44,6 +44,9 @@ to the network: it is a private host-to-guest transport.
   recovery-control identity, bridge protection and rollback. The control plane accepts
   only the packaged root guest agent, its helper, systemd and the exact private vsock
   bridge listener and its validated socat children; unknown peers make the view unavailable.
+  The freezer planner excludes only processes whose kernel status explicitly reports
+  `Kthread: 1`; missing or ambiguous status fails closed. Filesystem freeze fences
+  kernel filesystem writes.
 - `check-service.py` runs the real service in Linux, including inotify and dirfd confinement.
   From the repository root, with Docker:
 

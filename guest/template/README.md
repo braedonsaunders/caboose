@@ -45,3 +45,24 @@ fails closed if the guest's vsock CID does not refresh or the reset fails.
 For a short device diagnostic, `TEMPLATE_CHECK_QUICK=1` skips registration and
 full image hashing while retaining the disposable-disk and namespace checks.
 Use the default mode to verify registration and compatibility as well.
+
+`check-source.mts` exercises the actual host source builder, complete component
+version check, registration, a full-hash fork, and rejection of a modified
+prepared config. It also tests recovery refusal for an uncommitted TAP ownership
+receipt and a held image-root host lock. Stage the host source files used by the
+builder, the complete files listed in `guest/components/manifest.json`, and the
+built AppKit desk package at `node_modules/@braedonsaunders/appkit-desk` under a
+private test root. The root must contain disposable `base.raw`, `vmlinux` and
+`initrd`; the base must include the complete current guest bundle. Do not use a
+real computer's disk. With the same Linux KVM and private-network precautions,
+run:
+
+```sh
+sudo unshare -n env TEMPLATE_CHECK_STAGE=/path/to/disposable-stage \
+  tsx /path/to/staged/guest/template/check-source.mts
+```
+
+This check reads the full image and snapshot files for identity verification.
+It creates and keeps test artifacts inside the stage; after verifying the test
+VMM has exited, remove the stage. `TEMPLATE_CHECK_RECOVERY_ONLY=1` runs only the
+recovery refusal checks in a fresh private stage.

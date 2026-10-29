@@ -29,6 +29,24 @@ try {
   const helper = await readFile(join(stage, 'guest/template/caboose-template.py'))
   const unit = await readFile(join(stage, 'guest/template/caboose-template.target'))
   const install = `import base64,pathlib; pathlib.Path('/usr/local/libexec/caboose-template').write_bytes(base64.b64decode('${helper.toString('base64')}')); pathlib.Path('/etc/systemd/system/caboose-template.target').write_bytes(base64.b64decode('${unit.toString('base64')}'))`
+  const debPath = process.env.TEMPLATE_CHECK_WEBSOCKETS_DEB
+  if (debPath) {
+    const bytes = await readFile(debPath)
+    const encoded = bytes.toString('base64')
+    const guestDeb = '/tmp/caboose-template-websockets.deb'
+    const reset = await installer.exec({ command: '/bin/sh', args: ['-c', ': > "$1"', 'sh', guestDeb] })
+    if (reset.exitCode !== 0) throw new Error('Unable to stage fixture package')
+    for (let offset = 0; offset < encoded.length; offset += 48 * 1024) {
+      const write = await installer.exec({ command: '/bin/sh', args: ['-c', 'printf %s "$2" | base64 -d >> "$1"', 'sh', guestDeb, encoded.slice(offset, offset + 48 * 1024)] })
+      if (write.exitCode !== 0) throw new Error(`Unable to stage fixture package: ${write.stderr}`)
+    }
+    const installPackage = await installer.exec({ command: '/usr/bin/dpkg', args: ['-i', guestDeb], timeoutMs: 120_000 })
+    if (installPackage.exitCode !== 0) throw new Error(`Fixture package installation failed: ${installPackage.stderr}`)
+    const remove = await installer.exec({ command: '/bin/rm', args: ['-f', guestDeb] })
+    if (remove.exitCode !== 0) throw new Error('Unable to remove staged fixture package')
+  }
+  const dependencies = await installer.exec({ command: '/usr/bin/python3', args: ['-c', 'from websockets.asyncio.server import serve; print("terminal dependency ready")'] })
+  console.log(dependencies.exitCode === 0 ? 'PASS disposable golden terminal Python dependency' : `CHECK terminal dependency unavailable: ${dependencies.stderr}`)
   const installed = await installer.exec({ command: '/usr/bin/python3', args: ['-c', install] })
   if (installed.exitCode !== 0) throw new Error(`install failed: ${installed.stderr}`)
   // Older golden images may predate these components. Install the exact bundled
@@ -53,12 +71,27 @@ try {
   if (enabled.exitCode !== 0) throw new Error(`enable failed: ${enabled.stderr}`)
   await bootstrap.shutdown('bootstrap')
   const source = await host.start({ deskId: 'source', baseImage: disk, overlayPath: disk, memoryMb: 1024, vcpus: 2, network: { tapDevice: 'dsk932100', guestAddress: '172.30.92.2' } })
+  if (process.env.TEMPLATE_CHECK_QUICK !== '1') {
+    const version = await source.exec({ command: '/bin/cat', args: ['/usr/local/share/caboose/components.version'] })
+    if (version.exitCode !== 0 || version.stdout.trim() !== required('TEMPLATE_CHECK_COMPONENT_VERSION')) throw new Error('Disposable source lacks the current complete component bundle')
+    console.log('PASS disposable source component version')
+  }
   const prepared = await source.exec({ command: '/usr/bin/python3', args: ['/usr/local/libexec/caboose-template', 'prepare'], timeoutMs: 90_000 })
   if (prepared.exitCode !== 0) throw new Error(`guest prepare failed: ${prepared.stderr}`)
+  const bridgeScript = `import pathlib,subprocess
+p=int(subprocess.check_output(['systemctl','show','--property=MainPID','--value','desk-vsock-bridge.service']))
+for proc in sorted(pathlib.Path('/proc').glob('[0-9]*')):
+ try:
+  status=(proc/'status').read_text(); fields={line.split(':',1)[0]:line.split(':',1)[1].strip() for line in status.splitlines() if ':' in line}
+  if int(proc.name)!=p and fields.get('PPid')!=str(p): continue
+  print('pid',proc.name,'exe',(proc/'exe').resolve(),'argv',repr((proc/'cmdline').read_bytes()),'ppid',fields.get('PPid'),'uid',fields.get('Uid'),'cgroup',(proc/'cgroup').read_text().strip())
+ except (OSError,ValueError): pass`
+  const bridge = await source.exec({ command: '/usr/bin/python3', args: ['-c', bridgeScript] })
+  console.log(`CHECK private bridge: ${bridge.stdout} ${bridge.stderr}`)
   console.log('PASS isolated template guest')
   await host.suspend('source')
   for (const file of [disk, ...['config.json', 'state.json', 'memory-ranges'].map(name => join(snapshot, name))]) await chmod(file, 0o400)
-  const compatibility = { vmmVersion: 'v54.0', vmmPath: '/usr/local/bin/cloud-hypervisor', cpuSignature: await hostCpuSignature(), componentVersion: 'diagnostic', baseImagePath: required('TEMPLATE_CHECK_GOLDEN'), kernelPath: kernel, initramfsPath: initrd, attachmentPaths: [] }
+  const compatibility = { vmmVersion: 'v54.0', vmmPath: '/usr/local/bin/cloud-hypervisor', cpuSignature: await hostCpuSignature(), componentVersion: required('TEMPLATE_CHECK_COMPONENT_VERSION'), baseImagePath: required('TEMPLATE_CHECK_GOLDEN'), kernelPath: kernel, initramfsPath: initrd, attachmentPaths: [] }
   const quick = process.env.TEMPLATE_CHECK_QUICK === '1'
   if (!quick) await registerDeskTemplate(snapshot, disk, compatibility)
   async function startChild(id: string, tap: string, address: string, network: any) {
@@ -131,7 +164,11 @@ try {
       async releaseFence() {
         if (!initializedMachine) throw new Error('Guest was not initialized')
         const result = await initializedMachine.request({ op: 'exec', command: '/usr/bin/python3', args: ['/usr/local/libexec/caboose-template', 'activate'], timeoutMs: 90_000 }, { timeoutMs: 95_000 })
-        if (result.exitCode !== 0) throw new Error(`guest activation failed: ${result.stderr}`)
+        if (result.exitCode !== 0) {
+          const journal = await initializedMachine.request({ op: 'exec', command: '/bin/journalctl', args: ['-u', 'caboose-terminal.service', '-n', '30', '--no-pager', '-o', 'short'], timeoutMs: 15_000 }, { timeoutMs: 20_000 })
+          console.error(`CHECK bounded terminal journal:\n${journal.stdout || ''}\n${journal.stderr || ''}`)
+          throw new Error(`guest activation failed: ${result.stderr}`)
+        }
         // The namespace has no external interfaces; there is no host TAP fence to release.
       },
     } })

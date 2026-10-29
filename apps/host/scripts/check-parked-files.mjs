@@ -10,6 +10,7 @@ const timeout = Number(process.env.CABOOSE_CHECK_TIMEOUT_MS ?? 180000)
 if (!Number.isSafeInteger(timeout) || timeout < 10000 || timeout > 600000) throw new Error('CABOOSE_CHECK_TIMEOUT_MS must be 10000–600000')
 const prefix = `parked-check-${randomUUID()}`
 const payload = Buffer.from('parked files range and thaw verification\n')
+const streamedPayload = Buffer.alloc(16 * 1024 * 1024, 0x61)
 const headers = { authorization: `Bearer ${token}` }
 async function call(path, options = {}) {
   const response = await fetch(base + path, { ...options, headers: { ...headers, ...options.headers }, signal: options.signal ?? AbortSignal.timeout(timeout) })
@@ -31,6 +32,7 @@ try {
   await call('/v1/session', { method: 'POST' })
   await call(file('mkdir', prefix), { method: 'POST' }); created = true
   await call(file('content', `${prefix}/note.txt`), { method: 'PUT', headers: { 'if-none-match': '*' }, body: payload })
+  await call(file('content', `${prefix}/stream.bin`), { method: 'PUT', headers: { 'if-none-match': '*' }, body: streamedPayload })
   const before = await readStat(`${prefix}/note.txt`)
   await park()
   const listing = await (await call(file('list', prefix))).json()
@@ -53,6 +55,16 @@ try {
   const abort = new AbortController()
   const cancelled = fetch(base + file('content', `${prefix}/note.txt`), { headers, signal: abort.signal }).catch(() => undefined)
   abort.abort(); await cancelled
+  assert.deepEqual(await readStat(`${prefix}/note.txt`), before)
+  await expectState('parked')
+
+  // Response headers are sent only after the appliance has opened and read the
+  // first content chunk. Disconnect here rather than only before request dispatch.
+  const streamAbort = new AbortController()
+  const stream = await call(file('content', `${prefix}/stream.bin`), { signal: streamAbort.signal })
+  assert.equal(stream.headers.get('content-length'), String(streamedPayload.length))
+  streamAbort.abort()
+  await assert.rejects(stream.arrayBuffer(), error => error.name === 'AbortError')
   assert.deepEqual(await readStat(`${prefix}/note.txt`), before)
   await expectState('parked')
 

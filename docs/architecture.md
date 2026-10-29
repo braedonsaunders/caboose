@@ -2656,7 +2656,9 @@ across moves, signals the working set when the app receives `fs.changed`, and
 re-enumerates after an expired anchor. The system generates previews for downloaded files;
 there are no server-side thumbnails. On an opted-in supported Linux microVM, Files can
 read a sealed parked view through one network-disabled, read-only libguestfs appliance per request. Metadata and bounded content chunks share that appliance. The reader parses the guest Python MIME tables as literal data without executing guest code. Unsupported paths,
-metadata, change feeds and all mutations wake the computer. An unreachable host is
+metadata, change feeds and all mutations wake the computer. The guest's `.cache`
+tmpfs is absent from the disk view, so `.cache` access and home-root listings also
+wake rather than exposing the underlying mountpoint. An unreachable host is
 reported to Files as unreachable.
 
 ### Backups

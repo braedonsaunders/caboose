@@ -86,8 +86,30 @@ def cgroup_tree(root='/sys/fs/cgroup', max_groups=8192, max_pids=131072):
     return nodes
 
 
+def userspace_tree(nodes, proc='/proc'):
+    """Exclude only processes explicitly identified by the kernel as kernel threads.
+
+    Kernel threads can change while work queues drain; fsfreeze fences their
+    filesystem writes. A missing, repeated or malformed Kthread field fails closed.
+    """
+    result = {}
+    try:
+        for path, pids in nodes.items():
+            users = []
+            for pid in pids:
+                status = (Path(proc) / str(pid) / 'status').read_text()
+                fields = re.findall(r'^Kthread:\s*([^\s]+)\s*$', status, re.M)
+                if len(fields) != 1 or fields[0] not in ('0', '1'):
+                    raise Unsupported('process kernel-thread identity unavailable')
+                if fields[0] == '0': users.append(pid)
+            result[path] = users
+    except (OSError, UnicodeError) as error:
+        raise Unsupported('process kernel-thread identity unavailable') from error
+    return result
+
+
 def check_mounts(mountinfo, home='/home/caboose'):
-    """Require home to live on the root ext4 mount, with no nested mounts."""
+    """Require ext4 home, allowing only the standard transient cache mount."""
     mounts = []
     for line in mountinfo.splitlines():
         fields = line.split()
@@ -103,7 +125,8 @@ def check_mounts(mountinfo, home='/home/caboose'):
     root = [fs for point, fs in mounts if point == '/']
     if root != ['ext4']:
         raise Unsupported('root is not a single ext4 mount')
-    if any(point != '/' and (within(home, point) or within(point, home)) for point, _ in mounts):
+    relevant = [(point, fs) for point, fs in mounts if point != '/' and (within(home, point) or within(point, home))]
+    if any(point != home + '/.cache' or fs != 'tmpfs' for point, fs in relevant) or len(relevant) > 1:
         raise Unsupported('home has an unsupported mount')
 
 
@@ -178,6 +201,7 @@ def recovery_ancestry(proc='/proc', pid=None):
 
 BRIDGE_CGROUP = '/system.slice/desk-vsock-bridge.service'
 BRIDGE_ARGV = [b'/usr/bin/socat', b'VSOCK-LISTEN:5252,fork,reuseaddr', b'UNIX-CONNECT:/run/desk-guest-agent.sock']
+CGROUP_NAME = re.compile(r'/(?:[A-Za-z0-9_:@.\-]|\\x(?!00|2f)[0-9a-f]{2})+(?:/(?:[A-Za-z0-9_:@.\-]|\\x(?!00|2f)[0-9a-f]{2})+)*')
 
 
 def bridge_processes(nodes, proc='/proc'):
@@ -253,7 +277,7 @@ def check_control_plane(trusted, proc='/proc', home='/home/caboose', pid=None, b
 
 def prepare(root='/sys/fs/cgroup', proc='/proc'):
     check_mounts((Path(proc) / 'self' / 'mountinfo').read_text())
-    nodes = cgroup_tree(root)
+    nodes = userspace_tree(cgroup_tree(root), proc)
     ancestry = recovery_ancestry(proc)
     bridge = bridge_processes(nodes, proc)
     check_control_plane(ancestry, proc, bridge=bridge)
@@ -269,14 +293,14 @@ def freeze(intent, root='/sys/fs/cgroup', proc='/proc'):
     check_mounts((Path(proc) / 'self' / 'mountinfo').read_text())
     if os.stat('/home/caboose').st_dev != intent['homeDevice']:
         raise Unsupported('home filesystem identity changed')
-    nodes = cgroup_tree(root)
+    nodes = userspace_tree(cgroup_tree(root), proc)
     ancestry = recovery_ancestry(proc)
     bridge = bridge_processes(nodes, proc)
     check_control_plane(ancestry, proc, bridge=bridge)
     trusted = sorted(set(ancestry + bridge))
-    freeze_branches(nodes, trusted, recorded, root)
+    freeze_branches(nodes, trusted, recorded, root, proc)
     try:
-        refreshed = cgroup_tree(root)
+        refreshed = userspace_tree(cgroup_tree(root), proc)
         if refreshed != nodes or bridge_processes(refreshed, proc) != bridge or recovery_ancestry(proc) != ancestry:
             raise Unsupported('recovery control plane changed during freeze')
         check_control_plane(ancestry, proc, bridge=bridge)
@@ -312,7 +336,7 @@ def branch_states(nodes, trusted, root='/sys/fs/cgroup'):
         raise Unsupported('too many freezer branches')
     states = []
     for branch in branches:
-        if len(branch) > 200 or not re.fullmatch(r'/[A-Za-z0-9_:@.\-]+(?:/[A-Za-z0-9_:@.\-]+)*', branch):
+        if len(branch) > 200 or not CGROUP_NAME.fullmatch(branch) or any(part in ('.', '..') for part in branch.split('/')):
             raise Unsupported('unsupported freezer branch name')
         try:
             events = dict(line.split() for line in (Path(root) / branch.lstrip('/') / 'cgroup.events').read_text().splitlines())
@@ -324,7 +348,7 @@ def branch_states(nodes, trusted, root='/sys/fs/cgroup'):
     return states
 
 
-def freeze_branches(nodes, trusted, recorded, root='/sys/fs/cgroup'):
+def freeze_branches(nodes, trusted, recorded, root='/sys/fs/cgroup', proc='/proc'):
     """Freeze planned branches and return those changed by this invocation.
 
     A caller must durably journal the branch list *before* calling this function
@@ -341,7 +365,7 @@ def freeze_branches(nodes, trusted, recorded, root='/sys/fs/cgroup'):
             if not entry['frozen']:
                 changed.append(branch)  # A failed write may still have reached the kernel.
                 set_frozen(directory, True)
-        if cgroup_tree(root) != nodes:
+        if userspace_tree(cgroup_tree(root), proc) != nodes:
             raise Unsupported('cgroup tree changed during freeze')
         return changed
     except BaseException as error:
@@ -380,7 +404,7 @@ def thaw(root='/', cgroup='/sys/fs/cgroup/caboose-workloads.slice', branches=Non
             raise Unsupported('invalid recovery branches')
         names = []
         for entry in branches:
-            if not isinstance(entry, dict) or set(entry) != {'path', 'frozen'} or type(entry['frozen']) is not bool or not isinstance(entry['path'], str) or len(entry['path']) > 200 or not re.fullmatch(r'/[A-Za-z0-9_:@.\-]+(?:/[A-Za-z0-9_:@.\-]+)*', entry['path']) or any(part in ('.', '..') for part in entry['path'].split('/')):
+            if not isinstance(entry, dict) or set(entry) != {'path', 'frozen'} or type(entry['frozen']) is not bool or not isinstance(entry['path'], str) or len(entry['path']) > 200 or not CGROUP_NAME.fullmatch(entry['path']) or any(part in ('.', '..') for part in entry['path'].split('/')):
                 raise Unsupported('invalid recovery branch')
             name = entry['path']
             if any(within(name, old) or within(old, name) for old in names):

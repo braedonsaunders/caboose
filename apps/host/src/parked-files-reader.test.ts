@@ -46,7 +46,7 @@ it('serves owner-fenced stat, list and range; unsupported paths fall back', asyn
     const base = `http://127.0.0.1:${(app.address() as AddressInfo).port}`
     const stat = await (await fetch(base + '/v1/fs/stat?path=note.txt')).json() as { identity: string; etag: string }
     expect(stat.identity).toBe('123:12')
-    const list = await (await fetch(base + '/v1/fs/list')).json() as { items: Array<{ name: string }> }
+    const list = await (await fetch(base + '/v1/fs/list?path=folder')).json() as { items: Array<{ name: string }> }
     expect(list.items.map(item => item.name)).toEqual(['note.txt'])
     const content = await fetch(base + '/v1/fs/content?path=note.txt', { headers: { range: 'bytes=1-2', 'if-match': stat.etag } })
     expect(content.status).toBe(206)
@@ -56,6 +56,10 @@ it('serves owner-fenced stat, list and range; unsupported paths fall back', asyn
     expect((await readFile(fake + '.starts', 'utf8')).trim().split('\n')).toHaveLength(3)
     expect((await fetch(base + '/v1/fs/content?path=../etc')).status).toBe(409)
     expect((await fetch(base + '/v1/fs/changes')).status).toBe(409)
+    expect((await fetch(base + '/v1/fs/list')).status).toBe(409)
+    expect((await fetch(base + '/v1/fs/stat?path=.cache')).status).toBe(409)
+    expect((await fetch(base + '/v1/fs/content?path=.cache/note.txt')).status).toBe(409)
+    expect((await readFile(fake + '.starts', 'utf8')).trim().split('\n')).toHaveLength(3)
   } finally {
     app.closeAllConnections(); await new Promise<void>(resolve => app.close(() => resolve()))
     await rm(root, { recursive: true, force: true })
