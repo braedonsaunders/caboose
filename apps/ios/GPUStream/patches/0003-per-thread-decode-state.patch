@@ -8,12 +8,12 @@ diff --git a/framework/decode/common_object_info_table.cpp b/framework/decode/co
 @@ -26,8 +26,8 @@
  GFXRECON_BEGIN_NAMESPACE(gfxrecon)
  GFXRECON_BEGIN_NAMESPACE(decode)
- 
+
 -CommonObjectInfoTable* CommonObjectInfoTable::singleton_          = nullptr;
 -uint32_t               CommonObjectInfoTable::singleton_refcount_ = 0;
 +thread_local CommonObjectInfoTable* CommonObjectInfoTable::singleton_          = nullptr;
 +thread_local uint32_t               CommonObjectInfoTable::singleton_refcount_ = 0;
- 
+
  CommonObjectInfoTable* CommonObjectInfoTable::GetSingleton()
  {
 diff --git a/framework/decode/common_object_info_table.h b/framework/decode/common_object_info_table.h
@@ -21,7 +21,7 @@ diff --git a/framework/decode/common_object_info_table.h b/framework/decode/comm
 +++ b/framework/decode/common_object_info_table.h
 @@ -49,8 +49,10 @@
      static void                   ReleaseSingleton();
- 
+
    private:
 -    static CommonObjectInfoTable* singleton_;
 -    static uint32_t               singleton_refcount_;
@@ -30,7 +30,7 @@ diff --git a/framework/decode/common_object_info_table.h b/framework/decode/comm
 +    static thread_local CommonObjectInfoTable* singleton_;
 +    static thread_local uint32_t               singleton_refcount_;
  };
- 
+
  GFXRECON_END_NAMESPACE(decode)
 diff --git a/framework/decode/decode_allocator.cpp b/framework/decode/decode_allocator.cpp
 --- a/framework/decode/decode_allocator.cpp
@@ -38,10 +38,10 @@ diff --git a/framework/decode/decode_allocator.cpp b/framework/decode/decode_all
 @@ -26,7 +26,7 @@
  GFXRECON_BEGIN_NAMESPACE(gfxrecon)
  GFXRECON_BEGIN_NAMESPACE(decode)
- 
+
 -DecodeAllocator* DecodeAllocator::instance_{ nullptr };
 +thread_local DecodeAllocator* DecodeAllocator::instance_{ nullptr };
- 
+
  void DecodeAllocator::Begin()
  {
 diff --git a/framework/decode/decode_allocator.h b/framework/decode/decode_allocator.h
@@ -49,7 +49,7 @@ diff --git a/framework/decode/decode_allocator.h b/framework/decode/decode_alloc
 +++ b/framework/decode/decode_allocator.h
 @@ -62,8 +62,10 @@
      DecodeAllocator() : allocator_(kAllocatorBlockSize), can_allocate_(false), end_can_clear_(true) {}
- 
+
    private:
 -    static const size_t     kAllocatorBlockSize{ 64 * 1024 };
 -    static DecodeAllocator* instance_;
@@ -57,7 +57,7 @@ diff --git a/framework/decode/decode_allocator.h b/framework/decode/decode_alloc
 +    // One allocator per thread: every Begin, Allocate and End of a decode happens on the thread that processes the
 +    // file, so threads that each process their own file do not share (or clear) each other's allocations.
 +    static thread_local DecodeAllocator* instance_;
- 
+
      util::MonotonicAllocator allocator_;
      bool                     can_allocate_;
 diff --git a/framework/decode/vulkan_replay_consumer_base.cpp b/framework/decode/vulkan_replay_consumer_base.cpp
@@ -65,14 +65,14 @@ diff --git a/framework/decode/vulkan_replay_consumer_base.cpp b/framework/decode
 +++ b/framework/decode/vulkan_replay_consumer_base.cpp
 @@ -70,6 +70,7 @@
  #include "Vulkan-Utility-Libraries/vk_format_utils.h"
- 
+
  #include <algorithm>
 +#include <atomic>
  #include <chrono>
  #include <limits>
  #include <numeric>
 @@ -8969,9 +8970,8 @@
- 
+
          // Set fax handle data to find uncreated swapchain later.
          // Possible colision of handles from driver, but should not occur starting with uint max.
 -        static format::HandleId dummy_handle = std::numeric_limits<uint64_t>::max();
@@ -80,7 +80,7 @@ diff --git a/framework/decode/vulkan_replay_consumer_base.cpp b/framework/decode
 -        --dummy_handle;
 +        static std::atomic<format::HandleId> dummy_handle{ std::numeric_limits<uint64_t>::max() };
 +        (*replay_swapchain) = format::FromHandleId<VkSwapchainKHR>(dummy_handle.fetch_sub(1));
- 
+
          swapchain_info->surface    = VK_NULL_HANDLE;
          swapchain_info->surface_id = format::kNullHandleId;
 diff --git a/framework/graphics/vulkan_device_util.cpp b/framework/graphics/vulkan_device_util.cpp
@@ -128,16 +128,16 @@ diff --git a/framework/util/logging.h b/framework/util/logging.h
 +++ b/framework/util/logging.h
 @@ -29,6 +29,7 @@
  #include "util/platform.h"
- 
+
  #include <array>
 +#include <atomic>
  #include <functional>
  #include <memory>
- 
+
 @@ -309,14 +310,13 @@
                                          ##__VA_ARGS__);                                  \
      }
- 
+
 -#define GFXRECON_LOG_ONCE(X)         \
 -    {                                \
 -        static bool log_once = true; \
@@ -154,5 +154,5 @@ diff --git a/framework/util/logging.h b/framework/util/logging.h
 +            X;                                     \
 +        }                                          \
      }
- 
+
  // clang-format off
