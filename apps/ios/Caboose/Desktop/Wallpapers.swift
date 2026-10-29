@@ -376,9 +376,14 @@ final class WallpaperStore {
 struct ShellBackground: View {
     @Environment(AppModel.self) private var model
     @Environment(\.displayScale) private var scale
+    @Environment(\.shellBackgroundHosted) private var hosted
     var store = WallpaperStore.shared
 
     var body: some View {
+        if !hosted { wallpaper }
+    }
+
+    private var wallpaper: some View {
         GeometryReader { proxy in
             ZStack {
                 Backdrop()

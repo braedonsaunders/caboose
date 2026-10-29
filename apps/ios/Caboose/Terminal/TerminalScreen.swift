@@ -48,6 +48,7 @@ struct TerminalScreen: View {
         .toolbar {
             if computerAvailable { ToolbarItem(placement: .topBarTrailing) { sessionMenu } }
         }
+        .shellRailActions { if computerAvailable { sessionMenu } }
         .confirmationDialog("Terminal", isPresented: $sessionsPresented, titleVisibility: .visible) {
             Button("New Session") { terminal.newSession() }
             ForEach(terminal.sessions) { session in

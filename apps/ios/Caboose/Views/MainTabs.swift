@@ -157,41 +157,7 @@ struct LifecycleMenu: View {
         .popover(isPresented: $showingActions, attachmentAnchor: .rect(.bounds)) {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Computer").font(.headline)
-                if let upgrade = model.computerStatus?.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
-                    Button(title, systemImage: upgrade.state == "failed" ? "exclamationmark.triangle" : "arrow.down.circle") {
-                        showingActions = false
-                        model.settingsPresented = true
-                    }
-                }
-                switch model.phase {
-                case .ready:
-                    Button("Park", systemImage: "moon.zzz") {
-                        showingActions = false
-                        Task { try? await model.parkComputer() }
-                    }.disabled(model.parking)
-                    if model.computerStatus?.capabilities.restart == true {
-                        Button("Restart…", systemImage: "arrow.clockwise", role: .destructive) {
-                            showingActions = false
-                            model.restartConfirmationPresented = true
-                        }
-                    }
-                case .parked, .failed:
-                    Button("Turn On", systemImage: "power") {
-                        showingActions = false
-                        Task { await model.wake() }
-                    }
-                case .displayElsewhere:
-                    Button("Show Here", systemImage: "iphone") {
-                        showingActions = false
-                        Task { await model.wake() }
-                    }
-                    Button("Park", systemImage: "moon.zzz") {
-                        showingActions = false
-                        Task { try? await model.parkComputer() }
-                    }
-                case .waking, .connecting, .restarting, .needsSetup:
-                    Text(state.title).foregroundStyle(.secondary)
-                }
+                ComputerLifecycleActions(statusTitle: state.title) { showingActions = false }
             }
             .buttonStyle(.borderless)
             .labelStyle(.titleAndIcon)
@@ -227,6 +193,52 @@ extension View {
             toolbarVerticalCompressionBehavior(.prefersTabBar)
         } else {
             self
+        }
+    }
+}
+
+/// Shared lifecycle actions for native power popovers and compact rail overflow.
+struct ComputerLifecycleActions: View {
+    @Environment(AppModel.self) private var model
+    var statusTitle = "Computer busy"
+    var selected: () -> Void = {}
+    var body: some View {
+        Group {
+                if let upgrade = model.computerStatus?.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
+                    Button(title, systemImage: upgrade.state == "failed" ? "exclamationmark.triangle" : "arrow.down.circle") {
+                        selected()
+                        model.settingsPresented = true
+                    }
+                }
+                switch model.phase {
+                case .ready:
+                    Button("Park", systemImage: "moon.zzz") {
+                        selected()
+                        Task { try? await model.parkComputer() }
+                    }.disabled(model.parking)
+                    if model.computerStatus?.capabilities.restart == true {
+                        Button("Restart…", systemImage: "arrow.clockwise", role: .destructive) {
+                            selected()
+                            model.restartConfirmationPresented = true
+                        }
+                    }
+                case .parked, .failed:
+                    Button("Turn On", systemImage: "power") {
+                        selected()
+                        Task { await model.wake() }
+                    }
+                case .displayElsewhere:
+                    Button("Show Here", systemImage: "iphone") {
+                        selected()
+                        Task { await model.wake() }
+                    }
+                    Button("Park", systemImage: "moon.zzz") {
+                        selected()
+                        Task { try? await model.parkComputer() }
+                    }
+                case .waking, .connecting, .restarting, .needsSetup:
+                    Text(statusTitle).foregroundStyle(.secondary)
+                }
         }
     }
 }

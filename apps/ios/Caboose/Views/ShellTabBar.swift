@@ -47,43 +47,47 @@ struct ShellTabChrome: ViewModifier {
                     .animation(.snappy, value: hidden)
             case .sidebar:
                 GeometryReader { proxy in
-                    // A real content column, not a safe-area overlay on a NavigationStack:
-                    // child scroll views, composers and terminal grids get this exact width.
-                    HStack(spacing: 0) {
-                        content
-                            .frame(width: max(0, proxy.size.width - (immersive ? 0 : ShellTabButtons.sidebarWidth + 8)),
-                                   height: proxy.size.height)
-                        if !immersive {
-                            VStack(spacing: 0) {
-                                Spacer(minLength: 0)
+                    content
+                        .environment(\.shellBackgroundHosted, true)
+                        .frame(width: max(0, proxy.size.width - (immersive ? 0 : 76)), height: proxy.size.height)
+                        .frame(width: proxy.size.width, alignment: .leading)
+                        .overlayPreferenceValue(ShellRailActionsKey.self) { actions in
+                            if !immersive {
                                 ScrollView(.vertical) {
+                                  VStack(spacing: 24) {
                                     VStack(spacing: 8) {
-                                        if tab == .desktop { DesktopRailControls() }
-                                        ShellTabButtons(axis: .vertical)
+                                        Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
+                                            .frame(width: 56, height: 48)
+                                        Menu {
+                                            if let actions { actions }
+                                            Section("Computer") { ComputerLifecycleActions() }
+                                        } label: { Image(systemName: "ellipsis").frame(width: 56, height: 48) }
+                                        .accessibilityLabel("Page controls")
                                     }
                                     .padding(.vertical, 8)
-                                    .frame(width: ShellTabButtons.sidebarWidth)
+                                    .glassEffect(.regular, in: .capsule)
+                                    ShellTabButtons(axis: .vertical, iconsOnly: true)
+                                        .padding(.vertical, 8)
+                                        .glassEffect(.regular, in: .capsule)
+                                  }
                                 }
                                 .scrollIndicators(.hidden)
                                 .scrollBounceBehavior(.basedOnSize)
-                                .frame(width: ShellTabButtons.sidebarWidth,
-                                       height: min(max(0, proxy.size.height - 16), railHeight))
-                                .glassEffect(.regular, in: .rect(cornerRadius: 26))
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.plain)
+                                .font(.system(size: 22, weight: .medium))
+                                .frame(width: 64, height: min(max(0, proxy.size.height - 16), TerminalSlot.isFilled ? 396 : 348))
+                                .padding(.trailing, 8)
+                                .padding(.bottom, 8)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                             }
-                            .padding(.trailing, 8)
-                            .padding(.bottom, 8)
                         }
-                    }
                 }
-                .toolbarVisibility(.hidden, for: .tabBar)
+                .background { ShellBackground() }
+                .toolbarVisibility(.hidden, for: .tabBar, .navigationBar)
                 .animation(.snappy, value: immersive)
             }
         }
-    }
-
-    private var railHeight: CGFloat {
-        let tabs = TerminalSlot.isFilled ? 5 : 4
-        return CGFloat(tabs * 54 + (tabs - 1) * 4 + 16) + (tab == .desktop ? 184 : 0)
     }
 
     /// Under the keyboard, as the system's tab bar is, and out of the way of a window that
@@ -252,6 +256,21 @@ struct ShellWindowProbe: UIViewRepresentable {
 extension EnvironmentValues {
     /// The Desktop-only override, measured from the shell window before keyboard insets.
     @Entry var portraitDesktopChrome = false
+    @Entry var shellBackgroundHosted = false
     /// Where the shell's tabs sit, so a tab can place its own bottom control beside them.
     @Entry var shellTabPlacement: HomeToday.TabPlacement = .system
+}
+
+/// Page-owned actions stay attached to that page's state and sheet presenters.
+struct ShellRailActionsKey: PreferenceKey {
+    static var defaultValue: AnyView? { nil }
+    static func reduce(value: inout AnyView?, nextValue: () -> AnyView?) {
+        if let next = nextValue() { value = next }
+    }
+}
+
+extension View {
+    func shellRailActions<Actions: View>(@ViewBuilder _ actions: () -> Actions) -> some View {
+        preference(key: ShellRailActionsKey.self, value: AnyView(actions()))
+    }
 }

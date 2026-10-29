@@ -60,6 +60,13 @@ struct AgentsScreen: View {
                 ComputerToolbar()
             }
         }
+        .shellRailActions {
+            Button("Chats", systemImage: "list.bullet") { showingChats = true }
+            Button("New Chat", systemImage: "square.and.pencil") { agents.currentChat = nil }
+            Button("Teammates and Routines", systemImage: "person.2") { showingLibrary = true }
+            Button("Model", systemImage: "cpu") { showingModels = true }
+            Button("Agent Settings", systemImage: "slider.horizontal.3") { model.showAgentSettings = true }
+        }
         .alert("Agent Action Failed", isPresented: Binding(get: { agents.lastError != nil }, set: { if !$0 { agents.lastError = nil } })) {
             Button("OK") { agents.lastError = nil }
         } message: { Text(agents.lastError ?? "") }

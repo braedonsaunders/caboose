@@ -1745,7 +1745,10 @@ where the system draws a vertical bar, and on iPad, the tabs are the system's. O
 the system's tab bar is hidden and the tabs sit at the bottom right
 (`HomeToday.tabPlacement`): a cluster beside the tab's own bottom control (Home's Ask) when
 the screen is under 600 points wide, else a compact rail at the bottom trailing edge. Tablet portrait uses that compact
-rail on both Duo and iPad. The rail’s material wraps only its controls, and an explicit
+rail on both Duo and iPad: icon-only navigation in one floating capsule and page controls
+in a separate capsule above it. Page actions and lifecycle actions share the controls
+capsule’s overflow menu; the native top toolbar is hidden on this custom path. A single
+wallpaper continues behind both capsules, and an explicit
 content column reserves its width so grids, chat composers and the Ask field do not
 run behind it. Portrait Desktop overrides both system and custom tab placement: the far-right icon
 in the dock opens an upward, button-anchored 72-point-wide vertical strip of icons for

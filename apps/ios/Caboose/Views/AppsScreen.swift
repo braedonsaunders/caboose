@@ -5,6 +5,7 @@ import SwiftUI
 /// updates and removal.
 struct AppsScreen: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.shellTabPlacement) private var placement
     @State private var search = ""
     @State private var showSystem = false
     @State private var showLibrary = false
@@ -30,6 +31,21 @@ struct AppsScreen: View {
                     ComputerStateView()
                 }
             }
+            .safeAreaInset(edge: .top) {
+                if placement == .sidebar, model.phase == .ready {
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        NativeTextInput("Search apps", text: $search, capitalization: .none)
+                        if !search.isEmpty {
+                            Button("Clear search", systemImage: "xmark.circle.fill") { search = "" }.labelStyle(.iconOnly)
+                        }
+                    }
+                    .padding(12)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                }
+            }
             .background { ShellBackground() }
             .navigationTitle("Apps")
             .toolbar {
@@ -38,6 +54,9 @@ struct AppsScreen: View {
                 }
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 ComputerToolbar()
+            }
+            .shellRailActions {
+                Button("Library", systemImage: "books.vertical") { showLibrary = true }
             }
             .sheet(isPresented: $showLibrary) { CatalogLibrary().environment(model) }
         }

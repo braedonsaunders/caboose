@@ -83,6 +83,9 @@ struct HomeScreen: View {
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 ComputerToolbar()
             }
+            .shellRailActions {
+                Button("AirPlay", systemImage: "airplayvideo") { showingAirPlay = true }
+            }
             .sheet(isPresented: $showingAirPlay) {
                 AirPlaySheet().environment(model).presentationDetents([.medium])
             }

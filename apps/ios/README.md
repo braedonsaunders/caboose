@@ -580,6 +580,8 @@ unavailable, verify the failure is shown and the active connection is unchanged.
 a legacy single pairing and verify migration keeps its Files identity and shortcuts.
 
 Tablet-portrait shell check: on Home, Agents, Apps and Terminal, navigation forms a
-compact bottom-right rail with no empty full-height glass. Page content, Ask, composers
+compact bottom-right, icon-only navigation capsule with a separate controls capsule
+above it, matching the native side toolbar. Page actions and power are in its overflow.
+There is no empty full-height glass, black background strip, or duplicate top toolbar. Page content, Ask, composers
 and the terminal fit beside it. Rotate to landscape and back, then show and hide the
 keyboard; the rail stays reachable above it and no second tab bar appears.
