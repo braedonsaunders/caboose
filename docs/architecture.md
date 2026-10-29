@@ -1753,8 +1753,8 @@ the app card, and a detached view releases its layers.
   fold does not activate it. Screen Layout offers Automatic, Tablet and Laptop overrides;
   compact viewports keep the ordinary layout. The system keyboard's measured intersection
   with that view takes precedence over the fold, so it cannot cover the upper app. The
-  lower panel owns the existing `RemoteTextInputView`/`KeyBar`, with Keyboard, Trackpad
-  and Keyboard & Trackpad choices behind one input button. Its trailing rail contains window switching, settings,
+  lower panel owns the existing `RemoteTextInputView`/`KeyBar`, with Keyboard, Trackpad,
+  Keyboard & Trackpad and Gamepad choices behind one input button. Its trailing rail contains window switching, settings,
   power and navigation; the system-wide bars are hidden while Laptop is active. Opening
   a window from the Laptop desktop focuses it there, without a separate full-screen card
   or Full Screen/Exit App Full Screen controls. Controls never move above the hinge.
@@ -1762,7 +1762,11 @@ the app card, and a detached view releases its layers.
   Keyboard & Trackpad uses a full-width trackpad in the upper third of the lower panel and
   the same keyboard and header in its lower two thirds. The system keyboard opens only from
   the custom keyboard's globe button, for other languages, emoji and dictation, without the
-  shortcut header and with a floating button that returns to the custom keyboard. The dock becomes a thin, full-width taskbar at the top of
+  shortcut header and with a floating button that returns to the custom keyboard.
+  Gamepad is an on-screen controller (`LaptopGamepad` lays it out and maps it) aimed at the
+  window text would go to: a handed-off game gets `RemoteGame.gamepad` (its page's Gamepad
+  API), any other window held keys the owner assigns. No virtual controller exists on the
+  computer. The dock becomes a thin, full-width taskbar at the top of
   the lower half. Caboose title bars are hidden above the hinge; app-owned chrome remains
   part of the guest surface. Pointer hit testing includes the relocated dock, with separate
   saved Laptop positions, without changing the tablet arrangement. App cards target their current

@@ -6,12 +6,22 @@ import Foundation
 /// on a flat display; measured keyboard overlap always takes precedence over the split.
 public enum LaptopLayout {
     public enum Input: String, CaseIterable, Sendable {
-        case keyboard, trackpad, combo
+        case keyboard, trackpad, combo, gamepad
         public var title: String {
-            switch self { case .keyboard: "Keyboard"; case .trackpad: "Trackpad"; case .combo: "Keyboard & Trackpad" }
+            switch self {
+            case .keyboard: "Keyboard"
+            case .trackpad: "Trackpad"
+            case .combo: "Keyboard & Trackpad"
+            case .gamepad: "Gamepad"
+            }
         }
         public var symbol: String {
-            switch self { case .keyboard: "keyboard"; case .trackpad: "hand.draw"; case .combo: "rectangle.split.2x1" }
+            switch self {
+            case .keyboard: "keyboard"
+            case .trackpad: "hand.draw"
+            case .combo: "rectangle.split.2x1"
+            case .gamepad: "gamecontroller"
+            }
         }
         /// Whether Laptop's own keyboard and its header show; the system keyboard never does
         /// unless asked for.
@@ -42,13 +52,13 @@ public enum LaptopLayout {
     }
 
     /// The trackpad's share of the controls: all of them, the upper third beside the keyboard,
-    /// or none while the keyboard has them to itself.
+    /// or none while the keyboard or the gamepad has them to itself.
     public static func trackpadHeight(_ input: Input, available: CGFloat) -> CGFloat {
         guard available.isFinite else { return 0 }
         switch input {
         case .trackpad: return max(0, available)
         case .combo: return comboTrackpadHeight(available)
-        case .keyboard: return 0
+        case .keyboard, .gamepad: return 0
         }
     }
 

@@ -405,7 +405,9 @@ final class TrackpadSurface: RemoteTextInputView {
 
     override var canBecomeFirstResponder: Bool { inputEnabled && session?.state == .ready }
 
-    private var focusedWindow: RemoteWindow? {
+    /// The window typed text and Laptop's gamepad go to: the card's target, else the front
+    /// visible window of the desktop.
+    var focusedWindow: RemoteWindow? {
         if let target { return target }
         guard let session, let desktop else { return nil }
         return desktop.stacking.reversed().compactMap { session.windows[$0] }.first { !$0.isOverrideRedirect && desktop.isVisible($0.id) }

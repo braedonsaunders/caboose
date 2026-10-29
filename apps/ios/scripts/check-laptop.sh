@@ -31,6 +31,13 @@ Laptop layout — signed app on the paired physical Duo:
    symbols, held Delete, arrows and Ctrl shortcuts. Tap the globe: the system keyboard
    opens with no shortcut header on either side of the hinge, and a keyboard button
    floats just above it; use it for IME, then the button returns to Laptop's keyboard.
+   Gamepad: the controller fills the lower panel, nothing above the hinge. With a game
+   on this device (Platformer 3D) the caption says "Controller for …": the left stick
+   or d-pad runs, A jumps, two thumbs at once work, and lifting stops at once.
+   Background the app mid-run and return: nothing is held. In a text editor the caption
+   says "Keys to …": the d-pad moves the caret, holding it repeats, A types spaces.
+   Customize: switch to stick, add the right stick, resize, reassign A to Return,
+   choose Keys for games; each applies at once and survives relaunching the app.
 4. Move from the app across the hinge into the lower dock. Open an app from its dock
    icon, right-click it, and use Close; the cursor and click must agree everywhere.
    Two-finger tap opens a context menu; scroll with two fingers. Tap then drag

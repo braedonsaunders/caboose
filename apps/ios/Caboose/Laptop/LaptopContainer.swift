@@ -165,6 +165,9 @@ private struct LaptopControls: View {
                         }
                         .background(Color(uiColor: .systemGray5))
                     }
+                    if input == .gamepad {
+                        GamepadPanel(target: { [surface] in surface.focusedWindow }, enabled: enabled)
+                    }
                 }
             }
             Divider()
@@ -191,13 +194,13 @@ private struct LaptopControls: View {
 
     private var trackpad: some View {
         Trackpad(desktop: desktop, target: target, keyboardVisible: systemKeyboard && model.keyboardVisible,
-                 enabled: enabled, pointerEnabled: input != .keyboard,
+                 enabled: enabled, pointerEnabled: input == .trackpad || input == .combo,
                  sharedSurface: surface, inlineControls: input.showsKeyboard && !systemKeyboard,
                  bareSystemKeyboard: systemKeyboard,
                  dismissInline: { choose(.trackpad) })
             .background(Color(white: 0.12))
             .overlay {
-                if input != .keyboard {
+                if input == .trackpad || input == .combo {
                     VStack(spacing: 6) {
                         Image(systemName: "hand.draw").font(input == .combo ? .body : .title2)
                         Text("Trackpad").font(.subheadline.weight(.medium))
@@ -247,7 +250,7 @@ private struct LaptopControls: View {
 
     @ViewBuilder private var inputChoices: some View {
         Picker("Input", selection: Binding(get: { input }, set: { choose($0) })) {
-            ForEach([LaptopLayout.Input.keyboard, .trackpad, .combo], id: \.self) { choice in
+            ForEach(LaptopLayout.Input.allCases, id: \.self) { choice in
                 Label(choice.title, systemImage: choice.symbol).tag(choice)
             }
         }
