@@ -9,6 +9,7 @@ import UIKit
 struct TrackpadScreen: View {
     @Environment(AppModel.self) private var model
     let desktop: DesktopModel
+    @State private var gestureHelp = false
 
     var body: some View {
         VStack(spacing: 14) {
@@ -52,10 +53,9 @@ struct TrackpadScreen: View {
             TimelineView(.periodic(from: .now, by: 2)) { _ in
                 Text(model.connectionSummary).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
-            Text("Tap to click · two fingers to scroll · tap with two to right-click · tap then drag to move")
+            Button("Trackpad gestures", systemImage: "hand.draw") { gestureHelp = true }
                 .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+                .sheet(isPresented: $gestureHelp) { TrackpadGestureGuide() }
         }
         .padding(16)
     }
@@ -68,9 +68,12 @@ struct Trackpad: UIViewRepresentable {
     let keyboardVisible: Bool
     var enabled = true
     var pointerEnabled = true
+    var sharedSurface: TrackpadSurface? = nil
+    var inlineControls = false
+    var dismissInline: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> TrackpadSurface {
-        let view = TrackpadSurface()
+        let view = sharedSurface ?? TrackpadSurface()
         view.desktop = desktop
         view.model = model
         view.target = target
@@ -83,7 +86,9 @@ struct Trackpad: UIViewRepresentable {
         view.desktop = desktop
         view.model = model
         view.target = target
-        view.wantsKeyboard = keyboardVisible && enabled
+        view.inlineKeyboardControls = inlineControls
+        view.dismissInline = dismissInline
+        view.wantsKeyboard = (keyboardVisible || inlineControls) && enabled
         if view.autocorrectChoice == nil {
             if let purpose = model.session?.textPurpose {
                 view.prefersProse = !["terminal", "password", "pin", "url", "email", "number", "digits", "phone", "date", "time", "datetime"].contains(purpose)
@@ -106,6 +111,7 @@ struct Trackpad: UIViewRepresentable {
 final class TrackpadSurface: RemoteTextInputView {
     weak var desktop: DesktopModel?
     weak var model: AppModel?
+    var dismissInline: (() -> Void)?
     var wantsKeyboard = false
     var inputEnabled = true
     var pointerEnabled = true
@@ -122,6 +128,7 @@ final class TrackpadSurface: RemoteTextInputView {
     private var focusTask: Task<Void, Never>?
 
     private var gestures = TrackpadGestures()
+    private var zoomGesture = TrackpadZoom()
     private let haptics = UIImpactFeedbackGenerator(style: .light)
 
     override init(frame: CGRect) {
@@ -145,20 +152,33 @@ final class TrackpadSurface: RemoteTextInputView {
         event?.touches(for: self)?.filter { $0.phase != .ended && $0.phase != .cancelled }.count ?? 0
     }
 
+    // Reserve multi-finger gestures for the remote workspace rather than iOS edit menus.
+    override var editingInteractionConfiguration: UIEditingInteractionConfiguration { .none }
+
+    private func spread(_ event: UIEvent?) -> CGFloat? {
+        guard let center = centroid(event), let touches = event?.touches(for: self)?.filter({ $0.phase != .ended && $0.phase != .cancelled }), touches.count >= 2 else { return nil }
+        return touches.map { touch in
+            let p = touch.location(in: self)
+            return hypot(p.x - center.x, p.y - center.y)
+        }.reduce(0, +) / CGFloat(touches.count)
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        perform(gestures.began(touches: max(1, liveTouches(event)), centroid: centroid(event), at: event?.timestamp ?? 0))
+        perform(gestures.began(touches: max(1, liveTouches(event)), centroid: centroid(event), at: event?.timestamp ?? 0, spread: spread(event)))
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let point = centroid(event) else { return }
-        perform(gestures.moved(touches: liveTouches(event), centroid: point, at: event?.timestamp ?? 0))
+        perform(gestures.moved(touches: liveTouches(event), centroid: point, at: event?.timestamp ?? 0, spread: spread(event)))
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        perform(gestures.ended(remaining: liveTouches(event), centroid: centroid(event), at: event?.timestamp ?? 0))
+        zoomGesture.reset()
+        perform(gestures.ended(remaining: liveTouches(event), centroid: centroid(event), at: event?.timestamp ?? 0, spread: spread(event)))
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        zoomGesture.reset()
         perform(gestures.cancelled())
     }
 
@@ -169,8 +189,14 @@ final class TrackpadSurface: RemoteTextInputView {
             self?.model?.openOnDesktop(app)
         }
         for action in actions {
+            switch action {
+            case .workspace(let direction): performWorkspace(direction); continue
+            case .zoom(let delta): performZoom(delta); continue
+            default: break
+            }
             if let target { perform(action, in: target); continue }
             switch action {
+            case .workspace, .zoom: break // handled before window routing
             case .move(let delta):
                 desktop?.pointerHovering = true
                 desktop?.move(by: delta, session: session)
@@ -202,6 +228,7 @@ final class TrackpadSurface: RemoteTextInputView {
             session.pointerButton(in: target, button: button, pressed: down, at: pixel())
         }
         switch action {
+        case .workspace, .zoom: break // handled before window routing
         case .move(let delta):
             let scale = model?.pixelsPerPoint ?? 1
             point.x = min(0.999, max(0, point.x + delta.x * scale / max(1, target.frame.width)))
@@ -221,6 +248,42 @@ final class TrackpadSurface: RemoteTextInputView {
             checkTextFocus(session, target: target)
         }
         LaptopPointer.shared.show(in: target, session: session, at: point, owner: self)
+    }
+
+    private func performZoom(_ delta: CGFloat) {
+        guard let session, session.state == .ready, let window = focusedWindow else { return }
+        let steps = zoomGesture.consume(delta)
+        guard steps != 0, let stroke = Keysyms.stroke(for: steps > 0 ? "+" : "-") else { return }
+        // Use the app's standard zoom shortcut: no ignored pointer modifier field,
+        // held Control key, or app-specific DOM/browser behavior.
+        for _ in 0..<abs(steps) {
+            session.key(stroke, pressed: true, in: window, extraModifiers: ["control"])
+            session.key(stroke, pressed: false, in: window, extraModifiers: ["control"])
+        }
+    }
+
+    private func performWorkspace(_ direction: TrackpadGestures.Direction) {
+        guard let model, let session, session.state == .ready else { return }
+        switch direction {
+        case .up:
+            if model.presentedWindowID != nil { model.presentedWindowID = nil; return }
+            let workspace = desktop ?? model.desktop
+            model.quickSwitch.present(recent: model.recentWindowIDs, desktop: workspace.switchTarget(session: session))
+        case .down:
+            model.quickSwitch.cancel()
+            (desktop ?? model.desktop).launchpadOpen = false
+        case .left, .right:
+            let windows = model.appWindows.sorted { $0.id < $1.id }
+            guard !windows.isEmpty else { return }
+            let current = focusedWindow?.id
+            let index = windows.firstIndex { $0.id == current } ?? 0
+            let step = direction == .left ? 1 : -1
+            let next = windows[(index + step + windows.count) % windows.count]
+            model.quickSwitch.cancel()
+            if model.presentedWindowID != nil { model.presentedWindowID = next.id }
+            else { (desktop ?? model.desktop).activate(next.id, session: session) }
+        }
+        haptics.impactOccurred()
     }
 
     private func checkDesktopTextFocus() {
@@ -248,6 +311,7 @@ final class TrackpadSurface: RemoteTextInputView {
     }
 
     func endInteraction() {
+        zoomGesture.reset()
         focusTask?.cancel()
         focusTask = nil
         perform(gestures.cancelled())
@@ -280,6 +344,7 @@ final class TrackpadSurface: RemoteTextInputView {
     }
 
     override func dismissKeyboard() {
+        if inlineKeyboardControls { dismissInline?() }
         focusTask?.cancel()
         focusTask = nil
         model?.keyboardVisible = false
@@ -296,4 +361,33 @@ final class TrackpadSurface: RemoteTextInputView {
     override var sendsMarkedTextAsPreedit: Bool { session?.composesText ?? false }
 
     override func sendPreedit(_ text: String, selection: NSRange) { session?.compose(text, selection: selection, in: focusedWindow) }
+}
+
+struct TrackpadGestureGuide: View {
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Point and click") {
+                    Label("Move one finger to point; tap to click; double-tap to open.", systemImage: "cursorarrow")
+                    Label("Tap with two fingers to right-click.", systemImage: "hand.tap")
+                    Label("Move three fingers to drag; lift any finger to release. Tap then drag also works.", systemImage: "hand.draw")
+                }
+                Section("Scroll and zoom") {
+                    Label("Move two fingers together to scroll in either direction.", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                    Label("Pinch two fingers to zoom in apps that support Control–Plus and Control–Minus.", systemImage: "plus.magnifyingglass")
+                }
+                Section("Windows") {
+                    Label("Swipe four fingers left or right to switch windows.", systemImage: "macwindow.on.rectangle")
+                    Label("Swipe four fingers up to choose a window; down to dismiss the chooser. From an app card, swipe up to return to Desktop.", systemImage: "square.stack.3d.up")
+                }
+                Section {
+                    Text("iOS can reserve system-edge and accessibility gestures. Force Touch and app-specific rotation gestures are not emulated.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Trackpad Gestures")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+    }
 }

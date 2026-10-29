@@ -32,13 +32,32 @@ open class RemoteTextInputView: UIView, UITextInput {
         return bar
     }()
 
-    open override var inputAccessoryView: UIView? { keyBar }
-    open override var inputAssistantItem: UITextInputAssistantItem {
-        let item = super.inputAssistantItem
-        item.leadingBarButtonGroups = []
-        item.trailingBarButtonGroups = []
-        return item
+    /// Inline Laptop controls use the exact same header and action pipeline.
+    public var keyboardControls: KeyBar { keyBar }
+    public var inlineKeyboardControls = false {
+        didSet { if inlineKeyboardControls != oldValue, isFirstResponder { reloadInputViews() } }
     }
+    private let hiddenKeyboard = UIView(frame: .zero)
+    open override var inputView: UIView? { inlineKeyboardControls ? hiddenKeyboard : nil }
+    public func performKeyboardAction(_ action: KeyBar.Action) { keyBarAction(action) }
+    open override var inputAccessoryView: UIView? {
+        if inlineKeyboardControls {
+            inputAssistantItem.leadingBarButtonGroups = []
+            inputAssistantItem.trailingBarButtonGroups = []
+            return nil
+        }
+        return keyBar.accessory(for: self)
+    }
+    private var wideKeyboardHeader = false
+    open override func layoutSubviews() {
+        super.layoutSubviews()
+        let wide = (window?.bounds.width ?? bounds.width) >= 600
+        if wide != wideKeyboardHeader {
+            wideKeyboardHeader = wide
+            if isFirstResponder, !inlineKeyboardControls { reloadInputViews() }
+        }
+    }
+
     /// Sends a complete press/release to the view's current remote target.
     open func sendKey(_ stroke: KeyStroke, modifiers: [String]) {}
     /// Subclasses also clear their shared visibility state or pending focus requests.

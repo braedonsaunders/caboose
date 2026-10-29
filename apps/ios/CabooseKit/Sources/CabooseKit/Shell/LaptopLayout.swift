@@ -32,6 +32,12 @@ public enum LaptopLayout {
         }
     }
 
+    /// Combo reserves the upper third for pointing and the lower two thirds for keys,
+    /// including their shared shortcut header. Neither panel invokes the system keyboard.
+    public static func comboTrackpadHeight(_ availableHeight: CGFloat) -> CGFloat {
+        availableHeight.isFinite ? max(0, availableHeight) / 3 : 0
+    }
+
     public static func frames(size: CGSize, division: CGRect?, keyboard: CGFloat) -> Frames {
         let width = max(0, size.width), height = max(0, size.height)
         let visible = max(0, height - max(0, keyboard))
@@ -40,7 +46,7 @@ public enum LaptopLayout {
         // Native keyboard + its shared accessory can be taller than the lower half.
         // Keep the upper app above it, rather than clipping rows behind the keyboard.
         let screenHeight = max(0, min(boundary, visible))
-        let controlsY = min(visible, fold?.maxY ?? (height * 0.5))
+        let controlsY = fold?.maxY ?? (height * 0.5)
         return Frames(screen: CGRect(x: 0, y: 0, width: width, height: screenHeight),
                       controls: CGRect(x: 0, y: controlsY, width: width, height: max(0, visible - controlsY)))
     }

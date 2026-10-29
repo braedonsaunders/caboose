@@ -34,7 +34,7 @@ struct DesktopView: View {
                     Launchpad(desktop: desktop)
                         .transition(.opacity.combined(with: .scale(scale: 1.04)))
                 }
-                if let session = model.session, desktop.fullscreenWindow(in: session.windows) == nil {
+                if !desktop.detachedChrome, let session = model.session, desktop.fullscreenWindow(in: session.windows) == nil {
                     Dock(desktop: desktop)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                         .padding(.bottom, desktop.dockBottomInset)
@@ -43,7 +43,7 @@ struct DesktopView: View {
                 // Its rows are hit-tested by the desktop, in this space, like the dock.
                 QuickSwitchStrip(owner: .desktop, height: desktop.workArea.height, space: .named("desktop"), tappable: false)
                     .frame(width: desktop.size.width, height: desktop.workArea.height)
-                if desktop.showsCursor {
+                if desktop.showsCursor && !desktop.detachedChrome {
                     Cursor(hit: desktop.hovered, ui: desktop.ui)
                         .position(desktop.cursor)
                         .allowsHitTesting(false)
@@ -92,7 +92,7 @@ struct DesktopWindow: View {
     var body: some View {
         let chrome = desktop.chromeRect(window)
         VStack(spacing: 0) {
-            if !window.isAuxiliary && !window.isFullscreen {
+            if !desktop.detachedChrome && !window.isAuxiliary && !window.isFullscreen {
                 let ui = desktop.ui
                 let bar = desktop.titleBar
                 HStack(spacing: 0) {
@@ -151,8 +151,16 @@ struct RemoteWindowSurface: UIViewRepresentable {
 struct Dock: View {
     @Environment(AppModel.self) private var model
     let desktop: DesktopModel
+    var compact = false
+    var coordinateSpace = "desktop"
+    var interactive = false
 
     var body: some View {
+        if compact { laptopTaskbar }
+        else { floatingDock }
+    }
+
+    @ViewBuilder private var floatingDock: some View {
         let ui = desktop.ui
         HStack(spacing: 10 * ui) {
             // As many as fit: a phone held upright has room for fewer than a TV.
@@ -174,7 +182,9 @@ struct Dock: View {
                         .fill(.white.opacity(isRunning(app) ? 0.85 : 0))
                         .frame(width: 4 * ui, height: 4 * ui)
                 }
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.dockFrames[app.id] = $0 }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.dockFrames[app.id] = $0 }
+                .onTapGesture { if interactive { model.openOnDesktop(app) } }
+                .onLongPressGesture { if interactive { desktop.contextDockID = app.id } }
                 .popover(isPresented: Binding(get: { desktop.contextDockID == app.id }, set: { if !$0 { desktop.contextDockID = nil } })) {
                     VStack(alignment: .leading, spacing: 16) { DockAppActions(app: app) { desktop.contextDockID = nil } }
                         .padding(20)
@@ -191,11 +201,59 @@ struct Dock: View {
                 .scaleEffect(hot ? 1.28 : 1, anchor: .bottom)
                 .animation(.spring(duration: 0.22), value: hot)
                 .padding(.bottom, 7 * ui)
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launchpadButtonFrame = $0 }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.launchpadButtonFrame = $0 }
+                .onTapGesture { if interactive { desktop.launchpadOpen.toggle() } }
         }
         .padding(.horizontal, 12 * ui)
         .padding(.vertical, 8 * ui)
         .glassEffect(.regular, in: .rect(cornerRadius: 22 * ui))
+    }
+
+    /// A continuous, thin strip below the hinge, never a floating capsule over content.
+    private var laptopTaskbar: some View {
+        HStack(spacing: 0) {
+            let fit = max(1, Int((desktop.size.width - 60) / 44))
+            ForEach(model.dockApps.prefix(fit)) { app in
+                ZStack(alignment: .bottom) {
+                    Group {
+                        if let icon = model.appIcons[app.id] {
+                            Image(uiImage: icon).resizable().scaledToFit()
+                        } else { Image(systemName: "app.dashed").font(.title3) }
+                    }
+                    .frame(width: 26, height: 26)
+                    .frame(width: 44, height: 44)
+                    if isRunning(app) {
+                        Capsule().fill(.primary.opacity(0.75)).frame(width: 12, height: 2).padding(.bottom, 3)
+                    }
+                }
+                .background(desktop.hovered == .dock(app.id) ? Color.primary.opacity(0.12) : .clear)
+                .contentShape(Rectangle())
+                .accessibilityLabel(app.name)
+                .accessibilityAddTraits(.isButton)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.dockFrames[app.id] = $0 }
+                .onTapGesture { model.openOnDesktop(app) }
+                .onLongPressGesture { desktop.contextDockID = app.id }
+                .popover(isPresented: Binding(get: { desktop.contextDockID == app.id }, set: { if !$0 { desktop.contextDockID = nil } })) {
+                    VStack(alignment: .leading, spacing: 16) { DockAppActions(app: app) { desktop.contextDockID = nil } }
+                        .padding(20).presentationCompactAdaptation(.popover)
+                }
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "square.grid.3x3.fill")
+                .font(.system(size: 20, weight: .medium))
+                .frame(width: 44, height: 44)
+                .background(desktop.launchpadOpen || desktop.hovered == .launchpadButton ? Color.primary.opacity(0.12) : .clear)
+                .contentShape(Rectangle())
+                .accessibilityLabel("All Apps")
+                .accessibilityAddTraits(.isButton)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.launchpadButtonFrame = $0 }
+                .onTapGesture { desktop.launchpadOpen.toggle() }
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity).frame(height: 44)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.12)).frame(height: 0.5) }
+        .onDisappear { desktop.dockFrames.removeAll(); desktop.launchpadButtonFrame = .zero }
     }
 
     private func isRunning(_ app: HostClient.App) -> Bool {

@@ -50,12 +50,28 @@ struct LaptopContainer<Content: View>: View {
                     .frame(width: proxy.size.width, height: active ? frames.screen.height : max(0, proxy.size.height - geometry.keyboard))
                     .clipped()
                 if active {
+                    VStack(spacing: 0) {
+                        if !isCard && !model.externalDisplayActive {
+                            Dock(desktop: model.desktop, compact: true, coordinateSpace: "laptop", interactive: true)
+                                .frame(maxWidth: .infinity).frame(height: 44)
+                        }
                     LaptopControls(compact: frames.controls.height < 280, isCard: isCard,
                                    enabled: scenePhase == .active && (isCard ? model.presentedWindowID != nil : model.presentedWindowID == nil && model.selectedTab == .desktop))
+                    }
                         .frame(width: frames.controls.width, height: max(1, frames.controls.height))
                         .clipped()
                         .offset(y: frames.controls.minY)
                 }
+            }
+            .coordinateSpace(name: "laptop")
+            .overlay(alignment: .topLeading) {
+                if active && !isCard && !model.externalDisplayActive && model.desktop.showsCursor {
+                    Cursor(hit: model.desktop.hovered, ui: model.desktop.ui)
+                        .position(model.desktop.cursor).allowsHitTesting(false)
+                }
+            }
+            .onChange(of: frames, initial: true) { _, frames in
+                updatePointerArea(active: active, frames: frames)
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             .background { LaptopGeometryProbe { geometry = $0 }.allowsHitTesting(false) }
@@ -63,11 +79,16 @@ struct LaptopContainer<Content: View>: View {
                 layoutActive = value
                 activeChanged(value)
                 if !isCard { model.setLaptopDesktop(value) }
+                updatePointerArea(active: value, frames: frames)
                 model.keyboardVisible = false
                 LaptopPointer.shared.clear()
             }
             .onAppear {
                 if !isCard { model.setLaptopDesktop(active) }
+                updatePointerArea(active: active, frames: frames)
+            }
+            .onChange(of: ObjectIdentifier(model.desktop)) { _, _ in
+                updatePointerArea(active: active, frames: frames)
             }
             .onDisappear {
                 if !isCard { model.setLaptopDesktop(false) }
@@ -79,11 +100,18 @@ struct LaptopContainer<Content: View>: View {
         .ignoresSafeArea(.container, edges: layoutActive ? .all : (barEdge == nil ? [] : [.top, .bottom]))
         .ignoresSafeArea(.keyboard, edges: .bottom)
     }
+    private func updatePointerArea(active: Bool, frames: LaptopLayout.Frames) {
+        guard active, !isCard, !model.externalDisplayActive else { return }
+        model.desktop.pointerArea = CGSize(width: frames.controls.width, height: frames.controls.minY + min(44, frames.controls.height))
+    }
+
 }
 
 private struct LaptopControls: View {
     @Environment(AppModel.self) private var model
     @State private var input: LaptopLayout.Input = .trackpad
+    @State private var surface = TrackpadSurface()
+    @State private var gestureHelp = false
     let compact: Bool
     let isCard: Bool
     let enabled: Bool
@@ -96,33 +124,54 @@ private struct LaptopControls: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ZStack {
-                Trackpad(desktop: desktop, target: target, keyboardVisible: model.keyboardVisible,
-                         enabled: enabled, pointerEnabled: input != .keyboard)
-                if input == .keyboard {
-                    Label("Keyboard", systemImage: "keyboard")
-                        .font(.subheadline).foregroundStyle(.secondary).allowsHitTesting(false)
-                } else if !compact && !model.keyboardVisible {
-                    VStack(spacing: 8) {
-                        Image(systemName: "hand.draw").font(.title2)
-                        Text("Trackpad").font(.subheadline.weight(.medium))
-                        Text("Tap to click · two fingers to scroll or right-click")
-                            .font(.caption).multilineTextAlignment(.center)
+            GeometryReader { proxy in
+                VStack(spacing: 0) {
+                    trackpad
+                        .frame(height: input == .combo ? LaptopLayout.comboTrackpadHeight(proxy.size.height) : proxy.size.height)
+                    if input == .combo {
+                        VStack(spacing: 0) {
+                            LaptopKeyHeader(surface: surface).frame(height: 48)
+                            LaptopComboKeyboard(onText: { surface.insertText($0) },
+                                                onKey: { surface.performKeyboardAction(.key($0)) },
+                                                onNativeKeyboard: { choose(.keyboard) })
+                        }
+                        .background(Color(uiColor: .systemGray5))
                     }
-                    .foregroundStyle(.secondary).padding().allowsHitTesting(false)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
-            rail
-                .frame(width: 56)
+            rail.frame(width: 56)
         }
-        .background(.ultraThinMaterial)
+        .background(input == .combo ? Color(uiColor: .systemGray5) : Color(white: 0.14))
         .allowsHitTesting(enabled)
+        .sheet(isPresented: $gestureHelp) { TrackpadGestureGuide() }
         .onChange(of: model.keyboardVisible) { _, visible in
-            if !visible { input = .trackpad }
-            else if input == .trackpad { input = .combo }
+            if input == .combo {
+                if visible { model.keyboardVisible = false }
+            } else if !visible && input == .keyboard { input = .trackpad }
+            else if visible && input == .trackpad { input = .keyboard }
         }
+    }
+
+    private var trackpad: some View {
+        Trackpad(desktop: desktop, target: target, keyboardVisible: input == .keyboard && model.keyboardVisible,
+                 enabled: enabled, pointerEnabled: input != .keyboard,
+                 sharedSurface: surface, inlineControls: input == .combo,
+                 dismissInline: { choose(.trackpad) })
+            .background(Color(white: 0.12))
+            .overlay {
+                if input != .keyboard {
+                    VStack(spacing: 6) {
+                        Image(systemName: "hand.draw").font(input == .combo ? .body : .title2)
+                        Text("Trackpad").font(.subheadline.weight(.medium))
+                        if input != .combo && !compact {
+                            Text("Tap to click · two fingers to scroll or right-click").font(.caption)
+                        }
+                    }
+                    .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .padding(8).allowsHitTesting(false)
+                }
+            }
     }
 
     private var rail: some View {
@@ -160,6 +209,8 @@ private struct LaptopControls: View {
         Button("Keyboard", systemImage: "keyboard") { choose(.keyboard) }
         Button("Trackpad", systemImage: "hand.draw") { choose(.trackpad) }
         Button("Keyboard & Trackpad", systemImage: "rectangle.split.2x1") { choose(.combo) }
+        Divider()
+        Button("Trackpad Gestures", systemImage: "hand.draw") { gestureHelp = true }
     }
 
     @ViewBuilder private var computerActions: some View {
@@ -208,8 +259,10 @@ private struct LaptopControls: View {
     }
 
     private func choose(_ value: LaptopLayout.Input) {
+        surface.endInteraction()
+        surface.inlineKeyboardControls = value == .combo
         input = value
-        model.keyboardVisible = value != .trackpad
+        model.keyboardVisible = value == .keyboard
     }
     private func leave(_ tab: ShellTab) {
         model.keyboardVisible = false
@@ -317,4 +370,10 @@ private struct LaptopGeometryProbe: UIViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + (settling ? 0.2 : 0), execute: work)
         }
     }
+}
+
+private struct LaptopKeyHeader: UIViewRepresentable {
+    let surface: TrackpadSurface
+    func makeUIView(context: Context) -> KeyBar { surface.keyboardControls }
+    func updateUIView(_ view: KeyBar, context: Context) {}
 }

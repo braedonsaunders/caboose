@@ -150,7 +150,21 @@ final class NativeEditor: UITextView {
         keyBar.onAction = { [weak self] action in self?.perform(action) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
-    override func didMoveToWindow() { super.didMoveToWindow(); requestFocus() }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        inputAccessoryView = keyBar.accessory(for: self)
+        requestFocus()
+    }
+    private var nativeHeader = false
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let wide = (window?.bounds.width ?? bounds.width) >= 600
+        if wide != nativeHeader {
+            nativeHeader = wide
+            inputAccessoryView = keyBar.accessory(for: self)
+            if isFirstResponder { reloadInputViews() }
+        }
+    }
     func requestFocus() { if wantsFocus, window != nil, isEditable { becomeFirstResponder() } }
 
     override func insertText(_ text: String) {

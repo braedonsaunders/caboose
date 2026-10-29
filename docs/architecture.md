@@ -1593,9 +1593,13 @@ the app card, and a detached view releases its layers.
   lower panel owns the existing `RemoteTextInputView`/`KeyBar`, with Keyboard, Trackpad
   and Combo choices. Its trailing rail contains window switching, full screen, settings,
   power and navigation; the system-wide bars are hidden while Laptop is active. The
-  native keyboard occupies the lower edge and the rail stays above it. The upper workspace
-  uses the floating desktop and its whole-desktop hit testing, including the dock and
-  title bars, with separate saved Laptop positions, without changing the tablet arrangement. App cards target their current
+  native keyboard occupies the lower edge; controls never move above the hinge. Combo
+  uses a full-width trackpad in the upper third of the lower panel and a custom keyboard
+  with the shared shortcut header in its lower two thirds. Its globe button opens the
+  native keyboard for other languages, emoji and dictation. The dock becomes a thin, full-width taskbar at the top of
+  the lower half. Caboose title bars are hidden above the hinge; app-owned chrome remains
+  part of the guest surface. Pointer hit testing includes the relocated dock, with separate
+  saved Laptop positions, without changing the tablet arrangement. App cards target their current
   window. Upper surfaces keep direct touch but do not compete for first responder. The same bounded text-focus policy
   follows clicks and double clicks. Detaching or changing target releases a held drag
   and cancels focus requests. With an external display the upper phone region offers
@@ -1744,6 +1748,14 @@ Pinned and recent apps are kept on the phone per computer.
   the primary button. A tap shows the keyboard when the app
   answers it with a text cursor or text-input-v3 focus, and hides it otherwise. Dialogs are
   fitted and centred on the phone.
+- **Phone trackpad gestures.** Laptop and external-display controls share `TrackpadGestures`:
+  one-finger pointing/tapping, two-finger scrolling and secondary tap, three-finger drag,
+  and four-finger swipes (left/right switch windows, up opens the window chooser, down
+  closes it). From a standalone card, up returns to Desktop. Pinch recognition and scroll
+  recognition are mutually exclusive; pinch produces bounded Control–Plus/Minus shortcuts
+  for the focused app. Multi-finger lift or system cancellation releases a drag immediately
+  and suppresses leftover touches. A gesture guide is available in both control surfaces.
+  System-reserved/accessibility gestures, Force Touch and app-specific rotation are not emulated.
 - **Pointer.** A hardware trackpad and mouse work through `UIPointerInteraction` and
   `GCMouse`.
 - **Keyboard.** The iOS keyboard works through `UITextInput`, so autocorrect, QuickPath,
@@ -1761,7 +1773,10 @@ Pinned and recent apps are kept on the phone per computer.
 - **Keyboard accessory.** Remote app cards, tiled and free desktops, the external-display
   trackpad, Terminal, the Agents composer and app-owned native form fields use
   CabooseKit’s shared `KeyBar` accessory: one 48-point row of plain keys on the system
-  keyboard surface. Hide Keyboard stays fixed at the right edge. A controls menu selects
+  keyboard surface. At window widths of at least 600 points, native inputs instead install
+  the same actions in UIKit’s built-in keyboard shortcut row, avoiding a detached accessory
+  above a fold. Combo embeds the shared row directly above its custom keys.
+  Hide Keyboard stays fixed at the right edge. A controls menu selects
   Keys, Move or Symbols; each group shows four keys on compact keyboards and six from
   378 points wide, without horizontal scrolling. The menu also exposes every key and the
   Autocorrect toggle. Home/End and symbol keys offer related actions on touch-and-hold.

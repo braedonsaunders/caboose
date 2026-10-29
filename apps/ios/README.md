@@ -508,11 +508,17 @@ Automatic uses a partially folded horizontal hinge on iOS 27.1 and later. Laptop
 works as a manual split on a sufficiently tall flat screen. The upper area shows the
 app/desktop without the system toolbar. The lower-right control rail offers Keyboard,
 Trackpad or Combo, window switching, full screen, settings, power and navigation. Keyboard
-and Combo use the same system keyboard and single-row KeyBar used elsewhere; Hide Keyboard
-returns to the trackpad. The rail stays above the native keyboard. The upper desktop uses
-floating windows with a dock; its pointer reaches both the app and desktop controls. Tablet
+uses the native keyboard. Combo uses a full-width trackpad across the upper third of the
+lower panel, then a custom keyboard and shared shortcut header in the lower two-thirds.
+Its globe button opens the native keyboard for languages, emoji and dictation. Hide Keyboard
+returns to the trackpad. The dock becomes a thin, full-width taskbar at the top of the lower half; controls stay below
+the hinge. The upper desktop hides Caboose title bars and gives their space to the app;
+app-owned chrome remains. Its pointer reaches both the app and relocated dock. Tablet
 mode retains its saved arrangement. One-finger movement, tap/double-tap, two-finger
-scroll/right-click and tap-then-drag use the existing trackpad gestures. With a connected
+scroll/right-click, pinch zoom, three-finger drag and four-finger window switching use
+the shared trackpad gestures. Four fingers up opens the window chooser; down closes it.
+Pinch uses the focused app’s Control–Plus/Minus shortcuts. Both control surfaces offer a
+Trackpad Gestures guide with the mappings and platform limitations. With a connected
 monitor, the phone shows window previews above its keyboard/trackpad and leaves the monitor's
 workspace intact. Book posture and compact screens keep the ordinary layout in Automatic.
 

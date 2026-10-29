@@ -28,6 +28,17 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
         return TerminalTheme.fontSizes.contains(saved) ? saved : TerminalTheme.defaultFontSize
     }()
 
+    private var nativeHeader = false
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let wide = (window?.bounds.width ?? bounds.width) >= 600
+        if wide != nativeHeader {
+            nativeHeader = wide
+            inputAccessoryView = keyRow.view.accessory(for: self)
+            if isFirstResponder { reloadInputViews() }
+        }
+    }
+
     init() {
         // A 1×1 start makes the first layout report the real size, whatever it is.
         let options = TerminalOptions(cols: 1, rows: 1, scrollback: 10_000)

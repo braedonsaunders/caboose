@@ -39,12 +39,16 @@ final class DesktopModel {
     var ui: CGFloat = 1
     /// Every window's title bar: its controls' places for drawing and for hit-testing.
     var titleBar: WindowTitleBar { WindowTitleBar(ui: ui, touch: directTouch) }
-    var titleBarHeight: CGFloat { titleBar.height }
-    var dockHeight: CGFloat { 76 * ui }
-    var dockBottomInset: CGFloat { 10 * ui }
+    /// Laptop puts shell chrome below the hinge, outside the guest's display.
+    var detachedChrome = false
+    var pointerArea: CGSize?
+    var titleBarHeight: CGFloat { detachedChrome ? 0 : titleBar.height }
+    var dockHeight: CGFloat { detachedChrome ? 0 : 76 * ui }
+    var dockBottomInset: CGFloat { detachedChrome ? 0 : 10 * ui }
+    private var dockGap: CGFloat { detachedChrome ? 0 : 8 * ui }
     var maximizedFrame: CGRect {
         let area = DesktopGeometry.maximizedFrame(size: size, titleBarHeight: titleBarHeight,
-                                                 dockHeight: dockHeight, dockBottomInset: dockBottomInset, dockGap: 8 * ui)
+                                                 dockHeight: dockHeight, dockBottomInset: dockBottomInset, dockGap: dockGap)
         return CGRect(x: area.minX * pixelsPerPoint, y: area.minY * pixelsPerPoint,
                       width: area.width * pixelsPerPoint, height: area.height * pixelsPerPoint).integral
     }
@@ -52,7 +56,7 @@ final class DesktopModel {
     /// Where windows go: the desktop above the dock, in points. A window's whole frame,
     /// title bar included, stays inside it.
     var workArea: CGRect {
-        CGRect(x: 0, y: 0, width: max(1, size.width), height: max(1, size.height - dockHeight - dockBottomInset - 8 * ui))
+        CGRect(x: 0, y: 0, width: max(1, size.width), height: max(1, size.height - dockHeight - dockBottomInset - dockGap))
     }
 
     /// The owner's places for the windows, kept for the computer between launches.
@@ -282,7 +286,7 @@ final class DesktopModel {
             if let item = quickSwitch?.item(at: point) { return .switchItem(item) }
             if quickSwitch?.staysAt(point) == true { return .switchStay }
         }
-        if fullscreenWindow(in: windows) == nil {
+        if detachedChrome || fullscreenWindow(in: windows) == nil {
             if launchpadButtonFrame.contains(point) { return .launchpadButton }
             for (id, frame) in dockFrames where frame.contains(point) { return .dock(id) }
         }
@@ -297,7 +301,7 @@ final class DesktopModel {
             guard chrome.contains(point) else { continue }
             let content = contentRect(window)
             if content.contains(point) {
-                if !window.isAuxiliary, point.x > content.maxX - 18 * ui, point.y > content.maxY - 18 * ui { return .resize(id) }
+                if !detachedChrome, !window.isAuxiliary, point.x > content.maxX - 18 * ui, point.y > content.maxY - 18 * ui { return .resize(id) }
                 let local = CGPoint(x: (point.x - content.minX) * pixelsPerPoint, y: (point.y - content.minY) * pixelsPerPoint)
                 return .content(id, local)
             }
@@ -315,7 +319,8 @@ final class DesktopModel {
     // MARK: Pointer
 
     func move(by delta: CGPoint, session: (any DisplaySession)?) {
-        cursor = CGPoint(x: min(max(0, cursor.x + delta.x), size.width), y: min(max(0, cursor.y + delta.y), size.height))
+        let bounds = pointerArea ?? size
+        cursor = CGPoint(x: min(max(0, cursor.x + delta.x), bounds.width), y: min(max(0, cursor.y + delta.y), bounds.height))
         guard let session else { return }
         if let drag {
             dragMoved(drag, session: session)

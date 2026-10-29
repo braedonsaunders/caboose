@@ -520,6 +520,7 @@ final class AppModel {
         let scale = min(2, max(1, UIScreen.main.scale))
         if !(desktop.directTouch && desktop.pixelsPerPoint == scale) { desktop = DesktopModel(pixelsPerPoint: scale) }
         desktop.directTouch = true
+        desktop.detachedChrome = laptopDesktopActive
         desktop.storageKey = freeDesktopKey(external: false).map { $0 + (laptopDesktopActive ? ".laptop" : "") }
         desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
@@ -826,6 +827,10 @@ final class AppModel {
     func setLaptopDesktop(_ active: Bool) {
         guard laptopDesktopActive != active else { return }
         laptopDesktopActive = active
+        desktop.detachedChrome = active && !externalDisplayActive
+        desktop.pointerArea = nil
+        desktop.dockFrames.removeAll()
+        desktop.launchpadButtonFrame = .zero
         laptopNeedsInitialFit = active && !externalDisplayActive
         if deviceDesktopActive { desktop.storageKey = freeDesktopKey(external: false).map { $0 + (active ? ".laptop" : "") } }
         placedWindowIDs.removeAll()

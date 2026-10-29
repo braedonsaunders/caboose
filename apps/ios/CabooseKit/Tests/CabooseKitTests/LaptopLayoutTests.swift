@@ -28,8 +28,18 @@ struct LaptopLayoutTests {
             let frames = LaptopLayout.frames(size: size, division: horizontal, keyboard: keyboard)
             #expect(frames.screen.maxY <= max(0, size.height - keyboard))
             #expect(frames.controls.height >= 0)
+            #expect(frames.controls.minY == horizontal.maxY)
             #expect(frames.screen.maxY <= frames.controls.minY)
         }
+    }
+    @Test func comboKeepsTrackpadAboveFullWidthKeyboard() {
+        for height in [CGFloat(240), 360, 480] {
+            let trackpad = LaptopLayout.comboTrackpadHeight(height)
+            #expect(trackpad == height / 3)
+            #expect(height - trackpad == height * 2 / 3)
+        }
+        #expect(LaptopLayout.comboTrackpadHeight(-1) == 0)
+        #expect(LaptopLayout.comboTrackpadHeight(.infinity) == 0)
     }
     @Test func manualFlatModeHasSameSplitAfterKeyboardRoundTrip() {
         let first = LaptopLayout.frames(size: size, division: nil, keyboard: 0)

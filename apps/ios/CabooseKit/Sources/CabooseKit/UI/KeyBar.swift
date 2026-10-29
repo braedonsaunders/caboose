@@ -21,6 +21,8 @@ public final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     private var selectedGroup = 0
     private var visibleKeyCount = 4
     private var repeatTimer: Timer?
+    private weak var assistant: UITextInputAssistantItem?
+    private var nativeModifiers: [String: UIBarButtonItem] = [:]
     private let keys = UIStackView()
     private var activeModifiers: Set<String> = []
     public var enableInputClicksWhenVisible: Bool { true }
@@ -28,7 +30,9 @@ public final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     public init(showsAutocorrect: Bool = true) {
         self.showsAutocorrect = showsAutocorrect
         super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 48), inputViewStyle: .keyboard)
-        allowsSelfSizing = true
+        allowsSelfSizing = false
+        backgroundColor = .systemGray5
+        isOpaque = true
         // UIInputView's keyboard style supplies the system keyboard surface.
         // The controls themselves are plain, without independent glass backgrounds.
         let row = UIStackView()
@@ -56,6 +60,50 @@ public final class KeyBar: UIInputView, UIInputViewAudioFeedback {
             row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
         ])
         showGroup(0)
+    }
+
+    public override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: 48) }
+
+    /// The wide system keyboard has a built-in shortcut row within its own surface.
+    /// Using that row keeps controls out of the hinge's displaced accessory region.
+    public func accessory(for view: UIView) -> UIView? {
+        let item = view.inputAssistantItem
+        let wide = (view.window?.bounds.width ?? view.bounds.width) >= 600
+        if wide {
+            if assistant !== item || item.trailingBarButtonGroups.isEmpty {
+                assistant = item
+                installAssistant(item)
+            }
+            return nil
+        }
+        item.leadingBarButtonGroups = []
+        item.trailingBarButtonGroups = []
+        assistant = nil
+        return self
+    }
+
+    private func installAssistant(_ item: UITextInputAssistantItem) {
+        item.allowsHidingShortcuts = false
+        let menu = UIBarButtonItem(image: UIImage(systemName: "slider.horizontal.3"), menu: groupButton.menu)
+        menu.accessibilityLabel = String(localized: "Keyboard controls")
+        nativeModifiers.removeAll()
+        var leading = [menu]
+        for (title, label, action) in items(for: selectedGroup).prefix(4) {
+            let key = UIBarButtonItem(title: title, primaryAction: UIAction { [weak self] _ in
+                self?.press(action, repeating: false)
+            })
+            key.accessibilityLabel = label
+            if case .modifier(let name) = action { nativeModifiers[name] = key }
+            leading.append(key)
+        }
+        let hide = UIBarButtonItem(image: UIImage(systemName: "keyboard.chevron.compact.down"), primaryAction: UIAction { [weak self] _ in
+            self?.press(.dismissKeyboard, repeating: false)
+        })
+        hide.accessibilityLabel = String(localized: "Hide Keyboard")
+        let representative = UIBarButtonItem(image: UIImage(systemName: "slider.horizontal.3"), menu: groupButton.menu)
+        representative.accessibilityLabel = String(localized: "Keyboard controls")
+        item.leadingBarButtonGroups = [UIBarButtonItemGroup(barButtonItems: leading, representativeItem: representative)]
+        item.trailingBarButtonGroups = [UIBarButtonItemGroup(barButtonItems: [hide], representativeItem: nil)]
     }
 
     public override func layoutSubviews() {
@@ -131,6 +179,10 @@ public final class KeyBar: UIInputView, UIInputViewAudioFeedback {
             })
         }
         groupButton.menu = UIMenu(children: children)
+        if let assistant {
+            installAssistant(assistant)
+            for (name, item) in nativeModifiers { item.tintColor = activeModifiers.contains(name) ? .systemOrange : .label }
+        }
         let modifiers = [("control", "Control"), ("mod1", "Option")]
             .filter { activeModifiers.contains($0.0) }.map { $0.1 }
         groupButton.accessibilityValue = ([groupTitles[selectedGroup]] + modifiers).joined(separator: ", ")
