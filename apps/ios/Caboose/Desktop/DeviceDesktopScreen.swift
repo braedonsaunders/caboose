@@ -300,6 +300,12 @@ final class DesktopTouchSurface: RemoteTextInputView {
     weak var desktop: DesktopModel?
     weak var model: AppModel?
 
+    private let scrollDriver = ScrollDriver()
+    private var scrolling = false
+    private var scrollSuppressed = false
+    private var scrollOrigin = CGPoint.zero
+    private var scrollOriginTime: TimeInterval = 0
+
     private var began: TimeInterval = 0
     private var travel: CGFloat = 0
     private var touchOrigin = CGPoint.zero
@@ -365,12 +371,15 @@ final class DesktopTouchSurface: RemoteTextInputView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { cancelHold() }
+        if window == nil { cancelHold(); scrollDriver.cancel() }
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        scrollDriver.cancel()
+        scrolling = false
         let fingers = live(event)
         if maxFingers == 0 {
+            scrollSuppressed = false
             began = event?.timestamp ?? 0
             travel = 0
             dragging = false
@@ -382,12 +391,17 @@ final class DesktopTouchSurface: RemoteTextInputView {
         }
         maxFingers = max(maxFingers, fingers.count)
         lastCentroid = centroid(fingers)
+        if let center = lastCentroid {
+            scrollOrigin = center
+            scrollOriginTime = event?.timestamp ?? ProcessInfo.processInfo.systemUptime
+        }
         if maxFingers == 1, let point = lastCentroid { touchOrigin = point }
         if maxFingers == 1, let first = touches.first, first.type == .direct {
             press.begin(at: first.location(in: self), time: ProcessInfo.processInfo.systemUptime)
             holdTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
                 guard let self, let desktop = self.desktop, !self.dragging,
                       let point = self.press.context(at: ProcessInfo.processInfo.systemUptime) else { return }
+                self.scrollDriver.cancel()
                 self.contextOpened = true
                 self.lastTap = nil
                 self.point(at: point)
@@ -408,7 +422,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
             desktop?.trackSwitchHold(at: finger.location(in: self))
             return
         }
-        guard !contextOpened else { return }
+        guard !contextOpened, !scrollSuppressed else { return }
         guard let desktop, let now = centroid(fingers), let last = lastCentroid else { return }
         let delta = CGPoint(x: now.x - last.x, y: now.y - last.y)
         lastCentroid = now
@@ -416,8 +430,27 @@ final class DesktopTouchSurface: RemoteTextInputView {
         press.move(to: now)
         if maxFingers >= 2 {
             cancelHold()
-            // Content follows the fingers, like any iOS scroll view.
-            desktop.scroll(by: CGPoint(x: -delta.x, y: -delta.y), session: session)
+            // Capture the original target so inertia cannot cross windows or chrome.
+            let time = event?.timestamp ?? ProcessInfo.processInfo.systemUptime
+            var scrollDelta = delta
+            if !scrolling {
+                scrollDelta = CGPoint(x: now.x - scrollOrigin.x, y: now.y - scrollOrigin.y)
+                guard hypot(scrollDelta.x, scrollDelta.y) >= 4 else { return }
+                guard let session, case .content(let id, let anchor) = desktop.hitTest(desktop.cursor, windows: session.windows),
+                      let target = session.windows[id] else { return }
+                scrolling = true
+                session.resetScroll()
+                let scale = desktop.pixelsPerPoint
+                scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak target, weak desktop] delta in
+                    guard let self, let session, let target, let desktop, self.window != nil,
+                          self.session === session, self.desktop === desktop, session.state == .ready,
+                          session.windows[id] === target, desktop.isVisible(id),
+                          case .content(let current, _) = desktop.hitTest(desktop.cursor, windows: session.windows), current == id else { return false }
+                    session.scroll(in: target, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
+                    return true
+                }
+            }
+            scrollDriver.append(CGPoint(x: -scrollDelta.x, y: -scrollDelta.y), at: time)
             return
         }
         if !dragging, travel > 8 {
@@ -429,7 +462,15 @@ final class DesktopTouchSurface: RemoteTextInputView {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard live(event).isEmpty, let desktop else { return }
+        if scrolling {
+            scrollDriver.end(at: event?.timestamp ?? ProcessInfo.processInfo.systemUptime)
+            scrolling = false
+            scrollSuppressed = true
+        }
+        guard live(event).isEmpty, let desktop else {
+            lastCentroid = centroid(live(event))
+            return
+        }
         let now = event?.timestamp ?? 0
         let duration = now - began
         defer { maxFingers = 0; lastCentroid = nil; cancelHold() }
@@ -438,7 +479,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
             desktop.endSwitchHold()
             return
         }
-        if contextOpened { return }
+        if contextOpened || scrollSuppressed { return }
         if dragging {
             desktop.endDrag(session: session)
             dragging = false
@@ -463,6 +504,9 @@ final class DesktopTouchSurface: RemoteTextInputView {
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        scrollDriver.cancel()
+        scrolling = false
+        scrollSuppressed = false
         cancelHold()
         if switchHolding {
             switchHolding = false
