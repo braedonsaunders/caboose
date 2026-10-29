@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { lstat, open, rename, unlink } from 'node:fs/promises'
+import { lstat, open, readdir, rename, rm, unlink } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { ParkedFreezeIntent } from './parked-files-journal.js'
 
@@ -82,5 +82,15 @@ export class ParkedFilesStore {
   async invalidate(): Promise<void> {
     try { await unlink(this.pointer) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     await syncDirectory(dirname(this.pointer))
+    // This directory is dedicated to this computer's staged clones. Reap
+    // incomplete stages too, including those left by a host crash.
+    let root
+    try { root = await lstat(this.stagingRoot) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
+    if (!root.isDirectory() || root.isSymbolicLink() || (root.mode & 0o077) !== 0 || (process.getuid && root.uid !== process.getuid())) throw new Error('Unsafe parked Files staging directory')
+    for (const entry of await readdir(this.stagingRoot, { withFileTypes: true })) {
+      if (entry.isDirectory() && /^\.parked-files-[A-Za-z0-9]+$/.test(entry.name)) await rm(join(this.stagingRoot, entry.name), { recursive: true, force: true })
+    }
+    await syncDirectory(this.stagingRoot)
   }
 }

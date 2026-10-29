@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
@@ -31,5 +31,19 @@ it('removes a pointer when wake cancels publication during rename', async () => 
     await expect(store.publish({ directory, image: join(directory, 'disk.raw') }, intent, snapshot, () => ++checks === 1)).rejects.toThrow('cancelled')
     expect(await store.read()).toBeUndefined()
     await expect(readFile(join(snapshot, 'files-generation'))).rejects.toMatchObject({ code: 'ENOENT' })
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('removes only managed stages when invalidating a view', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'parked-store-'))
+  try {
+    const staging = join(root, 'stages')
+    await mkdir(join(staging, '.parked-files-abc123'), { recursive: true, mode: 0o700 })
+    await mkdir(join(staging, 'unrelated'), { mode: 0o700 })
+    const store = new ParkedFilesStore(join(root, 'snapshot'), staging)
+    await store.invalidate()
+    await expect(lstat(join(staging, '.parked-files-abc123'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await writeFile(join(staging, 'unrelated', 'kept'), 'safe')
+    expect(await readFile(join(staging, 'unrelated', 'kept'), 'utf8')).toBe('safe')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
