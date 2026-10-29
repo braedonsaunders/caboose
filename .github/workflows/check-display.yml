@@ -30,7 +30,7 @@ jobs:
       - name: Check guest bridge and injected page contracts
         run: |
           python3 -m unittest discover -s guest/apps -p 'test_*.py'
-          python3 -m unittest discover -s guest/files -p 'test_webview_endpoint.py'
+          python3 guest/files/test_webview_endpoint.py
           node --test guest/apps/agent-page.test.mjs
       - name: Build the Linux display test environment
         run: docker build -t caboose-display-dev guest/display
