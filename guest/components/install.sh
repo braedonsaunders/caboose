@@ -45,6 +45,7 @@ bash "$root/phone/install.sh"
 sh "$root/bridge/install.sh"
 sh "$root/flatpak/install.sh" "$mode"
 sh "$root/game/install.sh"
+sh "$root/gpu/install.sh"
 sh "$root/agentd/install.sh"
 install -d -m 0755 /usr/local/share/caboose
 if [[ "$mode" = *container ]]; then

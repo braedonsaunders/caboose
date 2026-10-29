@@ -45,5 +45,8 @@
   "game/games/powder-toy/caboose-game.json",
   "game/games/powder-toy/web/index.html",
   "game/games/powder-toy/icon.png",
-  "game/games/powder-toy/icon-license.txt"
+  "game/games/powder-toy/icon-license.txt",
+  "gpu/install.sh",
+  "gpu/caboose-gpu-run",
+  "gpu/profile.json"
 ]

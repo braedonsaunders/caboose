@@ -15,6 +15,17 @@ RUN cd /src && cargo build --release --locked --jobs "$CARGO_BUILD_JOBS" -p cabo
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
 
+# The GPU stream driver and layers (guest/gpu), at the commits of one Vulkan SDK release.
+FROM debian:trixie-slim AS gpu
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates git cmake ninja-build g++ python3 pkg-config \
+      libx11-dev libx11-xcb-dev libxcb1-dev libxrandr-dev libwayland-dev wayland-protocols && \
+    rm -rf /var/lib/apt/lists/*
+COPY gpu /gpu
+ARG GPU_BUILD_JOBS=2
+RUN CABOOSE_GPU_JOBS="$GPU_BUILD_JOBS" /gpu/build.sh /out/caboose-gpu
+
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 # This disposable image build can safely skip per-package fsync on WSL's HDD.
@@ -52,6 +63,7 @@ COPY phone /tmp/bundle/phone
 COPY bridge /tmp/bundle/bridge
 COPY flatpak /tmp/bundle/flatpak
 COPY game /tmp/bundle/game
+COPY gpu /tmp/bundle/gpu
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff
@@ -74,6 +86,7 @@ RUN triplet=$(dpkg --print-architecture) && \
     case "$triplet" in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) exit 1 ;; esac && \
     install -D -m 0644 /tmp/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so" && rm /tmp/caboose_drv_video.so
 COPY display/caboose-display-ready /usr/local/bin/caboose-display-ready
+COPY --from=gpu /out/caboose-gpu /usr/local/lib/caboose-gpu
 COPY container/caboose-session /usr/local/bin/caboose-session
 RUN chmod 0755 /usr/local/bin/caboose-session
 ENV LD_PRELOAD= CABOOSE_GPU=none DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus GDK_SCALE=1 QT_QPA_PLATFORMTHEME=gtk3 \

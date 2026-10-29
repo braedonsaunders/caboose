@@ -44,6 +44,8 @@ install -m 0755 /tmp/caboose-display/caboose-display /tmp/caboose-display/caboos
 install -m 0644 /tmp/caboose-display/caboose-display.service /tmp/caboose-display/caboose-display-agent.service /etc/systemd/system/
 # Codec passthrough (guest/vaapi): the driver, and /dev/udmabuf for its decode surfaces.
 install -D -m 0644 /tmp/caboose-display/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so"
+# GPU streams (guest/gpu): the driver that renders nothing and the layers caboose-gpu-run loads.
+cp -r /tmp/caboose-display/caboose-gpu /usr/local/lib/caboose-gpu
 printf 'udmabuf\n' > /etc/modules-load.d/caboose-udmabuf.conf
 printf 'KERNEL=="udmabuf", GROUP="caboose", MODE="0660"\n' > /etc/udev/rules.d/70-caboose-udmabuf.rules
 systemctl enable desk-guest-agent.service desk-vsock-bridge.service
