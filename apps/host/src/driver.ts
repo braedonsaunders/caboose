@@ -78,6 +78,7 @@ function macRuntimeDirectory(imageRoot: string): string {
  */
 export function createDeskPool(config: Config, dependencies: DeskPoolDependencies = {}): DeskHost {
   const nativeMac = usesVirtualization(dependencies)
+  if (nativeMac && (config.vmCow || config.vmFreePageReporting)) throw new Error('Cloud Hypervisor memory options are unavailable on macOS')
   const backend = dependencies.backend ?? (nativeMac
     ? createVirtualizationBackend({ helperPath: config.vmmPath, connectTimeoutMs: 120_000 })
     : createCloudHypervisorBackend({ connectTimeoutMs: 120_000, serviceVsock: true }))
@@ -93,7 +94,7 @@ export function createDeskPool(config: Config, dependencies: DeskPoolDependencie
     ...(nativeMac ? { guestNetwork: { guestAddress: '10.0.2.15', gatewayAddress: '10.0.2.2', prefixLength: 24, allowLan: false } } : {}),
     ...(dependencies.deviceExists ? { deviceExists: dependencies.deviceExists } : {}),
     ...dependencies.snapshotSignature,
-    parkWithMemory: true, idleSuspendMs: APPKIT_LEASE_MS, defaultLeaseMs: APPKIT_LEASE_MS, capacity: config.maxRunning,
+    parkWithMemory: true, ...(config.vmCow ? { memoryRestoreMode: 'copyonwrite' as const } : {}), idleSuspendMs: APPKIT_LEASE_MS, defaultLeaseMs: APPKIT_LEASE_MS, capacity: config.maxRunning,
     ports: { onEvent: () => {}, audit: () => {} },
   })
 }
@@ -191,8 +192,8 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       return { run: (cmd: string, args: string[], timeoutMs?: number) => command(cmd, args, timeoutMs), ownerEnv: launchEnv }
     },
     stats: () => ({ host: 'caboose-host', hypervisor: nativeMac ? 'virtualization' : 'cloud-hypervisor', kvm: existsSync('/dev/kvm'), desk: host.stats() }),
-    activeResources: () => desk || existsSync(snapshotPath) ? resources : null,
-    hasSavedState: () => Boolean(desk) || existsSync(snapshotPath),
+    activeResources: () => desk || existsSync(snapshotPath) || existsSync(`${snapshotPath}.cold.json`) ? resources : null,
+    hasSavedState: () => Boolean(desk) || existsSync(snapshotPath) || existsSync(`${snapshotPath}.cold.json`),
     lastError: () => restartWarning,
     async wake(mode = 'interactive'): Promise<Session> {
       const desired = settings()
@@ -225,6 +226,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       desk = await host.start({ deskId: id, baseImage: join(imageDirectory, 'base.raw'), overlayPath,
         ...(dependencies.depotPath ? { shares: [{ tag: 'caboose-depot', path: dependencies.depotPath, readOnly: true }] } : {}),
         ...(systemImage ? { kernelPath: join(imageDirectory, 'vmlinux'), initramfsPath: join(imageDirectory, 'initrd'), readOnlyAttachments: [{ path: join(imageDirectory, 'system.erofs'), sha256: systemImage.hashes['system.erofs'], kind: 'block' as const }] } : {}),
+        ...(config.vmFreePageReporting ? { freePageReporting: true } : {}),
         memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS,
         ...(nativeMac ? {} : { network: { tapDevice: address.tap, guestAddress: address.guest } }),
       }).catch(error => { if (!nativeMac) invalidateNetwork(slot); throw error })

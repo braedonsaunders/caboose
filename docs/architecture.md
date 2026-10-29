@@ -197,6 +197,19 @@ The computer runs as a **microVM** by default: Cloud Hypervisor on Linux or
 Virtualization.framework on Apple Silicon macOS 14+, through appkit-desk, with
 the image files `base.raw`, `vmlinux` and `initrd` in `CABOOSE_IMAGE_ROOT`, its overlay at
 `overlays/owner.raw` and its memory snapshot at `overlays/owner.snapshot`.
+On Linux, operators can opt into Cloud Hypervisor copy-on-write restore and
+virtio-balloon free-page reporting. Copy-on-write restore retires the old
+snapshot before the VM can write and keeps its source unchanged until the VMM
+exits; an interrupted VM can leave a source file requiring verified cleanup.
+
+An optional S3-compatible cold tier compresses and encrypts a parked snapshot
+after four hours. It verifies the remote archive before replacing the local
+snapshot with a durable pointer. Wake restores and verifies a staged snapshot
+before clearing that pointer; a failed cold-tier retrieval blocks wake. Restart
+and deletion durably invalidate cold memory. Remote object cleanup uses durable
+receipts and host-wide retries, including after a computer is deleted. The disk
+overlay stays local. Keep the private snapshot key and storage configuration with
+the host's protected backups.
 
 The macOS bundle includes a signed `appkit-desk-vz` helper and a menu bar app. A per-user
 LaunchAgent runs the host at login; its data lives under `~/Library/Application Support/Caboose`.

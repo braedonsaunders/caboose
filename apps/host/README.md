@@ -210,6 +210,11 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
 | `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks. |
+| `CABOOSE_VM_COW` | `off` | `on` enables Cloud Hypervisor copy-on-write snapshot restore. |
+| `CABOOSE_VM_FREE_PAGE_REPORTING` | `off` | `on` enables a zero-size virtio-balloon with free-page reporting on new Cloud Hypervisor boots. |
+| `CABOOSE_SNAPSHOT_TIER` | `off` | `on` archives parked Linux microVM memory to the configured private S3-compatible store after four hours. |
+| `CABOOSE_SNAPSHOT_KEY_FILE` | unset | Absolute path to a host-owned mode 0600 file containing a 32-byte encryption key as lowercase hex. Required when tiering is on. |
+| `APPKIT_STORAGE_ENDPOINT`, `APPKIT_STORAGE_BUCKET`, `APPKIT_STORAGE_ACCESS_KEY_ID`, `APPKIT_STORAGE_SECRET_ACCESS_KEY` | unset | S3-compatible storage connection used for cold snapshots. Required when tiering is on. |
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
 | `CABOOSE_PUBLIC_URL` | unset | Where phones reach this host from anywhere, such as `https://caboose.example.com`; listed first in pairing links and used as the console auth base URL (auth defaults to loopback when unset). |
 | `CABOOSE_MDNS` | `on` | `off` stops advertising `_caboose._tcp` on the LAN. |
@@ -231,6 +236,25 @@ Invalid values stop the host at startup. `GET /v1/host` reports the version, run
 image and the non-secret settings the host started with.
 
 The owner's computer's name, memory, CPUs, idle timeout and default agent are saved in
+Run `pnpm --filter caboose-host exec tsx scripts/check-snapshot-tier.mts` on a
+Linux host with the tier and storage variables set to check an encrypted
+upload, restore and object cleanup using a disposable snapshot. The check
+retains local receipts and reports their path if cleanup fails.
+
+Copy-on-write restore cannot be combined with virtio-fs shares, including shares
+recorded in a parked snapshot. Cloud Hypervisor v54 writes complete snapshots; it does
+not provide dirty-page-only snapshot deltas. Free-page reporting requires the guest balloon driver.
+
+Cold snapshot storage also accepts `APPKIT_STORAGE_REGION` and
+`APPKIT_STORAGE_FORCE_PATH_STYLE` (`true` or `false`). Back up the snapshot key
+with the computer disks and host state: without it cold memory cannot be
+restored. Store the key separately from the object bucket. If tiering is turned
+off while a cold snapshot exists, wake, restart and deletion refuse until the
+storage and original key are configured again. Cold restore needs enough local
+space for the restored snapshot. Failed object deletion is retried using local
+cleanup receipts, including receipts for deleted computers. An image root is local to one host; receipts from a different hostname are retained for operator review. A source file left by a crashed copy-on-write VM must be kept
+until an operator has confirmed no VMM maps it.
+
 `caboose.json` under `CABOOSE_IMAGE_ROOT` (atomic rename, mode 0600); saved values override
 the environment. Invalid or unreadable settings stop startup rather than reverting. Back the
 file up with the disks and do not edit it while the host runs. Its push devices

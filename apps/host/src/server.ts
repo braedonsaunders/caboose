@@ -23,6 +23,7 @@ import type { RuntimeDepot } from './depot.js'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWNLOADS } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
+import { tieredController, type SnapshotTierOptions } from './snapshot-tier-controller.js'
 import { HomeOwnership } from './home.js'
 import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
 import { BridgeInputError, BridgeRateLimitError, BridgeRelay, LocationShare, parseAppearance, parseLocation, type BridgeEvent } from './bridge.js'
@@ -89,7 +90,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
+export interface ComputerPieces { snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
 
 
 /**
@@ -115,8 +116,11 @@ export interface Library { flathub?: FlathubIndex; releases?: CraftReleases; dep
 function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; freezeParkMs?: number; admit?: Admission; library?: Library; gpuEnabled: boolean; validateSize: (input: Record<string, unknown>) => Promise<void> }) {
   const { settings, push, activities } = pieces
   const admit = shared.admit
-  const controller = admit ? withAdmission(pieces.controller, () => admit(id)) : pieces.controller
+  const admitted = admit ? withAdmission(pieces.controller, () => admit(id)) : pieces.controller
+  const tiering = pieces.snapshotPath ? tieredController(admitted, pieces.snapshotPath, pieces.snapshotTier) : undefined
+  const controller = tiering?.controller ?? admitted
   const computer = new ComputerLifecycle(controller, settings.get().idleMs, shared.freezeParkMs)
+  tiering?.attach(computer)
   const sockets = new Set<WebSocket>()
   const controls = new Set<WebSocket>()
   const foregroundClients = new Set<WebSocket>()
@@ -941,6 +945,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   }
 
   async function shutdown(): Promise<void> {
+    await tiering?.close()
     clearInterval(autoUpdates)
     await (await routinesReady)?.close()
     agents.pause()
