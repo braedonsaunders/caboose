@@ -2168,6 +2168,12 @@ still goes to the computer. One stream replays at a time: a later stream's windo
 waits, its bytes wait in its feed unacknowledged, and it plays when the first ends. A
 `gpu.destroy` with a reason leaves the window saying why its stream ended.
 
+`GPUDeviceCapabilities.queryJSON()` exposes an on-demand diagnostic of the same linked
+MoltenVK: physical devices, core features, relevant limits, extensions and BC format
+support. The C API returns schema-versioned JSON and owns no device or surface. Callers
+run the synchronous query off the UI thread. It does not change the display handshake,
+the computer's static profile or the renderer's advertised capabilities.
+
 ### Shell
 
 With the native vertical tab bar, Home's Ask field, the Agent composer and the tiled

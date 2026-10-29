@@ -30,7 +30,8 @@ headers, and fetches, at the commits of Vulkan SDK 1.4.363.0:
 
 `profile.json` is an Apple GPU's capabilities as MoltenVK reports them (`vulkaninfo --json`
 on an M4 Pro), without the `VK_KHR_portability_subset` extension and without the BC texture
-formats, which iPhone GPUs do not sample.
+formats. It is a fixed profile, not a query of the connected phone; actual device support
+is available through `GPUDeviceCapabilities.queryJSON()` in CabooseKit.
 
 The images build it in their `gpu` stage. To build it for a computer of another architecture
 than the machine building, and copy it out (an amd64 bundle from an arm64 Mac runs under
