@@ -1,3 +1,4 @@
+import { usesSystemImage, validateDepotRestoreOptions } from './system-image.js'
 import { prepareKeyring } from './keyring.js'
 import { AgentToolJournal } from './agent-tools-journal.js'
 import { AgentRoutines } from './agent-routines.js'
@@ -21,7 +22,7 @@ import { ComputerConflictError } from './lifecycle.js'
 import { ownerToken, secretFile } from './owner-token.js'
 import { openIdentityDatabase } from './identity/database.js'
 import { Identity } from './identity/service.js'
-import { lstat, readdir, readFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readFile } from 'node:fs/promises'
 import { containerImage, describeImage, microvmImage, type ImageProvisioner } from './provision.js'
 import { openSettings, type ComputerSettings } from './settings.js'
 import { hostId, machineName, ReachService } from './reach.js'
@@ -53,6 +54,12 @@ const computers = await ComputerRegistry.open(deployment.imageRoot, identityData
 const phones = await PhoneTokens.open(join(deployment.imageRoot, 'phones.json'))
 // Every microVM computer shares one appkit-desk host, and with it its capacity.
 const desks = deployment.runtime === 'microvm' ? createDeskPool(deployment) : undefined
+const splitImage = process.env.CABOOSE_SPLIT_IMAGE || undefined
+const vmDepot = deployment.runtime === 'microvm' && process.env.CABOOSE_VM_DEPOT ? resolve(process.env.CABOOSE_VM_DEPOT) : undefined
+validateDepotRestoreOptions(vmDepot, process.env.CABOOSE_VM_COW)
+if (vmDepot && /[:\n\r]/.test(vmDepot)) throw new Error('CABOOSE_VM_DEPOT cannot contain a colon or newline')
+if (vmDepot && process.platform !== 'linux') throw new Error('CABOOSE_VM_DEPOT requires a Linux microVM host')
+if (vmDepot) await mkdir(vmDepot, { recursive: true, mode: 0o755 })
 const defaults = { memoryMb: deployment.memoryMb, vcpus: deployment.vcpus, idleMs: deployment.idleMs }
 
 /** A computer's settings, runtime and notifications, from its own directory. */
@@ -66,9 +73,9 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const identity = { id: record.id, slot: record.slot }
   const controller = deployment.runtime === 'container'
     ? createContainerController(deployment, { identity, settings: () => settings.get() })
-    : createController(deployment, { identity, ...(desks ? { desks } : {}), settings: () => settings.get() })
+    : createController(deployment, { identity, splitImage, depotPath: vmDepot, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
-  return { settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  return { settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), join(deployment.imageRoot, 'overlays', `${record.id}.raw`), join(deployment.imageRoot, 'overlays', `${record.id}.snapshot`), splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
@@ -92,7 +99,9 @@ const reach = new ReachService({
 const flatpakArch: Architecture = guestArchitecture === 'arm64' ? 'aarch64' : 'x86_64'
 const depotRunner = deployment.runtime === 'container'
   ? containerDepotRunner({ image: deployment.containerImage, volume: DEPOT_VOLUME, securityArgs: securityArgs(deployment.containerArgs), script: () => readFile(new URL('./depot-builder.py', import.meta.url), 'utf8') })
-  : null
+  : vmDepot ? containerDepotRunner({ image: deployment.containerImage, volume: vmDepot, securityArgs: securityArgs(deployment.containerArgs), script: () => readFile(new URL('./depot-builder.py', import.meta.url), 'utf8') }) : null
+// Populate the repository before any guest probes its shared installation.
+if (vmDepot && depotRunner) await depotRunner(['list'], () => {}, 10 * 60_000)
 const library = {
   flathub: new FlathubIndex(join(deployment.imageRoot, 'flathub'), flatpakArch),
   releases: new CraftReleases(join(deployment.imageRoot, 'releases'), flatpakArch),
@@ -131,9 +140,10 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
  * Wakes wait for the computer's image: while it downloads, a wake is refused with its
  * progress, and `GET /v1/health` reports it as `image`.
  */
-function withImage(controller: Controller, provisioner: ImageProvisioner): Controller {
+function withImage(controller: Controller, provisioner: ImageProvisioner, useSplit?: () => Promise<boolean>): Controller {
   const gated = Object.create(controller) as Controller
-  gated.wake = async () => {
+  gated.wake = async (mode) => {
+    if (await useSplit?.()) return controller.wake(mode)
     // Checking for an image that is present takes moments; a download never holds a wake open.
     const ensured = provisioner.ensure().catch(() => undefined)
     await Promise.race([ensured, new Promise(resolve => setTimeout(resolve, 1000).unref())])
@@ -141,7 +151,7 @@ function withImage(controller: Controller, provisioner: ImageProvisioner): Contr
     if (status.state === 'fetching') throw new ComputerConflictError(describeImage(status))
     if (status.state === 'failed') throw new Error(describeImage(status))
     if (status.state === 'missing') throw new ComputerConflictError(missingImage())
-    return controller.wake()
+    return controller.wake(mode)
   }
   gated.stats = () => ({ ...(controller.stats() as object), image: provisioner.status() })
   return gated

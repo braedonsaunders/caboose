@@ -14,6 +14,7 @@ components.
 | `build.sh` | Builds the builder image and runs it. Entry point. |
 | `Dockerfile` | The builder: a first stage compiles Caboose Display and the VA-API passthrough driver; the second has debootstrap and copies the guest components. |
 | `build-inside.sh` | Inside the builder: partitions and formats the raw disk, runs debootstrap, chroots into `configure-guest.sh`, and extracts the kernel and initrd. |
+| `make-system-image.sh` | Packs a prepared root’s `/usr` and `/opt` into an uncompressed EROFS image without modifying the root. |
 | `configure-guest.sh` | Inside the chroot: packages, the `caboose` user, every guest component, theme, fonts and boot configuration. |
 | `apps.sh` | The app lineup installer, shared with the container image and usable on a running computer. |
 | `desktop-apps.sh`, `desktop-apps.tsv` | Official desktop package installer and exact version/SHA-256 pins for both architectures. |
@@ -140,7 +141,8 @@ checks package identity and lets apt resolve dependencies. Vendor desktop entrie
 handlers, icons, sandbox settings and signed apt repository registration remain intact;
 subsequent system package updates can update the clients. The terminal launchers are
 named **Claude Code CLI** and **Codex CLI**. Each desktop client requires the owner's
-sign-in. Cowork's nested KVM/QEMU runtime is not included or supported by this image.
+sign-in. Cowork's nested KVM/QEMU runtime is not included or supported by this image. Run `guest/image/check-system-image.sh` on Linux to check image creation,
+extraction, source preservation and overwrite refusal.
 
 The x86_64-only Craft packages are absent from the ARM64 catalog. Optional applications are installed from the host's catalog ([`guest/catalog`](../catalog/README.md)).
 
@@ -207,3 +209,27 @@ The components have their own checks: `guest/desktop-mcp/check-a11y.sh` (Docker)
 `guest/notifications/check.sh` and `check-container.sh`, `guest/phone/check.sh`,
 `guest/game/check.sh`, `guest/media-handoff/check.sh`, `guest/files/check-service.py` and
 `guest/terminal/check-service.py`.
+
+## Building an EROFS system image
+
+On Linux with `erofs-utils` installed, `guest/image/make-system-image.sh ROOT OUTPUT`
+creates and checks an EROFS image containing the prepared root's `usr` and `opt`.
+It refuses to replace an existing output and leaves the source unchanged. The image
+contains uncompressed, non-inlined files; filesystem DAX additionally requires a
+DAX-capable device and guest kernel. To build a complete split image into a separate empty directory, set
+`CABOOSE_SPLIT_SYSTEM=1 OUT_DIR=/path/to/version ./guest/image/build.sh`. It contains
+`base.raw`, `vmlinux`, `initrd`, and `system.erofs`. On boot, initramfs mounts the
+image read-only and overlays `/usr` and `/opt` with writable data on the computer's
+ext4 disk. The host selects this format with `CABOOSE_SPLIT_IMAGE`; existing disks
+are not changed. The four files are one version and must remain available unchanged
+for computers that use it. Run `guest/image/check-system-image.sh` on Linux to check image creation,
+extraction, source preservation and overwrite refusal.
+
+`guest/image/check-system-overlay.sh` checks read-only EROFS and persistent overlay writes on Linux; it requires root, loop devices, mount permissions and erofs-utils.
+
+On a split microVM, run `sudo guest/image/check-split-system.sh prepare`, cold-restart
+the computer, then run `sudo guest/image/check-split-system.sh verify` to check that a
+write persists in the upper layer while the EROFS lower stays unchanged.
+
+On a microVM with `CABOOSE_VM_DEPOT`, `sudo guest/image/check-vm-depot.sh` checks
+that the Flatpak repository is mounted via read-only virtio-fs and rejects a write.
