@@ -150,7 +150,7 @@ public enum OnScreenGamepad {
         case (.xbox, .rightTrigger): return Label("RT")
         case (.xbox, .select): return Label("View", symbol: "rectangle.on.rectangle")
         case (.xbox, .start): return Label("Menu", symbol: "line.3.horizontal")
-        case (.xbox, .home): return Label("Guide", symbol: "logo.xbox")
+        case (.xbox, .home): return Label("Guide", symbol: "house.fill")
         case (.xbox, .leftStick): return Label("LS")
         case (.xbox, .rightStick): return Label("RS")
         case (.playstation, .south): return Label("Cross", symbol: "xmark")
