@@ -491,9 +491,6 @@ def check_motion():
         def run(proc, token, out=out):
             r = probe(["--token-file", token, "--duration", "13", "--windows", "1", "--video-decoders", "h264",
                        "--server-pid", str(proc.pid), "--save", out])
-            print(f"copies check {name}: {json.dumps(r)}", flush=True)
-            if name == "copies" and r["windows"][0]["copies"] < 8:
-                print(open(proc.caboose_log).read(), flush=True)
             return r, os.path.join(out, "window-1.png")
         runs[name] = with_server(CHROMIUM + ["--window-size=1280,720", f"--app={PAGES}/movie.html#240"], run,
                                  extra=extra)
@@ -712,12 +709,9 @@ def check_tiles():
     runs = {}
     for name, extra in (("tiles", ()), ("pictures", ("--tile-max-px", "0"))):
         out = tempfile.mkdtemp(prefix="tiles-")
-        def run(proc, token, out=out, name=name):
+        def run(proc, token, out=out):
             r = probe(["--token-file", token, "--duration", "14", "--windows", "1", "--display", "1179x2556@120x3",
                        "--actions", actions, "--server-pid", str(proc.pid), "--save", out])
-            print(f"copies check {name}: {json.dumps(r)}", flush=True)
-            if name == "copies" and r["windows"][0]["copies"] < 8:
-                print(open(proc.caboose_log).read(), flush=True)
             return r, os.path.join(out, "window-1.png")
         runs[name] = with_server(CHROMIUM + [f"--app={PAGES}/input.html"], run, extra=extra)
     (r, picture), (plain, plain_picture) = runs["tiles"], runs["pictures"]
