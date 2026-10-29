@@ -563,7 +563,7 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
 | `node apps/host/scripts/check-terminal.mjs` | Opens a terminal through `/v1/terminal` (waking the computer), checks the login shell's environment, resizes, lists the session, detaches, reattaches from its offset and receives what was written meanwhile, then exits the shell with a code. A failed check hangs the session up. |
 | `node apps/host/scripts/check-fs.mjs` | Creates a temporary directory, uploads, lists, downloads a byte range, moves, and trashes its files and the directory. |
-| `bash apps/host/scripts/check-parked-appliance.sh <reflink-directory>` | Checks reflink and read-only libguestfs appliance access using a disposable ext4 image; it does not exercise parked Files access. |
+| `bash apps/host/scripts/check-parked-appliance.sh <reflink-directory>` | Checks reflink and read-only libguestfs appliance access using disposable ext4 and Btrfs images through the production appliance reader; verifies unchanged disk bytes. It does not exercise the host HTTP API. |
 | `node apps/host/scripts/check-storage.mjs` | On a disposable Linux microVM host started with `CABOOSE_SHARED_STORAGE=on`, `CABOOSE_SHARED_STORAGE_DELAY_MS=5000` and `CABOOSE_PARKED_FILES=on` (`CABOOSE_DISPOSABLE_CHECK=yes`, `CABOOSE_URL`, `CABOOSE_OWNER_TOKEN`): makes two throwaway computers, checks the same data in both becomes shared storage and reads back unchanged, wakes one during a pass, then backs one up as a phone does (every chunk checked against its hash), changes it and restores it by uploading every chunk, and deletes both. |
 | `node apps/host/scripts/check-parked-files.mjs` | On a dedicated disposable computer, checks parked list/stat/range and version failure, cancelled reads, change-feed fallback, and mutation after wake and thaw. Set `CABOOSE_DISPOSABLE_CHECK=yes`, `CABOOSE_URL`, and `CABOOSE_OWNER_TOKEN`. |
 | `node apps/host/scripts/check-agents.mjs [--agent <id>] [--install] [--open]` | Saves a file to `~/Downloads`, lists the registry, and runs a real task with the given agent (default: the computer's default agent) that asks before acting with an attachment, approves it through the API, and replies. The agent must be signed in; `--install` installs it first; `--open` also opens https://example.com on the owner's display. |
@@ -648,10 +648,16 @@ with disposable processes. The lock cannot fence VMMs started by older hosts.
 
 ### Migrate a legacy microVM disk
 
+The appliance accepts ext4 and Btrfs roots. Migration keeps the root filesystem and
+reclaims deleted system files with discard on its staged clone. Unlike sealed
+parked-file views, migration permits journal/log recovery inside libguestfs's
+private COW overlays when reading an uncleanly stopped source; the source bytes
+remain unchanged.
+
 On the Linux machine that owns the image root, stop the host and make sure the
 computer is cold-stopped. Local snapshots, cold snapshot pointers and incomplete
 snapshot staging block migration; parked memory is never discarded. The tool
-requires root, Python 3, guestfish, supermin, QEMU, `erofs-utils`, and
+requires root, Python 3, guestfish, supermin, QEMU, `erofs-utils`, `btrfs-progs`, `attr` (for `getfattr`), and
 the pinned Cloud Hypervisor v54 binary. Set `CABOOSE_VMM_PATH` or pass `--vmm`
 if it is not `/usr/local/bin/cloud-hypervisor`. Use `--mkfs` and `--fsck`
 for nonstandard `erofs-utils` paths. The appliance kernel must be installed and readable by root. The host must provide local OFD locking and
@@ -671,9 +677,23 @@ reflinks, packs its existing `/usr` and `/opt`, and rebuilds its initramfs with
 the matching installed kernel. Network-disabled libguestfs appliances parse the
 disk; guest-controlled hooks execute on a separate disposable clone. Migration
 rejects hard links crossing the system-image boundary. The original disk and
-the retained image remain in the image root. For the packing appliance, the
-image-root filesystem must have at least eight times the disk's logical size plus 5 GiB available; the tool refuses when this
-space is unavailable.
+the retained image remain in the image root.
+
+Packing sizes its scratch disk from `/usr` and `/opt` logical file lengths measured
+inside a bounded read-only appliance, counting hardlinks per pathname and sparse
+files at their full logical size. It also measures serialized extended attributes
+and allows 16 KiB per entry for metadata, plus fixed tool/filesystem headroom.
+The measurement rejects more than one million entries, 1 TiB of logical content,
+or 16 MiB or more of serialized extended attributes. Read-only scans reserve 16 GiB;
+packing reserves four times its computed scratch size plus 4 GiB. These limits
+include simultaneous output, cache, COW and log artifacts; unavailable space fails
+before that phase starts.
+
+Guest-controlled initramfs hooks retain their disk-size-based allowance: four times
+the source disk's logical size plus 4 GiB (244 GiB for a 60 GiB source). The final
+layout phase requires twice the logical disk size plus 2 GiB. Packing can require
+more for a large expanded tree. Optional offline migration therefore still needs
+substantial free space; new-image creation does not use these migration allowances.
 
 If interrupted, keep the host stopped and run `recover` with the same image
 root and computer ID. Recovery refuses while a preparation appliance is running
@@ -686,8 +706,14 @@ writes made after migration are absent from the restored original. A subsequent
 migration archives the rollback artifacts in `migration-images`.
 
 The transaction and appliance checks run with `python3` on the corresponding
-`apps/host/scripts/tests/test-migration-*.py` files. Real-device checks require
-a disposable Linux microVM; never run them on a production computer.
+`apps/host/scripts/tests/test-migration-*.py` files.
+`sudo /usr/bin/python3 apps/host/scripts/tests/check-compressed-migration.py --work DIR`
+checks production measurement and packing of disposable ext4/Btrfs fixtures,
+including hardlinks, xattrs, sparse files and symlinks. It needs the migration
+appliance tools, at least 21 GiB free, and uses a 600-second deadline per appliance.
+It retains failures with their guard journals for diagnosis. Full migration and
+rollback checks require a disposable Linux microVM; never run them on a production
+computer.
 ### Recovering an interrupted template source build
 
 An incomplete source build is never silently reused. Stop the Caboose host and

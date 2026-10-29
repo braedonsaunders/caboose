@@ -175,6 +175,8 @@ describe('navigation and actions', () => {
     expect(parseRoute('/setup?code=abc')).toEqual({ page: 'setup' })
     expect(parseRoute('/invite?token=abc')).toEqual({ page: 'invite' })
     expect(routeHref({ page: 'tenants' })).toBe('/tenants')
+    expect(parseRoute('/usage')).toEqual({ page: 'usage' })
+    expect(routeHref({ page: 'usage' })).toBe('/usage')
   })
 
   it('shows tenants and the host only to the operator', () => {

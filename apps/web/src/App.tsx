@@ -13,8 +13,8 @@ import { Computer } from './pages/Computer.js'
 import { Computers } from './pages/Computers.js'
 import { People } from './pages/People.js'
 import { Tenants } from './pages/Tenants.js'
-import { Host } from './pages/Host.js'
 import { Usage } from './pages/Usage.js'
+import { Host } from './pages/Host.js'
 import { Security } from './pages/Security.js'
 import { PasswordRecovery } from './pages/PasswordRecovery.js'
 
@@ -156,8 +156,8 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
           </Alert>
         </div>
       ) : null}
-      {route.page === 'overview' ? <Overview computers={computers} host={host} me={me} /> : null}
       {route.page === 'usage' ? <Usage client={client} me={me} onUnauthorized={onSignOut} /> : null}
+      {route.page === 'overview' ? <Overview computers={computers} host={host} me={me} /> : null}
       {route.page === 'security' && session.kind === 'account' ? <Security onSignOut={onSignOut} /> : null}
       {route.page === 'computers' ? <Computers client={client} computers={computers} me={me} /> : null}
       {route.page === 'computer' ? (
