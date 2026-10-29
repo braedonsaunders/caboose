@@ -49,6 +49,7 @@ COPY files /tmp/bundle/files
 COPY terminal /tmp/bundle/terminal
 COPY notifications /tmp/bundle/notifications
 COPY phone /tmp/bundle/phone
+COPY bridge /tmp/bundle/bridge
 COPY flatpak /tmp/bundle/flatpak
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff

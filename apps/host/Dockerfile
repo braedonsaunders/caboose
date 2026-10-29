@@ -51,6 +51,7 @@ COPY guest/files ./guest/files
 COPY guest/phone ./guest/phone
 COPY guest/notifications ./guest/notifications
 COPY guest/terminal ./guest/terminal
+COPY guest/bridge ./guest/bridge
 COPY guest/flatpak ./guest/flatpak
 COPY guest/container/caboose-seccomp.json ./guest/container/caboose-seccomp.json
 COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
