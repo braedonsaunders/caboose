@@ -73,6 +73,7 @@ class RecoveryTests(unittest.TestCase):
             path = self.root / label
             path.mkdir()
             (path / 'fixture').write_bytes(label.encode())
+            (path / 'empty').mkdir()
             roots.append(label + '=' + str(path))
         bundle = self.root / 'new'
         module.capture(SimpleNamespace(root=roots, bundle=str(bundle), confirm_stopped=True, max_bytes=1000))
@@ -80,6 +81,7 @@ class RecoveryTests(unittest.TestCase):
         args = SimpleNamespace(bundle=str(bundle), confirm_restore=True, destination=str(target), max_bytes=1000)
         module.restore(args)
         self.assertEqual((target / 'state/fixture').read_bytes(), b'state')
+        self.assertTrue((target / 'state/empty').is_dir())
         self.assertEqual((target / 'config/fixture').stat().st_mode & 0o777, 0o600)
         with self.assertRaises(ValueError):
             module.restore(args)

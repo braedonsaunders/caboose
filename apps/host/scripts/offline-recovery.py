@@ -58,11 +58,17 @@ def manifest(bundle, limit):
     data = json.loads((bundle / 'manifest.json').read_text())
     if data.get('version') != 1 or not isinstance(data.get('files'), list) or len(data['files']) > MAX_FILES:
         raise ValueError('Invalid manifest')
+    directories = data.get('directories', [])
+    if not isinstance(directories, list) or len(directories) > MAX_FILES:
+        raise ValueError('Invalid directory list')
+    for relative in directories:
+        if not safe_path(bundle / 'data', relative).is_dir():
+            raise ValueError('Missing directory')
     seen = set()
     total = 0
     for record in data['files']:
         path = safe_path(bundle / 'data', record['path'])
-        if record['path'] in seen or type(record['bytes']) is not int or record['bytes'] < 0:
+        if record['path'] in seen or type(record['bytes']) is not int or record['bytes'] < 0 or type(record.get('mode')) is not int or not 0 <= record['mode'] <= 0o777:
             raise ValueError('Invalid file record')
         seen.add(record['path'])
         total += record['bytes']
@@ -107,7 +113,14 @@ def capture(args):
             raise ValueError('Sources exceed --max-bytes')
         bundle.mkdir(mode=0o700)
         records = []
+        directories = []
         for label, root in roots.items():
+            for directory, _, _ in os.walk(root, followlinks=False):
+                relative = label + ('/' + Path(directory).relative_to(root).as_posix() if Path(directory) != root else '')
+                safe_path(bundle / 'data', relative).mkdir(mode=0o700, parents=True, exist_ok=True)
+                directories.append(relative)
+                if len(directories) > MAX_FILES:
+                    raise ValueError('Too many directories')
             for source in entries(root):
                 if len(records) >= MAX_FILES:
                     raise ValueError('Too many files')
@@ -127,7 +140,7 @@ def capture(args):
                     raise ValueError('Source changed during offline capture')
                 records.append({'path': relative, 'bytes': after.st_size, 'sha256': checksum, 'mode': stat.S_IMODE(after.st_mode) & 0o777})
         # Contains relative names/hashes only, never environment or credential values.
-        data = {'version': 1, 'files': records}
+        data = {'version': 1, 'files': records, 'directories': directories}
         with (bundle / 'manifest.json').open('x') as stream:
             json.dump(data, stream)
             stream.flush()
@@ -146,6 +159,8 @@ def restore(args):
     if target.exists() or target.is_symlink():
         raise ValueError('Restore destination must not exist')
     target.mkdir(mode=0o700)
+    for relative in data.get('directories', []):
+        safe_path(target, relative).mkdir(mode=0o700, parents=True, exist_ok=True)
     for record in data['files']:
         source = safe_path(bundle / 'data', record['path'])
         destination = safe_path(target, record['path'])
