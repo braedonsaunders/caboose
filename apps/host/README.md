@@ -234,6 +234,10 @@ sign-ins (`phones.json`, SHA-256 digests only). Every other computer keeps its o
 
 ## Accounts and tenants
 
+The console accepts the same account through its LAN HTTP address and its HTTPS proxy.
+Session cookies match that connection; an HTTPS `CABOOSE_PUBLIC_URL` does not force
+HTTPS-only cookies onto a LAN HTTP sign-in. HTTPS sessions retain Secure cookies.
+
 Administrators sign in to the console with an email and password; the people whose computers
 they run use only their phones and need no account. A tenant is a household or a team, with
 its computers, its administrators and quotas on memory, vCPUs and disk. The first account is

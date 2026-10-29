@@ -780,7 +780,7 @@ export function createCabooseServer(options: ComputerPieces & {
   identity?: Identity
 }) {
   const identity = options.identity
-  const authHandler = identity ? toNodeHandler(identity.auth) : undefined
+  const authHandler = identity ? toNodeHandler(request => identity.handleAuthentication(request)) : undefined
   const throttle = new SignInThrottle()
   const shared = {
     registry: options.registry ?? new AgentRegistry(),

@@ -653,6 +653,10 @@ A request is from one of three kinds of caller:
   renewed daily). An administrator reaches the computers and tenants they administer; only
   the operator reaches `/v1/health`, `/v1/host`, `/v1/host/*` and the computer routes without
   a computer in the path.
+  Cookie transport follows the browser's address: HTTPS uses Secure-prefixed cookies;
+  direct LAN HTTP uses host-only HTTP cookies. Both use the same accounts and session
+  store, even when `CABOOSE_PUBLIC_URL` advertises HTTPS. Sign-out clears the matching
+  transport's cookies.
 - **A phone token**, which reaches only its own computer's routes, without a computer in the
   path; `/v1/health`, `/v1/host`, `/v1/host/*`, `/v1/me`, `/v1/tenants…` and `/v1/computers…` answer it 403.
 

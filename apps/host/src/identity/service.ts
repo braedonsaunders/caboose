@@ -88,7 +88,13 @@ export class Identity {
   private claimedOnce = false
   private claiming: Promise<unknown> | undefined
 
-  private constructor(readonly database: IdentityDatabase, readonly auth: AppkitAuth, private readonly setupCodePath: string) {}
+  private constructor(
+    readonly database: IdentityDatabase,
+    readonly auth: AppkitAuth,
+    private readonly setupCodePath: string,
+    private readonly transports: { http: AppkitAuth; https: AppkitAuth },
+    private readonly defaultTransport: 'http' | 'https',
+  ) {}
 
   /**
    * `baseURL` is where the console is usually reached; sign-in also accepts requests from
@@ -96,20 +102,43 @@ export class Identity {
    * address, its Tailscale name and loopback alike.
    */
   static create(options: { database: IdentityDatabase; baseURL: string; secret: string; setupCodePath: string }): Identity {
-    const auth = createAppkitAuth({
-      database: options.database.pool,
-      baseURL: options.baseURL,
-      secret: options.secret,
-      appName: 'Caboose',
-      sendEmail: async () => { throw new Error('This host sends no email') },
-      trustedOrigins: request => {
-        const host = request?.headers.get('host')
-        const proto = request?.headers.get('x-forwarded-proto') ?? new URL(request?.url ?? options.baseURL).protocol.replace(':', '')
-        return host ? [options.baseURL, `${proto}://${host}`] : [options.baseURL]
-      },
-      extend: { basePath: '/v1/auth' },
-    })
-    return new Identity(options.database, auth, options.setupCodePath)
+    const configured = new URL(options.baseURL)
+    const makeAuth = (protocol: 'http:' | 'https:'): AppkitAuth => {
+      const url = new URL(configured)
+      url.protocol = protocol
+      const baseURL = url.toString()
+      return createAppkitAuth({
+        database: options.database.pool,
+        baseURL,
+        secret: options.secret,
+        appName: 'Caboose',
+        sendEmail: async () => { throw new Error('This host sends no email') },
+        trustedOrigins: request => {
+          const host = request?.headers.get('host')
+          const proto = request?.headers.get('x-forwarded-proto') ?? new URL(request?.url ?? baseURL).protocol.replace(':', '')
+          return host ? [options.baseURL, `${proto}://${host}`] : [options.baseURL]
+        },
+        extend: { basePath: '/v1/auth' },
+      })
+    }
+    // Both runtimes share accounts, sessions and signing keys. Cookie attributes and
+    // prefixes follow the connection used by the browser, not the advertised URL.
+    const transports = { http: makeAuth('http:'), https: makeAuth('https:') }
+    const preferred = configured.protocol === 'https:' ? 'https' : 'http'
+    return new Identity(options.database, transports[preferred], options.setupCodePath, transports, preferred)
+  }
+
+  handleAuthentication(request: Request): Promise<Response> {
+    const transport = new URL(request.url).protocol === 'https:' ? 'https' : 'http'
+    return this.transports[transport].handler(request)
+  }
+
+  private authFor(headers: Headers): AppkitAuth {
+    const forwarded = headers.get('x-forwarded-proto')?.toLowerCase()
+    if (forwarded === 'https' || forwarded === 'http') return this.transports[forwarded]
+    // The host serves HTTP itself; reverse proxies mark HTTPS with forwarded-proto.
+    // Headerless calls are internal, so retain the configured default for those.
+    return this.transports[headers.has('host') ? 'http' : this.defaultTransport]
   }
 
   private get db() { return this.database.db }
@@ -199,14 +228,14 @@ export class Identity {
 
   /** Signs an account in, answering with Better Auth's response so its session cookie reaches the browser. */
   signIn(address: string, secret: string, headers: Headers): Promise<Response> {
-    return this.auth.api.signInEmail({ body: { email: address, password: secret }, headers, asResponse: true })
+    return this.authFor(headers).api.signInEmail({ body: { email: address, password: secret }, headers, asResponse: true })
   }
 
   // --- Sessions ---------------------------------------------------------------
 
   async principal(headers: Headers): Promise<AdminPrincipal | undefined> {
     if (!headers.get('cookie')) return undefined
-    const session = await this.auth.api.getSession({ headers }).catch(() => null)
+    const session = await this.authFor(headers).api.getSession({ headers }).catch(() => null)
     const user = session?.user as { id: string; name: string; email: string; isActive?: boolean; isSuperAdmin?: boolean } | undefined
     if (!user || user.isActive === false) return undefined
     const rows = await this.db.select({ tenantId: memberships.tenantId }).from(memberships)
