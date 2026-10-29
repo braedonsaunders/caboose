@@ -66,7 +66,7 @@ struct ShellTabChrome: ViewModifier {
 
     /// The same test the Desktop uses to hide its own bars.
     private var immersive: Bool {
-        tab == .desktop && model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil
+        tab == .desktop && (model.laptopDesktopActive || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil))
     }
 }
 

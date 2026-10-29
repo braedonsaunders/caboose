@@ -366,7 +366,7 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   move scroll without clicking; tap-tap opens a desktop file. In Chromium's address bar a
   misspelt word is corrected in place, a swiped word arrives whole, and the Japanese Romaji
   and Chinese Pinyin keyboards commit their candidates; the terminal gets no autocorrect
-  until `Aa` on the key bar turns it on.
+  until Autocorrect in the keyboard controls menu turns it on.
 - **Share sheet.** Share a Safari page and pick Open on Computer; share a photo and pick Save
   and Open; share a photo with a request to an agent and see the task appear on Home and in Agents.
 - **Files.** Create a folder, save and edit a document in place and verify it on Linux;
@@ -438,8 +438,8 @@ Unsupported chords announce their unavailability without inserting text or contr
 and Hide clear focus; rendering and send completion do not reopen the keyboard. A tap,
 suggestion or Ask shortcut explicitly requests it again. The agent sign-in sheet uses
 translucent material over the presenting screen.
-Hide Keyboard stays above the key row at its right edge on iPhone, Duo and iPad;
-scrolling the keys never hides it. Remote inputs share `RemoteTextInputView` for
+Hide Keyboard stays fixed at the right edge of the single keyboard header row on iPhone,
+Duo and iPad; the keys do not scroll. Remote inputs share `RemoteTextInputView` for
 composition, autocorrect and sticky modifiers. Terminal adapts the same accessory
 to SwiftTerm's cursor modes and byte protocol. Verify folded/unfolded/rotated layouts,
 Hide and reopening, Ctrl/Alt, held arrows, Return and IME with `scripts/check-desktop.sh`.
@@ -483,10 +483,15 @@ The bridge requires a recent touch; keyboard-only activation is not supported.
 Quick Look, WebKit isolation, actual file download/share, touch and VoiceOver require the app
 on a device; unit tests cover the pure policy and fence parsing.
 
-The shared keyboard header has Keys, Move and Symbols groups with six fixed controls each;
-Hide Keyboard stays at the top right. Hold Home or End for page navigation and symbol
-keys for related punctuation. Group changes retain active Ctrl/Alt modifiers. Verify the
-header in Terminal, desktop apps and Agents at narrow width and with the Duo sidebar.
+The shared keyboard header is one 48-point row with plain keys on the system keyboard
+surface. Its controls menu selects Keys, Move or Symbols and exposes every action plus
+Autocorrect. Groups show four keys at compact widths and six from 378 points wide; Hide
+Keyboard stays fixed at the right edge. Hold Home or End for page navigation and symbol
+keys for related punctuation, also available in the menu. Group changes retain active
+Ctrl/Alt modifiers, indicated on the controls menu even when their keys are hidden.
+Verify the header in Terminal, desktop apps and Agents at narrow width and with the Duo
+sidebar: all controls stay in one row, Hide remains reachable, held arrows repeat and
+VoiceOver activates an arrow once. Check every group, menu alternatives and Autocorrect.
 
 For dock and toolbar verification on the Duo: hold both a pinned app icon and a running
 column icon. Each running window offers Open and Close, and a known application offers
@@ -501,8 +506,12 @@ screens. Dismiss it without parking or restarting when checking placement only.
 Desktop and full-screen app cards offer Screen Layout → Automatic, Tablet or Laptop.
 Automatic uses a partially folded horizontal hinge on iOS 27.1 and later. Laptop also
 works as a manual split on a sufficiently tall flat screen. The upper area shows the
-app/desktop; below it, Type opens the same system keyboard and shared KeyBar used elsewhere,
-and Hide Keyboard returns to the trackpad. One-finger movement, tap/double-tap, two-finger
+app/desktop without the system toolbar. The lower-right control rail offers Keyboard,
+Trackpad or Combo, window switching, full screen, settings, power and navigation. Keyboard
+and Combo use the same system keyboard and single-row KeyBar used elsewhere; Hide Keyboard
+returns to the trackpad. The rail stays above the native keyboard. The upper desktop uses
+floating windows with a dock; its pointer reaches both the app and desktop controls. Tablet
+mode retains its saved arrangement. One-finger movement, tap/double-tap, two-finger
 scroll/right-click and tap-then-drag use the existing trackpad gestures. With a connected
 monitor, the phone shows window previews above its keyboard/trackpad and leaves the monitor's
 workspace intact. Book posture and compact screens keep the ordinary layout in Automatic.

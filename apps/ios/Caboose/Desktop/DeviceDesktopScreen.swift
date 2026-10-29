@@ -14,6 +14,7 @@ import UIKit
 struct DesktopScreen: View {
     @Environment(AppModel.self) private var model
     @State private var showAirPlay = false
+    @State private var laptopActive = false
 
     var body: some View {
         NavigationStack {
@@ -21,7 +22,7 @@ struct DesktopScreen: View {
                 if model.phase != .ready {
                     ComputerStateView()
                 } else {
-                    LaptopContainer { laptop in
+                    LaptopContainer(activeChanged: { laptopActive = $0 }) { laptop in
                         if model.externalDisplayActive {
                             if laptop { LaptopExternalOverview() }
                             else { TrackpadScreen(desktop: model.desktop) }
@@ -39,13 +40,15 @@ struct DesktopScreen: View {
             // edge then belongs to the desktop alone.
             .toolbar(removing: .title)
             .toolbar {
-                if model.phase == .ready { actions }
-                ComputerToolbar()
+                if !laptopActive {
+                    if model.phase == .ready { actions }
+                    ComputerToolbar()
+                }
             }
             .keepsTabBarInVerticalBar()
-            .toolbarVisibility(immersive ? .hidden : .automatic, for: .navigationBar, .tabBar)
-            .statusBarHidden(immersive)
-            .persistentSystemOverlays(immersive ? .hidden : .automatic)
+            .toolbarVisibility(immersive || laptopActive ? .hidden : .automatic, for: .navigationBar, .tabBar)
+            .statusBarHidden(immersive || laptopActive)
+            .persistentSystemOverlays(immersive || laptopActive ? .hidden : .automatic)
             .animation(.snappy, value: immersive)
             .sheet(isPresented: $showAirPlay) {
                 AirPlaySheet().environment(model)
@@ -143,18 +146,9 @@ private struct DesktopStage: View {
                 if tab == .desktop { model.desktopStageResized(to: proxy.size) }
             }
         }
-        .ignoresSafeArea(edges: ignoredEdges)
     }
 
-    private var ignoredEdges: Edge.Set {
-        if laptopInputOwned { return [] }
-        if fullScreen { return .all }
-        switch barEdge {
-        case .trailing: return [.top, .bottom]
-        case .leading: return [.top, .bottom]
-        case nil: return []
-        }
-    }
+
 }
 
 extension EnvironmentValues {

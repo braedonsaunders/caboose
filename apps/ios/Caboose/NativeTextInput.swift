@@ -136,6 +136,8 @@ final class NativeEditor: UITextView {
     init() {
         super.init(frame: .zero, textContainer: nil)
         inputAccessoryView = keyBar
+        inputAssistantItem.leadingBarButtonGroups = []
+        inputAssistantItem.trailingBarButtonGroups = []
         placeholder.textColor = .placeholderText
         placeholder.isAccessibilityElement = false
         placeholder.translatesAutoresizingMaskIntoConstraints = false

@@ -15,12 +15,12 @@ struct HomeScreen: View {
     var body: some View {
         NavigationStack {
             GeometryReader { viewport in
-                let column = max(0, min(760, viewport.size.width) - 40)
+                let column = max(0, min(1040, viewport.size.width) - 40)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 30) {
                         TodayHeader()
                         OnScreenStrip(wide: column >= 600)
-                        if column >= 600 {
+                        if column >= 720 && hasAgentWork && hasActivity {
                             HStack(alignment: .top, spacing: 16) {
                                 VStack(alignment: .leading, spacing: 30) {
                                     NeedsYou()
@@ -35,6 +35,7 @@ struct HomeScreen: View {
                             SinceYouLeft()
                         }
                         PinnedApps()
+                        RecentHomeApps()
                     }
                     .environment(\.homeColumnWidth, column)
                     .padding(.horizontal, 20)
@@ -42,7 +43,7 @@ struct HomeScreen: View {
                     .padding(.bottom, 28)
                     // Measure outside the scroll content, whose intrinsic row widths can
                     // exceed the column. Every row now receives this finite proposal.
-                    .frame(width: min(760, viewport.size.width))
+                    .frame(width: min(1040, viewport.size.width))
                     .frame(width: viewport.size.width)
                     .frame(minHeight: viewport.size.height, alignment: .top)
                     .background {
@@ -91,6 +92,14 @@ struct HomeScreen: View {
             }
             .onDisappear { model.airPlay.stopWatching() }
         }
+    }
+
+    private var hasAgentWork: Bool {
+        model.agents.tasks.contains { $0.isRunning || $0.pendingApproval != nil }
+    }
+
+    private var hasActivity: Bool {
+        !RecentFiles.visible(model.recentFiles, limit: 1).isEmpty
     }
 
     private var airPlaying: Bool { model.airPlay.current != nil || model.externalDisplayActive }
@@ -222,6 +231,7 @@ struct TodayHeader: View {
 /// and the live windows take their place once it is back (`HomeToday.strip`).
 struct OnScreenStrip: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.homeColumnWidth) private var columnWidth
     let wide: Bool
     private var frames = HomeFrames.shared
 
@@ -229,17 +239,19 @@ struct OnScreenStrip: View {
 
     var body: some View {
         let windows = model.phase == .ready ? model.appWindows : []
-        let height: CGFloat = wide ? 176 : 156
+        let count = model.phase == .ready ? windows.count : frames.frames.count
+        let width: CGFloat? = wide ? max(0, ((columnWidth ?? 720) - CGFloat(max(0, min(count, 3) - 1)) * 14) / CGFloat(max(1, min(count, 3)))) : nil
+        let height: CGFloat = width.map { min(280, $0 / 1.5) } ?? 156
         let strip = HomeToday.strip(running: model.phase == .ready, live: windows.count, kept: frames.frames.count)
         Group {
             switch strip {
             case .live:
                 VStack(alignment: .leading, spacing: 12) {
-                    TodaySectionHeader(title: "On Screen", link: "Desktop") { model.selectedTab = .desktop }
+                    TodaySectionHeader(title: "On Screen", count: windows.count, link: "Desktop") { model.selectedTab = .desktop }
                     ScrollView(.horizontal) {
                         HStack(alignment: .top, spacing: 14) {
                             ForEach(windows) { window in
-                                LiveWindowTile(window: window, height: height)
+                                LiveWindowTile(window: window, height: height, width: width)
                             }
                         }
                     }
@@ -252,7 +264,7 @@ struct OnScreenStrip: View {
                     ScrollView(.horizontal) {
                         HStack(alignment: .top, spacing: 14) {
                             ForEach(frames.frames) { frame in
-                                KeptWindowTile(frame: frame, image: frames.images[frame.id], height: height,
+                                KeptWindowTile(frame: frame, image: frames.images[frame.id], height: height, width: width,
                                                waking: waking) { turnOn() }
                             }
                         }
@@ -281,18 +293,21 @@ struct LiveWindowTile: View {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let height: CGFloat
+    var width: CGFloat? = nil
 
     var body: some View {
-        let size = HomeToday.tileSize(window: window.frame.size, height: height)
+        let size = width.map { CGSize(width: $0, height: height) } ?? HomeToday.tileSize(window: window.frame.size, height: height)
+        let previewWidth = width == nil ? size.width : min(size.width, size.height * window.frame.width / max(1, window.frame.height))
         Button { model.show(windowID: window.id) } label: {
             VStack(alignment: .leading, spacing: 8) {
-                RemoteWindowPreview(window: window, width: size.width)
-                    .frame(width: size.width, height: size.height, alignment: .topLeading)
+                RemoteWindowPreview(window: window, width: previewWidth)
+                    .frame(width: previewWidth, height: size.height, alignment: .topLeading)
+                    .frame(width: size.width, height: size.height)
                     .background(Color(white: 0.08))
                     .clipShape(.rect(cornerRadius: Self.cornerRadius, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous).strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
                     .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
-                TileLabel(icon: model.icon(for: window), app: model.appName(for: window), width: size.width)
+                TileLabel(icon: model.icon(for: window), app: model.appName(for: window), title: window.title, width: size.width)
             }
             .contentShape(.rect)
         }
@@ -312,11 +327,12 @@ private struct KeptWindowTile: View {
     let frame: HomeFrames.Frame
     let image: UIImage?
     let height: CGFloat
+    var width: CGFloat? = nil
     let waking: Bool
     let resume: () -> Void
 
     var body: some View {
-        let size = HomeToday.tileSize(window: CGSize(width: frame.width, height: frame.height), height: height)
+        let size = width.map { CGSize(width: $0, height: height) } ?? HomeToday.tileSize(window: CGSize(width: frame.width, height: frame.height), height: height)
         Button(action: resume) {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack {
@@ -324,8 +340,8 @@ private struct KeptWindowTile: View {
                     if let image {
                         Image(uiImage: image)
                             .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: size.width, height: size.height, alignment: .topLeading)
+                            .aspectRatio(contentMode: width == nil ? .fill : .fit)
+                            .frame(width: size.width, height: size.height, alignment: width == nil ? .topLeading : .center)
                             .saturation(0.35)
                             .brightness(-0.18)
                     }
@@ -338,7 +354,7 @@ private struct KeptWindowTile: View {
                 .frame(width: size.width, height: size.height)
                 .clipShape(.rect(cornerRadius: LiveWindowTile.cornerRadius, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: LiveWindowTile.cornerRadius, style: .continuous).strokeBorder(.white.opacity(0.1), lineWidth: 0.5))
-                TileLabel(icon: model.apps.first { $0.name == frame.app }.flatMap { model.appIcons[$0.id] }, app: frame.app, width: size.width)
+                TileLabel(icon: model.apps.first { $0.name == frame.app }.flatMap { model.appIcons[$0.id] }, app: frame.app, title: frame.title, width: size.width)
                     .opacity(0.7)
             }
             .contentShape(.rect)
@@ -352,6 +368,7 @@ private struct KeptWindowTile: View {
 private struct TileLabel: View {
     let icon: UIImage?
     let app: String
+    let title: String
     let width: CGFloat
 
     var body: some View {
@@ -361,7 +378,12 @@ private struct TileLabel: View {
             } else {
                 Image(systemName: "macwindow").font(.caption).foregroundStyle(.secondary)
             }
-            Text(app).font(.caption.weight(.semibold)).lineLimit(1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(app).font(.caption.weight(.semibold)).lineLimit(1)
+                if !title.isEmpty && title != app {
+                    Text(title).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
         }
         .frame(width: width, alignment: .leading)
     }
@@ -574,6 +596,26 @@ struct PinnedApps: View {
     }
 }
 
+/// Launch history stored on this phone, excluding apps already pinned above.
+private struct RecentHomeApps: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let pinned = Set(model.pinnedApps.map(\.id))
+        let apps = model.recentApps(limit: 12).filter { !pinned.contains($0.id) }
+        if !apps.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                TodaySectionHeader(title: "Recent Apps", link: "All Apps") { model.selectedTab = .apps }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 96), spacing: 16)], alignment: .leading, spacing: 16) {
+                    ForEach(apps) { app in
+                        AppButton(app: app).frame(width: 76)
+                    }
+                }
+            }
+        }
+    }
+}
+
 // MARK: Parts
 
 /// A section's title, with a count, a detail such as a time, or a link to the tab that has
@@ -599,12 +641,18 @@ struct TodaySectionHeader: View {
             if let detail {
                 Text(detail).font(.subheadline).foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
             if let link, let action {
-                Button(link, action: action)
-                    .font(.subheadline.weight(.semibold))
-                    .tint(Brand.amber)
+                Button(action: action) {
+                    HStack(spacing: 4) {
+                        Text(link)
+                        Image(systemName: "chevron.right").font(.caption2.weight(.bold))
+                    }
+                }
+                .font(.subheadline.weight(.semibold))
+                .tint(Brand.amber)
+                .padding(.leading, 4)
             }
+            Spacer(minLength: 0)
         }
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(.isHeader)

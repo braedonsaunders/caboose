@@ -7,6 +7,7 @@ import SwiftUI
 struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @State private var chromeVisible = true
+    @State private var laptopActive = false
     @State private var verticalEdge: HorizontalEdge?
     @State private var enteredVerticalLayout = false
     @State private var askingAbout: RemoteWindow?
@@ -21,12 +22,12 @@ struct WindowScreen: View {
             ZStack(alignment: .top) {
                 ShellBackground()
                 if let window = model.window(model.presentedWindowID) {
-                    WindowCardViewport(controlsVisible: chromeVisible, verticalEdge: $verticalEdge) { _ in
-                        LaptopContainer(isCard: true) { _ in
+                    WindowCardViewport(controlsVisible: chromeVisible && !laptopActive, verticalEdge: $verticalEdge) { _ in
+                        LaptopContainer(isCard: true, activeChanged: { laptopActive = $0 }) { _ in
                             GeometryReader { proxy in surface(for: window, size: proxy.size) }
                         }
                     }
-                    if !chromeVisible { exitFullScreenHandle }
+                    if !chromeVisible && !laptopActive { exitFullScreenHandle }
                 } else {
                     ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -35,9 +36,9 @@ struct WindowScreen: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(removing: .title)
             .toolbar {
-                if let window = model.window(model.presentedWindowID) { controls(for: window) }
+                if !laptopActive, let window = model.window(model.presentedWindowID) { controls(for: window) }
             }
-            .toolbarVisibility(chromeVisible ? .automatic : .hidden, for: .navigationBar)
+            .toolbarVisibility(chromeVisible && !laptopActive ? .automatic : .hidden, for: .navigationBar)
             .toolbarBackground(toolbarBackground, for: .navigationBar)
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .onChange(of: verticalEdge) { _, edge in
@@ -50,8 +51,8 @@ struct WindowScreen: View {
             }
             .overlay(alignment: .top) { ApprovalBanner().padding(.top, 8) }
             .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
-            .statusBarHidden(!chromeVisible)
-            .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
+            .statusBarHidden(!chromeVisible || laptopActive)
+            .persistentSystemOverlays(chromeVisible && !laptopActive ? .automatic : .hidden)
         }
         .tint(Brand.amber)
         .confirmationDialog("Switch App", isPresented: $showingApps, titleVisibility: .visible) {
@@ -352,6 +353,7 @@ private struct WindowCardViewport<Content: View>: View {
     var body: some View {
         GeometryReader(content: content)
             .ignoresSafeArea(.container, edges: ignoredEdges)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
             .onAppear { verticalEdge = barEdge }
             .onChange(of: barEdge) { _, edge in
                 // Keep the reveal edge while hidden; read current placement again

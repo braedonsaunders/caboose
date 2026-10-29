@@ -1590,10 +1590,13 @@ the app card, and a detached view releases its layers.
   fold does not activate it. Screen Layout offers Automatic, Tablet and Laptop overrides;
   compact viewports keep the ordinary layout. The system keyboard's measured intersection
   with that view takes precedence over the fold, so it cannot cover the upper app. The
-  lower trackpad owns the existing `RemoteTextInputView`/`KeyBar`; upper surfaces keep
-  touch input and text-focus detection but do not compete for first responder. Tiled/card
-  pointer input targets the current window and displays a local pointer; free/external
-  desktops use their existing desktop hit testing. The same bounded text-focus policy
+  lower panel owns the existing `RemoteTextInputView`/`KeyBar`, with Keyboard, Trackpad
+  and Combo choices. Its trailing rail contains window switching, full screen, settings,
+  power and navigation; the system-wide bars are hidden while Laptop is active. The
+  native keyboard occupies the lower edge and the rail stays above it. The upper workspace
+  uses the floating desktop and its whole-desktop hit testing, including the dock and
+  title bars, with separate saved Laptop positions, without changing the tablet arrangement. App cards target their current
+  window. Upper surfaces keep direct touch but do not compete for first responder. The same bounded text-focus policy
   follows clicks and double clicks. Detaching or changing target releases a held drag
   and cancels focus requests. With an external display the upper phone region offers
   window previews and switching without resizing or taking video layers from the monitor.
@@ -1689,7 +1692,7 @@ repeated lines removed and clipped to a few lines, opens on tap.
 
 | Tab | What it is |
 | --- | --- |
-| Home | Today: the computer's state; its windows live in most-recently-used order, or while it rests their last pictures, kept on the phone; approvals (answered in place) and agents at work; agent turns that ended and visible files that changed since the app last left the screen, else the newest visible files (from the same `/v1/fs` scan that feeds Spotlight); pinned apps; AirPlay; and Ask, which opens a window, app or file by name or starts a chat with the default agent |
+| Home | Today: the computer's state; its windows live in most-recently-used order, or while it rests their last pictures, kept on the phone; approvals (answered in place) and agents at work; agent turns that ended and visible files that changed since the app last left the screen, else the newest visible files (from the same `/v1/fs` scan that feeds Spotlight); pinned and recent apps; AirPlay; and Ask, which opens a window, app or file by name or starts a chat with the default agent |
 | Desktop | The computer's desktop on this screen, configured for exactly the space beside or between the bars, with Keyboard, AirPlay and Full Screen in the toolbar; while a TV shows the desktop, the phone's trackpad |
 | Agents | The Ask bar, approvals, tasks and the agent seat's windows |
 | Apps | Every desktop entry, the Shelf and Library |
@@ -1753,17 +1756,19 @@ Pinned and recent apps are kept on the phone per computer.
   text and sends a real Enter key press/release, so a browser address bar submits. An
   unmodified software Return dismisses the keyboard except in terminals and code editors;
   pasted multiline text and hardware Return leave it open. Otherwise autocorrect and
-  capitals are on for prose and off in terminals and code editors, with an `Aa` toggle on
-  the key bar.
+  capitals are on for prose and off in terminals and code editors, with an Autocorrect toggle in
+  the keyboard controls menu.
 - **Keyboard accessory.** Remote app cards, tiled and free desktops, the external-display
   trackpad, Terminal, the Agents composer and app-owned native form fields use
-  CabooseKit’s shared `KeyBar` accessory. Hide Keyboard stays at the
-  top right beside the Keys, Move and Symbols groups; it never enters toolbar overflow.
-  Each group presents six fixed keys without horizontal scrolling. Home/End and symbol keys
-  offer related actions on touch-and-hold. Switching groups preserves active modifiers.
+  CabooseKit’s shared `KeyBar` accessory: one 48-point row of plain keys on the system
+  keyboard surface. Hide Keyboard stays fixed at the right edge. A controls menu selects
+  Keys, Move or Symbols; each group shows four keys on compact keyboards and six from
+  378 points wide, without horizontal scrolling. The menu also exposes every key and the
+  Autocorrect toggle. Home/End and symbol keys offer related actions on touch-and-hold.
+  Switching groups preserves active modifiers, also indicated on the controls menu.
   The accessory lays out within its own bounds, independently of the tab sidebar's safe area.
   The row offers Escape, Tab, sticky Ctrl/Alt, repeating arrows, navigation and shell symbols.
-  Remote inputs share the same text/composition and modifier handling, with an Aa control
+  Remote inputs share the same text/composition and modifier handling, with a menu toggle
   for autocorrect; Terminal keeps its own terminal-byte semantics without prose correction.
   Native fields use UIKit text editing, selection and IME; navigation moves native text
   positions and never inserts terminal escape sequences. Ctrl/Alt apply to the next key;

@@ -26,13 +26,16 @@ struct LaptopModeMenu: View {
 struct LaptopContainer<Content: View>: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
+    @State private var layoutActive = false
     @AppStorage("caboose.laptop.mode") private var mode = LaptopLayout.Mode.automatic.rawValue
     @State private var geometry = LaptopGeometry()
     let isCard: Bool
     let content: (Bool) -> Content
+    var activeChanged: (Bool) -> Void
 
-    init(isCard: Bool = false, @ViewBuilder content: @escaping (Bool) -> Content) {
-        self.isCard = isCard; self.content = content
+    init(isCard: Bool = false, activeChanged: @escaping (Bool) -> Void = { _ in }, @ViewBuilder content: @escaping (Bool) -> Content) {
+        self.isCard = isCard; self.content = content; self.activeChanged = activeChanged
     }
 
     var body: some View {
@@ -47,7 +50,7 @@ struct LaptopContainer<Content: View>: View {
                     .frame(width: proxy.size.width, height: active ? frames.screen.height : max(0, proxy.size.height - geometry.keyboard))
                     .clipped()
                 if active {
-                    LaptopControls(compact: frames.controls.height < 110, isCard: isCard,
+                    LaptopControls(compact: frames.controls.height < 280, isCard: isCard,
                                    enabled: scenePhase == .active && (isCard ? model.presentedWindowID != nil : model.presentedWindowID == nil && model.selectedTab == .desktop))
                         .frame(width: frames.controls.width, height: max(1, frames.controls.height))
                         .clipped()
@@ -56,77 +59,162 @@ struct LaptopContainer<Content: View>: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             .background { LaptopGeometryProbe { geometry = $0 }.allowsHitTesting(false) }
-            .onChange(of: active) { _, _ in
-                // Do not leave a keyboard attached to a responder in the old control region.
+            .onChange(of: active, initial: true) { _, value in
+                layoutActive = value
+                activeChanged(value)
+                if !isCard { model.setLaptopDesktop(value) }
                 model.keyboardVisible = false
                 LaptopPointer.shared.clear()
             }
+            .onAppear {
+                if !isCard { model.setLaptopDesktop(active) }
+            }
+            .onDisappear {
+                if !isCard { model.setLaptopDesktop(false) }
+            }
         }
+        // Safe-area expansion belongs to the measured parent, never a clipped child.
+        // Tablet keeps the horizontal sidebar; Laptop owns the whole display and draws
+        // its navigation only below the hinge.
+        .ignoresSafeArea(.container, edges: layoutActive ? .all : (barEdge == nil ? [] : [.top, .bottom]))
         .ignoresSafeArea(.keyboard, edges: .bottom)
     }
 }
 
 private struct LaptopControls: View {
     @Environment(AppModel.self) private var model
+    @State private var input: LaptopLayout.Input = .trackpad
     let compact: Bool
     let isCard: Bool
     let enabled: Bool
 
-    private var desktop: DesktopModel? {
-        guard !isCard else { return nil }
-        return model.externalDisplayActive || model.deviceDesktopStyle == .free ? model.desktop : nil
-    }
+    private var desktop: DesktopModel? { isCard ? nil : model.desktop }
     private var target: RemoteWindow? {
-        if isCard, let parent = model.window(model.presentedWindowID) {
-            return model.auxiliaryWindows(for: parent).last { !$0.isOverrideRedirect } ?? parent
-        }
-        return model.window(model.yard.keyTarget(in: model.session?.windows ?? [:]))
+        guard isCard, let parent = model.window(model.presentedWindowID) else { return nil }
+        return model.auxiliaryWindows(for: parent).last { !$0.isOverrideRedirect } ?? parent
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            if !compact {
-                HStack(spacing: 12) {
-                    Label(model.externalDisplayActive ? "Control Desk" : "Laptop", systemImage: model.externalDisplayActive ? "display" : "laptopcomputer")
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    Menu {
-                        ForEach(model.appWindows) { window in
-                            Button(window.title.isEmpty ? model.appName(for: window) : window.title) {
-                                if let desktop { desktop.activate(window.id, session: model.session) }
-                                else if model.presentedWindowID != nil { model.presentedWindowID = window.id }
-                                else { model.yard.focus(window.id) }
-                            }
-                        }
-                    } label: { Image(systemName: "macwindow.on.rectangle").frame(width: 44, height: 44) }
-                    .accessibilityLabel("Switch window")
-                    Button { model.keyboardVisible.toggle() } label: {
-                        Image(systemName: model.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
-                            .frame(width: 44, height: 44)
+        HStack(spacing: 0) {
+            ZStack {
+                Trackpad(desktop: desktop, target: target, keyboardVisible: model.keyboardVisible,
+                         enabled: enabled, pointerEnabled: input != .keyboard)
+                if input == .keyboard {
+                    Label("Keyboard", systemImage: "keyboard")
+                        .font(.subheadline).foregroundStyle(.secondary).allowsHitTesting(false)
+                } else if !compact && !model.keyboardVisible {
+                    VStack(spacing: 8) {
+                        Image(systemName: "hand.draw").font(.title2)
+                        Text("Trackpad").font(.subheadline.weight(.medium))
+                        Text("Tap to click · two fingers to scroll or right-click")
+                            .font(.caption).multilineTextAlignment(.center)
                     }
-                    .accessibilityLabel(model.keyboardVisible ? "Hide Keyboard" : "Type")
+                    .foregroundStyle(.secondary).padding().allowsHitTesting(false)
                 }
-                .padding(.horizontal, 12)
             }
-            Trackpad(desktop: desktop, target: desktop == nil ? target : nil, keyboardVisible: model.keyboardVisible, enabled: enabled)
-                .clipShape(.rect(cornerRadius: 20))
-                .overlay {
-                    if !compact && !model.keyboardVisible {
-                        VStack(spacing: 8) {
-                            Image(systemName: "hand.draw").font(.title2)
-                            Text("Trackpad").font(.subheadline.weight(.medium))
-                            Text("Tap to click · two fingers to scroll or right-click")
-                                .font(.caption).multilineTextAlignment(.center)
-                        }
-                        .foregroundStyle(.secondary).padding().allowsHitTesting(false)
-                    }
-                }
-                .overlay { RoundedRectangle(cornerRadius: 20).stroke(.white.opacity(0.12)).allowsHitTesting(false) }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
+            rail
+                .frame(width: 56)
         }
-        .padding(compact ? 0 : 10)
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 26))
+        .background(.ultraThinMaterial)
         .allowsHitTesting(enabled)
+        .onChange(of: model.keyboardVisible) { _, visible in
+            if !visible { input = .trackpad }
+            else if input == .trackpad { input = .combo }
+        }
+    }
+
+    private var rail: some View {
+        VStack(spacing: 0) {
+            if compact {
+                // The native keyboard can leave only one row above it. One anchored
+                // control retains every action without clipping a second row.
+                Menu {
+                    inputChoices
+                    Divider()
+                    fullScreen
+                    windowSwitcher
+                    computerActions
+                    navigationActions
+                } label: { Image(systemName: "slider.horizontal.3").frame(width: 48, height: 44) }
+                .accessibilityLabel("Laptop controls: \(input.title)")
+            } else {
+                Menu { inputChoices } label: { Image(systemName: input.symbol).frame(width: 48, height: 44) }
+                    .accessibilityLabel("Input: \(input.title)")
+                fullScreen
+                windowSwitcher
+                Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
+                    .frame(width: 48, height: 44)
+                LifecycleMenu().frame(width: 48, height: 44)
+                Menu { navigationActions } label: { Image(systemName: "ellipsis").frame(width: 48, height: 44) }
+                    .accessibilityLabel("Laptop controls and navigation")
+            }
+            Spacer(minLength: 0)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder private var inputChoices: some View {
+        Button("Keyboard", systemImage: "keyboard") { choose(.keyboard) }
+        Button("Trackpad", systemImage: "hand.draw") { choose(.trackpad) }
+        Button("Keyboard & Trackpad", systemImage: "rectangle.split.2x1") { choose(.combo) }
+    }
+
+    @ViewBuilder private var computerActions: some View {
+        Button("Computer Settings", systemImage: "gearshape") { model.settingsPresented = true }
+        Button("Park", systemImage: "moon.zzz") { Task { try? await model.parkComputer() } }
+        if model.computerStatus?.capabilities.restart == true {
+            Button("Restart…", systemImage: "arrow.clockwise", role: .destructive) { model.restartConfirmationPresented = true }
+        }
+    }
+
+    @ViewBuilder private var navigationActions: some View {
+        if let window = target ?? model.session.flatMap({ model.desktop.frontWindow(in: $0.windows) }) {
+            Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
+                model.session?.exitFullscreen(window, frame: window.frame)
+            }
+        }
+        LaptopModeMenu()
+        Button("Wallpaper", systemImage: "photo") { model.wallpaperPickerPresented = true }
+        Divider()
+        Button("Home", systemImage: "house") { leave(.home) }
+        Button("Agents", systemImage: "sparkles") { leave(.agents) }
+        Button("Apps", systemImage: "square.grid.2x2") { leave(.apps) }
+        if TerminalSlot.isFilled { Button("Terminal", systemImage: "apple.terminal") { leave(.terminal) } }
+    }
+
+    private var fullScreen: some View {
+        Button(isCard ? "Back to Desktop" : "Open App Full Screen",
+               systemImage: isCard ? "macwindow.on.rectangle" : "arrow.up.left.and.arrow.down.right") {
+            if isCard { model.presentedWindowID = nil }
+            else if let id = model.desktop.stacking.reversed().first(where: { model.desktop.isVisible($0) && model.session?.windows[$0]?.isAuxiliary == false }) {
+                model.show(windowID: id)
+            }
+        }.frame(width: 48, height: 44)
+    }
+
+    private var windowSwitcher: some View {
+        Menu {
+            ForEach(model.appWindows) { window in
+                Button(window.title.isEmpty ? model.appName(for: window) : window.title) {
+                    if isCard { model.presentedWindowID = window.id }
+                    else { model.desktop.activate(window.id, session: model.session) }
+                }
+            }
+        } label: { Image(systemName: "macwindow.on.rectangle").frame(width: 48, height: 44) }
+        .accessibilityLabel("Switch window")
+    }
+
+    private func choose(_ value: LaptopLayout.Input) {
+        input = value
+        model.keyboardVisible = value != .trackpad
+    }
+    private func leave(_ tab: ShellTab) {
+        model.keyboardVisible = false
+        model.presentedWindowID = nil
+        model.selectedTab = tab
     }
 }
 

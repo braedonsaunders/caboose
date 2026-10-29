@@ -52,6 +52,8 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
         keyboardAppearance = .dark
         indicatorStyle = .white
         inputAccessoryView = keyRow.view
+        inputAssistantItem.leadingBarButtonGroups = []
+        inputAssistantItem.trailingBarButtonGroups = []
         keyRow.onAction = { [weak self] action in self?.keyRowAction(action) }
 
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:)))

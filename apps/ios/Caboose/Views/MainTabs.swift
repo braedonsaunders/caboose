@@ -36,6 +36,7 @@ struct MainTabs: View {
                 }
             }
         }
+        .toolbarVisibility((model.selectedTab == .desktop && model.laptopDesktopActive) || placement != .system ? .hidden : .automatic, for: .tabBar)
         .environment(\.shellTabPlacement, placement)
         .background { ShellWindowProbe().allowsHitTesting(false).accessibilityHidden(true) }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }

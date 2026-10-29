@@ -33,6 +33,12 @@ open class RemoteTextInputView: UIView, UITextInput {
     }()
 
     open override var inputAccessoryView: UIView? { keyBar }
+    open override var inputAssistantItem: UITextInputAssistantItem {
+        let item = super.inputAssistantItem
+        item.leadingBarButtonGroups = []
+        item.trailingBarButtonGroups = []
+        return item
+    }
     /// Sends a complete press/release to the view's current remote target.
     open func sendKey(_ stroke: KeyStroke, modifiers: [String]) {}
     /// Subclasses also clear their shared visibility state or pending focus requests.

@@ -5,6 +5,15 @@ import Foundation
 /// A vertical book fold never activates Laptop automatically. Manual mode also works
 /// on a flat display; measured keyboard overlap always takes precedence over the split.
 public enum LaptopLayout {
+    public enum Input: String, CaseIterable, Sendable {
+        case keyboard, trackpad, combo
+        public var title: String {
+            switch self { case .keyboard: "Keyboard"; case .trackpad: "Trackpad"; case .combo: "Keyboard & Trackpad" }
+        }
+        public var symbol: String {
+            switch self { case .keyboard: "keyboard"; case .trackpad: "hand.draw"; case .combo: "rectangle.split.2x1" }
+        }
+    }
     public enum Mode: String, CaseIterable, Sendable { case automatic, tablet, laptop }
     public struct Frames: Equatable, Sendable {
         public let screen: CGRect
@@ -30,8 +39,8 @@ public enum LaptopLayout {
         let boundary = fold?.minY ?? height * 0.5
         // Native keyboard + its shared accessory can be taller than the lower half.
         // Keep the upper app above it, rather than clipping rows behind the keyboard.
-        let screenHeight = max(0, min(boundary - 8, visible))
-        let controlsY = min(visible, fold.map { $0.maxY + 8 } ?? (height * 0.5 + 8))
+        let screenHeight = max(0, min(boundary, visible))
+        let controlsY = min(visible, fold?.maxY ?? (height * 0.5))
         return Frames(screen: CGRect(x: 0, y: 0, width: width, height: screenHeight),
                       controls: CGRect(x: 0, y: controlsY, width: width, height: max(0, visible - controlsY)))
     }

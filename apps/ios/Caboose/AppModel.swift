@@ -407,6 +407,11 @@ final class AppModel {
                 session.configure(window, frame: frame, state: ["maximized": false])
                 desktop.raise(window.id)
             }
+            if laptopNeedsInitialFit, laptopDesktopActive, !externalDisplayActive,
+               let front = desktop.frontWindow(in: session.windows) {
+                laptopNeedsInitialFit = false
+                desktop.snap(front.id, .maximized, session)
+            }
             // Dialogs and tool windows: over their parent, or centred, never left at the origin.
             // Menus and tooltips (override-redirect) keep the place the app chose.
             for window in session.windows.values where window.isAuxiliary && !window.isOverrideRedirect && !placedWindowIDs.contains(window.id) {
@@ -515,7 +520,7 @@ final class AppModel {
         let scale = min(2, max(1, UIScreen.main.scale))
         if !(desktop.directTouch && desktop.pixelsPerPoint == scale) { desktop = DesktopModel(pixelsPerPoint: scale) }
         desktop.directTouch = true
-        desktop.storageKey = freeDesktopKey(external: false)
+        desktop.storageKey = freeDesktopKey(external: false).map { $0 + (laptopDesktopActive ? ".laptop" : "") }
         desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
         desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -813,8 +818,26 @@ final class AppModel {
 
     private var chosenDesktopStyle = DeviceDesktopStyle(rawValue: UserDefaults.standard.string(forKey: "deviceDesktopStyle") ?? "") ?? .tiled
 
+    /// Laptop has a whole-desktop pointer, including native title bars and the dock.
+    /// This temporary arrangement never changes the owner's saved tablet preference.
+    var laptopDesktopActive = false
+    private var laptopNeedsInitialFit = false
+
+    func setLaptopDesktop(_ active: Bool) {
+        guard laptopDesktopActive != active else { return }
+        laptopDesktopActive = active
+        laptopNeedsInitialFit = active && !externalDisplayActive
+        if deviceDesktopActive { desktop.storageKey = freeDesktopKey(external: false).map { $0 + (active ? ".laptop" : "") } }
+        placedWindowIDs.removeAll()
+        yard.invalidate()
+        if deviceDesktopActive {
+            if deviceDesktopStyle == .tiled { prepareYard() }
+            sessionChanged()
+        }
+    }
+
     var deviceDesktopStyle: DeviceDesktopStyle {
-        get { UIDevice.current.userInterfaceIdiom == .pad ? chosenDesktopStyle : .tiled }
+        get { laptopDesktopActive ? .free : (UIDevice.current.userInterfaceIdiom == .pad ? chosenDesktopStyle : .tiled) }
         set {
             guard UIDevice.current.userInterfaceIdiom == .pad, newValue != chosenDesktopStyle else { return }
             chosenDesktopStyle = newValue

@@ -19,8 +19,8 @@ struct LaptopLayoutTests {
     }
     @Test func actualFoldIsReservedOnce() {
         let frames = LaptopLayout.frames(size: size, division: horizontal, keyboard: 0)
-        #expect(frames.screen.maxY == 402)
-        #expect(frames.controls.minY == 448)
+        #expect(frames.screen.maxY == 410)
+        #expect(frames.controls.minY == 440)
         #expect(frames.controls.maxY == size.height)
     }
     @Test func keyboardNeverCoversUpperAppOrProducesNegativeControls() {
