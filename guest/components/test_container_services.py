@@ -10,6 +10,18 @@ import urllib.request
 
 SOURCE = Path(__file__).with_name('container-services.sh')
 
+class BusStartup(unittest.TestCase):
+    def test_headless_services_use_the_session_bus_recovery_policies(self):
+        services = SOURCE.read_text()
+        session = (SOURCE.parent.parent / 'container' / 'caboose-session').read_text()
+        for start, end in [
+            ("import errno, os, pathlib, socket, stat", "SYSTEM_BUS\n"),
+            ("import errno, socket, sys", "PY\n"),
+        ]:
+            self.assertEqual(services.split(start, 1)[1].split(end, 1)[0], session.split(start, 1)[1].split(end, 1)[0])
+        self.assertLess(services.index('session_bus "$runtime/bus"'), services.index('owner_service files '))
+        self.assertNotIn('start_display ', services)
+
 class ServiceReplacement(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

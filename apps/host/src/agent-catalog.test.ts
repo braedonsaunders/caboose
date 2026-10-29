@@ -206,6 +206,13 @@ describe('AgentCatalog', () => {
       env: { WAYLAND_DISPLAY: 'wayland-caboose-0', DISPLAY: ':110', GDK_BACKEND: 'wayland,x11', QT_QPA_PLATFORM: 'wayland;xcb' } } })
   })
 
+  it('starts phone sign-in without a display environment', async () => {
+    const fake = fakeGuest()
+    const catalog = new AgentCatalog(registry(), () => ({ ...fake.guest, ownerEnv: [] }), settingsStore())
+    await catalog.signIn('codex-acp', { methodId: 'chat-gpt', on: 'phone' })
+    expect(fake.calls.at(-1)).toMatchObject({ mode: 'sign-in', argument: { on: 'phone', env: {} } })
+  })
+
   it('accepts only agents a task could run as the default', async () => {
     const catalog = new AgentCatalog(registry(), () => undefined, settingsStore())
     await expect(catalog.ensureKnown('goose')).resolves.toBeUndefined()

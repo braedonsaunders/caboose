@@ -155,6 +155,8 @@ same installer to update computers whose disks predate the host:
 - Container services are identified as their owner, including when restricted container
   root cannot read that user's process arguments. A stale pid file is repaired from the
   exact service script; readiness requires that process to own its listening socket.
+  Container service startup also ensures the system and owner session buses are available
+  for credential preparation, including on headless wakes, without starting a display.
 - `GET /v1/computer` reports `upgrade: null | { state, version?, message? }`, and
   `/v1/control` sends `computer.upgrade` with `state` `checking`, `updating`, `succeeded` or
   `failed`.

@@ -84,6 +84,68 @@ owner_service() {
   echo "$label did not become ready" >&2; return 1
 }
 MODE=${1:-}
+# The keyring needs both buses even when the owner display stays stopped.
+install -d -m 0755 /run/dbus
+# /run survives a container stop. Only a failed connection with a known stale-socket
+# error permits removing the socket; a live pid or any other failure stops recovery.
+if python3 - <<'SYSTEM_BUS'
+import errno, os, pathlib, socket, stat
+path = pathlib.Path('/run/dbus/system_bus_socket')
+with socket.socket(socket.AF_UNIX) as connection:
+    connection.settimeout(2)
+    try:
+        connection.connect(str(path))
+    except OSError as error:
+        if error.errno not in (errno.ENOENT, errno.ECONNREFUSED):
+            raise SystemExit(2)
+    else:
+        raise SystemExit(0)
+pidfile = pathlib.Path('/run/dbus/pid')
+if pidfile.exists():
+    value = pidfile.read_text().strip()
+    if not value.isdecimal() or int(value) <= 1:
+        raise SystemExit(2)
+    try:
+        os.kill(int(value), 0)
+    except ProcessLookupError:
+        pass
+    else:
+        raise SystemExit(2)
+try:
+    if not stat.S_ISSOCK(path.lstat().st_mode):
+        raise SystemExit(2)
+    path.unlink()
+except FileNotFoundError:
+    pass
+pidfile.unlink(missing_ok=True)
+raise SystemExit(1)
+SYSTEM_BUS
+then :; else
+  status=$?
+  [ "$status" = 1 ] || { echo 'System bus recovery requires operator attention' >&2; exit "$status"; }
+  dbus-daemon --system --fork
+fi
+session_bus() {
+  local bus=$1
+  # /run survives a container stop. A socket file alone does not prove its daemon lives.
+  if runuser -u caboose -- python3 - "$bus" <<'PY'
+import errno, socket, sys
+with socket.socket(socket.AF_UNIX) as connection:
+    connection.settimeout(2)
+    try:
+        connection.connect(sys.argv[1])
+    except OSError as error:
+        sys.exit(1 if error.errno in (errno.ENOENT, errno.ECONNREFUSED) else 2)
+PY
+  then return; else
+    local status=$?
+    [ "$status" = 1 ] || return "$status"
+  fi
+  rm -f -- "$bus"
+  runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork
+}
+
+session_bus "$runtime/bus"
 owner_service files /opt/caboose/files/caboose-files.py 14700 'Caboose file service'
 owner_service terminal /opt/caboose/terminal/caboose-terminal.py 14701 'Caboose terminal service'
 monitor_pid="$runtime/caboose-notifications.pid"

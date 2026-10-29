@@ -339,6 +339,7 @@ export function createContainerController(config: Config, dependencies: { docker
     async park() {
       if ((await state()) === 'running') await docker(['pause', name], 60_000)
       running = false
+      launchEnv = []
     },
     /** Restart the same container so installed packages survive. */
     async restart() {
@@ -354,6 +355,7 @@ export function createContainerController(config: Config, dependencies: { docker
       if (current === 'paused') await docker(['unpause', name], 60_000)
       if (current === 'running' || current === 'paused') await docker(['stop', '-t', '10', name], 120_000)
       running = false
+      launchEnv = []
       displayToken = ''
       if (current !== 'missing') {
         const desired = settings()
@@ -365,6 +367,7 @@ export function createContainerController(config: Config, dependencies: { docker
     /** Deletes the computer: its container, its home and its network. Nothing of it is kept. */
     async destroy() {
       running = false
+      launchEnv = []
       displayToken = ''
       resources = null
       if ((await state()) !== 'missing') await docker(['rm', '-f', name], 120_000)
