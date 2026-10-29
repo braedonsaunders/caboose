@@ -3,6 +3,13 @@ name: Check split microVM image
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/check-split-image.yml'
+      - 'guest/**'
+      - 'apps/host/src/driver.ts'
+      - 'apps/host/src/system-image.ts'
+      - 'apps/host/src/system-image.test.ts'
 
 permissions:
   contents: read
