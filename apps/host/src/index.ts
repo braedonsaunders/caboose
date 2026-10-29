@@ -31,8 +31,36 @@ import { openSettings, type ComputerSettings } from './settings.js'
 import { hostId, machineName, ReachService } from './reach.js'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawn, spawnSync } from 'node:child_process'
+import { fstatSync, statSync } from 'node:fs'
 
 const deployment = config(process.env)
+if (process.platform === 'linux' && deployment.runtime === 'microvm') {
+  if (!process.env.CABOOSE_HOST_LOCK_FD) {
+    const helper = fileURLToPath(new URL('./host-lock.py', import.meta.url))
+    const child = spawn('python3', [helper, deployment.imageRoot, process.execPath, ...process.execArgv, ...process.argv.slice(1)], { stdio: 'inherit' })
+    for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => child.kill(signal))
+    const status = await new Promise<number>((resolveStatus, reject) => {
+      child.once('error', reject)
+      child.once('exit', (code, signal) => resolveStatus(code ?? (signal ? 1 : 0)))
+    })
+    process.exit(status)
+  }
+  const fd = Number(process.env.CABOOSE_HOST_LOCK_FD)
+  if (fd !== 3) throw new Error('Invalid host lock descriptor')
+  const held = fstatSync(fd)
+  const path = statSync(join(deployment.imageRoot, '.host.lock'))
+  if (!held.isFile() || held.dev !== path.dev || held.ino !== path.ino) throw new Error('Host lock descriptor does not match image root')
+  // Reassert the lock on the same open file description, including on a direct exec.
+  const verified = spawnSync('python3', ['-c', 'import fcntl; fcntl.flock(3, fcntl.LOCK_EX | fcntl.LOCK_NB)'], { stdio: ['ignore', 'ignore', 'pipe', fd] })
+  if (verified.status !== 0) throw new Error('Could not verify exclusive host lock')
+  const overlays = join(deployment.imageRoot, 'overlays')
+  const entries = await readdir(overlays).catch(error => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  })
+  if (entries.some(name => name.endsWith('.migration.json'))) throw new Error('An unfinished disk migration must be recovered before starting the host')
+}
 const tierKey = await snapshotTierKey(process.env, deployment.runtime)
 const tierStore = tierKey ? createStorageFromEnv(process.env) : undefined
 const snapshotGc = tierStore && tierKey ? startSnapshotGc(join(deployment.imageRoot, 'overlays'), tierStore, tierKey) : undefined

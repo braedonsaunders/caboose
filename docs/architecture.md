@@ -260,6 +260,12 @@ caboose-session start-files  # the file service on 14700
 The microVM is the default because it isolates the computer as a VM and its parked state
 survives host restarts.
 
+On Linux, the microVM host holds an exclusive advisory lock at `.host.lock` in the
+image root. Its VMM and virtio-fs daemons inherit the lock, so a surviving daemon
+continues to fence other cooperating host processes after the host exits. The host
+refuses startup if an `overlays/*.migration.json` journal is present. Operators
+must stop older hosts and verify their VMMs have exited before relying on this lock.
+
 ### Network fencing
 
 Each Linux microVM computer has its own persistent TAP device and /30. Slots 0–63 use

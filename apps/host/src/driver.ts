@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { constants, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
 import { access, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -81,7 +82,7 @@ export function createDeskPool(config: Config, dependencies: DeskPoolDependencie
   if (nativeMac && (config.vmCow || config.vmFreePageReporting)) throw new Error('Cloud Hypervisor memory options are unavailable on macOS')
   const backend = dependencies.backend ?? (nativeMac
     ? createVirtualizationBackend({ helperPath: config.vmmPath, connectTimeoutMs: 120_000 })
-    : createCloudHypervisorBackend({ connectTimeoutMs: 120_000, serviceVsock: true }))
+    : createCloudHypervisorBackend({ connectTimeoutMs: 120_000, serviceVsock: true, ...(process.env.CABOOSE_HOST_LOCK_FD === '3' ? { launcher: (command, args, options) => spawn(command, [...args], { stdio: ['ignore', 'pipe', 'pipe', 3], uid: options.identity?.uid, gid: options.identity?.gid }) } : {}) }))
   return createDeskHost({
     imageRoot: config.imageRoot, vmmPath: config.vmmPath,
     // Images may be downloaded after pool creation; don't let AppKit's eager existence
