@@ -265,9 +265,9 @@ extension EnvironmentValues {
     }
 }
 
-/// Touch straight on the desktop: a tap clicks where it lands, a drag moves what it starts
-/// on (a title bar moves its window, a corner resizes, content drags inside the app), two
-/// fingers scroll, a two-finger tap or a long press right-clicks, two taps double-click.
+/// Touch straight on the desktop: a tap clicks, a finger pans app content, and holding
+/// content before moving drags it. Title bars and corners drag immediately. Two fingers
+/// also scroll; a two-finger tap opens context. Two taps double-click.
 /// An iPad pointer hovers and clicks like a Mac's. Keys go to the frontmost window.
 struct DesktopTouchArea: UIViewRepresentable {
     @Environment(AppModel.self) private var model
@@ -306,6 +306,10 @@ final class DesktopTouchSurface: RemoteTextInputView {
     private var maxFingers = 0
     private var dragging = false
     private var contextOpened = false
+    /// Captured on contact, so a pan/hold cannot change its target before recognition.
+    private var pansContent = false
+    private weak var panWindow: RemoteWindow?
+    private weak var panSession: (any DisplaySession)?
     /// A finger held on Launchpad is sliding through Quick Switch.
     private var switchHolding = false
     private var press = DirectPointerPress()
@@ -319,6 +323,8 @@ final class DesktopTouchSurface: RemoteTextInputView {
         isMultipleTouchEnabled = true
         backgroundColor = .clear
         addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(hover(_:))))
+        NotificationCenter.default.addObserver(self, selector: #selector(cancelInteraction),
+            name: UIApplication.willResignActiveNotification, object: nil)
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -365,13 +371,23 @@ final class DesktopTouchSurface: RemoteTextInputView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { cancelHold(); scrollDriver.cancel() }
+        if window == nil { cancelInteraction() }
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         scrollDriver.cancel()
-        scrolling = false
         let fingers = live(event)
+        if maxFingers > 0, (dragging || scrolling) {
+            if dragging { releaseDrag() }
+            dragging = false
+            scrolling = false
+            scrollSuppressed = true
+            cancelHold()
+            maxFingers = max(maxFingers, fingers.count)
+            lastCentroid = centroid(fingers)
+            return
+        }
+        scrolling = false
         if maxFingers == 0 {
             scrollSuppressed = false
             began = event?.timestamp ?? 0
@@ -379,6 +395,9 @@ final class DesktopTouchSurface: RemoteTextInputView {
             dragging = false
             contextOpened = false
             switchHolding = false
+            pansContent = false
+            panWindow = nil
+            panSession = nil
             cancelHold()
             if let first = touches.first, touches.first?.type != .indirectPointer { desktop?.pointerHovering = false; point(at: first.location(in: self)) }
             else if let first = touches.first { point(at: first.location(in: self)) }
@@ -391,14 +410,30 @@ final class DesktopTouchSurface: RemoteTextInputView {
         }
         if maxFingers == 1, let point = lastCentroid { touchOrigin = point }
         if maxFingers == 1, let first = touches.first, first.type == .direct {
+            if let desktop, let session,
+               case .content(let id, _) = desktop.hitTest(touchOrigin, windows: session.windows) {
+                pansContent = true
+                panWindow = session.windows[id]
+                panSession = session
+            }
             press.begin(at: first.location(in: self), time: ProcessInfo.processInfo.systemUptime)
             holdTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
                 guard let self, let desktop = self.desktop, !self.dragging,
                       let point = self.press.context(at: ProcessInfo.processInfo.systemUptime) else { return }
                 self.scrollDriver.cancel()
-                self.contextOpened = true
                 self.lastTap = nil
                 self.point(at: point)
+                if self.pansContent {
+                    guard let target = self.panWindow, let session = self.session, session === self.panSession,
+                          session.state == .ready, session.windows[target.id] === target,
+                          case .content(let id, _) = desktop.hitTest(point, windows: session.windows),
+                          id == target.id else { self.scrollSuppressed = true; return }
+                    self.dragging = true
+                    desktop.beginDrag(session: session)
+                    self.haptics.impactOccurred()
+                    return
+                }
+                self.contextOpened = true
                 // Held on Launchpad: Quick Switch, slid through with the same finger.
                 if desktop.beginSwitchHold(session: self.session) {
                     self.switchHolding = true
@@ -417,13 +452,24 @@ final class DesktopTouchSurface: RemoteTextInputView {
             return
         }
         guard !contextOpened, !scrollSuppressed else { return }
+        if pansContent {
+            guard let target = panWindow, let session, session === panSession,
+                  session.state == .ready, session.windows[target.id] === target,
+                  desktop?.isVisible(target.id) == true else {
+                if dragging { releaseDrag() }
+                dragging = false
+                scrollDriver.cancel()
+                scrollSuppressed = true
+                cancelHold()
+                return
+            }
+        }
         guard let desktop, let now = centroid(fingers), let last = lastCentroid else { return }
         let delta = CGPoint(x: now.x - last.x, y: now.y - last.y)
         lastCentroid = now
         travel = max(travel, hypot(now.x - touchOrigin.x, now.y - touchOrigin.y))
         press.move(to: now)
-        if maxFingers >= 2 {
-            cancelHold()
+        if maxFingers >= 2 || (pansContent && !dragging) {
             // Capture the original target so inertia cannot cross windows or chrome.
             let time = event?.timestamp ?? ProcessInfo.processInfo.systemUptime
             var scrollDelta = delta
@@ -432,6 +478,13 @@ final class DesktopTouchSurface: RemoteTextInputView {
                 guard hypot(scrollDelta.x, scrollDelta.y) >= 4 else { return }
                 guard let session, case .content(let id, let anchor) = desktop.hitTest(desktop.cursor, windows: session.windows),
                       let target = session.windows[id] else { return }
+                if pansContent && (session !== panSession || target !== panWindow) {
+                    scrollSuppressed = true
+                    cancelHold()
+                    return
+                }
+                cancelHold()
+                lastTap = nil
                 scrolling = true
                 session.resetScroll()
                 let scale = desktop.pixelsPerPoint
@@ -467,7 +520,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
         }
         let now = event?.timestamp ?? 0
         let duration = now - began
-        defer { maxFingers = 0; lastCentroid = nil; cancelHold() }
+        defer { maxFingers = 0; lastCentroid = nil; pansContent = false; panWindow = nil; panSession = nil; cancelHold() }
         if switchHolding {
             switchHolding = false
             desktop.endSwitchHold()
@@ -475,7 +528,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
         }
         if contextOpened || scrollSuppressed { return }
         if dragging {
-            desktop.endDrag(session: session)
+            releaseDrag()
             dragging = false
             return
         }
@@ -498,18 +551,34 @@ final class DesktopTouchSurface: RemoteTextInputView {
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        cancelInteraction()
+    }
+
+    private func releaseDrag() {
+        if pansContent {
+            let liveTarget = panWindow.map { panSession?.windows[$0.id] === $0 } ?? false
+            desktop?.endDrag(session: liveTarget ? panSession : nil)
+        } else {
+            desktop?.endDrag(session: session)
+        }
+    }
+
+    @objc private func cancelInteraction() {
         scrollDriver.cancel()
         scrolling = false
-        scrollSuppressed = false
+        scrollSuppressed = true
         cancelHold()
         if switchHolding {
             switchHolding = false
             desktop?.cancelSwitchHold()
         }
-        if dragging { desktop?.endDrag(session: session) }
+        if dragging { releaseDrag() }
         dragging = false
         maxFingers = 0
         lastCentroid = nil
+        pansContent = false
+        panWindow = nil
+        panSession = nil
     }
 
     // MARK: Keyboard

@@ -338,22 +338,24 @@ stationary half-second hold cancels that native touch sequence and sends a right
 Apple Pencil is a
 tablet with pressure, tilt and azimuth on every coalesced sample, and hover on iPads that
 have it. Mouse-only windows, including X11 apps through Xwayland, take pointer gestures:
-one finger draws, selects or drags with the primary button; two fingers scroll with momentum.
-A tap clicks, two quick taps double-click, and a two-finger tap or stationary half-second
-hold right-clicks immediately. A drag starts at the original contact point and releases
-its button on cancellation, target change or backgrounding. These rules are shared by
+one finger scrolls with momentum. Hold for half a second, feel the haptic, then move to
+select text or drag a control with the primary button; lifting releases it. Two fingers
+also scroll. A tap clicks, two quick taps double-click, and a two-finger tap right-clicks.
+Pencil strokes and hardware pointers drag directly. A held drag releases its button on
+cancellation, target change or backgrounding. The free desktop uses the same content
+pan/hold gestures; window title bars and resize handles still drag immediately. These rules are shared by
 all mouse-only windows, with no application-name overrides. A trackpad or mouse hovers,
 clicks and right-clicks precisely.
 
 Emulated scrolling shares `CabooseKit/Input/ScrollPhysics.swift`: fractional deltas are
 coalesced once per display frame, and release velocity decays independently of refresh
-rate. Desktop two-finger scrolling and the phone trackpad use the same inertia. New
+rate. Desktop content scrolling and the phone trackpad use the same inertia. New
 input, context actions, leaving the surface, losing the target and backgrounding stop
 client inertia; native Wayland touch keeps the application's own fling behavior.
 Run `swift test --filter ScrollPhysicsTests` in `apps/ios/CabooseKit` for deterministic
 checks of distance at 30/60/90/120 Hz, fractional input, cancellation, stale release,
 reversal and display stalls. On a real host, check slow and fast swipes in a native
-Wayland app and two-finger swipes in an Xwayland app, then desktop/trackpad scrolling. Confirm
+Wayland app and one- and two-finger swipes in an Xwayland app, then desktop/trackpad scrolling. Confirm
 that a new touch stops the fling, a held finger stops before release, pinches still
 zoom, drawing and selection still work, context clicks do not fling, and changing
 windows or backgrounding never sends old scroll input to the next window.
@@ -970,3 +972,23 @@ menu and select another agent. The empty/new composer names the selected agent; 
 message is created until Send. The previous chat and its unsent draft remain in Chats. Repeat
 from a signed-out chat’s Switch Agent action. Open Agent Settings and connect/sign-in
 controls there; the composer and toolbar contain no separate Connect a Model action.
+
+### Direct-touch scroll check (device)
+
+Use a connected computer with a scrollable Xwayland application and a native Wayland
+application; repeat in a window card and on the free desktop. This checks the shared
+input path without application-name rules.
+
+1. In mouse-only content, swipe vertically and horizontally away from the scrollbar.
+   Content scrolls, coasts after lift, and stops on a new touch. No mouse selection or
+   click occurs at lift. Tap a button and a text field: each still activates once.
+2. Hold a text selection or draggable control for half a second, then move. It drags
+   instead of scrolling; lifting releases it once. Small stationary finger jitter must
+   not prevent the hold. A two-finger tap still opens the context menu.
+3. Add a second finger during a held drag, background the app, change its target, or
+   close the window. No pressed button or late click survives; a fresh touch works.
+4. On the desktop, drag a title bar and resize handle immediately; content gestures do
+   not move the window. Repeat with a mouse and Pencil: their direct strokes still drag.
+5. In native-touch content, swipe and pinch: the Linux app still owns those gestures.
+   Check a native context hold and ordinary keyboard focus as well. Laptop trackpad
+   gestures remain one finger to point and two fingers to scroll.

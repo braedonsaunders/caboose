@@ -58,11 +58,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var presentedGeneration: UInt64 = .max
     private var lastPointer = CGPoint.zero
     private var directDrag = DirectPointerDrag()
+    private var holdingDirectDrag = false
     private let pointerClicks = PointerClickDriver()
     private let scrollDriver = ScrollDriver()
     private var scrollUsesDirectTouch = false
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
     private weak var contextTouchGesture: UILongPressGestureRecognizer?
+    private var holdUsesPointerDrag = false
+    private weak var holdWindow: RemoteWindow?
+    private weak var holdSession: (any DisplaySession)?
 
     /// Asks the host app to show or hide the software keyboard. Set it and a tap shows the
     /// keyboard only when it lands on editable text (the app switched to a text cursor) and
@@ -359,9 +363,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         longPress.delegate = self
         addGestureRecognizer(longPress)
 
-        // Mouse-only windows: one finger draws/selects; two fingers navigate.
+        // Mouse-only windows: a finger pans content; hold before moving to drag.
+        // Pencil strokes retain direct drawing/selection.
         let touchDrag = UIPanGestureRecognizer(target: self, action: #selector(handleTouchDrag(_:)))
-        touchDrag.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber]
+        touchDrag.allowedTouchTypes = [UITouch.TouchType.pencil.rawValue as NSNumber]
         touchDrag.maximumNumberOfTouches = 1
         touchDrag.allowedScrollTypesMask = []
         touchDrag.delegate = self
@@ -375,10 +380,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let scroll = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
         scroll.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
         scroll.allowedScrollTypesMask = []
-        scroll.minimumNumberOfTouches = 2
+        scroll.minimumNumberOfTouches = 1
         scroll.maximumNumberOfTouches = 2
         scroll.delegate = self
         addGestureRecognizer(scroll)
+        // Movement fails the stationary hold and immediately releases the pan. Once
+        // the hold wins it owns the contact through lift, so it cannot also scroll.
+        scroll.require(toFail: longPress)
+        tap.require(toFail: longPress)
 
         // Hardware wheel/trackpad events do not have direct finger contacts.
         let wheel = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
@@ -401,7 +410,12 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        gesture === secondaryTouchGesture || gesture === contextTouchGesture || !routesNatively(touch)
+        if gesture === contextTouchGesture {
+            holdUsesPointerDrag = touch.type == .direct && remoteWindow?.acceptsTouch == false
+            holdWindow = remoteWindow
+            holdSession = session
+        }
+        return gesture === secondaryTouchGesture || gesture === contextTouchGesture || !routesNatively(touch)
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -464,12 +478,38 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         return super.resignFirstResponder()
     }
 
-    /// Open at recognition, at the held point; lifting or cancelling cannot issue another click.
+    /// Native touch and Pencil retain context holds. A mouse-only finger hold grabs
+    /// content instead; two-finger tap still opens its context menu.
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began else { return }
-        cancelTouches()
-        stopMomentum()
-        click(at: gesture.location(in: self), button: 3)
+        let point = gesture.location(in: self)
+        switch gesture.state {
+        case .began:
+            guard let window = holdWindow, let session = holdSession,
+                  remoteWindow === window, self.session === session,
+                  isInteractive, self.window != nil, session.state == .ready,
+                  session.windows[window.id] === window else { return }
+            let drag = holdUsesPointerDrag
+            cancelTouches()
+            stopMomentum()
+            if drag {
+                holdingDirectDrag = true
+                focusCheck = nil
+                if let remoteWindow { session?.focus(remoteWindow) }
+                sendDirectDrag(directDrag.begin(at: point, translation: .zero))
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } else {
+                click(at: point, button: 3)
+            }
+        case .changed:
+            if holdingDirectDrag { sendDirectDrag(directDrag.move(to: point)) }
+        case .ended:
+            if holdingDirectDrag { sendDirectDrag(directDrag.end(at: point)) }
+            holdingDirectDrag = false
+        case .cancelled, .failed:
+            if holdingDirectDrag { sendDirectDrag(directDrag.cancel()) }
+            holdingDirectDrag = false
+        default: break
+        }
     }
 
     @objc private func handleTouchDrag(_ gesture: UIPanGestureRecognizer) {
@@ -662,6 +702,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         pointerClicks.cancel()
         stopMomentum()
         sendDirectDrag(directDrag.cancel())
+        holdingDirectDrag = false
         if let window = remoteWindow, let session {
             if !activeTouches.isEmpty {
                 session.touch(activeTouches.values.map { TouchPoint(slot: $0.slot, phase: .cancel, x: Double($0.point.x), y: Double($0.point.y)) },
@@ -691,6 +732,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         switch gesture.state {
         case .began:
             stopMomentum()
+            pointerClicks.cancel()
+            focusCheck = nil
             guard let session, let remoteWindow else { return }
             session.resetScroll()
             move(to: gesture.location(in: self))

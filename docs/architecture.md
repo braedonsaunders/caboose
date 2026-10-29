@@ -2311,17 +2311,20 @@ and restores its dock.
 - **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap or stationary
   half-second hold cancels
   the touch sequence and sends a right-click with a brief amber ring and haptic. Xwayland windows get pointer
-  gestures: a tap clicks, a one-finger drag holds the primary mouse button for drawing,
-  selection or moving, and two fingers scroll with momentum. A two-finger tap or a
-  stationary long press sends a right click (an amber ring blooms where it lands, with a tick). Emulated scrolling uses fractional deltas paced to display refresh, with
+  gestures: a tap clicks and a one-finger swipe scrolls with momentum. Holding for half a
+  second before moving holds the primary mouse button for selection or dragging; lifting
+  releases it. Two fingers can also scroll, and a two-finger tap sends a right click (an
+  amber ring blooms where it lands, with a tick). Pencil strokes and hardware pointers
+  retain direct dragging. The free desktop uses the same finger pan/hold convention for
+  content while title bars and resize handles drag immediately. Emulated scrolling uses fractional deltas paced to display refresh, with
   time-based deceleration shared by window swipes, desktop two-finger scrolling and the
   phone trackpad. A new touch, context action, target change, detach or app backgrounding
   stops client inertia. Native touch leaves fling and gesture interpretation to the Linux app.
   Pointer taps are sent individually, retaining their real timing for double
-  clicks. A stationary half-second hold opens context immediately at the held point;
-  lifting or cancellation cannot send another click. A direct drag starts at the finger's
-  original contact point; cancellation, backgrounding and target changes release its mouse
-  button exactly once. Hardware wheel scrolling keeps its own system momentum.
+  clicks. A stationary half-second hold in native-touch content opens context immediately
+  at the held point; lifting or cancellation cannot send another click. A mouse-only
+  content hold presses once, then moves the pointer until lift. Cancellation, backgrounding
+  and target changes release a held mouse button exactly once. Hardware wheel scrolling keeps its own system momentum.
   A tap shows the keyboard when the app
   answers it with a text cursor or text-input-v3 focus, and hides it otherwise. Dialogs are
   fitted and centred on the phone.
