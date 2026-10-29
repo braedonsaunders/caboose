@@ -13,6 +13,7 @@ struct WindowScreen: View {
     @State private var askingAbout: RemoteWindow?
     @State private var showingApps = false
     @State private var showingOptions = false
+    @State private var cardFit = CardWindowFit()
     /// How far the card has been swiped sideways, and the picture of the app it reveals.
     @State private var swipe: CGFloat = 0
     @State private var neighbour: (id: Int, picture: CGImage?)?
@@ -116,7 +117,8 @@ struct WindowScreen: View {
         }
         .onAppear { fit(window, to: size) }
         .onChange(of: size) { _, size in fit(window, to: size) }
-        .onChange(of: window.id) { _, _ in fit(window, to: size) }
+        .onChange(of: window.id) { _, _ in cardFit = CardWindowFit(); fit(window, to: size) }
+        .onChange(of: window.frame) { _, _ in fit(window, to: size) }
     }
 
     // MARK: Swiping between apps
@@ -309,7 +311,7 @@ struct WindowScreen: View {
         guard model.presentedWindowID == window.id, size.width > 0, size.height > 0, let session = model.session else { return }
         model.windowCardResized(to: size)
         let target = DeviceViewport.guestFrame(size: size, pixelsPerPoint: model.pixelsPerPoint)
-        if window.frame != target {
+        if cardFit.shouldCorrect(frame: window.frame, target: target, now: ProcessInfo.processInfo.systemUptime) {
             var state = ["maximized": false]
             if model.externalDisplayActive && window.isFullscreen { state["fullscreen"] = false }
             session.configure(window, frame: target, state: state)
