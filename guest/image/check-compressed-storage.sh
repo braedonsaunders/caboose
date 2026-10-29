@@ -88,7 +88,7 @@ umount "$work/root"
 # The backup GPT must still be intact after formatting/writing the limited loop.
 sfdisk --verify "$work/base.raw"
 btrfs check --readonly "$loop"
-if ! mount -t btrfs -o ro,nologreplay "$loop" "$work/root"; then
+if ! mount -t btrfs -o ro,rescue=nologreplay "$loop" "$work/root"; then
   dmesg | tail -60 >&2
   exit 1
 fi

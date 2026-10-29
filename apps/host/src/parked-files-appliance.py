@@ -115,7 +115,7 @@ def mount_root(g):
     # A partitioned image must use its root partition; do not fall back to a
     # different volume when that partition has an unsupported filesystem.
     root = '/dev/sda3' if '/dev/sda3' in filesystems else '/dev/sda'
-    options = {'ext4': 'ro,noload', 'btrfs': 'ro,nologreplay'}
+    options = {'ext4': 'ro,noload', 'btrfs': 'ro,rescue=nologreplay'}
     filesystem = filesystems.get(root)
     if filesystem not in options:
         raise ValueError('unsupported root filesystem')

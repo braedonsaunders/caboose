@@ -20,7 +20,7 @@ class Files:
 class MountTests(unittest.TestCase):
     def test_supported_roots_disable_replay(self):
         for root in ('/dev/sda', '/dev/sda3'):
-            for filesystem, options in (('ext4', 'ro,noload'), ('btrfs', 'ro,nologreplay')):
+            for filesystem, options in (('ext4', 'ro,noload'), ('btrfs', 'ro,rescue=nologreplay')):
                 with self.subTest(root=root, filesystem=filesystem):
                     g = Mock()
                     g.list_filesystems.return_value = {root: filesystem, '/dev/sda1': 'vfat'}

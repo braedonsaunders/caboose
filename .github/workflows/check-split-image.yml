@@ -55,7 +55,7 @@ jobs:
           mkdir -p "$root" "$lower"
           cleanup() { sudo umount "$lower" 2>/dev/null || true; sudo umount "$root" 2>/dev/null || true; }
           trap cleanup EXIT
-          sudo mount -t btrfs -o ro,nologreplay,loop,offset=3145728 "$IMAGE_DIR/base.raw" "$root"
+          sudo mount -t btrfs -o ro,rescue=nologreplay,loop,offset=3145728 "$IMAGE_DIR/base.raw" "$root"
           sudo mount -t erofs -o ro,loop "$IMAGE_DIR/system.erofs" "$lower"
           sudo test -f "$root/etc/caboose-split-system"
           test -z "$(sudo find "$root/usr" "$root/opt" -mindepth 1 -print -quit)"
