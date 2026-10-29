@@ -125,7 +125,8 @@ computer in `error` with the reason in `lastError`, and the next wake retries it
 ### Guest components
 
 Caboose's own guest plumbing (the file and terminal services, the notification monitor and
-endpoints, phone handoff and the agent runner) is a bundle listed in `guest/components/manifest.json` and installed by
+endpoints, phone handoff, `caboose-game-run` with the game bundles Caboose ships in
+`/usr/local/share/caboose/games`, and the agent runner) is a bundle listed in `guest/components/manifest.json` and installed by
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
 
@@ -376,7 +377,7 @@ messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 ### Catalog
 
 The Library is every application a computer can add: Caboose's curated entries
-(`guest/catalog/catalog.json`: Craft releases and Debian applications) and Flathub's desktop
+(`guest/catalog/catalog.json`: Craft releases, Debian applications and games) and Flathub's desktop
 applications. A Flathub application that is also a curated entry (`flathub` in `catalog.json`)
 is shown once, as the curated entry. Every operation is on one application.
 
@@ -404,11 +405,17 @@ is shown once, as the curated entry. Every operation is on one application.
 - **Debian applications** install from Debian 13's signed repositories. Debian applications the
   Library discovered through AppStream before it offered Flathub stay listed, updatable and
   removable: their package and AppStream identity are kept in their operation record.
+- **Games** (`source.kind: "game"`, [game-handoff.md](game-handoff.md#catalog-games)) pin a
+  WebAssembly build archive and, per architecture (`x86_64`, `aarch64`), optional native builds
+  by GitHub release URL, byte count and SHA-256, and name a bundle Caboose ships. Every
+  computer is offered every game; the host sends the guest the archive and only its own
+  architecture's native build, and the listing's `source.size` is their total.
 
 **Updates.** Installed applications update themselves. Once a day while a computer runs (never
 waking one), the host first updates the shared runtimes, then asks the guest which Flathub apps
 have a newer commit and which curated Debian packages APT can upgrade, compares each Craft app's
-installed version with its latest release, and runs an ordinary `update` operation for each.
+installed version with its latest release and each game's with the version its pin names
+(`latestVersion`), and runs an ordinary `update` operation for each.
 `updateAvailable` reports what the last check found and `update` installs it at once.
 
 The host runs the installer (`guest-catalog.py`) as root through the guest channel on both
@@ -416,7 +423,16 @@ runtimes. A Craft release downloads directly from the guest and is size- and SHA
 before APT installs it with `mesa-vulkan-drivers` and `libgl1-mesa-dri`; the `.deb` is deleted
 once installed. A Flathub app installs into the computer's system Flatpak installation through
 libflatpak, from the Flathub remote whose repository file (with its signing key) ships in
-`guest/flatpak`. Installed versions come from dpkg and Flatpak; failures and interrupted
+`guest/flatpak`. A game downloads directly from the guest and is size- and SHA-256-checked;
+then, as `caboose`, the archive is unpacked into a staging directory beside
+`~/.local/share/caboose/games/<id>`, the shipped bundle and the native build (at the program
+the manifest's `native_fallback` names) are added, and the directory is swapped in with one
+atomic rename, so an update replaces it whole. As root the installer then writes
+`/usr/local/share/applications/<desktopId>` (`Exec=caboose-game-run <dir>`, with the installed
+version in `X-Caboose-Catalog-Version`) and the hicolor icon, and deletes the downloads. Root
+never writes below the owner's home. Removal deletes the desktop entry, the directory and the
+icon and keeps the save paths; game operations run neither APT nor dpkg. Installed versions
+come from dpkg, Flatpak and a game's desktop entry; failures and interrupted
 operations are recorded in the guest and reported on the next listing. A guest operation lock,
 retained by package-manager children, distinguishes active work from an interrupted worker. A
 retry of failed or interrupted Debian work completes pending dpkg configuration before trying

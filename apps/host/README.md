@@ -433,8 +433,10 @@ runtime into the computer.
 Install, update and removal are asynchronous; watch `catalog.progress` and `catalog.changed` on
 `/v1/control`. Installed applications update once a day while their computer runs. The guest
 downloads and verifies Craft releases against their published SHA-256 before APT runs, Debian
-packages come from the signed Debian 13 repositories, and Flathub apps install through
-libflatpak. Progress percentages describe measured download bytes only; verification, package
+packages come from the signed Debian 13 repositories, Flathub apps install through
+libflatpak, and catalog games are checked against their pins and unpacked as `caboose` into
+`~/.local/share/caboose/games` ([docs/game-handoff.md](../../docs/game-handoff.md#catalog-games)).
+Progress percentages describe measured download bytes only; verification, package
 installation and triggers show indeterminate stages. One catalog operation runs at a time.
 Listings distinguish a lock-held active operation from an interrupted worker; the host observes
 surviving work and holds its lease until it ends. Retry completes pending dpkg configuration
@@ -480,7 +482,7 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | --- | --- |
 | `CABOOSE_OWNER_TOKEN=… apps/host/scripts/e2e.sh` | Wakes the computer (cold only without a snapshot), says an authenticated hello to the owner's display and the agent seat through the relay with `scripts/display-client.mjs` and requires an encoder it decodes, checks the app list has PNG icons and the core apps, launches the Xfce terminal, parks, resumes, says hello again, checks `/v1/health` has no desk error, and parks. |
 | `node apps/host/scripts/check-lineup.mjs` | Opens Mousepad, btop and OpenCode and requires a new window for each on the owner's display. Leaves them open and does not park. |
-| `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft if needed, launches it and requires a new window. Close any PhotoCraft window first. |
+| `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft (or the catalog app `CABOOSE_CATALOG_APP` names, such as `powder-toy`) if needed, launches it and requires a new window with its name and a PNG icon in the app list. Close the app's windows first. |
 | `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |
 | `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk. Hosts with accounts also get a throwaway tenant, removed after the computer even when the check fails. Older hosts without tenants remain supported. It creates no accounts; the owner's computer is only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
 | `node apps/host/scripts/check-accounts.mjs` | Accounts and tenants: the setup state and the owner token's view, then a throwaway tenant with a memory quota, a computer within it made and one beyond it refused, a resize past it refused, and both deleted. It makes no accounts and verifies that setup requires its code even on loopback. |

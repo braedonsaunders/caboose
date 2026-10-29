@@ -3,12 +3,15 @@
   "title": "Caboose application catalog",
   "type": "object",
   "required": ["apps"],
+  "$defs": {
+    "asset": { "type": "object", "required": ["url", "sha256", "size"], "properties": { "url": {"type":"string"}, "sha256": {"type":"string"}, "size": {"type":"integer","minimum":1} } }
+  },
   "properties": {
     "apps": { "type": "array", "items": { "type": "object", "required": ["id", "name", "summary", "category", "icon", "desktopId", "fileTypes", "source"], "properties": {
       "id": {"type":"string"}, "name": {"type":"string"}, "summary": {"type":"string"}, "category": {"type":"string"},
       "icon":{"type":"string"}, "desktopId":{"type":"string"}, "cli":{"type":"string"}, "mcp":{"type":"string"}, "flathub":{"type":"string"},
       "fileTypes":{"type":"object", "required":["extensions","utTypes"], "properties":{"extensions":{"type":"array", "items":{"type":"string"}}, "utTypes":{"type":"array", "items":{"type":"string"}}}},
-      "source":{"oneOf":[{"type":"object", "required":["kind","package"], "properties":{"kind":{"const":"release"},"package":{"type":"string"}}},{"type":"object", "required":["kind","packages"],"properties":{"kind":{"const":"apt"},"packages":{"type":"array","minItems":1,"items":{"type":"string"}}}}]}
+      "source":{"oneOf":[{"type":"object", "required":["kind","package"], "properties":{"kind":{"const":"release"},"package":{"type":"string"}}},{"type":"object", "required":["kind","packages"],"properties":{"kind":{"const":"apt"},"packages":{"type":"array","minItems":1,"items":{"type":"string"}}}},{"type":"object", "required":["kind","bundle","version","url","sha256","size"], "properties":{"kind":{"const":"game"},"bundle":{"type":"string"},"version":{"type":"string"},"url":{"type":"string"},"sha256":{"type":"string"},"size":{"type":"integer","minimum":1},"native":{"type":"object", "properties":{"x86_64":{"$ref":"#/$defs/asset"},"aarch64":{"$ref":"#/$defs/asset"}}, "additionalProperties":false}}}]}
     } } }
   }
 }

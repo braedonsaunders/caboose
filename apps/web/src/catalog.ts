@@ -15,8 +15,9 @@ export interface CatalogProgress {
 }
 
 export interface CatalogSource {
-  kind: 'apt' | 'release' | 'flatpak'
-  /** Download bytes, when known. */
+  /** Debian packages, a Craft release, a pinned game or a Flathub app. */
+  kind: 'apt' | 'release' | 'game' | 'flatpak'
+  /** Download bytes, when known; a game's are its web build and this computer's native build. */
   size?: number
 }
 

@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
+import { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 
 const roots: string[] = []
@@ -131,3 +132,109 @@ it('recognizes a running worker that holds only the shared catalog lock', async 
   } finally { f.release('release-lock'); await done }
   expect(f.list()).toMatchObject({ active: false, interrupted: true, progress: { phase: 'failed' } })
 }, 15000)
+
+it('installs a game as the owner, swaps an update in whole, keeps no download and keeps saves on removal', () => {
+  const root = mkdtempSync(join(tmpdir(), 'caboose-catalog-game-')); roots.push(root)
+  const bin = join(root, 'bin'), files = join(root, 'files'), home = join(root, 'home'), shipped = join(root, 'shipped')
+  const applications = join(root, 'applications'), icons = join(root, 'icons'), state = join(root, 'state')
+  for (const dir of [bin, files, home, shipped, applications, icons]) mkdirSync(dir)
+  const put = (name: string, body: string) => writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+  put('curl', 'while [ "$1" != "--output" ]; do shift; done; cp "$TEST_FILES/${3##*/}" "$2"')
+  put('dpkg', 'echo "dpkg must not run for a game" >&2; exit 1')
+  put('apt-get', 'echo "apt-get must not run for a game" >&2; exit 1')
+  // runuser -u caboose -- COMMAND...: the owner is the test's own user here.
+  put('runuser', 'shift 3; exec "$@"')
+  cpSync(fileURLToPath(new URL('../../../guest/game/games/powder-toy', import.meta.url)), join(shipped, 'powder-toy'), { recursive: true })
+  const script = readFileSync(new URL('./guest-catalog.py', import.meta.url), 'utf8')
+    .replace("Path('/var/lib/caboose/catalog')", `Path(${JSON.stringify(state)})`)
+    .replace("Path('/usr/local/share/caboose/games')", `Path(${JSON.stringify(shipped)})`)
+    .replace("Path('/usr/local/share/applications')", `Path(${JSON.stringify(applications)})`)
+    .replace("Path('/usr/local/share/icons/hicolor')", `Path(${JSON.stringify(icons)})`)
+    .replace("pwd.getpwnam('caboose').pw_dir", JSON.stringify(home))
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, TEST_FILES: files, COPYFILE_DISABLE: '1' }
+  const asset = (name: string, contents: Buffer) => {
+    writeFileSync(join(files, name), contents)
+    return { url: `https://github.com/The-Powder-Toy/The-Powder-Toy/releases/download/v1/${name}`, size: contents.length, sha256: createHash('sha256').update(contents).digest('hex') }
+  }
+  const archive = (version: string, extra: string) => {
+    const dir = mkdtempSync(join(root, 'web-'))
+    writeFileSync(join(dir, 'powder.js'), `// ${version}`)
+    writeFileSync(join(dir, extra), extra)
+    const tar = join(root, `powder-${version}.tar`)
+    expect(spawnSync('tar', ['-cf', tar, '-C', dir, 'powder.js', extra], { env }).status).toBe(0)
+    return asset(`powder-${version}.tar`, readFileSync(tar))
+  }
+  // What the host sends: the archive and this architecture's native build (app-catalog.ts, gameFor).
+  const source = (version: string, extra: string) => ({ kind: 'game', bundle: 'powder-toy', version, ...archive(version, extra), native: asset(`powder-${version}-x86_64`, Buffer.from(`#!/bin/sh\n# ${version}\n`)) })
+  const app = (src: unknown) => ({ id: 'powder-toy', name: 'The Powder Toy', summary: 'Physics sandbox', icon: 'uk.co.powdertoy.tpt', desktopId: 'uk.co.powdertoy.tpt.desktop', source: src })
+  const execute = (action: string, src: unknown) => spawnSync('/usr/bin/python3', ['-c', script, action, JSON.stringify(app(src))], { env, encoding: 'utf8' })
+  const list = (src: unknown) => JSON.parse(spawnSync('/usr/bin/python3', ['-c', script, 'list', JSON.stringify([app(src)])], { env, encoding: 'utf8' }).stdout).apps['powder-toy']
+  const game = join(home, '.local/share/caboose/games/powder-toy')
+  const desktop = join(applications, 'uk.co.powdertoy.tpt.desktop')
+  const saves = join(home, '.local/share/The Powder Toy')
+  mkdirSync(saves, { recursive: true }); writeFileSync(join(saves, 'powder.pref'), '{}')
+  const downloads = () => readdirSync(state).filter(name => !/\.(json|lock)$/.test(name))
+
+  const first = source('1.0.0', 'first.txt')
+  expect(list(first).installedVersion).toBeNull()
+  const installed = execute('install', first)
+  expect(installed.stderr).toBe('')
+  expect(installed.status).toBe(0)
+  expect(readFileSync(join(game, 'web/powder.js'), 'utf8')).toBe('// 1.0.0')
+  expect(existsSync(join(game, 'web/first.txt'))).toBe(true)
+  expect(readFileSync(join(game, 'web/index.html'), 'utf8')).toContain('create_powder')
+  expect(JSON.parse(readFileSync(join(game, 'caboose-game.json'), 'utf8'))).toMatchObject({ app_id: 'uk.co.powdertoy.tpt', root: 'web' })
+  expect(readFileSync(join(game, 'native/powder'), 'utf8')).toContain('# 1.0.0')
+  expect(statSync(join(game, 'native/powder')).mode & 0o777).toBe(0o755)
+  const entry = readFileSync(desktop, 'utf8')
+  expect(entry).toContain(`\nExec=/usr/local/bin/caboose-game-run ${game}\n`)
+  expect(entry).toContain('\nIcon=uk.co.powdertoy.tpt\n')
+  expect(entry).toContain('\nX-Caboose-Catalog-Version=1.0.0\n')
+  expect(readFileSync(join(icons, '128x128/apps/uk.co.powdertoy.tpt.png'))).toEqual(readFileSync(join(shipped, 'powder-toy/icon.png')))
+  expect(downloads()).toEqual([])
+  // The launcher accepts what was installed, and announces the served directory.
+  const hello = spawnSync('python3', ['-I', '-c', [
+    'import importlib.machinery, importlib.util, json, sys',
+    "loader = importlib.machinery.SourceFileLoader('run', sys.argv[1])",
+    'run = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(run)',
+    'game = run.Game(sys.argv[2], sys.argv[3])',
+    'print(json.dumps([game.hello, game.native_command()]))'].join('\n'),
+  fileURLToPath(new URL('../../../guest/game/caboose-game-run', import.meta.url)), game, home], { encoding: 'utf8' })
+  expect(hello.stderr).toBe('')
+  expect(JSON.parse(hello.stdout)).toEqual([
+    { version: 1, title: 'The Powder Toy', app_id: 'uk.co.powdertoy.tpt', root: '.local/share/caboose/games/powder-toy/web', entry: 'index.html', saves: [{ mount: '/powder', path: '.local/share/The Powder Toy' }] },
+    [join(game, 'native/powder'), 'ddir', saves],
+  ])
+  expect(list(first)).toMatchObject({ installedVersion: '1.0.0', lastError: null, progress: { phase: 'finished' } })
+
+  const second = source('2.0.0', 'second.txt')
+  const tampered = execute('update', { ...second, sha256: 'f'.repeat(64) })
+  expect(tampered.status).not.toBe(0)
+  expect(tampered.stderr).toContain('does not match the catalog')
+  expect(readFileSync(join(game, 'web/powder.js'), 'utf8')).toBe('// 1.0.0')
+  expect(list(second)).toMatchObject({ installedVersion: '1.0.0', interrupted: false, progress: { phase: 'failed' } })
+  expect(downloads()).toEqual([])
+  // A failed game install is retried whole; there is no dpkg setup to complete.
+  expect(execute('update', second).status).toBe(0)
+  expect(readFileSync(join(game, 'web/powder.js'), 'utf8')).toBe('// 2.0.0')
+  expect(existsSync(join(game, 'web/first.txt'))).toBe(false)
+  expect(readFileSync(join(game, 'native/powder'), 'utf8')).toContain('# 2.0.0')
+  expect(list(second)).toMatchObject({ installedVersion: '2.0.0', lastError: null })
+  expect(readdirSync(join(home, '.local/share/caboose/games'))).toEqual(['powder-toy'])
+  expect(downloads()).toEqual([])
+
+  // Without a native build for the computer, the game is installed to be played on a device.
+  const { native: _native, ...webOnly } = source('3.0.0', 'third.txt')
+  expect(execute('update', webOnly).status).toBe(0)
+  expect(existsSync(join(game, 'native/powder'))).toBe(false)
+  expect(list(webOnly).installedVersion).toBe('3.0.0')
+
+  expect(execute('remove', webOnly).status).toBe(0)
+  expect(existsSync(game)).toBe(false)
+  expect(existsSync(desktop)).toBe(false)
+  expect(existsSync(join(icons, '128x128/apps/uk.co.powdertoy.tpt.png'))).toBe(false)
+  expect(readFileSync(join(saves, 'powder.pref'), 'utf8')).toBe('{}')
+  expect(readdirSync(join(home, '.local/share/caboose/games'))).toEqual([])
+  expect(list(webOnly).installedVersion).toBeNull()
+  expect(execute('rollback', webOnly).stderr).toContain('Unknown operation')
+})

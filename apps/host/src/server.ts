@@ -12,6 +12,7 @@ import { NOT_FOUND, json, noContent, readJson } from './http.js'
 import { parseAppLaunch, type AppAction } from './guest-apps.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
+import type { Architecture } from './app-catalog-data.js'
 import type { FlathubIndex } from './flathub.js'
 import type { CraftReleases } from './releases.js'
 import type { RuntimeDepot } from './depot.js'
@@ -105,7 +106,7 @@ function withAdmission(controller: Controller, admit: () => Promise<void>): Cont
 }
 
 /** The Library's host-wide parts, shared by every computer. */
-export interface Library { flathub?: FlathubIndex; releases?: CraftReleases; depot?: RuntimeDepot }
+export interface Library { flathub?: FlathubIndex; releases?: CraftReleases; depot?: RuntimeDepot; arch?: Architecture }
 
 function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; admit?: Admission; library?: Library }) {
   const { settings, push, activities } = pieces

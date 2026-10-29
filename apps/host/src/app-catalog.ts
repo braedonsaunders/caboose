@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentUnavailableError, type AgentGuest } from './agents.js'
-import { loadCatalog, type CatalogData, type CatalogEntry } from './app-catalog-data.js'
+import { loadCatalog, type Architecture, type CatalogData, type CatalogEntry, type GameSource } from './app-catalog-data.js'
 import { APP_ID, CATEGORIES, type FlathubApp, type FlathubIndex } from './flathub.js'
 import type { CraftReleases } from './releases.js'
 import type { RuntimeDepot } from './depot.js'
@@ -79,6 +79,13 @@ export function flathubEntry(app: FlathubApp): Entry {
 
 function words(value: string): string[] { return value.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean) }
 
+/** What the guest installs for a game on this architecture: its archive and, if pinned, this architecture's native build only. */
+export function gameFor(source: GameSource, arch: Architecture) {
+  const { native, ...game } = source
+  const build = native?.[arch]
+  return { ...game, ...(build ? { native: build } : {}) }
+}
+
 export interface CatalogOptions {
   data?: CatalogData
   flathub?: FlathubIndex
@@ -86,6 +93,8 @@ export interface CatalogOptions {
   depot?: RuntimeDepot
   /** This computer, as the depot records which runtimes each computer uses. */
   computer?: string
+  /** The computer's architecture, which picks a game's native build; the host's own by default. */
+  arch?: Architecture
   now?: () => number
 }
 
@@ -103,6 +112,7 @@ export class AppCatalog {
   private readonly releases: CraftReleases | undefined
   private readonly depot: RuntimeDepot | undefined
   private readonly computer: string
+  private readonly arch: Architecture
   private readonly now: () => number
   private states: Record<string, State> = {}
   private progress = new Map<string, Progress>()
@@ -126,6 +136,7 @@ export class AppCatalog {
     this.releases = settings.releases
     this.depot = settings.depot
     this.computer = settings.computer ?? 'owner'
+    this.arch = settings.arch ?? (process.arch === 'arm64' ? 'aarch64' : 'x86_64')
     this.now = settings.now ?? Date.now
   }
   get busy(): boolean { return this.working || this.observing || Object.values(this.states).some(state => state.active) }
@@ -201,12 +212,15 @@ export class AppCatalog {
   private async view(app: Entry) {
     const { operationId: _operationId, ...state } = this.states[app.id] ?? EMPTY
     const release = app.source.kind === 'release' ? this.releases?.known(app.id) ?? null : null
+    const game = app.source.kind === 'game' ? gameFor(app.source, this.arch) : null
+    const latestVersion = release?.version ?? game?.version ?? null
     const installedVersion = state.installedVersion
     const iconData = app.origin === 'flathub' && app.source.kind === 'flatpak' ? await this.flathub?.icon(app.source.appId) ?? null : catalogIcon(app.id)
     const { icon: _icon, flathub: _alias, ...entry } = app
-    const source = app.source.kind === 'flatpak' ? { kind: 'flatpak' as const } : app.source.kind === 'release' ? { kind: 'release' as const, ...(release ? { size: release.size } : {}) } : app.source
-    return { ...entry, source, ...state, iconData, latestVersion: release?.version ?? null, unavailable: this.unavailable(app),
-      updateAvailable: release && installedVersion ? newer(release.version, installedVersion) : !!installedVersion && this.updates.has(app.id),
+    const source = app.source.kind === 'flatpak' ? { kind: 'flatpak' as const } : app.source.kind === 'release' ? { kind: 'release' as const, ...(release ? { size: release.size } : {}) }
+      : game ? { kind: 'game' as const, size: game.size + (game.native?.size ?? 0) } : app.source
+    return { ...entry, source, ...state, iconData, latestVersion, unavailable: this.unavailable(app),
+      updateAvailable: latestVersion && installedVersion ? newer(latestVersion, installedVersion) : !!installedVersion && this.updates.has(app.id),
       progress: state.active ? state.progress : this.progress.get(app.id) ?? state.progress }
   }
   /** Why this app cannot be installed here, or null. Only Flatpak apps depend on the computer. */
@@ -224,7 +238,7 @@ export class AppCatalog {
   }
   private async observeGuest(): Promise<void> {
     const tracked = [...this.curated, ...this.store.values()]
-    const raw = object(JSON.parse(await this.invoke('list', tracked.map(({ id, source }) => ({ id, source })))))
+    const raw = object(JSON.parse(await this.invoke('list', tracked.map(({ id, source, desktopId }) => ({ id, source, desktopId })))))
     const apps = object(raw.apps), environment = object(raw.environment)
     this.environment = { flatpak: environment.flatpak === true, sandbox: environment.sandbox === true, depot: environment.depot === true }
     const states: Record<string, State> = {}
@@ -280,6 +294,7 @@ export class AppCatalog {
       }
       return { ...app, source: { kind: 'flatpak', appId: app.source.appId, runtime } }
     }
+    if (app.source.kind === 'game' && action !== 'remove') return { ...app, source: gameFor(app.source, this.arch) }
     return { ...app }
   }
   private startMany(apps: Entry[], action: Operation): void {
@@ -335,7 +350,7 @@ export class AppCatalog {
   }
   /**
    * Once a day while the computer runs: shared runtimes first, then every installed app with
-   * a newer release, Flathub commit or Debian package. Never wakes the computer.
+   * a newer release, Flathub commit, Debian package or pinned game. Never wakes the computer.
    */
   async autoUpdate(): Promise<void> {
     if (this.busy || !this.guest() || this.now() - this.updatedAt < UPDATE_MS) return
@@ -357,6 +372,9 @@ export class AppCatalog {
         if (app.source.kind === 'release') {
           const latest = await this.releases?.latest(app.id, true).catch(() => null)
           if (latest && version && newer(latest.version, version)) due.push(app)
+        } else if (app.source.kind === 'game') {
+          // A game updates when the host's catalog pins a newer version than the one installed.
+          if (version && newer(app.source.version, version)) due.push(app)
         } else if (flatpak.has(app.id) || apt.has(app.id)) due.push(app)
       }
       this.updates = new Set(due.map(app => app.id))
