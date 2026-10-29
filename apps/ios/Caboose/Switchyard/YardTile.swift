@@ -32,7 +32,8 @@ struct YardTile: View {
         .frame(width: rect.width, height: rect.height)
         .background(Color(white: 0.06))
         .clipShape(shape)
-        .containerShape(shape)
+        // Keep the system container inherited by both the concentric clip and the
+        // title bar's corner-inset reader; a tile does not redefine screen geometry.
         // The bevel: light along the top edge, a little shade along the bottom, as glass has.
         .overlay {
             shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.3), .white.opacity(0.07), .black.opacity(0.28)],
