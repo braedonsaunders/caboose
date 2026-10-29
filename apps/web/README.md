@@ -136,3 +136,9 @@ remain on the host.
 
 Computer creation and settings offer host-provided sizes alongside custom CPU and memory.
 GPU access uses the host GPU and is shared; availability reflects host configuration.
+
+### Capacity and usage
+
+The `Capacity` view uses AppKit dashboard primitives and reads an authorized host
+or tenant snapshot every thirty seconds while visible. It acquires no computer
+leases. See [capacity and usage](../../docs/capacity.md) for metric semantics and tests.
