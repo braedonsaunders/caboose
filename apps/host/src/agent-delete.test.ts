@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { DELETE_TASK } from './agents.js'
+import { DELETE_TASK, START_SCRIPT } from './agents.js'
 
 const exec = promisify(execFile)
 const roots: string[] = []
@@ -39,6 +39,13 @@ describe('durable chat history deletion', () => {
     expect(await readdir(join(s.root, `.deleted-${s.id}`))).toEqual([])
     await s.remove()
     expect(await readFile(join(s.dir, 'attachments', 'input.txt'), 'utf8')).toBe('user input')
+  })
+
+  it('prevents a deleted stable task ID from being admitted again', async () => {
+    const s = await fixture()
+    await s.remove()
+    await expect(exec('/bin/sh', ['-c', START_SCRIPT, 'sh', s.dir, 'prompt', 'agent', 'Agent', 'auto', '{}', '{}', '{}', '', '', join(s.root, 'staging')])).rejects.toThrow('task was deleted')
+    expect(await readdir(s.dir)).toEqual([])
   })
 
   it('rejects a task directory symlink without touching its target', async () => {

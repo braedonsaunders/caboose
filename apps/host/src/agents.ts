@@ -179,8 +179,8 @@ for(const signal of ['SIGTERM','SIGCONT'])try{process.kill(-pid,signal)}catch(e)
 for(let i=0;i<50&&members(pid).length;i++)await new Promise(r=>setTimeout(r,100));
 if(members(pid).length)throw Error('The agent is still stopping; try again');
 }}
-fs.mkdirSync(gone,{recursive:true});const fd=fs.openSync(p.dirname(d),'r');try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}
 }
+fs.mkdirSync(gone,{recursive:true});const fd=fs.openSync(p.dirname(d),'r');try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}
 if(exists(gone)&&exists(d)){
 if(!exists(gone).isDirectory()||exists(gone).isSymbolicLink())throw Error('Invalid deleted chat directory');
 for(const name of ['prompt.txt','task.json','transcript.jsonl','draft.json','delivery.json','initial-prompt.json','session','models.json','requested-model.json','agent.log','stderr.log','pid','exit-code','agent','agent-name','approval-mode','turns','profile-id','profile-instructions.txt','tool-turn','tool-mailbox','inbox','approvals','receipts','deliveries'])fs.rmSync(p.join(d,name),{recursive:true,force:true});
@@ -884,13 +884,14 @@ export class AgentTasks {
     if (input.optionId !== undefined && (typeof input.optionId !== 'string' || !input.optionId || input.optionId.length > 200)) {
       throw new AgentInputError('optionId must be one of the request\'s option ids')
     }
-    if (!isLive(entry.task.status)) return false
-    const guest = this.guest()
-    if (!guest) throw new AgentUnavailableError()
-    const decision = JSON.stringify({
-      allow: input.allow,
-      ...(typeof input.message === 'string' && input.message.trim() ? { message: input.message.trim() } : {}),
-      ...(typeof input.optionId === 'string' ? { optionId: input.optionId } : {}),
+    return this.serial(entry, async () => {
+      if (!isLive(entry.task.status)) return false
+      const guest = this.guest()
+      if (!guest) throw new AgentUnavailableError()
+      const decision = JSON.stringify({
+        allow: input.allow,
+        ...(typeof input.message === 'string' && input.message.trim() ? { message: input.message.trim() } : {}),
+        ...(typeof input.optionId === 'string' ? { optionId: input.optionId } : {}),
     })
     const out = await asCaboose(guest, [
       'cd "$1/approvals" 2>/dev/null || exit 0',
@@ -902,6 +903,7 @@ export class AgentTasks {
     if (out.trim() !== 'resolved') return false
     this.emit({ type: 'agent.task.approval.resolved', id, requestId, allow: input.allow })
     return true
+    })
   }
 
   /**
@@ -937,6 +939,7 @@ export class AgentTasks {
   /** Removes this computer's history; a live chat requires explicit stop-and-delete. */
   async delete(id: string, stop = false): Promise<boolean> {
     if (!TASK_ID.test(id)) throw new AgentNotFoundError()
+    await this.startChain.catch(() => {})
     await this.restore()
     const entry = this.tracked.get(id)
     const remove = async () => {
@@ -982,10 +985,13 @@ export class AgentTasks {
     const entry = this.tracked.get(id)
     const guest = this.guest()
     if (!entry || !TASK_ID.test(id) || !guest || entry.task.status !== (paused ? 'running' : 'paused')) return false
-    await guest.run('/bin/sh', ['-c', signal(paused ? 'STOP' : 'CONT'), 'sh', `${HOME}/Agents/${id}`], 15_000)
-    entry.task.status = paused ? 'paused' : 'running'
-    this.emit({ type: paused ? 'agent.task.paused' : 'agent.task.resumed', id })
-    return true
+    return this.serial(entry, async () => {
+      if (entry.task.status !== (paused ? 'running' : 'paused')) return false
+      await guest.run('/bin/sh', ['-c', signal(paused ? 'STOP' : 'CONT'), 'sh', `${HOME}/Agents/${id}`], 15_000)
+      entry.task.status = paused ? 'paused' : 'running'
+      this.emit({ type: paused ? 'agent.task.paused' : 'agent.task.resumed', id })
+      return true
+    })
   }
 
   private async prepareSeat(guest: AgentGuest): Promise<void> {
