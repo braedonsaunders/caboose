@@ -19,6 +19,7 @@ export class ParkedAppliance {
     })
     this.child.stdout.setEncoding('utf8')
     this.child.stdout.on('data', (chunk: string) => this.receive(chunk))
+    this.child.stdin.on('error', error => this.fail(error))
     // Guest errors may contain names/content. Drain without logging it.
     this.child.stderr.resume()
     this.child.once('error', error => this.fail(error))

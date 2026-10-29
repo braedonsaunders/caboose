@@ -142,3 +142,20 @@ process.stdin.resume();
     expect(() => process.kill(pid, 0)).toThrow()
   } finally { clearTimeout(timer); app.closeAllConnections(); await new Promise<void>(resolve => app.close(() => resolve())); await rm(root, { recursive: true, force: true }) }
 })
+
+it('falls back without an unhandled stream error when an appliance closes its request pipe', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'parked-reader-pipe-'))
+  const fake = join(root, 'timeout')
+  await writeFile(fake, `#!${process.execPath}
+require('node:fs').closeSync(0);
+process.stdout.write('{"ready":true}\\n');
+setInterval(() => {}, 1000);
+`)
+  await chmod(fake, 0o755)
+  process.env.PATH = root + ':' + originalPath
+  const app = createServer((req, res) => { void serveParkedFiles({ id: 'id', homeDevice: 123, directory: root, image: '/disk' }, req, res).then(served => { if (!served) { res.writeHead(409); res.end('wake') } }) })
+  app.listen(0, '127.0.0.1'); await once(app, 'listening')
+  try {
+    expect((await fetch(`http://127.0.0.1:${(app.address() as AddressInfo).port}/v1/fs/stat?path=note.txt`)).status).toBe(409)
+  } finally { app.closeAllConnections(); await new Promise<void>(resolve => app.close(() => resolve())); await rm(root, { recursive: true, force: true }) }
+})
