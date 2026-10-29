@@ -235,7 +235,6 @@ each image pulls anonymously before it attaches the bundles.
 Invalid values stop the host at startup. `GET /v1/host` reports the version, runtime, GPU,
 image and the non-secret settings the host started with.
 
-The owner's computer's name, memory, CPUs, idle timeout and default agent are saved in
 Run `pnpm --filter caboose-host exec tsx scripts/check-snapshot-tier.mts` on a
 Linux host with the tier and storage variables set to check an encrypted
 upload, restore and object cleanup using a disposable snapshot. The check
@@ -255,6 +254,7 @@ space for the restored snapshot. Failed object deletion is retried using local
 cleanup receipts, including receipts for deleted computers. An image root is local to one host; receipts from a different hostname are retained for operator review. A source file left by a crashed copy-on-write VM must be kept
 until an operator has confirmed no VMM maps it.
 
+The owner's computer's name, memory, CPUs, idle timeout and default agent are saved in
 `caboose.json` under `CABOOSE_IMAGE_ROOT` (atomic rename, mode 0600); saved values override
 the environment. Invalid or unreadable settings stop startup rather than reverting. Back the
 file up with the disks and do not edit it while the host runs. Its push devices
