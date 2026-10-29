@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -44,7 +44,7 @@ describe('runtime depot', () => {
     expect(await depot.status()).toEqual({ enabled: true, runtimes: [GNOME, KDE], bytes: 2000 })
     await expect(depot.ensure('../../etc')).rejects.toThrow('Invalid runtime')
   })
-  it('keeps the runtimes any computer used within 30 days and forgets deleted computers', async () => {
+  it('keeps runtimes used by long-parked computers and forgets deleted computers', async () => {
     let now = 1_000_000_000_000
     const r = runner(), path = file(), depot = new RuntimeDepot(r.run, path, () => now)
     const both = Promise.all([depot.ensure(GNOME), depot.ensure(KDE)])
@@ -54,12 +54,21 @@ describe('runtime depot', () => {
     now += 31 * 86400_000
     await depot.note('owner', [GNOME])
     await depot.maintain()
-    expect(r.runs.slice(-2)).toEqual([['update'], ['collect', JSON.stringify([GNOME])]])
-    expect(depot.has(KDE)).toBe(false)
+    expect(r.runs.slice(-2)).toEqual([['update'], ['collect', JSON.stringify([GNOME, KDE])]])
+    expect(depot.has(KDE)).toBe(true)
     await depot.forget('owner')
     expect(JSON.parse(readFileSync(path, 'utf8')).usage).toEqual({ alex: { [KDE]: now - 31 * 86400_000 } })
     await depot.maintain()
     expect(r.runs.filter(run => run[0] === 'update')).toHaveLength(1)
+  })
+  it('does not collect or overwrite an unreadable usage record', async () => {
+    const path = file(), r = runner()
+    writeFileSync(path, '{broken')
+    const depot = new RuntimeDepot(r.run, path)
+    await expect(depot.maintain(true)).rejects.toThrow()
+    await expect(depot.note('owner', [GNOME])).rejects.toThrow()
+    expect(r.runs).toEqual([])
+    expect(readFileSync(path, 'utf8')).toBe('{broken')
   })
   it('refuses work without a builder', async () => {
     const depot = new RuntimeDepot(null, file())

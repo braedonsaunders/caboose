@@ -482,9 +482,10 @@ downloads each runtime once, for every computer: none is installed ahead of an a
   `depot-builder.py`. No computer can modify a runtime another computer runs. Builds are
   serialized; a second request for the same runtime waits for the first.
 - **Daily maintenance.** The builder updates every runtime. A superseded runtime's deployed
-  files stay for 14 days for apps that started on it and still run. A runtime no computer has
-  reported using for 30 days is removed; a computer whose apps still need it after a long sleep
-  gets it back on its next listing, before an app needs it.
+  files stay for 14 days for apps that started on it and still run. A runtime remains while any
+  computer's last reported app list needs it, including while that computer is parked. A runtime
+  no computer reports using is removed. An unreadable depot record stops maintenance rather than
+  collecting against an empty usage list.
 - **Without the depot** (a microVM host, or a container created before the depot existed), an
   app's runtime installs into the computer itself.
 

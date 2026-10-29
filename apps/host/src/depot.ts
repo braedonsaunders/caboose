@@ -12,8 +12,6 @@ export interface DepotProgress { message: string; downloadedBytes?: number; tota
 
 const RUNTIME = /^[A-Za-z_][A-Za-z0-9_.-]{0,254}\/(x86_64|aarch64)\/[A-Za-z0-9_.-]{1,64}$/
 const MAINTAIN_MS = 24 * 3600_000
-/** A runtime no computer has reported using for this long leaves the depot. */
-const UNUSED_MS = 30 * 86400_000
 
 /** "org.gnome.Platform/x86_64/49" → "GNOME 49", for progress a person reads. */
 export function runtimeLabel(ref: string): string {
@@ -29,7 +27,7 @@ interface State { usage: Record<string, Record<string, number>>; maintainedAt: n
  * that needs it is installed, into one installation every computer mounts read-only. Apps
  * install into each computer and run on these runtimes in place of their own copies.
  * Runtimes update daily; a superseded one stays deployed for apps still running on it, and
- * one no computer has used for 30 days is removed.
+ * one no computer reports using is removed.
  */
 export class RuntimeDepot {
   private queue: Promise<unknown> = Promise.resolve()
@@ -49,7 +47,9 @@ export class RuntimeDepot {
         usage[computer] = Object.fromEntries(Object.entries(refs).filter(([ref, at]) => RUNTIME.test(ref) && Number.isSafeInteger(at)))
       }
       this.state = { usage, maintainedAt: Number.isSafeInteger(raw.maintainedAt) ? raw.maintainedAt! : 0, runtimes: Array.isArray(raw.runtimes) ? raw.runtimes.filter(ref => typeof ref === 'string' && RUNTIME.test(ref)) : [], bytes: Number.isSafeInteger(raw.bytes) ? raw.bytes! : null }
-    }).catch(() => {})
+    }).catch(error => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    })
     return this.loaded
   }
   /** Writes run one after another, each of the state as it is then, so none is lost or torn. */
@@ -109,15 +109,14 @@ export class RuntimeDepot {
     delete this.state.usage[computer]
     await this.save()
   }
-  /** Daily: update every runtime, then remove the ones no computer has used for 30 days. */
+  /** Daily: update every runtime, then remove the ones no computer reports using. */
   maintain(force = false): Promise<void> {
     this.maintaining ??= (async () => {
       await this.load()
       if (!this.enabled || (!force && this.now() - this.state.maintainedAt < MAINTAIN_MS)) return
       this.state.maintainedAt = this.now()
       await this.run(['update'], () => {}, 2 * 3600_000)
-      const horizon = this.now() - UNUSED_MS
-      const keep = [...new Set(Object.values(this.state.usage).flatMap(refs => Object.entries(refs).filter(([, at]) => at >= horizon).map(([ref]) => ref)))]
+      const keep = [...new Set(Object.values(this.state.usage).flatMap(refs => Object.keys(refs)))]
       await this.run(['collect', JSON.stringify(keep)], () => {}, 30 * 60_000)
     })().finally(() => { this.maintaining = undefined })
     return this.maintaining
