@@ -9,8 +9,9 @@ Open the executable and choose **Install / Update Caboose**. Windows asks for ad
 approval; approve as the same Windows login, because WSL distributions belong to a user.
 WSL optional feature installation can require a restart. The installer registers a RunOnce
 continuation and asks the owner to restart; it never shuts down another distribution.
-Windows 11 build 22621 or later and WSL 2.0 or later are required. If WSL is absent entirely,
-enable Windows Subsystem for Linux and Virtual Machine Platform in Windows Features first.
+Windows 11 build 22621 or later is required. When WSL is absent, the installer enables
+Windows Subsystem for Linux and Virtual Machine Platform and continues after a restart.
+It installs WSL when needed and requires WSL 2.0 or later for mirrored networking.
 The installed app lives in `%LOCALAPPDATA%\Caboose` and starts at sign-in.
 
 The native window shows an expiring single-use pairing QR, phone connection confirmation,

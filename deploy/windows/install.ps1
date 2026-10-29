@@ -49,7 +49,18 @@ $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
 $ready = $false
 if ($wsl) { $probe = Invoke-Native 'wsl.exe' @('--version') 30; $ready = $probe.ok -and $probe.output -match '(\d+)\.(\d+)\.(\d+)' -and [int]$Matches[1] -ge 2 }
 if (-not $ready) {
-    if (-not $wsl) { throw 'WSL is not available. Enable Windows Subsystem for Linux and Virtual Machine Platform in Windows Features, restart, and open Caboose again.' }
+    if (-not $wsl) {
+        # A clean Windows installation may not expose wsl.exe until these features
+        # are enabled and Windows restarts. Configure continuation before changing it.
+        $once = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
+        New-Item $once -Force | Out-Null
+        New-ItemProperty $once -Name CabooseSetup -Value ('"' + (Join-Path $root "CabooseSetup-$Version.exe") + '"') -Force | Out-Null
+        foreach ($feature in @('Microsoft-Windows-Subsystem-Linux','VirtualMachinePlatform')) {
+            Enable-WindowsOptionalFeature -Online -FeatureName $feature -All -NoRestart | Out-Null
+        }
+        Write-Host 'Restart Windows, then open Caboose again to finish installing WSL.'
+        exit 3010
+    }
     $result = Invoke-Native 'wsl.exe' @('--install','--no-distribution','--no-launch') 1200
     # Installation of optional Windows features needs a reboot. Continue after sign-in;
     # never restart Windows or another person's WSL distributions implicitly.
