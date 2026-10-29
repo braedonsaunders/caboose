@@ -489,15 +489,13 @@ final class DesktopTouchSurface: RemoteTextInputView {
                 lastTap = nil
                 scrolling = true
                 session.resetScroll()
-                guard let mapping = desktop.inputMapping(for: target, windows: session.windows) else { return }
+                let scale = desktop.pixelsPerPoint
                 scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak target, weak desktop] delta in
                     guard let self, let session, let target, let desktop, self.window != nil,
                           self.session === session, self.desktop === desktop, session.state == .ready,
                           session.windows[id] === target, desktop.isVisible(id),
-                          desktop.inputMapping(for: target, windows: session.windows) == mapping,
-                          case .content(let current, _) = desktop.hitTest(desktop.cursor, windows: session.windows), current == id,
-                          let mapped = mapping.delta(delta) else { return false }
-                    session.scroll(in: target, dx: mapped.x, dy: mapped.y, at: anchor)
+                          case .content(let current, _) = desktop.hitTest(desktop.cursor, windows: session.windows), current == id else { return false }
+                    session.scroll(in: target, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
                     return true
                 }
             }
