@@ -85,7 +85,7 @@ const app = createCabooseServer({
   token: owner.token, ...ownerComputer, registry, guestArchitecture, host, agentIdleMs: deployment.agentIdleMs, webRoot,
   machine: () => machineResources(deployment.imageRoot), reach,
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null, diskBytes },
-  identity, trustedProxies: deployment.trustedProxies,
+  identity, trustedProxies: deployment.trustedProxies, publicUrl: deployment.publicUrl,
 })
 app.server.listen(deployment.port, deployment.host, () => {
   console.log(`caboose-host listening on ${deployment.host}:${deployment.port}`)

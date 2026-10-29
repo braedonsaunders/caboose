@@ -653,7 +653,9 @@ A request is from one of three kinds of caller:
 - **An administrator**, by the session cookie Better Auth sets at sign-in (30 days,
   renewed daily). An administrator reaches the computers and tenants they administer; only
   the operator reaches `/v1/health`, `/v1/host`, `/v1/host/*` and the computer routes without
-  a computer in the path.
+  a computer in the path. A request that is not a `GET`, `HEAD` or `OPTIONS`, and every
+  WebSocket upgrade, is accepted on a cookie only from the console's own origin
+  ([Security model](#7-security-model)); otherwise it answers 403 `cross-site request refused`.
 - **A phone token**, which reaches only its own computer's routes, without a computer in the
   path; `/v1/health`, `/v1/host`, `/v1/host/*`, `/v1/me`, `/v1/tenants…` and `/v1/computers…` answer it 403.
 
@@ -674,7 +676,7 @@ most 64 KiB (15 MiB for task start and reply, 16 MiB for `POST /v1/files`). Erro
 | --- | --- |
 | 400 | Invalid input, including unknown fields where a route rejects them |
 | 401 | Missing or unknown token or session |
-| 403 | A phone, or an administrator who is not the operator, on a route that is not theirs |
+| 403 | A phone, or an administrator who is not the operator, on a route that is not theirs; or a session cookie sent by a page on another site |
 | 404 | Unknown route, task, agent, element or device |
 | 409 | The computer is not running (or is restarting, or being deleted), its display is not ready, a conflicting operation is in progress, or a tenant's quota would be exceeded |
 | 413 | A JSON body beyond the route's limit |
@@ -1944,8 +1946,14 @@ app group and a Keychain access group.
   rest from single-use invitation links. The host allows twenty sign-in, setup or
   invitation attempts per client in ten minutes, then answers 429; behind a reverse proxy,
   the client is the address the proxy forwarded only when the proxy is in
-  `CABOOSE_TRUSTED_PROXIES` or on loopback. An administrator sees only their tenants'
-  computers; only the operator sees the host itself.
+  `CABOOSE_TRUSTED_PROXIES` or on loopback. A session cookie proves who the browser is,
+  not which page sent the request, so a state-changing request or a WebSocket upgrade
+  carrying one is refused (403, before the route runs) unless the browser vouches for the
+  page: `Sec-Fetch-Site` of `same-origin` or `none`, or an `Origin` equal to the host's own
+  origin (the `Host` header, over HTTPS when a trusted proxy says so) or to
+  `CABOOSE_PUBLIC_URL`'s. Bearer tokens need no such check: another site cannot attach
+  them. An administrator sees only their tenants' computers; only the operator sees the
+  host itself.
 - **Phone tokens.** A phone signs in to one computer with its own token, obtained once for a
   single-use, ten-minute pairing code, so no token is ever shown in a link, a QR code or the
   console. The host stores only SHA-256 digests; signing a phone out closes its sockets and

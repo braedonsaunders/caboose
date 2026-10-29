@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { WebSocket } from 'ws'
 import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens, type ComputerRecord } from './computers.js'
 import { openIdentityDatabase, type IdentityDatabase } from './identity/database.js'
 import { Identity } from './identity/service.js'
@@ -46,7 +47,7 @@ beforeAll(async () => {
   await mkdir(webRoot)
   await writeFile(join(webRoot, 'index.html'), '<!doctype html><title>Caboose</title>')
   const app = createCabooseServer({
-    token: 'owner-token-for-tests', ...owner, identity, webRoot,
+    token: 'owner-token-for-tests', ...owner, identity, webRoot, publicUrl: 'https://caboose.example.com',
     reach: new ReachService({ bind: '127.0.0.1', port: 7310, publicUrl: 'https://caboose.example.com', mdns: false, id: 'test-host', name: () => 'Caboose', tailscale: new Tailscale(7310, null) }),
     fleet: { computers, phones: PhoneTokens.memory(), open, defaults: { memoryMb: 2048, vcpus: 2, idleMs: 600_000 }, maxRunning: 4, diskBytes: async record => disks.get(record.id) ?? 0 },
   })
@@ -219,5 +220,47 @@ describe('a host with accounts and tenants', () => {
     // Signing back in through Better Auth's route sets a new session.
     expect((await parent('/v1/auth/sign-in/email', { method: 'POST', body: { email: 'parent@example.com', password: 'parent password' } })).status).toBe(200)
     expect((await parent('/v1/me')).status).toBe(200)
+  })
+
+  it('refuses requests a page elsewhere makes with the session cookie, and nothing else', async () => {
+    // A browser names the page behind a request; from another site the route never runs.
+    const elsewhere = { origin: 'https://evil.example' }
+    const refused = await operator('/v1/tenants', { method: 'POST', body: { name: 'Planted' }, headers: elsewhere })
+    expect(refused.status).toBe(403)
+    expect(await refused.json()).toEqual({ error: 'cross-site request refused' })
+    expect((await (await operator('/v1/tenants')).json()).tenants.map((tenant: { name: string }) => tenant.name)).not.toContain('Planted')
+    expect((await operator(`/v1/tenants/${home}`, { method: 'PATCH', body: { name: 'Taken' }, headers: { origin: 'null' } })).status).toBe(403)
+    expect((await operator(`/v1/tenants/${home}`, { method: 'PATCH', body: { name: 'Taken' }, headers: { origin: `${base}.evil.example`, 'sec-fetch-site': 'cross-site' } })).status).toBe(403)
+    expect((await operator(`/v1/tenants/${home}`, { method: 'DELETE', headers: { origin: 'https://home.evil.example', 'sec-fetch-site': 'same-site' } })).status).toBe(403)
+    expect((await (await operator(`/v1/tenants/${home}`)).json()).name).toBe('Home')
+    // Reads change nothing and pass from anywhere.
+    expect((await operator('/v1/tenants', { headers: elsewhere })).status).toBe(200)
+    // The console's own origin passes: the one in Host, the public URL, or the browser's word for it.
+    expect((await operator(`/v1/tenants/${home}`, { method: 'PATCH', body: { name: 'Home' } })).status).toBe(200)
+    expect((await operator(`/v1/tenants/${home}`, { method: 'PATCH', body: { name: 'Home' }, headers: { origin: 'https://caboose.example.com' } })).status).toBe(200)
+    expect((await operator(`/v1/tenants/${home}`, { method: 'PATCH', body: { name: 'Home' }, headers: { origin: 'https://caboose.example.com:443' } })).status).toBe(200)
+    expect((await operator(`/v1/tenants/${home}`, { method: 'PATCH', body: { name: 'Home' }, headers: { origin: 'https://other.example', 'sec-fetch-site': 'same-origin' } })).status).toBe(200)
+    // A bearer token is nothing another site could send, so it needs no Origin at all.
+    const token = { authorization: 'Bearer owner-token-for-tests', 'content-type': 'application/json' }
+    const made = await fetch(`${base}/v1/tenants`, { method: 'POST', headers: token, body: JSON.stringify({ name: 'By token' }) })
+    expect(made.status).toBe(201)
+    expect((await fetch(`${base}/v1/tenants/${(await made.json()).id}`, { method: 'DELETE', headers: token })).status).toBe(200)
+
+    // A WebSocket handshake carries the cookie too, so it is checked whatever its method.
+    expect((await operator('/v1/session', { method: 'POST' })).status).toBe(200)
+    const signedIn = await fetch(`${base}/v1/auth/sign-in/email`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify({ email: 'owner@example.com', password: 'correct horse' }) })
+    expect(signedIn.status).toBe(200)
+    const cookie = signedIn.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+    const upgrade = (headers: Record<string, string>) => new Promise<number>((resolve, reject) => {
+      const socket = new WebSocket(`${base.replace('http:', 'ws:')}/v1/control`, { headers: { cookie, ...headers } })
+      socket.once('unexpected-response', (request, response) => { resolve(response.statusCode ?? 0); request.destroy() })
+      socket.once('open', () => { resolve(101); socket.close() })
+      socket.once('error', reject)
+    })
+    expect(await upgrade(elsewhere)).toBe(403)
+    expect(await upgrade({})).toBe(403)
+    expect(await upgrade({ origin: base })).toBe(101)
+    expect(await upgrade({ origin: 'https://caboose.example.com' })).toBe(101)
+    expect(await upgrade({ 'sec-fetch-site': 'same-origin' })).toBe(101)
   })
 })

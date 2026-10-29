@@ -9,6 +9,7 @@ import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { NOT_FOUND, RequestTooLargeError, json, readJson } from './http.js'
+import { crossSite } from './cross-site.js'
 import { dropUntrustedForwarding, type TrustedProxies } from './proxies.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
@@ -783,6 +784,8 @@ export function createCabooseServer(options: ComputerPieces & {
   identity?: Identity
   /** Reverse proxies whose forwarding headers are believed (`CABOOSE_TRUSTED_PROXIES`); loopback always is. */
   trustedProxies?: TrustedProxies
+  /** `CABOOSE_PUBLIC_URL`: an origin the console is served at besides the one in `Host`. */
+  publicUrl?: string | null
 }) {
   const identity = options.identity
   const authHandler = identity ? toNodeHandler(identity.auth) : undefined
@@ -960,6 +963,8 @@ export function createCabooseServer(options: ComputerPieces & {
         return json(response, 201, { token, computer: { id: runtime.id, name: runtime.settings.get().name } })
       }
       const principal = await principalOf(request)
+      // A session cookie proves who the browser is, not which page sent the request.
+      if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl })) return json(response, 403, { error: 'cross-site request refused' })
       if (tenancy && await tenancyRoute(tenancy, request, response, path, principal) !== NOT_FOUND) return
       if (!principal) return json(response, 401, { error: 'unauthorized' })
       const fleetRoute = path === '/v1/computers' || /^\/v1\/computers\/[^/]+(?:\/pairing|\/phones(?:\/[^/]+)?)?$/.test(path)
@@ -1059,6 +1064,7 @@ export function createCabooseServer(options: ComputerPieces & {
     const url = new URL(request.url ?? '/', 'http://localhost')
     const principal = await principalOf(request).catch(() => undefined)
     if (!principal) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
+    if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl, upgrade: true })) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
     const routed = target(url.pathname, principal)
     if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
     if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }

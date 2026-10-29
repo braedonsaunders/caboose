@@ -251,6 +251,15 @@ from **People**. Accounts and sessions are AppKit's (`appkit-auth`, `appkit-db`)
 embedded database, or Postgres with `CABOOSE_DATABASE_URL`. Back up `identity/` (or the
 Postgres database) with the disks. The owner token keeps working for the whole API.
 
+A session cookie changes something, or opens a WebSocket, only from the console's own
+origin: the browser's `Sec-Fetch-Site` or `Origin` header must name it (the origin in
+`Host`, or `CABOOSE_PUBLIC_URL`), or the host answers 403 `cross-site request refused`
+before the route runs. Reads pass from anywhere. The owner and phone tokens are bearer
+headers no other site can attach, so they are not checked. Behind a reverse proxy that
+terminates HTTPS on another machine or in another container, list the proxy in
+`CABOOSE_TRUSTED_PROXIES` so the host believes its `X-Forwarded-Proto` and counts sign-in
+attempts per client rather than per proxy.
+
 ## Computers
 
 Computers belong to people, and people belong to tenants. The identity database stores
