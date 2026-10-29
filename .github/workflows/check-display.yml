@@ -57,4 +57,10 @@ jobs:
         env:
           CABOOSE_DISPLAY_CPUS: '2'
           CABOOSE_DISPLAY_MEMORY: 4g
-        run: guest/display/scripts/dev.sh env CABOOSE_COPY_CHECK_DEBUG=1 python3 scripts/check.py copies
+        run: guest/display/scripts/dev.sh env CABOOSE_COPY_CHECK_DEBUG=1 CABOOSE_COPY_DUMP=/src/target python3 scripts/check.py copies
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: copy-pixel-diagnostic
+          path: guest/display/target/copy-*
+          if-no-files-found: ignore
