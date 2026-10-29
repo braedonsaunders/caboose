@@ -2,7 +2,8 @@ import CabooseKit
 import SwiftUI
 import UIKit
 
-/// The phone as a Mac trackpad for the desktop on the big screen.
+/// The phone as the input for the desktop on the big screen: the same Trackpad, Keyboard &
+/// Trackpad, Keyboard and Gamepad Laptop offers. Gamepad fills the phone.
 ///
 /// One finger moves the cursor with acceleration, tap clicks, two-finger tap right-clicks,
 /// two fingers scroll, and tap-and-a-half (tap, then touch down again and move) drags.
@@ -10,13 +11,25 @@ struct TrackpadScreen: View {
     @Environment(AppModel.self) private var model
     let desktop: DesktopModel
     @State private var gestureHelp = false
+    @State private var input: LaptopLayout.Input = .trackpad
+    @State private var systemKeyboard = false
 
     var body: some View {
         VStack(spacing: 14) {
             HStack {
-                Label("Desktop on your display", systemImage: "tv")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
+                ViewThatFits(in: .horizontal) {
+                    Label("Desktop on your display", systemImage: "tv")
+                    Image(systemName: "tv").accessibilityLabel("Desktop on your display")
+                }
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                Spacer(minLength: 8)
+                Menu { InputChoices(input: $input, gestureHelp: $gestureHelp) } label: {
+                    Image(systemName: input.symbol).frame(width: 40, height: 40)
+                }
+                .glassEffect(.regular.interactive(), in: .circle)
+                .accessibilityLabel("Input")
+                .accessibilityValue(input.title)
                 Button { model.adjustDesktopZoom(by: 1 / 1.15) } label: {
                     Image(systemName: "textformat.size.smaller").frame(width: 40, height: 40)
                 }
@@ -37,7 +50,7 @@ struct TrackpadScreen: View {
                 }
                 .glassEffect(.regular.interactive(), in: .circle)
                 .accessibilityLabel("New wallpaper")
-                if !model.keyboardVisible {
+                if input == .trackpad && !model.keyboardVisible {
                     Button { model.keyboardVisible = true } label: {
                         Image(systemName: "keyboard").frame(width: 40, height: 40)
                     }
@@ -45,19 +58,22 @@ struct TrackpadScreen: View {
                     .accessibilityLabel("Keyboard")
                 }
             }
-            Trackpad(desktop: desktop, keyboardVisible: model.keyboardVisible,
-                     enabled: model.presentedWindowID == nil && model.selectedTab == .desktop)
+            InputControls(placement: .display, isCard: false,
+                          enabled: model.presentedWindowID == nil && model.selectedTab == .desktop,
+                          input: $input, systemKeyboard: $systemKeyboard)
                 .background { DesktopKeyCommands(desktop: desktop) }
-                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(.white.opacity(0.12)))
-            TimelineView(.periodic(from: .now, by: 2)) { _ in
-                Text(model.connectionSummary).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                .clipShape(RoundedRectangle(cornerRadius: input.showsKeyboard ? 16 : 28, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: input.showsKeyboard ? 16 : 28, style: .continuous).stroke(.white.opacity(0.12)))
+            if !input.showsKeyboard {
+                TimelineView(.periodic(from: .now, by: 2)) { _ in
+                    Text(model.connectionSummary).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                Button("Trackpad gestures", systemImage: "hand.draw") { gestureHelp = true }
+                    .font(.caption)
             }
-            Button("Trackpad gestures", systemImage: "hand.draw") { gestureHelp = true }
-                .font(.caption)
-                .sheet(isPresented: $gestureHelp) { TrackpadGestureGuide() }
         }
         .padding(16)
+        .sheet(isPresented: $gestureHelp) { TrackpadGestureGuide() }
     }
 }
 

@@ -179,7 +179,8 @@ window and game; replacing any of them cancels that close.
 
 **Input.** Touch, the hardware keyboard, the pointer and game controllers (the Gamepad API,
 from GameController) go to the web view on the device; none of it is sent to the computer.
-An on-screen controller the app draws (Laptop's Gamepad mode) appears to the page as one more
+An on-screen controller the app draws (the Gamepad input, below Laptop's hinge or across the
+phone while a TV shows the desktop) appears to the page as one more
 gamepad. The app's
 own controls aimed at the window (Laptop's trackpad and keyboard, the key bar) reach the
 page as DOM events through `window.cabooseInput`, a script the client adds at document

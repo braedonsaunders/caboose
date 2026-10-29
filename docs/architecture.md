@@ -1983,10 +1983,15 @@ the app card, and a detached view releases its layers.
   the same keyboard and header in its lower two thirds. The system keyboard opens only from
   the custom keyboard's globe button, for other languages, emoji and dictation, without the
   shortcut header and with a floating button that returns to the custom keyboard.
-  Gamepad is an on-screen controller (`LaptopGamepad` lays it out and maps it) aimed at the
-  window text would go to: a handed-off game gets `RemoteGame.gamepad` (its page's Gamepad
-  API), any other window held keys the owner assigns. No virtual controller exists on the
-  computer. The dock becomes a thin, full-width taskbar at the top of
+  Gamepad is an on-screen controller aimed at the window text would go to: a handed-off game
+  gets `RemoteGame.gamepad` (its page's Gamepad API), any other window held keys the owner
+  assigns. No virtual controller exists on the computer. `OnScreenGamepad` defines its
+  Modern, Classic, Retro and Arcade types, lays each out for the pad's size, remembers a type
+  per app (by window class), and its `Tracker` turns fingers into controller state: a finger
+  owns the group it lands on, rolls across and chords neighbouring buttons, floats a stick
+  under the thumb, clicks a stick on tap-then-press and feathers a trigger by sliding.
+  `InputControls` is the one input panel: below the hinge with Laptop's rail, and across the
+  phone while a display shows the desktop, where Gamepad is a full-screen cover. The dock becomes a thin, full-width taskbar at the top of
   the lower half. Caboose title bars are hidden above the hinge; app-owned chrome remains
   part of the guest surface. Pointer hit testing includes the relocated dock, with separate
   saved Laptop positions, without changing the tablet arrangement. App cards target their current
@@ -2181,7 +2186,7 @@ repeated lines removed and clipped to a few lines, opens on tap.
 | Tab | What it is |
 | --- | --- |
 | Home | Today: the computer's state; its windows live in most-recently-used order, or while it rests their last pictures, kept on the phone; approvals (answered in place) and agents at work; agent turns that ended and visible files that changed since the app last left the screen, else the newest visible files (from the same `/v1/fs` scan that feeds Spotlight); pinned and recent apps; AirPlay; and Ask, which opens a window, app or file by name or starts a chat with the default agent |
-| Desktop | The computer's desktop on this screen, configured for exactly the space beside or between the bars, with Keyboard, AirPlay and Full Screen in the toolbar; while a TV shows the desktop, the phone's trackpad |
+| Desktop | The computer's desktop on this screen, configured for exactly the space beside or between the bars, with Keyboard, AirPlay and Full Screen in the toolbar; while a TV shows the desktop, the phone's input: Trackpad, Keyboard & Trackpad, Keyboard or a full-screen Gamepad |
 | Agents | The Ask bar, approvals, tasks and the agent seat's windows |
 | Apps | Every desktop entry, System Settings & Tools last, Library, and New App, which starts a chat with the default agent to make an [agent app](#agent-apps) |
 | Terminal | A native terminal, present when the app is built with it |

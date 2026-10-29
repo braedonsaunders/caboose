@@ -7,7 +7,7 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 
 | Path | What |
 | --- | --- |
-| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). |
+| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures, touch slots and the on-screen controller (`OnScreenGamepad`: its types, layouts and touch tracking). `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). |
 | `GPUStream/` | The GPU stream player's native side: a C API (`include/caboose_gpu_stream.h`) over GFXReconstruct's Vulkan replay, the CMake project that builds it with MoltenVK, and the patches applied to GFXReconstruct. See [GPU streams](#gpu-streams). CabooseKit's `GPU/GPUStreamPlayer` and `UI/GPUStreamView` wrap it. |
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
 | `Caboose/Catalog/`, `Caboose/McpLibrary/` | The Apps tab's Library (`CatalogCenter`, `CatalogViews`) and the Agents tab's Tools, the MCP Library (`McpCenter`, `McpLibraryViews`). Both storefronts draw with `StoreChrome`: the icon well, rows of tiles with See All, tiles and list rows. The MCP Library's routes, answers and setup form are `CabooseKit/Catalog/McpLibrary`. |
@@ -316,7 +316,13 @@ zoom, drawing and selection still work, context clicks do not fling, and changin
 windows or backgrounding never sends old scroll input to the next window.
 
 
-With the desktop on a TV the phone is a trackpad: one finger moves the cursor, tap clicks,
+With the desktop on a TV the phone is its input, with the same choices as Laptop from the
+input button in its header: Trackpad, Keyboard & Trackpad, Keyboard and Gamepad. Keyboard &
+Trackpad and Keyboard are Laptop's own keyboard and shortcut header; the keyboard button over
+the plain trackpad opens the system keyboard instead, and the globe key does too from Laptop's
+keyboard, which returns when it is hidden. Gamepad fills the whole phone, in either
+orientation, with the [on-screen controller](#on-screen-controller) and a button that returns
+to the trackpad. As a trackpad, one finger moves the cursor, tap clicks,
 two fingers scroll, a two-finger tap right-clicks, two quick taps double-click and tap then
 touch and move drags. Those rules live in `CabooseKit/Input/TrackpadGestures.swift` and are
 unit-tested with staggered fingers, because real fingers never land or lift together.
@@ -743,17 +749,7 @@ the same keyboard and header in the lower two-thirds. Neither opens the system k
 text field the trackpad focuses opens Keyboard & Trackpad. The keyboard's globe button opens
 the system keyboard for languages, emoji and dictation, without the shortcut header (which
 would land above the hinge) and with a button above it that returns to Laptop's keyboard.
-Hide Keyboard returns to the trackpad. Gamepad fills the lower panel with an on-screen
-controller (shoulders and triggers, a d-pad or stick, the A/B/X/Y face buttons, Select and
-Start, and optionally a right stick) aimed at the window the keyboard would type into. A game
-running on this device ([game handoff](../../docs/game-handoff.md)) gets it as a standard
-controller through the page's Gamepad API; every other window, and a game when Customize says
-so, gets keys, each held for as long as its control is (by default the d-pad and left stick are
-the arrow keys, the right stick W A S D, A Space, B Escape, Start Return). The computer gets no
-controller device. A caption under Customize names where the pad goes. Customize sets the
-layout, size, haptics and every key, and remembers them; leaving the mode, a change of window, game,
-connection or settings, opening Customize or leaving the app releases everything held, and a
-finger still on the pad then controls nothing until it lifts. The dock becomes a thin, full-width taskbar at the top of the lower half; controls stay below
+Hide Keyboard returns to the trackpad. Gamepad fills the lower panel with the [on-screen controller](#on-screen-controller). The dock becomes a thin, full-width taskbar at the top of the lower half; controls stay below
 the hinge. The upper desktop hides Caboose title bars and gives their space to the app;
 app-owned chrome remains. Its pointer reaches both the app and relocated dock. Tablet
 mode retains its saved arrangement. One-finger movement, tap/double-tap, two-finger
@@ -763,6 +759,47 @@ Pinch uses the focused app’s Control–Plus/Minus shortcuts. Both control surf
 Trackpad Gestures guide with the mappings and platform limitations. With a connected
 monitor, the phone shows window previews above its keyboard/trackpad and leaves the monitor's
 workspace intact. Book posture and compact screens keep the ordinary layout in Automatic.
+
+### On-screen controller
+
+Laptop's Gamepad mode and a TV's Gamepad draw the same controller, aimed at the window the
+keyboard would type into. A strip at its top chooses the controller type, names where the pad
+goes ("Controller for …" or "Keys to …"), opens Customize and, filling the phone, leaves.
+There are four types, each laid out and drawn as the controller it recalls:
+
+- **Modern**: offset twin sticks, a d-pad, A/B/X/Y, bumpers, analog triggers, View, Menu and
+  Guide, marked Xbox or PlayStation (✕ ○ □ △, L1/R1, L2/R2, Create, Options).
+- **Classic**: a d-pad, the four-colour B/A/Y/X diamond, L and R, slanted Select and Start.
+- **Retro**: a d-pad, B and A, Select and Start.
+- **Arcade**: an eight-way lever and eight buttons in two curved rows (X Y RB LB over
+  A B RT LT, or their PlayStation marks), Select, Guide and Start.
+
+Each type has a wide arrangement (a landscape phone, the panel below a hinge) and, but for
+Arcade, a tall one (a portrait phone); the pad uses whichever gives larger controls. Controls
+hug the sides, where thumbs are, and the bottom, and extra width opens the middle. Each app
+keeps the type last chosen for it; a new app starts with the last type chosen.
+
+A finger belongs to what it lands on until it lifts, and a thumb a little off a control still
+takes it. On the face buttons and shoulders it presses whatever it slides onto, and resting
+in the seam between two neighbours presses both (never two across the diamond). Sticks float
+by default: a stick centres wherever its thumb lands on its side of the pad and follows a
+thumb carried past its rim, so reversing answers at once; Customize can fix them in place.
+A stick reads nothing in its centre tenth and full at 85% of its travel. Tap then press a stick
+to click it (L3, R3) for as long as the press lasts. A trigger pulls fully when touched and
+eases off, down to 15%, as its finger slides down, for throttle and brakes. The d-pad and
+lever have eight directions. Presses, d-pad direction changes and stick clicks each have
+their own haptic, and the pad defers the screen-edge system gestures.
+
+A game running on this device ([game handoff](../../docs/game-handoff.md)) gets it as a
+standard controller through the page's Gamepad API; every other window, and a game when
+Customize says so, gets keys, each held for as long as its control is (by default the d-pad and
+left stick are the arrow keys, the right stick W A S D, A Space, B Escape, Start Return). A key
+belongs to a button's place on the controller, so it carries across types. The computer gets
+no controller device. Customize sets the type, markings, sticks, size, haptics and every key,
+and remembers them; leaving the mode, a change of window, game, connection or settings,
+opening Customize or leaving the app releases everything held, and a finger still on the pad
+then controls nothing until it lifts. `CabooseKit/Input/OnScreenGamepad*.swift` holds the
+types, layouts and touch tracking, unit-tested for every type at every pad size.
 
 In Tablet mode, portrait Desktop at 600 points or wider has a controls icon at the far-right end of the bottom dock. Its
 upward, anchored strip shows desktop controls and app navigation as a single vertical

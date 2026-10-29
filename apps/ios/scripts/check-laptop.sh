@@ -36,15 +36,23 @@ Laptop layout — signed app on the paired physical Duo:
    symbols, held Delete, arrows and Ctrl shortcuts. Tap the globe: the system keyboard
    opens with no shortcut header on either side of the hinge, and a keyboard button
    floats just above it; use it for IME, then the button returns to Laptop's keyboard.
-   Gamepad: the controller fills the lower panel, nothing above the hinge. With a game
-   on this device (Platformer 3D) the caption says "Controller for …": the left stick
-   or d-pad runs, A jumps, two thumbs at once work, and lifting stops at once.
+   Gamepad: the controller fills the lower panel, nothing above the hinge, with its strip
+   (type, caption, Customize) between the shoulders or above them. With a game on this
+   device (Platformer 3D) the caption says "Controller for …". Modern: land a thumb anywhere
+   on the left: the stick centres there and runs; carry it past the rim and reverse: it
+   answers at once. A jumps, two thumbs at once work, and lifting stops at once. Roll a thumb
+   from A to B: each in turn, both in the seam; never X and B together. Tap then press the
+   left stick: L3 holds while pressed. Press RT and slide down: it eases off (the fill drops).
+   Swipe up from the bottom edge while playing: the game keeps the touch.
    Background the app mid-run and return: nothing is held. Hold the stick, then switch
    window with the other hand (rail or four-finger swipe) or open Customize: the run
    stops at once, and moving the still-held thumb does nothing until it lifts. In a text editor the caption
    says "Keys to …": the d-pad moves the caret, holding it repeats, A types spaces.
-   Customize: switch to stick, add the right stick, resize, reassign A to Return,
-   choose Keys for games; each applies at once and survives relaunching the app.
+   From the strip choose Classic, Retro and Arcade in turn: each draws its own controller
+   and plays; switch to another app and back: each app keeps its own type.
+   Customize: the four cards preview each type. Choose PlayStation labels, fixed sticks,
+   resize, reassign A to Return, choose Keys for games; each applies at once and survives
+   relaunching the app.
 4. Move from the app across the hinge into the lower dock. Open an app from its dock
    icon, right-click it, and use Close; the cursor and click must agree everywhere.
    Two-finger tap opens a context menu; scroll with two fingers. Tap then drag
@@ -60,6 +68,12 @@ Laptop layout — signed app on the paired physical Duo:
    above its control pad. Select a window there: it focuses on the monitor without
    moving/resizing the monitor's windows or losing video. Type, scroll, right-click,
    drag, disconnect the monitor and continue on the phone. Repeat opened/flat.
+   Flat with the monitor: the header's input button offers the same four inputs.
+   Keyboard & Trackpad and Keyboard type with Laptop's keyboard; the globe opens the
+   system keyboard over the trackpad and hiding it brings Laptop's keyboard back.
+   Gamepad fills the phone with no status bar or tab bar; rotate it: the wide controller
+   follows. Play a game on the monitor, then Done: the trackpad returns, nothing held.
+   Disconnect the monitor with the gamepad open: it closes and releases everything.
 6. Check VoiceOver labels for Screen Layout, Switch Window, Type and Hide Keyboard;
    large text; native sidebar reveal/hide; hardware keyboard; fold/rotate during
    reconnect. Leaving Laptop mode preserves the app and restores the full viewport.
