@@ -3,7 +3,7 @@ import {
   Alert, AlertDescription, AlertTitle, Button, Input, Select, SettingsRow, SettingsSection, promptDialog, toast,
 } from '@braedonsaunders/appkit-ui'
 import {
-  computeSettingsPatch, effectiveLimits, formatIdleDuration, formatMemoryMb, validateSettingsInput,
+  computeSettingsPatch, settingsSavePatch, effectiveLimits, formatIdleDuration, formatMemoryMb, validateSettingsInput,
   willRequireColdRestart, type CabooseClient, type ComputerSettings,
 } from '../../api.js'
 import { useComputerActions } from '../../actions.js'
@@ -28,7 +28,10 @@ export function Settings({ client, computer, onDelete, assignment }: { client: C
   // Follow changes made elsewhere (the iPhone, another tab) unless there are edits in progress here.
   React.useEffect(() => {
     if (!status) return
-    setDraft(current => (current === null || same(current, baseline.current) ? status.settings : current))
+    if (draft === null || same(draft, baseline.current)) {
+      if (!same(status.settings, baseline.current)) setSizeId('custom')
+      setDraft(status.settings)
+    }
     baseline.current = status.settings
   }, [status])
 
@@ -46,8 +49,7 @@ export function Settings({ client, computer, onDelete, assignment }: { client: C
     if (!validation.ok || !dirty) return validation.ok
     setSaving(true)
     try {
-      const { memoryMb: _memory, vcpus: _cpus, ...other } = patch
-      const next = await client.updateSettings(sizeId === 'custom' ? patch : { ...other, size: sizeId })
+      const next = await client.updateSettings(settingsSavePatch(patch, sizeId))
       setSizeId('custom')
       baseline.current = next.settings
       computer.setStatus(next)

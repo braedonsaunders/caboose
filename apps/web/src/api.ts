@@ -251,6 +251,13 @@ export function computeSettingsPatch(
   return patch
 }
 
+/** Send a preset only when its resource values are part of the edit. */
+export function settingsSavePatch(patch: Partial<ComputerSettings>, sizeId: string): Partial<ComputerSettings> & { size?: string } {
+  if (sizeId === 'custom' || (!('memoryMb' in patch) && !('vcpus' in patch))) return patch
+  const { memoryMb: _memory, vcpus: _cpus, ...other } = patch
+  return { ...other, size: sizeId }
+}
+
 export function willRequireColdRestart(
   status: Pick<ComputerStatus, 'activeResources' | 'restartRequired'>,
   next: Pick<ComputerSettings, 'memoryMb' | 'vcpus'>,
