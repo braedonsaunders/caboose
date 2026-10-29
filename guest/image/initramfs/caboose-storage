@@ -10,7 +10,7 @@ case "${1:-}" in prereqs) prereqs; exit 0 ;; esac
 : "${rootmnt:?}"
 while read -r _device target filesystem _options _rest; do
   if [ "$target" = "$rootmnt" ] && [ "$filesystem" = btrfs ]; then
-    mount -o remount,compress-force=zstd:1,discard=async,noatime "$rootmnt" ||
+    mount -o remount,compress-force=zstd:1,discard=async,noatime "$_device" "$rootmnt" ||
       panic 'Cannot enable Caboose root compression and discard'
     break
   fi
