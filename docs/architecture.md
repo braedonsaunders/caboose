@@ -688,6 +688,9 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park |
 | `CABOOSE_PUBLIC_URL` | unset | Where phones reach the host from anywhere (an `http(s)` URL, optionally with a path, without credentials, query or fragment); first in `/v1/host/reach`, and the console auth base URL (auth defaults to loopback when unset) |
 | `CABOOSE_MDNS` | `on` | `off` stops the LAN advertisement ([Reachability](#reachability)) |
+| `CABOOSE_SHARED_STORAGE` | `off` | `on` shares identical blocks across parked microVM disks on a Linux host ([Shared storage](#shared-storage)) |
+| `CABOOSE_SHARED_STORAGE_DELAY_MS` | `1800000` | How long a computer stays parked before shared storage passes its disk |
+| `CABOOSE_DISK_HELPER` | `caboose-disk` on `PATH` (bundles: their own) | The `apps/host/disk` helper for shared storage and phone backups |
 | `CABOOSE_WEB_ROOT` | `apps/web/dist` | The built web console |
 | `CABOOSE_APNS_KEY_PATH`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC` | unset | APNs provider; all four or none |
 
@@ -702,6 +705,10 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
   in `computers/<id>/`.
 - For microVMs, `overlays/<id>.raw` (the disk), `overlays/<id>.snapshot` (parked memory)
   and `overlays/<id>.resources.json` (the resources it was booted with).
+- Phone backups, beside each computer's disk: `<id>.backup/` (captures, download packs and a
+  staged restore, mode 0700) and, while a restore installs, `overlays/<id>.restore.json`.
+- `shared-storage.json` (shared storage's totals and the disk state of each computer's last
+  pass), `shared-storage/` (its block index) and `disk-cache/` (chunk maps of base images).
 
 Computer slots and ownership live in `caboose_computers` and `caboose_people` in the identity database.
 
@@ -972,7 +979,7 @@ guest answer 409 while it is not running.
 | `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec, actions, startupWMClass }]`. `startupWMClass` is the entry’s declared window class (at most 256 characters), or null; older hosts may omit it. The phone matches this class as well as desktop IDs. `actions` is the entry's desktop actions (`Actions=` with a `[Desktop Action …]` group, a Name, and an Exec unless the entry is D-Bus activated): at most 16 `{ id, name }`, ids `[A-Za-z0-9-]{1,64}`, names at most 100 characters |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }`. An optional `{ action }` runs one of its `actions` instead (GLib runs its Exec or activates it over D-Bus); 400 for an invalid id, 404 for an entry or action the computer does not have |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`. Open an `http(s)` URL (at most 8192 characters, no spaces or control characters) with the default handler on the owner's display |
-| `GET` | `/v1/health` | microVM: `{ host, hypervisor: "cloud-hypervisor" \| "virtualization", kvm, desk, machine }` with appkit-desk's stats (`kvm` applies only to Cloud Hypervisor); container: `{ host, runtime: "container", gpu, container, running, machine }`; both add `image`. `machine` is `{ memoryMb, availableMemoryMb, cpus, disk: { totalBytes, freeBytes } \| null }`: the machine the computers share, with `disk` the volume holding `CABOOSE_IMAGE_ROOT` (null when it cannot be read). `image` is `{ state: "ready" \| "fetching" \| "failed" \| "missing", reference: string \| null, receivedBytes?, totalBytes?, message? }`: the computer's image ([Published images](#published-images)); `missing` means no reference to fetch from |
+| `GET` | `/v1/health` | microVM: `{ host, hypervisor: "cloud-hypervisor" \| "virtualization", kvm, desk, machine }` with appkit-desk's stats (`kvm` applies only to Cloud Hypervisor); container: `{ host, runtime: "container", gpu, container, running, machine }`; both add `image`. `machine` is `{ memoryMb, availableMemoryMb, cpus, disk: { totalBytes, freeBytes } \| null }`: the machine the computers share, with `disk` the volume holding `CABOOSE_IMAGE_ROOT` (null when it cannot be read). `image` is `{ state: "ready" \| "fetching" \| "failed" \| "missing", reference: string \| null, receivedBytes?, totalBytes?, message? }`: the computer's image ([Published images](#published-images)); `missing` means no reference to fetch from. With shared storage on, `sharedStorage` is `{ sharedBytes, punchedBytes, passes, lastPassAt, lastError, running }`, `running` the id of the computer a pass is reading now or null ([Shared storage](#shared-storage)) |
 | `GET` | `/v1/host` | How the host was started (below) |
 
 A WebSocket upgrade answers 401 without the owner token, 404 for another path, 409 unless
@@ -1148,6 +1155,85 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
 - `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.
+
+### Shared storage
+
+With `CABOOSE_SHARED_STORAGE=on`, a Linux microVM host keeps identical blocks of its
+computers' disks once. Computers cloned from one image install the same packages, caches and
+applications; each copy written into a disk becomes shared storage on the host.
+
+`caboose-disk` (`apps/host/disk`) does the work. It keeps a sampled index of 4 KiB blocks of
+the base images and of each disk it has seen, finds runs of at least 128 KiB that already
+exist in another disk or a base, and asks the kernel to share them (`FIDEDUPERANGE`). The
+kernel compares the bytes under its own locks before remapping anything, so a stale index entry
+or a hash collision costs one refused call and never changes what a disk reads as. Runs of
+64 KiB or more of zeros are deallocated. A disk's clones (its parked Files view and backup
+captures) are shared and deallocated with it; a clone that has diverged keeps its data.
+
+- A computer is passed when it has been parked for 30 minutes (`CABOOSE_SHARED_STORAGE_DELAY_MS`)
+  and its disk changed since its last pass. One pass runs at a time on the host.
+- The pass holds the computer, and every parked computer whose disk it may share from, in
+  parked-exclusive work. A wake, restart or delete of any of them cancels the pass between
+  kernel calls, then proceeds. The helper also takes an open file description lock on the disk
+  and refuses one that a VMM, a migration or anything else holds.
+- A disk shares only with disks that were parked and lockable when the pass began, and with
+  base images.
+- After a pass that freed space, the host runs `fstrim` on the image root (at most hourly), so
+  a sparse XFS image file gives the space back to the disk below.
+- A tenant's disk usage counts every block of its computers' disks whether shared or not, so
+  sharing never reveals what another tenant stores.
+- The image root must be XFS with reflink or Btrfs. On a filesystem that cannot share blocks
+  the first pass reports it in `lastError` and shared storage stops.
+- `apps/host/disk/scripts/check-reflink.sh` checks the helper against a real loop-mounted XFS
+  or Btrfs filesystem.
+
+### Phone backups
+
+A phone signed in to a microVM computer can keep backups of the computer's disk. Backups need
+a Linux host with parked Files on (`CABOOSE_PARKED_FILES=on`) and `caboose-disk`; elsewhere
+`GET /v1/backup` answers `available: false` with the `reason`. None of these routes wakes the
+computer.
+
+**Captures.** When the computer parks and a phone backs it up, and the newest capture is six
+hours old or a phone asked for one, the host holds the computer in parked-exclusive work and
+reflink-clones the coherent disk image parked Files published for that park (its filesystems
+frozen and its processes stopped). A capture is therefore a complete, consistent filesystem,
+and taking it never touches a running disk. The host then describes the capture in 1 MiB
+chunks with SHA-256: each chunk is all zeros, the same as the base image at that offset, or
+data. Only data chunks leave the host. It keeps the newest two captures and any a phone is
+still downloading, and records the image the disk boots with: the base, kernel and initramfs
+hashes, and the split system image's when there is one.
+
+**Restores.** A restore rebuilds the disk from the base image, chunks still held in captures on
+this host, and chunks the phone uploads. The rebuilt disk is described again and must match the
+backup chunk for chunk. Then, in a confirmed restart, the host stops the computer, discards its
+memory (cold memory included), and installs the disk and its image binding under a journal,
+`overlays/<id>.restore.json`, written before anything changes. A later wake or restart finishes
+an interrupted installation; anything it cannot prove stops with "recovery required". A backup
+restores only onto a host with exactly its image files, and onto a template computer only once
+that computer has started; both are refused before the computer stops.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/backup` | `{ available, reason?, enabled, devices: [{ id, name, lastCompletedAt }], capture: <capture> \| null, capturing, pending }`: `enabled` is whether the calling phone backs up this computer; `capture` the newest |
+| `PUT` | `/v1/backup/device` | Phone only. `{ enabled }`: start or stop backing up to this phone; the first capture is asked for at once |
+| `POST` | `/v1/backup/capture` | Phone only. Capture now if parked, otherwise at the next park (`pending`) → 202 with the status |
+| `GET` | `/v1/backup/captures/:id` | `{ info: <capture>, manifest }` |
+| `POST` | `/v1/backup/captures/:id/packs` | `{ chunks: [sha256] }` → 201 `{ packs: [{ id, chunks, bytes }] }`: the capture's data chunks in packs of up to 32, kept for three days |
+| `GET` | `/v1/backup/packs/:id` | The pack's chunks, concatenated in its order (`application/octet-stream`); 409 once its capture is gone |
+| `POST` | `/v1/backup/complete` | Phone only. `{ capture }`: the phone holds that capture in full |
+| `POST` | `/v1/backup/restores` | Phone only. `{ image, manifest }` → 201 `{ id, missing: [sha256] }`: stage a restore; 409 when this host lacks the backup's image. One restore is staged at a time; one untouched for a day is removed |
+| `GET`, `DELETE` | `/v1/backup/restores/:id` | `{ id, missing }`, or abandon it |
+| `PUT` | `/v1/backup/restores/:id/chunks` | Repeated `[32-byte SHA-256][4-byte big-endian length][bytes]`, at most 256 MiB → `{ id, missing }` (a count); each chunk is checked against its hash |
+| `POST` | `/v1/backup/restores/:id/apply` | Phone only. `{ confirm: true }`: verify, replace the disk and restart; answers once the computer has restarted |
+
+- A capture is `{ id, createdAt, diskBytes, chunkBytes, dataChunks, dataBytes, image }` and
+  `image` is `{ baseSha256, vmlinux, initrd, systemErofs }` (`systemErofs` null for a disk
+  without a split image).
+- A manifest is `{ version: 1, diskBytes, chunkBytes, baseSha256, chunks }`; each element of
+  `chunks` is a data chunk's SHA-256 or a run, `{ "zero": n }` or `{ "base": n }`.
+- Captures pin the blocks the disk has since changed; shared storage deduplicates them with
+  the disk. They are host-managed and not counted in a tenant's disk usage.
 
 ### Terminal
 
@@ -2575,6 +2661,26 @@ tmpfs is absent from the disk view, so `.cache` access and home-root listings al
 wake rather than exposing the underlying mountpoint. An unreachable host is
 reported to Files as unreachable.
 
+### Backups
+
+Computer settings > Backup turns on backups to this phone and chooses where they live: on this
+iPhone (excluded from the iPhone's own backup) or in the app's iCloud Drive container. A
+`BGProcessingTask` (`com.braedonsaunders.caboose.backup`, on power and network, at most every
+six hours) backs up each computer the phone keeps backups of; Back Up Now does the same at once.
+A backup downloads the newest capture's manifest and only the data chunks the phone lacks, in
+packs ([Phone backups](#phone-backups)); each step is committed, so an interrupted backup
+resumes. The phone keeps the newest two captures of each computer.
+
+Each computer's backups are a vault (`ChunkVault` in CabooseKit): chunks sealed with AES-GCM in
+pack files, an index and the captures' manifests, all under keys derived from one 256-bit key in
+iCloud Keychain. Chunks are stored under an HMAC of their hash and authenticated with it, and a
+chunk several captures share is stored once. Packs at most half needed after pruning are
+rewritten.
+
+Restore lists this computer's backups and those of other computers on the phone or in iCloud
+Drive, so a computer on a new host can start from an old one's backup. It sends only chunks the
+host lacks and asks for confirmation first: the disk is replaced and the computer restarts.
+
 ### Open in place
 
 The app's alternate-handler document types come from `guest/catalog/catalog.json`:
@@ -2655,6 +2761,10 @@ phone's location while Caboose is open. Computer settings has the switches. See
   console. The host stores only SHA-256 digests; signing a phone out closes its sockets and
   removes its notifications. The app and its extensions keep the token in a shared Keychain
   access group.
+- **Backups.** Phone backups are sealed on the phone with a key only the person's devices
+  hold (iCloud Keychain); the host serves a computer's capture only to that computer's phones,
+  and stores captures beside the disk with mode 0700. Restored chunks are checked against
+  their hashes and the rebuilt disk against the backup before it replaces anything.
 - **Computers.** Each computer is fenced from every other (both computer subnets are always
   rejected; containers sit on separate bridge networks) and has its own disk and data
   directory.

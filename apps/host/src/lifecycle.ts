@@ -29,6 +29,7 @@ export class ComputerLifecycle<T> {
   private freezeAllowed: () => boolean = () => true
   private parkedGeneration = 0
   private cancelParkedWork: () => void = () => {}
+  private parkedWorkCancellers = new Set<() => void>()
 
   constructor(private readonly driver: ComputerDriver<T>, private idleMs: number, private readonly freezeParkMs = 60_000) {
     if (!Number.isSafeInteger(idleMs) || idleMs < 1 || idleMs > 2_147_483_647) {
@@ -46,9 +47,16 @@ export class ComputerLifecycle<T> {
   /** Cancel external parked work synchronously before a state-changing admission is queued. */
   setParkedWorkCanceller(cancel: () => void): void { this.cancelParkedWork = cancel }
 
+  /** Another canceller for other parked work; returns its removal. */
+  addParkedWorkCanceller(cancel: () => void): () => void {
+    this.parkedWorkCancellers.add(cancel)
+    return () => { this.parkedWorkCancellers.delete(cancel) }
+  }
+
   private invalidateParkedWork(): void {
     this.parkedGeneration++
     this.cancelParkedWork()
+    for (const cancel of [...this.parkedWorkCancellers]) cancel()
   }
 
   /** Recheck after asynchronous work, including while holding parkedExclusive. */

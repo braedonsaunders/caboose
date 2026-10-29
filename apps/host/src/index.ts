@@ -17,6 +17,7 @@ import { FlathubIndex } from './flathub.js'
 import { SmitheryCatalog } from './smithery.js'
 import { CraftReleases } from './releases.js'
 import { createController, createDeskPool } from './driver.js'
+import { openStorage } from './storage.js'
 import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
 import type { Architecture } from './app-catalog-data.js'
 import { describeHost, machineResources } from './host-info.js'
@@ -96,6 +97,8 @@ if (vmDepot && /[:\n\r]/.test(vmDepot)) throw new Error('CABOOSE_VM_DEPOT cannot
 if (vmDepot && process.platform !== 'linux') throw new Error('CABOOSE_VM_DEPOT requires a Linux microVM host')
 if (vmDepot) await mkdir(vmDepot, { recursive: true, mode: 0o755 })
 const defaults = { memoryMb: deployment.memoryMb, vcpus: deployment.vcpus, idleMs: deployment.idleMs }
+// Shared storage and phone backups for microVM computers.
+const storage = await openStorage(deployment, process.env)
 
 /** A computer's settings, runtime and notifications, from its own directory. */
 async function open(record: ComputerRecord, initial?: ComputerSettings): Promise<ComputerPieces> {
@@ -112,7 +115,8 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
   const paths = vmPaths(deployment.imageRoot, record.id, deployment.vmTemplate)
   const snapshotPath = paths.snapshot
-  return { ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  const computerStorage = storage.forComputer(record.id, controller, phoneId => phones.list(record.id).find(phone => phone.id === phoneId)?.name)
+  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
@@ -151,7 +155,7 @@ void library.flathub.ready().catch(error => console.error('Flathub index unavail
 const host = describeHost(deployment, process.env, { push: !!sender, liveActivities: !!(apns && sender) })
 const app = createCabooseServer({
   token: owner.token, ...ownerComputer, registry, library, host, agentIdleMs: deployment.agentIdleMs, freezeParkMs: deployment.freezeParkMs, webRoot,
-  machine: () => machineResources(deployment.imageRoot), reach,
+  machine: () => machineResources(deployment.imageRoot), reach, sharedStorage: () => storage.sharedStorage(),
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null, diskBytes },
   identity,
 })
@@ -169,7 +173,7 @@ app.server.listen(deployment.port, deployment.host, () => {
 void image.ensure().then(() => console.log(describeImage(image.status())), error => console.error(error instanceof Error ? error.message : error))
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
-    void reach.stop().catch(() => undefined).then(() => app.shutdown()).then(() => snapshotGc?.close()).then(() => identityDatabase.close()).then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
+    void reach.stop().catch(() => undefined).then(() => app.shutdown()).then(() => storage.close()).then(() => snapshotGc?.close()).then(() => identityDatabase.close()).then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
   })
 }
 
