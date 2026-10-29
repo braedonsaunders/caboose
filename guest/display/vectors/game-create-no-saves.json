@@ -1,0 +1,8 @@
+{
+  "name": "game-create-no-saves",
+  "description": "A game that saves nothing: no saves key.",
+  "messages": [
+    {"direction": "server", "type": "game.create", "type_id": 23, "fields": {"id": 2, "root": "Games/doom", "entry": "index.html", "window": 12}}
+  ],
+  "hex": "172e000000a46269640264726f6f746a47616d65732f646f6f6d65656e7472796a696e6465782e68746d6c6677696e646f770c"
+}

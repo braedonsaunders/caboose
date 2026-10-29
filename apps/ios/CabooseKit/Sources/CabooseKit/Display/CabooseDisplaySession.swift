@@ -44,6 +44,14 @@ public final class CabooseDisplaySession: DisplaySession {
     public var cachedFrame: ((Int) -> CGImage?)?
     /// Whether to ask for the computer's sound (the agent seat, for one, stays silent). Set before `connect()`.
     public var playsAudio = true
+    /// Whether to run the games the computer hands off (`wasm` in the hello), where this build
+    /// has WebKit to run them in. Set before `connect()`.
+    public var runsGames = RemoteGame.isSupported
+    /// Whether to render windows from their applications' Vulkan calls (`gpu` in the hello,
+    /// docs/gpu-stream.md), where this build has the player. Set before `connect()`.
+    public var rendersGPUStreams = RemoteGPUStream.isSupported
+    /// How game surfaces reach the computer's files: the host behind the display URL, with its token.
+    public private(set) var gameHost: GameHostAccess?
 
     /// The pointer's shape by cursor-shape name ("default", "text", …), nil for an image cursor.
     public private(set) var cursorName: String?
@@ -64,6 +72,7 @@ public final class CabooseDisplaySession: DisplaySession {
     /// a closed socket still delivers can reach the next.
     private var pipelines = FramePipelineRegistry()
     private var videos = VideoRegistry()
+    private var gpuFeeds = GPUStreamFeeds()
     /// This connection's sound, on the clock its video layers share; nil when it plays none.
     private(set) var sound: SoundPlayer?
     private let echo = EchoMeter()
@@ -78,6 +87,8 @@ public final class CabooseDisplaySession: DisplaySession {
     /// After a hello from the same server epoch: the ping whose pong follows every
     /// `window.create` of the hello, and the ids announced so far.
     private var reconciling: (marker: UInt64, announced: Set<Int>)?
+    /// The games announced since the last hello; a kept game the burst does not announce has ended.
+    private var announcedGames = Set<Int>()
     private var buttons = 0
     private var focusedWindow: Int?
     /// What the server said about each window: geometry is relative to the parent for
@@ -97,6 +108,7 @@ public final class CabooseDisplaySession: DisplaySession {
     public convenience init(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities) {
         self.init(stream: { WebSocketStream(url: displayURL, token: token) }, token: password,
                   displays: [DisplayInfo(capabilities)], decoders: Self.hardwareDecoders)
+        gameHost = GameHostAccess(displayURL: displayURL, token: token)
     }
 
     init(stream: @escaping () -> ByteStream, token: String, displays: [DisplayInfo], decoders: [DisplayCodec],
@@ -130,6 +142,7 @@ public final class CabooseDisplaySession: DisplaySession {
         self.stream = stream
         pipelines = FramePipelineRegistry()
         videos = VideoRegistry()
+        gpuFeeds = GPUStreamFeeds()
         metrics = ConnectionMetrics()
         let now = CACurrentMediaTime()
         watchdog = LinkWatchdog(openedAt: now)
@@ -137,7 +150,7 @@ public final class CabooseDisplaySession: DisplaySession {
         startLivenessTimer()
         let clock = MediaClock()
         sound = playsAudio ? SoundPlayer(clock: clock) : nil
-        let incoming = Incoming(pipelines: pipelines, videos: videos, clock: clock, sound: sound, echo: echo, metrics: metrics,
+        let incoming = Incoming(pipelines: pipelines, videos: videos, gpuFeeds: gpuFeeds, clock: clock, sound: sound, echo: echo, metrics: metrics,
                                 carried: Carried(retained, epoch: server?.epoch),
                                 makeDecoder: makeDecoder, retire: { [weak self] id, generation in
             Task { @MainActor in if self?.stream === stream { self?.retireVideo(id, after: generation) } }
@@ -168,6 +181,9 @@ public final class CabooseDisplaySession: DisplaySession {
     /// The windows stay on screen with their last pictures; the server's hello decides
     /// whether they are still the same windows (see `resume(stream:password:displays:)`).
     public func resume(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities) {
+        guard isClosed, !isReplaced else { return }
+        gameHost = GameHostAccess(displayURL: displayURL, token: token)
+        for window in windows.values { window.game?.host = gameHost }
         resume(stream: { WebSocketStream(url: displayURL, token: token) }, password: password,
                displays: [DisplayInfo(capabilities)])
     }
@@ -227,6 +243,9 @@ public final class CabooseDisplaySession: DisplaySession {
         let closed = pipelines.removeAll()
         for pipeline in closed { pipeline.close() }
         for video in videos.removeAll() { video.close() }
+        // A GPU stream replays from its first byte on the next connection.
+        for window in windows.values { endGPUStream(of: window) }
+        _ = gpuFeeds.removeAll()
         sound?.stop()
         sound = nil
         pendingGeometry.removeAll()
@@ -247,6 +266,7 @@ public final class CabooseDisplaySession: DisplaySession {
             return
         }
         dropRetained()
+        for window in windows.values { endGame(of: window) }
         windows.removeAll()
         placement.removeAll()
         focusedWindow = nil
@@ -260,6 +280,8 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     private func removeWindow(_ id: Int) {
+        endGame(of: windows[id])
+        endGPUStream(of: windows[id])
         windows[id] = nil
         placement[id] = nil
         if focusedWindow == id { focusedWindow = nil }
@@ -274,7 +296,7 @@ public final class CabooseDisplaySession: DisplaySession {
     private func sendHello() {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
-                    audioDecoders: playsAudio ? ["opus"] : nil))
+                    audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams))
     }
 
     // MARK: Server messages
@@ -322,8 +344,20 @@ public final class CabooseDisplaySession: DisplaySession {
             case .videoCreate(let fields): addVideo(fields.id)
             case .videoUpdate(let fields): updateVideo(fields)
             case .videoDestroy(let id): retireVideo(id, after: 0)
-            case .frame, .tile, .videoFrame, .videoPresent, .audio, .unknown, .malformed:
-                continue // pictures were routed on the socket's queue; sound and unknown types are not used yet
+            case .gameCreate(let descriptor): createGame(descriptor)
+            case .gameDestroy(let id): endGame(of: windows.values.first { $0.game?.id == id })
+            case .gpuCreate(let id, let window): createGPUStream(id, window: window)
+            case .gpuDestroy(let id, let reason):
+                guard let window = windows.values.first(where: { $0.gpuStream?.id == id }) else { continue }
+                if let reason {
+                    // The window keeps the stream's view, saying why it ended.
+                    gpuFeeds[id] = nil
+                    window.gpuStream?.end(reason: reason)
+                } else {
+                    endGPUStream(of: window)
+                }
+            case .frame, .tile, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
+                continue // pictures and streams were routed on the socket's queue; unknown types are not used
             }
         }
     }
@@ -354,6 +388,7 @@ public final class CabooseDisplaySession: DisplaySession {
         // and answers a ping on the same ordered socket, so this pong ends the burst.
         let marker = Self.monotonicMicros()
         if hello.epoch != nil { reconciling = (marker, []) }
+        announcedGames.removeAll()
         send(.ping(micros: marker))
         for window in windows.values { applyCapabilities(window, xwayland: nil) }
     }
@@ -366,6 +401,7 @@ public final class CabooseDisplaySession: DisplaySession {
             removeWindow(id)
         }
         retained.removeAll()
+        for window in windows.values where window.game.map({ !announcedGames.contains($0.id) }) == true { endGame(of: window) }
         windowsAnnounced &+= 1
     }
 
@@ -465,6 +501,8 @@ public final class CabooseDisplaySession: DisplaySession {
     private func destroyWindow(_ id: Int) {
         retained[id] = nil
         for video in windows[id]?.videos ?? [] { removeVideo(video.id) }
+        endGame(of: windows[id])
+        endGPUStream(of: windows[id])
         pipelines.remove(id)?.close()
         windows[id] = nil
         placement[id] = nil
@@ -516,6 +554,44 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     private func removeVideo(_ id: Int) { retireVideo(id, after: 0) }
+
+    // MARK: GPU streams
+
+    /// The window is drawn on this device from stream `id`; its bytes are already arriving on
+    /// the socket's queue.
+    private func createGPUStream(_ id: Int, window windowID: Int) {
+        guard rendersGPUStreams, let window = windows[windowID], let feed = gpuFeeds[id] else { return }
+        if window.gpuStream?.id == id { return }
+        endGPUStream(of: window)
+        window.gpuStream = RemoteGPUStream(id: id, window: windowID, feed: feed) { [weak self] bytes in
+            self?.send(.gpuAck(id: id, offset: bytes))
+        }
+    }
+
+    private func endGPUStream(of window: RemoteWindow?) {
+        guard let window, let stream = window.gpuStream else { return }
+        window.gpuStream = nil
+        gpuFeeds[stream.id] = nil
+        stream.end()
+    }
+
+    // MARK: Games
+
+    /// The window's game runs on this device. The same game again (a resumed connection's
+    /// burst) keeps its object and its running page.
+    private func createGame(_ descriptor: GameDescriptor) {
+        guard runsGames, let window = windows[descriptor.window] else { return }
+        announcedGames.insert(descriptor.id)
+        if window.game?.id == descriptor.id { return }
+        endGame(of: window)
+        window.game = RemoteGame(descriptor, host: gameHost, picture: window.surface)
+    }
+
+    private func endGame(of window: RemoteWindow?) {
+        guard let window, let game = window.game else { return }
+        window.game = nil
+        game.end()
+    }
 
     private func apply(_ fields: WindowFields, to window: RemoteWindow) {
         if let title = fields.title { window.title = title }
@@ -604,7 +680,15 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.configure(window: window.id, geometry: nil, activated: true))
     }
 
-    public func close(_ window: RemoteWindow) { send(.close(window: window.id)) }
+    /// A game window first waits, for up to five seconds, for the game's saves still on their way.
+    public func close(_ window: RemoteWindow) {
+        guard let game = window.game else { return send(.close(window: window.id)) }
+        let id = window.id
+        Task { [weak self] in
+            await game.flushSaves(within: 5)
+            self?.send(.close(window: id))
+        }
+    }
 
     /// A keyframe repaints the whole window.
     public func refresh(_ window: RemoteWindow) { send(.requestKeyframe(window: window.id)) }
@@ -639,21 +723,25 @@ public final class CabooseDisplaySession: DisplaySession {
     nonisolated static func isModifier(_ keysym: Int) -> Bool { (0xFFE1 ... 0xFFEE).contains(keysym) }
 
     // MARK: Input — positions are in the window's own pixels.
+    //
+    // A window whose game runs on this device takes its input there: none addressed to it
+    // goes to the computer (docs/game-handoff.md, "Input").
 
     public func pointerMove(in window: RemoteWindow, to point: CGPoint, modifiers: [String] = []) {
+        guard window.game == nil else { return }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil))
     }
 
     public func pointerButton(in window: RemoteWindow, button: Int, pressed: Bool, at point: CGPoint, modifiers: [String] = []) {
         let bit = PointerButtons.bit(forXButton: button)
-        guard bit != 0 else { return }
+        guard bit != 0, window.game == nil else { return }
         if pressed { buttons |= bit } else { buttons &= ~bit }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil))
     }
 
     /// Wayland scrolls by any amount, so every swipe is precise.
     public func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, modifiers: [String] = []) {
-        guard dx != 0 || dy != 0 else { return }
+        guard dx != 0 || dy != 0, window.game == nil else { return }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons,
                       scroll: (Double(dx), Double(dy), true)))
     }
@@ -661,6 +749,7 @@ public final class CabooseDisplaySession: DisplaySession {
     public func resetScroll() {}
 
     public func key(_ stroke: KeyStroke, pressed: Bool, in window: RemoteWindow?, extraModifiers: [String] = []) {
+        guard window?.game == nil else { return }
         if let window {
             // A modifier alone draws nothing, so it would wait for a picture that never comes.
             if pressed, !Self.isModifier(stroke.keyval) { echo.keySent(window.id) }
@@ -672,12 +761,13 @@ public final class CabooseDisplaySession: DisplaySession {
 
     /// Text goes as a text-input-v3 commit; the server types it as keys into apps without one.
     public func type(_ text: String, in window: RemoteWindow?) {
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty, window?.game == nil else { return }
         prepareText(for: window)
         sendCommittedText(text)
     }
 
     public func edit(_ edits: [TypingBuffer.Edit], in window: RemoteWindow?) {
+        guard window?.game == nil else { return }
         var deleteBefore = 0
         var commit = ""
         for edit in edits {
@@ -739,6 +829,7 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     public func compose(_ text: String, selection: NSRange, in window: RemoteWindow?) {
+        guard window?.game == nil else { return }
         if text.isEmpty {
             guard preedit != nil else { return } // already ended by its commit
             preedit = nil
@@ -767,12 +858,13 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     public func touch(_ points: [TouchPoint], in window: RemoteWindow) {
-        guard !points.isEmpty else { return }
+        guard !points.isEmpty, window.game == nil else { return }
         if points.contains(where: { $0.phase == .down }), focusedWindow != window.id { focus(window) }
         send(.touch(window: window.id, points: points))
     }
 
     public func pencil(_ sample: PencilSample, in window: RemoteWindow) {
+        guard window.game == nil else { return }
         if sample.phase == .down, focusedWindow != window.id { focus(window) }
         send(.pencil(window: window.id, sample))
     }
@@ -799,6 +891,7 @@ private final class Incoming: @unchecked Sendable {
     private var parser = DisplayFrameParser()
     private let pipelines: FramePipelineRegistry
     private let videos: VideoRegistry
+    private let gpuFeeds: GPUStreamFeeds
     private let clock: MediaClock
     private let sound: SoundPlayer?
     private let echo: EchoMeter
@@ -808,13 +901,14 @@ private final class Incoming: @unchecked Sendable {
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private let send: @Sendable (ClientMessage) -> Void
 
-    init(pipelines: FramePipelineRegistry, videos: VideoRegistry, clock: MediaClock, sound: SoundPlayer?, echo: EchoMeter,
+    init(pipelines: FramePipelineRegistry, videos: VideoRegistry, gpuFeeds: GPUStreamFeeds, clock: MediaClock, sound: SoundPlayer?, echo: EchoMeter,
          metrics: ConnectionMetrics, carried: Carried,
          makeDecoder: @escaping (DisplayCodec) -> PictureDecoder, retire: @escaping @Sendable (Int, UInt64) -> Void,
          send: @escaping @Sendable (ClientMessage) -> Void) {
         self.retire = retire
         self.pipelines = pipelines
         self.videos = videos
+        self.gpuFeeds = gpuFeeds
         self.clock = clock
         self.sound = sound
         self.echo = echo
@@ -851,6 +945,12 @@ private final class Incoming: @unchecked Sendable {
                 }
                 let retire = retire
                 pipeline.whenApplied { generation in retire(id, generation) }
+            case .gpuCreate(let id, _):
+                // Made here, like a window's pipeline: the stream's bytes follow at once.
+                if gpuFeeds[id] == nil { gpuFeeds[id] = GPUStreamFeed() }
+                others.append(message)
+            case .gpuData(let id, let offset, let data):
+                gpuFeeds[id]?.receive(offset: offset, data: data)
             case .videoCreate(let fields):
                 // Made here, like a window's pipeline, because its first picture follows at once.
                 if videos[fields.id] == nil, let video = RemoteVideo(fields, clock: clock, send: send) { videos[fields.id] = video }

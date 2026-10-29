@@ -281,6 +281,10 @@ pub struct ClientHello {
     pub video_decoders: Option<Vec<Codec>>,
     /// Audio codecs the client plays (`"opus"`); absent means no audio is sent.
     pub audio_decoders: Option<Vec<String>>,
+    /// The client runs games handed off to it (docs/game-handoff.md). Sent only when true.
+    pub wasm: bool,
+    /// The client renders Vulkan streams itself (docs/gpu-stream.md). Sent only when true.
+    pub gpu: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -334,6 +338,35 @@ pub struct VideoUpdate {
     pub rect: Option<Rect>,
     pub clip: Option<Rect>,
     pub z: Option<i32>,
+}
+
+/// A directory a game persists through IDBFS: `mount` in the game's file system, `path` on
+/// the computer, relative to the home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameSave {
+    pub mount: String,
+    pub path: String,
+}
+
+/// `game.create` (0x17): the window's game runs on the client (docs/game-handoff.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameCreate {
+    pub id: u64,
+    pub window: u64,
+    /// The directory the game's files are served from, relative to the home.
+    pub root: String,
+    /// The page the client loads, relative to `root`.
+    pub entry: String,
+    /// Absent when the game saves nothing.
+    pub saves: Option<Vec<GameSave>>,
+}
+
+/// `gpu.data` (0x1A): the next bytes of a Vulkan stream, at `offset` from its start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuData {
+    pub id: u64,
+    pub offset: u64,
+    pub data: Vec<u8>,
 }
 
 /// `configure` (0x84).
@@ -458,6 +491,22 @@ pub enum Message {
         seq: u64,
         pts_us: u64,
     },
+    GameCreate(GameCreate),
+    GameDestroy {
+        id: u64,
+    },
+    /// The window's pictures are a Vulkan stream the client renders.
+    GpuCreate {
+        id: u64,
+        window: u64,
+    },
+    GpuData(GpuData),
+    /// The stream ended: its application closed, or `reason` says why it could not go on
+    /// (`"spool-limit"`: the computer would keep more of it than it allows).
+    GpuDestroy {
+        id: u64,
+        reason: Option<String>,
+    },
     Pong {
         t_us: u64,
     },
@@ -500,6 +549,11 @@ pub enum Message {
     VideoKeyframe {
         id: u64,
     },
+    /// The client has consumed a stream up to `offset`.
+    GpuAck {
+        id: u64,
+        offset: u64,
+    },
     Ping {
         t_us: u64,
     },
@@ -517,6 +571,11 @@ pub mod type_id {
     pub const VIDEO_UPDATE: u8 = 0x14;
     pub const VIDEO_DESTROY: u8 = 0x15;
     pub const VIDEO_PRESENT: u8 = 0x16;
+    pub const GAME_CREATE: u8 = 0x17;
+    pub const GAME_DESTROY: u8 = 0x18;
+    pub const GPU_CREATE: u8 = 0x19;
+    pub const GPU_DATA: u8 = 0x1A;
+    pub const GPU_DESTROY: u8 = 0x1B;
     pub const CURSOR: u8 = 0x20;
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
@@ -539,6 +598,7 @@ pub mod type_id {
     pub const POINTER: u8 = 0x92;
     pub const KEY: u8 = 0x93;
     pub const TEXT: u8 = 0x94;
+    pub const GPU_ACK: u8 = 0x96;
     pub const CLIENT_CLIPBOARD: u8 = 0xA0;
     pub const PING: u8 = 0xFE;
 }
@@ -597,6 +657,11 @@ impl Message {
             Message::VideoUpdate(_) => VIDEO_UPDATE,
             Message::VideoDestroy { .. } => VIDEO_DESTROY,
             Message::VideoPresent { .. } => VIDEO_PRESENT,
+            Message::GameCreate(_) => GAME_CREATE,
+            Message::GameDestroy { .. } => GAME_DESTROY,
+            Message::GpuCreate { .. } => GPU_CREATE,
+            Message::GpuData(_) => GPU_DATA,
+            Message::GpuDestroy { .. } => GPU_DESTROY,
             Message::Pong { .. } => PONG,
             Message::Bye { .. } => BYE,
             Message::ClientHello(_) => CLIENT_HELLO,
@@ -614,6 +679,7 @@ impl Message {
             Message::ClientClipboard(_) => CLIENT_CLIPBOARD,
             Message::VideoAck { .. } => VIDEO_ACK,
             Message::VideoKeyframe { .. } => VIDEO_KEYFRAME,
+            Message::GpuAck { .. } => GPU_ACK,
             Message::Ping { .. } => PING,
         }
     }
@@ -666,7 +732,36 @@ impl Message {
             | Message::Close { id }
             | Message::RequestKeyframe { id }
             | Message::VideoDestroy { id }
+            | Message::GameDestroy { id }
             | Message::VideoKeyframe { id } => MapBuilder::new().put("id", *id).build(),
+            Message::GpuDestroy { id, reason } => MapBuilder::new().put("id", *id).opt("reason", reason.clone()).build(),
+            Message::GpuCreate { id, window } => MapBuilder::new().put("id", *id).put("window", *window).build(),
+            Message::GpuData(m) => {
+                MapBuilder::new().put("id", m.id).put("offset", m.offset).put("data", m.data.clone()).build()
+            }
+            Message::GpuAck { id, offset } => MapBuilder::new().put("id", *id).put("offset", *offset).build(),
+            Message::GameCreate(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("window", m.window)
+                .put("root", m.root.as_str())
+                .put("entry", m.entry.as_str())
+                .opt(
+                    "saves",
+                    m.saves.as_ref().map(|saves| {
+                        Value::Array(
+                            saves
+                                .iter()
+                                .map(|s| {
+                                    MapBuilder::new()
+                                        .put("mount", s.mount.as_str())
+                                        .put("path", s.path.as_str())
+                                        .build()
+                                })
+                                .collect(),
+                        )
+                    }),
+                )
+                .build(),
             Message::VideoCreate(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("window", m.window)
@@ -753,6 +848,8 @@ impl Message {
                 .put("displays", displays_value(&m.displays))
                 .opt("video_decoders", m.video_decoders.as_deref().map(codecs_value))
                 .opt("audio_decoders", m.audio_decoders.clone())
+                .opt("wasm", m.wasm.then_some(true))
+                .opt("gpu", m.gpu.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -954,6 +1051,31 @@ impl Message {
             }),
             VIDEO_DESTROY => Message::VideoDestroy { id: f.u64("id")? },
             VIDEO_PRESENT => Message::VideoPresent { id: f.u64("id")?, seq: f.u64("seq")?, pts_us: f.u64("pts_us")? },
+            GAME_CREATE => Message::GameCreate(GameCreate {
+                id: f.u64("id")?,
+                window: f.u64("window")?,
+                root: f.string("root")?,
+                entry: f.string("entry")?,
+                saves: match f.opt("saves", fields::as_array)? {
+                    None => None,
+                    Some(saves) => Some(
+                        saves
+                            .iter()
+                            .map(|s| {
+                                let s = Fields::new("game.create.saves", s)?;
+                                Ok(GameSave { mount: s.string("mount")?, path: s.string("path")? })
+                            })
+                            .collect::<Result<_, ProtocolError>>()?,
+                    ),
+                },
+            }),
+            GAME_DESTROY => Message::GameDestroy { id: f.u64("id")? },
+            GPU_CREATE => Message::GpuCreate { id: f.u64("id")?, window: f.u64("window")? },
+            GPU_DATA => {
+                Message::GpuData(GpuData { id: f.u64("id")?, offset: f.u64("offset")?, data: f.bytes("data")? })
+            }
+            GPU_DESTROY => Message::GpuDestroy { id: f.u64("id")?, reason: f.opt_string("reason")? },
+            GPU_ACK => Message::GpuAck { id: f.u64("id")?, offset: f.u64("offset")? },
             VIDEO_ACK => Message::VideoAck { id: f.u64("id")?, seq: f.u64("seq")? },
             VIDEO_KEYFRAME => Message::VideoKeyframe { id: f.u64("id")? },
             PONG => Message::Pong { t_us: f.u64("t_us")? },
@@ -971,6 +1093,8 @@ impl Message {
                     None => None,
                     Some(_) => Some(f.strings("audio_decoders")?),
                 },
+                wasm: f.opt_bool("wasm")?.unwrap_or(false),
+                gpu: f.opt_bool("gpu")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -1060,6 +1184,12 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         VIDEO_PRESENT => "video.present",
         VIDEO_ACK => "video.ack",
         VIDEO_KEYFRAME => "video.keyframe",
+        GAME_CREATE => "game.create",
+        GAME_DESTROY => "game.destroy",
+        GPU_CREATE => "gpu.create",
+        GPU_DATA => "gpu.data",
+        GPU_DESTROY => "gpu.destroy",
+        GPU_ACK => "gpu.ack",
         CURSOR => "cursor",
         CURSOR_NAMED => "cursor.named",
         TEXT_INPUT => "text_input",

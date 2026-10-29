@@ -18,6 +18,9 @@ OPTIONS:
     --x-display N          Xwayland display number [default: 110]
     --no-xwayland          do not start Xwayland
     --no-audio             do not run PulseAudio or send sound
+    --no-games             do not listen for game launchers (the agent seat)
+    --gpu-spool-limit BYTES  the most of one GPU stream kept on disk; a stream that outgrows
+                           it ends [default: 2147483648]
     --audio-bitrate BPS    Opus bitrate [default: 128000]
     --env-file PATH        write WAYLAND_DISPLAY/DISPLAY for launchers here once ready
     --renderer KIND        pixman [default: pixman]
@@ -83,6 +86,10 @@ pub struct Config {
     pub x_display: Option<u32>,
     pub audio: bool,
     pub audio_bitrate: u32,
+    /// Listen on the game socket and hand games off to clients that run them.
+    pub games: bool,
+    /// The most of one GPU stream kept in its spool (docs/gpu-stream.md).
+    pub gpu_spool_limit: u64,
     pub env_file: Option<PathBuf>,
     pub renderer: RendererChoice,
     pub always_compose: bool,
@@ -106,6 +113,8 @@ impl Default for Config {
             x_display: Some(110),
             audio: true,
             audio_bitrate: 128_000,
+            games: true,
+            gpu_spool_limit: 2 << 30,
             env_file: None,
             renderer: RendererChoice::Pixman,
             always_compose: false,
@@ -155,6 +164,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             "--x-display" => config.x_display = Some(number(value(&mut args, &arg)?, &arg)?),
             "--no-xwayland" => config.x_display = None,
             "--no-audio" => config.audio = false,
+            "--no-games" => config.games = false,
+            "--gpu-spool-limit" => config.gpu_spool_limit = number(value(&mut args, &arg)?, &arg)?,
             "--audio-bitrate" => config.audio_bitrate = number(value(&mut args, &arg)?, &arg)?,
             "--env-file" => config.env_file = Some(value(&mut args, &arg)?.into()),
             "--renderer" => {
@@ -235,6 +246,10 @@ mod tests {
         let agent = run(&["--socket", "wayland-caboose-agent", "--x-display", "101"]);
         assert_eq!(owner.instance_dir(runtime), runtime.join("caboose-display/wayland-caboose-0"));
         assert_ne!(owner.instance_dir(runtime), agent.instance_dir(runtime));
+        assert!(owner.games);
+        assert!(!run(&["--no-games"]).games);
+        assert_eq!(owner.gpu_spool_limit, 2 << 30);
+        assert_eq!(run(&["--gpu-spool-limit", "1048576"]).gpu_spool_limit, 1 << 20);
     }
 
     #[test]

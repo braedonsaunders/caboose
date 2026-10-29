@@ -58,6 +58,7 @@ describe('catalog', () => {
     expect(displayVersion('7.6.1-1+b2', { kind: 'apt' })).toBe('7.6.1')
     expect(displayVersion('0.16.0')).toBe('0.16.0')
     expect(displayVersion('2.0.0-beta2', { kind: 'flatpak' })).toBe('2.0.0-beta2')
+    expect(displayVersion('100.1.400', { kind: 'game', size: 16380760 })).toBe('100.1.400')
   })
 })
 

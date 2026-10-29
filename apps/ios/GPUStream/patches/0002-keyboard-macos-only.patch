@@ -1,0 +1,26 @@
+diff --git a/framework/util/keyboard.cpp b/framework/util/keyboard.cpp
+index 4e0951e..dc95e55 100644
+--- a/framework/util/keyboard.cpp
++++ b/framework/util/keyboard.cpp
+@@ -37,7 +37,11 @@
+ #include <linux/input-event-codes.h>
+ #endif
+ 
+-#if defined(VK_USE_PLATFORM_METAL_EXT)
++#if defined(__APPLE__)
++#include <TargetConditionals.h>
++#endif
++
++#if defined(VK_USE_PLATFORM_METAL_EXT) && TARGET_OS_OSX
+ GFXRECON_BEGIN_SUPPRESS_APPLE_SDK_WARNINGS
+ #include <Carbon/Carbon.h>
+ GFXRECON_END_SUPPRESS_APPLE_SDK_WARNINGS
+@@ -288,7 +292,7 @@ bool Keyboard::GetKeyState(const std::string& key)
+     }
+ #endif
+ 
+-#if defined(VK_USE_PLATFORM_METAL_EXT)
++#if defined(VK_USE_PLATFORM_METAL_EXT) && TARGET_OS_OSX
+     static const std::unordered_map<std::string, CGKeyCode, CaseInsensitiveHash, CaseInsensitiveEqual>
+         carbon_key_code_map = {
+             { "F1", kVK_F1 },

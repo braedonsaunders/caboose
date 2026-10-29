@@ -17,6 +17,7 @@ wire contract, the Caboose Display Protocol.
    ├ an encoder per stream: libx264, libx265, or NVENC (h264/hevc/av1_nvenc)
    ├ changed-block detection, lossless tiles for small changes, sharpening of quiet areas
    ├ video: codec passthrough (the VA-API driver) and detected motion, as their own streams
+   ├ games: WebAssembly games handed off to the client, which runs them itself
    ├ pacing: frame callbacks released on the client's vsync, at most two frames in flight
    ├ input: pointer, wl_touch, keyboard by keysym, text-input-v3
    └ sound: a private PulseAudio, sent as Opus on the pictures' clock
@@ -76,6 +77,7 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 | D-Bus session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus`, with its own notification endpoint |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Video socket | `$XDG_RUNTIME_DIR/caboose-video.sock` | `$XDG_RUNTIME_DIR/caboose-video-agent.sock` |
+| Game socket | `$XDG_RUNTIME_DIR/caboose-game.sock` | none (`--no-games`) |
 | Control socket | `…/caboose-display/wayland-caboose-0/control.sock` | `…/caboose-display/wayland-caboose-agent/control.sock` |
 | Started | by the host at each wake | on demand, when an agent task or a watcher (the app's Agent space) needs it |
 
@@ -88,8 +90,8 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 - **Launch environment.** Once Wayland and Xwayland are ready, each instance writes the
   environment its applications need (`WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`,
   `XDG_RUNTIME_DIR`, toolkit backends, `CABOOSE_DISPLAY_CONTROL`, `PULSE_SERVER` when it
-  plays sound, the VA-API passthrough variables when the driver is installed) to its env
-  file in sh syntax.
+  plays sound, `CABOOSE_GAME_SOCKET` when it hands games off, the VA-API passthrough
+  variables when the driver is installed) to its env file in sh syntax.
 - **Per-instance state.** Each instance keeps its X authority (`Xauthority`), the
   Xwayland shim that adds `-auth` (`bin/Xwayland`), its PulseAudio socket
   (`pulse/native`) and its control socket (`control.sock`) under
@@ -216,11 +218,13 @@ client's windows are exactly the server's. A server that sends `epoch` guarantee
 order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `audio`, `xwayland`, `video`. A feature is listed only when the
-server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
+`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`. A feature is listed only
+when the server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
 `text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
-plays sound; and `tiles` unless tiles are turned off.
+plays sound; `tiles` unless tiles are turned off; `wasm` when it hands games off (the
+owner's display) and the client's hello says `wasm: true`; and `gpu` when it relays GPU
+streams (the owner's display) and the client's hello says `gpu: true`.
 
 ### Pacing and flow control
 
@@ -262,6 +266,11 @@ Server → client (`0x01`–`0x7F`):
 | `0x14` | `video.update` | `id`, `rect?`, `clip?`, `z?` |
 | `0x15` | `video.destroy` | `id` |
 | `0x16` | `video.present` | `id`, `seq`, `pts_us` |
+| `0x17` | `game.create` | `id`, `window`, `root: text`, `entry: text`, `saves?: [{ mount: text, path: text }]` |
+| `0x18` | `game.destroy` | `id` |
+| `0x19` | `gpu.create` | `id`, `window` |
+| `0x1A` | `gpu.data` | `id`, `offset: uint`, `data: bytes` |
+| `0x1B` | `gpu.destroy` | `id`, `reason?: "spool-limit"` |
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
@@ -275,7 +284,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]` |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool` (each present only when true) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
@@ -289,6 +298,7 @@ Client → server (`0x81`–`0xFF`):
 | `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool }` (pixels when precise, otherwise wheel clicks) |
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
+| `0x96` | `gpu.ack` | `id`, `offset`: the client has consumed the stream up to `offset` |
 | `0xA0` | `clipboard` | `mime`, `data: bytes` |
 | `0xFE` | `ping` | `t_us`, answered by `pong` for round-trip time |
 
@@ -408,6 +418,33 @@ owner; thumbnails and inactive presentations do not take it from the visible win
   `video.keyframe` the server sends a keyframe (a passthrough stream is replayed from its
   last one). A client that sends three `video.keyframe` for a passthrough stream within
   10 s gets that stream decoded on the server instead.
+
+### Game handoff
+
+A client whose hello says `wasm: true` runs games itself. A game is an ordinary toplevel on
+the computer, made by `caboose-game-run`; `game.create` tells the client that window's game
+runs on the client, from files under `root` (relative to `/home/caboose`) starting at
+`entry` (relative to `root`), and which directories it persists (`saves`: `mount` in the
+game's Emscripten file system, `path` relative to `/home/caboose`). The server sends it after
+the window's `window.create`, in the hello burst too, and `game.destroy` before the window
+is withdrawn or when the game ends. Game ids are their own namespace, unique for the server
+process's lifetime. While a client runs a window's game, the window sends no `frame`,
+`tile` or video stream and `request_keyframe` for it has no effect; `configure` and `close`
+work as for any window, and once the game ends a remaining window sends its picture again
+from a keyframe. The launcher, its socket and the client's side are specified in
+[game-handoff.md](game-handoff.md).
+
+### GPU streams
+
+A client whose hello says `gpu: true` renders windows from their applications' Vulkan calls.
+`gpu.create` binds stream `id` to `window`; `gpu.data` carries the stream's bytes in order,
+`offset` counting from its first byte, which is a GFXReconstruct capture file the client
+replays on its own GPU into the window. The client answers with `gpu.ack` as it consumes the
+stream; the server sends at most 4 MiB beyond the last acknowledged offset. A client that
+connects later receives the stream from offset 0. `gpu.destroy` ends it; with
+`reason: "spool-limit"` the stream outgrew what the server keeps of it and cannot be rendered. While a client renders
+a window's stream, the window sends no `frame`, `tile` or video stream. The launcher and the
+relay are specified in [gpu-stream.md](gpu-stream.md).
 
 ## Measurements
 

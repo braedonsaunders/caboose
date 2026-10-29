@@ -34,7 +34,7 @@ pub struct Videos {
 }
 
 /// The peer's pid, from the kernel rather than from what it says.
-fn peer_pid(stream: &UnixStream) -> Option<u32> {
+pub(crate) fn peer_pid(stream: &UnixStream) -> Option<u32> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: getsockopt writes at most `len` bytes into `cred`.

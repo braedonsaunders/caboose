@@ -194,6 +194,7 @@ pub struct State {
     /// Windows in the order they were focused, most recent last.
     pub focus_history: Vec<u64>,
     pub videos: crate::video::server::Videos,
+    pub games: crate::game::Games,
     pub control: crate::control::Control,
     pub clipboard: crate::clipboard::Clipboard,
     /// The compositor's PulseAudio, when it runs.
@@ -273,6 +274,9 @@ impl State {
             lineage: None,
         });
         self.assign_output(id);
+        if kind == WindowKind::Toplevel {
+            self.bind_waiting_games();
+        }
         id
     }
 
@@ -301,6 +305,7 @@ impl State {
             }
         }
         self.video_window_gone(id);
+        self.game_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
                 let conn = s.conn;
@@ -365,13 +370,16 @@ impl State {
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         for id in self.windows.parent_first() {
             let Some(w) = self.windows.get(id) else { continue };
-            let mapped = w.surface.wl_surface().is_some_and(|s| Self::is_mapped(&s));
+            // A Vulkan application whose stream the client renders never presents here, so its
+            // X11 window is shown once X maps it, without a buffer (docs/gpu-stream.md).
+            let mapped = w.surface.wl_surface().is_some_and(|s| Self::is_mapped(&s)) || self.streams_unbuffered(id);
             let parent_announced = w.parent.is_none_or(|p| self.windows.get(p).is_some_and(|p| p.announced.is_some()));
             if !mapped || !parent_announced {
                 if w.announced.is_some() {
                     if let Some(m) = &w.stream.motion {
                         self.net.send(conn, &proto::Message::VideoDestroy { id: m.id });
                     }
+                    self.window_withdrawn(id);
                     self.net.send(conn, &proto::Message::WindowDestroy { id });
                     let w = self.windows.get_mut(id).unwrap();
                     w.announced = None;
@@ -389,6 +397,7 @@ impl State {
                     w.announced = Some(now);
                     w.stream.need_keyframe = true;
                     w.stream.dirty = true;
+                    self.window_announced(id);
                 }
                 Some(before) => {
                     let update = crate::windows::diff(before, &now);

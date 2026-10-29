@@ -37,7 +37,8 @@ the agent runner ([`guest/agentd`](../agentd/README.md)), the file service
 ([`guest/terminal`](../terminal/README.md)), notifications
 ([`guest/notifications`](../notifications/README.md)), phone handoff and the `iPhone` printer
 ([`guest/phone`](../phone/README.md)), media handoff
-([`guest/media-handoff`](../media-handoff/README.md)), and the WhiteSur theme. Its
+([`guest/media-handoff`](../media-handoff/README.md)), `caboose-game-run` and the shipped game
+bundles ([`guest/game`](../game/README.md)), and the WhiteSur theme. Its
 environment switches on apps' accessibility trees (`ACCESSIBILITY_ENABLED`,
 `GNOME_ACCESSIBILITY`, `QT_LINUX_ACCESSIBILITY_ALWAYS_ON`). The container's command is
 `sleep infinity`; the host starts the session with `caboose-session`.
@@ -173,6 +174,8 @@ Other checks for this image:
   handoff.
 - `docker exec -u root caboose-owner bash -s < guest/phone/check.sh` checks the phone
   commands and printer; it consumes pending handoffs.
+- `docker exec -i -u root caboose-owner bash -s -- --here < guest/game/check.sh` checks game
+  handoff against a private display instance.
 - `guest/notifications/check-container.sh` checks the notification monitor and separate
   session buses in a disposable container.
 - `guest/desktop-mcp/check-a11y.sh` runs both Caboose Display instances and the

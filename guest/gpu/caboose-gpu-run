@@ -1,0 +1,178 @@
+#!/usr/bin/python3
+"""Run a Vulkan application with the client as its GPU (docs/gpu-stream.md).
+
+caboose-gpu-run [--title TITLE] [--app-id APP_ID] [--] COMMAND [ARGS...]
+
+The application runs against a driver that renders nothing, and a capture layer writes every
+Vulkan call and every write into mapped GPU memory into a FIFO that caboose-display relays to
+the connected client, which renders it into the application's window. When no client renders
+Vulkan streams, the application runs as it would without this launcher.
+"""
+import argparse
+import os
+import pathlib
+import socket
+import struct
+import sys
+
+LIB = pathlib.Path(os.environ.get('CABOOSE_GPU_DIR', '/usr/local/lib/caboose-gpu'))
+HELLO, MODE = 0x01, 0x81
+ANSWER_TIMEOUT = 5.0
+
+
+def cbor(value):
+    """Canonical CBOR for the maps, text, unsigned integers, booleans and arrays a hello holds."""
+    def head(major, n):
+        if n < 24:
+            return bytes([major << 5 | n])
+        for extra, size in ((24, 1), (25, 2), (26, 4), (27, 8)):
+            if n < 1 << (8 * size):
+                return bytes([major << 5 | extra]) + n.to_bytes(size, 'big')
+        raise ValueError(n)
+    if isinstance(value, bool):
+        return b'\xf5' if value else b'\xf4'
+    if isinstance(value, int):
+        return head(0, value)
+    if isinstance(value, str):
+        raw = value.encode()
+        return head(3, len(raw)) + raw
+    if isinstance(value, list):
+        return head(4, len(value)) + b''.join(cbor(v) for v in value)
+    if isinstance(value, dict):
+        items = sorted((cbor(k), cbor(v)) for k, v in value.items())
+        return head(5, len(items)) + b''.join(k + v for k, v in items)
+    raise TypeError(type(value))
+
+
+def uncbor(data, at=0):
+    """Decode one CBOR item of the kinds `mode` holds: (value, next offset)."""
+    first = data[at]
+    major, info = first >> 5, first & 31
+    at += 1
+    if major == 7:
+        return {20: False, 21: True, 22: None}[info], at
+    if info < 24:
+        n = info
+    else:
+        size = {24: 1, 25: 2, 26: 4, 27: 8}[info]
+        n = int.from_bytes(data[at:at + size], 'big')
+        at += size
+    if major == 0:
+        return n, at
+    if major == 3:
+        return data[at:at + n].decode(), at + n
+    if major == 4:
+        out = []
+        for _ in range(n):
+            item, at = uncbor(data, at)
+            out.append(item)
+        return out, at
+    if major == 5:
+        out = {}
+        for _ in range(n):
+            key, at = uncbor(data, at)
+            out[key], at = uncbor(data, at)
+        return out, at
+    raise ValueError(f'CBOR major type {major}')
+
+
+def message(kind, value):
+    payload = cbor(value)
+    return bytes([kind]) + struct.pack('<I', len(payload)) + payload
+
+
+def first_mode(sock):
+    """The display's first `mode`, or None when it does not answer in time."""
+    sock.settimeout(ANSWER_TIMEOUT)
+    buf = b''
+    try:
+        while True:
+            while len(buf) >= 5:
+                kind, length = buf[0], struct.unpack_from('<I', buf, 1)[0]
+                if len(buf) < 5 + length:
+                    break
+                payload, buf = buf[5:5 + length], buf[5 + length:]
+                if kind == MODE:
+                    return uncbor(payload)[0]
+            chunk = sock.recv(4096)
+            if not chunk:
+                return None
+            buf += chunk
+    except (socket.timeout, OSError, ValueError, KeyError):
+        return None
+
+
+def stream_env(fifo):
+    """The environment that renders nothing here and streams every call to the client."""
+    env = dict(os.environ)
+    env.update({
+        'VK_ICD_FILENAMES': str(LIB / 'icd.json'),
+        'VK_ADD_LAYER_PATH': str(LIB / 'layers'),
+        'VK_INSTANCE_LAYERS': 'VK_LAYER_LUNARG_gfxreconstruct',
+        'GFXRECON_CAPTURE_FILE': str(fifo),
+        'GFXRECON_CAPTURE_FILE_TIMESTAMP': 'false',
+        'GFXRECON_CAPTURE_COMPRESSION_TYPE': 'NONE',
+        'GFXRECON_CAPTURE_FILE_FLUSH': 'true',
+        'GFXRECON_LOG_LEVEL': 'error',
+        # The window is an X11 window through Xwayland: it maps without a buffer, which this
+        # driver never presents.
+        'SDL_VIDEODRIVER': 'x11',
+        'GDK_BACKEND': 'x11',
+        'QT_QPA_PLATFORM': 'xcb',
+    })
+    env.pop('WAYLAND_DISPLAY', None)
+    profile = LIB / 'profile.json'
+    if profile.is_file():
+        # The application sees the client's GPU: only what it can render is offered.
+        env['VK_INSTANCE_LAYERS'] += ':VK_LAYER_KHRONOS_profiles'
+        env['VK_KHRONOS_PROFILES_PROFILE_FILE'] = str(profile)
+        env['VK_KHRONOS_PROFILES_SIMULATE_CAPABILITIES'] = 'SIMULATE_API_VERSION_BIT,SIMULATE_FEATURES_BIT,SIMULATE_PROPERTIES_BIT,SIMULATE_EXTENSIONS_BIT,SIMULATE_FORMATS_BIT'
+    return env
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog='caboose-gpu-run', description=__doc__.split('\n\n')[0])
+    ap.add_argument('--title')
+    ap.add_argument('--app-id')
+    ap.add_argument('command', nargs=argparse.REMAINDER)
+    args = ap.parse_args(argv)
+    command = args.command[1:] if args.command[:1] == ['--'] else args.command
+    if not command:
+        ap.error('a command is required')
+    name = pathlib.Path(command[0]).name
+    socket_path = os.environ.get('CABOOSE_GAME_SOCKET')
+    runtime = os.environ.get('XDG_RUNTIME_DIR')
+    if not socket_path or not runtime or not (LIB / 'icd.json').is_file():
+        os.execvp(command[0], command)
+    streams = pathlib.Path(runtime) / 'caboose-gpu'
+    streams.mkdir(mode=0o700, exist_ok=True)
+    fifo = streams / f'{os.getpid()}.gfxr'
+    try:
+        fifo.unlink()
+    except FileNotFoundError:
+        pass
+    os.mkfifo(fifo, 0o600)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    mode = None
+    try:
+        sock.connect(socket_path)
+        sock.sendall(message(HELLO, {'version': 1, 'title': args.title or name, 'app_id': args.app_id or name, 'stream': str(fifo)}))
+        mode = first_mode(sock)
+    except OSError:
+        pass
+    if not isinstance(mode, dict) or mode.get('mode') != 'handoff':
+        # No client renders it: the application runs here, on this computer's own driver.
+        print(f'caboose-gpu-run: no client renders Vulkan streams ({mode!r}); running {name} here', file=sys.stderr)
+        sock.close()
+        fifo.unlink(missing_ok=True)
+        os.execvp(command[0], command)
+    # The connection stays open in the application, which caboose-display matches by pid,
+    # and its end tells caboose-display the stream is over.
+    sock.settimeout(None)
+    os.set_inheritable(sock.fileno(), True)
+    print(f'caboose-gpu-run: {name} renders on the client', file=sys.stderr)
+    os.execvpe(command[0], command, stream_env(fifo))
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

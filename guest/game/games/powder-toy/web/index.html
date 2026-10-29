@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>The Powder Toy</title>
+<style>
+  html, body {
+    margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000;
+    overscroll-behavior: none; -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+  }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: none; touch-action: none; outline: none; image-rendering: pixelated; }
+  #status {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 24px; box-sizing: border-box; text-align: center; white-space: pre-wrap;
+    color: #a3a6ae; font: 15px -apple-system, system-ui, sans-serif;
+  }
+  #status.over { inset: 0 0 auto 0; background: rgba(0, 0, 0, 0.8); color: #f3f3f5; }
+</style>
+</head>
+<body>
+<p id="status">Loading…</p>
+<canvas id="canvas" tabindex="-1"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById('canvas')
+  const status = document.getElementById('status')
+  let presented = false
+  // Before the game shows, the message replaces it; after, it lies over the top edge.
+  const fail = message => {
+    status.textContent = message
+    status.classList.toggle('over', presented)
+    status.style.display = 'flex'
+  }
+  // The largest size with the game's aspect ratio that fits the viewport. The canvas keeps
+  // its own pixel size, so pointer and touch coordinates map exactly.
+  const fit = () => {
+    if (!canvas.width || !canvas.height) return
+    const scale = Math.min(window.innerWidth / canvas.width, window.innerHeight / canvas.height)
+    canvas.style.width = `${Math.floor(canvas.width * scale)}px`
+    canvas.style.height = `${Math.floor(canvas.height * scale)}px`
+  }
+  new MutationObserver(fit).observe(canvas, { attributes: true, attributeFilter: ['width', 'height'] })
+  window.addEventListener('resize', fit)
+  canvas.addEventListener('contextmenu', event => event.preventDefault())
+  canvas.addEventListener('webglcontextlost', event => {
+    event.preventDefault()
+    fail('The game lost its graphics context. Close the window and open the game again.')
+  })
+  window.mark_presentable = () => {
+    if (presented) return
+    presented = true
+    status.style.display = 'none'
+    canvas.style.display = 'block'
+    fit()
+    canvas.focus()
+  }
+  window.addEventListener('error', event => fail(`The game stopped: ${event.message || 'an error occurred'}`))
+  window.addEventListener('unhandledrejection', event => fail(`The game stopped: ${event.reason?.message ?? event.reason}`))
+  // This build runs on threads, which need SharedArrayBuffer, which needs a cross-origin
+  // isolated page.
+  if (typeof SharedArrayBuffer === 'undefined') {
+    fail('The game needs threads (SharedArrayBuffer), which this page is not isolated enough to use.')
+    return
+  }
+  const script = document.createElement('script')
+  script.onerror = () => fail('The game could not be loaded.')
+  script.onload = () => {
+    window.create_powder({
+      canvas,
+      print: text => console.log(text),
+      printErr: text => console.error(text),
+    }).catch(error => fail(`The game could not start: ${error?.message ?? error}`))
+  }
+  script.src = 'powder.js'
+  document.head.appendChild(script)
+})()
+</script>
+</body>
+</html>

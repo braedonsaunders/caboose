@@ -1,0 +1,38 @@
+diff --git a/framework/decode/vulkan_replay_consumer_base.cpp b/framework/decode/vulkan_replay_consumer_base.cpp
+index e9fe6fe..d867989 100644
+--- a/framework/decode/vulkan_replay_consumer_base.cpp
++++ b/framework/decode/vulkan_replay_consumer_base.cpp
+@@ -1505,9 +1505,13 @@ void VulkanReplayConsumerBase::ClearRecaptureHandleIds()
+ 
+ void VulkanReplayConsumerBase::InitializeLoader()
+ {
+-    loader_handle_ = graphics::InitializeLoader(getenv("GFXRECON_VULKAN_LIBRARY_PATH"));
++    // Only load a Vulkan library when no vkGetInstanceProcAddr was provided via SetupForRecapture() or
++    // SetInstanceProcAddr()
++    if (get_instance_proc_addr_ == nullptr)
++    {
++        loader_handle_ = graphics::InitializeLoader(getenv("GFXRECON_VULKAN_LIBRARY_PATH"));
++    }
+ 
+-    // Only get get_instance_proc_addr_ from the loader if it wasn't already set via SetupForRecapture()
+     if ((loader_handle_ != nullptr) && (get_instance_proc_addr_ == nullptr))
+     {
+         get_instance_proc_addr_ = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+diff --git a/framework/decode/vulkan_replay_consumer_base.h b/framework/decode/vulkan_replay_consumer_base.h
+index d18f24b..f1f2eb0 100644
+--- a/framework/decode/vulkan_replay_consumer_base.h
++++ b/framework/decode/vulkan_replay_consumer_base.h
+@@ -93,6 +93,13 @@ class VulkanReplayConsumerBase : public VulkanConsumer
+ 
+     void SetFpsInfo(graphics::FpsInfo* fps_info) { fps_info_ = fps_info; }
+ 
++    // Use this vkGetInstanceProcAddr instead of loading a Vulkan library, for a Vulkan implementation that is linked
++    // into the process (such as a static MoltenVK on iOS). Call it before the first block is processed.
++    void SetInstanceProcAddr(PFN_vkGetInstanceProcAddr get_instance_proc_addr)
++    {
++        get_instance_proc_addr_ = get_instance_proc_addr;
++    }
++
+     void           SetDecoder(VulkanDecoder* decoder) { decoder_ = decoder; };
+     VulkanDecoder* GetDecoder() { return decoder_; }
+ 

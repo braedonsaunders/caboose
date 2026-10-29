@@ -1,0 +1,8 @@
+{
+  "name": "gpu-data",
+  "description": "The first bytes of stream 1: a GFXReconstruct file header (fourcc GFXR, format 0.0, no options).",
+  "messages": [
+    {"direction": "server", "type": "gpu.data", "type_id": 26, "fields": {"id": 1, "data": {"$bytes": "47465852000000000000000000000000"}, "offset": 0}}
+  ],
+  "hex": "1a23000000a36269640164646174615047465852000000000000000000000000666f666673657400"
+}

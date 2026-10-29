@@ -11,6 +11,7 @@ import { FlathubIndex } from './flathub.js'
 import { CraftReleases } from './releases.js'
 import { createController, createDeskPool } from './driver.js'
 import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
+import type { Architecture } from './app-catalog-data.js'
 import { describeHost, machineResources } from './host-info.js'
 import { AgentRegistry } from './registry.js'
 import { AgentProfiles } from './agent-profiles.js'
@@ -83,8 +84,9 @@ const reach = new ReachService({
     return name === 'Caboose' ? `Caboose on ${machineName()}` : name
   },
 })
-// The Library's host-wide parts: Flathub's index, the Craft releases and the shared runtimes.
-const flatpakArch = guestArchitecture === 'arm64' ? 'aarch64' : 'x86_64'
+// The Library's host-wide parts: Flathub's index, the Craft releases, the shared runtimes and
+// the architecture that picks a game's native build.
+const flatpakArch: Architecture = guestArchitecture === 'arm64' ? 'aarch64' : 'x86_64'
 const depotRunner = deployment.runtime === 'container'
   ? containerDepotRunner({ image: deployment.containerImage, volume: DEPOT_VOLUME, securityArgs: securityArgs(deployment.containerArgs), script: () => readFile(new URL('./depot-builder.py', import.meta.url), 'utf8') })
   : null
@@ -92,6 +94,7 @@ const library = {
   flathub: new FlathubIndex(join(deployment.imageRoot, 'flathub'), flatpakArch),
   releases: new CraftReleases(join(deployment.imageRoot, 'releases'), flatpakArch),
   depot: new RuntimeDepot(depotRunner, join(deployment.imageRoot, 'depot.json')),
+  arch: flatpakArch,
 }
 void library.flathub.ready().catch(error => console.error('Flathub index unavailable:', error instanceof Error ? error.message : error))
 const host = describeHost(deployment, process.env, { push: !!sender, liveActivities: !!(apns && sender) })

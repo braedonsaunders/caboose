@@ -51,6 +51,60 @@ describe('catalog operations', () => {
   })
 })
 
+describe('catalog games', () => {
+  function games(arch: 'x86_64' | 'aarch64', installed: string | null = null) {
+    const calls: Array<{ action: string; argument: any }> = [], events: any[] = []
+    let apps: Record<string, unknown> = installed ? { 'powder-toy': { installedVersion: installed, active: false } } : {}
+    const guest = { run: vi.fn(async (_command: string, args: string[]) => {
+      if (args.length === 3) return '[]'
+      const action = args[2]!, argument = JSON.parse(args[3]!)
+      if (action === 'progress') return 'null'
+      calls.push({ action, argument })
+      if (action === 'list') return JSON.stringify({ apps, environment: {} })
+      if (action === 'updates') return JSON.stringify({ flatpak: [], apt: [] })
+      if (action === 'install' || action === 'update') apps = { 'powder-toy': { installedVersion: argument.source.version, active: false, progress: { operation: action, phase: 'finished', stage: 'finished' } } }
+      if (action === 'remove') apps = {}
+      return ''
+    }) }
+    const catalog = new AppCatalog(() => guest, event => events.push(event), () => () => {}, { data, releases, arch })
+    return { catalog, calls, events }
+  }
+  const pinned = data.apps.find(app => app.id === 'powder-toy')!.source as Extract<typeof data.apps[number]['source'], { kind: 'game' }>
+
+  it('lists a game with its pinned version and the download size for this architecture', async () => {
+    for (const [arch, native] of [['x86_64', 7671200], ['aarch64', 6714136]] as const) {
+      const game = (await games(arch).catalog.list()).apps.find(app => app.id === 'powder-toy')!
+      expect(game).toMatchObject({ source: { kind: 'game', size: 9666560 + native }, latestVersion: '100.1.400', installedVersion: null, updateAvailable: false, curated: true, categories: ['Games'] })
+      expect(game.source).not.toHaveProperty('url')
+    }
+  })
+  it('sends the guest the archive and only this architecture\'s native build, and the desktop id to list it by', async () => {
+    const s = games('aarch64')
+    await s.catalog.list()
+    expect(s.calls.find(call => call.action === 'list')!.argument).toContainEqual({ id: 'powder-toy', source: pinned, desktopId: 'uk.co.powdertoy.tpt.desktop' })
+    s.catalog.start('powder-toy', 'install')
+    await expect.poll(() => s.catalog.busy).toBe(false)
+    const { native: _native, ...archive } = pinned
+    expect(s.calls.find(call => call.action === 'install')!.argument).toMatchObject({ id: 'powder-toy', icon: 'uk.co.powdertoy.tpt', desktopId: 'uk.co.powdertoy.tpt.desktop', source: { ...archive, native: pinned.native!.aarch64 } })
+    expect(s.events).toContainEqual(expect.objectContaining({ id: 'powder-toy', phase: 'finished' }))
+    expect((await s.catalog.list()).apps.find(app => app.id === 'powder-toy')?.installedVersion).toBe('100.1.400')
+    s.catalog.start('powder-toy', 'remove')
+    await expect.poll(() => s.catalog.busy).toBe(false)
+    expect(s.calls.find(call => call.action === 'remove')!.argument.source).toEqual(pinned)
+  })
+  it('updates an installed game itself once the catalog pins a newer version', async () => {
+    const s = games('x86_64', '100.0.1')
+    expect((await s.catalog.list()).apps.find(app => app.id === 'powder-toy')?.updateAvailable).toBe(true)
+    await s.catalog.autoUpdate()
+    await expect.poll(() => s.calls.filter(call => call.action === 'update').map(call => call.argument.id)).toEqual(['powder-toy'])
+    await expect.poll(() => s.catalog.busy).toBe(false)
+    expect((await s.catalog.list()).apps.find(app => app.id === 'powder-toy')).toMatchObject({ installedVersion: '100.1.400', updateAvailable: false })
+    const current = games('x86_64', '100.1.400')
+    await current.catalog.autoUpdate()
+    expect(current.calls.some(call => call.action === 'update')).toBe(false)
+  })
+})
+
 describe('catalog MCP servers', () => {
   it('offers only installed apps with safe commands', async () => {
     const { craftMcpServers } = await import('./app-catalog.js')
@@ -226,7 +280,7 @@ describe('Flathub in the Library', () => {
     expect(create.apps.slice(0, Math.min(15, curatedCreate.length)).map(app => app.id)).toEqual(curatedCreate.slice(0, 15))
     expect(groups.find(group => group.category === 'Internet')?.apps.map(app => app.id)).toEqual(['flathub-org.mozilla.firefox'])
     expect(groups.every(group => group.apps.length > 0 && group.apps.length <= 15)).toBe(true)
-    expect(groups.some(group => group.category === 'Games')).toBe(false)
+    expect(groups.find(group => group.category === 'Games')?.apps.map(app => app.id)).toEqual(['powder-toy'])
   })
   it('installs a Flathub app on its current runtime and lists it as installed', async () => {
     const s = await library()

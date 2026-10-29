@@ -865,6 +865,39 @@
         ]
       },
       "flathub": "org.videolan.VLC"
+    },
+    {
+      "id": "powder-toy",
+      "name": "The Powder Toy",
+      "summary": "Physics sandbox",
+      "category": "Games",
+      "icon": "uk.co.powdertoy.tpt",
+      "desktopId": "uk.co.powdertoy.tpt.desktop",
+      "fileTypes": {
+        "extensions": [],
+        "utTypes": []
+      },
+      "source": {
+        "kind": "game",
+        "bundle": "powder-toy",
+        "version": "100.1.400",
+        "url": "https://github.com/The-Powder-Toy/The-Powder-Toy/releases/download/v100.1.400/powder-v100.1.400-wasm32-emscripten-emscripten.tar",
+        "sha256": "55143cc3f9b01e4d950841983079f9040cd105f5816f6af7f4f8d5ab9608dbb6",
+        "size": 9666560,
+        "native": {
+          "x86_64": {
+            "url": "https://github.com/The-Powder-Toy/The-Powder-Toy/releases/download/v100.1.400/powder-v100.1.400-x86_64-linux-gnu",
+            "sha256": "5e28b1c911e8bb0c5fe42d50c33880c7db9fca3cdf098facb09e0afb7731d499",
+            "size": 7671200
+          },
+          "aarch64": {
+            "url": "https://github.com/The-Powder-Toy/The-Powder-Toy/releases/download/v100.1.400/powder-v100.1.400-aarch64-linux-gnu",
+            "sha256": "4e7295c81078273d4e2b1f807213ae4c6973a0d7a1e367373856602b2a12a3cc",
+            "size": 6714136
+          }
+        }
+      },
+      "flathub": "uk.co.powdertoy.tpt"
     }
   ]
 }

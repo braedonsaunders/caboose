@@ -125,7 +125,8 @@ computer in `error` with the reason in `lastError`, and the next wake retries it
 ### Guest components
 
 Caboose's own guest plumbing (the file and terminal services, the notification monitor and
-endpoints, phone handoff and the agent runner) is a bundle listed in `guest/components/manifest.json` and installed by
+endpoints, phone handoff, `caboose-game-run` with the game bundles Caboose ships in
+`/usr/local/share/caboose/games`, and the agent runner) is a bundle listed in `guest/components/manifest.json` and installed by
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
 
@@ -257,6 +258,7 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | Xwayland | `:110` | `:101` |
 | Applications | Wayland first, X11 through Xwayland as a fallback | The same |
 | Sound | Its own PulseAudio, sent as Opus | None (`--no-audio`) |
+| Game handoff | `$XDG_RUNTIME_DIR/caboose-game.sock` | None (`--no-games`) |
 | Session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus` |
 | Notification endpoint | `caboose-notification-daemon.service` | `caboose-agent-notification-daemon.service` |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
@@ -265,8 +267,9 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
 `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`),
-`CABOOSE_DISPLAY_CONTROL` (its control socket, below), plus `LIBVA_DRIVER_NAME=caboose` when
-the passthrough driver is installed. Each keeps its X authority, Xwayland shim, PulseAudio
+`CABOOSE_DISPLAY_CONTROL` (its control socket, below), `CABOOSE_GAME_SOCKET` on the owner's
+display ([game-handoff.md](game-handoff.md)), plus `LIBVA_DRIVER_NAME=caboose` when the
+passthrough driver is installed. Each keeps its X authority, Xwayland shim, PulseAudio
 socket and control socket under `$XDG_RUNTIME_DIR/caboose-display/<wayland socket name>/`.
 The units set `ACCESSIBILITY_ENABLED=1`, `GNOME_ACCESSIBILITY=1` and
 `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`, and start the seat's AT-SPI bus (`a11y.py bus`) before
@@ -375,7 +378,7 @@ messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 ### Catalog
 
 The Library is every application a computer can add: Caboose's curated entries
-(`guest/catalog/catalog.json`: Craft releases and Debian applications) and Flathub's desktop
+(`guest/catalog/catalog.json`: Craft releases, Debian applications and games) and Flathub's desktop
 applications. A Flathub application that is also a curated entry (`flathub` in `catalog.json`)
 is shown once, as the curated entry. Every operation is on one application.
 
@@ -403,11 +406,17 @@ is shown once, as the curated entry. Every operation is on one application.
 - **Debian applications** install from Debian 13's signed repositories. Debian applications the
   Library discovered through AppStream before it offered Flathub stay listed, updatable and
   removable: their package and AppStream identity are kept in their operation record.
+- **Games** (`source.kind: "game"`, [game-handoff.md](game-handoff.md#catalog-games)) pin a
+  WebAssembly build archive and, per architecture (`x86_64`, `aarch64`), optional native builds
+  by GitHub release URL, byte count and SHA-256, and name a bundle Caboose ships. Every
+  computer is offered every game; the host sends the guest the archive and only its own
+  architecture's native build, and the listing's `source.size` is their total.
 
 **Updates.** Installed applications update themselves. Once a day while a computer runs (never
 waking one), the host first updates the shared runtimes, then asks the guest which Flathub apps
 have a newer commit and which curated Debian packages APT can upgrade, compares each Craft app's
-installed version with its latest release, and runs an ordinary `update` operation for each.
+installed version with its latest release and each game's with the version its pin names
+(`latestVersion`), and runs an ordinary `update` operation for each.
 `updateAvailable` reports what the last check found and `update` installs it at once.
 
 The host runs the installer (`guest-catalog.py`) as root through the guest channel on both
@@ -415,7 +424,16 @@ runtimes. A Craft release downloads directly from the guest and is size- and SHA
 before APT installs it with `mesa-vulkan-drivers` and `libgl1-mesa-dri`; the `.deb` is deleted
 once installed. A Flathub app installs into the computer's system Flatpak installation through
 libflatpak, from the Flathub remote whose repository file (with its signing key) ships in
-`guest/flatpak`. Installed versions come from dpkg and Flatpak; failures and interrupted
+`guest/flatpak`. A game downloads directly from the guest and is size- and SHA-256-checked;
+then, as `caboose`, the archive is unpacked into a staging directory beside
+`~/.local/share/caboose/games/<id>`, the shipped bundle and the native build (at the program
+the manifest's `native_fallback` names) are added, and the directory is swapped in with one
+atomic rename, so an update replaces it whole. As root the installer then writes
+`/usr/local/share/applications/<desktopId>` (`Exec=caboose-game-run <dir>`, with the installed
+version in `X-Caboose-Catalog-Version`) and the hicolor icon, and deletes the downloads. Root
+never writes below the owner's home. Removal deletes the desktop entry, the directory and the
+icon and keeps the save paths; game operations run neither APT nor dpkg. Installed versions
+come from dpkg, Flatpak and a game's desktop entry; failures and interrupted
 operations are recorded in the guest and reported on the next listing. A guest operation lock,
 retained by package-manager children, distinguishes active work from an interrupted worker. A
 retry of failed or interrupted Debian work completes pending dpkg configuration before trying
@@ -1834,6 +1852,40 @@ the app card, and a detached view releases its layers.
   display), the address in use, reconnects and recent losses with their reasons. The
   computer's encode time and the one-way network delay are not measured, because the
   phone and the computer share no clock.
+
+### Game handoff
+
+CabooseKit's `Game/` runs the games caboose-display hands off ([game-handoff.md](game-handoff.md)).
+`CabooseDisplaySession.runsGames`, true wherever WebKit is available, puts `wasm: true` in the
+hello. `game.create` sets `RemoteWindow.game`, a `RemoteGame` that lasts through a resume from
+the same server epoch and ends on `game.destroy`, when its window is withdrawn, or when the
+session ends. The session sends no input addressed to a game window, and `close` for a game
+window first waits up to five seconds for saves still being written. The host's `/v1/fs` is
+reached at the display URL's origin with the host bearer token. `RemoteWindowView`'s
+interactive view lays the game's one `GameSurfaceView` (a `WKWebView` with a non-persistent
+data store) over the window and turns off its own gestures and key forwarding; when the view
+leaves the screen or the app stops being active, a snapshot becomes the window's picture.
+`CabooseGameSchemeHandler` serves `caboose-game://<id>/<path>` from a least-recently-used cache
+in `Caches/CabooseGames`, bounded at 1 GiB and keyed by computer, path and etag. Save sync
+writes IDBFS changes within two seconds and retries every five seconds while the game runs.
+An on-screen controller reaches the page's Gamepad API through `RemoteGame.gamepad`.
+
+### GPU streams
+
+A window that arrives as a GPU stream ([gpu-stream.md](gpu-stream.md)) is replayed on the
+device. `CabooseDisplaySession.rendersGPUStreams`, true where the player is built in, puts
+`gpu: true` in the hello. `gpu.create` sets `RemoteWindow.gpuStream`; `gpu.data` goes from the
+socket's queue to the stream's replay in order, and the session answers with `gpu.ack` as the
+replay takes the bytes. The player, `GPUStreamPlayer`, is GFXReconstruct's Vulkan replay (tag
+`vulkan-sdk-1.4.363.0`, capture format 1.0.5, MIT) over MoltenVK 1.4.2 (Apache-2.0), linked
+statically behind a C API in `apps/ios/GPUStream` and built by
+`apps/ios/scripts/build-gpu-stream.sh`; without that library CabooseKit builds without the
+player and says nothing of GPU streams. It replays as `gfxrecon-replay --remove-unsupported -m
+rebind` does, through the virtual swapchain, on its own thread, into the `CAMetalLayer` of a
+`GPUStreamView` that the window's interactive view lays over its picture. Input to the window
+still goes to the computer. One stream replays at a time: a later stream's window says it
+waits, its bytes wait in its feed unacknowledged, and it plays when the first ends. A
+`gpu.destroy` with a reason leaves the window saying why its stream ended.
 
 ### Shell
 

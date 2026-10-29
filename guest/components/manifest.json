@@ -39,5 +39,14 @@
   "agentd/caboose-agentd.mjs",
   "agentd/agent-tools.mjs",
   "agentd/package.json",
-  "agentd/install.sh"
+  "agentd/install.sh",
+  "game/install.sh",
+  "game/caboose-game-run",
+  "game/games/powder-toy/caboose-game.json",
+  "game/games/powder-toy/web/index.html",
+  "game/games/powder-toy/icon.png",
+  "game/games/powder-toy/icon-license.txt",
+  "gpu/install.sh",
+  "gpu/caboose-gpu-run",
+  "gpu/profile.json"
 ]

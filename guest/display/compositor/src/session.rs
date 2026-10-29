@@ -28,10 +28,14 @@ pub struct Session {
     pub video_decoders: Vec<Codec>,
     /// The client plays Opus audio.
     pub audio: bool,
+    /// The client runs games handed off to it, and this instance hands them off.
+    pub wasm: bool,
+    /// The client renders Vulkan streams, and this instance relays them.
+    pub gpu: bool,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
-pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool) -> Vec<String> {
+pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool, wasm: bool, gpu: bool) -> Vec<String> {
     let mut f = vec!["vsync", "ack", "touch", "pencil", "text-input-v3", "cursor-named", "clipboard"];
     if xwayland {
         f.push("xwayland");
@@ -44,6 +48,12 @@ pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool) -> Vec<St
     }
     if tiles {
         f.push("tiles");
+    }
+    if wasm {
+        f.push("wasm");
+    }
+    if gpu {
+        f.push("gpu");
     }
     f.into_iter().map(String::from).collect()
 }
@@ -134,6 +144,7 @@ impl State {
             a.stop_capture();
         }
         self.session = None;
+        self.games_session_changed();
         self.generation += 1;
         self.release_input();
         for w in self.windows.iter_mut() {
@@ -187,6 +198,7 @@ impl State {
             }
             Message::Configure(c) => self.configure_window(&c),
             Message::Close { id } => self.close_window(id),
+            Message::GpuAck { id, offset } => self.gpu_ack(id, offset),
             Message::Displays { displays } => self.set_displays(&displays),
             Message::Touch(t) => self.touch(&t),
             Message::Pointer(p) => self.pointer(&p),
@@ -242,6 +254,8 @@ impl State {
         self.generation += 1;
         self.set_displays(&hello.displays);
         let encoders: Vec<Codec> = offered.into_iter().filter(|c| hello.decoders.contains(c)).collect();
+        let wasm = hello.wasm && self.games.socket.is_some();
+        let gpu = hello.gpu && self.games.socket.is_some();
         self.net.send(
             conn,
             &Message::ServerHello(proto::ServerHello {
@@ -254,6 +268,8 @@ impl State {
                         && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()),
                     self.audio.is_some(),
                     self.encoders.settings.tile_max_px > 0,
+                    wasm,
+                    gpu,
                 ),
                 epoch: Some(self.epoch.clone()),
             }),
@@ -261,7 +277,9 @@ impl State {
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
         let video_decoders = hello.video_decoders.clone().unwrap_or_default();
         let audio = hello.audio_decoders.as_ref().is_some_and(|d| d.iter().any(|c| c == "opus"));
-        self.session = Some(Session { conn, ready: true, backend, last_vsync: HashMap::new(), video_decoders, audio });
+        self.session =
+            Some(Session { conn, ready: true, backend, last_vsync: HashMap::new(), video_decoders, audio, wasm, gpu });
+        self.games_session_changed();
         if audio {
             let (tx, bitrate) = (self.audio_tx.clone(), self.config.audio_bitrate);
             if let Some(a) = self.audio.as_mut() {
@@ -388,6 +406,9 @@ impl State {
         let align = backend.alignment();
         let now_us = self.now_us();
         for id in self.windows.ids() {
+            if self.game_shown(id) {
+                continue; // the client runs the window's game; there is nothing to show
+            }
             let Some(w) = self.windows.get(id) else { continue };
             if let Some(a) = w.announced.as_ref().filter(|_| w.stream.refine_due(now_us) && !w.stream.need_keyframe) {
                 let rect = Rect::new(0, 0, a.geometry.w, a.geometry.h);
@@ -884,10 +905,13 @@ mod tests {
 
     #[test]
     fn features_name_xwayland_only_when_running() {
-        assert!(!features(false, false, false, false).contains(&"xwayland".to_string()));
-        assert!(features(true, false, false, false).contains(&"xwayland".to_string()));
-        assert!(features(false, true, false, false).contains(&"video".to_string()));
-        assert!(features(false, false, true, false).contains(&"audio".to_string()));
-        assert!(features(false, false, false, true).contains(&"tiles".to_string()));
+        assert!(!features(false, false, false, false, false, false).contains(&"xwayland".to_string()));
+        assert!(features(true, false, false, false, false, false).contains(&"xwayland".to_string()));
+        assert!(features(false, true, false, false, false, false).contains(&"video".to_string()));
+        assert!(features(false, false, true, false, false, false).contains(&"audio".to_string()));
+        assert!(features(false, false, false, true, false, false).contains(&"tiles".to_string()));
+        assert!(features(false, false, false, false, true, false).contains(&"wasm".to_string()));
+        assert!(!features(true, true, true, true, false, false).contains(&"wasm".to_string()));
+        assert!(features(false, false, false, false, false, true).contains(&"gpu".to_string()));
     }
 }
