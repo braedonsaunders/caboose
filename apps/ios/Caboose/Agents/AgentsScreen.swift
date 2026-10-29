@@ -30,7 +30,10 @@ struct AgentsScreen: View {
                 } else {
                     NewChat(connectModel: { connectingModel = true })
                         .background { AgentReadingBackground() }
-                        .safeAreaBar(edge: .bottom) { ChatComposer(task: nil) { connectingModel = true } }
+                        .safeAreaBar(edge: .bottom) {
+                            ChatComposer(task: nil) { connectingModel = true }
+                                .padding(.top, 12)
+                        }
                         .navigationTitle("Agents")
                 }
             }
@@ -233,8 +236,8 @@ private struct NewChat: View {
                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                             agents.draft = suggestion.text
                         } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: suggestion.symbol).font(.title3).foregroundStyle(Brand.amber).frame(width: 28)
+                            HStack(spacing: 10) {
+                                Image(systemName: suggestion.symbol).font(.body).foregroundStyle(Brand.amber).frame(width: 24)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(suggestion.title).font(.subheadline.weight(.semibold))
                                     Text(suggestion.detail).font(.caption).foregroundStyle(.secondary)
@@ -243,7 +246,8 @@ private struct NewChat: View {
                                 Image(systemName: "arrow.up.left").font(.caption).foregroundStyle(.tertiary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 14).padding(.vertical, 13)
+                            .padding(.horizontal, 12).padding(.vertical, 9)
+                            .frame(minHeight: 44)
                         }
                         .buttonStyle(.plain)
                         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
@@ -252,6 +256,7 @@ private struct NewChat: View {
                 .frame(maxWidth: 420)
             }
             .padding(.horizontal, 16)
+            .padding(.bottom, 16)
             .frame(maxWidth: 760)
             .frame(maxWidth: .infinity)
         }
