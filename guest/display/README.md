@@ -106,6 +106,14 @@ This directory is a Cargo workspace:
   `video.present` when the application shows each frame. A client that keeps failing to
   decode a stream gets it decoded on the server. Launched applications get
   `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
+- **Game handoff** ([docs/game-handoff.md](../../docs/game-handoff.md), `src/game.rs`). The
+  compositor listens on the game socket (`$CABOOSE_GAME_SOCKET`, default
+  `$XDG_RUNTIME_DIR/caboose-game.sock`) for `caboose-game-run`
+  ([guest/game](../game/README.md)), binds each launcher to the toplevel its process made
+  (SO_PEERCRED), and tells it whether the connected client runs games. A client whose hello
+  says `wasm: true` gets `game.create` after the window's `window.create` and
+  `game.destroy` when the game ends, and the window sends it no pictures meanwhile.
+  `--no-games` turns it off (the agent seat).
 - **Detected motion** (`src/motion.rs`). Each window's changed macroblocks feed a tracker.
   A dense rectangle of at least 192×112 pixels whose blocks change in most pictures at
   15 fps or more, for a second, becomes a `motion` video stream. The window's encode
@@ -226,7 +234,8 @@ It needs `XDG_RUNTIME_DIR`. It creates the Wayland socket (`--socket`), starts X
 (`--x-display`), and once both are ready writes the application environment to
 `--env-file` in sh syntax: `WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
 toolkit backends (Wayland first), `CABOOSE_DISPLAY_CONTROL` (its control socket),
-`PULSE_SERVER` when it plays sound, `LIBVA_DRIVER_NAME=caboose`,
+`PULSE_SERVER` when it plays sound, `CABOOSE_GAME_SOCKET` when it hands games off,
+`LIBVA_DRIVER_NAME=caboose`,
 `GST_VA_ALL_DRIVERS=1` and `CABOOSE_VIDEO_SOCKET` when the passthrough driver is
 installed, and the GPU variables it was started with (`GALLIUM_DRIVER`,
 `MESA_D3D12_DEFAULT_ADAPTER_NAME`, `LIBVA_DRIVER_NAME`). It then runs `COMMAND` with that
@@ -244,6 +253,7 @@ summary.
 | `--x-display N` | `110` | Xwayland display number |
 | `--no-xwayland` | | Do not start Xwayland |
 | `--no-audio` | | Do not run PulseAudio or send sound |
+| `--no-games` | | Do not listen for game launchers |
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |
 | `--renderer KIND` | `pixman` | The renderer (pixman is the only one) |
@@ -264,6 +274,7 @@ summary.
 | --- | --- |
 | `XDG_RUNTIME_DIR` | Required. Holds the Wayland socket, the default video socket and the instance's state directory |
 | `CABOOSE_VIDEO_SOCKET` | The video passthrough socket (default `$XDG_RUNTIME_DIR/caboose-video.sock`) |
+| `CABOOSE_GAME_SOCKET` | The game socket (default `$XDG_RUNTIME_DIR/caboose-game.sock`) |
 | `LIBVA_DRIVERS_PATH` | Where to look for `caboose_drv_video.so` (default `/usr/lib/x86_64-linux-gnu/dri`) |
 | `CABOOSE_DISPLAY_LOG` | A `tracing` filter (`info`, `caboose_display=debug`, …) |
 
@@ -283,8 +294,9 @@ caboose-display-probe --check --url ws://127.0.0.1:14601/ --token-file /run/cabo
 `--url` selects the instance (default `ws://127.0.0.1:14600/`). `--save` writes each
 window's stream and last decoded picture (PNG); `--type`, `--click` and `--touch` send
 input once a window shows, and `--actions` replays a sequence of keys, text, taps and
-clicks (`--window` picks the window); `--decoders`, `--video-decoders` and `--audio` set
-what the probe announces; `--json` prints a machine-readable report; `--check` exits 0 as
+clicks (`--window` picks the window, and `close` closes it); `--decoders`,
+`--video-decoders`, `--audio` and `--wasm` set what the probe announces, and with `--wasm`
+the report lists the games handed to it; `--json` prints a machine-readable report; `--check` exits 0 as
 soon as the server answers a hello. `caboose-display-probe --help` lists every option.
 
 ## Control socket
@@ -318,7 +330,7 @@ passthrough driver. Neither enables a unit at boot; the host starts the displays
   by the host at each wake; `caboose-display-agent.service` is the agent seat, started
   when an agent task or the app's Agent space needs it. The agent seat runs
   `--listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio
-  --env-file /run/caboose/agent-display.env` on its own D-Bus session bus
+  --no-games --env-file /run/caboose/agent-display.env` on its own D-Bus session bus
   (`/run/user/1000/agent-bus`, from `caboose-agent-bus.service`) with its own
   notification endpoint, so the agents' notifications never reach the owner. Both units
   turn applications' accessibility on and start the seat's accessibility bus once it is

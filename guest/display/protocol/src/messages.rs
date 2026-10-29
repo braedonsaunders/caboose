@@ -710,7 +710,12 @@ impl Message {
                         Value::Array(
                             saves
                                 .iter()
-                                .map(|s| MapBuilder::new().put("mount", s.mount.as_str()).put("path", s.path.as_str()).build())
+                                .map(|s| {
+                                    MapBuilder::new()
+                                        .put("mount", s.mount.as_str())
+                                        .put("path", s.path.as_str())
+                                        .build()
+                                })
                                 .collect(),
                         )
                     }),

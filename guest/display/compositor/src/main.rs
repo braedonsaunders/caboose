@@ -6,6 +6,7 @@ mod config;
 mod control;
 mod displays;
 mod encode;
+mod game;
 mod input;
 mod keymap;
 mod motion;
@@ -140,6 +141,10 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     if let Some(audio) = &state.audio {
         // Applications play into the compositor's PulseAudio, whose sound goes to the phone.
         env.push(("PULSE_SERVER".into(), audio.server_address()));
+    }
+    if let Some(socket) = &state.games.socket {
+        // Game handoff: caboose-game-run finds the compositor here (game.rs).
+        env.push(("CABOOSE_GAME_SOCKET".into(), socket.display().to_string()));
     }
     if let Some(socket) = &state.control.socket {
         // The seat for local tools: windows, input and pictures (control.rs).
@@ -378,6 +383,7 @@ fn run(config: Config) -> Result<(), String> {
         input,
         focus_history: Vec::new(),
         videos: Default::default(),
+        games: Default::default(),
         control: Default::default(),
         clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
         audio: None,
@@ -402,6 +408,16 @@ fn run(config: Config) -> Result<(), String> {
             Err(e) => tracing::warn!("no video passthrough: cannot listen on {}: {e}", path.display()),
         },
         None => tracing::info!("no video passthrough: XDG_RUNTIME_DIR is not set"),
+    }
+    match game::socket_path().filter(|_| state.config.games) {
+        Some(path) => match game::Games::listen(&path, &handle) {
+            Ok(g) => {
+                tracing::info!("game socket: {}", path.display());
+                state.games = g;
+            }
+            Err(e) => tracing::warn!("no game handoff: cannot listen on {}: {e}", path.display()),
+        },
+        None => tracing::info!("no game handoff"),
     }
     let instance_dir = std::env::var_os("XDG_RUNTIME_DIR").map(|d| state.config.instance_dir(std::path::Path::new(&d)));
     if let Some(dir) = &instance_dir {
