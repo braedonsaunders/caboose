@@ -41,9 +41,9 @@ COPY image/apps.sh /tmp/caboose-apps.sh
 RUN bash /tmp/caboose-apps.sh
 COPY desktop-mcp /tmp/desktop-mcp
 RUN /tmp/desktop-mcp/install.sh
-COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /tmp/agentd/
+COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/package.json agentd/install.sh /tmp/agentd/
 RUN /tmp/agentd/install.sh && rm -rf /tmp/agentd
-COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /tmp/bundle/agentd/
+COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/package.json agentd/install.sh /tmp/bundle/agentd/
 COPY components /tmp/bundle/components
 COPY files /tmp/bundle/files
 COPY terminal /tmp/bundle/terminal
