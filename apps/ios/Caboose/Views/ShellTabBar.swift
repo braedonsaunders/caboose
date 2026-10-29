@@ -18,7 +18,7 @@ struct ShellTabChrome: ViewModifier {
         self.tab = tab
     }
 
-    func body(content: Content) -> some View {
+    @ViewBuilder func body(content: Content) -> some View {
         switch placement {
         case .system:
             content
@@ -142,7 +142,7 @@ struct ShellTabButtons: View {
 
 private struct ClusterGlass: ViewModifier {
     let active: Bool
-    func body(content: Content) -> some View {
+    @ViewBuilder func body(content: Content) -> some View {
         if active { content.glassEffect(.regular.interactive(), in: .capsule) } else { content }
     }
 }

@@ -79,7 +79,6 @@ struct HomeFinder: View {
             .toolbar(.hidden, for: .navigationBar)
         }
         .presentationDetents([.large])
-        .presentationBackground(.clear)
         .onAppear { focused = true }
     }
 
@@ -89,7 +88,6 @@ struct HomeFinder: View {
             TextField(model.agents.available ? "Ask, open or find" : "Open or find", text: $query)
                 .focused($focused)
                 .submitLabel(.go)
-                .autocorrectionDisabled()
                 .onSubmit(takeFirst)
             if !query.isEmpty {
                 Button("Clear", systemImage: "xmark.circle.fill") { query = "" }
