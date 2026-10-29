@@ -206,6 +206,13 @@ describe('AgentCatalog', () => {
       env: { WAYLAND_DISPLAY: 'wayland-caboose-0', DISPLAY: ':110', GDK_BACKEND: 'wayland,x11', QT_QPA_PLATFORM: 'wayland;xcb' } } })
   })
 
+  it('starts phone sign-in without a display environment', async () => {
+    const fake = fakeGuest()
+    const catalog = new AgentCatalog(registry(), () => ({ ...fake.guest, ownerEnv: [] }), settingsStore())
+    await catalog.signIn('codex-acp', { methodId: 'chat-gpt', on: 'phone' })
+    expect(fake.calls.at(-1)).toMatchObject({ mode: 'sign-in', argument: { on: 'phone', env: {} } })
+  })
+
   it('accepts only agents a task could run as the default', async () => {
     const catalog = new AgentCatalog(registry(), () => undefined, settingsStore())
     await expect(catalog.ensureKnown('goose')).resolves.toBeUndefined()
@@ -245,7 +252,8 @@ describe('agent routes', () => {
     const fake = fakeGuest()
     let running = false
     const controller: Controller = {
-      wake: vi.fn(async () => { running = true; return { state: 'running', display: { path: '/v1/display', token: 't', protocol: 'caboose-display' as const }, computer: { name: 'C', image: 'Debian 13', memoryMb: 2048, vcpus: 2 } } }),
+      wake: vi.fn(async (mode) => { running = true; fake.guest.ownerEnv = mode === 'headless' ? [] : ['DISPLAY=:110']; return { state: 'running', display: { path: '/v1/display', token: 't', protocol: 'caboose-display' as const }, computer: { name: 'C', image: 'Debian 13', memoryMb: 2048, vcpus: 2 } } }),
+      promote: vi.fn(async () => { fake.guest.ownerEnv = ['DISPLAY=:110']; return { state: 'running', display: { path: '/v1/display', token: 't', protocol: 'caboose-display' as const }, computer: { name: 'C', image: 'Debian 13', memoryMb: 2048, vcpus: 2 } } }),
       park: vi.fn(async () => { running = false }), activeResources: () => null, hasSavedState: () => false,
       stats: () => ({}), apps: async () => [], launch: async () => {},
       displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {},
@@ -261,8 +269,20 @@ describe('agent routes', () => {
       const response = await fetch(base + path, { method, headers: { authorization: 'Bearer owner', 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
       return { status: response.status, body: await response.json() as any }
     }
-    return { fake, controller, settings, request, base }
+    return { fake, controller, settings, request, base, computer: app.computer }
   }
+
+  it('keeps phone sign-in headless and promotes before display sign-in', async () => {
+    const { request, controller, fake, computer } = await server()
+    await computer.wake('headless')
+    expect((await request('/v1/agents/claude-acp/install', 'POST')).status).toBe(200)
+    expect((await request('/v1/agents/claude-acp/sign-in', 'POST', { methodId: 'console-login', on: 'phone' })).status).toBe(200)
+    expect(controller.promote).not.toHaveBeenCalled()
+    expect(fake.calls.at(-1)).toMatchObject({ mode: 'sign-in', argument: { on: 'phone', env: {} } })
+    expect((await request('/v1/agents/claude-acp/sign-in', 'POST', { methodId: 'console-login' })).status).toBe(200)
+    expect(controller.promote).toHaveBeenCalledOnce()
+    expect(fake.calls.at(-1)).toMatchObject({ mode: 'sign-in', argument: { on: 'display', env: { DISPLAY: ':110' } } })
+  })
 
   it('lists, installs, signs in and sets the default agent', async () => {
     const { request, controller, fake, base } = await server()
@@ -272,7 +292,7 @@ describe('agent routes', () => {
     expect(listed.body).toMatchObject({ defaultAgent: null, registry: { fetchedAt: expect.any(String) } })
     expect(controller.wake).not.toHaveBeenCalled()
     expect((await request('/v1/agents/goose/install', 'POST')).status).toBe(409)
-    expect((await request('/v1/agent/tasks', 'POST', { prompt: 'hi' })).status).toBe(409)
+    expect((await request('/v1/agent/tasks', 'POST', { prompt: 'hi' })).status).toBe(400)
     await request('/v1/session', 'POST')
     expect(await request('/v1/agent/tasks', 'POST', { prompt: 'hi' })).toEqual({ status: 400, body: { error: 'Choose an agent: pass agent, or set a default agent in Settings' } })
     const installed = await request('/v1/agents/claude-acp/install', 'POST')

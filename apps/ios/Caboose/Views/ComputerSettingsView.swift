@@ -197,7 +197,7 @@ struct ComputerSettingsView: View {
                 } label: {
                     Label("Park Now", systemImage: "moon.zzz")
                 }
-                .disabled(parking || status.state != "running")
+                .disabled(parking || !["running", "frozen"].contains(status.state))
                 if status.capabilities.restart {
                     Button(role: .destructive) { confirmRestart = true } label: {
                         Label("Restart", systemImage: "arrow.clockwise")
@@ -366,6 +366,7 @@ struct ComputerSettingsView: View {
         switch state {
         case "running": "Running"
         case "parked": "Parked"
+        case "frozen": "Sleeping"
         case "waking": "Waking"
         case "parking": "Parking"
         case "restarting": "Restarting"

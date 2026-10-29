@@ -1,3 +1,4 @@
+import { usesSystemImage, validateDepotRestoreOptions } from './system-image.js'
 import { prepareKeyring } from './keyring.js'
 import { AgentToolJournal } from './agent-tools-journal.js'
 import { AgentRoutines } from './agent-routines.js'
@@ -5,6 +6,9 @@ import { ActivityService, ActivityStore } from './activities.js'
 import { APNsSender, apnsFromEnvironment } from './apns.js'
 import { PushDevices, PushService } from './push.js'
 import { config } from './config.js'
+import { createStorageFromEnv } from '@braedonsaunders/appkit-storage/env'
+import { snapshotTierKey } from './snapshot-tier-config.js'
+import { startSnapshotGc } from './snapshot-tier-gc.js'
 import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens, type ComputerRecord } from './computers.js'
 import { createContainerController, DEPOT_VOLUME, securityArgs } from './container-driver.js'
 import { containerDepotRunner, RuntimeDepot } from './depot.js'
@@ -21,7 +25,7 @@ import { ComputerConflictError } from './lifecycle.js'
 import { ownerToken, secretFile } from './owner-token.js'
 import { openIdentityDatabase } from './identity/database.js'
 import { Identity } from './identity/service.js'
-import { lstat, readdir, readFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readFile } from 'node:fs/promises'
 import { containerImage, describeImage, microvmImage, type ImageProvisioner } from './provision.js'
 import { openSettings, type ComputerSettings } from './settings.js'
 import { hostId, machineName, ReachService } from './reach.js'
@@ -29,6 +33,9 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const deployment = config(process.env)
+const tierKey = await snapshotTierKey(process.env, deployment.runtime)
+const tierStore = tierKey ? createStorageFromEnv(process.env) : undefined
+const snapshotGc = tierStore && tierKey ? startSnapshotGc(join(deployment.imageRoot, 'overlays'), tierStore, tierKey) : undefined
 const owner = deployment.token ? { token: deployment.token, created: false } : await ownerToken(join(deployment.imageRoot, 'owner-token'))
 if (!deployment.token) {
   console.log(owner.created
@@ -53,6 +60,12 @@ const computers = await ComputerRegistry.open(deployment.imageRoot, identityData
 const phones = await PhoneTokens.open(join(deployment.imageRoot, 'phones.json'))
 // Every microVM computer shares one appkit-desk host, and with it its capacity.
 const desks = deployment.runtime === 'microvm' ? createDeskPool(deployment) : undefined
+const splitImage = process.env.CABOOSE_SPLIT_IMAGE || undefined
+const vmDepot = deployment.runtime === 'microvm' && process.env.CABOOSE_VM_DEPOT ? resolve(process.env.CABOOSE_VM_DEPOT) : undefined
+validateDepotRestoreOptions(vmDepot, process.env.CABOOSE_VM_COW)
+if (vmDepot && /[:\n\r]/.test(vmDepot)) throw new Error('CABOOSE_VM_DEPOT cannot contain a colon or newline')
+if (vmDepot && process.platform !== 'linux') throw new Error('CABOOSE_VM_DEPOT requires a Linux microVM host')
+if (vmDepot) await mkdir(vmDepot, { recursive: true, mode: 0o755 })
 const defaults = { memoryMb: deployment.memoryMb, vcpus: deployment.vcpus, idleMs: deployment.idleMs }
 
 /** A computer's settings, runtime and notifications, from its own directory. */
@@ -66,9 +79,10 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const identity = { id: record.id, slot: record.slot }
   const controller = deployment.runtime === 'container'
     ? createContainerController(deployment, { identity, settings: () => settings.get() })
-    : createController(deployment, { identity, ...(desks ? { desks } : {}), settings: () => settings.get() })
+    : createController(deployment, { identity, splitImage, depotPath: vmDepot, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
-  return { settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  const snapshotPath = join(deployment.imageRoot, 'overlays', `${record.id}.snapshot`)
+  return { ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), join(deployment.imageRoot, 'overlays', `${record.id}.raw`), snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
@@ -92,7 +106,9 @@ const reach = new ReachService({
 const flatpakArch: Architecture = guestArchitecture === 'arm64' ? 'aarch64' : 'x86_64'
 const depotRunner = deployment.runtime === 'container'
   ? containerDepotRunner({ image: deployment.containerImage, volume: DEPOT_VOLUME, securityArgs: securityArgs(deployment.containerArgs), script: () => readFile(new URL('./depot-builder.py', import.meta.url), 'utf8') })
-  : null
+  : vmDepot ? containerDepotRunner({ image: deployment.containerImage, volume: vmDepot, securityArgs: securityArgs(deployment.containerArgs), script: () => readFile(new URL('./depot-builder.py', import.meta.url), 'utf8') }) : null
+// Populate the repository before any guest probes its shared installation.
+if (vmDepot && depotRunner) await depotRunner(['list'], () => {}, 10 * 60_000)
 const library = {
   flathub: new FlathubIndex(join(deployment.imageRoot, 'flathub'), flatpakArch),
   releases: new CraftReleases(join(deployment.imageRoot, 'releases'), flatpakArch),
@@ -104,7 +120,7 @@ const library = {
 void library.flathub.ready().catch(error => console.error('Flathub index unavailable:', error instanceof Error ? error.message : error))
 const host = describeHost(deployment, process.env, { push: !!sender, liveActivities: !!(apns && sender) })
 const app = createCabooseServer({
-  token: owner.token, ...ownerComputer, registry, library, host, agentIdleMs: deployment.agentIdleMs, webRoot,
+  token: owner.token, ...ownerComputer, registry, library, host, agentIdleMs: deployment.agentIdleMs, freezeParkMs: deployment.freezeParkMs, webRoot,
   machine: () => machineResources(deployment.imageRoot), reach,
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null, diskBytes },
   identity,
@@ -123,7 +139,7 @@ app.server.listen(deployment.port, deployment.host, () => {
 void image.ensure().then(() => console.log(describeImage(image.status())), error => console.error(error instanceof Error ? error.message : error))
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
-    void reach.stop().catch(() => undefined).then(() => app.shutdown()).then(() => identityDatabase.close()).then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
+    void reach.stop().catch(() => undefined).then(() => app.shutdown()).then(() => snapshotGc?.close()).then(() => identityDatabase.close()).then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
   })
 }
 
@@ -131,19 +147,28 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
  * Wakes wait for the computer's image: while it downloads, a wake is refused with its
  * progress, and `GET /v1/health` reports it as `image`.
  */
-function withImage(controller: Controller, provisioner: ImageProvisioner): Controller {
+function withImage(controller: Controller, provisioner: ImageProvisioner, useSplit?: () => Promise<boolean>): Controller {
   const gated = Object.create(controller) as Controller
-  gated.wake = async () => {
+  gated.wake = async (mode) => {
+    if (await useSplit?.()) return controller.wake(mode)
     // Checking for an image that is present takes moments; a download never holds a wake open.
     const ensured = provisioner.ensure().catch(() => undefined)
     await Promise.race([ensured, new Promise(resolve => setTimeout(resolve, 1000).unref())])
     const status = provisioner.status()
     if (status.state === 'fetching') throw new ComputerConflictError(describeImage(status))
     if (status.state === 'failed') throw new Error(describeImage(status))
-    return controller.wake()
+    if (status.state === 'missing') throw new ComputerConflictError(missingImage())
+    return controller.wake(mode)
   }
   gated.stats = () => ({ ...(controller.stats() as object), image: provisioner.status() })
   return gated
+}
+
+/** What an owner does when the computer's image is absent and the host has none to fetch. */
+function missingImage(): string {
+  return deployment.runtime === 'container'
+    ? `The computer's image ${deployment.containerImage} is not in Docker. Build it with docker build -t ${deployment.containerImage} -f guest/container/Dockerfile guest, or set CABOOSE_CONTAINER_IMAGE to a published image.`
+    : `The computer's image is not installed. Build it into ${deployment.imageRoot} with guest/image/build.sh, or set CABOOSE_BASE_IMAGE to a published image.`
 }
 
 /** The disk a microVM computer uses on the host: its overlay and any parked memory. Unknown for a container. */

@@ -996,8 +996,6 @@ export class AgentTasks {
 
   private async prepareSeat(guest: AgentGuest): Promise<void> {
     await this.home?.ensure(guest)
-    if (this.ensureSeat) await this.ensureSeat().catch(error => console.error('Agent seat did not start:', error))
-    else await guest.run('/bin/sh', ['-c', 'systemctl start caboose-display-agent.service || true'], 30_000)
   }
 
   /**
@@ -1010,8 +1008,9 @@ export class AgentTasks {
     if (this.restoring) return this.restoring
     const guest = this.guest()
     if (this.restored || !guest) return
+    const release = this.acquire()
     this.restoring = this.restoreId()
-    try { await this.restoring; this.restored = true } finally { this.restoring = undefined }
+    try { await this.restoring; this.restored = true } finally { this.restoring = undefined; release() }
     this.resume()
   }
 
@@ -1112,10 +1111,11 @@ export class AgentTasks {
   resume(): void {
     if (this.needsRecovery && !this.recovering) {
       this.needsRecovery = false
+      const release = this.acquire()
       this.recovering = Promise.all([...this.tracked.values()].map(entry => this.serial(entry, () => this.recoverDelivery(entry))))
         .then(() => { if ([...this.tracked.values()].some(entry => isLive(entry.task.status))) this.ensurePolling() })
         .catch(error => { this.needsRecovery = true; console.error('Agent recovery failed:', error) })
-        .finally(() => { this.recovering = undefined })
+        .finally(() => { this.recovering = undefined; release() })
     }
     if (!this.restored) void this.restore().catch(error => console.error('Agent recovery failed:', error))
     if ([...this.tracked.values()].some(entry => isLive(entry.task.status))) this.ensurePolling()

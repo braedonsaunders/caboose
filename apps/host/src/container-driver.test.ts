@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { config } from './config.js'
-import { containerPlacement, createContainerController, detectGpu, gpuArgs, type Docker } from './container-driver.js'
+import { containerPlacement, createContainerController, detectGpu, gpuArgs, withContainerPorts, type Docker } from './container-driver.js'
 import { DISPLAY_ENV } from './display.test.js'
 
 /** `published` are the container ports Docker reports as mapped; the bridge address is 172.18.0.2. */
@@ -43,6 +43,15 @@ const env = {
 const settings = config(env)
 
 describe('createContainerController', () => {
+  it('starts the owner display only when a headless wake is promoted', async () => {
+    const fake = fakeDocker('missing')
+    const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
+    const first = await controller.wake('headless')
+    expect(fake.calls.some(call => call.includes('/usr/local/bin/caboose-session') && call.includes('start'))).toBe(false)
+    const promoted = await controller.promote!()
+    expect(promoted.display.token).toBe(first.display.token)
+    expect(fake.calls.some(call => call.includes('/usr/local/bin/caboose-session') && call.includes('start'))).toBe(true)
+  })
   it('creates the computer with the GPU, its home and loopback-only displays, then starts the session', async () => {
     const fake = fakeDocker('missing')
     const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: path => path === '/dev/dxg' })
@@ -81,7 +90,7 @@ describe('createContainerController', () => {
       'XAUTHORITY=/run/user/1000/caboose-xauth', 'QT_QPA_PLATFORM=wayland;xcb']))
     expect(controller.agentDisplayUrl).toBe('ws://127.0.0.1:14601/')
     await controller.ensureAgentSeat()
-    expect(fake.calls.at(-1)).toEqual(expect.arrayContaining(['/usr/local/bin/caboose-session', 'start-agent']))
+    expect(fake.calls.at(-1)).toEqual(expect.arrayContaining(['/usr/local/libexec/caboose-agent-seat']))
   })
 
   it('parks by freezing and resumes with the same display token', async () => {
@@ -91,6 +100,9 @@ describe('createContainerController', () => {
     await controller.park()
     expect(fake.calls.at(-1)).toEqual(['pause', 'caboose-owner'])
     expect(controller.guest()).toBeUndefined()
+    await controller.wake('headless')
+    expect(controller.guest()?.ownerEnv).toEqual([])
+    await controller.park()
     const second = await controller.wake()
     expect(fake.calls.some(call => call[0] === 'unpause')).toBe(true)
     expect(second.display.token).toBe(first.display.token)
@@ -119,7 +131,7 @@ describe('createContainerController', () => {
     const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
     await controller.wake()
     await controller.ensureAgentSeat()
-    expect(fake.calls.at(-1)).toEqual(['exec', '-u', 'root', 'caboose-owner', '/usr/local/bin/caboose-session', 'start-agent'])
+    expect(fake.calls.at(-1)).toEqual(['exec', '-u', 'root', 'caboose-owner', '/usr/local/libexec/caboose-agent-seat'])
     expect(await controller.apps()).toEqual([])
     expect(fake.calls.at(-1)?.slice(0, 4)).toEqual(['exec', '-u', 'caboose', 'caboose-owner'])
     await controller.launch('gimp.desktop', 'Pictures/a.png')
@@ -179,6 +191,23 @@ describe('container settings and restart', () => {
 })
 
 describe('container network fence', () => {
+  it('uses Docker-assigned loopback ports for new slots and rediscovers them after park', async () => {
+    const fake = fakeDocker('missing')
+    const docker: Docker = async (args, timeout) => {
+      if (args[0] === 'ps') return ''
+      if (args[0] === 'port') return `127.0.0.1:${({ '14600/tcp': 21000, '14601/tcp': 21001, '14700/tcp': 21002, '14701/tcp': 21003 } as Record<string, number>)[args[2]!]}\n`
+      return fake.docker(args, timeout)
+    }
+    const controller = createContainerController(settings, { identity: { id: 'c-0123456789', slot: 64 }, docker, exists: () => false, fence: async () => {} })
+    await controller.wake()
+    expect(fake.calls.find(call => call[0] === 'run')).toEqual(expect.arrayContaining(['127.0.0.1:21000:14600', '127.0.0.1:21002:14700']))
+    expect(controller.displayUrl).toBe('ws://127.0.0.1:21000/')
+    expect(controller.fileService?.().url).toBe('http://127.0.0.1:21002')
+    await controller.park()
+    await controller.wake()
+    expect(controller.terminalService?.().url).toBe('http://127.0.0.1:21003')
+  })
+
   it('puts the computer on its own fenced network with public DNS before it starts', async () => {
     const fake = fakeDocker('missing')
     const fenced: string[] = []
@@ -216,4 +245,75 @@ describe('container network fence', () => {
     expect(fenced).toEqual(['caboose-br3', '-caboose-br3'])
     expect(controller.guest()).toBeUndefined()
   })
+})
+
+
+it('avoids ports recorded by stopped containers and serializes new allocations', async () => {
+  let published = false
+  const docker: Docker = async args => {
+    if (args[0] === 'ps') return 'stopped\n'
+    if (args[0] === 'inspect') return `${JSON.stringify({ '14600/tcp': [{ HostIp: '127.0.0.1', HostPort: '21000' }], ...(published ? { '14700/tcp': [{ HostIp: '127.0.0.1', HostPort: '21004' }] } : {}) })}\t${JSON.stringify({ '14701/tcp': [{ HostPort: '21012' }] })}`
+    return ''
+  }
+  const a = withContainerPorts(docker, async ports => { published = true; return ports })
+  const b = withContainerPorts(docker, async ports => ports)
+  expect((await a).display).toBe(21004)
+  expect((await b).display).toBe(21008)
+})
+
+it('skips an occupied host listener before selecting a port block', async () => {
+  const { createServer } = await import('node:net')
+  const { portsAvailable } = await import('./container-driver.js')
+  const server = createServer()
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('No test port')
+    const docker: Docker = async () => ''
+    const picked = await withContainerPorts(docker, async ports => ports, ports => ports[0] === 21000 ? portsAvailable([address.port]) : Promise.resolve(true))
+    expect(picked.display).toBe(21004)
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())) }
+})
+
+it('removes only its failed bind attempt and retries with new ports', async () => {
+  const fake = fakeDocker('missing')
+  const calls: string[][] = []
+  let attempt = '', runs = 0
+  const id = 'a'.repeat(64)
+  const docker: Docker = async (args, timeout) => {
+    calls.push(args)
+    if (args[0] === 'ps') return ''
+    if (args[0] === 'run') {
+      runs++
+      if (runs === 1) {
+        attempt = args.find(arg => arg.startsWith('caboose.port-attempt='))!.split('=')[1]!
+        throw new Error('port is already allocated')
+      }
+    }
+    if (args[0] === 'inspect' && args.includes('{{json .}}')) return JSON.stringify({ Id: id, State: { Status: 'created' }, Config: { Labels: { 'caboose.port-attempt': attempt } } })
+    if (args[0] === 'rm' && args[1] === id) return ''
+    if (args[0] === 'port') return `127.0.0.1:${({ '14600/tcp': 21004, '14601/tcp': 21005, '14700/tcp': 21006, '14701/tcp': 21007 } as Record<string, number>)[args[2]!]}\n`
+    return fake.docker(args, timeout)
+  }
+  const controller = createContainerController(settings, { identity: { id: 'c-0123456789', slot: 64 }, docker, exists: () => false, fence: async () => {} })
+  await controller.wake()
+  expect(runs).toBe(2)
+  expect(calls.filter(call => call[0] === 'rm')).toEqual([['rm', id]])
+  expect(calls.filter(call => call[0] === 'run')[1]).toContain('127.0.0.1:21004:14600')
+  expect(calls.some(call => call[0] === 'volume' || (call[0] === 'network' && call[1] === 'rm'))).toBe(false)
+})
+
+it('never removes an existing container when a bind failure cannot prove ownership', async () => {
+  const fake = fakeDocker('missing')
+  const calls: string[][] = []
+  const docker: Docker = async (args, timeout) => {
+    calls.push(args)
+    if (args[0] === 'ps') return ''
+    if (args[0] === 'run') throw new Error('port is already allocated')
+    if (args[0] === 'inspect' && args.includes('{{json .}}')) return JSON.stringify({ Id: 'b'.repeat(64), State: { Status: 'created' }, Config: { Labels: { 'caboose.port-attempt': 'someone-else' } } })
+    return fake.docker(args, timeout)
+  }
+  const controller = createContainerController(settings, { identity: { id: 'c-0123456789', slot: 64 }, docker, exists: () => false, fence: async () => {} })
+  await expect(controller.wake()).rejects.toThrow('port is already allocated')
+  expect(calls.some(call => call[0] === 'rm' || call[0] === 'volume')).toBe(false)
 })

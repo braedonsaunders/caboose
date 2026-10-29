@@ -19,6 +19,7 @@ protocol is in [`docs/architecture.md`](../../docs/architecture.md) § Files.
 | `CABOOSE_FILES_ROOT` | `/home/caboose` | The directory served. |
 | `CABOOSE_FILES_TOKEN_FILE` | `/run/caboose/display-token` | The token file. |
 | `CABOOSE_FILES_PORT` | `14700` | The listening port. |
+| `CABOOSE_BRIDGE_RUNTIME` | `/run/user/<uid>` | Directory of agent-app bridge sockets. |
 
 The service listens on every interface inside the computer. Only the host reaches it: in the
 microVM through the guest's private TAP address, in the container runtime on a port published
@@ -58,3 +59,12 @@ log and returns only a fixed state with `Cache-Control: no-store`. The host file
 proxy allows only public file operations and cannot forward this endpoint. Run
 `python3 guest/files/test_keyring_endpoint.py` for body, authorization, serialization and
 error-redaction checks without starting Linux services.
+
+### Private agent-app bridge
+
+`POST /webview/<instance>` is a token-authenticated relay to the app instance's Unix
+socket in the runtime directory. It accepts only a 32-character lowercase hex instance,
+requires a bounded Content-Length and streams at most 96 MiB in each direction. The app
+checks its display-session grant, document revision and declared capabilities. The host
+exposes only its separately authenticated bridge route, not this guest endpoint. Run
+`python3 guest/files/test_webview_endpoint.py` for authorization and request-bound checks.

@@ -283,8 +283,12 @@ pub struct ClientHello {
     pub audio_decoders: Option<Vec<String>>,
     /// The client runs games handed off to it (docs/game-handoff.md). Sent only when true.
     pub wasm: bool,
+    /// The client can host agent app web views.
+    pub webview: bool,
     /// The client renders Vulkan streams itself (docs/gpu-stream.md). Sent only when true.
     pub gpu: bool,
+    /// The client accepts half-resolution motion streams.
+    pub scaled_motion: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -313,6 +317,8 @@ pub struct VideoCreate {
     /// Out-of-band codec configuration, only for a codec whose parameters cannot travel
     /// in band.
     pub extradata: Option<Vec<u8>>,
+    /// This motion stream is encoded at half the region's width and height.
+    pub scaled: bool,
 }
 
 /// `video.frame` (0x13): one access unit, in decode order.
@@ -359,6 +365,18 @@ pub struct GameCreate {
     pub entry: String,
     /// Absent when the game saves nothing.
     pub saves: Option<Vec<GameSave>>,
+}
+
+/// `webview.create`: an agent app handed to the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebviewCreate {
+    pub id: u64,
+    pub window: u64,
+    pub app: String,
+    pub bridge: String,
+    pub grant: String,
+    pub root: String,
+    pub entry: String,
 }
 
 /// `gpu.data` (0x1A): the next bytes of a Vulkan stream, at `offset` from its start.
@@ -491,6 +509,10 @@ pub enum Message {
         seq: u64,
         pts_us: u64,
     },
+    WebviewCreate(WebviewCreate),
+    WebviewDestroy {
+        id: u64,
+    },
     GameCreate(GameCreate),
     GameDestroy {
         id: u64,
@@ -556,6 +578,10 @@ pub enum Message {
     },
     /// The client cannot run game `id` (docs/game-handoff.md, "Declining"); `reason` says
     /// why, for the computer's log.
+    WebviewDecline {
+        id: u64,
+        reason: String,
+    },
     GameDecline {
         id: u64,
         reason: String,
@@ -582,6 +608,8 @@ pub mod type_id {
     pub const GPU_CREATE: u8 = 0x19;
     pub const GPU_DATA: u8 = 0x1A;
     pub const GPU_DESTROY: u8 = 0x1B;
+    pub const WEBVIEW_CREATE: u8 = 0x1C;
+    pub const WEBVIEW_DESTROY: u8 = 0x1D;
     pub const CURSOR: u8 = 0x20;
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
@@ -606,6 +634,7 @@ pub mod type_id {
     pub const TEXT: u8 = 0x94;
     pub const GPU_ACK: u8 = 0x96;
     pub const GAME_DECLINE: u8 = 0x97;
+    pub const WEBVIEW_DECLINE: u8 = 0x98;
     pub const CLIENT_CLIPBOARD: u8 = 0xA0;
     pub const PING: u8 = 0xFE;
 }
@@ -664,6 +693,9 @@ impl Message {
             Message::VideoUpdate(_) => VIDEO_UPDATE,
             Message::VideoDestroy { .. } => VIDEO_DESTROY,
             Message::VideoPresent { .. } => VIDEO_PRESENT,
+            Message::WebviewCreate(_) => WEBVIEW_CREATE,
+            Message::WebviewDestroy { .. } => WEBVIEW_DESTROY,
+            Message::WebviewDecline { .. } => WEBVIEW_DECLINE,
             Message::GameCreate(_) => GAME_CREATE,
             Message::GameDestroy { .. } => GAME_DESTROY,
             Message::GpuCreate { .. } => GPU_CREATE,
@@ -741,14 +773,31 @@ impl Message {
             | Message::RequestKeyframe { id }
             | Message::VideoDestroy { id }
             | Message::GameDestroy { id }
+            | Message::WebviewDestroy { id }
             | Message::VideoKeyframe { id } => MapBuilder::new().put("id", *id).build(),
-            Message::GpuDestroy { id, reason } => MapBuilder::new().put("id", *id).opt("reason", reason.clone()).build(),
+            Message::GpuDestroy { id, reason } => {
+                MapBuilder::new().put("id", *id).opt("reason", reason.clone()).build()
+            }
             Message::GpuCreate { id, window } => MapBuilder::new().put("id", *id).put("window", *window).build(),
             Message::GpuData(m) => {
                 MapBuilder::new().put("id", m.id).put("offset", m.offset).put("data", m.data.clone()).build()
             }
             Message::GpuAck { id, offset } => MapBuilder::new().put("id", *id).put("offset", *offset).build(),
-            Message::GameDecline { id, reason } => MapBuilder::new().put("id", *id).put("reason", reason.as_str()).build(),
+            Message::WebviewCreate(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("window", m.window)
+                .put("app", m.app.as_str())
+                .put("bridge", m.bridge.as_str())
+                .put("grant", m.grant.as_str())
+                .put("root", m.root.as_str())
+                .put("entry", m.entry.as_str())
+                .build(),
+            Message::WebviewDecline { id, reason } => {
+                MapBuilder::new().put("id", *id).put("reason", reason.as_str()).build()
+            }
+            Message::GameDecline { id, reason } => {
+                MapBuilder::new().put("id", *id).put("reason", reason.as_str()).build()
+            }
             Message::GameCreate(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("window", m.window)
@@ -791,6 +840,7 @@ impl Message {
                     }),
                 )
                 .opt("extradata", m.extradata.clone())
+                .opt("scaled", m.scaled.then_some(true))
                 .build(),
             Message::VideoFrame(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -858,7 +908,9 @@ impl Message {
                 .opt("video_decoders", m.video_decoders.as_deref().map(codecs_value))
                 .opt("audio_decoders", m.audio_decoders.clone())
                 .opt("wasm", m.wasm.then_some(true))
+                .opt("webview", m.webview.then_some(true))
                 .opt("gpu", m.gpu.then_some(true))
+                .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -1044,6 +1096,7 @@ impl Message {
                     }
                 },
                 extradata: f.opt_bytes("extradata")?,
+                scaled: f.opt_bool("scaled")?.unwrap_or(false),
             }),
             VIDEO_FRAME => Message::VideoFrame(VideoFrame {
                 id: f.u64("id")?,
@@ -1060,6 +1113,17 @@ impl Message {
             }),
             VIDEO_DESTROY => Message::VideoDestroy { id: f.u64("id")? },
             VIDEO_PRESENT => Message::VideoPresent { id: f.u64("id")?, seq: f.u64("seq")?, pts_us: f.u64("pts_us")? },
+            WEBVIEW_CREATE => Message::WebviewCreate(WebviewCreate {
+                id: f.u64("id")?,
+                window: f.u64("window")?,
+                app: f.string("app")?,
+                bridge: f.string("bridge")?,
+                grant: f.string("grant")?,
+                root: f.string("root")?,
+                entry: f.string("entry")?,
+            }),
+            WEBVIEW_DESTROY => Message::WebviewDestroy { id: f.u64("id")? },
+            WEBVIEW_DECLINE => Message::WebviewDecline { id: f.u64("id")?, reason: f.string("reason")? },
             GAME_CREATE => Message::GameCreate(GameCreate {
                 id: f.u64("id")?,
                 window: f.u64("window")?,
@@ -1104,7 +1168,9 @@ impl Message {
                     Some(_) => Some(f.strings("audio_decoders")?),
                 },
                 wasm: f.opt_bool("wasm")?.unwrap_or(false),
+                webview: f.opt_bool("webview")?.unwrap_or(false),
                 gpu: f.opt_bool("gpu")?.unwrap_or(false),
+                scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -1194,6 +1260,9 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         VIDEO_PRESENT => "video.present",
         VIDEO_ACK => "video.ack",
         VIDEO_KEYFRAME => "video.keyframe",
+        WEBVIEW_CREATE => "webview.create",
+        WEBVIEW_DESTROY => "webview.destroy",
+        WEBVIEW_DECLINE => "webview.decline",
         GAME_CREATE => "game.create",
         GAME_DESTROY => "game.destroy",
         GPU_CREATE => "gpu.create",

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { readFile } from 'node:fs/promises'
 import type { DeskHandle } from '@braedonsaunders/appkit-desk'
 
 const exec = promisify(execFile)
@@ -10,22 +11,28 @@ const exec = promisify(execFile)
  * computer, so a host from before several computers keeps `caboose0`, 192.0.2.1 and .2.
  */
 export const COMPUTERS_SUBNET = '192.0.2.0/24'
-export const MAX_SLOTS = 64
+export const EXPANDED_SUBNET = '198.18.0.0/15'
+export const MAX_SLOTS = 64 + 32768
 
 export interface NetworkSlot { tap: string; host: string; guest: string }
 
 export function networkSlot(slot: number): NetworkSlot {
   if (!Number.isSafeInteger(slot) || slot < 0 || slot >= MAX_SLOTS) throw new Error(`Network slot must be an integer from 0 to ${MAX_SLOTS - 1}`)
-  return { tap: `caboose${slot}`, host: `192.0.2.${slot * 4 + 1}`, guest: `192.0.2.${slot * 4 + 2}` }
+  if (slot < 64) return { tap: `caboose${slot}`, host: `192.0.2.${slot * 4 + 1}`, guest: `192.0.2.${slot * 4 + 2}` }
+  const offset = (slot - 64) * 4
+  const prefix = `198.${18 + Math.floor(offset / 65536)}.${Math.floor(offset / 256) % 256}`
+  return { tap: `caboose${slot}`, host: `${prefix}.${offset % 256 + 1}`, guest: `${prefix}.${offset % 256 + 2}` }
 }
 
 // Host networking for the microVMs: a TAP device per computer, its guest's address, and the
 // fence that keeps every guest to the public internet. Commands run as root, or through `sudo -n`.
-async function privileged(command: string, args: string[]): Promise<void> {
+async function privilegedOutput(command: string, args: string[]): Promise<string> {
   const executable = process.getuid?.() === 0 ? command : 'sudo'
   const arguments_ = executable === 'sudo' ? ['-n', command, ...args] : args
-  await exec(executable, arguments_, { timeout: 15_000 })
+  const result = await exec(executable, arguments_, { timeout: 15_000, maxBuffer: 16 * 1024 * 1024 })
+  return result.stdout
 }
+async function privileged(command: string, args: string[]): Promise<void> { await privilegedOutput(command, args) }
 async function exists(command: string, args: string[]): Promise<boolean> {
   try { await privileged(command, args); return true } catch { return false }
 }
@@ -59,6 +66,7 @@ export function fenceRules(guestLan: boolean): { input: string[][]; forward: str
       established,
       // Other computers are other people's machines: allowing the LAN never opens them.
       reject(COMPUTERS_SUBNET),
+      reject(EXPANDED_SUBNET),
       ...(guestLan ? [] : FENCED_RANGES.map(reject)),
       ['-j', 'RETURN'],
     ],
@@ -72,6 +80,12 @@ export function fenceRules(guestLan: boolean): { input: string[][]; forward: str
  */
 async function ownChain(chain: string, from: 'INPUT' | 'FORWARD' | 'DOCKER-USER', rules: string[][], device: string): Promise<void> {
   const created = await exists('iptables', ['-N', chain])
+  // Add the expanded inter-computer fence before checking existing rules; never
+  // flush a live chain while migrating from the legacy allow-LAN policy.
+  const expanded = ['-d', EXPANDED_SUBNET, '-j', 'REJECT', '--reject-with', 'icmp-net-prohibited']
+  if (!created && from !== 'INPUT' && !await exists('iptables', ['-C', chain, ...expanded])) {
+    await privileged('iptables', ['-I', chain, '2', ...expanded])
+  }
   let current = !created
   if (current) {
     for (const args of rules) if (!await exists('iptables', ['-C', chain, ...args])) { current = false; break }
@@ -103,7 +117,7 @@ export async function unfenceBridge(device: string): Promise<void> {
 }
 
 /** Persistent named TAP: it must exist before both boot and snapshot restore. */
-export async function ensureNetwork(slot = 0): Promise<void> {
+async function setupNetwork(slot = 0): Promise<void> {
   const { tap, host, guest } = networkSlot(slot)
   if (!await exists('ip', ['link', 'show', 'dev', tap])) {
     const uid = process.getuid?.()
@@ -121,8 +135,83 @@ export async function ensureNetwork(slot = 0): Promise<void> {
   await rule('filter', 'FORWARD', ['-o', tap, '-d', `${guest}/32`, '-m', 'conntrack', '--ctstate', 'ESTABLISHED,RELATED', '-j', 'ACCEPT'])
 }
 
+/** Cache only a verified setup and re-read kernel state before each reuse. */
+export function createNetworkCache(setup: (slot: number) => Promise<void>, fingerprint: (slot: number) => Promise<string>) {
+  const cache = new Map<number, { state: string; policy: string }>()
+  const pending = new Map<number, Promise<void>>()
+  let generation = 0
+  return {
+    invalidate(slot: number) { generation++; cache.delete(slot) },
+    async ensure(slot: number): Promise<void> {
+      const previous = pending.get(slot) ?? Promise.resolve()
+      const work = previous.catch(() => {}).then(async () => {
+        const policy = process.env.CABOOSE_GUEST_LAN ?? ''
+        const saved = cache.get(slot)
+        if (saved?.policy === policy) {
+          try { if (await fingerprint(slot) === saved.state) return } catch { /* reconfigure */ }
+        }
+        cache.delete(slot)
+        const started = generation
+        try {
+          await setup(slot)
+          const state = await fingerprint(slot)
+          if (generation === started) cache.set(slot, { state, policy })
+        } catch (error) { cache.delete(slot); throw error }
+      })
+      pending.set(slot, work)
+      try { await work } finally { if (pending.get(slot) === work) pending.delete(slot) }
+    },
+  }
+}
+
+/** Ignore presentation timestamps and counters while retaining every rule and its order. */
+export function normalizeFirewallSnapshot(snapshot: string): string {
+  return snapshot.split(/\r?\n/).map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'))
+    .map(line => line.replace(/^\[\d+:\d+\]\s+/, '').replace(/\s+\[\d+:\d+\]$/, ' [0:0]'))
+    .join('\n')
+}
+
+/** Drop link statistics, and compare address lifetimes by state rather than elapsed seconds. */
+export function normalizeLinkSnapshot(snapshot: string): string {
+  const links: unknown = JSON.parse(snapshot)
+  if (!Array.isArray(links) || links.length !== 1 || !links[0] || typeof links[0] !== 'object') throw new Error('Invalid TAP state')
+  const transient = new Set(['stats', 'stats64', 'cacheinfo', 'carrier_changes', 'carrier_up_count', 'carrier_down_count'])
+  function normalize(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(normalize)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(Object.entries(value).filter(([key]) => !transient.has(key)).map(([key, item]) => {
+      if ((key === 'valid_life_time' || key === 'preferred_life_time') && typeof item === 'number') {
+        return [key, item === 0 ? 'expired' : 'finite']
+      }
+      return [key, normalize(item)]
+    }))
+  }
+  return JSON.stringify(normalize(links))
+}
+
+export function networkStateFingerprint(link: string, rules: string, forwarding: string): string {
+  if (forwarding.trim() !== '1') throw new Error('IPv4 forwarding is disabled')
+  return JSON.stringify([normalizeLinkSnapshot(link), normalizeFirewallSnapshot(rules), '1'])
+}
+
+async function networkFingerprint(slot: number): Promise<string> {
+  const { tap } = networkSlot(slot)
+  const [link, rules, forwarding] = await Promise.all([
+    privilegedOutput('ip', ['-j', 'address', 'show', 'dev', tap]),
+    privilegedOutput('iptables-save', []),
+    readFile('/proc/sys/net/ipv4/ip_forward', 'utf8'),
+  ])
+  return networkStateFingerprint(link, rules, forwarding)
+}
+
+const networkCache = createNetworkCache(setupNetwork, networkFingerprint)
+export async function ensureNetwork(slot = 0): Promise<void> { await networkCache.ensure(slot) }
+export function invalidateNetwork(slot: number): void { networkCache.invalidate(slot) }
+
 /** Removes a deleted computer's TAP and its rules; the shared chains stay for the others. */
 export async function removeNetwork(slot: number): Promise<void> {
+  invalidateNetwork(slot)
   const { tap, guest } = networkSlot(slot)
   await dropRule('filter', 'INPUT', ['-i', tap, '-j', 'CABOOSE-IN'])
   await dropRule('filter', 'FORWARD', ['-i', tap, '-j', 'CABOOSE-FWD'])

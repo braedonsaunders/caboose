@@ -16,3 +16,16 @@ it('drains the owner queue through the guest and ignores malformed records', asy
   expect(run).toHaveBeenCalledOnce()
   expect(emit).toHaveBeenCalledWith(notify)
 })
+it('waits for an in-flight queue drain before pausing the guest', async () => {
+  let finish!: (value: string) => void
+  const monitor = new DesktopNotifications(() => ({ run: () => new Promise<string>(resolve => { finish = resolve }) }), () => {})
+  const polling = monitor.poll()
+  const done = vi.fn()
+  const quiesced = monitor.quiesce().then(done)
+  await Promise.resolve()
+  expect(done).not.toHaveBeenCalled()
+  finish('')
+  await polling
+  await quiesced
+  expect(done).toHaveBeenCalledOnce()
+})

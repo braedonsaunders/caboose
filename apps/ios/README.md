@@ -71,6 +71,11 @@ swiftc Caboose/Host/Credentials.swift tests/RemoteAddresses.swift -o /tmp/caboos
 sh scripts/check-remote-access.sh
 ```
 
+Opted-in agent apps use a native WebKit view and the authenticated guest bridge, with a
+stable per-app origin. Apps that depend on computer-side browser storage stay on the
+computer; the `handoff: "files"` contract and fallback are in
+[guest/apps](../../guest/apps/README.md#native-handoff).
+
 The unit tests replay the compositor's golden vectors from `guest/display/vectors` (every
 message decodes, re-encodes byte for byte and parses, and every client message the app
 sends matches its vector), drive `CabooseDisplaySession` over a mocked transport
@@ -89,6 +94,17 @@ gamepad scripts in JavaScriptCore the way Emscripten's IDBFS and a Gamepad API p
 them, and decode the vectors' H.264 and HEVC keyframes and an AV1 stream
 (`Tests/CabooseKitTests/Fixtures`) in hardware. The AV1 test runs where the Mac has an AV1
 decoder (M3 and later).
+
+The native agent-app handoff has a focused simulator check using a local fake host:
+
+```sh
+SIMULATOR_ID=<available-ios-simulator-udid> sh scripts/check-agent-app-webview.sh
+```
+
+It exercises the real WKWebView, injected API, idle event polling, reload and takeover.
+The check uses port 18765 on loopback and an unchanged temporary package copy.
+Builds without MetalFX use the software motion upscaler. Select the full Xcode
+developer directory before running the check.
 
 Against a real computer with a window open:
 
@@ -189,15 +205,13 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   from its own screen's display link, at 120 Hz on ProMotion
   (`CADisableMinimumFrameDurationOnPhone`) and at the TV's rate on a TV. The server releases
   a window's frames on those ticks, so a window nobody sees costs nothing.
-- **Video in windows.** The app negotiates one SDR picture stream per window, including
-  any video the app plays. It does not advertise separate video decoders; the computer
-  keeps motion in the window picture and decodes passthrough streams on the server.
-  The protocol client also implements explicitly negotiated layered video for checks:
-  passthrough presentation, live motion, repaint retirement and HDR decoding. Those
-  layers are not enabled in ordinary app sessions. Resize metadata retains the previous
+- **Video in windows.** The app leaves passthrough streams to server decoding. It requests
+  half-resolution software-encoded motion streams and upscales them using MetalFX or vImage
+  on the CPU. If both fail, the video layer scales the decoded picture. Resize metadata retains the previous
   picture's pixel basis until its replacement frame decodes.
   `VideoLayerGeometryTests` and `VideoSessionTests` cover geometry, negotiation and
-  retirement; `scripts/check-desktop.sh` covers physical-device playback and resizing.
+  retirement; `scripts/check-desktop.sh` covers physical-device playback and resizing,
+  and `scripts/check-scaled-motion.sh` checks scaled motion and device fallback.
 - **Sound.** The computer's sound arrives as 20 ms Opus packets on the server timeline,
   decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`. Playback uses
   an explicit monotonic host/server anchor, with decoded sample durations keeping nearby
@@ -843,14 +857,14 @@ opening message. Repeat with Reduce Motion, reconnect, and a running minimized a
 Desktop imports copy one file at a time; they do not establish Open in Place synchronization.
 Items use file-type icons and name ordering; manual placement and file previews are absent.
 
+Computer settings offer the sizes provided by the host and custom CPU and memory.
+GPU access uses the host GPU and is shared; availability reflects host configuration.
+
 Desktop checks: launch a handed-off game directly in Laptop mode, then flatten and fold
 the device; the live game stays visible and fits its window. In tablet portrait, the
 window’s green Full Screen control hides the dock and chrome; the return handle restores
 controls. Swipe horizontally across All Apps to change pages; vertical drags and short
 taps do not page. Opening Caboose does not read the system pasteboard.
-
-Computer settings offer the sizes provided by the host and custom CPU and memory.
-GPU access uses the host GPU and is shared; availability reflects host configuration.
 
 Agent selection check: open a chat whose last message is “hey”, open the composer agent
 menu and select another agent. The empty/new composer names the selected agent; no chat or

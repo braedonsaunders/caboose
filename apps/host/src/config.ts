@@ -8,6 +8,8 @@ export interface Config {
   host: string
   port: number
   idleMs: number
+  /** Maximum time a resident microVM remains frozen before parking. */
+  freezeParkMs?: number
   imageRoot: string
   memoryMb: number
   vcpus: number
@@ -34,6 +36,9 @@ export interface Config {
   maxRunning: number
   /** `CABOOSE_PUBLIC_URL`: where phones reach this host from anywhere, first in every pairing link. */
   publicUrl: string | null
+  /** Cloud Hypervisor snapshot and memory options. */
+  vmCow?: boolean
+  vmFreePageReporting?: boolean
   /** `CABOOSE_MDNS`: advertise `_caboose._tcp` on the LAN (default on). */
   mdns: boolean
 }
@@ -53,16 +58,22 @@ function integer(value: string | undefined, fallback: number, name: string, max:
   return parsed
 }
 export function config(env: NodeJS.ProcessEnv): Config {
+  const selectedRuntime = runtime(env.CABOOSE_RUNTIME)
+  const vmCow = toggle(env.CABOOSE_VM_COW, 'CABOOSE_VM_COW')
+  const vmFreePageReporting = toggle(env.CABOOSE_VM_FREE_PAGE_REPORTING, 'CABOOSE_VM_FREE_PAGE_REPORTING')
+  if (vmCow && env.CABOOSE_VM_DEPOT?.trim()) throw new Error('CABOOSE_VM_COW cannot be combined with the microVM depot')
+  if (selectedRuntime === 'container' && (vmCow || vmFreePageReporting)) throw new Error('Cloud Hypervisor memory options require the microVM runtime')
   return {
     token: env.CABOOSE_OWNER_TOKEN || null,
     host: env.CABOOSE_BIND ?? '127.0.0.1',
     port: integer(env.CABOOSE_PORT, 7310, 'CABOOSE_PORT', 65535),
     idleMs: integer(env.CABOOSE_IDLE_MS, 600_000, 'CABOOSE_IDLE_MS', 2_147_483_647),
+    freezeParkMs: integer(env.CABOOSE_FREEZE_PARK_MS, 60_000, 'CABOOSE_FREEZE_PARK_MS', 2_147_483_647),
     imageRoot: resolve(env.CABOOSE_IMAGE_ROOT ?? '/var/lib/caboose'),
     memoryMb: integer(env.CABOOSE_MEMORY_MB, 6144, 'CABOOSE_MEMORY_MB', 1_048_576),
     vcpus: integer(env.CABOOSE_VCPUS, 4, 'CABOOSE_VCPUS', 256),
     vmmPath: env.CABOOSE_VMM_PATH ?? (process.platform === 'darwin' ? '/usr/local/bin/appkit-desk-vz' : '/usr/local/bin/cloud-hypervisor'),
-    runtime: runtime(env.CABOOSE_RUNTIME),
+    runtime: selectedRuntime,
     containerImage: env.CABOOSE_CONTAINER_IMAGE ?? 'caboose-computer:latest',
     baseImage: env.CABOOSE_BASE_IMAGE || null,
     databaseUrl: env.CABOOSE_DATABASE_URL || null,
@@ -75,7 +86,15 @@ export function config(env: NodeJS.ProcessEnv): Config {
     maxRunning: integer(env.CABOOSE_MAX_RUNNING, 4, 'CABOOSE_MAX_RUNNING', 64),
     publicUrl: publicUrl(env.CABOOSE_PUBLIC_URL),
     mdns: mdns(env.CABOOSE_MDNS),
+    vmCow,
+    vmFreePageReporting,
   }
+}
+
+function toggle(value: string | undefined, name: string): boolean {
+  if (value === undefined || value === 'off') return false
+  if (value === 'on') return true
+  throw new Error(`${name} must be on or off`)
 }
 
 function mdns(value: string | undefined): boolean {

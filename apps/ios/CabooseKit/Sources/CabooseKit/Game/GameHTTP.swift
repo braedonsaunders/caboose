@@ -132,7 +132,7 @@ enum GameHTTP {
     /// `root`. The `Host` must be the origin's exactly (a page elsewhere that renamed its
     /// host to 127.0.0.1 is refused), the first path component the token (compared in
     /// constant time), and the rest a path that stays inside `root`.
-    static func route(_ request: Request, origin: GameOrigin, root: String) -> Route {
+    static func route(_ request: Request, origin: GameOrigin, root: String, appPolicy: Bool = false, appEntry: String? = nil) -> Route {
         guard request.value("host") == origin.authority else { return .status(400) }
         guard request.target.hasPrefix("/") else { return .status(400) }
         let path = request.target.prefix { $0 != "?" && $0 != "#" }
@@ -140,8 +140,18 @@ enum GameHTTP {
         let token = below.prefix { $0 != "/" }
         guard sameToken(token, origin.token), below.count > token.count else { return .status(404) }
         guard request.method == "GET" || request.method == "HEAD" else { return .status(405) }
-        guard let decoded = String(below.dropFirst(token.count)).removingPercentEncoding else { return .status(400) }
-        switch GameFiles.resolve(decoded, root: root) {
+        let encoded = String(below.dropFirst(token.count))
+        if appPolicy && (encoded.lowercased().contains("%2f") || encoded.lowercased().contains("%5c")) { return .status(403) }
+        guard let decoded = encoded.removingPercentEncoding else { return .status(400) }
+        var resolved = decoded
+        if appPolicy {
+            let pieces = decoded.split(separator: "/", omittingEmptySubsequences: false).dropFirst()
+            let interior = decoded.hasSuffix("/") ? pieces.dropLast() : pieces[...]
+            if decoded.contains("\\") || interior.contains(where: { $0 == "." || $0 == ".." || $0.isEmpty }) { return .status(403) }
+            if decoded == "/", let appEntry { resolved = "/" + appEntry }
+            else if decoded.hasSuffix("/") { resolved += "index.html" }
+        }
+        switch GameFiles.resolve(resolved, root: root) {
         case .file(let file): return .file(path: file, range: request.value("range"), head: request.method == "HEAD")
         case .forbidden: return .status(403)
         case .notFound: return .status(404)

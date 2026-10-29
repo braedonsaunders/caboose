@@ -40,6 +40,12 @@ install -Dm755 "$root/files/caboose-files.py" /opt/caboose/files/caboose-files.p
 install -Dm644 "$root/files/caboose-files.service" /etc/systemd/system/caboose-files.service
 install -Dm755 "$root/terminal/caboose-terminal.py" /opt/caboose/terminal/caboose-terminal.py
 install -Dm644 "$root/terminal/caboose-terminal.service" /etc/systemd/system/caboose-terminal.service
+install -Dm755 "$root/desktop-mcp/caboose-desktop-mcp.mjs" /opt/caboose/desktop-mcp.mjs
+install -Dm755 "$root/desktop-mcp/a11y.py" /opt/caboose/a11y.py
+install -Dm755 "$root/desktop-mcp/seat.py" /opt/caboose/seat.py
+install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/ensure-agent-seat.mjs
+install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/desktop-mcp/ensure-agent-seat.mjs
+install -Dm755 "$root/desktop-mcp/caboose-agent-seat" /usr/local/libexec/caboose-agent-seat
 sh "$root/keyring/install.sh"
 sh "$root/notifications/install.sh"
 bash "$root/phone/install.sh"
@@ -54,19 +60,21 @@ if [[ "$mode" = *container ]]; then
   install -Dm755 "$root/container/caboose-session" /usr/local/bin/caboose-session
   install -Dm755 "$root/components/container-services.sh" /usr/local/libexec/caboose-components-services
 else
+  install -Dm755 "$root/components/caboose-vsock-services.py" /opt/caboose/vsock/caboose-vsock-services.py
+  install -Dm644 "$root/components/caboose-vsock-services.service" /etc/systemd/system/caboose-vsock-services.service
   mkdir -p /var/lib/systemd/linger
   touch /var/lib/systemd/linger/caboose
-  systemctl enable caboose-files.service caboose-terminal.service caboose-notifications.service cups.service caboose-phone-printer.service caboose-bridge.service var-lib-caboose-depot.mount
+  systemctl enable caboose-vsock-services.service caboose-files.service caboose-terminal.service caboose-notifications.service caboose-bridge.service var-lib-caboose-depot.mount
+  systemctl disable cups.service cups.socket cups.path caboose-phone-printer.service
 fi
 if [[ "$mode" = vm ]]; then
   systemctl daemon-reload
+  systemctl restart caboose-vsock-services.service
   systemctl restart caboose-notifications.service
   systemctl restart caboose-files.service
   systemctl restart caboose-terminal.service
-  systemctl start cups.service
   # Only a host that shares its runtime depot gives the computer the caboose-depot tag.
   systemctl start var-lib-caboose-depot.mount 2>/dev/null || :
-  systemctl restart caboose-phone-printer.service
   # The bridge runs with the owner's display; restart it only where that display is up.
   if systemctl is-active --quiet caboose-display.service; then systemctl restart caboose-bridge.service; fi
 elif [[ "$mode" = container ]]; then

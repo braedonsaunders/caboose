@@ -107,7 +107,7 @@ final class GamepadDriver {
     func destination(of window: RemoteWindow?, settings: LaptopGamepad.Settings) -> String {
         guard let window else { return "Choose a window to play" }
         let name = window.title.isEmpty ? "this window" : window.title
-        return window.game != nil && settings.games == .controller ? "Controller for \(name)" : "Keys to \(name)"
+        return window.game.map { $0.webview == nil } == true && settings.games == .controller ? "Controller for \(name)" : "Keys to \(name)"
     }
 
     func apply(_ new: GameGamepadState, to target: RemoteWindow?, session: (any DisplaySession)?, settings: LaptopGamepad.Settings) {
@@ -123,7 +123,7 @@ final class GamepadDriver {
         if settings.haptics, LaptopGamepad.assignableButtons.contains(where: { new[$0] > 0.5 && old[$0] <= 0.5 }) {
             haptics.impactOccurred()
         }
-        if let game = target.game, settings.games == .controller {
+        if let game = target.game, game.webview == nil, settings.games == .controller {
             self.game = game
             game.gamepad = new
             return

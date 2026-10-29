@@ -288,7 +288,7 @@ export class AgentCatalog implements AgentResolver {
     if (!method) throw new AgentInputError(`${launch.name} has no sign-in method "${methodId}"`)
     const attempt = randomUUID()
     await guest.run(RUNUSER, ['-u', 'caboose', '--', '/usr/bin/env', ...GUEST_ENV, '/bin/sh', '-c', SIGN_IN_SCRIPT, 'sh', AGENTD,
-      encode({ agent: launch, methodId, on, attempt, env: envObject(ownerEnv(guest)) })], 30_000).catch(rethrowRunnerMissing)
+      encode({ agent: launch, methodId, on, attempt, env: on === 'display' ? envObject(ownerEnv(guest)) : {} })], 30_000).catch(rethrowRunnerMissing)
     const state = this.guestAgents[id] ?? (this.guestAgents[id] = {})
     state.signInStatus = { methodId, status: 'running', on, attempt, startedAt: new Date().toISOString() }
     return { started: true, method, attempt }

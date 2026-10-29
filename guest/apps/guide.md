@@ -45,6 +45,7 @@ and data).
 | `icon` | | An `.svg` or `.png` in the app directory, square, at least 128 px. Without one the app gets a monogram. |
 | `categories` | | Any of `AudioVideo`, `Audio`, `Video`, `Development`, `Education`, `Game`, `Graphics`, `Network`, `Office`, `Science`, `Settings`, `System`, `Utility`. Default `Utility`. |
 | `capabilities` | | Which parts of `window.caboose` the app uses: `exec`, `files`, `notify`, `open`. Calls to an undeclared one fail. Changes apply the next time the app starts. |
+| `handoff` | | Set to `"files"` only when all persistent app state uses `caboose.files`; the phone may run the page locally. Browser storage is not transferred between the phone and computer. Without it the app runs on the computer. |
 | `window` | | Opening size and limits in pixels, and `background`, the colour shown before the page paints (`#rrggbb`). |
 
 Unknown fields are errors, so a typo is caught at publish.

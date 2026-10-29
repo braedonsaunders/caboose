@@ -72,6 +72,16 @@ computer's disk is a reflink copy-on-write clone of the base: it costs no space 
 and the owner's installs and home persist. A clone is independent of the base once made,
 so a new base image reaches new computers only.
 
+A Linux host can opt new computers into a split image using `CABOOSE_SPLIT_IMAGE`.
+Its `base.raw`, `vmlinux`, `initrd` and `system.erofs` form one retained version. The
+host records the absolute directory and file hashes per computer before creating its
+disk; on wake it checks the system image, kernel and initramfs, and checks the base before
+creating a disk. Initramfs mounts the EROFS image read-only and
+mounts writable overlays for `/usr` and `/opt`, whose upper and work directories live on
+the computer's ext4 disk. Package and component updates persist there. Existing disks
+and snapshots remain on their original image; switching the setting does not migrate them.
+The device uses read-only virtio-block; this does not establish DAX or a RAM saving.
+
 The image contains:
 
 - **Applications.** Chromium, Firefox ESR, VS Code, xfce4-terminal, Thunar, Mousepad,
@@ -122,7 +132,9 @@ reference and removes the old files.
 
 While the image is being fetched, `POST /v1/session` (and anything that wakes) answers 409
 with its progress ("Downloading the computer's image (42%)"). A failed fetch puts the
-computer in `error` with the reason in `lastError`, and the next wake retries it.
+computer in `error` with the reason in `lastError`, and the next wake retries it. When the
+image is absent and the host has no reference to fetch it from, a wake answers 409 with how
+to build it or which variable names a published one.
 
 ### Guest components
 
@@ -132,7 +144,7 @@ endpoints, phone handoff, `caboose-game-run` with the game bundles Caboose ships
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
 
-- After each wake, once the owner's display is ready, the host hashes the bundled files in
+- After each wake, the host hashes the bundled files in
   manifest order and compares the hash with `/usr/local/share/caboose/components.version`
   in the guest. On a mismatch it runs the installer as root over the guest channel (`vm` or
   `container` mode). The installer adds missing Debian dependencies and preserves working
@@ -143,6 +155,8 @@ same installer to update computers whose disks predate the host:
 - Container services are identified as their owner, including when restricted container
   root cannot read that user's process arguments. A stale pid file is repaired from the
   exact service script; readiness requires that process to own its listening socket.
+  Container service startup also ensures the system and owner session buses are available
+  for credential preparation, including on headless wakes, without starting a display.
 - `GET /v1/computer` reports `upgrade: null | { state, version?, message? }`, and
   `/v1/control` sends `computer.upgrade` with `state` `checking`, `updating`, `succeeded` or
   `failed`.
@@ -185,6 +199,19 @@ The computer runs as a **microVM** by default: Cloud Hypervisor on Linux or
 Virtualization.framework on Apple Silicon macOS 14+, through appkit-desk, with
 the image files `base.raw`, `vmlinux` and `initrd` in `CABOOSE_IMAGE_ROOT`, its overlay at
 `overlays/owner.raw` and its memory snapshot at `overlays/owner.snapshot`.
+On Linux, operators can opt into Cloud Hypervisor copy-on-write restore and
+virtio-balloon free-page reporting. Copy-on-write restore retires the old
+snapshot before the VM can write and keeps its source unchanged until the VMM
+exits; an interrupted VM can leave a source file requiring verified cleanup.
+
+An optional S3-compatible cold tier compresses and encrypts a parked snapshot
+after four hours. It verifies the remote archive before replacing the local
+snapshot with a durable pointer. Wake restores and verifies a staged snapshot
+before clearing that pointer; a failed cold-tier retrieval blocks wake. Restart
+and deletion durably invalidate cold memory. Remote object cleanup uses durable
+receipts and host-wide retries, including after a computer is deleted. The disk
+overlay stays local. Keep the private snapshot key and storage configuration with
+the host's protected backups.
 
 The macOS bundle includes a signed `appkit-desk-vz` helper and a menu bar app. A per-user
 LaunchAgent runs the host at login; its data lives under `~/Library/Application Support/Caboose`.
@@ -235,9 +262,9 @@ survives host restarts.
 
 ### Network fencing
 
-Each Linux microVM computer has its own persistent TAP device and /30 in `192.0.2.0/24`: the
-computer on slot *n* (see Computers) uses `caboose<n>`, with the host at `192.0.2.(4n+1)`
-and the guest at `192.0.2.(4n+2)`. The owner's computer is slot 0: `caboose0`,
+Each Linux microVM computer has its own persistent TAP device and /30. Slots 0–63 use
+`192.0.2.0/24`, with the host at `192.0.2.(4n+1)` and guest at `192.0.2.(4n+2)`.
+Slots 64–32831 use consecutive /30s in `198.18.0.0/15`. TAP names remain `caboose<n>`. The owner's computer is slot 0: `caboose0`,
 `192.0.2.1/30` and `192.0.2.2/30`. Each guest gets NAT to the host's other interfaces and
 DNS `1.1.1.1`. At each wake the host also sets the guest's clock over the guest agent.
 
@@ -246,16 +273,17 @@ The guest is fenced in chains the host owns, each jumped to first from its built
 | Chain | Hook | Rules |
 | --- | --- | --- |
 | `CABOOSE-IN` | `INPUT -i caboose<n>` | Established and related traffic returns; everything else is dropped. The guest can open nothing on the host. |
-| `CABOOSE-FWD` | `FORWARD -i caboose<n>` | Established and related traffic returns; new connections to `192.0.2.0/24` (every computer) and to private and reserved ranges are rejected; the rest returns to normal forwarding. |
+| `CABOOSE-FWD` | `FORWARD -i caboose<n>` | Established and related traffic returns; new connections to `192.0.2.0/24` and `198.18.0.0/15` (every computer) and to private and reserved ranges are rejected; the rest returns to normal forwarding. |
 
-Both chains are shared by every computer and refilled only when their rules differ, so
-waking one computer never leaves another unfenced.
+Both chains are shared by every computer. After setup the host records the TAP, firewall and
+forwarding state; a later wake skips setup only when the live state still matches. Failure,
+restart or deletion invalidates the cached state.
 
 The rejected ranges are `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
 `169.254.0.0/16` (link-local and cloud metadata), `100.64.0.0/10` (CGNAT and Tailscale),
 `127.0.0.0/8`, `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`, `224.0.0.0/4` and
 `240.0.0.0/4`. `CABOOSE_GUEST_LAN=allow` removes them, so the guest can reach the local
-network; it never removes `192.0.2.0/24`, so one computer can never reach another. The host
+network; it never removes the two computer ranges, so one computer can never reach another. The host
 opens the relay connections to the guest itself.
 
 A container computer gets the same fence on its own Docker bridge network: `caboose`
@@ -270,6 +298,11 @@ terminal use ephemeral listeners on host loopback that relay into the guest thro
 appkit-desk. Those listeners and their active connections close when the computer parks,
 restarts, is deleted, or fails to wake. They reopen on wake; guest service tokens still
 authorize every connection.
+
+Linux VM guest components include a host-CID-only vsock bridge to display, agent display,
+Files and terminal. At wake the host probes Files through vsock; when it answers HTTP the
+host opens service relays over vsock, otherwise it uses guest TCP for older images. Relays
+and active connections close on park, restart, deletion or a failed wake.
 
 ### Displays
 
@@ -287,7 +320,7 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | Session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus` |
 | Notification endpoint | `caboose-notification-daemon.service` | `caboose-agent-notification-daemon.service` |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
-| Started | At every wake | On demand: by an agent task, or by a client opening `/v1/display?seat=agent` |
+| Started | On interactive wake or promotion | On demand: by a desktop tool or a client opening `/v1/display?seat=agent` |
 
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
@@ -333,7 +366,7 @@ token and has written its launch environment (`/run/caboose/display.env`, or
 `agent-display.env` for port 14601). The host starts the owner's display with
 `systemctl start caboose-display.service && caboose-display-ready 60 14600` (microVM) or
 `caboose-session start` and `ready` (container), then reads `/run/caboose/display.env`. A
-wake fails if the display writes no launch environment.
+interactive wake or promotion fails if the display writes no launch environment.
 
 ### Display token
 
@@ -470,8 +503,11 @@ Flatpak apps run on shared runtimes (GNOME, KDE, Freedesktop), each about a giga
 downloads each runtime once, for every computer: none is installed ahead of an app that needs it.
 
 - **One installation, read-only everywhere.** The depot is a Flatpak installation owned by the
-  host: the Docker volume `caboose-depot` on the container runtime, mounted read-only at
-  `/var/lib/caboose/depot` in each computer. `/etc/flatpak/installations.d/caboose-depot.conf`
+  host: the Docker volume `caboose-depot` on the container runtime, or the directory named
+  by `CABOOSE_VM_DEPOT` on Linux microVM hosts. The latter is shared with read-only virtio-fs.
+  Both mount read-only at `/var/lib/caboose/depot` in each computer. Virtio-fs needs shared
+  guest memory, which Cloud Hypervisor restores eagerly; `CABOOSE_VM_DEPOT` and
+  `CABOOSE_VM_COW=on` cannot be enabled together. `/etc/flatpak/installations.d/caboose-depot.conf`
   names it; the installer adds it as the dependency source of every app transaction, so an app
   installs into its own computer and runs on the depot's runtime in place.
 - **Written only by the host's builder.** Before a Flathub install or update, the host adds the
@@ -480,10 +516,11 @@ downloads each runtime once, for every computer: none is installed ahead of an a
   `depot-builder.py`. No computer can modify a runtime another computer runs. Builds are
   serialized; a second request for the same runtime waits for the first.
 - **Daily maintenance.** The builder updates every runtime. A superseded runtime's deployed
-  files stay for 14 days for apps that started on it and still run. A runtime no computer has
-  reported using for 30 days is removed; a computer whose apps still need it after a long sleep
-  gets it back on its next listing, before an app needs it.
-- **Without the depot** (a microVM host, or a container created before the depot existed), an
+  files stay for 14 days for apps that started on it and still run. A runtime remains while any
+  computer's last reported app list needs it, including while that computer is parked. A runtime
+  no computer reports using is removed. An unreadable depot record stops maintenance rather than
+  collecting against an empty usage list.
+- **Without the depot** (an unconfigured microVM host or a container created before the depot existed), an
   app's runtime installs into the computer itself.
 
 **Flatpak in a container.** Flatpak runs each app in bubblewrap, which needs user and mount
@@ -537,16 +574,17 @@ Xwayland, with `WAYLAND_DISPLAY` removed and `GDK_BACKEND`, `WINIT_UNIX_BACKEND`
 
 An agent app is a web app an agent writes into `~/Apps/<id>/` (`app.json` and its files)
 that runs as an application of its own. `caboose-app` (`guest/apps`, installed with the
-guest components at `/opt/caboose/apps`) runs each in a GTK 3 window around a WebKitGTK 4.1
-view. `caboose-app publish <id>` validates it and writes
+guest components at `/opt/caboose/apps`) runs each in a GTK 3 window. Apps that opt in to
+`handoff: "files"` run in the phone's WebKit view when the display client supports it;
+otherwise WebKitGTK 4.1 runs on the computer. `caboose-app publish <id>` validates it and writes
 `~/.local/share/applications/caboose.app.<id>.desktop`, so `/v1/apps` lists it and
 `/v1/apps/:id/launch` opens it like any desktop entry; the window's `app_id` is the entry's
 name. Ids are `[a-z][a-z0-9-]{0,47}`. The format, the API and the runtime's rules are in
 [guest/apps](../guest/apps/README.md).
 
-- The page is served only from `caboose-app://<id>/`, from regular files inside the app
-  directory after decoding and resolving symlinks, with a content security policy (header
-  and `<meta>`) under which script runs only from the app's own files and frames hold only
+- The local page is served from `caboose-app://<id>/`, and the handed-off page from its
+  device's loopback origin. Each serves only files in the app directory with a content
+  security policy under which script runs only from the app's files and frames hold only
   its own pages. Publishing rejects pages with inline script. The top frame cannot leave the
   app; web, mail and phone links the person follows open in their default application.
 - `window.caboose` exists only in the top frame, through a relay in an isolated script world
@@ -556,8 +594,13 @@ name. Ids are `[a-z][a-z0-9-]{0,47}`. The format, the API and the runtime's rule
   (symlink-safe file operations in the home), `notify` (a desktop notification, which
   reaches the phone) and `open`. Declared capabilities describe the app; they are not a
   sandbox. An app runs as `caboose`, and `exec` has that user's full authority.
-- Each app keeps its web storage and files under `~/.local/share/caboose/apps/<id>/`. Edits
-  to the app's files reload its open windows; capabilities apply from the next start.
+- App files live under `~/.local/share/caboose/apps/<id>/files/`. Apps that opt in to
+  handoff keep persistent app state in those files: WebKitGTK storage and device WebKit
+  storage are separate and are not migrated. Device origins are stable per computer and app.
+  Edits reload open windows; capabilities apply from the next start. The authenticated
+  `/v1/webview/<instance>/bridge` relay passes requests to the running app, which enforces
+  its session grant, document revision and startup capabilities. The owner token stays in
+  native code. See [native handoff](../guest/apps/README.md#native-handoff).
 
 ## 3. Host
 
@@ -574,9 +617,12 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_BIND` | `127.0.0.1` | Listen address |
 | `CABOOSE_PORT` | `7310` | Listen port |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Golden image, overlays, snapshots and host state |
+| `CABOOSE_SPLIT_IMAGE` | unset | Retained split image version for new Linux microVM computers |
+| `CABOOSE_VM_DEPOT` | unset | Host directory for a read-only virtio-fs runtime depot on Linux microVMs |
 | `CABOOSE_MEMORY_MB` | `6144` | Initial memory setting of the owner's computer and of new computers |
 | `CABOOSE_VCPUS` | `4` | Initial vCPU setting, likewise |
 | `CABOOSE_IDLE_MS` | `600000` | Initial idle time before parking, likewise |
+| `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor binary |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container` |
 | `CABOOSE_GPU` | `auto` | Container GPU: `auto`, `wsl`, `nvidia`, `dri` or `none` |
@@ -612,9 +658,11 @@ Computer slots and ownership live in `caboose_computers` and `caboose_people` in
 
 A host runs several computers. The owner's computer always exists, with id `owner` and
 slot 0, and cannot be deleted. Every other computer has an id `c-` followed by 10 hex
-digits, and the lowest free slot from 1 to 63. The slot names its network (see Network
-fencing) and, for a container, its loopback ports: 20000 + 10 × slot for the owner's
-display, plus 1 for the agent seat and plus 2 for the file service. Each computer has its
+digits, and the lowest free slot from 1 to 32831. The slot names its network (see Network
+fencing). Containers in slots 1–63 retain their fixed loopback ports; later containers use
+loopback ports allocated outside the legacy range after inspecting Docker bindings, including
+stopped containers, and probing the host before binding. A bind race is retried after
+removing only the newly created failed container. Docker retains ports while parked. Each computer has its
 own disk, settings, lifecycle, leases, agents, catalog, notifications and phones; nothing
 of one is reachable from another. microVM computers share one appkit-desk host, so at most
 `CABOOSE_MAX_RUNNING` run at once and further wakes queue.
@@ -622,7 +670,7 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/v1/computers` | `{ computers: [{ id, createdAt, …management status }], canCreate, limits: { computers, running } }`. `createdAt` is null for an owner's computer made before the host recorded it; `running` is null for the container runtime |
-| `POST` | `/v1/computers` | `{ name, memoryMb?, vcpus?, idleMs? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. 409 when all 63 slots are taken |
+| `POST` | `/v1/computers` | `{ name, memoryMb?, vcpus?, idleMs? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. 409 when all computer slots are taken |
 | `GET` | `/v1/computers/:id` | One computer, as listed |
 | `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer, or while a catalog operation or Craft job someone started runs on it (the message says which; retry when it finishes) |
 | any | `/v1/computers/:id/<route>` | Any computer route (§ Session and display through § Live Activities, and the agent routes of § 5), served by that computer (`/v1/computers/:id/session`, `/v1/computers/:id/fs/list`, `/v1/computers/:id/display`, …) |
@@ -702,18 +750,30 @@ unknown keys as reserved and a higher `v` as possibly incompatible.
 
 ### Lifecycle
 
-The computer has one state: `parked`, `waking`, `running`, `parking`, `restarting` or
+The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, `restarting` or
 `error`. Wake, park and restart are serialized, so none can race another or a launch.
 
 - **Wake** (`POST /v1/session`, and routes that wake on demand) starts or restores the
   computer, configures its network and clock, writes the display token, starts the file
   service, starts the owner's display and reads its launch environment. A microVM whose
   snapshot cannot be restored is reported as an error rather than cold-booted.
-- **Leases.** Each open display, control or terminal WebSocket holds a lease, as do running agent
+- **Headless wake.** Agent tasks and routines wake the computer without starting the owner's
+  display. Guest components and the file service are prepared before admitting the task.
+  Desktop MCP tools and `app_open` start the agent seat on demand; an owner display request or
+  app launch promotes a headless computer to an interactive one. A memory restore retains any
+  display already running in the snapshot; headless wake does not stop existing applications.
+- **Leases.** Each open display, terminal or foreground control WebSocket holds a lease, as do running agent
   tasks, catalog operations, Craft jobs, agent installs and sign-ins, and each `/v1/fs`
-  request until its response completes. With no lease, the computer parks after the
-  `idleMs` setting. HTTP polling of `/v1/computer` holds no lease, so leaving the web
-  console open does not keep the computer awake.
+  request until its response completes. Control sockets marked `foreground=0` do not hold a
+  lease; unmarked sockets retain the foreground behavior for compatibility. HTTP polling of
+  `/v1/computer` holds no lease, so leaving the web console open does not keep it awake.
+- **Freeze.** On a microVM backend that supports resident pause, three seconds without a
+  lease pauses the guest in memory. A new operation resumes it before guest access. The
+  computer parks at the earlier of its configured idle timeout or the freeze-to-park timeout;
+  a frozen VM retains RAM until then. Backends without resident pause use the ordinary idle park. A failed pause
+  remains fenced until a resume or park reconciles the VMM state. A detached terminal can
+  still run a foreground process, so any existing terminal session defers freezing; if the
+  terminal service cannot confirm the session list, the host also defers it and retries.
 - **Park** keeps memory, so every application is where it was on resume. An explicit park
   closes all client sockets first and ignores leases.
 - **Restart** is a cold boot that keeps the disk and discards memory. It first tries a 5 s
@@ -937,7 +997,8 @@ Management status:
   `lastError`.
 
 `GET /v1/host` returns `{ version, node, runtime, gpu, image, push, liveActivities,
-settings }`: the host package and Node versions, `"microvm"` or `"container"`, the
+settings }`: the host's version (the release it was built as, `CABOOSE_VERSION`, else the
+package version) and Node's version, `"microvm"` or `"container"`, the
 container's GPU kind (null for a microVM), the container image or the golden image path,
 whether APNs and Live Activities are configured, and `settings: [{ name, value, default }]`
 for the non-secret `CABOOSE_*` variables read at startup (container-only variables appear
@@ -1016,8 +1077,14 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   10000 events. A missing, expired, overflowed or previous-run anchor answers
   `reset: true`, and the client re-enumerates. Rename events carry the inotify `cookie`
   that pairs the old and new path.
+- The journal is a notification mechanism, not a complete consistency proof: inotify
+  does not report every change (including modifications through memory mappings), and
+  processing is asynchronous. The host does not serve parked reads from this journal;
+  reads and writes wake the computer.
 - While the computer runs and at least one control socket is connected, the host polls the
-  journal every second and broadcasts `fs.changed { anchor }` when something changed.
+  journal every second and broadcasts `fs.changed { anchor }` when something changed. It
+  keeps the last anchor through a resident freeze and resumes polling from it on thaw; park,
+  restart or the last control socket closing resets the host's polling anchor.
 - `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.
@@ -1817,10 +1884,10 @@ window's texture is a blit on one shared Metal queue, which runs command buffers
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-The iOS app negotiates whole-window video by default: it omits `video_decoders`, so the
-computer encodes video into the same window picture as its controls and returns unsupported
-passthrough streams to server decoding. The layered-video client remains explicitly
-negotiated for protocol checks. PCM playback uses decoded sample durations to join adjacent
+The iOS app omits `video_decoders`, returning passthrough streams to server decoding. It
+requests half-resolution software-encoded motion streams and upscales them with MetalFX,
+or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer scales the
+decoded picture. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 The phone estimates the source sample-clock rate over a bounded rolling arrival window,
 then adjusts playback continuously with pitch preservation. This accommodates virtual
@@ -2506,7 +2573,7 @@ phone's location while Caboose is open. Computer settings has the switches. See
   console. The host stores only SHA-256 digests; signing a phone out closes its sockets and
   removes its notifications. The app and its extensions keep the token in a shared Keychain
   access group.
-- **Computers.** Each computer is fenced from every other (`192.0.2.0/24` is always
+- **Computers.** Each computer is fenced from every other (both computer subnets are always
   rejected; containers sit on separate bridge networks) and has its own disk and data
   directory.
 - **Display token.** A random per-wake token in `/run/caboose/display-token` (mode 0600,

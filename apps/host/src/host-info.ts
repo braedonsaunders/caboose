@@ -30,7 +30,8 @@ export interface HostInfo {
   settings: HostSetting[]
 }
 
-const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
+/** The release a bundle or image was built as (CABOOSE_VERSION), else the package's own version. */
+const VERSION = process.env.CABOOSE_VERSION || (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
 
 /**
  * Settings worth showing an owner, read from the environment the host started with. The

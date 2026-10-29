@@ -26,8 +26,9 @@ ARG GPU_BUILD_JOBS=2
 RUN CABOOSE_GPU_JOBS="$GPU_BUILD_JOBS" /gpu/build.sh /out/caboose-gpu
 
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eatmydata util-linux fdisk e2fsprogs ca-certificates curl && rm -rf /var/lib/apt/lists/*
-COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv /builder/
+RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eatmydata util-linux fdisk e2fsprogs erofs-utils zerofree ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv image/make-system-image.sh /builder/
+COPY image/initramfs/caboose-system /builder/caboose-system
 COPY components /builder/components
 COPY keyring /builder/keyring
 COPY container/caboose-session /builder/container/
@@ -41,9 +42,10 @@ COPY bridge /builder/bridge
 COPY flatpak /builder/flatpak
 COPY game /builder/game
 COPY gpu /builder/gpu
-COPY apps/install.sh apps/caboose-app apps/appcore.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /builder/apps/
+COPY apps/install.sh apps/caboose-app apps/appcore.py apps/remote.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /builder/apps/
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /out/vaapi/caboose_drv_video.so /builder/display/
 COPY --from=gpu /out/caboose-gpu /builder/display/caboose-gpu
 COPY display/caboose-display-ready display/systemd/caboose-display.service display/systemd/caboose-display-agent.service /builder/display/
 COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs agentd/package.json agentd/install.sh /builder/agentd/
+COPY media-handoff /builder/media-handoff
 ENTRYPOINT ["/builder/build-inside.sh"]

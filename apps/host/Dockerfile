@@ -47,6 +47,7 @@ COPY --from=host-build /src/apps/host/dist ./apps/host/dist
 COPY apps/host/migrations ./apps/host/migrations
 COPY guest/agentd/caboose-agentd.mjs guest/agentd/agent-tools.mjs guest/agentd/library-mcp.mjs guest/agentd/package.json guest/agentd/install.sh ./guest/agentd/
 COPY guest/components ./guest/components
+COPY guest/desktop-mcp ./guest/desktop-mcp
 COPY guest/keyring ./guest/keyring
 COPY guest/container/caboose-session ./guest/container/
 COPY guest/files ./guest/files
@@ -57,7 +58,7 @@ COPY guest/bridge ./guest/bridge
 COPY guest/flatpak ./guest/flatpak
 COPY guest/game ./guest/game
 COPY guest/gpu/install.sh guest/gpu/caboose-gpu-run guest/gpu/profile.json ./guest/gpu/
-COPY guest/apps/install.sh guest/apps/caboose-app guest/apps/appcore.py guest/apps/page.js guest/apps/world.js guest/apps/guide.md guest/apps/apps-mcp.mjs ./guest/apps/
+COPY guest/apps/install.sh guest/apps/caboose-app guest/apps/appcore.py guest/apps/remote.py guest/apps/page.js guest/apps/world.js guest/apps/guide.md guest/apps/apps-mcp.mjs ./guest/apps/
 COPY guest/container/caboose-seccomp.json ./guest/container/caboose-seccomp.json
 COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
 COPY guest/catalog/icons ./guest/catalog/icons
@@ -69,6 +70,7 @@ ENV CABOOSE_IMAGE_ROOT=/data/caboose/disks CABOOSE_BIND=0.0.0.0
 # fetches the one its runtime needs on first run. A local build leaves both to the operator.
 ARG CABOOSE_BASE_IMAGE=
 ARG CABOOSE_CONTAINER_IMAGE=caboose-computer:latest
-ENV CABOOSE_BASE_IMAGE=${CABOOSE_BASE_IMAGE} CABOOSE_CONTAINER_IMAGE=${CABOOSE_CONTAINER_IMAGE}
+ARG CABOOSE_VERSION=
+ENV CABOOSE_BASE_IMAGE=${CABOOSE_BASE_IMAGE} CABOOSE_CONTAINER_IMAGE=${CABOOSE_CONTAINER_IMAGE} CABOOSE_VERSION=${CABOOSE_VERSION}
 ENTRYPOINT ["/usr/local/bin/caboose-entrypoint"]
 CMD ["node", "apps/host/dist/index.js"]

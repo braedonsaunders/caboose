@@ -280,7 +280,7 @@ describe('Flathub in the Library', () => {
     expect(create.apps.slice(0, Math.min(15, curatedCreate.length)).map(app => app.id)).toEqual(curatedCreate.slice(0, 15))
     expect(groups.find(group => group.category === 'Internet')?.apps.map(app => app.id)).toEqual(['flathub-org.mozilla.firefox'])
     expect(groups.every(group => group.apps.length > 0 && group.apps.length <= 15)).toBe(true)
-    expect(groups.find(group => group.category === 'Games')?.apps.map(app => app.id)).toEqual(['powder-toy'])
+    expect(groups.find(group => group.category === 'Games')?.apps.map(app => app.id)).toEqual(['powder-toy', 'platformer-3d'])
   })
   it('installs a Flathub app on its current runtime and lists it as installed', async () => {
     const s = await library()

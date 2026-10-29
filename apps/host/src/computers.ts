@@ -9,7 +9,7 @@ import type { IdentityDatabase } from './identity/database.js'
  * The computers a host runs. The owner's computer is always there: it has id `owner` and
  * slot 0, and keeps the files a host had before it ran several (`caboose.json`,
  * `push-devices.json` and `activities.json` at the image root). Every other computer keeps its
- * own under `computers/<id>/`. A slot names a computer's network and loopback ports; it is
+ * own under `computers/<id>/`. A slot names a computer's network; it is
  * the lowest one free when the computer is made, and freed when it is deleted.
  */
 export const OWNER_COMPUTER = 'owner'

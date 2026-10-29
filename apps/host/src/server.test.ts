@@ -47,10 +47,17 @@ it('authenticates routes and relays binary websocket messages while holding a le
   expect(park).not.toHaveBeenCalled()
   client.close()
   await once(client, 'close')
+  const background = new WebSocket(base.replace('http:', 'ws:') + '/v1/control?foreground=0', { headers: { authorization: 'Bearer owner' } })
+  await once(background, 'open')
+  const backgroundClosed = once(background, 'close')
   await vi.waitFor(() => expect(park).toHaveBeenCalledTimes(1))
+  await backgroundClosed
 })
 
 it('routes agent replies, approvals, files and links with the right status codes', async () => {
+  const display = new WebSocketServer({ port: 0 })
+  await once(display, 'listening')
+  close.push(() => new Promise(resolve => display.close(() => resolve())))
   const fileServer = createServer((req, res) => {
     req.resume()
     req.on('end', () => { res.writeHead(201, { 'content-type': 'application/json' }); res.end('{}') })
@@ -63,6 +70,7 @@ it('routes agent replies, approvals, files and links with the right status codes
   const launch = vi.fn(async (_id: string, _path?: string, _action?: string) => {})
   const guest = { ownerEnv: ['DISPLAY=:110'], run: async (command: string, args: string[]) => {
     runs.push([command, ...args])
+    if (args.includes('/opt/caboose/a11y.py')) return '0\n{"elements":[]}'
     if (command === '/usr/bin/python3' && args[2] === 'list') return '{}'
     // This route fixture models a runner that immediately claims admitted prompts.
     // Durable delivery now asks for that evidence before draining queued replies.
@@ -74,9 +82,11 @@ it('routes agent replies, approvals, files and links with the right status codes
     if (args[8]?.startsWith('// caboose delivery evidence')) return JSON.stringify({ journal: '', receipt: '', receiptExists: false, inbox: '', published: '', transcript: transcripts.get(args[7]!) ?? '', alive: true })
     return args[5]?.includes('while [ -e "$target" ]') ? '/home/caboose/Downloads/a.txt' : ''
   } }
-  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+  const session = { state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }
+  const wake = vi.fn(async () => session), promote = vi.fn(async () => session)
+  const controller: Controller = { wake, promote,
     park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch,
-    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest,
+    displayUrl: `ws://127.0.0.1:${(display.address() as AddressInfo).port}`, agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest,
     fileService: () => ({ url: `http://127.0.0.1:${(fileServer.address() as AddressInfo).port}`, token: 'test' }) }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: 'claude-acp' }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const registry = new AgentRegistry({ fetch: (async () => new Response(await readFile(new URL('./fixtures/acp-registry.json', import.meta.url)))) as unknown as typeof fetch })
@@ -87,9 +97,29 @@ it('routes agent replies, approvals, files and links with the right status codes
   const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
   const post = (path: string, body: unknown) => fetch(base + path, { method: 'POST', headers: { authorization: 'Bearer owner' }, body: JSON.stringify(body) })
   const missing = '11111111-1111-4111-8111-111111111111'
-  expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(409)
+  const headlessTask = await post('/v1/agent/tasks', { prompt: 'headless' })
+  expect(headlessTask.status).toBe(200)
+  expect(wake).toHaveBeenCalledWith('headless')
+  expect(promote).not.toHaveBeenCalled()
+  expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(404)
+  const displayClient = new WebSocket(base.replace('http:', 'ws:') + '/v1/display', 'binary', { headers: { authorization: 'Bearer owner' } })
+  const [opened, launched, uploaded, screen] = await Promise.all([
+    post('/v1/open', { url: 'https://example.com' }),
+    post('/v1/apps/firefox.desktop/launch', {}),
+    post('/v1/files', { name: 'open.txt', data: 'aGk=', open: true }),
+    fetch(base + '/v1/screen/elements', { headers: { authorization: 'Bearer owner' } }),
+    once(displayClient, 'open'),
+  ])
+  expect(opened.status).toBe(200)
+  expect(launched.status).toBe(200)
+  expect(uploaded.status).toBe(200)
+  expect(screen.status).toBe(200)
+  expect(promote).toHaveBeenCalledOnce()
+  displayClient.close()
+  await once(displayClient, 'close')
   expect(await (await post('/v1/files', { name: 'a.txt', data: 'aGk=' })).json()).toEqual({ path: '/home/caboose/Downloads/a.txt' })
   await post('/v1/session', {})
+  expect(promote).toHaveBeenCalledOnce()
   expect((await post('/v1/fs/open', { path: 'Documents/a.psd', app: 'ai.storyteller.photocraft.desktop' })).status).toBe(200)
   expect(launch).toHaveBeenCalledWith('ai.storyteller.photocraft.desktop', 'Documents/a.psd')
   expect((await post('/v1/fs/open', { path: '../bad', app: 'a.desktop' })).status).toBe(400)

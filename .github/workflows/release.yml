@@ -108,6 +108,7 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           push: true
           build-args: |
+            CABOOSE_VERSION=${{ env.TAG }}
             CABOOSE_BASE_IMAGE=${{ env.CABOOSE_BASE_IMAGE }}
             CABOOSE_CONTAINER_IMAGE=${{ env.CABOOSE_CONTAINER_IMAGE }}
           tags: ${{ env.REGISTRY }}/caboose-host:${{ env.TAG }}-${{ matrix.arch }}
@@ -137,7 +138,7 @@ jobs:
         include:
           - { os: linux, arch: amd64, runner: ubuntu-24.04 }
           - { os: linux, arch: arm64, runner: ubuntu-24.04-arm }
-          - { os: darwin, arch: arm64, runner: macos-14 }
+          - { os: darwin, arch: arm64, runner: macos-15 }
     runs-on: ${{ matrix.runner }}
     env:
       CABOOSE_VERSION: ${{ inputs.tag || github.ref_name }}
@@ -173,6 +174,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Hosts, installers and Docker pull the images anonymously; stop before publishing
+      # bundles that could not fetch them.
+      - name: Check the images are public
+        run: |
+          owner=${REGISTRY#ghcr.io/}
+          for name in caboose-host caboose-computer caboose-base; do
+            token=$(curl -sS "https://ghcr.io/token?scope=repository:$owner/$name:pull" | jq -r ".token // empty" || true)
+            curl -fsS -o /dev/null -H "Authorization: Bearer $token" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/$owner/$name/manifests/$TAG-amd64" ||
+              { echo "::error::$REGISTRY/$name is not publicly pullable. Set it to public in its package settings, then re-run this job."; exit 1; }
+          done
       - uses: actions/download-artifact@v4
         with: { pattern: 'bundle-*', path: bundles }
       - name: Combine checksums and attach release assets

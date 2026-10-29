@@ -378,6 +378,8 @@ export class LocationShare {
 
   /** The computer left the running state: its next run starts without a location. */
   computerStopped(): void { this.disarm() }
+  /** Wait for a location expiry or update already sent to the guest. */
+  async quiesce(): Promise<void> { await this.queue }
 
   /** The computer is running again: remove a location left on its disk from before. */
   computerRunning(): Promise<void> {

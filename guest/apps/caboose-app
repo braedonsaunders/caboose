@@ -14,6 +14,7 @@ Every command but run prints one JSON object. The format and the bridge are in g
 beside this program; the rules it enforces are in appcore.py.
 """
 import json
+import secrets
 import os
 import signal
 import subprocess
@@ -24,6 +25,7 @@ import time
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 import appcore as apps  # noqa: E402
+import remote  # noqa: E402
 
 HOME = os.environ.get('HOME') or os.path.expanduser('~')
 SHUTDOWN_GRACE_S = 2.0
@@ -56,9 +58,13 @@ class Children:
             entry = self.running.get(key)
         return entry[0] if entry else None
 
-    def forget(self, key):
+    def forget(self, key, proc):
         with self.lock:
-            self.running.pop(key, None)
+            entry = self.running.get(key)
+            if entry is None or entry[0] is not proc:
+                return False
+            self.running.pop(key)
+            return True
 
     @staticmethod
     def signal(proc, sig):
@@ -86,7 +92,7 @@ class Children:
                 proc.wait(1)
             except subprocess.TimeoutExpired:
                 pass
-            self.forget(key)
+            self.forget(key, proc)
 
 
 def collect(stream, limit, sink):
@@ -158,12 +164,22 @@ def run(ident):
     WORLD = 'caboose'
 
     children = Children()
-    writers = {}  # spawn key -> the lock that serializes its input
+    writers = {}  # spawn key -> (process, lock that serializes its input)
+    writers_lock = threading.Lock()
     state = {'generation': 0, 'document': None, 'view': None, 'window': None, 'reload': None, 'monitors': {}}
+    gate = remote.GrantGate()
 
     def event(payload):
         view = state['view']
         if view is None:
+            if state.get('remote_document'):
+                encoded = json.dumps(payload)
+                size = len(encoded.encode())
+                if state.get('remote_event_bytes', 0) + size > 16 * 1024 * 1024:
+                    remote_end()
+                else:
+                    state.setdefault('remote_events', []).append(payload)
+                    state['remote_event_bytes'] = state.get('remote_event_bytes', 0) + size
             return False
         script = f'__cabooseEvent({json.dumps(json.dumps(payload))})'
         view.evaluate_javascript(script, -1, WORLD, None, None, None)
@@ -175,15 +191,6 @@ def run(ident):
     def resolve(path):
         return apps.split_path(path, HOME, files_dir)
 
-    def directory(path):
-        if path is None:
-            return files_dir
-        root, parts = resolve(path)
-        target = os.path.join(root, *parts)
-        if not os.path.isdir(target):
-            raise apps.AppError(f'cwd {path} is not a directory')
-        return target
-
     def environment(env):
         merged = dict(os.environ)
         merged.update(apps.check_env(env))
@@ -193,11 +200,17 @@ def run(ident):
         if children.count() >= apps.MAX_RUNNING:
             raise apps.AppError(f'At most {apps.MAX_RUNNING} programs run at once for an app')
         try:
-            return subprocess.Popen(apps.check_argv(argv), cwd=directory(params.get('cwd')),
-                                    env=environment(params.get('env')),
-                                    stdin=subprocess.PIPE if stdin_pipe else subprocess.DEVNULL,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    start_new_session=True, close_fds=True)
+            fd = apps.open_cwd(params.get('cwd'), HOME, files_dir)
+            try:
+                # The child changes directory through an already-open descriptor. Keeping it
+                # across the fork prevents a renamed or replaced path from redirecting cwd.
+                return subprocess.Popen(apps.check_argv(argv), cwd=f'/proc/self/fd/{fd}', pass_fds=(fd,),
+                                        env=environment(params.get('env')),
+                                        stdin=subprocess.PIPE if stdin_pipe else subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        start_new_session=True, close_fds=True)
+            finally:
+                os.close(fd)
         except FileNotFoundError:
             raise apps.AppError(f'{argv[0]} was not found') from None
         except PermissionError:
@@ -245,7 +258,7 @@ def run(ident):
                 if reader.is_alive():
                     Children.signal(proc, signal.SIGKILL)
                     reader.join()
-            children.forget(key)
+            children.forget(key, proc)
             code = proc.returncode
             encode = (lambda data: base64.b64encode(data).decode()) if encoding == 'base64' else \
                 (lambda data: data.decode('utf-8', 'replace'))
@@ -284,8 +297,10 @@ def run(ident):
             code = proc.wait()
             for thread in pumps:
                 thread.join(5)
-            children.forget(f'spawn:{key}')
-            writers.pop(key, None)
+            children.forget(f'spawn:{key}', proc)
+            with writers_lock:
+                if writers.get(key, (None,))[0] is proc:
+                    writers.pop(key, None)
             if state['generation'] == generation:
                 in_main(event, {'key': key, 'type': 'exit', 'code': code if code >= 0 else None,
                                 'signal': signal.Signals(-code).name[3:] if code < 0 else None})
@@ -304,7 +319,13 @@ def run(ident):
         if not isinstance(data, str) or len(data) > apps.MAX_STDIN:
             raise apps.AppError('data must be a string')
         proc = process(params)
-        lock = writers.setdefault(params['key'], threading.Lock())
+        key = params['key']
+        with writers_lock:
+            entry = writers.get(key)
+            if entry is None or entry[0] is not proc:
+                entry = (proc, threading.Lock())
+                writers[key] = entry
+            lock = entry[1]
 
         def work():
             # One write at a time per process, so concurrent writes never interleave.
@@ -334,10 +355,23 @@ def run(ident):
         Children.signal(process(params), sig)
         return True
 
-    def files_op(fn):
+    def files_op(fn, allow_root=False, stat_root=False):
         def method(params):
             root, parts = resolve(params.get('path'))
-            return lambda: fn(root, parts, params)
+            is_data_root = root == files_dir and not parts
+            if is_data_root and not allow_root:
+                raise apps.AppError('path must name a file, not the root')
+            if root == files_dir:
+                relative = os.path.relpath(files_dir, HOME)
+                if relative == '..' or relative.startswith('../') or os.path.isabs(relative):
+                    raise apps.AppError('The app data directory is outside the home')
+                root, parts = HOME, relative.split('/') + parts
+            def work():
+                value = fn(root, parts, params)
+                if is_data_root and stat_root:
+                    value['name'] = ''
+                return value
+            return work
         return method
 
     def read(root, parts, _):
@@ -392,9 +426,9 @@ def run(ident):
         'process.kill': ('exec', do_kill),
         'files.read': ('files', files_op(read)),
         'files.write': ('files', files_op(write)),
-        'files.list': ('files', files_op(lambda root, parts, _: apps.list_dir(root, parts))),
-        'files.stat': ('files', files_op(lambda root, parts, _: apps.stat_path(root, parts))),
-        'files.mkdir': ('files', files_op(lambda root, parts, _: (apps.make_dir(root, parts), True)[1])),
+        'files.list': ('files', files_op(lambda root, parts, _: apps.list_dir(root, parts), allow_root=True)),
+        'files.stat': ('files', files_op(lambda root, parts, _: apps.stat_path(root, parts), allow_root=True, stat_root=True)),
+        'files.mkdir': ('files', files_op(lambda root, parts, _: (apps.make_dir(root, parts), True)[1], allow_root=True)),
         'files.remove': ('files', files_op(lambda root, parts, params: (apps.remove_path(root, parts, params.get('recursive') is True), True)[1])),
         'notify': ('notify', do_notify),
         'open': ('open', do_open),
@@ -434,14 +468,7 @@ def run(ident):
                 raise apps.AppError('Malformed request')
             if not admitted(request.get('document')):
                 raise apps.AppError('This page has been replaced')
-            method, params = request.get('method'), request.get('params')
-            if method not in METHODS or not isinstance(params, dict):
-                raise apps.AppError(f'Unknown method {str(method)[:60]}')
-            capability, handler = METHODS[method]
-            if capability not in capabilities:
-                raise apps.AppError(f'This app does not declare the "{capability}" capability in app.json; '
-                                    'add it and start the app again')
-            result = handler(params)
+            result = True if request.get('method') == '__caboose.ready' else apps.bridge_request(request, METHODS, capabilities)
         except Exception as error:  # every failure is the caller's rejection
             send({'ok': False, 'error': failure(error)})
             return True
@@ -457,6 +484,90 @@ def run(ident):
             in_main(send, outcome)
         threading.Thread(target=work, daemon=True).start()
         return True
+
+    def remote_end():
+        previous = state['generation']
+        state['generation'] += 1
+        state['remote_document'] = None
+        gate.close_document()
+        state['remote_events'] = []
+        state['remote_event_bytes'] = 0
+        threading.Thread(target=children.stop, args=(previous,), daemon=True).start()
+
+    def remote_request(request):
+        # Socket threads enter the GTK main loop before touching runtime state or starting
+        # a process. Long-running work runs on the socket thread after admission.
+        ready = threading.Event()
+        admission_lock = threading.Lock()
+        cancelled = [False]
+        result = {}
+
+        def admit():
+            with admission_lock:
+                if cancelled[0]:
+                    ready.set()
+                    return False
+                return admit_locked()
+
+        def admit_locked():
+            try:
+                grant = request.get('grant') if isinstance(request, dict) else None
+                if not gate.matches(grant):
+                    raise apps.AppError('This app is not handed off')
+                operation, document = request.get('operation'), request.get('document')
+                if not isinstance(document, str) or len(document) != 32 or any(c not in '0123456789abcdef' for c in document):
+                    raise apps.AppError('Invalid document')
+                if operation == 'open':
+                    revision = request.get('revision')
+                    if gate.opening(grant, document, revision):
+                        remote_end()
+                        gate.commit(document, revision)
+                        state['remote_document'] = document
+                    result['value'] = info
+                elif document != state.get('remote_document'):
+                    raise apps.AppError('This page has been replaced')
+                elif operation == 'close':
+                    remote_end()
+                    result['value'] = True
+                elif operation == 'events':
+                    result['value'] = state.get('remote_events', [])
+                    state['remote_events'] = []
+                    state['remote_event_bytes'] = 0
+                elif operation == 'call':
+                    result['value'] = apps.bridge_request(request, METHODS, capabilities)
+                else:
+                    raise apps.AppError('Unknown bridge operation')
+                state['remote_seen'] = time.monotonic()
+                result['generation'] = state['generation']
+            except Exception as error:
+                result['error'] = failure(error)
+            finally:
+                ready.set()
+            return False
+
+        GLib.idle_add(admit)
+        if not ready.wait(30):
+            with admission_lock:
+                if not ready.is_set():
+                    cancelled[0] = True
+                    return {'ok': False, 'error': 'App bridge unavailable'}
+        if 'error' in result:
+            return {'ok': False, 'error': result['error']}
+        try:
+            value = result['value']
+            if callable(value):
+                value = value()
+            if result['generation'] != state['generation']:
+                raise apps.AppError('This page has been replaced')
+            return {'ok': True, 'value': value}
+        except Exception as error:
+            return {'ok': False, 'error': failure(error)}
+
+    def remote_expire():
+        if state.get('remote_document') and time.monotonic() - state.get('remote_seen', 0) > 30:
+            remote_end()
+        return True
+
 
     def serve(request):
         uri = request.get_uri()
@@ -538,6 +649,8 @@ def run(ident):
             state['reload'] = None
             if state['view'] is not None:
                 state['view'].reload_bypass_cache()
+            elif state.get('remote_document'):
+                event({'type': 'reload'})
             return False
         state['reload'] = GLib.timeout_add(300, fire)
 
@@ -581,11 +694,7 @@ def run(ident):
             view.reload()
         state['crashed'] = now
 
-    def build(application):
-        # Each run of the app starts a fresh log. A second launch, which only raises this
-        # window, does not get here.
-        if not os.isatty(1):
-            os.ftruncate(1, 0)
+    def local_view(window):
         manager = WebKit2.WebsiteDataManager(base_data_directory=places.web(ident),
                                              base_cache_directory=places.web_cache(ident))
         manager.get_cookie_manager().set_persistent_storage(os.path.join(places.web(ident), 'cookies.sqlite'),
@@ -626,6 +735,19 @@ def run(ident):
         view.connect('notify::title', lambda v, _p: window.set_title(v.get_title() or manifest['name']))
         view.connect('web-process-terminated', on_crash)
 
+        old = window.get_child()
+        if old:
+            window.remove(old)
+        window.add(view)
+        state['view'] = view
+        view.show()
+        view.load_uri(apps.app_url(ident))
+        view.grab_focus()
+
+    def build(application):
+        # The window exists before the launcher says hello, so the compositor can bind it.
+        if not os.isatty(1):
+            os.ftruncate(1, 0)
         window = Gtk.ApplicationWindow(application=application, title=manifest['name'])
         size = manifest['window']
         window.set_default_size(size['width'], size['height'])
@@ -635,12 +757,94 @@ def run(ident):
             window.set_icon_from_file(icon)
         except GLib.Error:
             pass
-        window.add(view)
-        window.show_all()
-        state['view'], state['window'] = view, window
+        placeholder = Gtk.Label(label='Starting…')
+        window.add(placeholder)
+        state['window'] = window
         watch(app_dir)
-        view.load_uri(apps.app_url(ident))
-        view.grab_focus()
+        window.show_all()
+
+        # The game socket binds this process to this window. The agent seat has no socket
+        # and starts its WebKitGTK view immediately.
+        socket_path = os.environ.get('CABOOSE_GAME_SOCKET')
+        if not socket_path or manifest['handoff'] != 'files':
+            local_view(window)
+            return
+        import runpy
+        try:
+            instance = secrets.token_hex(16)
+            runtime = f'/run/user/{os.getuid()}'
+            bridge = remote.BridgeServer(os.path.join(runtime, f'caboose-app-{instance}.sock'), remote_request)
+            state['remote_bridge'] = bridge
+            GLib.timeout_add_seconds(5, remote_expire)
+            protocol = runpy.run_path('/usr/local/bin/caboose-game-run')
+            link = protocol['Link'](socket_path, {
+                'version': 1, 'kind': 'webview', 'title': manifest['name'],
+                'app_id': app_id, 'app': ident, 'root': f'Apps/{ident}',
+                'entry': manifest['entry'], 'bridge': instance,
+            })
+        except (OSError, ImportError) as error:
+            if state.get('remote_bridge'):
+                state.pop('remote_bridge').close()
+            sys.stderr.write(f'{ident}: handoff unavailable: {error}\n')
+            local_view(window)
+            return
+        state['handoff_link'] = link
+        state['handoff_answered'] = False
+
+        def mode(value, grant=None):
+            state['handoff_answered'] = True
+            if value == 'handoff' and (not isinstance(grant, str) or len(grant) != 32 or any(c not in '0123456789abcdef' for c in grant)):
+                value = 'local'
+            if value == 'handoff':
+                if gate.update(grant) and state.get('remote_document'):
+                    remote_end()
+                state['handoff'] = True
+                if state['view'] is not None:
+                    previous = state['generation']
+                    state['generation'] += 1
+                    state['document'] = None
+                    old = state['view']
+                    state['view'] = None
+                    window.remove(old)
+                    old.destroy()
+                    threading.Thread(target=children.stop, args=(previous,), daemon=True).start()
+                if window.get_child() is None:
+                    window.add(Gtk.Label(label='Running on your device'))
+                    window.show_all()
+            else:
+                state['handoff'] = False
+                gate.update(None)
+                if state.get('remote_document'):
+                    remote_end()
+                if state['view'] is None:
+                    local_view(window)
+
+        def readable(_fd, _condition):
+            try:
+                data = link.sock.recv(65536)
+                if not data:
+                    raise ConnectionError('the display closed the handoff socket')
+                for kind, payload in link.frames.feed(data):
+                    if kind != protocol['MODE']:
+                        continue
+                    message = protocol['decode'](payload)
+                    if isinstance(message, dict) and message.get('mode') in ('local', 'handoff'):
+                        mode(message['mode'], message.get('grant'))
+            except (OSError, ValueError) as error:
+                sys.stderr.write(f'{ident}: handoff disconnected: {error}\n')
+                link.close()
+                state['handoff_link'] = None
+                mode('local')
+                return False
+            return True
+
+        GLib.io_add_watch(link.fileno(), GLib.PRIORITY_DEFAULT,
+                          GLib.IOCondition.IN | GLib.IOCondition.HUP | GLib.IOCondition.ERR, readable)
+        def timeout():
+            if not state['handoff_answered']:
+                mode('local')
+            return False
+        GLib.timeout_add_seconds(5, timeout)
 
     flags = getattr(Gio.ApplicationFlags, 'DEFAULT_FLAGS', Gio.ApplicationFlags.FLAGS_NONE)
     application = Gtk.Application(application_id=app_id, flags=flags)
@@ -652,6 +856,12 @@ def run(ident):
             build(application)
 
     def shutdown(_application):
+        gate.update(None)
+        state['handoff'] = False
+        if state.get('handoff_link') is not None:
+            state['handoff_link'].close()
+        if state.get('remote_bridge') is not None:
+            state['remote_bridge'].close()
         state['view'] = None
         children.stop()
 

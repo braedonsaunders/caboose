@@ -4,7 +4,8 @@ The manifest lists the exact files shipped by the host. `version.py` and the hos
 ordered file names and bytes identically. `install.sh` installs missing dependencies,
 updates system-owned files (including the agent runner and its pinned npm dependencies), configures services and writes the version marker only after
 success. It never modifies the owner's home. Both image builders call it in image mode;
-the host calls it through root guest exec in `vm` or `container` mode after display readiness.
+the host calls it through root guest exec in `vm` or `container` mode after wake, including
+headless wakes.
 The installer provides AppStream and its Python introspection bindings, which rediscover Debian apps installed through the Library's earlier AppStream search, and Flatpak with its introspection bindings for Flathub apps ([`guest/flatpak`](../flatpak/README.md)). It also provides GTK 3's introspection data for `caboose-game-run` ([guest/game](../game/README.md)). It refreshes APT metadata after adding AppStream.
 The installer preserves working `node` and `npm` commands, including npm bundled with
 NodeSource's `nodejs`. It installs Node when unusable, then checks npm again before
@@ -49,3 +50,14 @@ The bundle includes the owner keyring helper and its GNOME Keyring dependency. I
 `caboose-session` only in container modes, including updates to existing containers; VM
 lifecycle units remain managed by their image. Keyring initialization/unlock occurs through
 the host after the Files service is ready, never inside the installer.
+
+Linux VM images install `caboose-vsock-services.service`, which accepts host CID 2 on
+vsock ports 14600, 14601, 14700 and 14701 and relays each to the corresponding loopback
+TCP service. The bridge bounds concurrent connections and closes both ends on disconnect.
+Container mode does not install it. At wake the host probes the Files bridge and falls back
+to guest TCP when the bridge is unavailable.
+
+`python3 guest/components/test_vsock_services.py` checks relay forwarding and cleanup
+without KVM. On a running Linux microVM with Files ready, run
+`python3 apps/host/scripts/check-vsock-services.py /path/to/desk.vsock` as the socket owner;
+it checks the Cloud Hypervisor handshake and an HTTP response through the Files bridge.

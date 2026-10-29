@@ -238,6 +238,7 @@ pub fn create_message(s: &VideoStream, b: &Binding) -> proto::Message {
         source: proto::VideoSource::Passthrough,
         color: None,
         extradata: None,
+        scaled: false,
     })
 }
 

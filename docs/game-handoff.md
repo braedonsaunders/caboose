@@ -86,8 +86,10 @@ payload larger than 64 KiB closes the connection.
 
 | Direction | Type | Message | Fields |
 | --- | --- | --- | --- |
-| launcher → display | `0x01` | `hello` | `version: 1`, `title`, `app_id`, `root`, `entry`, `saves?: [{ mount, path }]` |
-| display → launcher | `0x81` | `mode` | `mode: "handoff"\|"local"`, `window?: uint`, `declined?: true` |
+| launcher → display | `0x01` | `hello` | `version: 1`, `title`, `app_id`, `root`, `entry`, `saves?: [{ mount, path }]`; an agent app also supplies `kind: "webview"`, `app` and `bridge` |
+| display → launcher | `0x81` | `mode` | `mode: "handoff"\|"local"`, `window?: uint`, `declined?: true`, `grant?: text` (webview handoff only) |
+
+For an agent app, `bridge` is its random instance identifier and `grant` is the current display session grant; see [agent apps](../guest/apps/README.md#native-handoff).
 
 `root` is the served directory relative to `/home/caboose` (the bundle's path joined with its
 manifest's `root`), `entry` is relative to `root`, and `saves` are as in the manifest.

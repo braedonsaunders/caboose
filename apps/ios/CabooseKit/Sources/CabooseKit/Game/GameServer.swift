@@ -36,6 +36,8 @@ final class GameServer {
     let token: String
     let root: String
     let limits: Limits
+    let appPolicy: Bool
+    let appEntry: String?
     private let responder: GameFileResponder
     private var listener: NWListener?
     /// The port once the server first listened; it listens there again after a failure, so the
@@ -46,11 +48,14 @@ final class GameServer {
     private var waiting: [CheckedContinuation<GameOrigin, Error>] = []
     private var connections: [ObjectIdentifier: GameServerConnection] = [:]
 
-    init(root: String, responder: GameFileResponder, limits: Limits = .standard, token: String = GameOrigin.newToken()) {
+    init(root: String, responder: GameFileResponder, limits: Limits = .standard, token: String = GameOrigin.newToken(), appPolicy: Bool = false, appEntry: String? = nil, preferredPort: UInt16? = nil) {
         self.root = root
         self.responder = responder
         self.limits = limits
         self.token = token
+        self.appPolicy = appPolicy
+        self.appEntry = appEntry
+        self.port = preferredPort
     }
 
     deinit {
@@ -231,7 +236,7 @@ private final class GameServerConnection: GameResponseSink {
             answer(status)
         case .request(let request):
             buffer = Data()
-            switch GameHTTP.route(request, origin: origin, root: root) {
+            switch GameHTTP.route(request, origin: origin, root: root, appPolicy: server?.appPolicy ?? false, appEntry: server?.appEntry) {
             case .status(let status):
                 answer(status)
             case .file(let path, let range, let head):
@@ -254,6 +259,14 @@ private final class GameServerConnection: GameResponseSink {
 
     func start(_ status: Int, headers: [String: String]) {
         guard isLive else { return }
+        var headers = headers
+        if server?.appPolicy == true {
+            headers.removeValue(forKey: "Cross-Origin-Embedder-Policy")
+            if let type = headers["Content-Type"], type.hasPrefix("text/") || type == "application/json" || type == "image/svg+xml" {
+                headers["Content-Type"] = type + "; charset=utf-8"
+            }
+            headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' blob: data: https:; font-src 'self' blob: data: https:; img-src * blob: data:; media-src * blob: data:; connect-src *; worker-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+        }
         connection.send(content: GameHTTP.head(status, headers: headers), completion: .contentProcessed { [weak self] error in
             guard error != nil else { return }
             MainActor.assumeIsolated { self?.abort() }

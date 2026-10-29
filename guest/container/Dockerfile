@@ -56,6 +56,7 @@ COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs age
 RUN /tmp/agentd/install.sh && rm -rf /tmp/agentd
 COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs agentd/package.json agentd/install.sh /tmp/bundle/agentd/
 COPY components /tmp/bundle/components
+COPY desktop-mcp /tmp/bundle/desktop-mcp
 COPY keyring /tmp/bundle/keyring
 COPY container/caboose-session /tmp/bundle/container/
 COPY files /tmp/bundle/files
@@ -66,7 +67,7 @@ COPY bridge /tmp/bundle/bridge
 COPY flatpak /tmp/bundle/flatpak
 COPY game /tmp/bundle/game
 COPY gpu /tmp/bundle/gpu
-COPY apps/install.sh apps/caboose-app apps/appcore.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /tmp/bundle/apps/
+COPY apps/install.sh apps/caboose-app apps/appcore.py apps/remote.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /tmp/bundle/apps/
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff

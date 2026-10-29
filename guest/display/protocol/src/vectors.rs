@@ -341,6 +341,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 source: VideoSource::Passthrough,
                 color: Some(VideoColor { primaries: 9, transfer: 16, matrix: 9, full_range: false }),
                 extradata: None,
+                scaled: false,
             }),
         ),
         one(
@@ -356,6 +357,15 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 source: VideoSource::Surface,
                 color: None,
                 extradata: None,
+                scaled: false,
+            }),
+        ),
+        one(
+            "video-create-scaled-motion",
+            "A half-resolution motion picture placed in window coordinates.",
+            Message::VideoCreate(VideoCreate {
+                id: 3, window: 12, rect: Rect::new(40, 80, 640, 360), clip: None, z: None,
+                codec: Codec::H264, source: VideoSource::Motion, color: None, extradata: None, scaled: true,
             }),
         ),
         one(
@@ -402,6 +412,11 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 saves: None,
             }),
         ),
+        one("webview-create", "An agent app on window 7.", Message::WebviewCreate(WebviewCreate {
+            id: 1, window: 7, app: "notes".into(), bridge: "0123456789abcdef0123456789abcdef".into(), grant: "fedcba9876543210fedcba9876543210".into(), root: "Apps/notes".into(), entry: "index.html".into(),
+        })),
+        one("webview-destroy", "", Message::WebviewDestroy { id: 1 }),
+        one("webview-decline", "", Message::WebviewDecline { id: 1, reason: "web view failed".into() }),
         one("game-destroy", "", Message::GameDestroy { id: 1 }),
         one("gpu-create", "Window 7's pictures are a Vulkan stream the client renders.", Message::GpuCreate { id: 1, window: 7 }),
         one(
@@ -445,7 +460,17 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 video_decoders: None,
                 audio_decoders: None,
                 wasm: false,
+                webview: false,
                 gpu: false,
+                scaled_motion: false,
+            }),
+        ),
+        one(
+            "client-hello-scaled-motion",
+            "A client accepts half-resolution motion without enabling passthrough video.",
+            Message::ClientHello(ClientHello {
+                version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![Codec::H264], displays: vec![phone()],
+                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true,
             }),
         ),
         one(
@@ -459,7 +484,9 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: None,
                 wasm: false,
+                webview: false,
                 gpu: false,
+                scaled_motion: false,
             }),
         ),
         one(
@@ -473,7 +500,9 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: Some(vec!["opus".into()]),
                 wasm: false,
+                webview: false,
                 gpu: false,
+                scaled_motion: false,
             }),
         ),
         one(
@@ -487,7 +516,9 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: Some(vec!["opus".into()]),
                 wasm: false,
+                webview: false,
                 gpu: true,
+                scaled_motion: false,
             }),
         ),
         one(
@@ -501,7 +532,18 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: Some(vec!["opus".into()]),
                 wasm: true,
+                webview: false,
                 gpu: false,
+                scaled_motion: false,
+            }),
+        ),
+        one(
+            "client-hello-webview",
+            "A client that runs agent app web views.",
+            Message::ClientHello(ClientHello {
+                version: 0, token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::H264], displays: vec![phone()],
+                video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false, scaled_motion: false,
             }),
         ),
         one("vsync", "", Message::Vsync { display: 1, t_us: 5_000_008_333 }),

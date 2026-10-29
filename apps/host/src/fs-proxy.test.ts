@@ -1,15 +1,46 @@
 import { once } from 'node:events'
-import { createServer, request as httpRequest } from 'node:http'
+import { createServer, request as httpRequest, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, expect, it, vi } from 'vitest'
 import { WebSocket } from 'ws'
 import { createCabooseServer, type Controller } from './server.js'
 import { ComputerLifecycle } from './lifecycle.js'
-import { proxyFiles, publicFileUrl } from './fs-proxy.js'
+import { proxyFiles, proxyWebview, publicFileUrl } from './fs-proxy.js'
 import { SettingsStore, settingsLimits } from './settings.js'
 
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close() })
+
+it('wakes for parked reads and writes, and authenticates before waking', async () => {
+  const requests: Array<{ method?: string; range?: string; match?: string }> = []
+  const upstream = createServer((req, res) => {
+    requests.push({ method: req.method, range: req.headers.range, match: req.headers['if-match'] })
+    req.resume()
+    req.on('end', () => { res.writeHead(req.method === 'GET' ? 206 : 200, { etag: '"v1"', 'content-range': 'bytes 0-0/1' }); res.end(req.method === 'GET' ? 'x' : '') })
+  })
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
+  cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
+  const wake = vi.fn(async () => ({ state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }))
+  const controller: Controller = { wake, park: async () => {}, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined, activeResources: () => null, hasSavedState: () => false,
+    fileService: () => ({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'private' }) }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  cleanup.unshift(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  expect((await fetch(base + '/v1/fs/content?path=a')).status).toBe(401)
+  expect(wake).not.toHaveBeenCalled()
+  const headers = { authorization: 'Bearer owner' }
+  const read = await fetch(base + '/v1/fs/content?path=a', { headers: { ...headers, range: 'bytes=0-0', 'if-match': '"v1"' } })
+  expect(read.status).toBe(206)
+  expect(read.headers.get('etag')).toBe('"v1"')
+  expect(read.headers.get('content-range')).toBe('bytes 0-0/1')
+  expect(await read.text()).toBe('x')
+  expect((await fetch(base + '/v1/session/park', { method: 'POST', headers })).status).toBe(200)
+  expect((await fetch(base + '/v1/fs/content?path=a', { method: 'PUT', headers: { ...headers, 'if-match': '"v1"' }, body: 'y' })).status).toBe(200)
+  expect(wake).toHaveBeenCalledTimes(2)
+  expect(requests).toEqual([{ method: 'GET', range: 'bytes=0-0', match: '"v1"' }, { method: 'PUT', range: undefined, match: '"v1"' }])
+})
 
 it('releases the lifecycle queue when a file client disconnects during wake', async () => {
   const upstream = createServer(() => {})
@@ -193,6 +224,63 @@ it('signals control clients when the guest change anchor advances', async () => 
   socket.terminate()
 })
 
+it('keeps a background control anchor across freeze and resets it on park', async () => {
+  let version = 1
+  let held: ServerResponse | undefined
+  const anchors: Array<string | null> = []
+  const upstream = createServer((req, res) => {
+    const url = new URL(req.url!, 'http://localhost')
+    res.writeHead(200, { 'content-type': 'application/json' })
+    if (url.pathname === '/sessions') return res.end(JSON.stringify({ sessions: [] }))
+    const anchor = url.searchParams.get('anchor')
+    anchors.push(anchor)
+    if (version === 1 && anchor && !held) { held = res; return }
+    res.end(JSON.stringify({ anchor: `epoch:${version}`, changed: anchor !== null && anchor !== `epoch:${version}`, reset: false, events: [] }))
+  })
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
+  cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
+  const guest = { run: async () => '' }
+  const service = () => ({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'test' })
+  const controller: Controller = {
+    wake: async () => ({ state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+    canFreeze: () => true, freeze: async () => { version = 2 }, thaw: async () => {}, park: async () => {},
+    stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => guest,
+    activeResources: () => null, hasSavedState: () => false, fileService: service, terminalService: service,
+  }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  cleanup.unshift(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const headers = { authorization: 'Bearer owner' }
+  await fetch(base + '/v1/session', { method: 'POST', headers })
+  const socket = new WebSocket(base.replace('http:', 'ws:') + '/v1/control?foreground=0', { headers })
+  const events: Array<{ type: string; anchor?: string; state?: string }> = []
+  socket.on('message', data => events.push(JSON.parse(data.toString())))
+  await once(socket, 'open')
+  await vi.waitFor(() => expect(anchors).toContain(null))
+  await vi.waitFor(() => expect(held).toBeDefined(), { timeout: 2500 })
+  await vi.waitFor(() => expect(events).toContainEqual({ type: 'computer.state', state: 'frozen' }), { timeout: 6000 })
+  const beforeThaw = anchors.length
+  await fetch(base + '/v1/session', { method: 'POST', headers })
+  await vi.waitFor(() => expect(events).toContainEqual({ type: 'fs.changed', anchor: 'epoch:2' }))
+  expect(anchors[beforeThaw]).toBe('epoch:1')
+  held!.end(JSON.stringify({ anchor: 'epoch:1', changed: false, reset: false, events: [] }))
+  const afterLateResponse = anchors.length
+  await vi.waitFor(() => expect(anchors.length).toBeGreaterThan(afterLateResponse), { timeout: 2500 })
+  expect(anchors[afterLateResponse]).toBe('epoch:2')
+  const closed = once(socket, 'close')
+  await fetch(base + '/v1/session/park', { method: 'POST', headers, body: '{}' })
+  await closed
+  await fetch(base + '/v1/session', { method: 'POST', headers })
+  const beforeReconnect = anchors.length
+  const next = new WebSocket(base.replace('http:', 'ws:') + '/v1/control?foreground=0', { headers })
+  await once(next, 'open')
+  await vi.waitFor(() => expect(anchors.length).toBeGreaterThan(beforeReconnect))
+  expect(anchors[beforeReconnect]).toBeNull()
+  next.terminate()
+}, 10_000)
+
 
 it('allows only public operations after URL normalization', () => {
   const base = 'http://127.0.0.1:14700'
@@ -202,4 +290,52 @@ it('allows only public operations after URL normalization', () => {
     expect(publicFileUrl(path, base), path).toBeUndefined()
   }
   expect(publicFileUrl('/v1/fs/content?path=keyring', base)?.href).toBe(base + '/content?path=keyring')
+})
+
+
+it('relays only a bounded bridge POST with the guest credential', async () => {
+  const seen: Array<{ url?: string; auth?: string; cookie?: string }> = []
+  const upstream = createServer((req, res) => {
+    seen.push({ url: req.url, auth: req.headers.authorization, cookie: req.headers.cookie })
+    req.resume(); req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}') })
+  })
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
+  cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
+  const service = { url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'guest' }
+  const app = createServer((req, res) => { void proxyWebview(service, req.url!.slice(1), req, res) })
+  app.listen(0, '127.0.0.1'); await once(app, 'listening')
+  cleanup.unshift(() => new Promise(resolve => app.close(() => resolve())))
+  const base = `http://127.0.0.1:${(app.address() as AddressInfo).port}`
+  const instance = 'a'.repeat(32)
+  const ok = await fetch(`${base}/${instance}`, { method: 'POST', headers: { authorization: 'Bearer owner', cookie: 'secret' }, body: '{}' })
+  expect(ok.status).toBe(200)
+  expect(seen).toEqual([{ url: `/webview/${instance}`, auth: 'Bearer guest', cookie: undefined }])
+  expect((await fetch(`${base}/../bad`, { method: 'POST', body: '{}' })).status).toBe(400)
+  expect((await fetch(`${base}/${instance}`)).status).toBe(400)
+  expect(seen).toHaveLength(1)
+})
+
+it('authorizes the app bridge through the selected computer', async () => {
+  const upstream = createServer((req, res) => {
+    expect(req.url).toBe(`/webview/${'a'.repeat(32)}`)
+    expect(req.headers.authorization).toBe('Bearer guest')
+    req.resume(); req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}') })
+  })
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
+  cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
+  const controller: Controller = {
+    wake: async () => ({ state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+    park: async () => {}, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined,
+    activeResources: () => null, hasSavedState: () => false,
+    fileService: () => ({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'guest' }),
+  }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  cleanup.unshift(() => app.shutdown())
+  const url = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}/v1/webview/${'a'.repeat(32)}/bridge`
+  expect((await fetch(url, { method: 'POST', body: '{}' })).status).toBe(401)
+  const response = await fetch(url, { method: 'POST', headers: { authorization: 'Bearer owner' }, body: '{}' })
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({ ok: true })
 })

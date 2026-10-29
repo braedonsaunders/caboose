@@ -6,6 +6,8 @@
 (() => {
   const handler = window.webkit.messageHandlers.caboose
   const token = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('')
+  // Register even a page that makes no API calls, so edits and disconnects reach it.
+  handler.postMessage(JSON.stringify({ document: token, method: '__caboose.ready', params: {} })).catch(() => {})
   window.addEventListener('message', event => {
     if (event.source !== window || event.origin !== location.origin) return
     const data = event.data

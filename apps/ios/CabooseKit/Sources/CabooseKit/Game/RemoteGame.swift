@@ -11,16 +11,18 @@ public struct GameHostAccess: Equatable, Sendable {
     /// Names this computer in the game cache: a digest of the token, which only this
     /// computer's routes accept, so it stays the same over every address the host has.
     public var computerKey: String
+    public var webviewComputerKey: String
 
-    public init(baseURL: URL, token: String) {
+    public init(baseURL: URL, token: String, computerIdentity: String? = nil) {
         self.baseURL = baseURL
         self.token = token
         computerKey = SHA256.hash(data: Data("caboose-game-cache\u{0}\(token)".utf8)).map { String(format: "%02x", $0) }.joined()
+        webviewComputerKey = computerIdentity ?? computerKey
     }
 
     /// The host behind a display WebSocket: `wss` → `https`, `ws` → `http`, and the path up to
     /// its `/v1/` route dropped (a prefix the host is served under stays). Nil for any other scheme.
-    public init?(displayURL: URL, token: String) {
+    public init?(displayURL: URL, token: String, computerIdentity: String? = nil) {
         guard var components = URLComponents(url: displayURL, resolvingAgainstBaseURL: false) else { return nil }
         switch components.scheme?.lowercased() {
         case "wss", "https": components.scheme = "https"
@@ -33,7 +35,7 @@ public struct GameHostAccess: Equatable, Sendable {
         components.query = nil
         components.fragment = nil
         guard let url = components.url else { return nil }
-        self.init(baseURL: url, token: token)
+        self.init(baseURL: url, token: token, computerIdentity: computerIdentity)
     }
 
     /// `<base>/v1/fs/<operation>?path=<path>`.
@@ -72,6 +74,7 @@ public final class RemoteGame: Identifiable {
 
     public nonisolated let id: Int
     public let descriptor: GameDescriptor
+    public let webview: WebviewDescriptor?
     /// Where the game's files are; replaced when the session resumes through another address.
     public internal(set) var host: GameHostAccess?
     public private(set) var isEnded = false
@@ -92,6 +95,7 @@ public final class RemoteGame: Identifiable {
     var declineSaveWait: Double = 5
     /// The UI's surface, told when `state` changes.
     var stateSink: (() -> Void)?
+    var resumeSink: (() -> Void)?
     /// The window's picture, which a snapshot of the game seeds for Home and the window strip.
     let picture: WindowSurface
     /// The UI's live surface for this game, if one was made.
@@ -121,9 +125,10 @@ public final class RemoteGame: Identifiable {
         #endif
     }
 
-    init(_ descriptor: GameDescriptor, host: GameHostAccess?, picture: WindowSurface) {
+    init(_ descriptor: GameDescriptor, host: GameHostAccess?, picture: WindowSurface, webview: WebviewDescriptor? = nil) {
         id = descriptor.id
         self.descriptor = descriptor
+        self.webview = webview
         self.host = host
         self.picture = picture
     }
@@ -144,6 +149,7 @@ public final class RemoteGame: Identifiable {
         gamepadSink = nil
         inputSink = nil
         stateSink = nil
+        resumeSink = nil
         onDecline = nil
         for handler in handlers { handler() }
     }

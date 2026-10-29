@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreGraphics
+import CoreVideo
 import Foundation
 import Testing
 @testable import CabooseKit
@@ -20,6 +21,11 @@ import Testing
         #expect(create.id == 3 && create.window == 7 && create.codec == .hevc && create.source == .passthrough && create.z == 1)
         #expect(create.rect == CGRect(x: 10, y: 20, width: 1280, height: 720) && create.clip == CGRect(x: 10, y: 20, width: 1280, height: 600))
         #expect(create.color?.isHDR == true)
+        #expect(!create.scaled)
+        guard case .videoCreate(let scaled) = Self.server(.videoCreate, [
+            "id": 4, "window": 7, "rect": [10, 20, 1280, 720], "codec": "h264", "source": "motion", "scaled": true,
+        ]) else { Issue.record("scaled motion"); return }
+        #expect(scaled.scaled && scaled.source == .motion && scaled.rect == CGRect(x: 10, y: 20, width: 1280, height: 720))
 
         guard case .malformed = Self.server(.videoCreate, ["id": 3, "rect": [0, 0, 1, 1], "codec": "hevc"]) else {
             Issue.record("a stream without a window"); return
@@ -47,6 +53,42 @@ import Testing
         #expect(ClientMessage.videoAck(video: 2, seq: 41).frame == DisplayFrame(type: 0x88, body: ["id": 2, "seq": 41]))
         #expect(ClientMessage.videoKeyframe(video: 3).frame == DisplayFrame(type: 0x89, body: ["id": 3]))
         #expect(ClientMessage.hello(token: "t", decoders: [.hevc], displays: []).frame.body["video_decoders"] == nil)
+        #expect(ClientMessage.hello(token: "t", decoders: [.hevc], displays: []).frame.body["scaled_motion"] == nil)
+        #expect(ClientMessage.hello(token: "t", decoders: [.hevc], displays: [], scaledMotion: true).frame.body["scaled_motion"]?.bool == true)
+    }
+
+    @Test func unsupportedPixelFormatFallsBackToOriginalPicture() throws {
+        var pixel: CVPixelBuffer?
+        let attrs = [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
+        #expect(CVPixelBufferCreate(kCFAllocatorDefault, 256, 256, kCVPixelFormatType_OneComponent8,
+                                    attrs, &pixel) == kCVReturnSuccess)
+        #expect(MotionUpscaler().upscale(try #require(pixel)) == nil)
+    }
+
+    @Test func upscalersProduceADoubleSizedPicture() throws {
+        var pixel: CVPixelBuffer?
+        let attrs: [CFString: Any] = [kCVPixelBufferMetalCompatibilityKey: true,
+                                     kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary]
+        #expect(CVPixelBufferCreate(kCFAllocatorDefault, 256, 256, kCVPixelFormatType_32BGRA,
+                                    attrs as CFDictionary, &pixel) == kCVReturnSuccess)
+        let input = try #require(pixel)
+        CVPixelBufferLockBaseAddress(input, [])
+        if let base = CVPixelBufferGetBaseAddress(input) {
+            memset(base, 127, CVPixelBufferGetBytesPerRow(input) * CVPixelBufferGetHeight(input))
+        }
+        CVPixelBufferUnlockBaseAddress(input, [])
+        let upscaler = MotionUpscaler()
+        let software = try #require(upscaler.softwareUpscale(input))
+        let output = try #require(upscaler.upscale(input))
+        if MotionUpscaler.supported { #expect(upscaler.metalUpscale(input) != nil) }
+        for result in [software, output] {
+            #expect(CVPixelBufferGetWidth(result) == 512 && CVPixelBufferGetHeight(result) == 512)
+            CVPixelBufferLockBaseAddress(result, .readOnly)
+            let base = try #require(CVPixelBufferGetBaseAddress(result))
+            let center = base.assumingMemoryBound(to: UInt8.self)[256 * CVPixelBufferGetBytesPerRow(result) + 256 * 4]
+            CVPixelBufferUnlockBaseAddress(result, .readOnly)
+            #expect((100...155).contains(Int(center)))
+        }
     }
 }
 
@@ -185,13 +227,15 @@ import Testing
         try await base.until("pruned") { window.retiringVideos.isEmpty }
     }
 
-    @Test func ordinarySessionsKeepVideoInTheWindowPicture() async throws {
+    @Test func ordinarySessionsNegotiateScaledMotionWithoutPassthrough() async throws {
         let base = CabooseDisplaySessionTests()
         let session = base.makeSession()
         session.connect()
         base.stream.deliver(.opened)
         try await base.until("hello") { session.state == .authenticating }
-        #expect(base.stream.take().first?.body["video_decoders"] == nil)
+        let hello = try #require(base.stream.take().first)
+        #expect(hello.body["video_decoders"] == nil)
+        #expect(hello.body["scaled_motion"]?.bool == true)
     }
     @Test func layeredVideoRequiresExplicitDecoderNegotiation() async throws {
         let base = CabooseDisplaySessionTests()

@@ -254,7 +254,9 @@ function setup(options: { defaultAgent?: string | null; craftServers?: () => Pro
 describe('AgentTasks', () => {
   it('requires explicit stop for live deletion, releases the lease, and survives restore', async () => {
     const { tasks, fake, events, release } = setup()
+    await tasks.restore()
     const task = await tasks.start({ prompt: 'hello' })
+    release.mockClear() // Initial restore has released its temporary lease; the task lease remains.
     await expect(tasks.delete(task.id)).rejects.toThrow('Stop the agent')
     expect(tasks.list()).toHaveLength(1)
     await expect(tasks.delete(task.id, true)).resolves.toBe(true)
@@ -294,7 +296,9 @@ describe('AgentTasks', () => {
 
   it('retains the chat and lease when runner retirement fails', async () => {
     const { tasks, fake, events, release } = setup()
+    await tasks.restore()
     const task = await tasks.start({ prompt: 'hello' })
+    release.mockClear() // Assert deletion preserves the task lease, independently of restore.
     const run = fake.guest.run.bind(fake.guest)
     fake.guest.run = async (command, args, timeout) => {
       if (args.some(arg => arg.startsWith('// delete-agent-task'))) throw new Error('Cannot identify this chat runner')
@@ -384,7 +388,7 @@ describe('AgentTasks', () => {
     const { fake, events, release, tasks } = setup()
     const task = await tasks.start({ prompt: 'Run the tests', agent: 'stand-in' })
     expect(task).toMatchObject({ status: 'running', turns: 1, approvals: 'auto', agent: 'stand-in', agentName: 'Stand-in' })
-    expect(fake.calls.some(call => call.join(' ').includes('caboose-display-agent.service'))).toBe(true)
+    expect(fake.calls.some(call => call.join(' ').includes('caboose-display-agent.service'))).toBe(false)
     const state = fake.task(task.id)
     expect(JSON.parse(state.files.get('task.json')!)).toEqual({
       agent: { id: 'stand-in', name: 'Stand-in', version: '1.0.0', distribution: 'npx', package: '@example/stand-in@1.0.0', args: [], env: {} },
@@ -448,12 +452,12 @@ describe('AgentTasks', () => {
     await expect(none.tasks.start({ prompt: 'x' })).rejects.toThrow('Choose an agent')
   })
 
-  it('starts the seat through the driver when it has its own way', async () => {
+  it('does not start the seat for a new task', async () => {
     const fake = fakeGuest()
     const ensureSeat = vi.fn(async () => {})
     const tasks = new AgentTasks(() => fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000, ensureSeat })
     await tasks.start({ prompt: 'hi' })
-    expect(ensureSeat).toHaveBeenCalledTimes(1)
+    expect(ensureSeat).not.toHaveBeenCalled()
     expect(fake.calls.some(call => call.join(' ').includes('systemctl'))).toBe(false)
   })
 
@@ -829,8 +833,8 @@ describe('AgentTasks', () => {
     expect(tasks.list()[0]).toMatchObject({ prompt: 'keep going', turns: 2, agentName: 'goose' })
     expect(tasks.list()[1]).toMatchObject({ summary: 'All green.', turns: 3, approvals: 'ask', attachments: [`/home/caboose/Agents/${done}/attachments/shot.png`] })
     expect(tasks.list()[3]).toMatchObject({ summary: 'Sign in to Stand-in first.', signIn: [{ id: 'a', name: 'A', type: 'agent' }] })
-    // Only the task whose turn is still running holds the computer awake.
-    expect(acquire).toHaveBeenCalledTimes(1)
+    // Restore holds a temporary lease, and the live task keeps its own lease.
+    expect(acquire).toHaveBeenCalledTimes(2)
     expect(events).toEqual([])
     await tasks.reply(done, { prompt: 'and lint' })
     expect(JSON.parse(fake.task(done).inbox.at(-1)!)).toMatchObject({ type: 'prompt', turn: 4, text: 'and lint', deliveryId: expect.any(String) })
@@ -1177,7 +1181,7 @@ describe('durable admission and recovery', () => {
     s.fake.setListing([t.id, 'stand-in', '1790000500', '', '1', String(s.fake.task(t.id).transcript.length), b64('work'), b64(line(end(1, 'done'))), 'auto', '1', '1', '', ''].join('\t'))
     const r = await restart(s)
     expect(r.tasks.list()[0]).toMatchObject({ status: 'running', turns: 2 })
-    expect(r.release).not.toHaveBeenCalled()
+    expect(r.release).toHaveBeenCalledTimes(1) // restore's temporary lease
     await r.tasks.reply(t.id, { prompt: 'later' })
     expect(r.tasks.list()[0]?.queued).toEqual(['later'])
     expect(s.fake.task(t.id).published.size).toBe(2)

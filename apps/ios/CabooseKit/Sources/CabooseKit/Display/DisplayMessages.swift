@@ -27,6 +27,8 @@ public enum DisplayProtocol {
         case gpuCreate = 0x19
         case gpuData = 0x1A
         case gpuDestroy = 0x1B
+        case webviewCreate = 0x1C
+        case webviewDestroy = 0x1D
         case cursor = 0x20
         case cursorNamed = 0x21
         case textInput = 0x22
@@ -54,6 +56,7 @@ public enum DisplayProtocol {
         case text = 0x94
         case gpuAck = 0x96
         case gameDecline = 0x97
+        case webviewDecline = 0x98
         case clipboard = 0xA0
         case ping = 0xFE
     }
@@ -231,6 +234,7 @@ public struct VideoStreamFields: Sendable {
     public var codec: DisplayCodec?
     public var source: VideoSource?
     public var color: VideoColor?
+    public var scaled: Bool
 
     init?(_ body: CBOR) {
         guard let id = body["id"]?.int else { return nil }
@@ -242,6 +246,7 @@ public struct VideoStreamFields: Sendable {
         codec = body["codec"]?.string.flatMap(DisplayCodec.init(rawValue:))
         source = body["source"]?.string.flatMap(VideoSource.init(rawValue:))
         color = body["color"].flatMap(VideoColor.init)
+        scaled = body["scaled"]?.bool ?? false
     }
 }
 
@@ -326,6 +331,30 @@ public struct GameDescriptor: Equatable, Sendable {
     }
 }
 
+public struct WebviewDescriptor: Equatable, Sendable {
+    public var id: Int
+    public var window: Int
+    public var app: String
+    public var bridge: String
+    public var grant: String
+    public var root: String
+    public var entry: String
+
+    init?(_ body: CBOR) {
+        guard let id = body["id"]?.int, let window = body["window"]?.int,
+              let app = body["app"]?.string, let bridge = body["bridge"]?.string, let grant = body["grant"]?.string,
+              let root = body["root"]?.string, let entry = body["entry"]?.string,
+              app.range(of: "^[a-z][a-z0-9-]{0,47}$", options: .regularExpression) != nil,
+              bridge.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil,
+              grant.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil,
+              root == "Apps/" + app, !entry.isEmpty, !entry.hasPrefix("/"),
+              !entry.contains("\0"), !entry.contains("\\"),
+              entry.split(separator: "/", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
+        else { return nil }
+        self.id = id; self.window = window; self.app = app; self.bridge = bridge; self.grant = grant; self.root = root; self.entry = entry
+    }
+}
+
 public struct ServerHello: Equatable, Sendable {
     public var version: Int
     public var displays: [Int]
@@ -366,6 +395,8 @@ public enum ServerMessage: Sendable {
     case videoDestroy(id: Int)
     /// The app is showing passthrough frame `seq` now.
     case videoPresent(id: Int, seq: Int, ptsMicros: UInt64)
+    case webviewCreate(WebviewDescriptor)
+    case webviewDestroy(id: Int)
     case gameCreate(GameDescriptor)
     case gameDestroy(id: Int)
     /// Window `window` is drawn on this device from stream `id`, an application's Vulkan calls.
@@ -427,6 +458,8 @@ public enum ServerMessage: Sendable {
             } else {
                 parsed = nil
             }
+        case .webviewCreate: parsed = WebviewDescriptor(body).map(ServerMessage.webviewCreate)
+        case .webviewDestroy: parsed = body["id"]?.int.map { .webviewDestroy(id: $0) }
         case .gameCreate: parsed = GameDescriptor(body).map(ServerMessage.gameCreate)
         case .gameDestroy: parsed = body["id"]?.int.map { .gameDestroy(id: $0) }
         case .gpuCreate:
@@ -563,7 +596,7 @@ public enum ClientMessage: Sendable {
     /// `wasm`: the client runs handed-off games (`"wasm": true`); the key is absent otherwise.
     /// `gpu`: the client renders GPU streams (`"gpu": true`); the key is absent otherwise.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
-               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false)
+               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -587,6 +620,7 @@ public enum ClientMessage: Sendable {
     /// Game `id` cannot run on this device, and why (docs/game-handoff.md, "Declining"). The
     /// reason is cut to `GameDecline.reasonLimit` UTF-8 bytes at a character boundary.
     case gameDecline(id: Int, reason: String)
+    case webviewDecline(id: Int, reason: String)
 
     public var frame: DisplayFrame {
         typealias T = DisplayProtocol.ClientType
@@ -597,7 +631,7 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
@@ -605,6 +639,8 @@ public enum ClientMessage: Sendable {
                 ("audio_decoders", audioDecoders.map { .array($0.map { CBOR($0) }) }),
                 ("wasm", wasm ? CBOR(true) : nil),
                 ("gpu", gpu ? CBOR(true) : nil),
+                ("scaled_motion", scaledMotion ? CBOR(true) : nil),
+                ("webview", webview ? CBOR(true) : nil),
             ]))
         case .videoAck(let video, let seq):
             return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))
@@ -612,6 +648,8 @@ public enum ClientMessage: Sendable {
             return DisplayFrame(type: T.videoKeyframe.rawValue, body: map([("id", CBOR(video))]))
         case .gpuAck(let id, let offset):
             return DisplayFrame(type: T.gpuAck.rawValue, body: map([("id", CBOR(id)), ("offset", CBOR(offset))]))
+        case .webviewDecline(let id, let reason):
+            return DisplayFrame(type: T.webviewDecline.rawValue, body: map([("id", CBOR(id)), ("reason", CBOR(GameDecline.bounded(reason)))]))
         case .gameDecline(let id, let reason):
             return DisplayFrame(type: T.gameDecline.rawValue, body: map([("id", CBOR(id)), ("reason", CBOR(GameDecline.bounded(reason)))]))
         case .vsync(let display, let micros):

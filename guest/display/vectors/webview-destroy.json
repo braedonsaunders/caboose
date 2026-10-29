@@ -1,0 +1,8 @@
+{
+  "name": "webview-destroy",
+  "description": "",
+  "messages": [
+    {"direction": "server", "type": "webview.destroy", "type_id": 29, "fields": {"id": 1}}
+  ],
+  "hex": "1d05000000a162696401"
+}

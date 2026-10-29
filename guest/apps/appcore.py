@@ -85,6 +85,24 @@ class AppError(ValueError):
     """A refusal with a sentence for the app's author."""
 
 
+def bridge_request(request, methods, capabilities):
+    """Validate a bridge request and dispatch it under the app's startup capabilities.
+
+    Authentication and document lifetime are the transport's responsibility. The method
+    table is supplied by the runtime, never by the caller.
+    """
+    if not isinstance(request, dict):
+        raise AppError('Malformed request')
+    method, params = request.get('method'), request.get('params')
+    if not isinstance(method, str) or method not in methods or not isinstance(params, dict):
+        raise AppError(f'Unknown method {str(method)[:60]}')
+    capability, handler = methods[method]
+    if capability not in capabilities:
+        raise AppError(f'This app does not declare the "{capability}" capability in app.json; '
+                       'add it and start the app again')
+    return handler(params)
+
+
 class Places:
     """Where one home keeps agent apps, their data and their desktop entries."""
 
@@ -188,7 +206,7 @@ def load_manifest(app_dir):
         return None, [f'{MANIFEST} is not valid JSON: {error}']
     if not isinstance(data, dict):
         return None, [f'{MANIFEST} must be a JSON object']
-    known = {'name', 'description', 'version', 'entry', 'icon', 'categories', 'capabilities', 'window'}
+    known = {'name', 'description', 'version', 'entry', 'icon', 'categories', 'capabilities', 'window', 'handoff'}
     for key in sorted(set(data) - known):
         errors.append(f'Unknown field "{key}"; the fields are {", ".join(sorted(known))}')
     manifest = {
@@ -199,8 +217,14 @@ def load_manifest(app_dir):
         'icon': None,
         'categories': ['Utility'],
         'capabilities': [],
+        'handoff': None,
         'window': dict(DEFAULT_WINDOW),
     }
+    if 'handoff' in data:
+        if data['handoff'] != 'files':
+            errors.append('handoff must be "files"')
+        else:
+            manifest['handoff'] = 'files'
     if 'icon' in data:
         manifest['icon'] = _relative(data['icon'], 'icon', ICON_TYPES, errors)
     for key, allowed in (('categories', CATEGORIES), ('capabilities', CAPABILITIES)):
@@ -624,6 +648,19 @@ def split_path(path, home, files):
     if '..' in parts:
         raise AppError('path must not contain ".."')
     return root, parts
+
+
+def open_cwd(path, home, files):
+    """Open a working directory beneath home without traversing symlinks."""
+    if path is None:
+        path = '.'
+    root, components = split_path(path, home, files)
+    if root == files:
+        relative = os.path.relpath(files, home)
+        if relative == '..' or relative.startswith('../') or os.path.isabs(relative):
+            raise AppError('The app data directory is outside the home')
+        components = ([] if relative == '.' else relative.split('/')) + components
+    return _open_dir(home, components)
 
 
 def _open_dir(root, parts, create=False):

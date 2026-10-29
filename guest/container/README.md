@@ -80,6 +80,8 @@ libraries.
 
 The host runs `caboose-session` as root through `docker exec`. Everything it starts for the
 owner runs as `caboose`, and every command is safe to repeat.
+Headless agent wakes start the file and terminal services without starting `start`; the
+owner's session and printing begin on interactive promotion.
 
 | Command | What it does |
 | --- | --- |

@@ -29,21 +29,31 @@ final class GameFileResponder {
     static let chunk = 256 * 1024
     private let cache: GameCache
     private let source: () -> (any GameFileSource)?
+    private let directoryIndex: Bool
 
-    init(cache: GameCache = .shared, source: @escaping () -> (any GameFileSource)?) {
+    init(cache: GameCache = .shared, directoryIndex: Bool = false, source: @escaping () -> (any GameFileSource)?) {
         self.cache = cache
+        self.directoryIndex = directoryIndex
         self.source = source
     }
 
     /// Answers a request for `path`, home-relative and already resolved against the game's root.
     func respond(path: String, range rangeHeader: String?, head: Bool, to sink: any GameResponseSink) async {
+        await respond(path: path, range: rangeHeader, head: head, to: sink, allowDirectory: directoryIndex)
+    }
+
+    private func respond(path: String, range rangeHeader: String?, head: Bool, to sink: any GameResponseSink, allowDirectory: Bool) async {
         let reply = Reply(sink: sink, head: head)
         guard let source = source() else { return reply.status(502, path: path) }
         let range = rangeHeader.flatMap(GameByteRange.init(header:))
         let item: GameFileItem?
         do { item = try await source.stat(path) } catch { return reply.fail(path: path) }
         guard reply.isLive else { return }
-        guard let item, !item.isDirectory else { return reply.status(404, path: path) }
+        guard let item else { return reply.status(404, path: path) }
+        if item.isDirectory {
+            guard allowDirectory else { return reply.status(404, path: path) }
+            return await respond(path: path + "/index.html", range: rangeHeader, head: head, to: sink, allowDirectory: false)
+        }
         if head { return reply.headers(of: item, path: path, range: range) }
         let key = item.etag.isEmpty ? nil : GameFiles.cacheKey(computer: source.computerKey, path: path, etag: item.etag)
         if let key, let file = cache.file(key) {

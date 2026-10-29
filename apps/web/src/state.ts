@@ -6,6 +6,7 @@ export function stateLabel(state: ComputerState): string {
   switch (state) {
     case 'running': return 'Running'
     case 'parked': return 'Parked'
+    case 'frozen': return 'Sleeping'
     case 'waking': return 'Waking'
     case 'parking': return 'Parking'
     case 'restarting': return 'Restarting'
@@ -16,7 +17,8 @@ export function stateLabel(state: ComputerState): string {
 export function stateTone(state: ComputerState): Tone {
   switch (state) {
     case 'running': return 'success'
-    case 'parked': return 'secondary'
+    case 'parked':
+    case 'frozen': return 'secondary'
     case 'error': return 'destructive'
     default: return 'info'
   }
@@ -35,8 +37,8 @@ export function availableActions(status: Pick<ComputerStatus, 'state' | 'capabil
 } {
   const settled = !isTransitioning(status.state)
   return {
-    wake: settled && (status.state === 'parked' || status.state === 'error'),
-    park: status.state === 'running',
+    wake: settled && (status.state === 'parked' || status.state === 'frozen' || status.state === 'error'),
+    park: status.state === 'running' || status.state === 'frozen',
     restart: settled && status.capabilities.restart,
   }
 }
