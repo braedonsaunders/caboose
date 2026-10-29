@@ -445,7 +445,7 @@ final class FakeDecoder: PictureDecoder {
     @Test func clipboardBothWaysWithoutEcho() async throws {
         let session = try await ready()
         var received: [String] = []
-        session.onClipboardText = { received.append($0) }
+        session.onClipboard = { received.append($0.text ?? "") }
         stream.server([(.clipboard, ["mime": "text/plain;charset=utf-8", "data": .bytes(Data("from linux".utf8))])])
         try await until("clipboard") { received == ["from linux"] }
         session.offerClipboard("from linux") // what the computer just sent: not echoed back
@@ -453,6 +453,34 @@ final class FakeDecoder: PictureDecoder {
         let sent = stream.take()
         #expect(sent.count == 1)
         #expect(sent.first?.body["data"]?.data == Data("from the phone".utf8))
+    }
+
+    static let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1])
+    static let captionedImage = ClipboardContent([ClipboardEntry(mime: ClipboardPolicy.text, data: Data("caption".utf8)),
+                                                  ClipboardEntry(mime: ClipboardPolicy.png, data: png)])!
+
+    @Test func aServerWithoutClipboardTypesGetsTextAlone() async throws {
+        let session = try await ready()
+        session.offerClipboard(Self.captionedImage)
+        let sent = stream.take()
+        #expect(sent.count == 1 && sent.first?.body["alternatives"] == nil)
+        #expect(sent.first?.body["mime"]?.string == ClipboardPolicy.text)
+    }
+
+    @Test func imagesGoBothWaysWithTheServersClipboardTypes() async throws {
+        let session = try await ready(features: ["vsync", "ack", "clipboard", "clipboard-types"])
+        #expect(stream.take().isEmpty)
+        var received: [ClipboardContent] = []
+        session.onClipboard = { received.append($0) }
+        stream.server([(.clipboard, ["mime": "image/png", "data": .bytes(Self.png),
+                                     "alternatives": [["mime": "image/bmp", "data": .bytes(Data([1]))]]])])
+        try await until("image") { received.count == 1 }
+        #expect(received.first?.entries.map(\.mime) == [ClipboardPolicy.png])
+        session.offerClipboard(ClipboardContent([ClipboardEntry(mime: ClipboardPolicy.png, data: Self.png)])!) // its own: no echo
+        session.offerClipboard(Self.captionedImage)
+        let sent = stream.take()
+        #expect(sent.count == 1)
+        #expect(sent.first?.body["alternatives"]?.array?.first?["mime"]?.string == ClipboardPolicy.png)
     }
 
     @Test func pongMeasuresTheRoundTrip() async throws {

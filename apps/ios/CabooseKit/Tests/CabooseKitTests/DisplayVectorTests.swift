@@ -221,8 +221,12 @@ import Testing
     @Test func otherServerMessages() throws {
         guard case .bye("auth") = try server("bye-auth").first else { Issue.record("bye"); return }
         guard case .pong(98_765_432_100) = try server("pong").first else { Issue.record("pong"); return }
-        guard case .clipboard(_, let data) = try server("clipboard-server").first else { Issue.record("clipboard"); return }
-        #expect(String(data: data, encoding: .utf8) == "héllo ✓")
+        guard case .clipboard(let text) = try server("clipboard-server").first else { Issue.record("clipboard"); return }
+        #expect(text.text == "héllo ✓" && text.entries.count == 1)
+        guard case .clipboard(let copy) = try server("clipboard-server-types").first else { Issue.record("clipboard types"); return }
+        #expect(copy.entries.map(\.mime) == ["text/plain;charset=utf-8", "image/png", "text/uri-list"])
+        #expect(copy.filePaths == ["/home/caboose/Pictures/a b.png"])
+        #expect(ClipboardPolicy.validate(copy) == nil)
         guard case .notification(3, "Chromium", "Download complete", "report.pdf\n2.1 MB") = try server("notification").first else {
             Issue.record("notification"); return
         }
@@ -239,7 +243,8 @@ import Testing
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
             DisplayInfo(id: 2, width: 3840, height: 2160, scale: 2, refreshHz: 59.94, hdr: false),
         ]),
-        "clipboard-client": .clipboard(mime: "text/plain;charset=utf-8", data: Data("copied on the phone".utf8)),
+        "clipboard-client": .clipboard(ClipboardContent([ClipboardEntry(mime: "text/plain;charset=utf-8", data: Data("copied on the phone".utf8))])!),
+        "clipboard-client-image": .clipboard(ClipboardContent([ClipboardEntry(mime: "image/png", data: Self.iconPNG)])!),
         "close": .close(window: 7),
         "configure": .configure(window: 7, geometry: CGRect(x: 0, y: 0, width: 2556, height: 1179), display: 1,
                                 maximized: true, activated: true),
@@ -265,9 +270,15 @@ import Testing
         "client-hello-audio": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"]),
+        "client-hello-clipboard": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], clipboardTypes: ["image/png", "image/jpeg", "text/uri-list"]),
         "video-ack": .videoAck(video: 2, seq: 41),
         "video-keyframe": .videoKeyframe(video: 1),
     ]
+
+    /// The vectors' 16x16 PNG (guest/display/vectors/media).
+    static let iconPNG = (try? Data(contentsOf: directory.appendingPathComponent("media/icon-16x16.png"))) ?? Data()
 
     static var clientVectors: [String] {
         names.filter { (try? vector($0).messages.contains { $0.direction == "client" }) == true }

@@ -23,8 +23,8 @@ public final class CabooseDisplaySession: DisplaySession {
     public private(set) var isReplaced = false
     public var typingEchoMs: Int? { echo.median }
 
-    public var onClipboardText: ((String) -> Void)?
-    public var clipboardProvider: (() -> String?)?
+    /// The computer's clipboard changed: the representations this client takes, checked.
+    public var onClipboard: ((ClipboardContent) -> Void)?
     public var onNotification: ((RemoteNotification) -> Void)?
     public var onBell: (() -> Void)?
     public var onRaise: ((Int) -> Void)?
@@ -64,7 +64,7 @@ public final class CabooseDisplaySession: DisplaySession {
     private var pendingGeometry: [Int: (geometry: CGRect, at: CFTimeInterval)] = [:]
     private var lastVsync: [Int: UInt64] = [:]
     private var preedit: (text: String, cursor: (Int, Int))?
-    private var lastClipboard: String?
+    private var lastClipboard: ClipboardContent?
 
     /// - Parameters:
     ///   - displayURL: the host's `/v1/display` WebSocket.
@@ -176,7 +176,7 @@ public final class CabooseDisplaySession: DisplaySession {
     private func sendHello() {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: decoders,
-                    audioDecoders: playsAudio ? ["opus"] : nil))
+                    audioDecoders: playsAudio ? ["opus"] : nil, clipboardTypes: ClipboardPolicy.clientTypes))
     }
 
     // MARK: Server messages
@@ -197,10 +197,10 @@ public final class CabooseDisplaySession: DisplaySession {
             case .textInput(let window, let enabled, let purpose):
                 textInput = (window, enabled, purpose)
                 cursorSerial &+= 1
-            case .clipboard(let mime, let data):
-                guard mime.hasPrefix("text/plain"), let text = String(data: data, encoding: .utf8) else { continue }
-                lastClipboard = text
-                onClipboardText?(text)
+            case .clipboard(let content):
+                guard let kept = ClipboardPolicy.accepted(content) else { continue }
+                lastClipboard = kept
+                onClipboard?(kept)
             case .notification(let id, let app, let summary, let body):
                 onNotification?(RemoteNotification(id: id, appName: app, summary: summary, body: body))
             case .pong(let sent):
@@ -421,10 +421,13 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.displays(displays))
     }
 
-    public func offerClipboard(_ text: String) {
-        guard state == .ready, has("clipboard"), text != lastClipboard else { return }
-        lastClipboard = text
-        send(.clipboard(mime: "text/plain;charset=utf-8", data: Data(text.utf8)))
+    public func offerClipboard(_ content: ClipboardContent) {
+        guard state == .ready, has("clipboard") else { return }
+        // A server without `clipboard-types` takes text only.
+        let offered = has("clipboard-types") ? content : ClipboardContent(content.entries.filter { $0.mime == ClipboardPolicy.text })
+        guard let offered, offered != lastClipboard, ClipboardPolicy.validate(offered) == nil else { return }
+        lastClipboard = offered
+        send(.clipboard(offered))
     }
 
     // MARK: Pacing

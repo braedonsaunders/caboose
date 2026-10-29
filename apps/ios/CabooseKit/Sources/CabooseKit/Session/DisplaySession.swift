@@ -24,8 +24,8 @@ public protocol DisplaySession: AnyObject {
     /// The median time from a key leaving the phone to the next picture of that window.
     var typingEchoMs: Int? { get }
 
-    var onClipboardText: ((String) -> Void)? { get set }
-    var clipboardProvider: (() -> String?)? { get set }
+    /// The computer's clipboard changed (docs/display.md, Clipboard).
+    var onClipboard: ((ClipboardContent) -> Void)? { get set }
     var onNotification: ((RemoteNotification) -> Void)? { get set }
     var onBell: (() -> Void)? { get set }
     var onRaise: ((Int) -> Void)? { get set }
@@ -48,7 +48,9 @@ public protocol DisplaySession: AnyObject {
     func refresh(_ window: RemoteWindow)
     /// Changes the screen the server lays windows out for, on the live connection.
     func reconfigure(_ capabilities: ClientCapabilities)
-    func offerClipboard(_ text: String)
+    /// Puts a copy made on the phone on the computer's clipboard; the same copy again,
+    /// or the computer's own coming back, is not sent.
+    func offerClipboard(_ content: ClipboardContent)
 
     // MARK: Input
 
@@ -136,4 +138,10 @@ public extension DisplaySession {
     func displayWillRefresh(_ display: Int, targetTimestamp: CFTimeInterval) {}
     var textPurpose: String? { nil }
     var isReplaced: Bool { false }
+}
+
+public extension DisplaySession {
+    func offerClipboard(_ text: String) {
+        if let content = ClipboardPolicy.content(text: text) { offerClipboard(content) }
+    }
 }

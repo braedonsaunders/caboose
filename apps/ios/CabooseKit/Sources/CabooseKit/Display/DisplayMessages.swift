@@ -301,7 +301,7 @@ public enum ServerMessage: Sendable {
     case cursorImage(window: Int?, image: Data, hotspot: CGPoint)
     case cursorNamed(String)
     case textInput(window: Int, enabled: Bool, purpose: String?)
-    case clipboard(mime: String, data: Data)
+    case clipboard(ClipboardContent)
     case notification(id: Int, app: String, summary: String, body: String)
     case audio(AudioPacket)
     case pong(micros: UInt64)
@@ -336,8 +336,7 @@ public enum ServerMessage: Sendable {
         case .cursorNamed: parsed = body["name"]?.string.map(ServerMessage.cursorNamed)
         case .textInput:
             parsed = body["id"]?.int.map { .textInput(window: $0, enabled: body["enabled"]?.bool ?? false, purpose: body["purpose"]?.string) }
-        case .clipboard:
-            parsed = body["data"]?.data.map { .clipboard(mime: body["mime"]?.string ?? "text/plain;charset=utf-8", data: $0) }
+        case .clipboard: parsed = ClipboardContent(cbor: body).map(ServerMessage.clipboard)
         case .notification:
             parsed = body["id"]?.int.map {
                 .notification(id: $0, app: body["app"]?.string ?? "", summary: body["summary"]?.string ?? "", body: body["body"]?.string ?? "")
@@ -456,8 +455,9 @@ public enum PointerButtons {
 public enum ClientMessage: Sendable {
     /// `videoDecoders`: what the client plays as video streams; absent, the server sends none.
     /// `audioDecoders`: the sound codecs the client plays ("opus"); absent, the server sends no sound.
+    /// `clipboardTypes`: what the client takes from the clipboard besides text; absent, text only.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
-               audioDecoders: [String]? = nil)
+               audioDecoders: [String]? = nil, clipboardTypes: [String]? = nil)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -470,7 +470,7 @@ public enum ClientMessage: Sendable {
     case pointer(window: Int, x: Double, y: Double, buttons: Int, scroll: (dx: Double, dy: Double, precise: Bool)?)
     case key(keysym: Int, pressed: Bool, modifiers: [String])
     case text(commit: String?, preedit: String? = nil, cursor: (Int, Int)? = nil, deleteBefore: Int? = nil, deleteAfter: Int? = nil)
-    case clipboard(mime: String, data: Data)
+    case clipboard(ClipboardContent)
     case ping(micros: UInt64)
     /// A video frame is decoded and queued for display.
     case videoAck(video: Int, seq: Int)
@@ -486,12 +486,13 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let clipboardTypes):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
                 ("video_decoders", videoDecoders.map { .array($0.map { CBOR($0.rawValue) }) }),
                 ("audio_decoders", audioDecoders.map { .array($0.map { CBOR($0) }) }),
+                ("clipboard_types", clipboardTypes.map { .array($0.map { CBOR($0) }) }),
             ]))
         case .videoAck(let video, let seq):
             return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))
@@ -538,10 +539,36 @@ public enum ClientMessage: Sendable {
                 ("cursor", cursor.map { [CBOR($0.0), CBOR($0.1)] }),
                 ("delete_before", deleteBefore.map { CBOR($0) }), ("delete_after", deleteAfter.map { CBOR($0) }),
             ]))
-        case .clipboard(let mime, let data):
-            return DisplayFrame(type: T.clipboard.rawValue, body: map([("mime", CBOR(mime)), ("data", .bytes(data))]))
+        case .clipboard(let content):
+            return DisplayFrame(type: T.clipboard.rawValue, body: content.cbor)
         case .ping(let micros):
             return DisplayFrame(type: T.ping.rawValue, body: map([("t_us", CBOR(micros))]))
         }
+    }
+}
+
+extension ClipboardContent {
+    /// A `clipboard` payload: `mime` and `data`, then `alternatives` when there are any.
+    init?(cbor body: CBOR) {
+        guard let mime = body["mime"]?.string, let data = body["data"]?.data else { return nil }
+        var entries = [ClipboardEntry(mime: mime, data: data)]
+        if let alternatives = body["alternatives"] {
+            guard let list = alternatives.array else { return nil }
+            for entry in list {
+                guard let mime = entry["mime"]?.string, let data = entry["data"]?.data else { return nil }
+                entries.append(ClipboardEntry(mime: mime, data: data))
+            }
+        }
+        self.init(entries)
+    }
+
+    var cbor: CBOR {
+        var pairs: [(CBOR, CBOR)] = [(.text("mime"), CBOR(entries[0].mime)), (.text("data"), .bytes(entries[0].data))]
+        if entries.count > 1 {
+            pairs.append((.text("alternatives"), .array(entries.dropFirst().map {
+                .map([(.text("mime"), CBOR($0.mime)), (.text("data"), .bytes($0.data))])
+            })))
+        }
+        return .map(pairs)
     }
 }
