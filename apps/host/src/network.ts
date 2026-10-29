@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { readFile } from 'node:fs/promises'
 import type { DeskHandle } from '@braedonsaunders/appkit-desk'
 
 const exec = promisify(execFile)
@@ -25,11 +26,13 @@ export function networkSlot(slot: number): NetworkSlot {
 
 // Host networking for the microVMs: a TAP device per computer, its guest's address, and the
 // fence that keeps every guest to the public internet. Commands run as root, or through `sudo -n`.
-async function privileged(command: string, args: string[]): Promise<void> {
+async function privilegedOutput(command: string, args: string[]): Promise<string> {
   const executable = process.getuid?.() === 0 ? command : 'sudo'
   const arguments_ = executable === 'sudo' ? ['-n', command, ...args] : args
-  await exec(executable, arguments_, { timeout: 15_000 })
+  const result = await exec(executable, arguments_, { timeout: 15_000, maxBuffer: 16 * 1024 * 1024 })
+  return result.stdout
 }
+async function privileged(command: string, args: string[]): Promise<void> { await privilegedOutput(command, args) }
 async function exists(command: string, args: string[]): Promise<boolean> {
   try { await privileged(command, args); return true } catch { return false }
 }
@@ -114,7 +117,7 @@ export async function unfenceBridge(device: string): Promise<void> {
 }
 
 /** Persistent named TAP: it must exist before both boot and snapshot restore. */
-export async function ensureNetwork(slot = 0): Promise<void> {
+async function setupNetwork(slot = 0): Promise<void> {
   const { tap, host, guest } = networkSlot(slot)
   if (!await exists('ip', ['link', 'show', 'dev', tap])) {
     const uid = process.getuid?.()
@@ -132,8 +135,53 @@ export async function ensureNetwork(slot = 0): Promise<void> {
   await rule('filter', 'FORWARD', ['-o', tap, '-d', `${guest}/32`, '-m', 'conntrack', '--ctstate', 'ESTABLISHED,RELATED', '-j', 'ACCEPT'])
 }
 
+/** Cache only a verified setup and re-read kernel state before each reuse. */
+export function createNetworkCache(setup: (slot: number) => Promise<void>, fingerprint: (slot: number) => Promise<string>) {
+  const cache = new Map<number, { state: string; policy: string }>()
+  const pending = new Map<number, Promise<void>>()
+  let generation = 0
+  return {
+    invalidate(slot: number) { generation++; cache.delete(slot) },
+    async ensure(slot: number): Promise<void> {
+      const previous = pending.get(slot) ?? Promise.resolve()
+      const work = previous.catch(() => {}).then(async () => {
+        const policy = process.env.CABOOSE_GUEST_LAN ?? ''
+        const saved = cache.get(slot)
+        if (saved?.policy === policy) {
+          try { if (await fingerprint(slot) === saved.state) return } catch { /* reconfigure */ }
+        }
+        cache.delete(slot)
+        const started = generation
+        try {
+          await setup(slot)
+          const state = await fingerprint(slot)
+          if (generation === started) cache.set(slot, { state, policy })
+        } catch (error) { cache.delete(slot); throw error }
+      })
+      pending.set(slot, work)
+      try { await work } finally { if (pending.get(slot) === work) pending.delete(slot) }
+    },
+  }
+}
+
+async function networkFingerprint(slot: number): Promise<string> {
+  const { tap } = networkSlot(slot)
+  const [link, rules, forwarding] = await Promise.all([
+    privilegedOutput('ip', ['-j', 'address', 'show', 'dev', tap]),
+    privilegedOutput('iptables-save', []),
+    readFile('/proc/sys/net/ipv4/ip_forward', 'utf8'),
+  ])
+  if (forwarding.trim() !== '1') throw new Error('IPv4 forwarding is disabled')
+  return JSON.stringify([link, rules, forwarding])
+}
+
+const networkCache = createNetworkCache(setupNetwork, networkFingerprint)
+export async function ensureNetwork(slot = 0): Promise<void> { await networkCache.ensure(slot) }
+export function invalidateNetwork(slot: number): void { networkCache.invalidate(slot) }
+
 /** Removes a deleted computer's TAP and its rules; the shared chains stay for the others. */
 export async function removeNetwork(slot: number): Promise<void> {
+  invalidateNetwork(slot)
   const { tap, guest } = networkSlot(slot)
   await dropRule('filter', 'INPUT', ['-i', tap, '-j', 'CABOOSE-IN'])
   await dropRule('filter', 'FORWARD', ['-i', tap, '-j', 'CABOOSE-FWD'])

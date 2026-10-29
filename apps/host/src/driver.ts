@@ -6,7 +6,7 @@ import { createDeskHost, createCloudHypervisorBackend, createVirtualizationBacke
 import type { Config } from './config.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 import { TERMINAL_PORT } from './terminal.js'
-import { configureGuest, ensureNetwork, networkSlot, removeNetwork } from './network.js'
+import { configureGuest, ensureNetwork, invalidateNetwork, networkSlot, removeNetwork } from './network.js'
 import type { App, Controller, Session } from './server.js'
 import { guestLaunch } from './guest-apps.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
@@ -199,7 +199,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       if (!nativeMac) await (dependencies.network ?? (() => ensureNetwork(slot)))()
       const restoring = existsSync(snapshotPath)
       const wasResident = Boolean(desk)
-      desk = await host.start({ deskId: id, baseImage: join(config.imageRoot, 'base.raw'), overlayPath, memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS, ...(nativeMac ? {} : { network: { tapDevice: address.tap, guestAddress: address.guest } }) })
+      desk = await host.start({ deskId: id, baseImage: join(config.imageRoot, 'base.raw'), overlayPath, memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS, ...(nativeMac ? {} : { network: { tapDevice: address.tap, guestAddress: address.guest } }) }).catch(error => { if (!nativeMac) invalidateNetwork(slot); throw error })
       try {
         if (restoring && host.stats().lastError?.includes('could not resume from its snapshot')) {
           throw new Error(host.stats().lastError ?? 'Snapshot restore failed')
@@ -225,6 +225,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         heartbeat.unref()
         return session()
       } catch (error) {
+        if (!nativeMac) invalidateNetwork(slot)
         clearHeartbeat()
         await closeRelays().catch(failure => console.error('Failed to close guest relays:', failure))
         await host.suspend(id).catch(failure => console.error('Failed to park after wake error:', failure))
@@ -245,6 +246,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       }
     },
     async restart() {
+      if (!nativeMac) invalidateNetwork(slot)
       restartWarning = null
       // A wedged guest still needs a restart. Try to flush briefly, then surface the
       // failure while proceeding with the explicitly confirmed cold restart.

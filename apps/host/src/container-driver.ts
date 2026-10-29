@@ -37,6 +37,38 @@ export function containerPlacement(config: Pick<Config, 'containerName' | 'conta
   }
 }
 
+// Docker keeps port bindings in stopped containers too. Reserve only ports outside the
+// legacy range, and serialize allocation through container creation so parked containers
+// cannot be assigned the same ports as a new one.
+let allocationQueue: Promise<void> = Promise.resolve()
+export async function withContainerPorts<T>(docker: Docker, work: (ports: { display: number; agent: number; files: number; terminal: number }) => Promise<T>): Promise<T> {
+  const run = allocationQueue.then(async () => {
+    const ids = (await docker(['ps', '-aq'], 15_000)).trim().split(/\s+/).filter(Boolean)
+    const occupied = new Set<number>()
+    if (ids.length) {
+      const lines = await docker(['inspect', '-f', '{{json .HostConfig.PortBindings}}\t{{json .NetworkSettings.Ports}}', ...ids], 30_000)
+      for (const field of lines.trim().split(/[\n\t]/)) {
+        const bindings: unknown = JSON.parse(field)
+        if (!bindings || typeof bindings !== 'object') continue
+        for (const value of Object.values(bindings)) {
+          if (!Array.isArray(value)) continue
+          for (const item of value) {
+            const port = Number(item?.HostPort)
+            if (Number.isInteger(port) && port > 0 && port <= 65535) occupied.add(port)
+          }
+        }
+      }
+    }
+    for (let base = 21000; base <= 65532; base += 4) {
+      if ([base, base + 1, base + 2, base + 3].some(port => occupied.has(port))) continue
+      return work({ display: base, agent: base + 1, files: base + 2, terminal: base + 3 })
+    }
+    throw new Error('No loopback ports remain for another container computer')
+  })
+  allocationQueue = run.then(() => {}, () => {})
+  return run
+}
+
 /**
  * The computer as a container instead of a microVM, for hosts whose GPU a container can use
  * but a VM cannot have: WSL2's paravirtual /dev/dxg (any vendor), a Linux NVIDIA GPU through
@@ -228,7 +260,12 @@ export function createContainerController(config: Config, dependencies: { docker
       if (current === 'missing') {
         const desired = settings()
         resources = { memoryMb: desired.memoryMb, vcpus: desired.vcpus }
-        await docker(runArgs(resources), 300_000)
+        if (dependencies.identity && dependencies.identity.slot >= 64) {
+          await withContainerPorts(docker, async ports => {
+            Object.assign(place.ports, ports)
+            await docker(runArgs(resources!), 300_000)
+          })
+        } else await docker(runArgs(resources), 300_000)
       } else {
         resources ??= await createdWith()
         if (current === 'stopped') await docker(['start', name], 120_000)

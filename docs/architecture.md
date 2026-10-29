@@ -250,8 +250,9 @@ The guest is fenced in chains the host owns, each jumped to first from its built
 | `CABOOSE-IN` | `INPUT -i caboose<n>` | Established and related traffic returns; everything else is dropped. The guest can open nothing on the host. |
 | `CABOOSE-FWD` | `FORWARD -i caboose<n>` | Established and related traffic returns; new connections to `192.0.2.0/24` and `198.18.0.0/15` (every computer) and to private and reserved ranges are rejected; the rest returns to normal forwarding. |
 
-Both chains are shared by every computer and refilled only when their rules differ, so
-waking one computer never leaves another unfenced.
+Both chains are shared by every computer. After setup the host records the TAP, firewall and
+forwarding state; a later wake skips setup only when the live state still matches. Failure,
+restart or deletion invalidates the cached state.
 
 The rejected ranges are `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
 `169.254.0.0/16` (link-local and cloud metadata), `100.64.0.0/10` (CGNAT and Tailscale),
@@ -622,7 +623,8 @@ A host runs several computers. The owner's computer always exists, with id `owne
 slot 0, and cannot be deleted. Every other computer has an id `c-` followed by 10 hex
 digits, and the lowest free slot from 1 to 32831. The slot names its network (see Network
 fencing). Containers in slots 1–63 retain their fixed loopback ports; later containers use
-Docker-assigned loopback ports discovered at wake. Docker retains those ports while parked. Each computer has its
+loopback ports allocated outside the legacy range after inspecting Docker bindings, including
+stopped containers. Docker retains those ports while parked. Each computer has its
 own disk, settings, lifecycle, leases, agents, catalog, notifications and phones; nothing
 of one is reachable from another. microVM computers share one appkit-desk host, so at most
 `CABOOSE_MAX_RUNNING` run at once and further wakes queue.

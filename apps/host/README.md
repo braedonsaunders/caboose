@@ -274,7 +274,7 @@ computer, as they always have. Each computer has its own disk, settings, lifecyc
 catalog, notifications and phones, and its own network slot: a microVM on slot *n* gets TAP
 `caboose<n>` and a persistent /30: slots 0–63 use `192.0.2.0/24`, later slots use
 `198.18.0.0/15`. A container has its own home and bridge; slots 1–63 retain loopback ports
-from 20000 + 10 × *n*, and later slots use Docker-assigned loopback ports. The owner's computer is slot 0 with the names and
+from 20000 + 10 × *n*, and later slots use available loopback ports outside that range; stopped containers retain their allocations. The owner's computer is slot 0 with the names and
 addresses below, and cannot be deleted. Deleting another computer removes its disk, files,
 network and phones.
 
@@ -502,6 +502,7 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-lineup.mjs` | Opens Mousepad, btop and OpenCode and requires a new window for each on the owner's display. Leaves them open and does not park. |
 | `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft (or the catalog app `CABOOSE_CATALOG_APP` names, such as `powder-toy`) if needed, launches it and requires a new window with its name and a PNG icon in the app list. Close the app's windows first. |
 | `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |
+| `apps/host/node_modules/.bin/tsx apps/host/scripts/check-container-ports.mts` | Real Docker port allocation, including legacy and stopped container bindings; requires an existing `node:22-bookworm-slim` image (override with `CABOOSE_CHECK_IMAGE`). |
 | `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk. Hosts with accounts also get a throwaway tenant, removed after the computer even when the check fails. Older hosts without tenants remain supported. It creates no accounts; the owner's computer is only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
 | `node apps/host/scripts/check-accounts.mjs` | Accounts and tenants: the setup state and the owner token's view, then a throwaway tenant with a memory quota, a computer within it made and one beyond it refused, a resize past it refused, and both deleted. It makes no accounts and verifies that setup requires its code even on loopback. |
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |

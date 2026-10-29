@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { COMPUTERS_SUBNET, EXPANDED_SUBNET, FENCED_RANGES, MAX_SLOTS, fenceRules, networkSlot } from './network.js'
+import { COMPUTERS_SUBNET, EXPANDED_SUBNET, FENCED_RANGES, MAX_SLOTS, fenceRules, networkSlot, createNetworkCache } from './network.js'
 
 describe('fenceRules', () => {
   it('lets the guest answer the host but open nothing on it', () => {
@@ -39,4 +39,22 @@ describe('networkSlot', () => {
     expect(() => networkSlot(-1)).toThrow()
     expect(() => networkSlot(1.5)).toThrow()
   })
+})
+
+
+it('reuses only unchanged verified network state and invalidates after errors and deletion', async () => {
+  let state = 'kernel-1', calls = 0, fail = false
+  const cache = createNetworkCache(async () => { calls++; if (fail) throw new Error('setup failed') }, async () => state)
+  await cache.ensure(0)
+  await cache.ensure(0)
+  expect(calls).toBe(1)
+  state = 'rules changed'
+  await cache.ensure(0)
+  expect(calls).toBe(2)
+  cache.invalidate(0)
+  fail = true
+  await expect(cache.ensure(0)).rejects.toThrow('setup failed')
+  fail = false
+  await cache.ensure(0)
+  expect(calls).toBe(4)
 })
