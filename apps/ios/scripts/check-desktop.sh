@@ -148,7 +148,7 @@ Desktop touch and close controls:
     open it once. A single tap selects once. Hold an item: its context menu appears
     before lifting, at that item, and lifting does not choose a menu action. Small
     finger jitter must not drag; moving away before the hold cancels context.
-    Tap then hold and move performs a primary drag. Native app pinch still works.
+    A one-finger drag in a mouse-only window performs a primary drag. Native app pinch still works.
 14. Hold a dock app icon: Open, Pin/Unpin and its Close Window actions appear. Open
     focuses its existing desktop window. GridCraft and other tiles have a visible
     top-right Close Window button; closing still permits the app's unsaved-work dialog.
@@ -158,4 +158,16 @@ Capture evidence with:
   xcrun devicectl device capture screenshot --device DEVICE --destination shot.png
 Use --display-unique-id from the first command to capture each available display.
 Record which device/orientation/display and checks passed; a build alone is not a pass.
+CHECK
+
+cat <<'CHECK'
+Direct touch on mouse-only windows:
+- In an X11 paint app, select a paintable layer and draw with one finger: a continuous
+  stroke begins at the contact point. In a text editor, drag to select; in a file manager,
+  drag an item. None of these one-finger drags scrolls the app.
+- Two fingers scroll with momentum; a two-finger tap or stationary hold opens context.
+- During a drag add a second finger, background the app, or close the card: the primary
+  button releases and later touches do not continue the old drag.
+- Native Wayland browser swipes, canvas gestures, sliders and pinch remain native.
+  With a hardware mouse/trackpad, primary drag and precise scrolling still work.
 CHECK

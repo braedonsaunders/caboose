@@ -200,11 +200,13 @@ event is one touch frame, so pinch and swipe are the app's own. A two-finger tap
 stationary half-second hold cancels that native touch sequence and sends a right-click, with a brief ring and haptic.
 Apple Pencil is a
 tablet with pressure, tilt and azimuth on every coalesced sample, and hover on iPads that
-have it. X11 windows (through Xwayland) take pointer gestures, since X11 apps turn a touch
-drag into a selection: swipe scrolls with momentum, tap clicks, double-tap double-clicks, a
-two-finger tap or a stationary half-second hold right-clicks immediately, and tap then
-hold and move drags. Individual pointer taps retain their timing for double-clicks. A trackpad or
-mouse hovers, clicks and right-clicks precisely.
+have it. Mouse-only windows, including X11 apps through Xwayland, take pointer gestures:
+one finger draws, selects or drags with the primary button; two fingers scroll with momentum.
+A tap clicks, two quick taps double-click, and a two-finger tap or stationary half-second
+hold right-clicks immediately. A drag starts at the original contact point and releases
+its button on cancellation, target change or backgrounding. These rules are shared by
+all mouse-only windows, with no application-name overrides. A trackpad or mouse hovers,
+clicks and right-clicks precisely.
 
 Emulated scrolling shares `CabooseKit/Input/ScrollPhysics.swift`: fractional deltas are
 coalesced once per display frame, and release velocity decays independently of refresh
@@ -214,7 +216,7 @@ client inertia; native Wayland touch keeps the application's own fling behavior.
 Run `swift test --filter ScrollPhysicsTests` in `apps/ios/CabooseKit` for deterministic
 checks of distance at 30/60/90/120 Hz, fractional input, cancellation, stale release,
 reversal and display stalls. On a real host, check slow and fast swipes in a native
-Wayland app and an Xwayland app, then two-finger desktop/trackpad scrolling. Confirm
+Wayland app and two-finger swipes in an Xwayland app, then desktop/trackpad scrolling. Confirm
 that a new touch stops the fling, a held finger stops before release, pinches still
 zoom, drawing and selection still work, context clicks do not fling, and changing
 windows or backgrounding never sends old scroll input to the next window.

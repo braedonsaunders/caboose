@@ -46,7 +46,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var displayLink: CADisplayLink?
     private var presentedGeneration: UInt64 = .max
     private var lastPointer = CGPoint.zero
-    private var dragging = false
+    private var directDrag = DirectPointerDrag()
     private let scrollDriver = ScrollDriver()
     private var scrollUsesDirectTouch = false
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
@@ -274,13 +274,11 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         longPress.delegate = self
         addGestureRecognizer(longPress)
 
-        // Tap, then hold and move for a primary-button drag. An ordinary hold is reserved
-        // for the context menu, so normal finger jitter cannot accidentally start a drag.
-        let touchDrag = UILongPressGestureRecognizer(target: self, action: #selector(handleTouchDrag(_:)))
-        touchDrag.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
-        touchDrag.numberOfTapsRequired = 1
-        touchDrag.minimumPressDuration = 0.15
-        touchDrag.allowableMovement = 10
+        // Mouse-only windows: one finger draws/selects; two fingers navigate.
+        let touchDrag = UIPanGestureRecognizer(target: self, action: #selector(handleTouchDrag(_:)))
+        touchDrag.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber]
+        touchDrag.maximumNumberOfTouches = 1
+        touchDrag.allowedScrollTypesMask = []
         touchDrag.delegate = self
         addGestureRecognizer(touchDrag)
 
@@ -291,10 +289,18 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
         let scroll = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
         scroll.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
-        scroll.allowedScrollTypesMask = .all
+        scroll.allowedScrollTypesMask = []
+        scroll.minimumNumberOfTouches = 2
         scroll.maximumNumberOfTouches = 2
         scroll.delegate = self
         addGestureRecognizer(scroll)
+
+        // Hardware wheel/trackpad events do not have direct finger contacts.
+        let wheel = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
+        wheel.allowedTouchTypes = []
+        wheel.allowedScrollTypesMask = .all
+        wheel.delegate = self
+        addGestureRecognizer(wheel)
 
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(handleHover(_:)))
         addGestureRecognizer(hover)
@@ -311,11 +317,6 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         gesture === secondaryTouchGesture || gesture === contextTouchGesture || !routesNatively(touch)
-    }
-
-    public override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
-        if gesture is UIPanGestureRecognizer, dragging { return false }
-        return true
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -386,22 +387,32 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         click(at: gesture.location(in: self), button: 3)
     }
 
-    @objc private func handleTouchDrag(_ gesture: UILongPressGestureRecognizer) {
-        guard let window = remoteWindow, let session else { return }
+    @objc private func handleTouchDrag(_ gesture: UIPanGestureRecognizer) {
         let point = gesture.location(in: self)
         switch gesture.state {
         case .began:
             stopMomentum()
-            dragging = true
-            move(to: point)
-            session.focus(window)
-            session.pointerButton(in: window, button: 1, pressed: true, at: lastPointer)
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        case .changed: move(to: point)
-        case .ended, .cancelled, .failed:
-            if dragging { session.pointerButton(in: window, button: 1, pressed: false, at: pixelPoint(point)) }
-            dragging = false
+            focusCheck = nil
+            if let window = remoteWindow { session?.focus(window) }
+            sendDirectDrag(directDrag.begin(at: point, translation: gesture.translation(in: self)))
+        case .changed:
+            sendDirectDrag(directDrag.move(to: point))
+        case .ended:
+            sendDirectDrag(directDrag.end(at: point))
+        case .cancelled, .failed:
+            sendDirectDrag(directDrag.cancel())
         default: break
+        }
+    }
+
+    private func sendDirectDrag(_ actions: [DirectPointerDrag.Action]) {
+        guard let window = remoteWindow, let session else { return }
+        for action in actions {
+            switch action {
+            case .move(let point): move(to: point)
+            case .button(let point, let pressed):
+                session.pointerButton(in: window, button: 1, pressed: pressed, at: pixelPoint(point))
+            }
         }
     }
 
@@ -562,6 +573,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// Lifts every finger the app still thinks is down, e.g. when the view leaves the screen.
     @objc private func cancelTouches() {
         stopMomentum()
+        sendDirectDrag(directDrag.cancel())
         if let window = remoteWindow, let session {
             if !activeTouches.isEmpty {
                 session.touch(activeTouches.values.map { TouchPoint(slot: $0.slot, phase: .cancel, x: Double($0.point.x), y: Double($0.point.y)) },
