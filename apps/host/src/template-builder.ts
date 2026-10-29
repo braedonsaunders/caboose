@@ -1,6 +1,6 @@
-import { randomInt } from 'node:crypto'
+import { randomInt, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, open, rm } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, open, readFile, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join, isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
@@ -34,6 +34,11 @@ async function privileged(command: string, args: string[]): Promise<void> {
   await exec(root ? command : 'sudo', root ? args : ['-n', command, ...args], { timeout: 15_000 })
 }
 
+/** Only the tested official and incremental builds have template support. */
+export function supportedTemplateVmm(version: string): boolean {
+  return ['cloud-hypervisor v54.0', 'cloud-hypervisor v54.0.0-appkit-incremental.1'].includes(version)
+}
+
 /** Reject a guest image that does not contain the complete current bundle. */
 export async function verifyTemplateGuestComponents(source: Pick<DeskHandle, 'exec'>, expectedComponents: string): Promise<void> {
   const versionCheck = await source.exec({ command: '/bin/cat', args: ['/usr/local/share/caboose/components.version'], timeoutMs: 15_000 })
@@ -63,7 +68,7 @@ async function buildTemplateSourceOnce(options: TemplateBuildOptions): Promise<v
   const api = desk as unknown as Partial<TemplateApi>
   if (api.DESK_TEMPLATE_VERSION !== 3 || typeof api.hostCpuSignature !== 'function' || typeof api.registerDeskTemplate !== 'function') throw new Error('Template building requires an AppKit desk release with template registration')
   const version = (await exec(options.vmmPath, ['--version'], { timeout: 15_000 })).stdout.trim()
-  if (version !== 'cloud-hypervisor v54.0') throw new Error('Templates require Cloud Hypervisor v54.0')
+  if (!supportedTemplateVmm(version)) throw new Error('Templates require a supported Cloud Hypervisor v54 build')
   const expectedComponents = (await readBundle()).version
   const snapshot = join(options.directory, 'source.snapshot'), disk = join(options.directory, 'source.raw')
   const readyPath = join(options.directory, '.ready')
@@ -81,6 +86,7 @@ async function buildTemplateSourceOnce(options: TemplateBuildOptions): Promise<v
   try { await receipt.writeFile(JSON.stringify({ version: 1, tap, runtime, vmmPath: options.vmmPath })); await receipt.sync() } finally { await receipt.close() }
   const sourceDirectory = await open(options.directory, 'r')
   try { await sourceDirectory.sync() } finally { await sourceDirectory.close() }
+  const alias = `caboose-template-${randomUUID()}`
   const fence = templateNetworkFenceForTap(tap)
   let tapOwned = false, stopped = true
   const host = desk.createDeskHost({ imageRoot: options.directory, runtimeDir: runtime, vmmPath: options.vmmPath,
@@ -93,6 +99,13 @@ async function buildTemplateSourceOnce(options: TemplateBuildOptions): Promise<v
     // Add is exclusive: never adopt or delete an existing TAP.
     await privileged('ip', ['tuntap', 'add', 'dev', tap, 'mode', 'tap', 'user', String(uid)])
     tapOwned = true
+    await privileged('ip', ['link', 'set', 'dev', tap, 'alias', alias])
+    const index = Number((await readFile(`/sys/class/net/${tap}/ifindex`, 'utf8')).trim())
+    if (!Number.isSafeInteger(index) || index < 1) throw new Error('Cannot identify the template TAP')
+    const ownership = await open(join(options.directory, '.tap-owner.json'), 'wx', 0o600)
+    try { await ownership.writeFile(JSON.stringify({ version: 1, tap, alias, ifindex: index })); await ownership.sync() } finally { await ownership.close() }
+    const sourceDir = await open(options.directory, 'r')
+    try { await sourceDir.sync() } finally { await sourceDir.close() }
     await fence.hold()
     await privileged('ip', ['link', 'set', 'dev', tap, 'up'])
     stopped = false
@@ -124,6 +137,7 @@ async function buildTemplateSourceOnce(options: TemplateBuildOptions): Promise<v
     }
     if (stopped) {
       await rm(runtime, { recursive: true, force: true })
+      await rm(join(options.directory, '.tap-owner.json'), { force: true })
       await rm(join(options.directory, '.build.json'), { force: true })
       const directory = await open(options.directory, 'r')
       try { await directory.sync() } finally { await directory.close() }

@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { buildTemplateSource, verifyTemplateGuestComponents } from './template-builder.js'
+import { buildTemplateSource, supportedTemplateVmm, verifyTemplateGuestComponents } from './template-builder.js'
 import type { DeskHandle } from '@braedonsaunders/appkit-desk'
 
 it('rejects an old or incomplete guest bundle before template capture', async () => {
@@ -19,4 +19,10 @@ it('coalesces concurrent construction of the same source and releases a failed b
   const retry = buildTemplateSource(options)
   expect(retry).not.toBe(first)
   await expect(retry).rejects.toThrow(/absolute paths/)
+})
+
+it('accepts only the validated v54 VMM builds', () => {
+  expect(supportedTemplateVmm('cloud-hypervisor v54.0')).toBe(true)
+  expect(supportedTemplateVmm('cloud-hypervisor v54.0.0-appkit-incremental.1')).toBe(true)
+  expect(supportedTemplateVmm('cloud-hypervisor v54.0.0-appkit-incremental.2')).toBe(false)
 })
