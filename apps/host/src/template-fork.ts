@@ -24,6 +24,17 @@ export interface TemplateForkOptions extends TemplateBuildOptions {
   attachments?: readonly DeskReadOnlyAttachment[]
 }
 
+/** Reject changed boot images or device endpoints without discarding saved memory. */
+export function assertSavedTemplateConfig(value: unknown, plan: DeskLaunchPlan, kernel: string, initramfs: string, attachments: readonly DeskReadOnlyAttachment[]): void {
+  if (plan.hypervisor !== 'cloud-hypervisor' || !value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid parked template configuration')
+  const saved = value as { payload?: { kernel?: string; initramfs?: string }; disks?: { path?: string; readonly?: boolean }[]; net?: { tap?: string; mac?: string }[]; vsock?: { cid?: number; socket?: string } }
+  if (saved.payload?.kernel !== kernel || saved.payload.initramfs !== initramfs || saved.disks?.length !== attachments.length + 1
+    || saved.disks[0]?.path !== plan.overlay.path || saved.disks[0].readonly === true
+    || attachments.some((item, index) => saved.disks?.[index + 1]?.path !== item.path || saved.disks?.[index + 1]?.readonly !== true)
+    || saved.net?.length !== 1 || saved.net[0]?.tap !== plan.tap.device || saved.net[0].mac?.toLowerCase() !== plan.tap.mac.toLowerCase()
+    || saved.vsock?.cid !== plan.vsock.cid || saved.vsock.socket !== plan.vsock.socketPath) throw new Error('Parked template image or device identity does not match')
+}
+
 /** Callback set consumed by AppKit before a new template child is exposed. */
 export function templateFork(options: TemplateForkOptions) {
   const fence = templateNetworkFence(options.slot)
@@ -63,9 +74,8 @@ export function templateFork(options: TemplateForkOptions) {
       const api = desk as unknown as Partial<TemplateApi>
       if (typeof api.verifyDeskTemplateCompatibility !== 'function') throw new Error('Template resume requires image verification')
       await api.verifyDeskTemplateCompatibility(options.childDirectory, await compatibility(api))
-      const saved = JSON.parse(await readFile(join(plan.snapshot.dir, 'config.json'), 'utf8')) as { disks?: { path?: string }[]; net?: { tap?: string; mac?: string }[]; vsock?: { cid?: number; socket?: string } }
-      if (saved.disks?.[0]?.path !== plan.overlay.path || saved.net?.[0]?.tap !== plan.tap.device || saved.net[0].mac?.toLowerCase() !== plan.tap.mac.toLowerCase()
-        || saved.vsock?.cid !== plan.vsock.cid || saved.vsock.socket !== plan.vsock.socketPath) throw new Error('Parked template device identity does not match')
+      const saved: unknown = JSON.parse(await readFile(join(plan.snapshot.dir, 'config.json'), 'utf8'))
+      assertSavedTemplateConfig(saved, plan, options.kernel, options.initramfs, options.attachments ?? [])
     },
     async initialize(machine: DeskMachine, plan: DeskLaunchPlan): Promise<void> {
       if (plan.hypervisor !== 'cloud-hypervisor') throw new Error('Template forks require Cloud Hypervisor')
