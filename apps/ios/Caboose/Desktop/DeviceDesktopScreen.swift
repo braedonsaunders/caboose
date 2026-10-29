@@ -100,7 +100,7 @@ struct DesktopScreen: View {
             ToolbarOverflowMenu {
                 Button("Wallpaper", systemImage: "photo.on.rectangle") { model.wallpaperPickerPresented = true }
                 if WallpaperStore.shared.choice.usesLibrary {
-                    Button("Next Photograph", systemImage: "arrow.triangle.2.circlepath") { WallpaperStore.shared.next() }
+                    Button("Next Wallpaper", systemImage: "arrow.triangle.2.circlepath") { WallpaperStore.shared.next() }
                 }
             }
         }
@@ -142,7 +142,7 @@ struct DesktopRailControls: View {
                     }
                     Button("Wallpaper", systemImage: "photo.on.rectangle") { model.wallpaperPickerPresented = true }
                     if WallpaperStore.shared.choice.usesLibrary {
-                        Button("Next Photograph", systemImage: "arrow.triangle.2.circlepath") { WallpaperStore.shared.next() }
+                        Button("Next Wallpaper", systemImage: "arrow.triangle.2.circlepath") { WallpaperStore.shared.next() }
                     }
                 } label: { Image(systemName: "ellipsis").frame(width: 56, height: 44) }
                 .accessibilityLabel("Desktop controls")
