@@ -254,6 +254,33 @@ import Testing
         #expect(delivered.map(\.kind) == [.keyUp])
     }
 
+    /// Input that goes to another window releases what a game held, whether or not focus
+    /// moves on the computer: a click in an ordinary window, keys there, or another game.
+    @Test func inputElsewhereReleasesWhatAGameHeld() async throws {
+        let session = makeSession()
+        session.connect()
+        try await resume.handshake(session, epoch: "e1", windows: [7, 8, 9])
+        resume.streams.last.server([(.gameCreate, game(1, window: 7)), (.gameCreate, game(2, window: 9))])
+        try await helpers.until("games") { session.windows[7]?.game != nil && session.windows[9]?.game != nil }
+        let first = try #require(session.windows[7]), ordinary = try #require(session.windows[8]), second = try #require(session.windows[9])
+        var delivered: [Int: [GameInputEvent.Kind]] = [:]
+        first.game?.inputSink = { delivered[1, default: []] += $0.map(\.kind) }
+        second.game?.inputSink = { delivered[2, default: []] += $0.map(\.kind) }
+        let up = Keysyms.special["Up"]!
+        session.key(up, pressed: true, in: first)
+        session.pointerButton(in: ordinary, button: 1, pressed: true, at: CGPoint(x: 1, y: 1))
+        session.pointerButton(in: ordinary, button: 1, pressed: false, at: CGPoint(x: 1, y: 1))
+        #expect(delivered[1] == [.keyDown, .keyUp])
+        session.key(up, pressed: true, in: first)
+        session.type("x", in: ordinary)
+        #expect(delivered[1] == [.keyDown, .keyUp, .keyDown, .keyUp])
+        session.key(up, pressed: true, in: first)
+        session.key(up, pressed: true, in: second)
+        #expect(delivered[1] == [.keyDown, .keyUp, .keyDown, .keyUp, .keyDown, .keyUp])
+        #expect(delivered[2] == [.keyDown])
+        session.disconnect()
+    }
+
     @Test func theWaitForSavesIsBounded() async {
         let game = RemoteGame(GameDescriptor(id: 1, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSurface())
         game.savesFlusher = { try? await Task.sleep(for: .seconds(30)) }

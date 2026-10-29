@@ -185,11 +185,13 @@ start:
   elements, `click`, `dblclick` and `contextmenu`, and `wheel` in CSS pixels. Positions are
   sent as fractions of the window and scaled by the page's viewport.
 - Keys are `keydown`, `keypress` for a key that types, and `keyup` at the focused element,
-  with `key`, `code` (a US layout), `keyCode`, `which` and `charCode`. A key typed with
-  modifiers presses and releases them around it; text is typed key by key.
+  with `key`, `code` (a US layout), `keyCode`, `which`, `charCode` and `repeat` (a key
+  pressed again while down). A key typed with modifiers presses and releases them around
+  it, and so does a pointer press (until its last button lifts) or a wheel turn with
+  modifiers; text is typed key by key.
 - What is held is released (keys up, buttons cancelled with `pointercancel` then `mouseup`)
-  when another window takes the input, the connection goes, the game's view leaves the
-  screen, or the app stops being active.
+  when a press, key or text goes to another window, focus moves, the connection goes, the
+  game ends, its view leaves the screen, or the app stops being active.
 
 These events are untrusted (`isTrusted` is false), so a page that ignores untrusted input
 takes only touch, hardware keys and controllers. Resizing, fullscreen, focus and closing the

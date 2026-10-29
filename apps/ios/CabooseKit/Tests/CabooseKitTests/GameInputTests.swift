@@ -98,6 +98,38 @@ import Testing
         #expect(keys(input.key(shift, pressed: false)) == ["-ShiftLeft"])
     }
 
+    @Test func aShiftDragHoldsShiftUntilTheLastButtonLifts() {
+        var input = GameInput()
+        let down = input.button(1, pressed: true, at: CGPoint(x: 100, y: 100), in: size, modifiers: ["shift"])
+        #expect(down.map(\.kind) == [.pointerMove, .keyDown, .pointerDown])
+        #expect(keys(down) == ["+ShiftLeft"] && down.last?.modifiers.shift == true)
+        let drag = input.move(to: CGPoint(x: 200, y: 100), in: size, modifiers: ["shift"])
+        #expect(drag.first?.modifiers.shift == true && drag.first?.buttons == 1)
+        let up = input.button(1, pressed: false, at: CGPoint(x: 200, y: 100), in: size, modifiers: ["shift"])
+        #expect(up.map(\.kind) == [.pointerUp, .keyUp] && keys(up) == ["-ShiftLeft"])
+        #expect(input.held.isEmpty)
+    }
+
+    @Test func aControlWheelPressesControlAroundIt() {
+        var input = GameInput()
+        let events = input.scroll(dx: 0, dy: -40, at: CGPoint(x: 10, y: 10), in: size, modifiers: ["control"])
+        #expect(events.map(\.kind) == [.keyDown, .wheel, .keyUp])
+        #expect(events[1].modifiers.control && keys(events) == ["+ControlLeft", "-ControlLeft"])
+        // Control already held by itself stays held.
+        _ = input.key(Keysyms.special["Control_L"]!, pressed: true)
+        #expect(input.scroll(dx: 0, dy: -40, at: .zero, in: size, modifiers: ["control"]).map(\.kind) == [.wheel])
+        #expect(input.held.count == 1)
+    }
+
+    @Test func aKeyDownWhileDownRepeats() {
+        var input = GameInput()
+        let left = Keysyms.special["Left"]!
+        let first = input.key(left, pressed: true), second = input.key(left, pressed: true)
+        #expect(first.first?.isRepeat == false && second.first?.isRepeat == true)
+        #expect(GameInputScript.call(second).arguments["events"].flatMap { ($0 as? [[String: Any]])?.first?["repeat"] as? Bool } == true)
+        #expect(keys(input.key(left, pressed: false)) == ["-ArrowLeft"])
+    }
+
     @Test func aKeyUpWithoutItsKeyDownIsNoEvent() {
         var input = GameInput()
         #expect(input.key(Keysyms.special["Left"]!, pressed: false).isEmpty)
@@ -143,8 +175,11 @@ import Testing
         game.edit([.type("x"), .backspace(1)])
         game.releaseInput()
         #expect(delivered.map { keys($0) } == [["+ArrowUp"], ["+KeyX", "-KeyX"], ["+Backspace", "-Backspace"], ["-ArrowUp"]])
+        game.key(Keysyms.special["Down"]!, pressed: true)
+        // Ending releases what the page holds before it stops listening.
         game.end()
+        #expect(delivered.suffix(2).map { keys($0) } == [["+ArrowDown"], ["-ArrowDown"]])
         game.key(Keysyms.special["Up"]!, pressed: true)
-        #expect(delivered.count == 4)
+        #expect(delivered.count == 6)
     }
 }

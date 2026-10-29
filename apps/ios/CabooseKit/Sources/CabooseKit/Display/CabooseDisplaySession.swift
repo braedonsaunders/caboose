@@ -770,17 +770,18 @@ public final class CabooseDisplaySession: DisplaySession {
     // trackpad, its keyboard) go to the page as DOM events.
 
     public func pointerMove(in window: RemoteWindow, to point: CGPoint, modifiers: [String] = []) {
-        if let game = window.game { return game.pointerMove(to: point, in: window.frame.size) }
+        if let game = window.game { return game.pointerMove(to: point, in: window.frame.size, modifiers: modifiers) }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil))
     }
 
     public func pointerButton(in window: RemoteWindow, button: Int, pressed: Bool, at point: CGPoint, modifiers: [String] = []) {
         if let game = window.game {
             if pressed { focusInput(on: window) }
-            return game.pointerButton(button, pressed: pressed, at: point, in: window.frame.size)
+            return game.pointerButton(button, pressed: pressed, at: point, in: window.frame.size, modifiers: modifiers)
         }
         let bit = PointerButtons.bit(forXButton: button)
         guard bit != 0 else { return }
+        if pressed { inputLeftGames(for: window) }
         if pressed { buttons |= bit } else { buttons &= ~bit }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil))
     }
@@ -788,7 +789,7 @@ public final class CabooseDisplaySession: DisplaySession {
     /// Wayland scrolls by any amount, so every swipe is precise.
     public func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, modifiers: [String] = []) {
         guard dx != 0 || dy != 0 else { return }
-        if let game = window.game { return game.scroll(dx: dx, dy: dy, at: point, in: window.frame.size) }
+        if let game = window.game { return game.scroll(dx: dx, dy: dy, at: point, in: window.frame.size, modifiers: modifiers) }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons,
                       scroll: (Double(dx), Double(dy), true)))
     }
@@ -798,6 +799,14 @@ public final class CabooseDisplaySession: DisplaySession {
     /// The window keys and text go to: `window`, or the focused window when none is named.
     private func inputTarget(_ window: RemoteWindow?) -> RemoteWindow? {
         window ?? focusedWindow.flatMap { windows[$0] }
+    }
+
+    /// A press, a key or text went to `window`, which runs no game: the game that had the
+    /// input releases what it held, even where nothing changes focus on the computer.
+    private func inputLeftGames(for window: RemoteWindow?) {
+        guard let game = gameHoldingInput, window?.game !== game else { return }
+        game.releaseInput()
+        gameHoldingInput = nil
     }
 
     /// Input goes to `window` now: a game window focuses on the computer like any other, and
@@ -813,6 +822,7 @@ public final class CabooseDisplaySession: DisplaySession {
             if pressed { focusInput(on: target) }
             return game.key(stroke, pressed: pressed, extraModifiers: extraModifiers)
         }
+        if pressed { inputLeftGames(for: inputTarget(window)) }
         if let window {
             // A modifier alone draws nothing, so it would wait for a picture that never comes.
             if pressed, !Self.isModifier(stroke.keyval) { echo.keySent(window.id) }
@@ -829,6 +839,7 @@ public final class CabooseDisplaySession: DisplaySession {
             focusInput(on: target)
             return game.type(text)
         }
+        inputLeftGames(for: inputTarget(window))
         prepareText(for: window)
         sendCommittedText(text)
     }
@@ -838,6 +849,7 @@ public final class CabooseDisplaySession: DisplaySession {
             focusInput(on: target)
             return game.edit(edits)
         }
+        inputLeftGames(for: inputTarget(window))
         var deleteBefore = 0
         var commit = ""
         for edit in edits {
@@ -930,12 +942,14 @@ public final class CabooseDisplaySession: DisplaySession {
 
     public func touch(_ points: [TouchPoint], in window: RemoteWindow) {
         guard !points.isEmpty, window.game == nil else { return }
+        if points.contains(where: { $0.phase == .down }) { inputLeftGames(for: window) }
         if points.contains(where: { $0.phase == .down }), focusedWindow != window.id { focus(window) }
         send(.touch(window: window.id, points: points))
     }
 
     public func pencil(_ sample: PencilSample, in window: RemoteWindow) {
         guard window.game == nil else { return }
+        if sample.phase == .down { inputLeftGames(for: window) }
         if sample.phase == .down, focusedWindow != window.id { focus(window) }
         send(.pencil(window: window.id, sample))
     }

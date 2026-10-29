@@ -135,6 +135,8 @@ public final class RemoteGame: Identifiable {
 
     func end() {
         guard !isEnded else { return }
+        // What the page holds is released while it can still hear it.
+        releaseInput()
         isEnded = true
         let handlers = endHandlers
         endHandlers.removeAll()
@@ -188,14 +190,16 @@ public final class RemoteGame: Identifiable {
 
     // MARK: Input — positions in the window's own pixels, `size` the window's pixel size.
 
-    public func pointerMove(to point: CGPoint, in size: CGSize) { deliver(input.move(to: point, in: size)) }
-
-    public func pointerButton(_ button: Int, pressed: Bool, at point: CGPoint, in size: CGSize) {
-        deliver(input.button(button, pressed: pressed, at: point, in: size))
+    public func pointerMove(to point: CGPoint, in size: CGSize, modifiers: [String] = []) {
+        deliver(input.move(to: point, in: size, modifiers: modifiers))
     }
 
-    public func scroll(dx: CGFloat, dy: CGFloat, at point: CGPoint, in size: CGSize) {
-        deliver(input.scroll(dx: dx, dy: dy, at: point, in: size))
+    public func pointerButton(_ button: Int, pressed: Bool, at point: CGPoint, in size: CGSize, modifiers: [String] = []) {
+        deliver(input.button(button, pressed: pressed, at: point, in: size, modifiers: modifiers))
+    }
+
+    public func scroll(dx: CGFloat, dy: CGFloat, at point: CGPoint, in size: CGSize, modifiers: [String] = []) {
+        deliver(input.scroll(dx: dx, dy: dy, at: point, in: size, modifiers: modifiers))
     }
 
     public func key(_ stroke: KeyStroke, pressed: Bool, extraModifiers: [String] = []) {

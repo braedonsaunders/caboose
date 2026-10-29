@@ -129,6 +129,8 @@ public struct GameInputEvent: Equatable, Sendable {
     public var button = 0, buttons = 0
     public var dx = 0.0, dy = 0.0
     public var key: GameKey?
+    /// A key down for a key that is already down: the key repeating.
+    public var isRepeat = false
     public var modifiers = Modifiers()
 
     /// The event as the page script takes it.
@@ -140,6 +142,7 @@ public struct GameInputEvent: Equatable, Sendable {
             value["code"] = key.code
             value["keyCode"] = key.keyCode
             value["location"] = key.location
+            value["repeat"] = isRepeat
             if let text = key.text { value["text"] = text }
         } else {
             value["x"] = x
@@ -171,6 +174,8 @@ public struct GameInput: Equatable, Sendable {
     public private(set) var held: [GameKey] = []
     /// The modifier keys pressed only to type a key: released with it.
     private var implied: [GameKey] = []
+    /// The modifier keys pressed only for a pointer press: released with its last button.
+    private var pointerImplied: [GameKey] = []
 
     public init() {}
 
@@ -209,36 +214,85 @@ public struct GameInput: Equatable, Sendable {
         return value
     }
 
-    private func pointerEvent(_ kind: GameInputEvent.Kind, button: Int = 0) -> GameInputEvent {
-        GameInputEvent(kind: kind, x: point.x, y: point.y, button: button, buttons: buttons, modifiers: modifiers)
+    /// The modifiers held, with `extra` (named as display input names them) added.
+    private func modifiers(adding extra: [String]) -> GameInputEvent.Modifiers {
+        var value = modifiers
+        for name in extra {
+            switch GameKey.modifier(name)?.modifier {
+            case "shift": value.shift = true
+            case "control": value.control = true
+            case "mod1": value.alt = true
+            case "mod4": value.meta = true
+            default: break
+            }
+        }
+        return value
     }
 
-    public mutating func move(to position: CGPoint, in size: CGSize) -> [GameInputEvent] {
+    private func pointerEvent(_ kind: GameInputEvent.Kind, button: Int = 0, modifiers extra: [String] = []) -> GameInputEvent {
+        GameInputEvent(kind: kind, x: point.x, y: point.y, button: button, buttons: buttons, modifiers: modifiers(adding: extra))
+    }
+
+    /// Presses the modifiers in `names` that are not held, for a pointer press or a wheel turn.
+    private mutating func pressModifiers(_ names: [String]) -> (events: [GameInputEvent], pressed: [GameKey]) {
+        var events: [GameInputEvent] = [], pressed: [GameKey] = []
+        for name in Set(names).sorted() {
+            guard let modifier = GameKey.modifier(name), !held.contains(where: { $0.modifier == modifier.modifier }) else { continue }
+            events += down(modifier)
+            pressed.append(modifier)
+        }
+        return (events, pressed)
+    }
+
+    /// The pointer moves; `modifiers` are those the pointer reports held.
+    public mutating func move(to position: CGPoint, in size: CGSize, modifiers: [String] = []) -> [GameInputEvent] {
         point = Self.fraction(position, in: size)
-        return [pointerEvent(.pointerMove)]
+        return [pointerEvent(.pointerMove, modifiers: modifiers)]
     }
 
-    public mutating func button(_ xButton: Int, pressed: Bool, at position: CGPoint, in size: CGSize) -> [GameInputEvent] {
+    /// A button goes down or up. A press with `modifiers` not held (a Shift-drag, a sticky
+    /// Control) presses them as keys first, as a keyboard would, and the last button's release
+    /// releases them after it.
+    public mutating func button(_ xButton: Int, pressed: Bool, at position: CGPoint, in size: CGSize,
+                                modifiers: [String] = []) -> [GameInputEvent] {
         guard let (button, bit) = Self.domButton(forXButton: xButton) else { return [] }
         let moved = Self.fraction(position, in: size)
         var events: [GameInputEvent] = []
         if moved != point {
             point = moved
-            events.append(pointerEvent(.pointerMove))
+            events.append(pointerEvent(.pointerMove, modifiers: modifiers))
         }
         guard pressed == (buttons & bit == 0) else { return events }
-        if pressed { buttons |= bit } else { buttons &= ~bit }
-        events.append(pointerEvent(pressed ? .pointerDown : .pointerUp, button: button))
+        if pressed {
+            let held = pressModifiers(modifiers)
+            events += held.events
+            pointerImplied += held.pressed
+            buttons |= bit
+            events.append(pointerEvent(.pointerDown, button: button, modifiers: modifiers))
+        } else {
+            buttons &= ~bit
+            events.append(pointerEvent(.pointerUp, button: button, modifiers: modifiers))
+            if buttons == 0 {
+                for modifier in pointerImplied.reversed() { events += up(modifier) }
+                pointerImplied.removeAll()
+            }
+        }
         return events
     }
 
-    public mutating func scroll(dx: CGFloat, dy: CGFloat, at position: CGPoint, in size: CGSize) -> [GameInputEvent] {
+    /// A wheel turn; `modifiers` not held (Control to zoom, Shift to scroll sideways) are
+    /// pressed around it.
+    public mutating func scroll(dx: CGFloat, dy: CGFloat, at position: CGPoint, in size: CGSize,
+                                modifiers: [String] = []) -> [GameInputEvent] {
         guard size.width > 0, size.height > 0, dx.isFinite, dy.isFinite, dx != 0 || dy != 0 else { return [] }
         point = Self.fraction(position, in: size)
-        var event = pointerEvent(.wheel)
+        let held = pressModifiers(modifiers)
+        var event = pointerEvent(.wheel, modifiers: modifiers)
         event.dx = dx / size.width
         event.dy = dy / size.height
-        return [event]
+        var events = held.events + [event]
+        for modifier in held.pressed.reversed() { events += up(modifier) }
+        return events
     }
 
     /// A key going down or up. A press that needs modifiers not held (`stroke.modifiers`, and
@@ -255,7 +309,9 @@ public struct GameInput: Equatable, Sendable {
                     implied.append(modifier)
                 }
             } else {
+                // Pressed by itself, the modifier is the owner's to release.
                 implied.removeAll { $0.modifier == key.modifier }
+                pointerImplied.removeAll { $0.modifier == key.modifier }
             }
             return events + down(key)
         }
@@ -292,6 +348,7 @@ public struct GameInput: Equatable, Sendable {
         for key in held.reversed() where key.modifier == nil { events += up(key) }
         for key in held.reversed() { events += up(key) }
         implied.removeAll()
+        pointerImplied.removeAll()
         for (button, bit) in [(0, 1), (1, 4), (2, 2), (3, 8), (4, 16)] where buttons & bit != 0 {
             buttons &= ~bit
             events.append(pointerEvent(.pointerCancel, button: button))
@@ -309,8 +366,9 @@ public struct GameInput: Equatable, Sendable {
 
     private mutating func down(_ key: GameKey) -> [GameInputEvent] {
         // A key already down repeats; the page sees it held again, not pressed twice.
-        if !held.contains(where: { Self.same($0, key) }) { held.append(key) }
-        var event = GameInputEvent(kind: .keyDown, key: key, modifiers: modifiers)
+        let isRepeat = held.contains { Self.same($0, key) }
+        if !isRepeat { held.append(key) }
+        var event = GameInputEvent(kind: .keyDown, key: key, isRepeat: isRepeat, modifiers: modifiers)
         // Control, Alt and Meta make a key a shortcut, which types nothing.
         if event.modifiers.control || event.modifiers.alt || event.modifiers.meta { event.key?.text = nil }
         return [event]
@@ -430,7 +488,7 @@ enum GameInputScript {
       const key = (e) => {
         const target = document.activeElement || root();
         const init = Object.assign({ bubbles: true, cancelable: true, composed: true, view: window,
-          key: e.key, code: e.code, location: e.location || 0, repeat: false }, flags(e));
+          key: e.key, code: e.code, location: e.location || 0, repeat: !!e.repeat }, flags(e));
         const allowed = fire(target, legacy(new KeyboardEvent(e.type, init), e.keyCode, 0));
         if (e.type !== "keydown" || !allowed) return;
         if (e.text) {
