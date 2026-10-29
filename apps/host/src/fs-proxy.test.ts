@@ -162,7 +162,7 @@ it('streams a chunked upload and a large response intact', async () => {
   const chunks: Buffer[] = []
   for await (const data of incoming) chunks.push(data as Buffer)
   expect(Buffer.concat(chunks)).toEqual(Buffer.alloc(chunk.length * 8, 42))
-})
+}, 15_000) // Exercise backpressure without treating shared-runner throughput as a deadline.
 
 it('wakes, authenticates and streams a range through the guest relay', async () => {
   const upstream = createServer((req, res) => {
