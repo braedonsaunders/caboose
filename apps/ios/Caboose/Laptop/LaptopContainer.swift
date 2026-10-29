@@ -46,16 +46,21 @@ struct LaptopContainer<Content: View>: View {
     var body: some View {
         GeometryReader { proxy in
             let active = LaptopLayout.isActive(mode: LaptopLayout.Mode(rawValue: mode) ?? .automatic,
-                                               size: proxy.size, division: geometry.division,
+                                               size: geometry.hostSize ?? proxy.size, division: geometry.physicalDivision,
                                                partiallyOpen: geometry.partiallyOpen)
             let frames = LaptopLayout.frames(size: proxy.size, division: geometry.division, keyboard: geometry.keyboard)
+            let physicalPanel = active ? geometry.hostSize.map {
+                LaptopLayout.frames(size: $0, division: geometry.physicalDivision, keyboard: 0).screen.size
+            } : nil
             ZStack(alignment: .topLeading) {
-                content(active)
-                    .environment(\.laptopInputOwned, active)
-                    // In Tablet, the shell has already proposed the area above the keyboard.
-                    // Subtracting its measured height again collapses the app to its title bar.
-                    .frame(width: proxy.size.width, height: active ? frames.screen.height : proxy.size.height)
-                    .clipped()
+                LaptopUpperPanel(screen: frames.screen, division: geometry.division,
+                                 active: active, size: proxy.size,
+                                 fullscreen: !isCard && !model.externalDisplayActive && model.session.map {
+                                     model.desktop.fullscreenWindow(in: $0.windows) != nil
+                                 } == true) {
+                    content(active)
+                        .environment(\.laptopInputOwned, active)
+                }
                 if active {
                     VStack(spacing: 0) {
                         if !isCard && !model.externalDisplayActive {
@@ -77,6 +82,9 @@ struct LaptopContainer<Content: View>: View {
                     Cursor(hit: model.desktop.hovered, ui: model.desktop.ui)
                         .position(model.desktop.cursor).allowsHitTesting(false)
                 }
+            }
+            .onChange(of: physicalPanel, initial: true) { _, panel in
+                if !isCard { model.laptopPhysicalPanelChanged(to: panel) }
             }
             .onChange(of: frames, initial: true) { _, frames in
                 updatePointerArea(active: active, frames: frames)
@@ -163,6 +171,8 @@ struct LaptopExternalOverview: View {
 
 struct LaptopGeometry: Equatable {
     var division: CGRect?
+    var hostSize: CGSize?
+    var physicalDivision: CGRect?
     var partiallyOpen = false
     var keyboard: CGFloat = 0
 }
@@ -210,12 +220,24 @@ struct LaptopGeometryProbe: UIViewRepresentable {
             observers.forEach(NotificationCenter.default.removeObserver)
             observers.removeAll()
         }
+        func physicalGeometry(division: CGRect?) -> LaptopGeometry {
+            guard let window else { return LaptopGeometry() }
+            return LaptopGeometry(division: division, hostSize: window.bounds.size,
+                physicalDivision: division.map {
+                    convert($0, to: window).offsetBy(dx: -window.bounds.minX, dy: -window.bounds.minY)
+                })
+        }
+
         func measure(settling: Bool = false) {
             guard let window, bounds.width > 0, bounds.height > 0 else { return }
-            var value = LaptopGeometry(partiallyOpen: partial)
+            // Measure the actual attached scene window, independent of the proposed
+            // SwiftUI viewport and keyboard. Convert reserved regions out of probe space.
+            var division: CGRect?
             if #available(iOS 27.1, *) {
-                value.division = reservedRegions(kind: .division).first { $0.frame.width > $0.frame.height }?.frame
+                division = reservedRegions(kind: .division).first { $0.frame.width > $0.frame.height }?.frame
             }
+            var value = physicalGeometry(division: division)
+            value.partiallyOpen = partial
             if let keyboardFrame {
                 let local = convert(keyboardFrame, from: window.screen.coordinateSpace)
                 let overlap = bounds.intersection(local)
@@ -260,5 +282,34 @@ struct LaptopKeyHeader: UIViewRepresentable {
             }
             bar.frame = bounds
         }
+    }
+}
+
+/// Content ends at the upper edge of the physical division. Only that reserved
+/// division gets a fullscreen matte; keyboard occlusion never becomes hinge padding.
+struct LaptopUpperPanel<Content: View>: View {
+    let screen: CGRect
+    let division: CGRect?
+    let active: Bool
+    let size: CGSize
+    let fullscreen: Bool
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            // Tablet already receives the shell's keyboard-adjusted proposal.
+            content()
+                .frame(width: size.width, height: active ? screen.height : size.height)
+                .clipped()
+            if active, fullscreen, let division,
+               division.width > division.height, division.minY > 0, division.maxY < size.height {
+                Color.black
+                    .frame(width: size.width, height: division.height)
+                    .offset(y: division.minY)
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(width: size.width, height: active ? max(screen.maxY, division?.maxY ?? screen.maxY) : size.height,
+               alignment: .topLeading)
     }
 }

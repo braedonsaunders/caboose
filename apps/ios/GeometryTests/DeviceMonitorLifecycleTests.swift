@@ -88,4 +88,31 @@ final class DeviceMonitorLifecycleTests: XCTestCase {
         let other = AppModel(collection: foreign, monitorDefaults: defaults, startsConnections: false)
         XCTAssertNil(other.displayCapabilities())
     }
+    func testLaptopMeasurementBeforeSelectionAndViewportChanges() throws {
+        let suite = "DeviceMonitorLifecycleTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let app = AppModel(collection: collection(), monitorDefaults: defaults, startsConnections: false)
+        app.setLaptopDesktop(true)
+        app.laptopPhysicalPanelChanged(to: CGSize(width: 656, height: 446))
+        XCTAssertNil(app.displayCapabilities())
+        app.openDeviceDesktop(size: CGSize(width: 656, height: 446))
+        let laptop = try XCTUnwrap(app.displayCapabilities())
+        XCTAssertEqual(laptop.desktopWidth, Int(656 * app.pixelsPerPoint))
+        XCTAssertEqual(laptop.desktopHeight, Int(446 * app.pixelsPerPoint))
+        for size in [CGSize(width: 656, height: 300), CGSize(width: 400, height: 240)] {
+            app.deviceDesktopResized(to: size)
+            app.windowCardResized(to: size)
+            XCTAssertEqual(app.displayCapabilities(), laptop)
+        }
+        app.externalDisplayConnected(size: CGSize(width: 1920, height: 1080), scale: 1)
+        XCTAssertNotEqual(app.displayCapabilities(), laptop)
+        app.externalDisplayDisconnected()
+        XCTAssertEqual(app.displayCapabilities(), laptop)
+        app.setLaptopDesktop(false)
+        let base = try XCTUnwrap(app.displayCapabilities())
+        XCTAssertEqual(base.desktopWidth, base.desktopHeight)
+        XCTAssertEqual(base.dpi, laptop.dpi)
+    }
+
 }

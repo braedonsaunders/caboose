@@ -33,6 +33,7 @@ public struct MonitorPolicy {
 
     public private(set) var computer: String?
     public private(set) var selection: Selection?
+    public private(set) var laptopPanel: CGSize?
     public var device: ClientCapabilities? { selection?.capabilities }
     public init() {}
 
@@ -42,6 +43,7 @@ public struct MonitorPolicy {
         guard self.computer != computer else { return }
         self.computer = computer
         selection = nil
+        laptopPanel = nil
         guard let computer, !computer.isEmpty, let saved, saved.count <= 4096,
               let record = try? JSONDecoder().decode(Saved.self, from: saved),
               record.version == 1, record.computer == computer, record.selection.isValid else { return }
@@ -62,7 +64,28 @@ public struct MonitorPolicy {
     }
 
     public func resolve(external: ClientCapabilities? = nil) -> ClientCapabilities? {
-        external ?? device
+        if let external { return external }
+        guard var device, let panel = laptopPanel, let selection else { return device }
+        let width = Double(panel.width) * selection.renderScale
+        let height = Double(panel.height) * selection.renderScale
+        guard width.isFinite, height.isFinite, (1...32768).contains(width),
+              (1...32768).contains(height) else { return device }
+        device.desktopWidth = Int(width)
+        device.desktopHeight = Int(height)
+        return device
+    }
+
+    /// Only the attached physical Laptop panel supplies this transient mode. Keyboard,
+    /// cards and ordinary viewport layout never feed it. The saved selection is untouched.
+    @discardableResult public mutating func presentLaptop(panel: CGSize?) -> Bool {
+        if let panel {
+            guard computer != nil, panel.width.isFinite, panel.height.isFinite,
+                  panel.width > 0, panel.height > 0,
+                  panel.width <= 32768, panel.height <= 32768 else { return false }
+        }
+        guard laptopPanel != panel else { return false }
+        laptopPanel = panel
+        return true
     }
 
     public static func fullDevice(screen: CGSize, pixelsPerPoint: CGFloat, dpi: Int,

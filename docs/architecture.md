@@ -2126,6 +2126,8 @@ the app card, and a detached view releases its layers.
   a window from the Laptop desktop focuses it there, without a separate full-screen card
   or Full Screen/Exit App Full Screen controls. Every app window that can fills the whole
   upper screen, as it is announced and whenever Laptop starts; Tablet keeps its own places. Controls never move above the hinge.
+  During app fullscreen the measured reserved division between the upper panel and controls
+  has a black matte. Keyboard occlusion does not enlarge that division.
   Keyboard fills the lower panel with a custom keyboard under the shared shortcut header;
   Keyboard & Trackpad uses a full-width trackpad in the upper third of the lower panel and
   the same keyboard and header in its lower two thirds. The system keyboard opens only from
@@ -2883,15 +2885,18 @@ one-second burst so a refused size does not cause a configure loop; a later app 
 viewport change starts a new burst. App-requested fullscreen retains compositor-owned
 monitor geometry and aspect-fit presentation/input until an explicit exit.
 
-The device's virtual monitor retains its full-screen square dimensions, chosen DPI and
+The device's virtual monitor retains its base full-screen square dimensions, chosen DPI and
 render scale in a validated local preference keyed by the existing computer identity.
 Start/resume restores that selection before announcing outputs. Uncached Home sends an
 empty display set, retaining the server's existing/default output; it does not choose a
 fallback DPI. The first measured device desktop or card selects the mode once, using its
-existing render scale and text DPI. Card, keyboard, fold, orientation and desktop-stage
-measurements do not replace it. External monitors take precedence without overwriting the
-device preference; explicit owner zoom updates the device DPI. Window viewports and visual
-render scale remain separate from monitor selection. Desktop surfaces occupy the model's
+existing render scale and text DPI. Card, keyboard and desktop-stage measurements do not
+replace it. Laptop supplies a transient physical upper-panel mode measured from its attached
+UIWindow, with the reserved division converted into window coordinates and keyboard overlap
+excluded. Its dimensions use the retained render scale; DPI and the saved base mode remain
+unchanged through posture and rotation. Leaving Laptop restores the base mode. External
+monitors take precedence without overwriting the device preference; explicit owner zoom
+updates the device DPI. Window viewports and visual render scale remain separate from monitor selection. Desktop surfaces occupy the model's
 shown rectangle directly; there is no second inner aspect-fit transform.
 This stabilizes output announcements; it does not guarantee a desktop application's
 minimum resolution or establish Wine compatibility with explicit live DPI changes.

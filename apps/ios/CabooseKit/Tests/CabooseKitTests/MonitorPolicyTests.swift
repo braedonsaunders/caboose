@@ -109,4 +109,61 @@ struct MonitorPolicyTests {
         #expect(resumed.device?.desktopWidth == 1886)
         #expect(resumed.selection?.renderScale == 2)
     }
+    @Test func physicalLaptopModeKeepsDensityAndRestoresBase() throws {
+        var policy = MonitorPolicy()
+        policy.bind(computer: "computer-a", saved: nil)
+        // Physical measurement can arrive before the first DPI selection.
+        policy.presentLaptop(panel: CGSize(width: 656, height: 446))
+        #expect(policy.resolve() == nil)
+        policy.attach(desktop)
+        let saved = try #require(policy.saved())
+        #expect(policy.resolve()?.desktopWidth == 1312)
+        #expect(policy.resolve()?.desktopHeight == 892)
+        #expect(policy.resolve()?.dpi == desktop.capabilities.dpi)
+        #expect(policy.selection == desktop)
+        for input in LaptopLayout.Input.allCases {
+            for keyboard in [CGFloat(0), 300, 600] {
+                _ = LaptopLayout.trackpadHeight(input, available: 400)
+                _ = LaptopLayout.frames(size: CGSize(width: 656, height: 932),
+                    division: CGRect(x: 0, y: 446, width: 656, height: 40), keyboard: keyboard)
+                #expect(policy.resolve()?.desktopHeight == 892)
+            }
+        }
+        // Only a new physical posture/rotation changes the panel mode.
+        policy.presentLaptop(panel: CGSize(width: 932, height: 308))
+        #expect(policy.resolve()?.desktopWidth == 1864)
+        #expect(policy.resolve()?.desktopHeight == 616)
+        #expect(policy.resolve()?.dpi == desktop.capabilities.dpi)
+        let external = ClientCapabilities(desktopWidth: 3840, desktopHeight: 2160, dpi: 192)
+        #expect(policy.resolve(external: external) == external)
+        #expect(policy.resolve()?.desktopHeight == 616)
+        #expect(policy.saved() == saved)
+        var restored = MonitorPolicy()
+        restored.bind(computer: "computer-a", saved: saved)
+        #expect(restored.laptopPanel == nil)
+        #expect(restored.resolve() == desktop.capabilities)
+        policy.presentLaptop(panel: nil)
+        #expect(policy.resolve() == desktop.capabilities)
+        policy.presentLaptop(panel: CGSize(width: 656, height: 446))
+        policy.bind(computer: "computer-b", saved: nil)
+        #expect(policy.laptopPanel == nil)
+    }
+
+    @Test func invalidPhysicalMeasurementsCannotReplacePanel() {
+        var policy = MonitorPolicy()
+        policy.bind(computer: "computer-a", saved: nil)
+        policy.attach(desktop)
+        policy.presentLaptop(panel: CGSize(width: 656, height: 446))
+        let selected = policy.resolve()
+        for invalid in [CGSize.zero, CGSize(width: CGFloat.nan, height: 10),
+                        CGSize(width: 10, height: CGFloat.infinity), CGSize(width: -1, height: 10)] {
+            #expect(!policy.presentLaptop(panel: invalid))
+            #expect(policy.resolve() == selected)
+        }
+        policy.zoomDevice(by: 1.2)
+        #expect(policy.resolve()?.dpi == 181)
+        #expect(policy.resolve()?.desktopWidth == selected?.desktopWidth)
+        #expect(policy.selection?.renderScale == 2)
+    }
+
 }

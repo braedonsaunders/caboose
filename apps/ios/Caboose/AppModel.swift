@@ -613,6 +613,12 @@ final class AppModel {
         monitorDefaults.set(data, forKey: "monitor.device." + identity)
     }
 
+    /// Dedicated physical-mode channel; no desktop/card viewport calls this method.
+    func laptopPhysicalPanelChanged(to panel: CGSize?) {
+        restoreDeviceMonitor()
+        if monitorPolicy.presentLaptop(panel: panel) { reconnectForDisplayChange() }
+    }
+
     private func attachDeviceMonitor(scale: CGFloat, dpi: Int) {
         restoreDeviceMonitor()
         guard !externalDisplayActive,
@@ -1175,6 +1181,7 @@ final class AppModel {
     func setLaptopDesktop(_ active: Bool) {
         guard laptopDesktopActive != active else { return }
         laptopDesktopActive = active
+        if !active { laptopPhysicalPanelChanged(to: nil) }
         desktop.detachedChrome = active && !externalDisplayActive
         desktop.pointerArea = nil
         desktop.dockFrames.removeAll()

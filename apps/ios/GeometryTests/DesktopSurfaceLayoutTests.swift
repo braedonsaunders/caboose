@@ -57,4 +57,67 @@ final class DesktopSurfaceLayoutTests: XCTestCase {
         _ = try layout()
         first.attach(nil)
     }
+    func testAttachedWindowDivisionConversionIgnoresProbeViewport() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 656, height: 932))
+        let probe = LaptopGeometryProbe.Probe(changed: { _ in })
+        probe.frame = CGRect(x: 12, y: 24, width: 620, height: 500)
+        window.addSubview(probe)
+        defer { probe.stop(); probe.removeFromSuperview() }
+        let measured = probe.physicalGeometry(division: CGRect(x: -12, y: 422, width: 656, height: 40))
+        XCTAssertEqual(measured.hostSize, window.bounds.size)
+        XCTAssertEqual(measured.physicalDivision, CGRect(x: 0, y: 446, width: 656, height: 40))
+        probe.frame.size.height = 300 // keyboard/card viewport changes cannot change the physical mode
+        XCTAssertEqual(probe.physicalGeometry(division: measured.division).physicalDivision, measured.physicalDivision)
+        XCTAssertEqual(probe.physicalGeometry(division: measured.division).hostSize, measured.hostSize)
+    }
+
+    func testHostedUpperPanelCoversOnlyMeasuredHingeWithFullscreenMatte() throws {
+        let size = CGSize(width: 656, height: 932)
+        let division = CGRect(x: 0, y: 446, width: 656, height: 40)
+        let host = UIHostingController(rootView: AnyView(EmptyView()))
+        host.safeAreaRegions = []
+        let window = UIWindow(frame: CGRect(origin: .zero, size: size))
+        window.rootViewController = host
+        window.isHidden = false
+        defer { window.isHidden = true; window.rootViewController = nil }
+        for keyboard in [CGFloat(0), 600] {
+            for fullscreen in [true, false] {
+                let frames = LaptopLayout.frames(size: size, division: division, keyboard: keyboard)
+                host.rootView = AnyView(ZStack(alignment: .topLeading) {
+                    Color(red: 0, green: 1, blue: 0)
+                    LaptopUpperPanel(screen: frames.screen, division: division, active: true,
+                                     size: size, fullscreen: fullscreen) { Color(red: 1, green: 0, blue: 0) }
+                }.frame(width: size.width, height: size.height).ignoresSafeArea())
+                window.layoutIfNeeded()
+                host.view.layoutIfNeeded()
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                let format = UIGraphicsImageRendererFormat()
+                format.scale = 1
+                let rendered = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+                    host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+                }
+                let cg = try XCTUnwrap(rendered.cgImage)
+                // Normalize the snapshot to known RGBA bytes before inspecting boundaries.
+                var bytes = [UInt8](repeating: 0, count: Int(size.width * size.height) * 4)
+                try bytes.withUnsafeMutableBytes { buffer in
+                    let context = try XCTUnwrap(CGContext(data: buffer.baseAddress, width: Int(size.width), height: Int(size.height),
+                        bitsPerComponent: 8, bytesPerRow: Int(size.width) * 4,
+                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                    context.draw(cg, in: CGRect(origin: .zero, size: size))
+                }
+                func pixel(_ y: Int) -> ArraySlice<UInt8> {
+                    let offset = (y * Int(size.width) + 100) * 4
+                    return bytes[offset..<(offset + 3)]
+                }
+                XCTAssertEqual(Array(pixel(Int(frames.screen.maxY) - 1)), [255, 0, 0])
+                XCTAssertEqual(Array(pixel(446)), fullscreen ? [0, 0, 0] : [0, 255, 0])
+                XCTAssertEqual(Array(pixel(485)), fullscreen ? [0, 0, 0] : [0, 255, 0])
+                XCTAssertEqual(Array(pixel(486)), [0, 255, 0]) // controls begin here
+                if keyboard > 0 {
+                    XCTAssertEqual(Array(pixel(400)), [0, 255, 0]) // keyboard gap is not a hinge
+                }
+            }
+        }
+    }
+
 }

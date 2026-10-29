@@ -886,9 +886,12 @@ attachment, including an active desktop's existing UI scale. Its validated mode,
 render scale persist locally under the computer's identity and restore before start/resume.
 Uncached Home announces no replacement output; hello, pictures and vsync use the server's
 retained/default display until the first measured card/desktop selects a mode. External
-monitors never overwrite that device preference. Cards, keyboard, folding and
-stage layout update window viewports without changing that monitor. External modes and
-explicit owner zoom remain monitor changes. Ordinary card/dialog requests honor per-axis
+monitors never overwrite that device preference. Cards, keyboard and stage layout update
+window viewports without changing that monitor. Laptop measures its physical upper panel
+from the attached window and converted reserved division, excluding keyboard overlap. It
+announces that panel at the retained render scale and DPI; posture and physical rotation
+update dimensions only. Leaving Laptop restores the saved base mode. External modes take
+precedence, and explicit owner zoom changes the selected DPI. Ordinary card/dialog requests honor per-axis
 size hints; app fullscreen retains compositor geometry and uses the existing aspect-fit
 presentation/input transform. No fixed minimum desktop resolution is imposed.
 
@@ -910,7 +913,10 @@ xcodebuild -project Caboose.xcodeproj -scheme CabooseGeometry -destination 'plat
 suite without starting connections. It exercises AppModel's actual Home → desktop/card
 order, restoration and external precedence. `DesktopSurfaceLayoutTests` hosts the production
 representable, changes the committed remote size before the parent bounds catch up, and
-asserts one full-rectangle Metal view with an identity transform and no inner fit. The
+asserts one full-rectangle Metal view with an identity transform and no inner fit. It also
+hosts the production Laptop upper panel and checks the content/hinge boundaries in rendered
+pixels, including a keyboard-shortened viewport that must not expand the hinge matte.
+Attached-window conversion is checked with an offset probe and a changing probe viewport. The
 compositor regression `cargo test -p caboose-display empty_client_announcement_retains_default_and_previous_output`
 in `guest/display` checks both default and retained output identity for empty announcements.
 
