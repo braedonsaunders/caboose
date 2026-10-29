@@ -67,13 +67,20 @@ async function buildTemplateSourceOnce(options: TemplateBuildOptions): Promise<v
   const expectedComponents = (await readBundle()).version
   const snapshot = join(options.directory, 'source.snapshot'), disk = join(options.directory, 'source.raw')
   const readyPath = join(options.directory, '.ready')
-  if (existsSync(readyPath)) return
+  if (existsSync(readyPath)) {
+    if (existsSync(join(options.directory, '.build.json'))) throw new Error('Template source cleanup was interrupted; operator recovery is required')
+    return
+  }
   // A prior incomplete directory is retained for recovery and cannot be reused.
   await mkdir(options.directory, { mode: 0o700 })
   const runtimeParent = join(dirname(dirname(options.directory)), 'runtime')
   await mkdir(runtimeParent, { recursive: true, mode: 0o700 })
   const runtime = await mkdtemp(join(runtimeParent, 'tpl-'))
   const tap = `dsk${randomInt(100000000, 999999999)}`
+  const receipt = await open(join(options.directory, '.build.json'), 'wx', 0o600)
+  try { await receipt.writeFile(JSON.stringify({ version: 1, tap, runtime, vmmPath: options.vmmPath })); await receipt.sync() } finally { await receipt.close() }
+  const sourceDirectory = await open(options.directory, 'r')
+  try { await sourceDirectory.sync() } finally { await sourceDirectory.close() }
   const fence = templateNetworkFenceForTap(tap)
   let tapOwned = false, stopped = true
   const host = desk.createDeskHost({ imageRoot: options.directory, runtimeDir: runtime, vmmPath: options.vmmPath,
@@ -115,6 +122,11 @@ async function buildTemplateSourceOnce(options: TemplateBuildOptions): Promise<v
       await fence.release()
       await privileged('ip', ['link', 'del', 'dev', tap])
     }
-    if (stopped) await rm(runtime, { recursive: true, force: true })
+    if (stopped) {
+      await rm(runtime, { recursive: true, force: true })
+      await rm(join(options.directory, '.build.json'), { force: true })
+      const directory = await open(options.directory, 'r')
+      try { await directory.sync() } finally { await directory.close() }
+    }
   }
 }

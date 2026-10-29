@@ -614,3 +614,15 @@ pnpm --filter caboose-host exec tsx -e "import {writeFileSync} from 'node:fs'; i
 docker run --rm --init --network none --memory 128m --cpus 1 -v "$PWD/apps/host/scripts/check-agent-delete.mjs:/check.mjs:ro" -v /tmp/caboose-delete-task-code.js:/delete-task.js:ro node:22-bookworm-slim node /check.mjs /delete-task.js
 rm /tmp/caboose-delete-task-code.js
 ```
+
+### Recovering an interrupted template source build
+
+An incomplete source build is never silently reused. Stop the Caboose host and
+verify that no other host instance is using the same image root. Run as root
+`apps/host/scripts/recover-template-source.sh IMAGE_ROOT SOURCE_ID` (the native
+bundle includes `bin/caboose-recover-template-source`). The command checks the
+recorded private VMM socket and TAP before removing the temporary network fence.
+It preserves any memory inode pinned by a descendant. For an incomplete source
+with no pins, it reports the directory to move aside before retrying. A source
+without a valid build receipt requires manual inspection. Never remove a source
+or child memory inode while a VMM may still map it.

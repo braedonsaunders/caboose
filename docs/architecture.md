@@ -224,8 +224,9 @@ machine ID and MAC, and restarts the private agent to discard its copied
 userspace random state. It then starts its normal services; the host releases the fence
 only after the private Files and terminal services are ready. The guest runtime-masks
 networkd wait-online because the host configures its network directly. An interrupted
-strict restore remains fenced and requires
-recovery. Existing non-template computers keep their original paths and restore
+strict restore remains fenced and requires recovery. Interrupted source builds
+retain a network and runtime receipt for the operator recovery command; that
+command refuses cleanup while the source VMM or TAP is still in use. Existing non-template computers keep their original paths and restore
 behavior. A fork retains the source kernel boot ID until its next cold boot.
 Copy-on-write mode may fall back for unsupported Cloud Hypervisor configurations;
 template preparation rejects those configurations.
