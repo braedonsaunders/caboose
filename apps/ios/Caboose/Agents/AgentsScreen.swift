@@ -28,6 +28,7 @@ struct AgentsScreen: View {
                         .id(chat.id)
                 } else {
                     NewChat(connectModel: { connectingModel = true })
+                        .background { AgentReadingBackground() }
                         .safeAreaBar(edge: .bottom) { ChatComposer(task: nil) { connectingModel = true } }
                         .navigationTitle("Agents")
                 }
@@ -267,5 +268,22 @@ private struct SetupCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(.regular.tint(Brand.amber.opacity(0.10)), in: .rect(cornerRadius: 22))
         .padding(.top, 12)
+    }
+}
+
+/// The same translucent reading field as Terminal, leaving the wallpaper visible while
+/// keeping text opaque. Each screen paints it once, including notification-opened chats.
+struct AgentReadingBackground: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        ShellBackground()
+            .overlay {
+                Color(uiColor: TerminalTheme.background)
+                    .opacity(reduceTransparency ? 1 : TerminalTheme.backgroundOpacity)
+                    .ignoresSafeArea()
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }

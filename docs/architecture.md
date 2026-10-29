@@ -1995,6 +1995,10 @@ otherwise). Model selection does not change profile identity, routines, MCP scop
 sign-in attempts. The phone's Agents toolbar offers the provider's advertised models
 for new chats and the current chat.
 
+Agent chats and the new-chat screen use a translucent navy reading field matching Terminal,
+with opaque text and the selected wallpaper visible beneath it. Reduce Transparency makes
+the reading field opaque.
+
 Agent chats keep their rendered turns mounted through keyboard and reply updates. A stale
 transcript read preserves completed turns already shown unless the host explicitly truncates
 the transcript; the last-answer summary is retained before a new reply clears it.
