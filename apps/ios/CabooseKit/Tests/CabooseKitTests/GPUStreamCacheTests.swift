@@ -251,12 +251,79 @@ import Testing
     @Test func releasingAStreamClosesItsWriter() throws {
         let cache = makeCache()
         defer { try? FileManager.default.removeItem(at: cache.directory) }
-        var stream: GPUStreamCache.Stream? = try #require(cache.open(epoch: "e1", id: 1, nonce: "n"))
-        stream?.write(bytes(10), at: 0)
-        stream = nil
+        do {
+            let stream = try #require(cache.open(epoch: "e1", id: 1, nonce: "n"))
+            stream.write(bytes(10), at: 0)
+        }
         let reopened = try #require(cache.open(epoch: "e1", id: 1, nonce: "n"))
         #expect(reopened.cached == 10)
         reopened.close()
+    }
+
+    @Test func failedRemovalOrClearRetainsAccountingAndFencesStaleOverwrites() throws {
+        for clear in [false, true] {
+            let cache = makeCache(budget: 100, commitInterval: 1000)
+            defer { try? FileManager.default.removeItem(at: cache.directory) }
+            let old = try #require(cache.open(epoch: "e1", id: 1, nonce: "old"))
+            let file = old.dataURL
+            old.write(bytes(80), at: 0)
+            let directory = cache.directory
+            cache.removeItem = { url in
+                if url == file || url == directory { throw CocoaError(.fileWriteNoPermission) }
+                try FileManager.default.removeItem(at: url)
+            }
+            if clear { cache.removeAll() } else { cache.remove(epoch: "e1", id: 1) }
+            #expect(cache.usedBytes == 80)
+            #expect(cache.open(epoch: "e1", id: 1, nonce: "new") == nil)
+            old.write(bytes(20, from: 100), at: 0) // No growth: still requires ownership.
+            old.close() // Must not truncate the failed-to-unlink inode either.
+            #expect(!old.isKeeping)
+            #expect(try Data(contentsOf: file) == bytes(80))
+            #expect(cache.usedBytes == 80)
+            let other = try #require(cache.open(epoch: "e1", id: 2, nonce: "other"))
+            other.write(bytes(30), at: 0)
+            #expect(!other.isKeeping && cache.usedBytes == 80)
+            other.close()
+            cache.removeItem = { try FileManager.default.removeItem(at: $0) }
+            let replacement = try #require(cache.open(epoch: "e1", id: 1, nonce: "new"))
+            replacement.write(bytes(60), at: 0)
+            #expect(cache.usedBytes == 60)
+            #expect(try Data(contentsOf: replacement.dataURL) == bytes(60))
+            replacement.close()
+        }
+    }
+
+    @Test func partialWriteWithFailedUnlinkAccountsTheRemainingFileExactlyOnce() throws {
+        let cache = makeCache(budget: 100, commitInterval: 1000)
+        defer { try? FileManager.default.removeItem(at: cache.directory) }
+        let other = try #require(cache.open(epoch: "e1", id: 2, nonce: "other"))
+        other.write(bytes(60), at: 0)
+        let failed = try #require(cache.open(epoch: "e1", id: 1, nonce: "failed"))
+        failed.write(bytes(20), at: 0)
+        let file = failed.dataURL
+        cache.removeItem = { url in
+            if url == file { throw CocoaError(.fileWriteNoPermission) }
+            try FileManager.default.removeItem(at: url)
+        }
+        cache.writeData = { handle, data in
+            try handle.write(contentsOf: data.prefix(7))
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        failed.write(bytes(20, from: 20), at: 20)
+        #expect(!failed.isKeeping && cache.usedBytes == 87)
+        failed.discard()
+        #expect(cache.usedBytes == 87)
+        #expect(cache.open(epoch: "e1", id: 1, nonce: "new") == nil)
+        cache.writeData = { try $0.write(contentsOf: $1) }
+        let last = try #require(cache.open(epoch: "e1", id: 3, nonce: "last"))
+        last.write(bytes(13), at: 0)
+        #expect(last.isKeeping && cache.usedBytes == 100)
+        cache.removeItem = { try FileManager.default.removeItem(at: $0) }
+        cache.remove(epoch: "e1", id: 1)
+        #expect(cache.usedBytes == 73)
+        #expect(try Data(contentsOf: other.dataURL) == bytes(60))
+        last.close()
+        other.close()
     }
 
 }

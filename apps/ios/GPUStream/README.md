@@ -49,7 +49,9 @@ producer evidence from independently rerun checks.
 
 The machine-checkable cache criterion is `swift test --jobs 1 --filter GPUStreamCacheTests`:
 zero and partial writes release exactly their reservation, repeated discard does not
-release another stream's bytes, and removed/cleared writers cannot modify replacements.
+release another stream's bytes, and removed/cleared writers cannot modify replacements, even when deletion fails.
+Failed unlink retains actual remaining bytes in the budget and prevents path reuse;
+write ownership and I/O are serialized with removal, including same-length overwrites.
 The injected internal file-write boundary performs a real partial FileHandle write before
 throwing a disk-full error. The native criterion is `swift test --jobs 1 --filter GPUStream`
 with CABOOSE_GPU_CAPTURE pointing to the fixture and CABOOSE_GPU_CAPTURE_FRAMES=300:

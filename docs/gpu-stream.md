@@ -130,7 +130,10 @@ limit; a stream that outgrows the computer's own limit ends), and all of them at
 (`GPUStreamCache.budget` changes it): the least recently used streams that are not open are
 removed to make room, and a stream that still has none stops being kept, with what it
 recorded. A write or record that fails (a full disk) stops keeping that stream and removes
-it; the stream plays on from the connection. The copy lives in Caches, which iOS may purge.
+it; the stream plays on from the connection. If deletion fails, the remaining file stays
+counted against the budget and its key cannot be reused until deletion succeeds. Cache I/O
+and removal share an ownership lock, including writes that do not grow a file. The copy
+lives in Caches, which iOS may purge.
 
 A stream's copy is removed by its `gpu.destroy`, by a replay that failed on it, by a stream of
 the same id under another nonce, and by a server hello with another epoch or none; the app
