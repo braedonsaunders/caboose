@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, open, readFile, rm } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, open, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join, isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
@@ -100,7 +100,10 @@ async function buildTemplateSourceOnce(options: TemplateBuildOptions): Promise<v
     await privileged('ip', ['tuntap', 'add', 'dev', tap, 'mode', 'tap', 'user', String(uid)])
     tapOwned = true
     await privileged('ip', ['link', 'set', 'dev', tap, 'alias', alias])
-    const index = Number((await readFile(`/sys/class/net/${tap}/ifindex`, 'utf8')).trim())
+    const root = process.getuid?.() === 0
+    const link = await exec(root ? 'ip' : 'sudo', root ? ['-j', 'link', 'show', 'dev', tap] : ['-n', 'ip', '-j', 'link', 'show', 'dev', tap], { timeout: 15_000 })
+    const links: unknown = JSON.parse(link.stdout)
+    const index = Array.isArray(links) && links.length === 1 ? Number((links[0] as { ifindex?: unknown }).ifindex) : NaN
     if (!Number.isSafeInteger(index) || index < 1) throw new Error('Cannot identify the template TAP')
     const ownership = await open(join(options.directory, '.tap-owner.json'), 'wx', 0o600)
     try { await ownership.writeFile(JSON.stringify({ version: 1, tap, alias, ifindex: index })); await ownership.sync() } finally { await ownership.close() }
