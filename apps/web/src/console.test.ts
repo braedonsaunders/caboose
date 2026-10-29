@@ -5,7 +5,7 @@ import {
 } from './api.js'
 import { navigationGroups, parseRoute, routeHref, sidebarPath } from './navigation.js'
 import { quotaDraft, quotasFromDraft } from './tenants.js'
-import { availableActions, idleChoices, memoryChoices } from './state.js'
+import { availableActions, idleChoices, memoryChoices, stateLabel } from './state.js'
 
 const settings: ComputerSettings = { name: 'Studio', memoryMb: 4096, vcpus: 2, idleMs: 600_000 }
 
@@ -230,6 +230,8 @@ describe('navigation and actions', () => {
     const capabilities = { restart: true }
     expect(availableActions({ state: 'parked', capabilities })).toEqual({ wake: true, park: false, restart: true })
     expect(availableActions({ state: 'running', capabilities })).toEqual({ wake: false, park: true, restart: true })
+    expect(availableActions({ state: 'frozen', capabilities })).toEqual({ wake: true, park: true, restart: true })
+    expect(stateLabel('frozen')).toBe('Sleeping')
     expect(availableActions({ state: 'restarting', capabilities })).toEqual({ wake: false, park: false, restart: false })
     expect(availableActions({ state: 'error', capabilities: { restart: false } })).toEqual({ wake: true, park: false, restart: false })
   })

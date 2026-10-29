@@ -2,7 +2,7 @@ import type { CatalogOperation, CatalogPage, CatalogResponse, CatalogStorefront,
 import { fsQuery, joinPath, numberedName, type FileItem } from './files.js'
 import type { ComponentsUpgrade, HealthStatus, HostInfo } from './host.js'
 
-export type ComputerState = 'parked' | 'waking' | 'running' | 'parking' | 'restarting' | 'error'
+export type ComputerState = 'parked' | 'frozen' | 'waking' | 'running' | 'parking' | 'restarting' | 'error'
 
 export interface LimitRange {
   min: number
