@@ -455,7 +455,14 @@ final class DesktopTouchSurface: RemoteTextInputView {
             desktop?.trackSwitchHold(at: finger.location(in: self))
             return
         }
-        guard !contextOpened, !scrollSuppressed, !partialLift else { return }
+        if partialLift {
+            // A leftover finger cannot scroll, but movement still disqualifies a tap.
+            if let now = centroid(fingers) {
+                travel = max(travel, hypot(now.x - touchOrigin.x, now.y - touchOrigin.y))
+            }
+            return
+        }
+        guard !contextOpened, !scrollSuppressed else { return }
         if pansContent {
             guard let target = panWindow, let session, session === panSession,
                   session.state == .ready, session.windows[target.id] === target,
