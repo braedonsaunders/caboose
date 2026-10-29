@@ -1,18 +1,12 @@
 import CabooseKit
 import SwiftUI
 
-/// The shell's tabs where an iPhone's bars are horizontal: at the bottom right rather than
-/// the system's bar across the bottom (`HomeToday.tabPlacement`). Held upright, they are a
-/// short glass cluster at the bottom right, with the tab's own control (Home's Ask) to its
-/// left, which goes under the software keyboard as the system's tab bar does. On a wide
-/// screen they are a sidebar down the trailing edge with the tabs at its foot, which stays
-/// while the keyboard is up, as the system's vertical bar on iPhone Duo does, its tabs riding
-/// above the keyboard; it never takes the desktop's width away mid-typing. Both step aside
-/// for a window covering the Desktop. Where the system draws its vertical bar, its own tab
-/// bar is used and this draws nothing. Desktop's custom rail also hosts its actions so
-/// a horizontal toolbar does not reserve height above the stage.
+/// Portrait Desktop uses one compact bottom control regardless of the system's tab
+/// placement. Other tabs retain the shell cluster or sidebar, and landscape Desktop
+/// retains its native bar where available. Laptop and covering windows own their controls.
 struct ShellTabChrome: ViewModifier {
     @Environment(AppModel.self) private var model
+    @Environment(\.portraitDesktopChrome) private var portraitDesktop
     let placement: HomeToday.TabPlacement
     let tab: ShellTab
     private var keyboard = SoftwareKeyboard.shared
@@ -23,53 +17,66 @@ struct ShellTabChrome: ViewModifier {
     }
 
     @ViewBuilder func body(content: Content) -> some View {
-        switch placement {
-        case .system:
-            content
-        case .cluster:
+        if tab == .desktop && portraitDesktop {
             content
                 .toolbarVisibility(.hidden, for: .tabBar)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if !hidden {
-                        HStack(alignment: .bottom, spacing: 10) {
-                            if tab == .home { HomeAskField().frame(maxWidth: .infinity) } else { Spacer(minLength: 0) }
-                            ShellTabButtons(axis: .horizontal)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 6)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-                }
-                .animation(.snappy, value: hidden)
-        case .sidebar:
-            content
-                .toolbarVisibility(.hidden, for: .tabBar)
-                .safeAreaInset(edge: .trailing, spacing: 0) {
+                .overlay(alignment: .bottomTrailing) {
                     if !immersive {
-                        GeometryReader { proxy in
-                            ScrollView(.vertical) {
-                                VStack(spacing: 8) {
-                                    if tab == .desktop { DesktopRailControls() }
-                                    Spacer(minLength: 0)
-                                    ShellTabButtons(axis: .vertical)
-                                }
-                                // Padding is inside the measured rail; the keyboard
-                                // can shorten it without making controls unreachable.
-                                .frame(minHeight: max(0, proxy.size.height - 16))
-                                .padding(.vertical, 8)
-                                .frame(width: ShellTabButtons.sidebarWidth)
-                            }
-                            .scrollIndicators(.hidden)
-                            .frame(width: ShellTabButtons.sidebarWidth, height: proxy.size.height)
-                            .glassEffect(.regular, in: .rect(cornerRadius: 26))
-                        }
-                        .frame(width: ShellTabButtons.sidebarWidth)
-                        .padding(.trailing, 8)
-                        .ignoresSafeArea(.container, edges: tab == .desktop ? [.top, .bottom] : [])
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                        DesktopPanelButton()
+                            .padding(.trailing, 12)
+                            // Above the dock, including when it spans the phone's width.
+                            .padding(.bottom, 80)
                     }
                 }
-                .animation(.snappy, value: immersive)
+        } else {
+            switch placement {
+            case .system:
+                content
+            case .cluster:
+                content
+                    .toolbarVisibility(.hidden, for: .tabBar)
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        if !hidden {
+                            HStack(alignment: .bottom, spacing: 10) {
+                                if tab == .home { HomeAskField().frame(maxWidth: .infinity) } else { Spacer(minLength: 0) }
+                                ShellTabButtons(axis: .horizontal)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 6)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+                    }
+                    .animation(.snappy, value: hidden)
+            case .sidebar:
+                content
+                    .toolbarVisibility(.hidden, for: .tabBar)
+                    .safeAreaInset(edge: .trailing, spacing: 0) {
+                        if !immersive {
+                            GeometryReader { proxy in
+                                ScrollView(.vertical) {
+                                    VStack(spacing: 8) {
+                                        if tab == .desktop { DesktopRailControls() }
+                                        Spacer(minLength: 0)
+                                        ShellTabButtons(axis: .vertical)
+                                    }
+                                    // Padding is inside the measured rail; the keyboard
+                                    // can shorten it without making controls unreachable.
+                                    .frame(minHeight: max(0, proxy.size.height - 16))
+                                    .padding(.vertical, 8)
+                                    .frame(width: ShellTabButtons.sidebarWidth)
+                                }
+                                .scrollIndicators(.hidden)
+                                .frame(width: ShellTabButtons.sidebarWidth, height: proxy.size.height)
+                                .glassEffect(.regular, in: .rect(cornerRadius: 26))
+                            }
+                            .frame(width: ShellTabButtons.sidebarWidth)
+                            .padding(.trailing, 8)
+                            .ignoresSafeArea(.container, edges: tab == .desktop ? [.top, .bottom] : [])
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                        }
+                    }
+                    .animation(.snappy, value: immersive)
+            }
         }
     }
 
@@ -91,6 +98,7 @@ struct ShellTabButtons: View {
     @Environment(AppModel.self) private var model
     @Namespace private var plate
     let axis: Axis
+    var showsTitles = false
 
     private var tabs: [(tab: ShellTab, title: String, symbol: String)] {
         var tabs: [(tab: ShellTab, title: String, symbol: String)] = [
@@ -125,12 +133,12 @@ struct ShellTabButtons: View {
                     .font(.system(size: 19, weight: selected ? .semibold : .regular))
                     .symbolVariant(selected ? .fill : .none)
                     .frame(height: 24)
-                if axis == .vertical {
+                if axis == .vertical || showsTitles {
                     Text(title).font(.system(size: 10, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
                 }
             }
             .foregroundStyle(selected ? Brand.amber : .white.opacity(0.72))
-            .frame(width: axis == .horizontal ? 44 : 56, height: axis == .horizontal ? 42 : 54)
+            .frame(width: axis == .horizontal ? 44 : 56, height: axis == .horizontal && !showsTitles ? 42 : 54)
             .background {
                 if selected {
                     Capsule().fill(.white.opacity(0.12)).matchedGeometryEffect(id: "plate", in: plate)
@@ -201,19 +209,42 @@ final class SoftwareKeyboard {
 
 /// Tells `SoftwareKeyboard` which window is the shell's: the one this invisible view is in.
 struct ShellWindowProbe: UIViewRepresentable {
-    func makeUIView(context: Context) -> Probe { Probe() }
-    func updateUIView(_ view: Probe, context: Context) {}
+    var sizeChanged: (CGSize) -> Void = { _ in }
+    func makeUIView(context: Context) -> Probe {
+        let view = Probe()
+        view.sizeChanged = sizeChanged
+        return view
+    }
+    func updateUIView(_ view: Probe, context: Context) { view.sizeChanged = sizeChanged }
 
     final class Probe: UIView {
+        var sizeChanged: (CGSize) -> Void = { _ in }
+        private var lastSize: CGSize = .zero
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            reportSize()
+        }
+
+        private func reportSize() {
+            guard let size = window?.bounds.size, size != lastSize else { return }
+            lastSize = size
+            // Window bounds do not change when keyboard or system bars appear.
+            DispatchQueue.main.async { [weak self] in self?.sizeChanged(size) }
+        }
+
         override func didMoveToWindow() {
             super.didMoveToWindow()
             isUserInteractionEnabled = false
             if let window { SoftwareKeyboard.shared.window = window }
+            reportSize()
         }
     }
 }
 
 extension EnvironmentValues {
+    /// The Desktop-only override, measured from the shell window before keyboard insets.
+    @Entry var portraitDesktopChrome = false
     /// Where the shell's tabs sit, so a tab can place its own bottom control beside them.
     @Entry var shellTabPlacement: HomeToday.TabPlacement = .system
 }

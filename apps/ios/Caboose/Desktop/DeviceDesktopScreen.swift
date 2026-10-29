@@ -6,15 +6,12 @@ import UIKit
 /// Switchyard (or, on an iPad that chooses Free, floating with the dock and Launchpad); or,
 /// while a TV shows the desktop, this phone as its trackpad.
 ///
-/// Its actions sit in the toolbar, so on iPhone Duo they join the tab bar in the vertical bar
-/// on the side, which stays fully shown as on every tab. The desktop fills everything beside
-/// the vertical bar, or between horizontal bars, and the computer lays its windows out for
-/// exactly that space; when the bars change, so does the desktop. With a custom sidebar,
-/// actions join the tabs in that rail and no horizontal toolbar takes stage height.
-/// Full Screen opens the focused app as a native card. Behind it all, under the
-/// bar as well, is the desktop's photograph with a sheer of the brand gradient.
+/// Portrait puts controls and app navigation in a compact panel above the dock, with
+/// no reserved strip. Landscape keeps its native toolbar or custom rail. Full Screen
+/// opens the focused app as a native card; there is no separate desktop screen.
 struct DesktopScreen: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.portraitDesktopChrome) private var portraitDesktop
     @Environment(\.shellTabPlacement) private var tabPlacement
     @State private var showAirPlay = false
     @State private var laptopActive = false
@@ -36,6 +33,7 @@ struct DesktopScreen: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.container, edges: portraitDesktop && !laptopActive ? [.top, .bottom] : [])
             .background { ShellBackground() }
             .navigationTitle("Desktop")
             .navigationBarTitleDisplayMode(.inline)
@@ -43,17 +41,17 @@ struct DesktopScreen: View {
             // edge then belongs to the desktop alone.
             .toolbar(removing: .title)
             .toolbar {
-                if !laptopActive && tabPlacement != .sidebar {
+                if !laptopActive && !portraitDesktop && tabPlacement != .sidebar {
                     if model.phase == .ready { actions }
                     ComputerToolbar()
                 }
             }
             .keepsTabBarInVerticalBar()
-            .toolbarVisibility(immersive || laptopActive || tabPlacement == .sidebar ? .hidden : .automatic, for: .navigationBar)
+            .toolbarVisibility(immersive || laptopActive || portraitDesktop || tabPlacement == .sidebar ? .hidden : .automatic, for: .navigationBar)
             // A child automatic preference must not restore the system bar beneath
             // the shell's custom tabs after rotation.
-            .toolbarVisibility(immersive || laptopActive || tabPlacement != .system ? .hidden : .automatic, for: .tabBar)
-            .statusBarHidden(immersive || laptopActive || tabPlacement == .sidebar)
+            .toolbarVisibility(immersive || laptopActive || portraitDesktop || tabPlacement != .system ? .hidden : .automatic, for: .tabBar)
+            .statusBarHidden(immersive || laptopActive || portraitDesktop || tabPlacement == .sidebar)
             .persistentSystemOverlays(immersive || laptopActive ? .hidden : .automatic)
             .animation(.snappy, value: immersive)
             .sheet(isPresented: $showAirPlay) {
@@ -126,9 +124,11 @@ struct DesktopScreen: View {
 struct DesktopRailControls: View {
     @Environment(AppModel.self) private var model
     @State private var showAirPlay = false
+    var compact = false
 
     var body: some View {
-        VStack(spacing: 0) {
+        let layout = compact ? AnyLayout(HStackLayout(spacing: 8)) : AnyLayout(VStackLayout(spacing: 0))
+        layout {
             if model.phase == .ready {
                 Menu {
                     LaptopModeMenu()
@@ -158,6 +158,56 @@ struct DesktopRailControls: View {
         .sheet(isPresented: $showAirPlay) {
             AirPlaySheet().environment(model).presentationDetents([.medium])
         }
+    }
+}
+
+/// A single bottom control owns the portrait presentation. The popover is attached to
+/// the button itself; its scrollable content is bounded, including with Dynamic Type.
+struct DesktopPanelButton: View {
+    @Environment(AppModel.self) private var model
+    @State private var presented = false
+
+    var body: some View {
+        Button {
+            presented.toggle()
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+                .frame(width: 48, height: 48)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Desktop controls and navigation")
+        .glassEffect(.regular.interactive(), in: .circle)
+        .accessibilityHint("Opens desktop controls and app navigation")
+        .popover(isPresented: $presented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+            ScrollView { panel }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(width: 288, height: 240)
+                // Even a narrow phone keeps the panel anchored and dismissible, rather
+                // than adapting it into a full-screen presentation.
+                .presentationCompactAdaptation(.popover)
+        }
+        .onChange(of: model.selectedTab) { _, _ in presented = false }
+        .onDisappear { presented = false }
+    }
+
+    private var panel: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("Desktop").font(.headline)
+                Spacer()
+                Button("Close", systemImage: "xmark") { presented = false }
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityLabel("Close desktop controls")
+            }
+            DesktopRailControls(compact: true)
+            Divider()
+            ShellTabButtons(axis: .horizontal, showsTitles: true)
+        }
+        .padding(16)
+        .frame(width: 288)
+        .accessibilityAction(.escape) { presented = false }
     }
 }
 

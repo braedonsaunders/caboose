@@ -1740,16 +1740,19 @@ the app card, and a detached view releases its layers.
 
 ### Shell
 
-The app is a system tab view (SwiftUI `TabView` with `Tab`). Where the system draws a
-vertical bar, and on iPad, the tabs are the system's. On an iPhone whose bars are horizontal
+The app is a system tab view (SwiftUI `TabView` with `Tab`). Outside portrait Desktop,
+where the system draws a vertical bar, and on iPad, the tabs are the system's. On an iPhone whose bars are horizontal
 the system's tab bar is hidden and the tabs sit at the bottom right
 (`HomeToday.tabPlacement`): a cluster beside the tab's own bottom control (Home's Ask) when
 the screen is under 600 points wide, else a sidebar on the trailing edge with the tabs at
-its foot. On Desktop the custom sidebar also contains its controls, settings and power;
-there is no horizontal navigation bar or system tab bar reserving a second strip. Its
-padding is inside its measured height, and its controls scroll when the keyboard leaves
-less room. Both native and custom Desktop sidebars reserve width only; the measured
-stage owns the full height beside them. Every tab's toolbar ends with the Computer settings and a
+its foot. Portrait Desktop overrides both system and custom tab placement: one button
+above the dock opens an upward, button-anchored 288-by-240-point scrollable popover with
+Desktop controls and app navigation. Close and the accessibility escape action dismiss
+it. The same compact popover fits a portrait phone. No navigation bar, native tab rail,
+or custom sidebar reserves a strip; the closed panel leaves the full available desktop
+viewport and bottom dock. Window bounds determine portrait, so showing the keyboard does
+not switch chrome. Landscape keeps its native bar where available or its custom sidebar;
+Laptop keeps its controls below the screen. Every tab offers Computer settings and a
 lifecycle menu: Turn On (`POST /v1/session`) while parked or out of reach, Park
 (`POST /v1/session/park`) and, where `capabilities.restart` is true, Restart after
 confirmation (`POST /v1/computer/restart`). The host has no power-off. Host messages
@@ -1780,8 +1783,8 @@ Pinned and recent apps are kept on the phone per computer.
   width and clip within it; Home window previews fit their original aspect ratio within
   320 points of width and 196 points of height, regardless of the window count. File names
   and paths truncate within the same column.
-  The Desktop toolbar’s Full Screen control opens the focused app card. No screen disables
-  the vertical bar.
+  The landscape Desktop toolbar’s Full Screen control opens the focused app card.
+  Portrait Desktop hides the native toolbar and tabs together for its compact panel.
 - **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. The
   AirPlay control (in Home's and the Desktop's AirPlay sheet) remembers the AirPlay output the computer's sound last played on (from the
   audio session's route) and, on a tap, switches the session to long-form video routing and

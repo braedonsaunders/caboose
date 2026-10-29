@@ -6,20 +6,24 @@ Open Chromium, Thunar and a terminal on a signed device paired to a real compute
 
 Portrait/landscape shell (Tablet mode, no external display):
 1. Keep the actual Desktop tab open with Chrome focused. Rotate the opened Duo
-   landscape -> portrait -> landscape. There is one side rail, with desktop
-   controls and tabs together; no second bottom tab bar or top toolbar strip.
-   Native landscape controls remain unchanged. Chrome fills the available height,
-   its full tab/address bars remain visible, and the dock stays at the bottom
-   beside the rail with no vacant band below it. On iPad repeat in tiled and Free:
-   Chrome and the dock use all space left by the native system bars.
-2. Show/hide the keyboard in portrait, then rotate with it shown. The dock stays
-   above the keyboard, the guest is resized once to the visible stage, and the
-   rail scrolls if needed to reach every control and tab. Dismiss the keyboard:
-   the original full-height viewport returns without drift.
-3. Visit Home/Apps and return; no duplicate tab bar appears. Enter/leave the
-   browser's fullscreen and the existing app card; controls and dock return once.
-   In Laptop mode verify the accepted upper app and lower keyboard/trackpad/combo
-   arrangement remains intact, then switch back to Tablet and repeat rotation.
+   landscape -> portrait -> landscape, with native rail on either side. Portrait
+   has only a compact button above the dock: no full-height rail, top toolbar or
+   system tabs. Landscape restores the existing controls. Repeat on iPad (Tiled
+   and Free), including its system-tab configuration, and a closed portrait phone.
+   Chrome uses the full available viewport with its tab/address bars intact; the
+   dock remains at the bottom. No vacant strip remains where the rail was.
+2. Open the portrait panel: it points to its button and grows upward, with controls
+   and Home/Desktop/Agents/Apps/Terminal together. It stays compact on phone and iPad.
+   Close it using Close, outside tap, and VoiceOver escape. Test large accessibility
+   text and scrolling. Opening/closing it must not resize Chrome or move the dock.
+   Try Keyboard, Screen Layout, AirPlay, Wallpaper, Computer, and lifecycle controls.
+3. Show/hide the keyboard in portrait, then rotate with it shown. The portrait panel
+   remains the chosen chrome despite the shortened viewport. Controls stay reachable
+   and the dock clears the keyboard. Dismiss it: the full viewport returns without drift.
+4. Visit Home/Apps and return; no duplicate tab bar appears. Enter/leave browser
+   fullscreen and the existing app card; controls and dock return once. Rotate with
+   the panel open. In Laptop mode verify the accepted upper app and lower controls
+   remain intact with no extra portrait button, then return to Tablet and repeat.
 
 Switchyard (Desktop tab, no external display):
 1. On a closed/upright phone, move between columns using the dock. Open the Duo or
@@ -28,7 +32,7 @@ Switchyard (Desktop tab, no external display):
    remain visible during resizing and after it settles. Thunar fits its tile.
 2. Double-tap the grabber: the same full-screen app card as Apps opens, with its
    window menu, keyboard and close controls. Focus a different tile, then use the
-   right-side toolbar's Full Screen control: that app opens directly.
+   landscape toolbar's Full Screen control: that app opens directly.
    There is no separate Full Screen button centered above the tile. Repeat with
    the grabber menu, VoiceOver Full Screen action and Command-Option-F.
    Double-tap browser content: the browser receives it. Drag the grabber and long

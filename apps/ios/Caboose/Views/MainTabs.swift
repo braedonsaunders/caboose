@@ -5,19 +5,21 @@ import SwiftUI
 /// device has a vertical bar (iPhone Duo), the system draws the tab bar and each tab's
 /// toolbar together on the side. On an iPhone whose bars are horizontal, the tabs sit at the
 /// bottom right instead of across the bottom (`ShellTabChrome`); on iPad they are the
-/// system's.
+/// system's. Portrait Desktop overrides either placement with its compact panel.
 struct MainTabs: View {
     @Environment(AppModel.self) private var model
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
     @Environment(\.scenePhase) private var scenePhase
     @State private var width: CGFloat = 0
+    @State private var windowSize: CGSize = .zero
 
     var body: some View {
         @Bindable var model = model
         let placement = HomeToday.tabPlacement(isPhone: UIDevice.current.userInterfaceIdiom == .phone,
                                                hasVerticalBar: barEdge != nil, width: width)
+        let portraitDesktop = DesktopChrome.usesCompactPanel(size: windowSize)
         let desktopHidesBars = model.selectedTab == .desktop &&
-            (model.laptopDesktopActive || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil))
+            (portraitDesktop || model.laptopDesktopActive || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil))
         TabView(selection: $model.selectedTab) {
             Tab("Home", systemImage: "house", value: ShellTab.home) {
                 HomeScreen().modifier(ShellTabChrome(placement: placement, tab: .home))
@@ -40,7 +42,8 @@ struct MainTabs: View {
         }
         .toolbarVisibility(desktopHidesBars || placement != .system ? .hidden : .automatic, for: .tabBar)
         .environment(\.shellTabPlacement, placement)
-        .background { ShellWindowProbe().allowsHitTesting(false).accessibilityHidden(true) }
+        .environment(\.portraitDesktopChrome, portraitDesktop)
+        .background { ShellWindowProbe(sizeChanged: { windowSize = $0 }).allowsHitTesting(false).accessibilityHidden(true) }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .tint(Brand.amber)
         .onChange(of: model.selectedTab) { _, _ in model.updateDeviceDesktop() }

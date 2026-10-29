@@ -338,7 +338,8 @@ sidebar down the trailing edge with the tabs at its foot once the screen is 600 
 keyboard, as the system's tab bar does; the sidebar stays, its tabs riding above the
 keyboard, as the system's vertical bar does. Both step aside for a window covering the
 Desktop. Where the system
-draws its vertical bar (iPhone Duo, iOS 27.1), and on iPad, the system's tab bar is used.
+draws its vertical bar (iPhone Duo, iOS 27.1), and on iPad, the system's tab bar is used,
+except portrait Desktop, whose controls and navigation share the compact dock-side panel.
 
 ## Computer settings
 
@@ -533,12 +534,17 @@ Trackpad Gestures guide with the mappings and platform limitations. With a conne
 monitor, the phone shows window previews above its keyboard/trackpad and leaves the monitor's
 workspace intact. Book posture and compact screens keep the ordinary layout in Automatic.
 
-In Tablet mode, Desktop's custom side rail contains its controls and tabs in one
-column and scrolls when the keyboard leaves less height. The native landscape rail
-is used where available. Both reserve width without a second horizontal toolbar or
-bottom tab strip. Run `sh apps/ios/scripts/check-desktop.sh` for rotation, keyboard,
-fullscreen and return-from-tab checks on a device. The measurement-to-guest and dock
-geometry regression is in `DeviceViewportTests` (`swift test --filter DeviceViewportTests`).
+In Tablet mode, portrait Desktop has one compact button above the bottom dock. Its
+upward, anchored popover combines desktop controls and app navigation, with Close and
+VoiceOver escape to dismiss. The panel scrolls within 288 × 240 points, including on a
+phone; it never becomes a full-height rail or reserves desktop space. Native toolbar and
+tabs are hidden on this path, including iPad system tabs and Duo's native rail.
+Landscape keeps the native rail where available and otherwise the custom rail. Laptop
+keeps its bottom-half controls. Window bounds select portrait independently of the keyboard.
+Run `sh apps/ios/scripts/check-desktop.sh` for rotation, keyboard, fullscreen and
+return-from-tab checks on a device. Pure orientation policy is covered by
+`swift test --filter DesktopChromeTests`; measurement-to-guest and dock geometry by
+`swift test --filter DeviceViewportTests`, both in CabooseKit.
 
 Run `sh apps/ios/scripts/check-laptop.sh` for the physical Duo, keyboard and monitor checks.
 Pure fold/keyboard geometry is covered by `swift test --filter LaptopLayoutTests` in CabooseKit.
