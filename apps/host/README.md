@@ -94,7 +94,7 @@ the non-interactive privileges above.
 native installs, without Docker: `caboose-host-<os>-<arch>.tar.zst` on Linux and
 `caboose-host-darwin-arm64.tar.gz` on macOS, plus a line in `<outdir>/SHA256SUMS`.
 It needs pnpm, and zstd for Linux archives. macOS bundles build on Apple Silicon with
-Xcode command-line tools; installation needs neither Xcode nor Homebrew. The archive
+Xcode 16 command-line tools (Swift 6); installation needs neither Xcode nor Homebrew. The archive
 holds one directory, `caboose-host/`:
 
 | Path | What |
@@ -191,9 +191,9 @@ on its own, and a new base image reaches only new computers (see
 With no image in its disk root and no reference to fetch one from, a wake is refused with
 409 and how to build it, and the console names the problem on Overview and Host.
 
-GHCR makes a new package private. The release workflow checks that each of the three images
-pulls anonymously before it attaches the bundles; on a first release it stops there until a
-maintainer makes each package public in its package settings and re-runs the job.
+Hosts, installers and Docker pull the three images anonymously, so they must be public;
+packages a workflow pushes from this public repository are. The release workflow checks that
+each image pulls anonymously before it attaches the bundles.
 
 ## Configuration
 
