@@ -3,11 +3,17 @@ import errno
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-from parked_quiesce import Unsupported, branch_states, cgroup_tree, check_mounts, check_processes, freeze_branches, plan_freezer_branches, thaw
+from parked_quiesce import Unsupported, branch_states, cgroup_tree, check_mounts, check_processes, freeze_branches, freeze_filesystem, plan_freezer_branches, thaw
 
 ROOT = '1 0 8:1 / / rw - ext4 /dev/vda rw\n'
 
 class QuiesceChecks(unittest.TestCase):
+    def test_filesystem_freeze_syncs_before_ioctl_and_closes_descriptor(self):
+        steps = []
+        with patch('parked_quiesce.os.open', return_value=33), patch('parked_quiesce.os.close', side_effect=lambda fd: steps.append('close')), patch('parked_quiesce.os.sync', side_effect=lambda: steps.append('sync')), patch('parked_quiesce.fcntl.ioctl', side_effect=lambda *args: steps.append('freeze')):
+            freeze_filesystem()
+        self.assertEqual(steps, ['sync', 'freeze', 'close'])
+
     def test_cgroup_tree_reads_direct_pids_and_fails_on_missing_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

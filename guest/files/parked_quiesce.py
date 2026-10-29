@@ -223,7 +223,22 @@ def freeze_branches(nodes, trusted, recorded, root='/sys/fs/cgroup'):
 
 # Linux FITHAW; EINVAL means the filesystem is already thawed (for example,
 # after a cold boot).
+FIFREEZE = 0xC0045877
 FITHAW = 0xC0045878
+
+
+def freeze_filesystem(root='/'):
+    """Flush and freeze the filesystem after all writer branches are stopped.
+
+    The caller must have persisted its recovery intent before invoking this.
+    An error can be ambiguous, so recovery must attempt thaw even on failure.
+    """
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.sync()
+        fcntl.ioctl(fd, FIFREEZE, 0)
+    finally:
+        os.close(fd)
 
 
 def thaw(root='/', cgroup='/sys/fs/cgroup/caboose-workloads.slice', branches=None):
