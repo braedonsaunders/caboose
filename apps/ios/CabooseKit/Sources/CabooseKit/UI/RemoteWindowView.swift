@@ -442,7 +442,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     /// The app answers a tap by redrawing the cursor: a text cursor means a text field took
     /// focus. Waits briefly for a fresh cursor; an unchanged one is still the answer, and a
-    /// server that names no cursors falls back to showing the keyboard.
+    /// server that names no cursors needs the owner's explicit keyboard control.
     fileprivate func checkFocus() {
         guard let check = focusCheck, let session, let onKeyboardWanted else { return }
         guard let isText = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial,

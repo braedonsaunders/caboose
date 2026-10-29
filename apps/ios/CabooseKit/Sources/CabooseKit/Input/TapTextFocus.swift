@@ -16,7 +16,8 @@ public struct TapTextFocus {
         let elapsed = now - since
         guard current != serial || elapsed > 0.35 else { return nil }
         if let isText { return isText }
-        // Preserve the legacy fallback for guests that report neither text input nor cursors.
-        return elapsed > 1.2 ? true : nil
+        // Missing cursor/text-input evidence is not an editable field. End the
+        // request without opening input; the owner can still request it manually.
+        return elapsed > 1.2 ? false : nil
     }
 }

@@ -568,7 +568,7 @@ final class FakeDecoder: PictureDecoder {
         #expect(typed.textPurpose == "terminal")
     }
 
-    @Test func xwaylandBitmapCursorUsesUnknownFocusFallback() async throws {
+    @Test func xwaylandBitmapCursorDoesNotInventEditableFocus() async throws {
         let session = try await ready()
         defer { session.disconnect() }
         stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100], xwayland: true)),
@@ -577,7 +577,7 @@ final class FakeDecoder: PictureDecoder {
         session.focus(try #require(session.windows[7]))
         #expect(session.cursorIsText == nil)
         let tap = TapTextFocus(since: 10, serial: session.cursorSerial)
-        #expect(tap.keyboardWanted(at: 11.3, serial: session.cursorSerial, isText: session.cursorIsText) == true)
+        #expect(tap.keyboardWanted(at: 11.3, serial: session.cursorSerial, isText: session.cursorIsText) == false)
         stream.server([(.cursorNamed, ["name": "text"])])
         try await until("text cursor") { session.cursorIsText == true }
         stream.server([(.textInput, ["id": 7, "enabled": false])])

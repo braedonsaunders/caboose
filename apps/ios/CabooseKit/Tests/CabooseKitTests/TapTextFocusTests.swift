@@ -15,9 +15,11 @@ struct TapTextFocusTests {
         #expect(request.keyboardWanted(at: 10.4, serial: 4, isText: false) == false)
     }
 
-    @Test func guestsWithoutTextOrCursorReportsUseExistingFallback() {
+    @Test func missingTextOrCursorReportsNeverOpenTheKeyboard() {
         #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: nil) == nil)
-        #expect(request.keyboardWanted(at: 11.3, serial: 5, isText: nil) == true)
+        #expect(request.keyboardWanted(at: 11.3, serial: 5, isText: nil) == false)
+        #expect(request.keyboardWanted(at: 20, serial: 4, isText: nil) == false)
+        #expect(request.keyboardWanted(at: 20, serial: 5, isText: nil, keyboardVisible: true) == true)
     }
 
     @Test func tappingAFieldCannotDismissAnAlreadyVisibleKeyboard() {
