@@ -264,7 +264,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x18` | `game.destroy` | `id` |
 | `0x19` | `gpu.create` | `id`, `window` |
 | `0x1A` | `gpu.data` | `id`, `offset: uint`, `data: bytes` |
-| `0x1B` | `gpu.destroy` | `id` |
+| `0x1B` | `gpu.destroy` | `id`, `reason?: "spool-limit"` |
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
@@ -435,7 +435,8 @@ A client whose hello says `gpu: true` renders windows from their applications' V
 `offset` counting from its first byte, which is a GFXReconstruct capture file the client
 replays on its own GPU into the window. The client answers with `gpu.ack` as it consumes the
 stream; the server sends at most 4 MiB beyond the last acknowledged offset. A client that
-connects later receives the stream from offset 0. `gpu.destroy` ends it. While a client renders
+connects later receives the stream from offset 0. `gpu.destroy` ends it; with
+`reason: "spool-limit"` the stream outgrew what the server keeps of it and cannot be rendered. While a client renders
 a window's stream, the window sends no `frame`, `tile` or video stream. The launcher and the
 relay are specified in [gpu-stream.md](gpu-stream.md).
 

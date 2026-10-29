@@ -254,6 +254,7 @@ summary.
 | `--no-xwayland` | | Do not start Xwayland |
 | `--no-audio` | | Do not run PulseAudio or send sound |
 | `--no-games` | | Do not listen for game launchers |
+| `--gpu-spool-limit BYTES` | `2147483648` | The most of one GPU stream kept on disk; a stream that outgrows it ends |
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |
 | `--renderer KIND` | `pixman` | The renderer (pixman is the only one) |

@@ -409,7 +409,12 @@ pub fn all(media: &Media) -> Vec<Vector> {
             "The first bytes of stream 1: a GFXReconstruct file header (fourcc GFXR, format 0.0, no options).",
             Message::GpuData(GpuData { id: 1, offset: 0, data: b"GFXR\0\0\0\0\0\0\0\0\0\0\0\0".to_vec() }),
         ),
-        one("gpu-destroy", "", Message::GpuDestroy { id: 1 }),
+        one("gpu-destroy", "", Message::GpuDestroy { id: 1, reason: None }),
+        one(
+            "gpu-destroy-spool-limit",
+            "The computer stopped keeping stream 1: it outgrew the spool limit.",
+            Message::GpuDestroy { id: 1, reason: Some("spool-limit".into()) },
+        ),
         one("gpu-ack", "The client has consumed stream 1 up to byte 65536.", Message::GpuAck { id: 1, offset: 65536 }),
         one("video-keyframe", "", Message::VideoKeyframe { id: 1 }),
         one(

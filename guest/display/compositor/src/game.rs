@@ -64,6 +64,18 @@ struct GpuStream {
     length: u64,
     sent: u64,
     acked: u64,
+    /// The stream outgrew the spool limit: it is over for the client, and what the application
+    /// still writes is read and dropped so that it does not wait forever.
+    failed: bool,
+}
+
+/// Whether to read a GPU stream's FIFO now. A failed stream is drained. Otherwise the stream is
+/// read only while a client renders streams: before its window is announced without limit
+/// beyond the spool's (an application uploads much of its data before it maps its window, and
+/// nothing can be acknowledged until then), and after that while the client is less than
+/// `GPU_BACKLOG` behind.
+fn gpu_read_allowed(takes: bool, announced: bool, failed: bool, length: u64, acked: u64) -> bool {
+    failed || (takes && (!announced || length - acked < GPU_BACKLOG))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -472,6 +484,14 @@ impl State {
         let Some(session) = self.session.as_ref().map(|s| s.conn) else { return };
         let Some(l) = self.games.launchers.get(&conn) else { return };
         let (Some((id, window)), Some(hello), false) = (l.bound, l.hello.as_ref(), l.announced) else { return };
+        if l.gpu.as_ref().is_some_and(|g| g.failed) {
+            // Its spool is gone, so a client can no longer render it: it is told so, and why.
+            if self.windows.get(window).is_some_and(|w| w.announced.is_some()) {
+                self.net.send(session, &Message::GpuCreate { id, window });
+                self.net.send(session, &Message::GpuDestroy { id, reason: Some("spool-limit".into()) });
+            }
+            return;
+        }
         if self.windows.get(window).is_none_or(|w| w.announced.is_none()) {
             return;
         }
@@ -512,12 +532,21 @@ impl State {
     }
 
     fn withdraw_game(&mut self, conn: u64) {
+        self.withdraw_game_because(conn, None);
+    }
+
+    fn withdraw_game_because(&mut self, conn: u64, reason: Option<&str>) {
         let Some(l) = self.games.launchers.get_mut(&conn) else { return };
         let (Some((id, _)), true) = (l.bound, l.announced) else { return };
         l.announced = false;
         let gpu = l.gpu.is_some();
         if let Some(session) = self.session.as_ref().map(|s| s.conn) {
-            self.net.send(session, &if gpu { Message::GpuDestroy { id } } else { Message::GameDestroy { id } });
+            let message = if gpu {
+                Message::GpuDestroy { id, reason: reason.map(str::to_owned) }
+            } else {
+                Message::GameDestroy { id }
+            };
+            self.net.send(session, &message);
         }
     }
 
@@ -659,17 +688,29 @@ impl State {
             length: 0,
             sent: 0,
             acked: 0,
+            failed: false,
         })
     }
 
     /// Reads what the application wrote into the spool, while the client keeps up.
     fn read_gpu_stream(&mut self, conn: u64) {
-        let Some(gpu) = self.games.launchers.get_mut(&conn).and_then(|l| l.gpu.as_mut()) else { return };
+        let takes = self.client_takes(conn);
+        let limit = self.config.gpu_spool_limit;
+        let Some(l) = self.games.launchers.get_mut(&conn) else { return };
+        let announced = l.announced;
+        let Some(gpu) = l.gpu.as_mut() else { return };
         let mut buf = vec![0u8; GPU_CHUNK];
-        while gpu.length - gpu.acked < GPU_BACKLOG {
+        let mut outgrew = false;
+        while gpu_read_allowed(takes, announced, gpu.failed, gpu.length, gpu.acked) {
             let Some(fifo) = gpu.fifo.as_mut() else { break };
             match fifo.read(&mut buf) {
                 Ok(0) => break,
+                Ok(_) if gpu.failed => {}
+                Ok(n) if gpu.length + n as u64 > limit => {
+                    gpu.failed = true;
+                    outgrew = true;
+                    let _ = gpu.spool.set_len(0);
+                }
                 Ok(n) => {
                     if let Err(e) = gpu.spool.write_all_at(&buf[..n], gpu.length) {
                         tracing::warn!("gpu stream spool: {e}");
@@ -685,6 +726,10 @@ impl State {
                 }
             }
         }
+        if outgrew {
+            tracing::warn!("gpu stream (launcher {conn}) outgrew the {limit}-byte spool limit; ended");
+            self.withdraw_game_because(conn, Some("spool-limit"));
+        }
         self.pump_gpu_stream(conn);
     }
 
@@ -697,7 +742,7 @@ impl State {
         let Some(l) = self.games.launchers.get_mut(&conn) else { return };
         let (bound, announced) = (l.bound, l.announced);
         let Some(gpu) = l.gpu.as_mut() else { return };
-        if let (true, true, Some(session), Some((id, _))) = (takes, announced, session, bound) {
+        if let (true, true, false, Some(session), Some((id, _))) = (takes, announced, gpu.failed, session, bound) {
             while gpu.sent < gpu.length && gpu.sent - gpu.acked < GPU_WINDOW {
                 let n = (gpu.length - gpu.sent).min(GPU_CHUNK as u64) as usize;
                 let mut data = vec![0u8; n];
@@ -709,7 +754,7 @@ impl State {
                 self.net.send(session, &message);
             }
         }
-        let should_read = takes && gpu.length - gpu.acked < GPU_BACKLOG;
+        let should_read = gpu_read_allowed(takes, announced, gpu.failed, gpu.length, gpu.acked);
         if should_read != gpu.reading {
             if let Some(token) = gpu.token.as_ref() {
                 let toggled = if should_read { self.handle.enable(token) } else { self.handle.disable(token) };
@@ -823,6 +868,20 @@ mod tests {
             assert_eq!(Hello::parse(&gpu(bad), Some(dir)), None, "{bad}");
         }
         assert_eq!(Hello::parse(&gpu("/run/user/1000/caboose-gpu/4242.gfxr"), None), None);
+    }
+
+    #[test]
+    fn gpu_streams_are_read_before_their_window_and_then_paced() {
+        // No client renders streams: the application waits.
+        assert!(!gpu_read_allowed(false, false, false, 0, 0));
+        // Before the window is announced, however much the application uploads first.
+        assert!(gpu_read_allowed(true, false, false, 512 << 20, 0));
+        // Then only while the client is less than GPU_BACKLOG behind.
+        assert!(gpu_read_allowed(true, true, false, GPU_BACKLOG - 1, 0));
+        assert!(!gpu_read_allowed(true, true, false, GPU_BACKLOG, 0));
+        assert!(gpu_read_allowed(true, true, false, GPU_BACKLOG, 1));
+        // A failed stream is drained whatever the client does.
+        assert!(gpu_read_allowed(false, false, true, 0, 0));
     }
 
     #[test]

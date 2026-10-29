@@ -1882,7 +1882,9 @@ statically behind a C API in `apps/ios/GPUStream` and built by
 player and says nothing of GPU streams. It replays as `gfxrecon-replay --remove-unsupported -m
 rebind` does, through the virtual swapchain, on its own thread, into the `CAMetalLayer` of a
 `GPUStreamView` that the window's interactive view lays over its picture. Input to the window
-still goes to the computer. One stream replays at a time per process.
+still goes to the computer. One stream replays at a time: a later stream's window says it
+waits, its bytes wait in its feed unacknowledged, and it plays when the first ends. A
+`gpu.destroy` with a reason leaves the window saying why its stream ended.
 
 ### Shell
 

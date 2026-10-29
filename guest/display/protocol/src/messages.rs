@@ -501,8 +501,11 @@ pub enum Message {
         window: u64,
     },
     GpuData(GpuData),
+    /// The stream ended: its application closed, or `reason` says why it could not go on
+    /// (`"spool-limit"`: the computer would keep more of it than it allows).
     GpuDestroy {
         id: u64,
+        reason: Option<String>,
     },
     Pong {
         t_us: u64,
@@ -730,8 +733,8 @@ impl Message {
             | Message::RequestKeyframe { id }
             | Message::VideoDestroy { id }
             | Message::GameDestroy { id }
-            | Message::GpuDestroy { id }
             | Message::VideoKeyframe { id } => MapBuilder::new().put("id", *id).build(),
+            Message::GpuDestroy { id, reason } => MapBuilder::new().put("id", *id).opt("reason", reason.clone()).build(),
             Message::GpuCreate { id, window } => MapBuilder::new().put("id", *id).put("window", *window).build(),
             Message::GpuData(m) => {
                 MapBuilder::new().put("id", m.id).put("offset", m.offset).put("data", m.data.clone()).build()
@@ -1071,7 +1074,7 @@ impl Message {
             GPU_DATA => {
                 Message::GpuData(GpuData { id: f.u64("id")?, offset: f.u64("offset")?, data: f.bytes("data")? })
             }
-            GPU_DESTROY => Message::GpuDestroy { id: f.u64("id")? },
+            GPU_DESTROY => Message::GpuDestroy { id: f.u64("id")?, reason: f.opt_string("reason")? },
             GPU_ACK => Message::GpuAck { id: f.u64("id")?, offset: f.u64("offset")? },
             VIDEO_ACK => Message::VideoAck { id: f.u64("id")?, seq: f.u64("seq")? },
             VIDEO_KEYFRAME => Message::VideoKeyframe { id: f.u64("id")? },

@@ -257,7 +257,8 @@ import Testing
         guard case .gpuCreate(1, 7) = try server("gpu-create").first else { Issue.record("gpu.create"); return }
         guard case .gpuData(1, 0, let data) = try server("gpu-data").first else { Issue.record("gpu.data"); return }
         #expect(data == Data("GFXR".utf8) + Data(count: 12))
-        guard case .gpuDestroy(1) = try server("gpu-destroy").first else { Issue.record("gpu.destroy"); return }
+        guard case .gpuDestroy(1, nil) = try server("gpu-destroy").first else { Issue.record("gpu.destroy"); return }
+        guard case .gpuDestroy(1, "spool-limit") = try server("gpu-destroy-spool-limit").first else { Issue.record("reason"); return }
     }
 
     /// A stream's bytes arrive in order once; a repeat from the start (a resent stream) and

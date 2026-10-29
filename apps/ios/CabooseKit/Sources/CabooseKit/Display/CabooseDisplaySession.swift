@@ -347,7 +347,15 @@ public final class CabooseDisplaySession: DisplaySession {
             case .gameCreate(let descriptor): createGame(descriptor)
             case .gameDestroy(let id): endGame(of: windows.values.first { $0.game?.id == id })
             case .gpuCreate(let id, let window): createGPUStream(id, window: window)
-            case .gpuDestroy(let id): endGPUStream(of: windows.values.first { $0.gpuStream?.id == id })
+            case .gpuDestroy(let id, let reason):
+                guard let window = windows.values.first(where: { $0.gpuStream?.id == id }) else { continue }
+                if let reason {
+                    // The window keeps the stream's view, saying why it ended.
+                    gpuFeeds[id] = nil
+                    window.gpuStream?.end(reason: reason)
+                } else {
+                    endGPUStream(of: window)
+                }
             case .frame, .tile, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
                 continue // pictures and streams were routed on the socket's queue; unknown types are not used
             }

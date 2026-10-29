@@ -40,17 +40,24 @@ caboose-display opens the FIFO for reading and writing, so it never sees end of 
 writes, and binds the stream to the first top-level window whose process is the launcher's
 (the Wayland client's pid, or an X11 window's `_NET_WM_PID`, else its X client's pid through
 the XRes extension). The window is shown once X maps it, although the driver never gives it a
-buffer. The FIFO is read while a client that renders streams is connected, from before the
-window exists (an application uploads much of its data first); with none connected the
-application waits in its next Vulkan call. Everything read is appended to a spool in `~/.cache/caboose/gpu-streams/`.
+buffer. With no client that renders streams connected, the FIFO is not read and the
+application waits in its next Vulkan call. Otherwise everything read is appended to a spool in
+`~/.cache/caboose/gpu-streams/`: without pause until the window is announced (an application
+uploads much of its data before it maps its window, and nothing can be acknowledged before),
+and after that only while the spool is less than 64 MiB ahead of the client.
 
 A client whose hello says `gpu: true` gets `gpu.create { id, window }` after the window's
 `window.create`, then the stream from its first byte as `gpu.data { id, offset, data }`, and
 answers with `gpu.ack { id, offset }` as it consumes it. At most 4 MiB are sent beyond the
-last acknowledgement, and the FIFO is read only while the spool is less than 64 MiB ahead of
-it, so the application runs at the pace the client renders. A client that connects later
-replays the spool from the start. `gpu.destroy` follows when the application ends or its
-window closes, and the spool is deleted with it.
+last acknowledgement, so the application runs at the pace the client renders. A client that
+connects later replays the spool from the start. `gpu.destroy` follows when the application
+ends or its window closes, and the spool is deleted with it.
+
+A spool holds at most `--gpu-spool-limit` bytes (2 GiB unless set). A stream that would
+outgrow it ends: its spool is emptied, `gpu.destroy { id, reason: "spool-limit" }` tells the
+client (a client that meets the window later gets `gpu.create` and that `gpu.destroy` at once),
+and what the application still writes is read and dropped, so the application keeps running
+while its window shows nothing.
 
 While a client renders a window's stream, the window sends no pictures.
 
@@ -69,5 +76,8 @@ While a client renders a window's stream, the window sends no pictures.
 - **Linear images.** An application that writes pixels straight into a linearly tiled image
   lays them out for the driver here, whose row pitch is not the client's; those images show
   wrong on the client. Uploads through a buffer (what games and engines do) are unaffected.
-- **The whole stream is kept.** A spool grows for as long as the application runs, and a
-  client that connects later replays all of it before the current frame.
+- **The whole stream is kept, up to the limit.** A spool grows for as long as the application
+  runs, up to `--gpu-spool-limit`, and a client that connects later replays all of it before
+  the current frame. A stream longer than the limit cannot be rendered at all.
+- **One stream at a time on a device.** The client replays one stream; a second stream's
+  window says it waits, and its application is held back until the first stream ends.

@@ -211,6 +211,7 @@ struct GpuStats {
     bytes: u64,
     file: Option<std::fs::File>,
     destroyed: bool,
+    reason: Option<String>,
 }
 
 struct GameStats {
@@ -794,7 +795,7 @@ fn run(args: Args) -> Result<bool, String> {
                         }
                         None => None,
                     };
-                    gpus.insert(id, GpuStats { window, bytes: 0, file, destroyed: false });
+                    gpus.insert(id, GpuStats { window, bytes: 0, file, destroyed: false, reason: None });
                 }
                 Message::GpuData(d) => {
                     if let Some(g) = gpus.get_mut(&d.id) {
@@ -807,9 +808,10 @@ fn run(args: Args) -> Result<bool, String> {
                         }
                     }
                 }
-                Message::GpuDestroy { id } => {
+                Message::GpuDestroy { id, reason } => {
                     if let Some(g) = gpus.get_mut(&id) {
                         g.destroyed = true;
+                        g.reason = reason;
                     }
                 }
                 Message::GameDestroy { id } => {
@@ -968,8 +970,11 @@ fn run(args: Args) -> Result<bool, String> {
             "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
             gpus.iter()
                 .map(|(id, g)| format!(
-                    "{{\"id\":{id},\"window\":{},\"bytes\":{},\"destroyed\":{}}}",
-                    g.window, g.bytes, g.destroyed
+                    "{{\"id\":{id},\"window\":{},\"bytes\":{},\"destroyed\":{},\"reason\":{}}}",
+                    g.window,
+                    g.bytes,
+                    g.destroyed,
+                    g.reason.as_ref().map(|r| format!("{r:?}")).unwrap_or("null".into())
                 ))
                 .collect::<Vec<_>>()
                 .join(","),

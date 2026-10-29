@@ -14,6 +14,25 @@ public final class GPUStreamView: UIView {
     /// The player presenting into this view, from the last `play`.
     public private(set) var player: GPUStreamPlayer?
 
+    /// Text shown over the stream (why it waits or ended); nil shows the stream alone.
+    public var message: String? {
+        didSet {
+            label.text = message
+            label.isHidden = message == nil
+        }
+    }
+
+    private let label: UILabel = {
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        label.textColor = .white
+        label.font = .preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
+        label.isHidden = true
+        return label
+    }()
+
     public override init(frame: CGRect) {
         super.init(frame: frame)
         metalLayer.isOpaque = true
@@ -21,6 +40,12 @@ public final class GPUStreamView: UIView {
         metalLayer.presentsWithTransaction = false
         backgroundColor = .black
         isOpaque = true
+        addSubview(label)
+    }
+
+    public override func layoutSubviews() {
+        super.layoutSubviews()
+        label.frame = bounds.insetBy(dx: 24, dy: 24)
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }

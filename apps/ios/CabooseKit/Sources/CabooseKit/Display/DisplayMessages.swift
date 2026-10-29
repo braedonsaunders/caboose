@@ -371,7 +371,8 @@ public enum ServerMessage: Sendable {
     case gpuCreate(id: Int, window: Int)
     /// The next bytes of stream `id`, `offset` bytes from its start.
     case gpuData(id: Int, offset: UInt64, data: Data)
-    case gpuDestroy(id: Int)
+    /// The stream ended; `reason` says why when the computer could not go on (`spool-limit`).
+    case gpuDestroy(id: Int, reason: String?)
     case unknown(type: UInt8)
     /// A known type whose fields are missing or of the wrong kind.
     case malformed(type: UInt8)
@@ -435,7 +436,7 @@ public enum ServerMessage: Sendable {
             } else {
                 parsed = nil
             }
-        case .gpuDestroy: parsed = body["id"]?.int.map { .gpuDestroy(id: $0) }
+        case .gpuDestroy: parsed = body["id"]?.int.map { .gpuDestroy(id: $0, reason: body["reason"]?.string) }
         }
         self = parsed ?? .malformed(type: frame.type)
     }
