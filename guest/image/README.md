@@ -242,7 +242,9 @@ Linux, loop devices, mount permissions, erofs-utils, e2fsprogs and btrfs-progs.
 split image under QEMU software emulation, with a temporary writable snapshot and
 no guest network. It checks Btrfs root mounting, compressed EROFS and writable
 system overlays. It needs the matching QEMU system emulator, initramfs-tools-core,
-cpio and timeout. Hosted split-image CI runs this on both architectures.
+cpio, gzip, Python 3 and timeout. `python3 guest/image/test_boot_check.py` checks
+test-hook insertion for both initramfs archive layouts. Hosted split-image CI runs
+the real boot check on both architectures.
 
 On a split microVM, run `sudo guest/image/check-split-system.sh prepare`, cold-restart
 the computer, then run `sudo guest/image/check-split-system.sh verify` to check that a
