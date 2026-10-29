@@ -244,6 +244,17 @@ it came from. A `gpu.create` that resumes at that offset continues the replay wi
 connection's bytes; any other discards it and starts again. `GPUStreamResume` holds these
 decisions, and `GPUStreamTests` covers them.
 
+`GPUStreamCache` is the device's copy of the streams
+([The device's copy](../../docs/gpu-stream.md#the-devices-copy)), in
+`Caches/CabooseGPUStreams/<server epoch>/<stream id>`: a stream's bytes are written just before
+its replay takes them, and a record replaced atomically says how many are complete. A new replay
+of a stream the device holds the start of takes it from there (`GPUStreamPlayer.feed(contentsOf:length:completion:)`,
+at the replay's pace, presenting every frame) and then sends `gpu.seek` for the rest. It keeps
+at most 2 GiB of one stream and 4 GiB in all (`GPUStreamCache.budget`), the least recently used
+streams going first; `CabooseDisplaySession.gpuStreamCache` names the cache a session uses (nil
+for none), and the app clears it on signing out and on switching computers.
+`GPUStreamCacheTests` covers its keying, bounds, eviction, records and clearing.
+
 The player is [GFXReconstruct](https://github.com/LunarG/gfxreconstruct) (MIT), tag
 `vulkan-sdk-1.4.363.0` (capture format 1.0.5, the capture layer the computer runs), and
 [MoltenVK](https://github.com/KhronosGroup/MoltenVK) (Apache-2.0) 1.4.2, the MoltenVK of the

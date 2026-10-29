@@ -202,6 +202,7 @@ impl State {
             Message::Configure(c) => self.configure_window(&c),
             Message::Close { id } => self.close_window(id),
             Message::GpuAck { id, offset } => self.gpu_ack(id, offset),
+            Message::GpuSeek { id, nonce, offset } => self.gpu_seek(id, nonce, offset),
             Message::GameDecline { id, reason } => self.decline_game(id, &reason),
             Message::WebviewDecline { id, reason } => self.decline_webview(id, &reason),
             Message::Displays { displays } => self.set_displays(&displays),

@@ -50,6 +50,9 @@ public final class CabooseDisplaySession: DisplaySession {
     /// Whether to render windows from their applications' Vulkan calls (`gpu` in the hello,
     /// docs/gpu-stream.md), where this build has the player. Set before `connect()`.
     public var rendersGPUStreams = RemoteGPUStream.isSupported
+    /// Where GPU streams are kept on the device, so that a new replay takes a stream's start
+    /// from here (docs/gpu-stream.md, "The device's copy"); nil keeps none. Set before `connect()`.
+    public var gpuStreamCache: GPUStreamCache? = .shared
     /// How game surfaces reach the computer's files: the host behind the display URL, with its token.
     public private(set) var gameHost: GameHostAccess?
 
@@ -369,6 +372,8 @@ public final class CabooseDisplaySession: DisplaySession {
             case .gpuCreate(let id, let window, let nonce, let resume): createGPUStream(id, window: window, nonce: nonce, resume: resume)
             case .gpuDestroy(let id, let reason):
                 guard let window = windows.values.first(where: { $0.gpuStream?.id == id }) else { continue }
+                // Over on the computer: the device's copy can never be replayed again.
+                window.gpuStream?.discardCache()
                 if let reason {
                     // The window keeps the stream's view, saying why it ended.
                     gpuFeeds[id] = nil
@@ -400,6 +405,8 @@ public final class CabooseDisplaySession: DisplaySession {
         let sameServer = hello.epoch != nil && hello.epoch == server?.epoch
         server = hello
         if !sameServer { dropRetained() }
+        // Streams kept on the device belong to one server process.
+        if has("gpu") { gpuStreamCache?.retain(epoch: hello.epoch) }
         state = .ready
         let now = CACurrentMediaTime()
         watchdog?.ready(at: now)
@@ -424,6 +431,7 @@ public final class CabooseDisplaySession: DisplaySession {
         retained.removeAll()
         for window in windows.values where window.game.map({ !announcedGames.contains($0.id) }) == true { endGame(of: window) }
         for window in windows.values where window.gpuStream.map({ $0.suspension != nil && !announcedGPUStreams.contains($0.id) }) == true {
+            window.gpuStream?.discardCache()
             endGPUStream(of: window)
         }
         windowsAnnounced &+= 1
@@ -594,19 +602,33 @@ public final class CabooseDisplaySession: DisplaySession {
                   window.gpuStream?.feed === feed, case .ready = self.state else { return }
             self.send(.gpuAck(id: id, offset: bytes))
         }
+        // A seek counts only on the connection and window it was made for, while the feed is
+        // this connection's (a new stream's first seek comes before it is the window's).
+        let seek: @MainActor (UInt64) -> Void = { [weak self, weak connection, weak window, weak feed] offset in
+            guard let self, let connection, let window, let feed, let nonce,
+                  self.stream === connection, self.windows[windowID] === window,
+                  self.gpuFeeds[id] === feed, case .ready = self.state else { return }
+            self.send(.gpuSeek(id: id, nonce: nonce, offset: offset))
+        }
         switch GPUStreamResume.plan(id: id, nonce: nonce, resume: resume, kept: window.gpuStream?.kept) {
         case .keep:
             return
         case .continueKept:
-            window.gpuStream?.resume(feed: feed, acknowledge: acknowledge)
-        case .fresh:
+            window.gpuStream?.resume(feed: feed, acknowledge: acknowledge, seek: seek)
+        case .fresh, .notKept:
+            // A kept replay closes its copy of the stream before the new one opens it.
             endGPUStream(of: window)
-            window.gpuStream = RemoteGPUStream(id: id, window: windowID, nonce: nonce, feed: feed, acknowledge: acknowledge)
-        case .unplayable:
-            // Only a computer that ignored what this device claimed gets here: nothing can be
-            // drawn from the middle of a stream without the replay that took its start.
-            endGPUStream(of: window)
+            let cache = openGPUStreamCache(id: id, nonce: nonce)
+            let start = GPUStreamResume.start(nonce: nonce, resume: resume, cached: cache?.cached ?? 0)
+            window.gpuStream = RemoteGPUStream(id: id, window: windowID, nonce: nonce, feed: feed, start: start, cache: cache,
+                                               acknowledge: acknowledge, seek: seek)
         }
+    }
+
+    /// The device's copy of stream `id`, for a server that relays GPU streams and names them.
+    private func openGPUStreamCache(id: Int, nonce: String?) -> GPUStreamCache.Stream? {
+        guard has("gpu"), let nonce, let epoch = server?.epoch, let cache = gpuStreamCache else { return nil }
+        return cache.open(epoch: epoch, id: id, nonce: nonce)
     }
 
     private func endGPUStream(of window: RemoteWindow?) {

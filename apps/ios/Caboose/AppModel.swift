@@ -255,6 +255,8 @@ final class AppModel {
     private func resetConnection() {
         connectionRevision += 1
         closeDisplay() // invalidates WakeFence and stops DisplayLink retries
+        // The GPU streams kept on the device are this computer's; its replays closed with the display.
+        GPUStreamCache.shared.removeAll()
         fileSearchTask?.cancel()
         ComputerSearch.clear()
         PushCoordinator.shared.unregister(from: host)

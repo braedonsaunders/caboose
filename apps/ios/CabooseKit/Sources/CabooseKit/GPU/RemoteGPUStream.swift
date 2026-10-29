@@ -5,7 +5,10 @@ import Foundation
 /// still goes to the computer, where the application runs.
 ///
 /// A playing stream's replay is kept through a lost connection (`suspend()`) and continues on
-/// the next one when the computer resumes it there (`resume(feed:acknowledge:)`).
+/// the next one when the computer resumes it there (`resume(feed:acknowledge:seek:)`). What
+/// arrives is kept in the device's copy of the stream (`GPUStreamCache`); a new replay of a
+/// stream the device holds the start of takes that from there and asks the computer for the
+/// rest (`gpu.seek`).
 ///
 /// The device replays one stream at a time. A stream announced while another plays waits,
 /// saying so in its window, and starts when that one ends; its bytes wait in its feed, and
@@ -37,7 +40,16 @@ public final class RemoteGPUStream: Identifiable {
     public private(set) var status: Status
     /// The connection's feed this stream takes its bytes from.
     private(set) var feed: GPUStreamFeed
+    /// Where a new replay takes the stream's start from.
+    let start: GPUStreamResume.Start
+    /// The device's copy of the stream, while it keeps one.
+    private let cache: GPUStreamCache.Stream?
     private var acknowledge: @MainActor (UInt64) -> Void
+    /// Tells the computer where the stream continues for this replay (`gpu.seek`).
+    private var seek: @MainActor (UInt64) -> Void
+    /// Whether what the replay takes is acknowledged: not while it takes the device's copy, which
+    /// the computer has no need to send.
+    private var acking = true
     /// Set while the stream is kept through a lost connection.
     private(set) var suspension: Suspension?
     /// Counts this stream's replays; an event from an earlier one is ignored.
@@ -61,13 +73,22 @@ public final class RemoteGPUStream: Identifiable {
         #endif
     }
 
-    /// - Parameter acknowledge: told the stream's consumed byte count as the replay takes it.
-    init(id: Int, window: Int, nonce: String? = nil, feed: GPUStreamFeed, acknowledge: @escaping @MainActor (UInt64) -> Void) {
+    /// - Parameters:
+    ///   - start: where the replay takes the stream's start from.
+    ///   - cache: the device's copy of the stream, which keeps what arrives.
+    ///   - acknowledge: told the stream's consumed byte count as the replay takes it.
+    ///   - seek: tells the computer to continue the stream at an offset.
+    init(id: Int, window: Int, nonce: String? = nil, feed: GPUStreamFeed, start: GPUStreamResume.Start = .network,
+         cache: GPUStreamCache.Stream? = nil, acknowledge: @escaping @MainActor (UInt64) -> Void,
+         seek: @escaping @MainActor (UInt64) -> Void = { _ in }) {
         self.id = id
         self.window = window
         self.nonce = nonce
         self.feed = feed
+        self.start = start
+        self.cache = cache
         self.acknowledge = acknowledge
+        self.seek = seek
         status = .waiting(behind: window)
         Self.line.append(Weak(stream: self))
         Self.advance()
@@ -111,12 +132,51 @@ public final class RemoteGPUStream: Identifiable {
                 }
             }
         }
-        feed.attach { data in player.feed(data) }
+        switch start {
+        case .network:
+            attachNetwork(player)
+        case .seekToStart:
+            // The computer continues the stream further on, for a replay this device lost.
+            feed.restart(at: 0)
+            seek(0)
+            attachNetwork(player)
+        case .cached(let length):
+            guard let cache else { return attachNetwork(player) }
+            acking = false
+            player.feed(contentsOf: cache.dataURL, length: length) { [weak self] accepted in
+                MainActor.assumeIsolated { self?.cachedStartTaken(accepted, playback: playback, player: player) }
+            }
+        }
         #endif
     }
 
+    #if canImport(UIKit) && canImport(CabooseGPUStream)
+    /// The stream's bytes from the connection go to the replay, and into the device's copy just
+    /// before the replay takes them.
+    private func attachNetwork(_ player: GPUStreamPlayer) {
+        acking = true
+        let cache = cache
+        feed.attach { offset, data in
+            if let cache {
+                player.feed(data) { cache.write(data, at: offset) }
+            } else {
+                player.feed(data)
+            }
+        }
+    }
+
+    /// The replay took the device's copy up to `accepted` (all of it, unless reading it failed):
+    /// the computer continues the stream from exactly there.
+    private func cachedStartTaken(_ accepted: UInt64?, playback: Int, player: GPUStreamPlayer) {
+        guard playback == self.playback, status == .playing, suspension == nil, let accepted else { return }
+        feed.restart(at: accepted)
+        seek(accepted)
+        attachNetwork(player)
+    }
+    #endif
+
     private func consumed(_ bytes: UInt64, playback: Int) {
-        guard playback == self.playback else { return }
+        guard playback == self.playback, acking else { return }
         acknowledge(bytes)
     }
 
@@ -131,6 +191,8 @@ public final class RemoteGPUStream: Identifiable {
         guard let player = view.player, player.state == .running else { return false }
         feed.detach()
         acknowledge = { _ in }
+        seek = { _ in }
+        cache?.commit()
         suspension = .settling
         let playback = playback
         player.discardPending { [weak self] accepted in
@@ -162,14 +224,21 @@ public final class RemoteGPUStream: Identifiable {
 
     /// Continues the kept replay on a new connection, whose `feed` starts where the replay
     /// stands.
-    func resume(feed: GPUStreamFeed, acknowledge: @escaping @MainActor (UInt64) -> Void) {
+    func resume(feed: GPUStreamFeed, acknowledge: @escaping @MainActor (UInt64) -> Void,
+                seek: @escaping @MainActor (UInt64) -> Void) {
         guard suspension != nil else { return }
         self.feed = feed
         self.acknowledge = acknowledge
+        self.seek = seek
         suspension = nil
         #if canImport(UIKit) && canImport(CabooseGPUStream)
-        if let player = view.player { feed.attach { data in player.feed(data) } }
+        if let player = view.player { attachNetwork(player) }
         #endif
+    }
+
+    /// The stream is over on the computer: nothing kept of it can be replayed again.
+    func discardCache() {
+        cache?.discard()
     }
 
     /// The replay `playback` stopped on its own with `failure`: the stream ends, says why,
@@ -177,6 +246,8 @@ public final class RemoteGPUStream: Identifiable {
     /// nothing.
     func replayEnded(playback: Int, failure: String) {
         guard playback == self.playback, status == .playing else { return }
+        // Replayed again, the same bytes would fail the same way.
+        cache?.discard()
         end(reason: "replay: " + failure)
     }
 
@@ -189,6 +260,7 @@ public final class RemoteGPUStream: Identifiable {
         if case .ended = status { return }
         status = .ended(reason: reason)
         feed.detach()
+        cache?.close()
         #if canImport(UIKit) && canImport(CabooseGPUStream)
         view.stop()
         #endif
@@ -221,9 +293,12 @@ public final class RemoteGPUStream: Identifiable {
 }
 
 /// The socket side of a GPU stream: takes `gpu.data` in order on the socket's queue and hands
-/// it to the replay, holding what arrives before the replay is attached on the main actor.
-/// A repeated or out-of-order offset (a stream resent from its start) is dropped. A stream
-/// that resumes a kept replay starts at the offset `gpu.create` resumed it at.
+/// it to the replay with its offset, holding what arrives before the replay is attached on the
+/// main actor. A stream that resumes a kept replay starts at the offset `gpu.create` resumed it
+/// at; one whose start the replay took from the device's copy restarts where that ended.
+///
+/// The bytes at an offset never change, so a chunk that overlaps the next offset brings what
+/// follows it, and one wholly before it (a resent part) or past it brings nothing.
 ///
 /// One caller at a time delivers, outside the lock and in arrival order: whoever finds the
 /// queue idle drains it, and anyone arriving meanwhile only queues. The sink is never called
@@ -231,8 +306,8 @@ public final class RemoteGPUStream: Identifiable {
 final class GPUStreamFeed: @unchecked Sendable {
     private let lock = NSLock()
     private var next: UInt64 = 0
-    private var queued: [Data] = []
-    private var sink: ((Data) -> Void)?
+    private var queued: [(offset: UInt64, data: Data)] = []
+    private var sink: ((UInt64, Data) -> Void)?
     private var delivering = false
     private var ended = false
 
@@ -245,15 +320,25 @@ final class GPUStreamFeed: @unchecked Sendable {
 
     func receive(offset: UInt64, data: Data) {
         let drains: Bool = lock.withLock {
-            guard !ended, offset == next else { return false }
-            next += UInt64(data.count)
-            queued.append(data)
+            let end = offset + UInt64(data.count)
+            guard !ended, offset <= next, end > next else { return false }
+            queued.append((next, offset == next ? data : Data(data.dropFirst(Int(next - offset)))))
+            next = end
             return claimDelivery()
         }
         if drains { deliver() }
     }
 
-    func attach(_ sink: @escaping (Data) -> Void) {
+    /// Drops what is queued and takes the stream from `offset` on: the replay has everything
+    /// before it.
+    func restart(at offset: UInt64) {
+        lock.withLock {
+            queued.removeAll()
+            next = offset
+        }
+    }
+
+    func attach(_ sink: @escaping (UInt64, Data) -> Void) {
         let drains: Bool = lock.withLock {
             guard !ended else { return false }
             self.sink = sink
@@ -279,7 +364,7 @@ final class GPUStreamFeed: @unchecked Sendable {
 
     private func deliver() {
         while true {
-            let item: (sink: (Data) -> Void, data: Data)? = lock.withLock {
+            let item: (sink: (UInt64, Data) -> Void, chunk: (offset: UInt64, data: Data))? = lock.withLock {
                 guard let sink, !ended, !queued.isEmpty else {
                     delivering = false
                     return nil
@@ -287,7 +372,7 @@ final class GPUStreamFeed: @unchecked Sendable {
                 return (sink, queued.removeFirst())
             }
             guard let item else { return }
-            item.sink(item.data)
+            item.sink(item.chunk.offset, item.chunk.data)
         }
     }
 }

@@ -918,6 +918,26 @@ impl State {
         }
         self.pump_gpu_stream(conn);
     }
+
+    /// The client replayed stream `id` up to `offset` from its own copy (docs/gpu-stream.md,
+    /// "The device's copy"): the stream continues there for it, forward or back, when the claim
+    /// names the stream announced to it (`nonce`) and the spool holds that much. Anything else
+    /// changes nothing.
+    pub fn gpu_seek(&mut self, id: u64, nonce: String, offset: u64) {
+        let conn = self
+            .games
+            .launchers
+            .iter()
+            .find(|(_, l)| l.gpu.is_some() && l.announced && l.bound.is_some_and(|(g, _)| g == id))
+            .map(|(c, _)| *c);
+        let Some(conn) = conn else { return };
+        let Some(gpu) = self.games.launchers.get_mut(&conn).and_then(|l| l.gpu.as_mut()) else { return };
+        let Some(offset) = gpu_resume_offset(Some(&(nonce, offset)), &gpu.nonce, gpu.length, gpu.failed) else { return };
+        tracing::info!("gpu stream {id} continues at byte {offset} of {} from the client's copy", gpu.length);
+        gpu.sent = offset;
+        gpu.acked = offset;
+        self.pump_gpu_stream(conn);
+    }
 }
 
 #[cfg(test)]

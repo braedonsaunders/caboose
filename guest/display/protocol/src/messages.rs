@@ -624,6 +624,13 @@ pub enum Message {
         id: u64,
         offset: u64,
     },
+    /// The client has stream `id` (the one `gpu.create` named `nonce`) up to `offset` from its
+    /// own copy: the stream continues there for it (docs/gpu-stream.md, "The device's copy").
+    GpuSeek {
+        id: u64,
+        nonce: String,
+        offset: u64,
+    },
     /// The client cannot run game `id` (docs/game-handoff.md, "Declining"); `reason` says
     /// why, for the computer's log.
     WebviewDecline {
@@ -683,6 +690,7 @@ pub mod type_id {
     pub const GPU_ACK: u8 = 0x96;
     pub const GAME_DECLINE: u8 = 0x97;
     pub const WEBVIEW_DECLINE: u8 = 0x98;
+    pub const GPU_SEEK: u8 = 0x99;
     pub const CLIENT_CLIPBOARD: u8 = 0xA0;
     pub const PING: u8 = 0xFE;
 }
@@ -767,6 +775,7 @@ impl Message {
             Message::VideoAck { .. } => VIDEO_ACK,
             Message::VideoKeyframe { .. } => VIDEO_KEYFRAME,
             Message::GpuAck { .. } => GPU_ACK,
+            Message::GpuSeek { .. } => GPU_SEEK,
             Message::GameDecline { .. } => GAME_DECLINE,
             Message::Ping { .. } => PING,
         }
@@ -836,6 +845,9 @@ impl Message {
                 MapBuilder::new().put("id", m.id).put("offset", m.offset).put("data", m.data.clone()).build()
             }
             Message::GpuAck { id, offset } => MapBuilder::new().put("id", *id).put("offset", *offset).build(),
+            Message::GpuSeek { id, nonce, offset } => {
+                MapBuilder::new().put("id", *id).put("nonce", nonce.as_str()).put("offset", *offset).build()
+            }
             Message::WebviewCreate(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("window", m.window)
@@ -1208,6 +1220,7 @@ impl Message {
             }
             GPU_DESTROY => Message::GpuDestroy { id: f.u64("id")?, reason: f.opt_string("reason")? },
             GPU_ACK => Message::GpuAck { id: f.u64("id")?, offset: f.u64("offset")? },
+            GPU_SEEK => Message::GpuSeek { id: f.u64("id")?, nonce: f.string("nonce")?, offset: f.u64("offset")? },
             GAME_DECLINE => Message::GameDecline { id: f.u64("id")?, reason: f.string("reason")? },
             VIDEO_ACK => Message::VideoAck { id: f.u64("id")?, seq: f.u64("seq")? },
             VIDEO_KEYFRAME => Message::VideoKeyframe { id: f.u64("id")? },
@@ -1329,6 +1342,7 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         GPU_DATA => "gpu.data",
         GPU_DESTROY => "gpu.destroy",
         GPU_ACK => "gpu.ack",
+        GPU_SEEK => "gpu.seek",
         GAME_DECLINE => "game.decline",
         CURSOR => "cursor",
         CURSOR_NAMED => "cursor.named",

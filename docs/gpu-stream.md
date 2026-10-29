@@ -11,8 +11,8 @@ encoding for the window; the client draws it at its own resolution.
 | --- | --- |
 | `caboose-gpu-run`, the launcher | [guest/gpu](../guest/gpu/README.md) |
 | The relay, its spool and its flow control | caboose-display, `compositor/src/game.rs` |
-| `gpu.create`, `gpu.data`, `gpu.destroy`, `gpu.ack` | [display.md, "GPU streams"](display.md#gpu-streams) |
-| The player | CabooseKit, `Sources/CabooseKit/GPU` and `UI/GPUStreamView`, over `apps/ios/GPUStream` |
+| `gpu.create`, `gpu.data`, `gpu.destroy`, `gpu.ack`, `gpu.seek` | [display.md, "GPU streams"](display.md#gpu-streams) |
+| The player and the device's copy of streams | CabooseKit, `Sources/CabooseKit/GPU` and `UI/GPUStreamView`, over `apps/ios/GPUStream` |
 
 ## On the computer
 
@@ -101,6 +101,42 @@ replay stands instead of replaying it from its first byte.
 A client that does not claim (an older one, for example) gets every stream from its first
 byte, as before; one that does not know `nonce` and `resume` ignores them.
 
+## The device's copy
+
+CabooseKit keeps the bytes of each stream it receives on the device, in
+`Caches/CabooseGPUStreams/<server epoch>/<stream id>`, with a record beside it
+(`<stream id>.json`: the epoch, the id, the nonce, and how many bytes from the stream's first
+the data holds). Each chunk is written just before the replay takes it. Every 4 MiB, and when
+the connection goes or the stream ends, the data is synchronized and the record replaced
+atomically (written to a temporary file, then renamed); data past the recorded length is never
+used.
+
+A new replay of a stream (after the app relaunched, or when a kept replay could not continue)
+for which the device holds a copy from the same server epoch under the same nonce takes the
+copy first: a chunk at a time, at the pace the replay takes them, replaying and presenting
+every frame as it would from the network, since the player has no way to replay without
+presenting. Meanwhile it acknowledges nothing, so caboose-display sends no more than its 4 MiB
+window of the stream's start, which the client drops. Once the replay has taken the copy, the
+client sends `gpu.seek { id, nonce, offset }` with the offset the replay accepted (all of the
+copy, or less if part of it could not be read), and takes the stream from the connection from
+there. caboose-display continues the stream at that offset, forward or back, when the stream
+with that `id` is announced to the connection, `nonce` is its own and the spool holds that
+much; otherwise it ignores the message. A `gpu.create` that resumes a stream for a replay the
+device no longer has, without a copy of the stream's start, is answered with `gpu.seek` at
+offset 0.
+
+The copy is bounded. A stream stops being kept at 2 GiB (caboose-display's default spool
+limit; a stream that outgrows the computer's own limit ends), and all of them at 4 GiB
+(`GPUStreamCache.budget` changes it): the least recently used streams that are not open are
+removed to make room, and a stream that still has none stops being kept, with what it
+recorded. A write or record that fails (a full disk) stops keeping that stream and removes
+it; the stream plays on from the connection. The copy lives in Caches, which iOS may purge.
+
+A stream's copy is removed by its `gpu.destroy`, by a replay that failed on it, by a stream of
+the same id under another nonce, and by a server hello with another epoch or none; the app
+removes them all on signing out and on switching computers. A stream that ended while no
+connection could say so stays until one of these, or eviction, removes it.
+
 ## Limits
 
 - **The driver answers, not the client's GPU.** Fences and semaphores signal at once, and
@@ -120,5 +156,8 @@ byte, as before; one that does not know `nonce` and `resume` ignores them.
   runs, up to `--gpu-spool-limit`, and a client that connects later without a replay of the
   stream to resume replays all of it before the current frame. A stream longer than the limit
   cannot be rendered at all.
+- **A new replay replays everything.** A replay that starts again, from the device's copy or
+  from the spool, replays and presents every frame from the stream's start before the current
+  one. The device's copy saves the transfer, not the time.
 - **One stream at a time on a device.** The client replays one stream; a second stream's
   window says it waits, and its application is held back until the first stream ends.

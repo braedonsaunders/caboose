@@ -309,6 +309,7 @@ Client → server (`0x81`–`0xFF`):
 | `0x96` | `gpu.ack` | `id`, `offset`: the client has consumed the stream up to `offset` |
 | `0x97` | `game.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes; the server logs no more): the client cannot run game `id` ([game-handoff.md, "Declining"](game-handoff.md#declining)) |
 | `0x98` | `webview.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes) |
+| `0x99` | `gpu.seek` | `id`, `nonce: text`, `offset`: the client's replay took the stream up to `offset` from the device's own copy; the stream continues there |
 | `0xA0` | `clipboard` | `mime`, `data: bytes` |
 | `0xFE` | `ping` | `t_us`, answered by `pong` for round-trip time |
 
@@ -472,7 +473,10 @@ a lost connection: its hello claims the replay in `gpu_resume` with the offset t
 taken, for the epoch of the server it came from, and when the server is that process and the
 claim names the stream's `id` and `nonce` within what the server keeps, `gpu.create` carries
 `resume` and the stream's bytes continue there. A `gpu.create` without `resume` starts the
-stream from offset 0, and the client discards any replay it kept of it. `gpu.destroy` ends it; with
+stream from offset 0, and the client discards any replay it kept of it. A client whose new
+replay took the stream's start from its own copy sends `gpu.seek` with the offset the replay
+accepted; when it names the stream announced to it, with its `nonce`, within what the server
+keeps, the stream's bytes continue there, forward or back. `gpu.destroy` ends it; with
 `reason: "spool-limit"` the stream outgrew what the server keeps of it and cannot be rendered. While a client renders
 a window's stream, the window sends no `frame`, `tile` or video stream. The launcher and the
 relay are specified in [gpu-stream.md](gpu-stream.md).

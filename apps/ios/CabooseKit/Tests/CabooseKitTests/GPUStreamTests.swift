@@ -35,7 +35,7 @@ import Testing
         let release = DispatchSemaphore(value: 0)
         let attached = DispatchSemaphore(value: 0)
         Thread {
-            feed.attach { data in
+            feed.attach { _, data in
                 deliveries.enter(data)
                 if data == Data([1]) {
                     inFirst.signal()
@@ -65,12 +65,46 @@ import Testing
         let feed = GPUStreamFeed(offset: 4)
         final class Received: @unchecked Sendable { var chunks: [Data] = [] }
         let received = Received()
-        feed.attach { data in received.chunks.append(data) }
+        feed.attach { _, data in received.chunks.append(data) }
         feed.receive(offset: 0, data: Data([1, 2, 3, 4]))
         feed.receive(offset: 4, data: Data([5]))
         #expect(received.chunks == [Data([5])])
         #expect(feed.offset == 5)
         feed.detach()
+    }
+
+    /// A chunk that overlaps the next offset brings what follows it, and the sink hears each
+    /// chunk's offset; a restart drops what is queued and takes the stream from a new offset.
+    @Test func aFeedTakesOverlapsAndRestarts() {
+        let feed = GPUStreamFeed()
+        feed.receive(offset: 0, data: Data([1, 2, 3]))
+        feed.receive(offset: 2, data: Data([3, 4, 5]))
+        #expect(feed.offset == 5)
+        feed.restart(at: 8)
+        feed.receive(offset: 6, data: Data([7, 8, 9, 10]))
+        feed.receive(offset: 12, data: Data([13]))
+        final class Received: @unchecked Sendable { var chunks: [(offset: UInt64, data: Data)] = [] }
+        let received = Received()
+        feed.attach { offset, data in received.chunks.append((offset, data)) }
+        #expect(received.chunks.map({ $0.offset }) == [8])
+        #expect(received.chunks.map({ $0.data }) == [Data([9, 10])])
+        #expect(feed.offset == 10)
+        feed.receive(offset: 10, data: Data([11]))
+        #expect(received.chunks.map({ $0.offset }) == [8, 10])
+        feed.detach()
+    }
+
+    /// A new replay takes the stream's start from the device's copy when there is one, and asks
+    /// the computer to go back only when it continues the stream elsewhere and there is none.
+    @Test func aNewReplayStartsFromTheDevicesCopyWhenItHasOne() {
+        typealias R = GPUStreamResume
+        #expect(R.start(nonce: "8c41d07e2b9fa365", resume: nil, cached: 0) == .network)
+        #expect(R.start(nonce: "8c41d07e2b9fa365", resume: nil, cached: 4096) == .cached(length: 4096))
+        #expect(R.start(nonce: "8c41d07e2b9fa365", resume: 1 << 20, cached: 4096) == .cached(length: 4096))
+        #expect(R.start(nonce: "8c41d07e2b9fa365", resume: 1 << 20, cached: 0) == .seekToStart)
+        #expect(R.start(nonce: "8c41d07e2b9fa365", resume: 0, cached: 0) == .network)
+        // A computer that names no streams cannot be asked to continue one elsewhere.
+        #expect(R.start(nonce: nil, resume: nil, cached: 4096) == .network)
     }
 
     /// A kept replay continues only when the computer resumes the same stream at exactly the
@@ -82,14 +116,14 @@ import Testing
         // Not resumed: the computer replays the stream from its start.
         #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: nil, kept: kept) == .fresh)
         // Another stream under the same id, or another offset, cannot continue this replay.
-        #expect(R.plan(id: 1, nonce: "0123456789abcdef", resume: 1 << 20, kept: kept) == .unplayable)
-        #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: 1, kept: kept) == .unplayable)
+        #expect(R.plan(id: 1, nonce: "0123456789abcdef", resume: 1 << 20, kept: kept) == .notKept)
+        #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: 1, kept: kept) == .notKept)
         #expect(R.plan(id: 1, nonce: nil, resume: nil, kept: kept) == .fresh)
         // A replay still settling, or one that stopped, is not resumable.
         var settling = kept
         settling.resumable = nil
         #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: nil, kept: settling) == .fresh)
-        #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: 1 << 20, kept: settling) == .unplayable)
+        #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: 1 << 20, kept: settling) == .notKept)
         // A stream already live on this connection, or ended here, stays as it is.
         let live = R.Kept(id: 1, nonce: "8c41d07e2b9fa365", ended: false, resumable: nil, suspended: false)
         #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: nil, kept: live) == .keep)
@@ -99,7 +133,7 @@ import Testing
         // A window with another stream, or none, starts the new one.
         #expect(R.plan(id: 2, nonce: "0123456789abcdef", resume: nil, kept: kept) == .fresh)
         #expect(R.plan(id: 2, nonce: nil, resume: nil, kept: nil) == .fresh)
-        #expect(R.plan(id: 2, nonce: nil, resume: 7, kept: nil) == .unplayable)
+        #expect(R.plan(id: 2, nonce: nil, resume: 7, kept: nil) == .notKept)
     }
 
     /// Only settled, named replays are claimed, and only for the server epoch they came from.

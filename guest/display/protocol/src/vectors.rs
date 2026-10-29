@@ -446,6 +446,11 @@ pub fn all(media: &Media) -> Vec<Vector> {
         ),
         one("gpu-ack", "The client has consumed stream 1 up to byte 65536.", Message::GpuAck { id: 1, offset: 65536 }),
         one(
+            "gpu-seek",
+            "After relaunching, the client replayed stream 1's first 8388608 bytes from its own copy: the stream continues there.",
+            Message::GpuSeek { id: 1, nonce: "8c41d07e2b9fa365".into(), offset: 8 << 20 },
+        ),
+        one(
             "game-decline",
             "The client cannot run game 1: its page needs threads the device would not give it.",
             Message::GameDecline { id: 1, reason: "the page is not cross-origin isolated".into() },

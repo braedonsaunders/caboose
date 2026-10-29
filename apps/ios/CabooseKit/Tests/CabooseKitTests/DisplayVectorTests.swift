@@ -280,7 +280,7 @@ import Testing
         feed.receive(offset: 5, data: Data([9]))
         final class Received { var chunks: [Data] = [] }
         let received = Received()
-        feed.attach { data in received.chunks.append(data) }
+        feed.attach { _, data in received.chunks.append(data) }
         feed.receive(offset: 2, data: Data([3]))
         feed.receive(offset: 0, data: Data([1, 2]))
         #expect(received.chunks == [Data([1, 2]), Data([3])])
@@ -361,6 +361,7 @@ import Testing
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], gpu: true,
            gpuResume: GPUResume(epoch: "5f3a9c01d2e4b678", streams: [GPUResume.Stream(id: 1, nonce: "8c41d07e2b9fa365", offset: 1_048_576)])),
         "gpu-ack": .gpuAck(id: 1, offset: 65536),
+        "gpu-seek": .gpuSeek(id: 1, nonce: "8c41d07e2b9fa365", offset: 8 << 20),
         "game-decline": .gameDecline(id: 1, reason: "the page is not cross-origin isolated"),
         "webview-decline": .webviewDecline(id: 1, reason: "web view failed"),
         "client-hello-webview": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.h264], displays: [

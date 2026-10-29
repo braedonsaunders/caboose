@@ -2291,7 +2291,10 @@ replay takes the bytes. Through a lost connection the session keeps each playing
 replay, dropping the bytes it has not taken, and the next hello's `gpu_resume` claims it at the
 offset it accepted, for the server epoch it came from; a `gpu.create` that resumes at that
 offset continues it, and any other starts the stream again
-([gpu-stream.md, "Resuming"](gpu-stream.md#resuming)). The player, `GPUStreamPlayer`, is GFXReconstruct's Vulkan replay (tag
+([gpu-stream.md, "Resuming"](gpu-stream.md#resuming)). `GPUStreamCache` keeps each stream's
+bytes in `Caches/CabooseGPUStreams`, bounded and cleared with the computer; a new replay of a
+stream it holds the start of takes that from the device and sends `gpu.seek` for the rest
+([gpu-stream.md, "The device's copy"](gpu-stream.md#the-devices-copy)). The player, `GPUStreamPlayer`, is GFXReconstruct's Vulkan replay (tag
 `vulkan-sdk-1.4.363.0`, capture format 1.0.5, MIT) over MoltenVK 1.4.2 (Apache-2.0), linked
 statically behind a C API in `apps/ios/GPUStream` and built by
 `apps/ios/scripts/build-gpu-stream.sh`; without that library CabooseKit builds without the

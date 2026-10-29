@@ -57,6 +57,7 @@ public enum DisplayProtocol {
         case gpuAck = 0x96
         case gameDecline = 0x97
         case webviewDecline = 0x98
+        case gpuSeek = 0x99
         case clipboard = 0xA0
         case ping = 0xFE
     }
@@ -659,6 +660,9 @@ public enum ClientMessage: Sendable {
     case videoKeyframe(video: Int)
     /// The client has consumed GPU stream `id` up to `offset`.
     case gpuAck(id: Int, offset: UInt64)
+    /// The client replayed GPU stream `id` (named `nonce`) up to `offset` from its own copy: the
+    /// stream continues there (docs/gpu-stream.md, "The device's copy").
+    case gpuSeek(id: Int, nonce: String, offset: UInt64)
     /// Game `id` cannot run on this device, and why (docs/game-handoff.md, "Declining"). The
     /// reason is cut to `GameDecline.reasonLimit` UTF-8 bytes at a character boundary.
     case gameDecline(id: Int, reason: String)
@@ -692,6 +696,8 @@ public enum ClientMessage: Sendable {
             return DisplayFrame(type: T.videoKeyframe.rawValue, body: map([("id", CBOR(video))]))
         case .gpuAck(let id, let offset):
             return DisplayFrame(type: T.gpuAck.rawValue, body: map([("id", CBOR(id)), ("offset", CBOR(offset))]))
+        case .gpuSeek(let id, let nonce, let offset):
+            return DisplayFrame(type: T.gpuSeek.rawValue, body: map([("id", CBOR(id)), ("nonce", CBOR(nonce)), ("offset", CBOR(offset))]))
         case .webviewDecline(let id, let reason):
             return DisplayFrame(type: T.webviewDecline.rawValue, body: map([("id", CBOR(id)), ("reason", CBOR(GameDecline.bounded(reason)))]))
         case .gameDecline(let id, let reason):

@@ -1,0 +1,8 @@
+{
+  "name": "gpu-seek",
+  "description": "After relaunching, the client replayed stream 1's first 8388608 bytes from its own copy: the stream continues there.",
+  "messages": [
+    {"direction": "client", "type": "gpu.seek", "type_id": 153, "fields": {"id": 1, "nonce": "8c41d07e2b9fa365", "offset": 8388608}}
+  ],
+  "hex": "9928000000a362696401656e6f6e63657038633431643037653262396661333635666f66667365741a00800000"
+}

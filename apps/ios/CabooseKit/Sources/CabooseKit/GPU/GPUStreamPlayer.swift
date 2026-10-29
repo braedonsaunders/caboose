@@ -53,13 +53,42 @@ public final class GPUStreamPlayer: @unchecked Sendable {
     public var consumedBytes: UInt64 { core.consumedBytes }
 
     /// Hands the next bytes of the stream to the replay. Bytes fed after the replay stopped are
-    /// dropped.
-    public func feed(_ data: Data) {
+    /// dropped. `before`, if given, runs on the feed queue just before the replay is handed the
+    /// bytes, and not for bytes `discardPending` drops.
+    public func feed(_ data: Data, before: (@Sendable () -> Void)? = nil) {
         guard !data.isEmpty else { return }
         let core = core
         let generation = core.generation
-        core.feeding.async { core.write(data, generation: generation) }
+        core.feeding.async { core.write(data, generation: generation, before: before) }
     }
+
+    /// Hands the replay the first `length` bytes of the file at `url` (the start of the stream),
+    /// ahead of anything fed after this call: a chunk at a time, each when the replay has taken
+    /// the last, so the replay sets the pace and no more than a chunk is held. Every frame is
+    /// replayed and presented as it would be from the network. Reports, on the event queue, the
+    /// offset the replay has accepted when it is done: all of `length`, or less when the file
+    /// could not be read or `discardPending` was called; nil when the replay stopped.
+    public func feed(contentsOf url: URL, length: UInt64, completion: @escaping @Sendable (UInt64?) -> Void) {
+        let core = core
+        let generation = core.generation
+        core.feeding.async {
+            var fed: UInt64 = 0
+            if let file = try? FileHandle(forReadingFrom: url) {
+                while fed < length, core.generation == generation {
+                    let count = Int(min(UInt64(Self.fileChunk), length - fed))
+                    let data = autoreleasepool { try? file.read(upToCount: count) }
+                    guard let data, !data.isEmpty, core.write(data, generation: generation) else { break }
+                    fed += UInt64(data.count)
+                }
+                try? file.close()
+            }
+            let accepted: UInt64? = core.state == .running ? core.consumedBytes : nil
+            core.sink.takeUnretainedValue().queue.async { completion(accepted) }
+        }
+    }
+
+    /// Bytes read from a file and handed to the replay at a time.
+    static let fileChunk = 512 << 10
 
     /// Drops the bytes handed to `feed` that the replay has not taken yet, then reports, on the
     /// event queue, the offset the replay has accepted: every byte before it was taken by this
@@ -151,15 +180,19 @@ extension GPUStreamPlayer {
             }
         }
 
-        func write(_ data: Data, generation: Int) {
-            guard generation == self.generation else { return }
+        /// Hands `data` to the replay, unless `discardPending` dropped it; whether it was taken.
+        @discardableResult
+        func write(_ data: Data, generation: Int, before: (@Sendable () -> Void)? = nil) -> Bool {
+            guard generation == self.generation else { return false }
+            before?()
             let taken = data.withUnsafeBytes { cgpu_player_feed(handle, $0.baseAddress, $0.count) == 0 }
-            guard taken else { return }
+            guard taken else { return false }
             lock.lock()
             consumed += UInt64(data.count)
             let total = consumed
             lock.unlock()
             sink.takeUnretainedValue().send(.consumed(total))
+            return true
         }
 
         func cancel() { cgpu_player_cancel(handle) }
