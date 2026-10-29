@@ -38,10 +38,17 @@ tasks and choosing a default agent live in the app, and the console does not rep
     create a folder, rename, or move to the Trash. The folder is in the address
     (`/computers/<id>/files?path=…`), so back and forward work. File requests wake a parked
     computer, so a parked one is woken only when you ask.
-  - **Apps** — the optional catalog: install, update, roll back or remove an app, or
-    install a whole pack. Queued and running operations show their stage and progress, and
-    failures show the installer's error. While the computer is parked the catalog shows
-    what was installed when it last ran.
+  - **Apps** — the Library: every app the computer can add, in one list, Caboose's curated
+    apps first and then Flathub's, each with its developer (and a mark for Flathub's
+    verified publishers) and license. Search (after a 300 ms pause) and the category
+    buttons narrow it; more results load as you scroll, or with **Show more**. With no
+    search or category, curated **Collections** come first, each with **Get pack**, then
+    **Updates**: apps update on their own, and **Update now** installs a waiting version
+    right away. Install, Retry, Update now and Remove need the computer running. Queued and
+    running operations show their stage and progress, and failures show the installer's
+    error. The list comes from the host's own index, so it works while the computer is
+    parked and never wakes it; installed state is what the computer reported when it last
+    ran.
   - **Phones** — **Sign in a phone** shows a single-use pairing code as a QR code, a
     `caboose://connect?host=…&code=…` link and the code itself, counts down its ten minutes,
     and notices when a phone uses it. Below, the phones signed in to the computer, with when

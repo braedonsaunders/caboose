@@ -1,3 +1,4 @@
+import CabooseKit
 import SwiftUI
 
 private func symbol(_ category: String) -> String {
@@ -6,7 +7,13 @@ private func symbol(_ category: String) -> String {
     case "Video & Audio": "waveform"
     case "Make": "cube.transparent"
     case "Office": "doc.text"
+    case "Develop": "chevron.left.forwardslash.chevron.right"
+    case "Games": "gamecontroller"
+    case "Internet": "globe"
+    case "Learn": "graduationcap"
+    case "Science": "atom"
     case "Admin": "network"
+    case "Utilities": "wrench.and.screwdriver"
     default: "square.grid.2x2"
     }
 }
@@ -38,71 +45,181 @@ struct ShelfTile: View {
     }
 }
 
+/// Every app the computer can add, in one list: Caboose's curated apps first, then Flathub's,
+/// a page at a time. Curated collections lead the list until a search or category narrows it.
 struct CatalogLibrary: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var remove: CatalogApp?
     @State private var search = ""
-    @State private var category = "All"
+    @State private var category = ""
+
+    private var query: LibraryQuery { LibraryQuery(text: search, category: category) }
+    private var listTitle: String { !query.text.isEmpty ? "Results" : category.isEmpty ? "All Apps" : category }
 
     var body: some View {
+        let catalog = model.catalog
         NavigationStack {
             List {
-                let updates = model.catalog.apps.filter(\.updateAvailable)
-                if !updates.isEmpty {
-                    Section("Updates Available") { ForEach(updates) { row($0) } }
-                }
-                Section("Debian applications") {
-                    if model.catalog.storeLoading { ProgressView() }
-                    if let error = model.catalog.storeError { Text(error).foregroundStyle(.secondary) }
-                    let categories = Set(model.catalog.storeApps.flatMap { $0.categories ?? [] }).sorted()
-                    if !categories.isEmpty {
-                        Picker("Category", selection: $category) {
-                            Text("All").tag("All")
-                            ForEach(categories, id: \.self) { Text($0).tag($0) }
-                        }
-                    }
-                    let shown = model.catalog.storeApps.filter { category == "All" || ($0.categories ?? []).contains(category) }
-                    if search.isEmpty && shown.contains(where: { $0.curated == true }) {
-                        Text("Caboose picks").font(.subheadline.weight(.semibold))
-                        ForEach(shown.filter { $0.curated == true }) { row($0) }
-                    }
-                    ForEach(search.isEmpty ? shown.filter { $0.curated != true } : shown) { row($0) }
-                    if !model.catalog.storeLoading && model.catalog.storeApps.isEmpty && model.catalog.storeError == nil { Text("No applications found.").foregroundStyle(.secondary) }
-                }
-                Section { Text("Curated collections").font(.headline) }
-                ForEach(model.catalog.packs) { pack in
-                    let entries = model.catalog.apps.filter { $0.packs.contains(pack.id) }
-                    Section {
-                        ForEach(entries) { row($0) }
-                    } header: {
-                        HStack {
-                            Text(pack.name)
-                            Spacer()
-                            if entries.contains(where: { $0.installedVersion == nil }) {
-                                Button("Get Pack") { Task { await model.catalog.perform(pack.id, action: "install", pack: true) } }
-                                    .textCase(nil)
+                if query.isUnfiltered {
+                    if !catalog.packs.isEmpty {
+                        Section("Collections") {
+                            ScrollView(.horizontal) {
+                                HStack(spacing: 12) {
+                                    ForEach(catalog.packs) { pack in
+                                        NavigationLink(value: pack) { CollectionCard(pack: pack, apps: catalog.apps.filter { $0.packs.contains(pack.id) }) }
+                                            .buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 4)
                             }
+                            .scrollIndicators(.hidden)
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
                         }
                     }
+                    let updates = catalog.apps.filter(\.updateAvailable)
+                    if !updates.isEmpty {
+                        Section {
+                            ForEach(updates) { app in LibraryRow(app: app, close: { dismiss() }, remove: { remove = $0 }) }
+                        } header: { Text("Updates") } footer: { Text("Apps update on their own. Update Now gets a new version right away.") }
+                    }
                 }
+                Section(listTitle) {
+                    ForEach(catalog.library) { app in
+                        LibraryRow(app: app, close: { dismiss() }, remove: { remove = $0 })
+                            .onAppear { if app.id == catalog.library.last?.id { Task { await catalog.loadMore() } } }
+                    }
+                    if let error = catalog.libraryError {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(error).foregroundStyle(.secondary)
+                            Button("Try Again") { Task { await catalog.retryLibrary() } }
+                        }
+                    } else if catalog.libraryLoading {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else if catalog.libraryLoaded && catalog.library.isEmpty {
+                        Text("No apps found.").foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .safeAreaInset(edge: .top) {
+                if !catalog.categories.isEmpty { CategoryChips(categories: catalog.categories, selection: $category) }
             }
             .navigationTitle("Library")
-            .searchable(text: $search, prompt: "Search Debian applications")
-            .task(id: search) {
-                category = "All"
-                do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
-                await model.catalog.discover(search)
+            .navigationDestination(for: CatalogPack.self) { pack in
+                CollectionView(pack: pack, close: { dismiss() }, remove: { remove = $0 })
+            }
+            .searchable(text: $search, prompt: "Search apps")
+            .task(id: query) {
+                catalog.prepare(model.host)
+                if query.text != catalog.libraryQuery.text {
+                    do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+                }
+                await catalog.discover(query)
             }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .refreshable { await model.catalog.refresh() }
-            .confirmationDialog("Remove \(remove?.name ?? "app")?", isPresented: Binding(get: { remove != nil }, set: { if !$0 { remove = nil } }), titleVisibility: .visible) {
-                Button("Remove", role: .destructive) { if let app = remove { Task { await model.catalog.perform(app.id, action: "remove") } }; remove = nil }
-            } message: { Text("The app will be removed from this computer.") }
+            .refreshable { await catalog.refresh(); await catalog.discover(query) }
         }
+        .confirmationDialog("Remove \(remove?.name ?? "app")?", isPresented: Binding(get: { remove != nil }, set: { if !$0 { remove = nil } }), titleVisibility: .visible) {
+            Button("Remove", role: .destructive) { if let app = remove { Task { await catalog.perform(app.id, action: "remove") } }; remove = nil }
+        } message: { Text("The app will be removed from this computer.") }
+        // The sheet covers the tabs, whose alert cannot show over it.
+        .alert("Library", isPresented: Binding(get: { catalog.error != nil }, set: { if !$0 { catalog.error = nil } })) {
+            Button("OK", role: .cancel) { catalog.error = nil }
+        } message: { Text(catalog.error ?? "") }
+    }
+}
+
+/// Discover's categories, All first, in a row that scrolls sideways above the list.
+private struct CategoryChips: View {
+    let categories: [String]
+    @Binding var selection: String
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            GlassEffectContainer {
+                HStack(spacing: 8) {
+                    chip("All", value: "")
+                    ForEach(categories, id: \.self) { chip($0, value: $0) }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 6)
+        }
+        .scrollIndicators(.hidden)
     }
 
-    private func row(_ app: CatalogApp) -> some View {
+    @ViewBuilder private func chip(_ title: String, value: String) -> some View {
+        if selection == value {
+            Button(title) { selection = value }.buttonStyle(.glassProminent).accessibilityAddTraits(.isSelected)
+        } else {
+            Button(title) { selection = value }.buttonStyle(.glass)
+        }
+    }
+}
+
+/// A curated collection at the top of the Library: a few of its icons, its name, and how
+/// much of it the computer has.
+private struct CollectionCard: View {
+    @Environment(AppModel.self) private var model
+    let pack: CatalogPack
+    let apps: [CatalogApp]
+
+    var body: some View {
+        let missing = apps.filter { $0.installedVersion == nil }.count
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                ForEach(apps.prefix(4)) { app in
+                    Group {
+                        if let image = model.appIcons[app.desktopId] ?? app.icon { Image(uiImage: image).resizable().scaledToFit() }
+                        else { Image(systemName: symbol(app.category)).foregroundStyle(.secondary) }
+                    }
+                    .frame(width: 28, height: 28)
+                }
+            }
+            .frame(height: 28)
+            Text(pack.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+            Text(missing == 0 ? "Installed" : apps.count == 1 ? "1 app" : "\(apps.count) apps").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(width: 168, alignment: .leading)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
+    }
+}
+
+/// One curated collection's apps, and Get Pack for the ones the computer lacks.
+private struct CollectionView: View {
+    @Environment(AppModel.self) private var model
+    let pack: CatalogPack
+    let close: () -> Void
+    let remove: (CatalogApp) -> Void
+
+    var body: some View {
+        let apps = model.catalog.apps.filter { $0.packs.contains(pack.id) }
+        List {
+            ForEach(apps) { LibraryRow(app: $0, close: close, remove: remove) }
+        }
+        .navigationTitle(pack.name)
+        .toolbar {
+            if apps.contains(where: { $0.installedVersion == nil }) {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Get Pack") { Task { await model.catalog.perform(pack.id, action: "install", pack: true) } }
+                }
+            }
+        }
+    }
+}
+
+/// An app in the Library, curated or from Flathub alike: who makes it, its license, and Get,
+/// progress, Retry, or Open, Update Now and Remove.
+private struct LibraryRow: View {
+    @Environment(AppModel.self) private var model
+    let app: CatalogApp
+    let close: () -> Void
+    let remove: (CatalogApp) -> Void
+
+    var body: some View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(.quaternary)
@@ -111,8 +228,8 @@ struct CatalogLibrary: View {
             }.frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 3) {
                 Text(app.name).font(.body.weight(.medium))
-                Text(app.summary).font(.caption).foregroundStyle(.secondary)
-                if let license = app.license, !license.isEmpty { Text(license).font(.caption2).foregroundStyle(.secondary) }
+                Text(app.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                credits
                 if app.busy, let progress = app.progress {
                     Text(progress.label).font(.caption2).foregroundStyle(.secondary)
                     if let detail = progress.downloadDetail { Text(detail).font(.caption2).foregroundStyle(.secondary) }
@@ -131,13 +248,31 @@ struct CatalogLibrary: View {
             } else {
                 Menu {
                     if let installed = model.apps.first(where: { $0.id == app.desktopId }) {
-                        Button("Open", systemImage: "arrow.up.right") { dismiss(); model.open(installed) }
+                        Button("Open", systemImage: "arrow.up.right") { close(); model.open(installed) }
                     }
-                    if app.updateAvailable { Button("Update", systemImage: "arrow.down.circle") { Task { await model.catalog.perform(app.id, action: "update") } } }
-                    if app.canRollback { Button("Roll Back", systemImage: "arrow.uturn.backward") { Task { await model.catalog.perform(app.id, action: "rollback") } } }
-                    Button("Remove", systemImage: "trash", role: .destructive) { remove = app }
+                    if app.updateAvailable { Button("Update Now", systemImage: "arrow.down.circle") { Task { await model.catalog.perform(app.id, action: "update") } } }
+                    Button("Remove", systemImage: "trash", role: .destructive) { remove(app) }
                 } label: { Image(systemName: "ellipsis.circle").font(.title3) }
             }
+        }
+    }
+
+    /// The publisher, with Flathub's verified seal, and the license.
+    @ViewBuilder private var credits: some View {
+        let developer = app.developer.flatMap { $0.isEmpty ? nil : $0 }
+        let license = app.license.flatMap { $0.isEmpty ? nil : $0 }
+        if developer != nil || license != nil {
+            HStack(spacing: 4) {
+                if let developer {
+                    Text(developer).lineLimit(1)
+                    if app.verified == true {
+                        Image(systemName: "checkmark.seal.fill").imageScale(.small).foregroundStyle(.tint).accessibilityLabel("Verified")
+                    }
+                }
+                if let license { Text(developer == nil ? license : "· \(license)").lineLimit(1) }
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
     }
 }

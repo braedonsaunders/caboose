@@ -43,7 +43,7 @@ private func craftRun(_ app: String, files: [IntentFile], format: String) async 
     }
     struct Result: Decodable { var job: String; var outputs: [String]; var warnings: [String] }
     let client = HostClient(baseURL: await credentials.reachableURL(), token: credentials.token)
-    let result: Result = try await client.request("POST", "/v1/catalog/\(app)/run", body: [
+    let result: Result = try await client.request("POST", "/v1/catalog/\(HostClient.pathComponent(app))/run", body: [
         "job": .string(job), "inputs": .array(names.map { .string($0) }), "format": .string(format),
     ], timeout: 3600)
     var output: [IntentFile] = []

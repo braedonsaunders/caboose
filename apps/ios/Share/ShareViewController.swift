@@ -192,7 +192,7 @@ final class ShareModel {
             if chosen.installedVersion == nil {
                 self.installing = app.id
                 defer { self.installing = nil }
-                let _: [String: Bool] = try await host.request("POST", "/v1/catalog/\(app.id)/install", timeout: 30)
+                let _: [String: Bool] = try await host.request("POST", "/v1/catalog/\(HostClient.pathComponent(app.id))/install", timeout: 30)
                 var installed = false
                 for _ in 0..<1800 {
                     let response: Catalog = try await host.request("GET", "/v1/catalog", timeout: 60)

@@ -1,4 +1,4 @@
-import type { CatalogOperation, CatalogResponse } from './catalog.js'
+import type { CatalogOperation, CatalogPage, CatalogResponse, DiscoverQuery } from './catalog.js'
 import { fsQuery, joinPath, numberedName, type FileItem } from './files.js'
 import type { ComponentsUpgrade, HealthStatus, HostInfo } from './host.js'
 
@@ -583,6 +583,14 @@ export class CabooseClient {
   /** The catalog with installed versions and operation state; the last observed state while parked. */
   catalog(): Promise<CatalogResponse> {
     return this.request<CatalogResponse>('GET', '/v1/catalog', { timeoutMs: 60_000 })
+  }
+
+  /** A page of the Library from the host's own index; it works while the computer is parked and never wakes it. */
+  discoverCatalog({ q = '', category = '', offset = 0 }: DiscoverQuery = {}): Promise<CatalogPage> {
+    const query = new URLSearchParams({ q: q.trim() })
+    if (category) query.set('category', category)
+    if (offset > 0) query.set('offset', String(offset))
+    return this.request<CatalogPage>('GET', `/v1/catalog/discover?${query}`, { timeoutMs: 60_000 })
   }
 
   /** Queues an operation; the host answers 202 and the catalog then reports its progress. */
