@@ -78,13 +78,15 @@ asks for it, and a disk attached with `wsl --mount` is no longer attached. `star
 brings the host back for a scheduled task that runs at startup and at sign-in:
 
 1. it attaches each `-Vhd` with `wsl --mount --vhd <path> --bare` before the distribution
-   starts, so the distribution's fstab mounts find it;
+   starts, so the distribution's fstab mounts find it, and stops if one cannot be attached;
 2. it starts the distribution through `-KeepaliveTask`, a scheduled task that keeps it running,
    or keeps it running itself;
 3. it makes sure `-MountPoint` is mounted from a disk, never from a loop device over an image
-   file, and only then starts each `-Service`.
+   file, and with file system `-Uuid` when given, and only then starts each `-Service`.
 
-A second run changes nothing that is already up. It logs each step to
+A second run changes nothing that is already up. A failed step exits 1, so the task's restart
+settings try again, and every `wsl.exe` call has a timeout, so a hung call cannot hold up the
+retries; the task's execution time limit bounds the whole run. It logs each step to
 `%ProgramData%\Caboose\start-wsl.log`. Register it to run as the user who owns the
 distribution, whether or not that user is signed in, with highest privileges (attaching a
 disk needs them):
@@ -96,10 +98,13 @@ Register-ScheduledTask -TaskName 'Caboose-Start' `
   -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments) `
   -Trigger (New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME") `
   -Principal (New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Highest) `
-  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero))
+  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
+    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero))
 ```
 
-Add `-Vhd <path>` for a data disk kept outside the distribution.
+Add `-Vhd <path>` for a data disk kept outside the distribution, and `-Uuid <uuid>` to accept
+only that file system at `-MountPoint`. Without `-KeepaliveTask` the script itself keeps the
+distribution running, so the task has no execution time limit; with one, give it a limit.
 
 ## Checks
 
@@ -114,7 +119,9 @@ pwsh -NoProfile -File deploy/windows/setup-wsl.tests.ps1
 ```
 
 `start-wsl.tests.ps1` tests the order of `start-wsl.ps1`'s steps and what it refuses to do (no
-service starts on a missing disk or a loop-mounted image), against a recorded runner:
+service starts when a disk does not attach, the mount fails, or the mount is a loop device or
+another file system), against a recorded runner, and its process launching for real: argument
+quoting and the timeout that kills a hung call:
 
 ```sh
 pwsh -NoProfile -File deploy/windows/start-wsl.tests.ps1
