@@ -22,7 +22,8 @@ Revocation checks ownership using the signed-in account. Session cookie caching 
 so revoked sessions cannot authorize subsequent requests. Open administrator sockets are
 revalidated before a successful account-security or membership-removal response returns;
 expired sessions are checked every 30 seconds. A failed authorization read closes the
-connection. Owner-token and phone sockets keep their separate authorization behavior.
+connection. Each revalidation sweep has a five-second deadline; an unavailable database
+closes affected connections rather than stalling revocation. Owner-token and phone sockets keep their separate authorization behavior.
 
 ## Recovery email transport
 
