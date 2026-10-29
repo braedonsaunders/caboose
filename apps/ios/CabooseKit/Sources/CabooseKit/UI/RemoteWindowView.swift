@@ -355,6 +355,18 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         focusCheck = nil
     }
 
+    private var adoptedSurrounding = 0
+
+    /// The focused field's real text before its caret, where its app reports it, becomes
+    /// what the keyboard edits. A selection in the app is left to the keystroke path.
+    fileprivate func adoptSurroundingText() {
+        guard isFirstResponder, let window = remoteWindow, let report = session?.surroundingText,
+              report.window == window.id, report.serial != adoptedSurrounding else { return }
+        adoptedSurrounding = report.serial
+        guard !report.text.hasSelection else { return }
+        adoptRemoteText(beforeCaret: report.text.beforeCaret)
+    }
+
     @objc private func handleSecondaryClick(_ gesture: UITapGestureRecognizer) {
         stopMomentum()
         if gesture === secondaryTouchGesture { cancelTouches() }
@@ -728,6 +740,7 @@ private final class DisplayLinkTarget: NSObject {
             pacer.displayWillRefresh(view.displayID, targetTimestamp: link.targetTimestamp)
         }
         view.checkFocus()
+        view.adoptSurroundingText()
         view.layoutVideos()
         view.present()
     }

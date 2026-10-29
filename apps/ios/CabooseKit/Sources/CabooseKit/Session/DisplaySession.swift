@@ -97,6 +97,9 @@ public protocol DisplaySession: AnyObject {
     var cursorIsText: Bool? { get }
     /// What kind of text the focused field takes ("terminal", "password", "normal", …), when known.
     var textPurpose: String? { get }
+    /// The focused field's text around the caret, where its app reports it, with a serial
+    /// bumped on every report.
+    var surroundingText: (window: Int, serial: Int, text: SurroundingText)? { get }
     /// The display closed because another device took it over. Reconnecting on its own would
     /// take it back, so the app waits for the person to ask.
     var isReplaced: Bool { get }
@@ -147,6 +150,7 @@ public extension DisplaySession {
     func pencil(_ sample: PencilSample, in window: RemoteWindow) {}
     func displayWillRefresh(_ display: Int, targetTimestamp: CFTimeInterval) {}
     var textPurpose: String? { nil }
+    var surroundingText: (window: Int, serial: Int, text: SurroundingText)? { nil }
     var isReplaced: Bool { false }
     var health: DisplayLinkHealth { .empty }
     var closeCause: DisplayCloseCause? { nil }

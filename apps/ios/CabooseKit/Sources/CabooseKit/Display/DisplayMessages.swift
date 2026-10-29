@@ -304,7 +304,7 @@ public enum ServerMessage: Sendable {
     case tile(LosslessTile)
     case cursorImage(window: Int?, image: Data, hotspot: CGPoint)
     case cursorNamed(String)
-    case textInput(window: Int, enabled: Bool, purpose: String?)
+    case textInput(window: Int, enabled: Bool, purpose: String?, surrounding: SurroundingText?)
     case clipboard(mime: String, data: Data)
     case notification(id: Int, app: String, summary: String, body: String)
     case audio(AudioPacket)
@@ -339,7 +339,10 @@ public enum ServerMessage: Sendable {
             parsed = body["image"]?.data.map { .cursorImage(window: body["id"]?.int, image: $0, hotspot: hotspot) }
         case .cursorNamed: parsed = body["name"]?.string.map(ServerMessage.cursorNamed)
         case .textInput:
-            parsed = body["id"]?.int.map { .textInput(window: $0, enabled: body["enabled"]?.bool ?? false, purpose: body["purpose"]?.string) }
+            parsed = body["id"]?.int.map {
+                .textInput(window: $0, enabled: body["enabled"]?.bool ?? false, purpose: body["purpose"]?.string,
+                           surrounding: SurroundingText(text: body["surrounding"]?.string, cursor: body["cursor"]?.int, anchor: body["anchor"]?.int))
+            }
         case .clipboard:
             parsed = body["data"]?.data.map { .clipboard(mime: body["mime"]?.string ?? "text/plain;charset=utf-8", data: $0) }
         case .notification:
@@ -406,6 +409,34 @@ public struct TouchPoint: Equatable, Sendable {
         if let force { pairs.append(("force", CBOR(force))) }
         if let radius { pairs.append(("radius", CBOR(radius))) }
         return .map(pairs.map { (.text($0.0), $0.1) })
+    }
+}
+
+/// The application's text around the caret (text-input-v3 surrounding text), with the
+/// caret and the selection's other end as UTF-8 byte offsets into it.
+public struct SurroundingText: Equatable, Sendable {
+    public let text: String
+    public let cursor: Int
+    public let anchor: Int
+
+    /// Nil unless all three are present and the offsets fall on characters of the text.
+    public init?(text: String?, cursor: Int?, anchor: Int?) {
+        guard let text, let cursor, let anchor else { return nil }
+        let utf8 = text.utf8
+        func boundary(_ offset: Int) -> Bool {
+            guard (0...utf8.count).contains(offset) else { return false }
+            return utf8.index(utf8.startIndex, offsetBy: offset).samePosition(in: text.unicodeScalars) != nil
+        }
+        guard boundary(cursor), boundary(anchor) else { return nil }
+        self.text = text; self.cursor = cursor; self.anchor = anchor
+    }
+
+    /// Text is selected in the application.
+    public var hasSelection: Bool { cursor != anchor }
+
+    /// The text before the caret.
+    public var beforeCaret: String {
+        String(decoding: text.utf8.prefix(cursor), as: UTF8.self)
     }
 }
 

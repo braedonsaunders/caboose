@@ -50,6 +50,8 @@ public final class CabooseDisplaySession: DisplaySession {
     public private(set) var cursorSerial = 0
     /// The focused app's text-input-v3 state, where the server reports it.
     public private(set) var textInput: (window: Int, enabled: Bool, purpose: String?)?
+    /// The focused field's text around the caret, as its app last reported it, bumped on each report.
+    public private(set) var surroundingText: (window: Int, serial: Int, text: SurroundingText)?
 
     private var makeStream: () -> ByteStream
     private var displayToken: String
@@ -249,6 +251,7 @@ public final class CabooseDisplaySession: DisplaySession {
         placement.removeAll()
         focusedWindow = nil
         textInput = nil
+        surroundingText = nil
     }
 
     private func dropRetained() {
@@ -261,6 +264,7 @@ public final class CabooseDisplaySession: DisplaySession {
         placement[id] = nil
         if focusedWindow == id { focusedWindow = nil }
         if textInput?.window == id { textInput = nil }
+        if surroundingText?.window == id { surroundingText = nil }
     }
 
     private func send(_ message: ClientMessage) {
@@ -288,9 +292,17 @@ public final class CabooseDisplaySession: DisplaySession {
             case .cursorNamed(let name):
                 cursorName = name.lowercased()
                 cursorSerial &+= 1
-            case .textInput(let window, let enabled, let purpose):
-                textInput = (window, enabled, purpose)
-                cursorSerial &+= 1
+            case .textInput(let window, let enabled, let purpose, let surrounding):
+                // Surrounding text arrives with every edit; only a change of field or state is news for the cursor.
+                if textInput?.window != window || textInput?.enabled != enabled || textInput?.purpose != purpose {
+                    textInput = (window, enabled, purpose)
+                    cursorSerial &+= 1
+                }
+                if enabled, let surrounding {
+                    surroundingText = (window, (surroundingText?.serial ?? 0) &+ 1, surrounding)
+                } else if surroundingText?.window == window {
+                    surroundingText = nil
+                }
             case .clipboard(let mime, let data):
                 guard mime.hasPrefix("text/plain"), let text = String(data: data, encoding: .utf8) else { continue }
                 lastClipboard = text
@@ -453,6 +465,7 @@ public final class CabooseDisplaySession: DisplaySession {
         placement[id] = nil
         if focusedWindow == id { focusedWindow = nil }
         if textInput?.window == id { textInput = nil }
+        if surroundingText?.window == id { surroundingText = nil }
     }
 
     // MARK: Video streams

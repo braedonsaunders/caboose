@@ -292,7 +292,12 @@ impl State {
                 (self.text_inputs.enabled_purpose(&surface), self.window_of_surface(&surface))
             {
                 if self.windows.get(id).is_some_and(|w| w.announced.is_some()) {
-                    let state = proto::TextInputState { id, enabled: true, purpose: purpose.map(str::to_owned) };
+                    let state = proto::TextInputState {
+                        id,
+                        enabled: true,
+                        purpose: purpose.map(str::to_owned),
+                        surrounding: self.text_inputs.surrounding(&surface),
+                    };
                     self.net.send(conn, &Message::TextInput(state));
                 }
             }

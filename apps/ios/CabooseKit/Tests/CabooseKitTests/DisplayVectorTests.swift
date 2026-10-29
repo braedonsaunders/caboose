@@ -211,10 +211,13 @@ import Testing
     }
 
     @Test func textAndCursor() throws {
-        guard case .textInput(let window, let enabled, let purpose) = try server("text-input-enabled").first else { Issue.record("enabled"); return }
-        #expect(window == 7 && enabled && purpose == "terminal")
-        guard case .textInput(_, let off, let none) = try server("text-input-disabled").first else { Issue.record("disabled"); return }
+        guard case .textInput(let window, let enabled, let purpose, let context) = try server("text-input-enabled").first else { Issue.record("enabled"); return }
+        #expect(window == 7 && enabled && purpose == "terminal" && context == nil)
+        guard case .textInput(_, let off, let none, _) = try server("text-input-disabled").first else { Issue.record("disabled"); return }
         #expect(!off && none == nil)
+        guard case .textInput(_, _, _, let surrounding?) = try server("text-input-surrounding").first else { Issue.record("surrounding"); return }
+        #expect(surrounding.text == "Héllo world" && surrounding.cursor == 10 && !surrounding.hasSelection)
+        #expect(surrounding.beforeCaret == "Héllo wor")
         guard case .cursorNamed(let name) = try server("cursor-named-text").first else { Issue.record("cursor"); return }
         #expect(name == "text")
         guard case .cursorImage(let id, let image, _) = try server("cursor-image").first else { Issue.record("image"); return }

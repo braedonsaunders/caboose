@@ -291,9 +291,23 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "text-input-enabled",
             "text-input-v3 enabled on window 7 with the terminal purpose.",
-            Message::TextInput(TextInputState { id: 7, enabled: true, purpose: Some("terminal".into()) }),
+            Message::TextInput(TextInputState { id: 7, enabled: true, purpose: Some("terminal".into()), surrounding: None }),
         ),
-        one("text-input-disabled", "", Message::TextInput(TextInputState { id: 7, enabled: false, purpose: None })),
+        one(
+            "text-input-surrounding",
+            "The application's text around the caret: 'Héllo wor|ld', the caret after 'wor' (byte 10).",
+            Message::TextInput(TextInputState {
+                id: 7,
+                enabled: true,
+                purpose: Some("normal".into()),
+                surrounding: Some(Surrounding { text: "Héllo world".into(), cursor: 10, anchor: 10 }),
+            }),
+        ),
+        one(
+            "text-input-disabled",
+            "",
+            Message::TextInput(TextInputState { id: 7, enabled: false, purpose: None, surrounding: None }),
+        ),
         one(
             "clipboard-server",
             "",

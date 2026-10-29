@@ -99,8 +99,28 @@ open class RemoteTextInputView: UIView, UITextInput {
     /// `send(_:)` whenever it changes, with "" once it is committed or cancelled.
     open func sendPreedit(_ text: String, selection: NSRange) {}
 
+    /// When this view last sent edits or forgot its text; an app's report from before then
+    /// may be stale.
+    private var lastEdit: CFTimeInterval = 0
+
+    /// The remote field reported the text before its caret. It becomes the buffer when it
+    /// agrees with what was typed (the app has caught up) or nothing was typed for a moment
+    /// (the app changed it, or its caret moved); a report racing fresh keystrokes waits.
+    public func adoptRemoteText(beforeCaret text: String) {
+        let caughtUp = !buffer.text.isEmpty && text.hasSuffix(buffer.text)
+        guard caughtUp || CACurrentMediaTime() - lastEdit > 0.35 else { return }
+        var next = buffer
+        guard next.adopt(beforeCaret: text) else { return }
+        inputDelegate?.selectionWillChange(self)
+        inputDelegate?.textWillChange(self)
+        buffer = next
+        inputDelegate?.textDidChange(self)
+        inputDelegate?.selectionDidChange(self)
+    }
+
     /// Forgets the typed text, e.g. when focus may have moved in the remote app.
     public func resetTyping() {
+        lastEdit = CACurrentMediaTime()
         guard buffer != TypingBuffer() else { return }
         inputDelegate?.selectionWillChange(self)
         inputDelegate?.textWillChange(self)
@@ -113,7 +133,7 @@ open class RemoteTextInputView: UIView, UITextInput {
         buffer.marksAsPreedit = sendsMarkedTextAsPreedit
         let preedit = buffer.preedit
         let edits = edit(&buffer)
-        if !edits.isEmpty { send(edits) }
+        if !edits.isEmpty { lastEdit = CACurrentMediaTime(); send(edits) }
         if sendsMarkedTextAsPreedit, buffer.preedit != preedit {
             let marked = buffer.marked ?? NSRange(location: 0, length: 0)
             let caret = NSRange(location: max(0, buffer.selection.location - marked.location), length: buffer.selection.length)

@@ -3,8 +3,10 @@ import Foundation
 /// What the iOS text system believes is in a remote text field, so autocorrect, swipe
 /// typing, dictation and marked-text input (Chinese, Japanese, Korean) can edit it.
 ///
-/// The remote app's real text is unknown, so the buffer only holds what was typed since
-/// the last reset, and the remote caret is assumed to sit at the end of it. Every edit
+/// Where the app reports the text before its caret (text-input-v3 surrounding text), the
+/// buffer adopts it, so iOS edits with the field's real context. Otherwise the remote text
+/// is unknown, so the buffer only holds what was typed since the last reset. Either way the
+/// remote caret is taken to sit at the end of the buffer. Every edit
 /// iOS makes — inserting, replacing a misspelt word, recomposing marked text — becomes
 /// the backspaces and keystrokes that turn the old buffer into the new one. Moving the
 /// local caret sends nothing; the next edit retypes from where the texts diverge.
@@ -51,6 +53,25 @@ public struct TypingBuffer: Equatable, Sendable {
         text = ""
         selection = NSRange(location: 0, length: 0)
         marked = nil
+    }
+
+    /// Takes the remote field's text before its caret as the buffer, the caret at its end,
+    /// keeping at most `limit` UTF-16 units of the end. Not while composing: marked text is
+    /// the phone's until committed. Returns whether the buffer changed.
+    public mutating func adopt(beforeCaret remoteText: String) -> Bool {
+        guard marked == nil else { return false }
+        var adopted = remoteText
+        let units = (adopted as NSString).length
+        if units > Self.limit {
+            var drop = units - Self.limit
+            drop = NSMaxRange((adopted as NSString).rangeOfComposedCharacterSequence(at: drop - 1))
+            adopted = (adopted as NSString).substring(from: drop)
+        }
+        let caret = NSRange(location: (adopted as NSString).length, length: 0)
+        guard adopted != text || selection != caret else { return false }
+        text = adopted
+        selection = caret
+        return true
     }
 
     public mutating func select(_ range: NSRange) {

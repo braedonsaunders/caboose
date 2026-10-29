@@ -140,4 +140,34 @@ import Testing
         #expect(buffer.setMarked("z", selectedRange: NSRange(location: 1, length: 0)) == [.backspace(2)])
         #expect(buffer.unmark() == [.type("z")])
     }
+
+    @Test func adoptingTheFieldsTextGivesCorrectionsRealContext() {
+        var buffer = TypingBuffer()
+        #expect(buffer.adopt(beforeCaret: "Dear Sam, thanks for teh"))
+        #expect(buffer.selection == NSRange(location: 24, length: 0))
+        // Autocorrect replaces a word typed before the buffer began: the remote field retypes from where it differs.
+        #expect(buffer.replace(NSRange(location: 21, length: 3), with: "the") == [.backspace(2), .type("he")])
+        #expect(!buffer.adopt(beforeCaret: "Dear Sam, thanks for the"))
+    }
+
+    @Test func adoptionKeepsTheEndOfLongTextAndWaitsForComposition() {
+        var buffer = TypingBuffer(marksAsPreedit: true)
+        #expect(buffer.adopt(beforeCaret: String(repeating: "a", count: 500) + "é"))
+        #expect((buffer.text as NSString).length == TypingBuffer.limit)
+        #expect(buffer.text.hasSuffix("é"))
+        _ = buffer.setMarked("ka", selectedRange: NSRange(location: 2, length: 0))
+        #expect(!buffer.adopt(beforeCaret: "other"))
+    }
+}
+
+@Suite struct SurroundingTextTests {
+    @Test func offsetsAreUTF8BytesOnCharacters() throws {
+        let text = try #require(SurroundingText(text: "Héllo world", cursor: 10, anchor: 6))
+        #expect(text.beforeCaret == "Héllo wor")
+        #expect(text.hasSelection)
+        #expect(SurroundingText(text: "Héllo", cursor: 2, anchor: 2) == nil) // inside é
+        #expect(SurroundingText(text: "abc", cursor: 4, anchor: 0) == nil)
+        #expect(SurroundingText(text: "abc", cursor: nil, anchor: 0) == nil)
+        #expect(SurroundingText(text: nil, cursor: 0, anchor: 0) == nil)
+    }
 }

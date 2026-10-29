@@ -230,6 +230,17 @@ pub struct TextInputState {
     pub id: u64,
     pub enabled: bool,
     pub purpose: Option<String>,
+    /// The application's text around the caret, while enabled and when it reports it.
+    pub surrounding: Option<Surrounding>,
+}
+
+/// text-input-v3 surrounding text: at most 4000 bytes of UTF-8 around the caret, with the
+/// caret (`cursor`) and the selection's other end (`anchor`) as byte offsets into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Surrounding {
+    pub text: String,
+    pub cursor: u64,
+    pub anchor: u64,
 }
 
 /// `clipboard` (0x30 server → client, 0xA0 client → server).
@@ -712,9 +723,14 @@ impl Message {
                 .put("hotspot", Value::Array(vec![m.hotspot[0].into(), m.hotspot[1].into()]))
                 .build(),
             Message::CursorNamed { name } => MapBuilder::new().put("name", name.as_str()).build(),
-            Message::TextInput(m) => {
-                MapBuilder::new().put("id", m.id).put("enabled", m.enabled).opt("purpose", m.purpose.clone()).build()
-            }
+            Message::TextInput(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("enabled", m.enabled)
+                .opt("purpose", m.purpose.clone())
+                .opt("surrounding", m.surrounding.as_ref().map(|s| s.text.as_str()))
+                .opt("cursor", m.surrounding.as_ref().map(|s| s.cursor))
+                .opt("anchor", m.surrounding.as_ref().map(|s| s.anchor))
+                .build(),
             Message::ServerClipboard(c) | Message::ClientClipboard(c) => clipboard_value(c),
             Message::Notification(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -879,6 +895,14 @@ impl Message {
                 id: f.u64("id")?,
                 enabled: f.bool("enabled")?,
                 purpose: f.opt_string("purpose")?,
+                surrounding: match f.opt_string("surrounding")? {
+                    None => None,
+                    Some(text) => {
+                        let cursor = f.u64("cursor")?;
+                        let anchor = f.u64("anchor")?;
+                        Some(Surrounding { text, cursor, anchor })
+                    }
+                },
             }),
             CLIPBOARD => Message::ServerClipboard(clipboard_from(&f)?),
             NOTIFICATION => Message::Notification(Notification {

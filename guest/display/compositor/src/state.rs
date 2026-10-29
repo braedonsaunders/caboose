@@ -411,6 +411,7 @@ impl State {
                     id,
                     enabled: toggle.enabled,
                     purpose: toggle.purpose.map(str::to_owned),
+                    surrounding: toggle.surrounding.as_ref().map(crate::text_input::Surrounding::wire),
                 }),
             );
         }
