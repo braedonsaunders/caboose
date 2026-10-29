@@ -751,6 +751,7 @@ public final class CabooseDisplaySession: DisplaySession {
 
     /// A game window first waits, for up to five seconds, for the game's saves still on their way.
     public func close(_ window: RemoteWindow) {
+        CloseDiagnostics.record(window: window, connection: connections, epoch: epoch)
         guard let game = window.game else { return send(.close(window: window.id)) }
         guard let connection = stream else { return }
         let id = window.id

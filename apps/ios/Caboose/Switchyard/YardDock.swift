@@ -177,7 +177,7 @@ struct DockAppActions: View {
                 Button(action.title, systemImage: action == .pin ? "pin" : "pin.slash") { model.togglePin(app); done() }
             case .close(let id, _):
                 Button(action.title, systemImage: "xmark", role: .destructive) {
-                    if let window = model.session?.windows[id] { model.session?.close(window) }
+                    if let window = model.session?.windows[id] { model.session?.closeDiagnosed(window) }
                     done()
                 }
             }

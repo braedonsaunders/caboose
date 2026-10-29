@@ -535,9 +535,9 @@ final class YardModel {
 
     // MARK: Closing
 
-    func close(_ window: Int) {
+    func close(_ window: Int, file: StaticString = #fileID, line: UInt = #line) {
         guard let session, let remote = session.windows[window] else { return }
-        session.close(remote)
+        session.closeDiagnosed(remote, context: .init(overviewOpen: overviewOpen), file: file, line: line)
     }
 
     // MARK: Saving

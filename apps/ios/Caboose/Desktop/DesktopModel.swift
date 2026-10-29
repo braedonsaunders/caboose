@@ -437,7 +437,7 @@ final class DesktopModel {
         case .launcherPage: break
         case .dock(let id):
             if button == 3 { contextDockID = id } else { contextDockID = nil; open(id) }
-        case .close(let id): if let window = session.windows[id] { session.close(window) }
+        case .close(let id): if let window = session.windows[id] { session.closeDiagnosed(window, context: .init(cursor: cursor)) }
         case .minimize(let id): minimize(id)
         case .zoom(let id): toggleZoom(id, session)
         case .titleBar(let id), .resize(let id): raise(id); focus(id, session)

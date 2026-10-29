@@ -480,7 +480,7 @@ struct DesktopKeyCommands: View {
             key("Restore", .downArrow, shift: true) { snap(nil) }
             key("Zoom", "f") { front { desktop.toggleZoom($0.id, $1) } }
             key("Minimize", "m") { front { window, _ in desktop.minimize(window.id) } }
-            key("Close Window", "w") { front { $1.close($0) } }
+            key("Close Window", "w") { front { $1.closeDiagnosed($0) } }
             key("Launchpad", "a") { withAnimation(.smooth(duration: 0.3)) { desktop.launchpadOpen.toggle() } }
             key("New Terminal", .return) { model.openTerminalApp() }
             QuickSwitchKeys(recent: { model.recentWindowIDs }) { desktop.switchTarget(session: model.session) }

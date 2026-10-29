@@ -399,11 +399,11 @@ struct LiveWindowTile: View {
         model.show(windowID: window.id)
     }
 
-    private func closeWindow() {
+    private func closeWindow(file: StaticString = #fileID, line: UInt = #line) {
         guard closeTarget.ready else { return }
         // The app decides whether to show an unsaved-change dialog. Keep its tile until
         // the server removes the window; closing never implies opening or force quitting.
-        model.session?.close(window)
+        model.session?.closeDiagnosed(window, file: file, line: line)
     }
 
     private func updateFeedback(_ translation: CGPoint) {

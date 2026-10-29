@@ -344,7 +344,7 @@ struct WindowScreen: View {
             Button("Play on iPhone or Apple TV", systemImage: "play.tv") { Task { await model.media.playHere(video) } }
         }
         Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
-        Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
+        Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.closeDiagnosed(window) }
     }
 
     /// Fill the shown area with the window, in Linux pixels.

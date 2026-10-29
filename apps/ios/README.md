@@ -1097,3 +1097,27 @@ input path without application-name rules.
 5. In native-touch content, swipe and pinch: the Linux app still owns those gestures.
    Check a native context hold and ordinary keyboard focus as well. Laptop trackpad
    gestures remain one finger to point and two fingers to scroll.
+
+### Opt-in close request diagnostics
+
+The Boolean app preference `CabooseCloseDiagnosticsEnabled` defaults to false. For a
+coordinated diagnostic launch, pass `-CabooseCloseDiagnosticsEnabled YES` as app launch
+arguments. With it enabled, a close request writes
+`Library/Caches/CabooseDiagnostics/close-requests.json` in the app container. The file
+contains at most the latest 64 requests from this process and is capped at 128 KiB.
+It is replaced atomically on close requests; there is no per-input disk logging or upload.
+Disable the preference or remove the launch override to stop recording; the existing
+artifact remains available for collection or deletion through the app container tools.
+
+Records contain monotonic seconds, window ID, connection generation, the validated
+server epoch, reported window geometry, initiating source file/line and available
+numeric UI context. Yard requests include whether Overview is open; free-desktop
+hit-tested requests include the cursor position. Title-bar controls include their
+measured global label bounds. These bounds are not UIKit's effective hit region and do
+not prove which physical touch activated the button. There are no stacks, window titles,
+account strings, URLs, text input, screenshots or protocol changes. Missing caller
+metadata identifies a close path that did not use the UI attribution wrapper.
+
+A record means the canonical session close method was called. It does not confirm a
+wire send: a device game still waits for its saves under the existing close policy.
+Correlate with a passive wire capture's close ID/time and subsequent window lifecycle.
