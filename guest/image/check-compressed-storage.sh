@@ -50,6 +50,9 @@ options=$(findmnt -n -o OPTIONS --target "$work/root")
 for option in compress-force=zstd:1 discard=async noatime; do
   [[ ,$options, == *,$option,* ]] || { echo "Missing mount option: $option" >&2; exit 1; }
 done
+btrfs filesystem sync "$work/root"
+fstrim "$work/root"
+compressed_before=$(stat -c %b "$work/base.raw")
 python3 - "$work/root/compressible" <<'PY'
 import pathlib, sys
 with pathlib.Path(sys.argv[1]).open('wb') as f:
@@ -57,13 +60,18 @@ with pathlib.Path(sys.argv[1]).open('wb') as f:
         f.write(b'Caboose compression check\n'.ljust(4096, b'x'))
 PY
 btrfs filesystem sync "$work/root"
-python3 - "$work/root/compressible" <<'PY'
+fstrim "$work/root"
+compressed_after=$(stat -c %b "$work/base.raw")
+# Btrfs inode st_blocks describes uncompressed extent lengths. Measure actual
+# host backing allocation instead, including metadata growth from this write.
+python3 - "$work/root/compressible" "$compressed_before" "$compressed_after" <<'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 s = p.stat()
-assert 0 < s.st_blocks * 512 < s.st_size, 'Fixture did not compress on disk'
+allocated = (int(sys.argv[3]) - int(sys.argv[2])) * 512
+assert 0 < allocated < s.st_size, f'Fixture did not reduce backing allocation: {allocated}'
 assert p.read_bytes() == b'Caboose compression check\n'.ljust(4096, b'x') * 4096
-print(f'Fixture: {s.st_size} logical bytes, {s.st_blocks * 512} allocated bytes')
+print(f'Fixture: {s.st_size} logical bytes, {allocated} additional backing bytes')
 PY
 # Random data exercises real allocated extents; fstrim must punch holes in the
 # backing file after deletion, not merely report successful ioctl submission.
