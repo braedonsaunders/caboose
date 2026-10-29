@@ -21,6 +21,71 @@ def within(path, root):
     return path == root or path.startswith(root.rstrip('/') + '/')
 
 
+def plan_freezer_branches(nodes, trusted):
+    """Plan disjoint whole cgroup branches, leaving only trusted PIDs unfrozen.
+
+    `nodes` maps absolute cgroup-v2 paths to their direct cgroup.procs PIDs.
+    The caller must fence admission and revalidate the tree after freezing; a
+    plan made from an isolated proc scan does not establish snapshot authority.
+    """
+    trusted = set(trusted)
+    if '/' not in nodes or not trusted:
+        raise Unsupported('incomplete cgroup tree or trusted set')
+    parents = {}
+    seen = set()
+    for path, pids in nodes.items():
+        if not isinstance(path, str) or not path.startswith('/') or (path != '/' and any(part in ('', '.', '..') for part in path[1:].split('/'))):
+            raise Unsupported('invalid cgroup path')
+        for pid in pids:
+            if not isinstance(pid, int) or pid <= 0 or pid in seen:
+                raise Unsupported('invalid or duplicate process')
+            seen.add(pid)
+        if path != '/':
+            parent = path.rsplit('/', 1)[0] or '/'
+            if parent not in nodes:
+                raise Unsupported('incomplete cgroup tree')
+            parents[path] = parent
+    if not trusted.issubset(seen):
+        raise Unsupported('trusted process missing')
+    protected = {'/'}
+    for path, pids in nodes.items():
+        if trusted.intersection(pids):
+            while path != '/':
+                protected.add(path)
+                path = parents[path]
+    for path in protected:
+        if set(nodes[path]) - trusted:
+            raise Unsupported('unaccounted process shares recovery ancestry')
+    return sorted(path for path, parent in parents.items() if parent in protected and path not in protected)
+
+
+def cgroup_tree(root='/sys/fs/cgroup', max_groups=8192, max_pids=131072):
+    """Read a bounded cgroup-v2 tree; any race or inaccessible entry fails closed."""
+    nodes = {}
+    pending = [('/', Path(root))]
+    total = 0
+    try:
+        while pending:
+            path, directory = pending.pop()
+            if len(nodes) >= max_groups:
+                raise Unsupported('cgroup tree too large')
+            raw = (directory / 'cgroup.procs').read_text()
+            pids = [int(line) for line in raw.splitlines()]
+            total += len(pids)
+            if total > max_pids:
+                raise Unsupported('too many processes')
+            nodes[path] = pids
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        raise Unsupported('symlink in cgroup tree')
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(((path.rstrip('/') + '/' + entry.name), Path(entry.path)))
+    except (OSError, ValueError) as error:
+        raise Unsupported('cgroup tree unavailable') from error
+    return nodes
+
+
 def check_mounts(mountinfo, home='/home/caboose'):
     """Require home to live on the root ext4 mount, with no nested mounts."""
     mounts = []
@@ -106,6 +171,37 @@ def set_frozen(cgroup, frozen, timeout=5):
             time.sleep(0.02)
     except (OSError, ValueError) as error:
         raise Unsupported('cgroup freezer unavailable') from error
+
+
+def freeze_branches(nodes, trusted, root='/sys/fs/cgroup'):
+    """Freeze planned branches and return those changed by this invocation.
+
+    A caller must durably journal the branch list *before* calling this function
+    and retain it until thaw succeeds. This function rechecks the entire tree;
+    a changed tree is rejected and every attempted freeze is rolled back.
+    """
+    branches = plan_freezer_branches(nodes, trusted)
+    changed = []
+    try:
+        for branch in branches:
+            directory = Path(root) / branch.lstrip('/')
+            events = dict(line.split() for line in (directory / 'cgroup.events').read_text().splitlines())
+            if events.get('frozen') not in ('0', '1'):
+                raise Unsupported('cgroup freezer state unavailable')
+            if events['frozen'] == '0':
+                changed.append(branch)  # A failed write may still have reached the kernel.
+                set_frozen(directory, True)
+        if cgroup_tree(root) != nodes:
+            raise Unsupported('cgroup tree changed during freeze')
+        return changed
+    except BaseException as error:
+        failed = []
+        for branch in reversed(changed):
+            try: set_frozen(Path(root) / branch.lstrip('/'), False)
+            except Exception as failure: failed.append(str(failure))
+        if failed:
+            raise Unsupported('cgroup rollback failed; recovery is required') from error
+        raise
 
 
 # Linux FITHAW; EINVAL means the filesystem is already thawed (for example,

@@ -1,11 +1,48 @@
 import unittest
 import errno
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
-from parked_quiesce import Unsupported, check_mounts, check_processes, thaw
+from parked_quiesce import Unsupported, cgroup_tree, check_mounts, check_processes, freeze_branches, plan_freezer_branches, thaw
 
 ROOT = '1 0 8:1 / / rw - ext4 /dev/vda rw\n'
 
 class QuiesceChecks(unittest.TestCase):
+    def test_cgroup_tree_reads_direct_pids_and_fails_on_missing_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'cgroup.procs').write_text('1\n')
+            child = root / 'system.slice'
+            child.mkdir()
+            (child / 'cgroup.procs').write_text('55\n')
+            self.assertEqual(cgroup_tree(directory), {'/': [1], '/system.slice': [55]})
+            (child / 'cgroup.procs').unlink()
+            with self.assertRaises(Unsupported): cgroup_tree(directory)
+
+    def test_freezer_plan_includes_writer_outside_user_slice(self):
+        nodes = {'/': [1], '/system.slice': [], '/system.slice/recovery.service': [10],
+                 '/system.slice/other.service': [55], '/user.slice': [42]}
+        self.assertEqual(plan_freezer_branches(nodes, [1, 10]), ['/system.slice/other.service', '/user.slice'])
+
+    def test_freezer_plan_rejects_unaccounted_process_on_recovery_path(self):
+        nodes = {'/': [1, 99], '/system.slice': [], '/system.slice/recovery.service': [10]}
+        with self.assertRaises(Unsupported): plan_freezer_branches(nodes, [1, 10])
+
+    def test_freezer_plan_rejects_missing_nodes_and_duplicate_processes(self):
+        for nodes in ({'/': [1], '/missing/child': [2]}, {'/': [1], '/a': [1]}):
+            with self.assertRaises(Unsupported): plan_freezer_branches(nodes, [1])
+
+    def test_changed_tree_rolls_back_attempted_freezes(self):
+        nodes = {'/': [1], '/user.slice': [42], '/system.slice': [55]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ('user.slice', 'system.slice'):
+                (root / name).mkdir()
+                (root / name / 'cgroup.events').write_text('frozen 0\n')
+            with patch('parked_quiesce.cgroup_tree', return_value={'/': [1]}), patch('parked_quiesce.set_frozen') as set_freeze:
+                with self.assertRaises(Unsupported): freeze_branches(nodes, [1], directory)
+                self.assertEqual([call.args[1] for call in set_freeze.call_args_list], [True, True, False, False])
+
     def test_owner_outside_slice_is_refused(self):
         with self.assertRaises(Unsupported):
             check_processes([(42, 1000, '/user.slice/user-1000.slice', '')])
