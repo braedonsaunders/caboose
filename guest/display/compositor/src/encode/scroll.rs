@@ -8,7 +8,7 @@
 //! The match share only decides whether a copy is worth sending.
 //!
 //! The search is bounded so that it costs far less than the picture it replaces: one hash
-//! per row of the damaged region in each picture, a vote over those hashes for the
+//! per row and its middle half in each picture, a vote over those hashes for the
 //! vertical shift, column hashes only when the window was just scrolled sideways, and an
 //! exact comparison of at most [`MAX_CANDIDATES`] shifts that gives up as soon as too many
 //! blocks differ.
@@ -103,28 +103,28 @@ pub fn plan(
             candidates.push(c);
         }
     };
-    if let Some(dy) = vote(&shown_rows[first..=last], &new_rows[first..=last], band_h / 2) {
-        add((0, dy));
-    }
+    let row_votes = vote(&shown_rows[first..=last], &new_rows[first..=last], band_h / 2);
+    if let Some(&dy) = row_votes.first() { add((0, dy)); }
     // Fixed sidebars and scrollbars can make every complete row different even
     // when the document between them moved exactly. Vote on its middle half too;
     // the complete damaged region still has to pass the exact block comparison.
     let inset = region_w / 4;
     let middle_shown: Vec<_> = (band.0..band.1).map(|y| hash(shown.row(y, x0 + inset, x1 - inset))).collect();
     let middle_new: Vec<_> = (band.0..band.1).map(|y| hash(new.row(y, x0 + inset, x1 - inset))).collect();
-    if let Some(dy) = vote(&middle_shown, &middle_new, band_h / 2) {
-        add((0, dy));
-    }
+    let middle_votes = vote(&middle_shown, &middle_new, band_h / 2);
+    if let Some(&dy) = middle_votes.first() { add((0, dy)); }
     if hints.iter().any(|&(dx, _)| dx != 0) {
         let shown_columns = column_hashes(shown, x0, x1, band.0, band.1);
         let new_columns = column_hashes(new, x0, x1, band.0, band.1);
-        if let Some(dx) = vote(&shown_columns, &new_columns, region_w / 2) {
-            add((dx, 0));
-        }
+        for dx in vote(&shown_columns, &new_columns, region_w / 2).into_iter().take(2) { add((dx, 0)); }
     }
     for &hint in hints {
         add(hint);
     }
+
+    // Repeating line shapes can give the strongest vote to a nearby text row.
+    // Try the remaining leading votes within the same exact-comparison budget.
+    for dy in row_votes.into_iter().skip(1).chain(middle_votes.into_iter().skip(1)) { add((0, dy)); }
 
     let blocks = (x1 - x0).div_ceil(BLOCK) * (y1 - y0).div_ceil(BLOCK);
     let band_blocks = (x1 - x0).div_ceil(BLOCK) * (band.1.div_ceil(BLOCK) - band.0 / BLOCK);
@@ -269,7 +269,7 @@ impl Shift {
 /// The shift most changed rows agree on: row `i` of `new` equal to row `i - shift` of
 /// `shown`, at least [`MIN_VOTES`] times, with `|shift| < limit`. Only rows whose hash
 /// occurs once in `shown` vote, so blank rows, which match anywhere, say nothing.
-fn vote(shown: &[u64], new: &[u64], limit: usize) -> Option<i32> {
+fn vote(shown: &[u64], new: &[u64], limit: usize) -> Vec<i32> {
     let mut once: HashMap<u64, Option<usize>> = HashMap::with_capacity(shown.len());
     for (i, &h) in shown.iter().enumerate() {
         once.entry(h).and_modify(|at| *at = None).or_insert(Some(i));
@@ -286,12 +286,10 @@ fn vote(shown: &[u64], new: &[u64], limit: usize) -> Option<i32> {
             }
         }
     }
-    votes
-        .into_iter()
-        .filter(|&(_, n)| n >= MIN_VOTES)
-        // The most votes; between equals, the smaller shift.
-        .max_by_key(|&(shift, n)| (n, std::cmp::Reverse(shift.unsigned_abs()), shift))
-        .map(|(shift, _)| shift)
+    let mut ranked: Vec<_> = votes.into_iter().filter(|&(_, n)| n >= MIN_VOTES).collect();
+    ranked.sort_unstable_by_key(|&(shift, n)| (std::cmp::Reverse(n), shift.unsigned_abs(), std::cmp::Reverse(shift)));
+    tracing::debug!("copy votes: {:?}", &ranked[..ranked.len().min(MAX_CANDIDATES)]);
+    ranked.into_iter().take(MAX_CANDIDATES).map(|(shift, _)| shift).collect()
 }
 
 const K: u64 = 0x9e37_79b9_7f4a_7c15;

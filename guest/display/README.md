@@ -64,7 +64,8 @@ This directory is a Cargo workspace:
   goes as a copy within the picture the client shows plus lossless tiles, with no x264
   pass. When a window that was just scrolled or touched (or whose last update was a copy)
   damages at least 128×128 pixels, the encoder compares the new picture with the shadow:
-  a hash of every damaged row votes for the vertical shift, column hashes vote for a
+  hashes of every damaged row and its middle half vote for the vertical shift (fixed
+  side pixels do not hide document motion), column hashes vote for a
   sideways one after a horizontal scroll, and the scroll deltas themselves are tried too.
   A shift is used only when an exact comparison finds at least 90% of the damaged
   region's 16×16 blocks reproduced; every other block, the exposed edge included, follows
