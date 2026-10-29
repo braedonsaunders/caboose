@@ -34,5 +34,13 @@ jobs:
       - run: pnpm --filter caboose-host typecheck
       - run: pnpm --filter caboose-web typecheck
       - run: pnpm --filter caboose-host exec vitest run --maxWorkers=2 --no-file-parallelism
+      - name: Check offline storage and appliance boundaries
+        run: |
+          python3 apps/host/scripts/tests/test-migration-transaction.py
+          python3 apps/host/scripts/tests/test-migration-appliance.py
+          python3 apps/host/scripts/tests/test-migration-appliance-guard.py
+          python3 apps/host/scripts/tests/test-migrate-disk.py
+          python3 apps/host/scripts/tests/test-parked-appliance.py
+          python3 apps/host/scripts/tests/check-host-lock.py
       - run: pnpm --filter caboose-web test
       - run: pnpm --filter caboose-web build

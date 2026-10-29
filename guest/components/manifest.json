@@ -1,5 +1,9 @@
 [
   "components/install.sh",
+  "components/caboose-workloads.slice",
+  "components/caboose-owner-run",
+  "template/caboose-template.py",
+  "template/caboose-template.target",
   "components/caboose-vsock-services.py",
   "components/caboose-vsock-services.service",
   "components/container-services.sh",
@@ -13,6 +17,7 @@
   "keyring/install.sh",
   "keyring/caboose-keyring",
   "files/caboose-files.py",
+  "files/parked_quiesce.py",
   "files/caboose-files.service",
   "terminal/caboose-terminal.py",
   "terminal/caboose-terminal.service",

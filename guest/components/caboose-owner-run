@@ -1,0 +1,8 @@
+#!/bin/sh
+# Enter the owner workload slice before dropping privileges and executing argv.
+set -eu
+if [ "$#" -eq 0 ]; then
+  echo 'usage: caboose-owner-run COMMAND [ARG ...]' >&2
+  exit 2
+fi
+exec systemd-run --quiet --scope --slice=caboose-workloads.slice -- /usr/sbin/runuser -u caboose -- "$@"

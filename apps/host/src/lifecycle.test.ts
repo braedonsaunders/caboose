@@ -6,6 +6,24 @@ import { config } from './config.js'
 afterEach(() => vi.useRealTimers())
 
 describe('computer lifecycle', () => {
+  it('invalidates a park publication guard as soon as wake is admitted', async () => {
+    let release!: () => void
+    let guard!: () => boolean
+    let computer!: ComputerLifecycle<string>
+    computer = new ComputerLifecycle({ wake: async () => 'desk', park: async () => {
+      guard = computer.parkingGenerationGuard()
+      await new Promise<void>(resolve => { release = resolve })
+    } }, 10000)
+    await computer.wake()
+    const parking = computer.park()
+    await vi.waitFor(() => expect(release).toBeDefined())
+    expect(guard()).toBe(true)
+    const waking = computer.wake('headless')
+    expect(guard()).toBe(false)
+    release()
+    await parking
+    await waking
+  })
   it('invalidates parked work synchronously and serializes wake behind it', async () => {
     let release!: () => void
     const cancel = vi.fn()

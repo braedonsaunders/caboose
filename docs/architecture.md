@@ -79,7 +79,12 @@ disk; on wake it checks the system image, kernel and initramfs, and checks the b
 creating a disk. Initramfs mounts the EROFS image read-only and
 mounts writable overlays for `/usr` and `/opt`, whose upper and work directories live on
 the computer's ext4 disk. Package and component updates persist there. Existing disks
-and snapshots remain on their original image; switching the setting does not migrate them.
+and snapshots remain on their original image when the setting changes. An operator can
+explicitly migrate a cold-stopped legacy disk using the offline Linux migration tool. The
+tool retains the original disk and kernel, uses a crash-recovery journal, refuses parked
+memory, and holds host and Cloud Hypervisor-compatible disk locks. Guest filesystems and
+initramfs hooks run only in isolated appliances, using separate clones. Rollback requires
+explicit acknowledgement that writes since migration will be lost.
 The device uses read-only virtio-block; this does not establish DAX or a RAM saving.
 
 The image contains:
@@ -170,6 +175,15 @@ replaces its script atomically and reuses dependencies whose exact versions alre
 An active runner finishes with the code it loaded; the next runner uses the installed code.
 The bundle does not include Caboose Display or its units, which come with the image.
 
+VM images place Caboose owner service units in `caboose-workloads.slice` and install
+`caboose-owner-run`, which enters a scope in that slice before switching to the owner.
+The microVM command transport uses that launcher for standard owner commands when it
+is installed, and uses `runuser` on older guests. Other owner processes can still run
+outside that slice.
+If a parked Files freeze recovery intent exists, VM wake thaws the guest filesystem
+and workload slice before exposing guest services. A failed thaw retains the intent
+and fails the wake.
+
 ### Owner credential store
 
 The host holds a random nonempty per-computer keyring password in `keyring-secret` in that
@@ -202,7 +216,34 @@ the image files `base.raw`, `vmlinux` and `initrd` in `CABOOSE_IMAGE_ROOT`, its 
 On Linux, operators can opt into Cloud Hypervisor copy-on-write restore and
 virtio-balloon free-page reporting. Copy-on-write restore retires the old
 snapshot before the VM can write and keeps its source unchanged until the VMM
-exits; an interrupted VM can leave a source file requiring verified cleanup.
+exits; an interrupted VM can leave a source file requiring verified cleanup. Native Linux bundles and the host image pin AppKit’s incremental.1 Cloud Hypervisor v54 build with archive and binary checksums. On a reflink-capable filesystem, it can reuse the unchanged CoW source extents and write private pages into a new self-contained snapshot; unavailable incremental paths write a full snapshot.
+Operators may instead select on-demand restore, which requires Linux userfaultfd
+and fails closed if the kernel or permissions cannot support it. On-demand
+restore retains its source while the VMM can use it and cannot be combined
+with a shared memory template or the microVM depot.
+
+Linux hosts can opt new microVM computers into a memory template with
+`CABOOSE_VM_TEMPLATE=on`. A dedicated source boots directly into an isolated
+systemd target from a copy of the golden image. The host pins a read-only
+memory inode shared by descendants, gives each computer its own writable disk
+and device identities, and retains the source inode while descendants exist.
+The host administrator and source owner keep that read-only inode unchanged;
+writing or truncating it while a descendant runs corrupts the guest.
+The source registration binds the VMM, CPU, golden image, kernel, initramfs and
+read-only attachments. Before resuming, the host verifies that the VMM privately
+maps the complete memory file; a fallback to eager copying is rejected. Before
+exposing a fork, the host blocks its TAP, the
+guest refreshes vsock and virtio-rng devices, reseeds its kernel, changes its
+machine ID and MAC, and restarts the private agent to discard its copied
+userspace random state. It then starts its normal services; the host releases the fence
+only after the private Files and terminal services are ready. The guest runtime-masks
+networkd wait-online because the host configures its network directly. An interrupted
+strict restore remains fenced and requires recovery. Interrupted source builds
+retain a network and runtime receipt for the operator recovery command; that
+command refuses cleanup while the source VMM or TAP is still in use. Existing non-template computers keep their original paths and restore
+behavior. A fork retains the source kernel boot ID until its next cold boot.
+Copy-on-write mode may fall back for unsupported Cloud Hypervisor configurations;
+template preparation rejects those configurations.
 
 An optional S3-compatible cold tier compresses and encrypts a parked snapshot
 after four hours. It verifies the remote archive before replacing the local
@@ -259,6 +300,12 @@ caboose-session start-files  # the file service on 14700
 
 The microVM is the default because it isolates the computer as a VM and its parked state
 survives host restarts.
+
+On Linux, the microVM host holds an exclusive advisory lock at `.host.lock` in the
+image root. Its VMM and virtio-fs daemons inherit the lock, so a surviving daemon
+continues to fence other cooperating host processes after the host exits. The host
+refuses startup if an `overlays/*.migration.json` journal is present. Operators
+must stop older hosts and verify their VMMs have exited before relying on this lock.
 
 ### Network fencing
 
@@ -2521,8 +2568,12 @@ The extension enumerates its home through `/v1/fs`, downloads on demand, and upl
 `If-Match` and `If-None-Match`. It keeps stable item identifiers in its extension storage
 across moves, signals the working set when the app receives `fs.changed`, and
 re-enumerates after an expired anchor. The system generates previews for downloaded files;
-there are no server-side thumbnails. Files access wakes a parked computer, and an
-unreachable host is reported to Files as unreachable.
+there are no server-side thumbnails. On an opted-in supported Linux microVM, Files can
+read a sealed parked view through one network-disabled, read-only libguestfs appliance per request. Metadata and bounded content chunks share that appliance. The reader parses the guest Python MIME tables as literal data without executing guest code. Unsupported paths,
+metadata, change feeds and all mutations wake the computer. The guest's `.cache`
+tmpfs is absent from the disk view, so `.cache` access and home-root listings also
+wake rather than exposing the underlying mountpoint. An unreachable host is
+reported to Files as unreachable.
 
 ### Open in place
 

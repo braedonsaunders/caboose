@@ -14,6 +14,13 @@ are updated. The installer is safe to repeat. The Thunar action is a system defa
 custom actions can override it. See `docs/architecture.md` § Guest for the API and
 older-container caveat.
 
+VM installations include `caboose-workloads.slice` and the root-invoked
+`caboose-owner-run` launcher. The launcher enters a transient scope in that
+slice before switching to the owner; supported owner service units also use the
+slice. Other owner launch paths can still run outside it, so membership alone
+does not establish a complete workload boundary.
+`python3 guest/components/test_owner_run.py` checks argument handling and launch order.
+
 From the repository root, `python3 guest/components/test_install.py` checks dependency
 detection and APT failures with isolated shell fixtures. It needs Bash and Python 3, runs
 without root, Docker or network access, and stops before the first system-file write.
