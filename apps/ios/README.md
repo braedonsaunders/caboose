@@ -43,13 +43,18 @@ the QR code with the iPhone's camera (or open its `caboose://connect?host=…&co
 the phone). The app trades the single-use code for its own token through `POST /v1/pair`
 (`Caboose/Host/Pairing.swift`) at the first of the link's addresses that answers. The
 sign-in screen also takes an address with a typed pairing code, or with a token, and older
-links that carry `token=` still work.
+links that carry `token=` still work. Under Computer settings, Remote Access adds or removes
+alternate HTTP or HTTPS addresses without replacing the phone's token or Files identity.
+The settings are available even when the host is unreachable. The app tries saved addresses
+at each wake.
 
 ## Test
 
 ```sh
 cd apps/ios/CabooseKit && swift test
 ```
+
+Run `sh scripts/check-remote-access.sh` for the paired-phone remote access check.
 
 The unit tests replay the compositor's golden vectors from `guest/display/vectors` (every
 message decodes, re-encodes byte for byte and parses, and every client message the app

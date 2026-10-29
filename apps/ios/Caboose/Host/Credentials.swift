@@ -53,6 +53,11 @@ struct Credentials: Equatable {
         UserDefaults.standard.removeObject(forKey: Self.alternatesKey)
     }
 
+    /// Update only addresses; leave the existing Keychain token untouched.
+    func saveAddresses() {
+        Self.write(Self.addressesService, candidates.map(\.absoluteString).joined(separator: "\n"))
+    }
+
     static func clear() {
         UserDefaults.standard.removeObject(forKey: hostKey)
         UserDefaults.standard.removeObject(forKey: alternatesKey)
