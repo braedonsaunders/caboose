@@ -17,6 +17,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
       async boot(plan, hooks) {
         expect(plan.initramfsPath).toBe(join(root, 'initrd'))
         restores.push(plan.snapshot.restoring)
+        if (!plan.snapshot.restoring && plan.hypervisor === 'cloud-hypervisor') expect(plan.vmm.args).toContain('size=0,free_page_reporting=on')
         await hooks?.onRestored?.()
         return {
           deskId: plan.deskId,
@@ -35,7 +36,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
       },
     }
     const network = vi.fn(async () => {})
-    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false }
+    const config = { vmFreePageReporting: true, token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false }
     const desired = { name: 'My computer', memoryMb: 512, vcpus: 1, idleMs: 60000, defaultAgent: null }
     const dependencies = { backend, network, deviceExists: () => true, snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} }, settings: () => desired }
     const controller = createController(config, dependencies)
