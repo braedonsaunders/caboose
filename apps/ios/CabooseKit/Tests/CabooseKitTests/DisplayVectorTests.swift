@@ -261,7 +261,11 @@ import Testing
     }
 
     @Test func gpuStreams() throws {
-        guard case .gpuCreate(1, 7) = try server("gpu-create").first else { Issue.record("gpu.create"); return }
+        guard case .gpuCreate(1, 7, nil, nil) = try server("gpu-create").first else { Issue.record("gpu.create"); return }
+        guard case .gpuCreate(1, 7, "8c41d07e2b9fa365"?, nil) = try server("gpu-create-nonce").first else { Issue.record("nonce"); return }
+        guard case .gpuCreate(1, 7, "8c41d07e2b9fa365"?, 1_048_576?) = try server("gpu-create-resume").first else {
+            Issue.record("resume"); return
+        }
         guard case .gpuData(1, 0, let data) = try server("gpu-data").first else { Issue.record("gpu.data"); return }
         #expect(data == Data("GFXR".utf8) + Data(count: 12))
         guard case .gpuDestroy(1, nil) = try server("gpu-destroy").first else { Issue.record("gpu.destroy"); return }
@@ -352,6 +356,10 @@ import Testing
         "client-hello-scaled-motion": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], scaledMotion: true),
+        "client-hello-gpu-resume": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], gpu: true,
+           gpuResume: GPUResume(epoch: "5f3a9c01d2e4b678", streams: [GPUResume.Stream(id: 1, nonce: "8c41d07e2b9fa365", offset: 1_048_576)])),
         "gpu-ack": .gpuAck(id: 1, offset: 65536),
         "game-decline": .gameDecline(id: 1, reason: "the page is not cross-origin isolated"),
         "webview-decline": .webviewDecline(id: 1, reason: "web view failed"),

@@ -89,6 +89,9 @@ public final class CabooseDisplaySession: DisplaySession {
     private var reconciling: (marker: UInt64, announced: Set<Int>)?
     /// The games announced since the last hello; a kept game the burst does not announce has ended.
     private var announcedGames = Set<Int>()
+    /// The GPU streams announced since the last hello; a kept stream the burst does not announce
+    /// has ended.
+    private var announcedGPUStreams = Set<Int>()
     private var buttons = 0
     private var focusedWindow: Int?
     /// The game that last took input from the app's controls; it releases what it holds when
@@ -249,8 +252,12 @@ public final class CabooseDisplaySession: DisplaySession {
         let closed = pipelines.removeAll()
         for pipeline in closed { pipeline.close() }
         for video in videos.removeAll() { video.close() }
-        // A GPU stream replays from its first byte on the next connection.
-        for window in windows.values { endGPUStream(of: window) }
+        // A GPU stream whose replay can be kept waits for the next connection to the same server,
+        // which may continue it (docs/gpu-stream.md, "Resuming"); every other one ends.
+        let keepsStreams = keepWindows && server?.epoch != nil
+        for window in windows.values where !(keepsStreams && window.gpuStream?.suspend() == true) {
+            endGPUStream(of: window)
+        }
         _ = gpuFeeds.removeAll()
         sound?.stop()
         sound = nil
@@ -301,9 +308,13 @@ public final class CabooseDisplaySession: DisplaySession {
 
     private func sendHello() {
         state = .authenticating
+        // Kept replays are claimed for the server epoch they came from; the hello's answer says
+        // whether this is still that server.
+        let kept = windows.values.compactMap(\.gpuStream).map { (id: $0.id, nonce: $0.nonce, offset: $0.resumableOffset) }
+        let gpuResume = rendersGPUStreams ? GPUStreamResume.claims(epoch: server?.epoch, streams: kept) : nil
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
-                    scaledMotion: true, webview: runsGames))
+                    scaledMotion: true, webview: runsGames, gpuResume: gpuResume))
     }
 
     // MARK: Server messages
@@ -355,7 +366,7 @@ public final class CabooseDisplaySession: DisplaySession {
             case .webviewDestroy(let id): endGame(of: windows.values.first { $0.game?.id == id && $0.game?.webview != nil })
             case .gameCreate(let descriptor): createGame(descriptor)
             case .gameDestroy(let id): endGame(of: windows.values.first { $0.game?.id == id })
-            case .gpuCreate(let id, let window): createGPUStream(id, window: window)
+            case .gpuCreate(let id, let window, let nonce, let resume): createGPUStream(id, window: window, nonce: nonce, resume: resume)
             case .gpuDestroy(let id, let reason):
                 guard let window = windows.values.first(where: { $0.gpuStream?.id == id }) else { continue }
                 if let reason {
@@ -398,6 +409,7 @@ public final class CabooseDisplaySession: DisplaySession {
         let marker = Self.monotonicMicros()
         if hello.epoch != nil { reconciling = (marker, []) }
         announcedGames.removeAll()
+        announcedGPUStreams.removeAll()
         send(.ping(micros: marker))
         for window in windows.values { applyCapabilities(window, xwayland: nil) }
     }
@@ -411,6 +423,9 @@ public final class CabooseDisplaySession: DisplaySession {
         }
         retained.removeAll()
         for window in windows.values where window.game.map({ !announcedGames.contains($0.id) }) == true { endGame(of: window) }
+        for window in windows.values where window.gpuStream.map({ $0.suspension != nil && !announcedGPUStreams.contains($0.id) }) == true {
+            endGPUStream(of: window)
+        }
         windowsAnnounced &+= 1
     }
 
@@ -567,16 +582,30 @@ public final class CabooseDisplaySession: DisplaySession {
     // MARK: GPU streams
 
     /// The window is drawn on this device from stream `id`; its bytes are already arriving on
-    /// the socket's queue.
-    private func createGPUStream(_ id: Int, window windowID: Int) {
+    /// the socket's queue, from `resume` when the computer continues the replay this device kept
+    /// through a reconnect (docs/gpu-stream.md, "Resuming").
+    private func createGPUStream(_ id: Int, window windowID: Int, nonce: String?, resume: UInt64?) {
         guard rendersGPUStreams, let window = windows[windowID], let feed = gpuFeeds[id], let connection = stream else { return }
-        if window.gpuStream?.id == id { return }
-        endGPUStream(of: window)
-        window.gpuStream = RemoteGPUStream(id: id, window: windowID, feed: feed) { [weak self, weak connection, weak window, weak feed] bytes in
+        announcedGPUStreams.insert(id)
+        // Acknowledgements count only on the connection, window and feed that took the bytes.
+        let acknowledge: @MainActor (UInt64) -> Void = { [weak self, weak connection, weak window, weak feed] bytes in
             guard let self, let connection, let window, let feed,
                   self.stream === connection, self.windows[windowID] === window,
                   window.gpuStream?.feed === feed, case .ready = self.state else { return }
             self.send(.gpuAck(id: id, offset: bytes))
+        }
+        switch GPUStreamResume.plan(id: id, nonce: nonce, resume: resume, kept: window.gpuStream?.kept) {
+        case .keep:
+            return
+        case .continueKept:
+            window.gpuStream?.resume(feed: feed, acknowledge: acknowledge)
+        case .fresh:
+            endGPUStream(of: window)
+            window.gpuStream = RemoteGPUStream(id: id, window: windowID, nonce: nonce, feed: feed, acknowledge: acknowledge)
+        case .unplayable:
+            // Only a computer that ignored what this device claimed gets here: nothing can be
+            // drawn from the middle of a stream without the replay that took its start.
+            endGPUStream(of: window)
         }
     }
 
@@ -1051,9 +1080,10 @@ private final class Incoming: @unchecked Sendable {
                 }
                 let retire = retire
                 pipeline.whenApplied { generation in retire(id, generation) }
-            case .gpuCreate(let id, _):
-                // Made here, like a window's pipeline: the stream's bytes follow at once.
-                if gpuFeeds[id] == nil { gpuFeeds[id] = GPUStreamFeed() }
+            case .gpuCreate(let id, _, _, let resume):
+                // Made here, like a window's pipeline: the stream's bytes follow at once, from
+                // where a resumed stream continues.
+                if gpuFeeds[id] == nil { gpuFeeds[id] = GPUStreamFeed(offset: resume ?? 0) }
                 others.append(message)
             case .gpuData(let id, let offset, let data):
                 gpuFeeds[id]?.receive(offset: offset, data: data)

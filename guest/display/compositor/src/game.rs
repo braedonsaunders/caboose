@@ -55,9 +55,11 @@ pub fn gpu_stream_dir() -> Option<PathBuf> {
 }
 
 /// A Vulkan stream being relayed: the FIFO its application writes, the spool every byte is
-/// kept in (a client that connects later replays it from the start), and how far the
-/// connected client has been sent and has consumed.
+/// kept in (a client that connects later replays it from the start, or from where the replay
+/// it kept stands), and how far the connected client has been sent and has consumed.
 struct GpuStream {
+    /// Names this stream, and no other, for resuming (docs/gpu-stream.md, "Resuming").
+    nonce: String,
     fifo: Option<File>,
     token: Option<RegistrationToken>,
     reading: bool,
@@ -78,6 +80,23 @@ struct GpuStream {
 /// `GPU_BACKLOG` behind.
 fn gpu_read_allowed(takes: bool, announced: bool, failed: bool, length: u64, acked: u64) -> bool {
     failed || (takes && (!announced || length - acked < GPU_BACKLOG))
+}
+
+/// The claims of a hello's `gpu_resume` this server process can honour, by stream id: only those
+/// made for its own epoch, since stream ids and nonces mean nothing to another process.
+pub fn resume_claims(resume: Option<&proto::GpuResume>, epoch: &str) -> HashMap<u64, (String, u64)> {
+    match resume {
+        Some(r) if r.epoch == epoch => r.streams.iter().map(|s| (s.id, (s.nonce.clone(), s.offset))).collect(),
+        _ => HashMap::new(),
+    }
+}
+
+/// Where a stream continues for a client that claims to have kept its replay: at the claimed
+/// offset when the claim names this very stream (its nonce), the stream has not failed, and
+/// the spool holds that much of it. `None` replays the stream from its first byte.
+fn gpu_resume_offset(claim: Option<&(String, u64)>, nonce: &str, length: u64, failed: bool) -> Option<u64> {
+    let (claimed, offset) = claim?;
+    (!failed && claimed == nonce && *offset <= length).then_some(*offset)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,6 +281,9 @@ struct Launcher {
 pub struct Games {
     /// The socket path, when listening.
     pub socket: Option<PathBuf>,
+    /// The connecting client's resume claims (`resume_claims`), for the `gpu.create`s of its
+    /// hello's burst; empty at any other time.
+    pub resume_claims: HashMap<u64, (String, u64)>,
     launchers: HashMap<u64, Launcher>,
     next_conn: u64,
     next_game: u64,
@@ -528,10 +550,11 @@ impl State {
         let Some(session) = self.session.as_ref().map(|s| s.conn) else { return };
         let Some(l) = self.games.launchers.get(&conn) else { return };
         let (Some((id, window)), Some(hello), false) = (l.bound, l.hello.as_ref(), l.announced) else { return };
+        let nonce = l.gpu.as_ref().map(|g| g.nonce.clone());
         if l.gpu.as_ref().is_some_and(|g| g.failed) {
             // Its spool is gone, so a client can no longer render it: it is told so, and why.
             if self.windows.get(window).is_some_and(|w| w.announced.is_some()) {
-                self.net.send(session, &Message::GpuCreate { id, window });
+                self.net.send(session, &Message::GpuCreate { id, window, nonce, resume: None });
                 self.net.send(session, &Message::GpuDestroy { id, reason: Some("spool-limit".into()) });
             }
             return;
@@ -539,6 +562,9 @@ impl State {
         if self.windows.get(window).is_none_or(|w| w.announced.is_none()) {
             return;
         }
+        // A client that kept the stream's replay through a reconnect continues it.
+        let resume =
+            l.gpu.as_ref().and_then(|g| gpu_resume_offset(self.games.resume_claims.get(&id), &g.nonce, g.length, g.failed));
         let message = match &hello.kind {
             Kind::Game { root, entry, saves } => Message::GameCreate(proto::GameCreate {
                 id,
@@ -547,7 +573,7 @@ impl State {
                 entry: entry.clone(),
                 saves: saves.clone(),
             }),
-            Kind::Gpu { .. } => Message::GpuCreate { id, window },
+            Kind::Gpu { .. } => Message::GpuCreate { id, window, nonce, resume },
             Kind::Webview { app, bridge, root, entry } => {
                 let Some(grant) = self.session.as_ref().and_then(|s| s.webview_grant.clone()) else { return };
                 Message::WebviewCreate(proto::WebviewCreate {
@@ -565,9 +591,13 @@ impl State {
         let l = self.games.launchers.get_mut(&conn).unwrap();
         l.announced = true;
         if let Some(gpu) = l.gpu.as_mut() {
-            // A new client renders the stream from its first byte.
-            gpu.sent = 0;
-            gpu.acked = 0;
+            // A new client renders the stream from its first byte, or from where its kept replay
+            // stands: the first `gpu.data` starts at `resume`.
+            if let Some(offset) = resume {
+                tracing::info!("gpu stream {id} resumes at byte {offset} of {}", gpu.length);
+            }
+            gpu.sent = resume.unwrap_or(0);
+            gpu.acked = gpu.sent;
             self.pump_gpu_stream(conn);
         }
     }
@@ -744,6 +774,8 @@ impl State {
         // Nothing is read until a client renders the stream: the application waits.
         self.handle.disable(&token).map_err(|e| io::Error::other(e.to_string()))?;
         Ok(GpuStream {
+            // As unpredictable as an epoch, so that no other stream's claim can name this one.
+            nonce: crate::session::new_epoch(),
             fifo: Some(fifo),
             token: Some(token),
             reading: false,
@@ -1011,6 +1043,37 @@ mod tests {
         assert!(gpu_read_allowed(true, true, false, GPU_BACKLOG, 1));
         // A failed stream is drained whatever the client does.
         assert!(gpu_read_allowed(false, false, true, 0, 0));
+    }
+
+    #[test]
+    fn a_kept_replay_resumes_only_the_same_stream_within_its_spool() {
+        let nonce = "8c41d07e2b9fa365";
+        let claim = (nonce.to_owned(), 1 << 20);
+        assert_eq!(gpu_resume_offset(Some(&claim), nonce, 2 << 20, false), Some(1 << 20));
+        // The whole spool, exactly.
+        assert_eq!(gpu_resume_offset(Some(&claim), nonce, 1 << 20, false), Some(1 << 20));
+        // No claim, another stream under the same id, more than the spool holds, or a stream
+        // that outgrew its spool: from the first byte.
+        assert_eq!(gpu_resume_offset(None, nonce, 2 << 20, false), None);
+        assert_eq!(gpu_resume_offset(Some(&claim), "0123456789abcdef", 2 << 20, false), None);
+        assert_eq!(gpu_resume_offset(Some(&claim), nonce, (1 << 20) - 1, false), None);
+        assert_eq!(gpu_resume_offset(Some(&claim), nonce, 2 << 20, true), None);
+    }
+
+    #[test]
+    fn only_claims_made_for_this_server_process_count() {
+        let resume = proto::GpuResume {
+            epoch: "5f3a9c01d2e4b678".into(),
+            streams: vec![
+                proto::GpuResumeStream { id: 1, nonce: "8c41d07e2b9fa365".into(), offset: 7 },
+                proto::GpuResumeStream { id: 4, nonce: "0123456789abcdef".into(), offset: 0 },
+            ],
+        };
+        let claims = resume_claims(Some(&resume), "5f3a9c01d2e4b678");
+        assert_eq!(claims.get(&1), Some(&("8c41d07e2b9fa365".to_owned(), 7)));
+        assert_eq!(claims.get(&4), Some(&("0123456789abcdef".to_owned(), 0)));
+        assert!(resume_claims(Some(&resume), "0123456789abcdef").is_empty());
+        assert!(resume_claims(None, "5f3a9c01d2e4b678").is_empty());
     }
 
     #[test]

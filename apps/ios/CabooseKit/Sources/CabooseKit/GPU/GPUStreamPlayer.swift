@@ -57,7 +57,22 @@ public final class GPUStreamPlayer: @unchecked Sendable {
     public func feed(_ data: Data) {
         guard !data.isEmpty else { return }
         let core = core
-        core.feeding.async { core.write(data) }
+        let generation = core.generation
+        core.feeding.async { core.write(data, generation: generation) }
+    }
+
+    /// Drops the bytes handed to `feed` that the replay has not taken yet, then reports, on the
+    /// event queue, the offset the replay has accepted: every byte before it was taken by this
+    /// replay (`cgpu_player_feed` returned for it), and none after. A chunk the replay is being
+    /// handed when this is called is waited for. Nil when the replay has stopped, so it takes no
+    /// more and cannot be continued. Bytes fed after this call continue from that offset.
+    public func discardPending(_ completion: @escaping @Sendable (UInt64?) -> Void) {
+        let core = core
+        core.nextGeneration()
+        core.feeding.async {
+            let accepted: UInt64? = core.state == .running ? core.consumedBytes : nil
+            core.sink.takeUnretainedValue().queue.async { completion(accepted) }
+        }
     }
 
     /// Ends the stream after the bytes fed so far; the replay finishes their frames and stops.
@@ -86,9 +101,11 @@ extension GPUStreamPlayer {
     fileprivate final class Core: @unchecked Sendable {
         let handle: OpaquePointer
         let feeding = DispatchQueue(label: "com.braedonsaunders.caboose.gpu-stream.feed", qos: .userInteractive)
-        private let sink: Unmanaged<EventSink>
+        let sink: Unmanaged<EventSink>
         private let lock = NSLock()
         private var consumed: UInt64 = 0
+        /// Bumped by `discardPending`: a chunk fed before it is dropped unless already taken.
+        private var currentGeneration = 0
 
         init(layer: CAMetalLayer, sink: EventSink) {
             let retained = Unmanaged.passRetained(sink)
@@ -110,6 +127,18 @@ extension GPUStreamPlayer {
             return consumed
         }
 
+        var generation: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return currentGeneration
+        }
+
+        func nextGeneration() {
+            lock.lock()
+            currentGeneration += 1
+            lock.unlock()
+        }
+
         var state: State {
             switch cgpu_player_state(handle) {
             case CGPU_STATE_RUNNING: return .running
@@ -122,7 +151,8 @@ extension GPUStreamPlayer {
             }
         }
 
-        func write(_ data: Data) {
+        func write(_ data: Data, generation: Int) {
+            guard generation == self.generation else { return }
             let taken = data.withUnsafeBytes { cgpu_player_feed(handle, $0.baseAddress, $0.count) == 0 }
             guard taken else { return }
             lock.lock()

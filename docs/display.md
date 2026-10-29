@@ -274,7 +274,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x16` | `video.present` | `id`, `seq`, `pts_us` |
 | `0x17` | `game.create` | `id`, `window`, `root: text`, `entry: text`, `saves?: [{ mount: text, path: text }]` |
 | `0x18` | `game.destroy` | `id` |
-| `0x19` | `gpu.create` | `id`, `window` |
+| `0x19` | `gpu.create` | `id`, `window`, `nonce?: text` (names the stream for resuming), `resume?: uint` (the stream continues at this offset for the client's kept replay) |
 | `0x1A` | `gpu.data` | `id`, `offset: uint`, `data: bytes` |
 | `0x1B` | `gpu.destroy` | `id`, `reason?: "spool-limit"` |
 | `0x1C` | `webview.create` | `id`, `window`, `app: text`, `root: text`, `entry: text`, `bridge: text`, `grant: text` |
@@ -292,7 +292,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool` (booleans present only when true) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool` (booleans present only when true), `gpu_resume?: { epoch: text, streams: [{ id, nonce: text, offset: uint }] }` (GPU stream replays kept from the server process with that epoch) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
@@ -467,7 +467,12 @@ A client whose hello says `gpu: true` renders windows from their applications' V
 `offset` counting from its first byte, which is a GFXReconstruct capture file the client
 replays on its own GPU into the window. The client answers with `gpu.ack` as it consumes the
 stream; the server sends at most 4 MiB beyond the last acknowledged offset. A client that
-connects later receives the stream from offset 0. `gpu.destroy` ends it; with
+connects later receives the stream from offset 0, unless it kept the stream's replay through
+a lost connection: its hello claims the replay in `gpu_resume` with the offset the replay has
+taken, for the epoch of the server it came from, and when the server is that process and the
+claim names the stream's `id` and `nonce` within what the server keeps, `gpu.create` carries
+`resume` and the stream's bytes continue there. A `gpu.create` without `resume` starts the
+stream from offset 0, and the client discards any replay it kept of it. `gpu.destroy` ends it; with
 `reason: "spool-limit"` the stream outgrew what the server keeps of it and cannot be rendered. While a client renders
 a window's stream, the window sends no `frame`, `tile` or video stream. The launcher and the
 relay are specified in [gpu-stream.md](gpu-stream.md).

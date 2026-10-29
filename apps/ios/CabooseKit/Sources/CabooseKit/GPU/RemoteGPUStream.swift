@@ -4,6 +4,9 @@ import Foundation
 /// `gpu.create` makes one, `gpu.data` feeds it, `gpu.destroy` ends it. Input to the window
 /// still goes to the computer, where the application runs.
 ///
+/// A playing stream's replay is kept through a lost connection (`suspend()`) and continues on
+/// the next one when the computer resumes it there (`resume(feed:acknowledge:)`).
+///
 /// The device replays one stream at a time. A stream announced while another plays waits,
 /// saying so in its window, and starts when that one ends; its bytes wait in its feed, and
 /// the computer holds its application back meanwhile.
@@ -17,11 +20,26 @@ public final class RemoteGPUStream: Identifiable {
         case ended(reason: String?)
     }
 
+    /// How a stream kept through a lost connection stands.
+    enum Suspension: Equatable {
+        /// The replay is still taking the chunk it was being handed.
+        case settling
+        /// The replay has accepted exactly this many bytes, and can continue from there.
+        case at(UInt64)
+        /// The replay stopped; it cannot continue.
+        case lost
+    }
+
     public let id: Int
     public let window: Int
+    /// Names the stream for resuming; nil from a computer that names none.
+    public let nonce: String?
     public private(set) var status: Status
-    let feed: GPUStreamFeed
-    private let acknowledge: @MainActor (UInt64) -> Void
+    /// The connection's feed this stream takes its bytes from.
+    private(set) var feed: GPUStreamFeed
+    private var acknowledge: @MainActor (UInt64) -> Void
+    /// Set while the stream is kept through a lost connection.
+    private(set) var suspension: Suspension?
     /// Counts this stream's replays; an event from an earlier one is ignored.
     private var playback = 0
     #if canImport(UIKit) && canImport(CabooseGPUStream)
@@ -44,9 +62,10 @@ public final class RemoteGPUStream: Identifiable {
     }
 
     /// - Parameter acknowledge: told the stream's consumed byte count as the replay takes it.
-    init(id: Int, window: Int, feed: GPUStreamFeed, acknowledge: @escaping @MainActor (UInt64) -> Void) {
+    init(id: Int, window: Int, nonce: String? = nil, feed: GPUStreamFeed, acknowledge: @escaping @MainActor (UInt64) -> Void) {
         self.id = id
         self.window = window
+        self.nonce = nonce
         self.feed = feed
         self.acknowledge = acknowledge
         status = .waiting(behind: window)
@@ -82,17 +101,74 @@ public final class RemoteGPUStream: Identifiable {
         playback += 1
         show(status)
         #if canImport(UIKit) && canImport(CabooseGPUStream)
-        let (acknowledge, playback) = (acknowledge, playback)
+        let playback = playback
         let player = view.play { [weak self] event in
             MainActor.assumeIsolated {
                 switch event {
-                case .consumed(let bytes): acknowledge(bytes)
+                case .consumed(let bytes): self?.consumed(bytes, playback: playback)
                 case .ended(.failed(let reason)): self?.replayEnded(playback: playback, failure: reason)
                 case .ended, .frame: break
                 }
             }
         }
         feed.attach { data in player.feed(data) }
+        #endif
+    }
+
+    private func consumed(_ bytes: UInt64, playback: Int) {
+        guard playback == self.playback else { return }
+        acknowledge(bytes)
+    }
+
+    /// The connection went: keeps the replay for the next one, when it can. Bytes received and
+    /// not yet taken by the replay are dropped; once the replay has taken the chunk it was
+    /// being handed, `suspension` says how far it got. Returns false for a stream that cannot
+    /// be kept (waiting its turn, ended, unnamed by the computer, or with no running replay),
+    /// which the caller ends.
+    func suspend() -> Bool {
+        guard status == .playing, nonce != nil, suspension == nil else { return false }
+        #if canImport(UIKit) && canImport(CabooseGPUStream)
+        guard let player = view.player, player.state == .running else { return false }
+        feed.detach()
+        acknowledge = { _ in }
+        suspension = .settling
+        let playback = playback
+        player.discardPending { [weak self] accepted in
+            MainActor.assumeIsolated {
+                guard let self, self.playback == playback, self.suspension == .settling else { return }
+                self.suspension = accepted.map(Suspension.at) ?? .lost
+            }
+        }
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    /// The offset a kept replay continues from: settled, and the replay still running.
+    var resumableOffset: UInt64? {
+        guard status == .playing, case .at(let offset) = suspension else { return nil }
+        #if canImport(UIKit) && canImport(CabooseGPUStream)
+        guard view.player?.state == .running else { return nil }
+        #endif
+        return offset
+    }
+
+    /// The stream as `GPUStreamResume.plan` weighs it.
+    var kept: GPUStreamResume.Kept {
+        let ended = if case .ended = status { true } else { false }
+        return GPUStreamResume.Kept(id: id, nonce: nonce, ended: ended, resumable: resumableOffset, suspended: suspension != nil)
+    }
+
+    /// Continues the kept replay on a new connection, whose `feed` starts where the replay
+    /// stands.
+    func resume(feed: GPUStreamFeed, acknowledge: @escaping @MainActor (UInt64) -> Void) {
+        guard suspension != nil else { return }
+        self.feed = feed
+        self.acknowledge = acknowledge
+        suspension = nil
+        #if canImport(UIKit) && canImport(CabooseGPUStream)
+        if let player = view.player { feed.attach { data in player.feed(data) } }
         #endif
     }
 
@@ -146,7 +222,8 @@ public final class RemoteGPUStream: Identifiable {
 
 /// The socket side of a GPU stream: takes `gpu.data` in order on the socket's queue and hands
 /// it to the replay, holding what arrives before the replay is attached on the main actor.
-/// A repeated or out-of-order offset (a stream resent from its start) is dropped.
+/// A repeated or out-of-order offset (a stream resent from its start) is dropped. A stream
+/// that resumes a kept replay starts at the offset `gpu.create` resumed it at.
 ///
 /// One caller at a time delivers, outside the lock and in arrival order: whoever finds the
 /// queue idle drains it, and anyone arriving meanwhile only queues. The sink is never called
@@ -158,6 +235,10 @@ final class GPUStreamFeed: @unchecked Sendable {
     private var sink: ((Data) -> Void)?
     private var delivering = false
     private var ended = false
+
+    init(offset: UInt64 = 0) {
+        next = offset
+    }
 
     /// Bytes accepted so far: the offset the next `gpu.data` must start at.
     var offset: UInt64 { lock.withLock { next } }

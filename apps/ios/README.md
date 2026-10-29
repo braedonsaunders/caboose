@@ -236,6 +236,14 @@ Vulkan calls, which the device replays on its own GPU. `GPUStreamPlayer` takes t
 bytes in order and reports each frame, the bytes it has taken (the offset `gpu.ack`
 reports) and how the replay ended; `GPUStreamView` is the `CAMetalLayer` it presents into.
 
+A stream's replay outlives a lost connection ([Resuming](../../docs/gpu-stream.md#resuming)):
+`CabooseDisplaySession` keeps each playing `RemoteGPUStream` while it keeps the window,
+`GPUStreamPlayer.discardPending` drops the bytes the replay has not taken and reports the
+offset it accepted, and the next hello claims the replay in `gpu_resume` for the server epoch
+it came from. A `gpu.create` that resumes at that offset continues the replay with the new
+connection's bytes; any other discards it and starts again. `GPUStreamResume` holds these
+decisions, and `GPUStreamTests` covers them.
+
 The player is [GFXReconstruct](https://github.com/LunarG/gfxreconstruct) (MIT), tag
 `vulkan-sdk-1.4.363.0` (capture format 1.0.5, the capture layer the computer runs), and
 [MoltenVK](https://github.com/KhronosGroup/MoltenVK) (Apache-2.0) 1.4.2, the MoltenVK of the

@@ -46,11 +46,12 @@ application waits in its next Vulkan call. Otherwise everything read is appended
 uploads much of its data before it maps its window, and nothing can be acknowledged before),
 and after that only while the spool is less than 64 MiB ahead of the client.
 
-A client whose hello says `gpu: true` gets `gpu.create { id, window }` after the window's
-`window.create`, then the stream from its first byte as `gpu.data { id, offset, data }`, and
-answers with `gpu.ack { id, offset }` as it consumes it. At most 4 MiB are sent beyond the
+A client whose hello says `gpu: true` gets `gpu.create { id, window, nonce }` after the
+window's `window.create`, then the stream from its first byte as `gpu.data { id, offset, data }`,
+and answers with `gpu.ack { id, offset }` as it consumes it. At most 4 MiB are sent beyond the
 last acknowledgement, so the application runs at the pace the client renders. A client that
-connects later replays the spool from the start. `gpu.destroy` follows when the application
+connects later replays the spool from the start, unless it kept its replay of the stream
+through a lost connection ([Resuming](#resuming)). `gpu.destroy` follows when the application
 ends or its window closes, and the spool is deleted with it.
 Client acknowledgements apply only to the connection, window and stream that consumed
 the bytes; queued callbacks from a replaced connection are ignored.
@@ -62,6 +63,43 @@ and what the application still writes is read and dropped, so the application ke
 while its window shows nothing.
 
 While a client renders a window's stream, the window sends no pictures.
+
+## Resuming
+
+A client that loses its display connection keeps the replay of each stream it was playing, so
+that the next connection to the same caboose-display process continues the stream where the
+replay stands instead of replaying it from its first byte.
+
+- **The stream's name.** `gpu.create` carries `nonce`: 16 random hexadecimal characters that
+  name the stream (its launcher and spool) and no other. A stream id names one window's
+  binding; the nonce is what a claim must match.
+- **The accepted offset.** When the connection goes, the client drops the stream bytes it has
+  received that its replay has not taken (still queued, or not yet handed to the replay) and
+  waits for the replay to take the chunk it is being handed. The replay's *accepted offset* is
+  then exact: every byte before it went into this replay (`cgpu_player_feed` returned for it),
+  and none after. A replay that failed or was stopped cannot continue and is not kept; nor is a
+  stream waiting for its turn, or one from a server that named no nonce.
+- **The claim.** The next `hello` lists each kept replay whose accepted offset is settled in
+  `gpu_resume { epoch, streams: [{ id, nonce, offset }] }`, with the epoch of the server hello
+  the replays came from. A replay still taking its last chunk when the hello is sent is not
+  claimed.
+- **The answer.** caboose-display honours a claim when `epoch` is its own, the stream with that
+  `id` is announced in the hello's burst of `window.create`s and `gpu.create`s, `nonce` is that
+  stream's, the stream has not outgrown its spool, and `offset` is at most the spool's length.
+  The stream's `gpu.create` then carries `resume: offset`: its first `gpu.data` starts at that
+  offset and acknowledgements count from it. A claim counts only for the hello's burst. Every
+  other stream starts from its first byte, with a `gpu.create` without `resume`.
+- **The client.** A `gpu.create` whose `resume` equals the kept replay's accepted offset and
+  whose `nonce` is the kept stream's continues that replay with the new connection's bytes.
+  Without `resume`, the client discards the kept replay and starts a new one from the stream's
+  first byte. A kept stream that the burst does not announce has ended, and a server hello
+  with another epoch, or with none, discards every kept replay.
+- **Fences.** Acknowledgements and claims count only on the connection that made them:
+  caboose-display acts on nothing a replaced connection sends, and the client ignores what a
+  replay reports for a connection it has left.
+
+A client that does not claim (an older one, for example) gets every stream from its first
+byte, as before; one that does not know `nonce` and `resume` ignores them.
 
 ## Limits
 
@@ -79,7 +117,8 @@ While a client renders a window's stream, the window sends no pictures.
   lays them out for the driver here, whose row pitch is not the client's; those images show
   wrong on the client. Uploads through a buffer (what games and engines do) are unaffected.
 - **The whole stream is kept, up to the limit.** A spool grows for as long as the application
-  runs, up to `--gpu-spool-limit`, and a client that connects later replays all of it before
-  the current frame. A stream longer than the limit cannot be rendered at all.
+  runs, up to `--gpu-spool-limit`, and a client that connects later without a replay of the
+  stream to resume replays all of it before the current frame. A stream longer than the limit
+  cannot be rendered at all.
 - **One stream at a time on a device.** The client replays one stream; a second stream's
   window says it waits, and its application is held back until the first stream ends.

@@ -59,6 +59,66 @@ import Testing
         feed.detach()
     }
 
+    /// A resumed stream's feed starts where the kept replay stands: bytes from before it are
+    /// not taken again.
+    @Test func aResumedFeedStartsAtItsOffset() {
+        let feed = GPUStreamFeed(offset: 4)
+        final class Received: @unchecked Sendable { var chunks: [Data] = [] }
+        let received = Received()
+        feed.attach { data in received.chunks.append(data) }
+        feed.receive(offset: 0, data: Data([1, 2, 3, 4]))
+        feed.receive(offset: 4, data: Data([5]))
+        #expect(received.chunks == [Data([5])])
+        #expect(feed.offset == 5)
+        feed.detach()
+    }
+
+    /// A kept replay continues only when the computer resumes the same stream at exactly the
+    /// offset the replay accepted; otherwise the stream starts again from its first byte.
+    @Test func aKeptReplayContinuesOnlyWhereItStands() {
+        typealias R = GPUStreamResume
+        let kept = R.Kept(id: 1, nonce: "8c41d07e2b9fa365", ended: false, resumable: 1 << 20, suspended: true)
+        #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: 1 << 20, kept: kept) == .continueKept(offset: 1 << 20))
+        // Not resumed: the computer replays the stream from its start.
+        #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: nil, kept: kept) == .fresh)
+        // Another stream under the same id, or another offset, cannot continue this replay.
+        #expect(R.plan(id: 1, nonce: "0123456789abcdef", resume: 1 << 20, kept: kept) == .unplayable)
+        #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: 1, kept: kept) == .unplayable)
+        #expect(R.plan(id: 1, nonce: nil, resume: nil, kept: kept) == .fresh)
+        // A replay still settling, or one that stopped, is not resumable.
+        var settling = kept
+        settling.resumable = nil
+        #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: nil, kept: settling) == .fresh)
+        #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: 1 << 20, kept: settling) == .unplayable)
+        // A stream already live on this connection, or ended here, stays as it is.
+        let live = R.Kept(id: 1, nonce: "8c41d07e2b9fa365", ended: false, resumable: nil, suspended: false)
+        #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: nil, kept: live) == .keep)
+        var ended = kept
+        ended.ended = true
+        #expect(R.plan(id: 1, nonce: "8c41d07e2b9fa365", resume: 1 << 20, kept: ended) == .keep)
+        // A window with another stream, or none, starts the new one.
+        #expect(R.plan(id: 2, nonce: "0123456789abcdef", resume: nil, kept: kept) == .fresh)
+        #expect(R.plan(id: 2, nonce: nil, resume: nil, kept: nil) == .fresh)
+        #expect(R.plan(id: 2, nonce: nil, resume: 7, kept: nil) == .unplayable)
+    }
+
+    /// Only settled, named replays are claimed, and only for the server epoch they came from.
+    @Test func helloClaimsOnlyResumableReplays() {
+        typealias R = GPUStreamResume
+        let streams: [(id: Int, nonce: String?, offset: UInt64?)] = [
+            (id: 9, nonce: "0123456789abcdef", offset: 0),
+            (id: 1, nonce: "8c41d07e2b9fa365", offset: 1 << 20),
+            (id: 2, nonce: nil, offset: 5),
+            (id: 3, nonce: "fedcba9876543210", offset: nil),
+        ]
+        #expect(R.claims(epoch: "5f3a9c01d2e4b678", streams: streams) == GPUResume(epoch: "5f3a9c01d2e4b678", streams: [
+            GPUResume.Stream(id: 1, nonce: "8c41d07e2b9fa365", offset: 1 << 20),
+            GPUResume.Stream(id: 9, nonce: "0123456789abcdef", offset: 0),
+        ]))
+        #expect(R.claims(epoch: nil, streams: streams) == nil)
+        #expect(R.claims(epoch: "5f3a9c01d2e4b678", streams: [(id: 2, nonce: nil, offset: 5)]) == nil)
+    }
+
     @Test @MainActor func aSecondStreamWaitsForTheFirstAndThenPlays() {
         let first = RemoteGPUStream(id: 1, window: 7, feed: GPUStreamFeed()) { _ in }
         let second = RemoteGPUStream(id: 2, window: 9, feed: GPUStreamFeed()) { _ in }

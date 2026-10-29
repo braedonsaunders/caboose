@@ -313,6 +313,10 @@ impl State {
             gpu,
             scaled_motion: hello.scaled_motion,
         });
+        // Streams whose replay the client kept continue in this hello's burst
+        // (docs/gpu-stream.md, "Resuming").
+        self.games.resume_claims =
+            crate::game::resume_claims(hello.gpu_resume.as_ref().filter(|_| gpu), &self.epoch);
         self.games_session_changed();
         if audio {
             let (tx, bitrate) = (self.audio_tx.clone(), self.config.audio_bitrate);
@@ -325,6 +329,8 @@ impl State {
             w.stream.reset_for_client();
         }
         self.sync_windows();
+        // A claim counts only for the burst: a stream announced later starts from its first byte.
+        self.games.resume_claims.clear();
         if let Some(cursor) = self.cursor.clone() {
             self.net.send(conn, &cursor);
         }

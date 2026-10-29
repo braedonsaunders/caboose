@@ -1,0 +1,8 @@
+{
+  "name": "gpu-create-nonce",
+  "description": "A stream as caboose-display announces it: with the nonce a client resumes it by.",
+  "messages": [
+    {"direction": "server", "type": "gpu.create", "type_id": 25, "fields": {"id": 1, "nonce": "8c41d07e2b9fa365", "window": 7}}
+  ],
+  "hex": "1924000000a362696401656e6f6e636570386334316430376532623966613336356677696e646f7707"
+}

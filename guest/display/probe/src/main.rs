@@ -562,6 +562,7 @@ fn run(args: Args) -> Result<bool, String> {
             wasm: args.wasm,
             webview: false,
             gpu: args.gpu_save.is_some(),
+            gpu_resume: None,
             scaled_motion: args.scaled_motion,
         }),
     )?;
@@ -802,7 +803,7 @@ fn run(args: Args) -> Result<bool, String> {
                     }
                     games.insert(g.id, GameStats { game: g, destroyed: false });
                 }
-                Message::GpuCreate { id, window } => {
+                Message::GpuCreate { id, window, .. } => {
                     if target.is_none() && args.window.is_none_or(|w| w == window) {
                         target = Some(window);
                     }

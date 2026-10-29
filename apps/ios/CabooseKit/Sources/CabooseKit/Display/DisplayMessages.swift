@@ -400,7 +400,9 @@ public enum ServerMessage: Sendable {
     case gameCreate(GameDescriptor)
     case gameDestroy(id: Int)
     /// Window `window` is drawn on this device from stream `id`, an application's Vulkan calls.
-    case gpuCreate(id: Int, window: Int)
+    /// `nonce` names the stream for resuming; `resume` says the stream continues at that offset
+    /// for the replay this device kept through a reconnect (docs/gpu-stream.md, "Resuming").
+    case gpuCreate(id: Int, window: Int, nonce: String?, resume: UInt64?)
     /// The next bytes of stream `id`, `offset` bytes from its start.
     case gpuData(id: Int, offset: UInt64, data: Data)
     /// The stream ended; `reason` says why when the computer could not go on (`spool-limit`).
@@ -463,7 +465,12 @@ public enum ServerMessage: Sendable {
         case .gameCreate: parsed = GameDescriptor(body).map(ServerMessage.gameCreate)
         case .gameDestroy: parsed = body["id"]?.int.map { .gameDestroy(id: $0) }
         case .gpuCreate:
-            if let id = body["id"]?.int, let window = body["window"]?.int { parsed = .gpuCreate(id: id, window: window) } else { parsed = nil }
+            if let id = body["id"]?.int, let window = body["window"]?.int {
+                let nonce = body["nonce"]?.string.flatMap { (1 ... 64).contains($0.utf8.count) ? $0 : nil }
+                parsed = .gpuCreate(id: id, window: window, nonce: nonce, resume: body["resume"]?.uint64)
+            } else {
+                parsed = nil
+            }
         case .gpuData:
             if let id = body["id"]?.int, let offset = body["offset"]?.uint64, let data = body["data"]?.data {
                 parsed = .gpuData(id: id, offset: offset, data: data)
@@ -590,13 +597,48 @@ public enum PointerButtons {
     }
 }
 
+/// The GPU streams a client still replays from its connection to the server process `epoch`
+/// names: the hello's `gpu_resume` (docs/gpu-stream.md, "Resuming").
+public struct GPUResume: Equatable, Sendable {
+    /// Stream `id`, as `gpu.create` named it with `nonce`, whose first `offset` bytes the
+    /// replay has taken.
+    public struct Stream: Equatable, Sendable {
+        public var id: Int
+        public var nonce: String
+        public var offset: UInt64
+
+        public init(id: Int, nonce: String, offset: UInt64) {
+            self.id = id
+            self.nonce = nonce
+            self.offset = offset
+        }
+    }
+
+    public var epoch: String
+    public var streams: [Stream]
+
+    public init(epoch: String, streams: [Stream]) {
+        self.epoch = epoch
+        self.streams = streams
+    }
+
+    var cbor: CBOR {
+        let streams: [CBOR] = streams.map { stream in
+            .map([("id", CBOR(stream.id)), ("nonce", CBOR(stream.nonce)), ("offset", CBOR(stream.offset))])
+        }
+        return .map([("epoch", CBOR(epoch)), ("streams", .array(streams))])
+    }
+}
+
 public enum ClientMessage: Sendable {
     /// `videoDecoders`: what the client plays as video streams; absent, the server sends none.
     /// `audioDecoders`: the sound codecs the client plays ("opus"); absent, the server sends no sound.
     /// `wasm`: the client runs handed-off games (`"wasm": true`); the key is absent otherwise.
     /// `gpu`: the client renders GPU streams (`"gpu": true`); the key is absent otherwise.
+    /// `gpuResume`: the GPU streams whose replay the client kept through a reconnect.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
-               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false)
+               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false,
+               gpuResume: GPUResume? = nil)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -631,7 +673,8 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview,
+                    let gpuResume):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
@@ -639,6 +682,7 @@ public enum ClientMessage: Sendable {
                 ("audio_decoders", audioDecoders.map { .array($0.map { CBOR($0) }) }),
                 ("wasm", wasm ? CBOR(true) : nil),
                 ("gpu", gpu ? CBOR(true) : nil),
+                ("gpu_resume", gpuResume?.cbor),
                 ("scaled_motion", scaledMotion ? CBOR(true) : nil),
                 ("webview", webview ? CBOR(true) : nil),
             ]))

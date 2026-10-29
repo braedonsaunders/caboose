@@ -1,0 +1,8 @@
+{
+  "name": "gpu-create-resume",
+  "description": "The client kept stream 1's replay across a reconnect: the stream continues at byte 1048576.",
+  "messages": [
+    {"direction": "server", "type": "gpu.create", "type_id": 25, "fields": {"id": 1, "nonce": "8c41d07e2b9fa365", "resume": 1048576, "window": 7}}
+  ],
+  "hex": "1930000000a462696401656e6f6e6365703863343164303765326239666133363566726573756d651a001000006677696e646f7707"
+}

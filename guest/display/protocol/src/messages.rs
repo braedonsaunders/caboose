@@ -287,6 +287,9 @@ pub struct ClientHello {
     pub webview: bool,
     /// The client renders Vulkan streams itself (docs/gpu-stream.md). Sent only when true.
     pub gpu: bool,
+    /// Streams the client still replays from its connection to the server process `epoch`
+    /// names (docs/gpu-stream.md, "Resuming"). Absent when there are none.
+    pub gpu_resume: Option<GpuResume>,
     /// The client accepts half-resolution motion streams.
     pub scaled_motion: bool,
 }
@@ -377,6 +380,47 @@ pub struct WebviewCreate {
     pub grant: String,
     pub root: String,
     pub entry: String,
+}
+
+/// A client hello's `gpu_resume`: the Vulkan streams the client still replays, from the
+/// server process whose hello carried `epoch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuResume {
+    pub epoch: String,
+    pub streams: Vec<GpuResumeStream>,
+}
+
+/// One stream of `gpu_resume`: stream `id`, as `gpu.create` named it with `nonce`, whose first
+/// `offset` bytes the client's replay has taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuResumeStream {
+    pub id: u64,
+    pub nonce: String,
+    pub offset: u64,
+}
+
+impl GpuResume {
+    fn to_value(&self) -> Value {
+        let streams = self
+            .streams
+            .iter()
+            .map(|s| MapBuilder::new().put("id", s.id).put("nonce", s.nonce.as_str()).put("offset", s.offset).build())
+            .collect::<Vec<_>>();
+        MapBuilder::new().put("epoch", self.epoch.as_str()).put("streams", streams).build()
+    }
+
+    fn from_value(v: &Value) -> Result<Self, ProtocolError> {
+        let f = Fields::new("hello.gpu_resume", v)?;
+        let streams = f
+            .array("streams")?
+            .iter()
+            .map(|s| {
+                let s = Fields::new("hello.gpu_resume.streams", s)?;
+                Ok(GpuResumeStream { id: s.u64("id")?, nonce: s.string("nonce")?, offset: s.u64("offset")? })
+            })
+            .collect::<Result<_, ProtocolError>>()?;
+        Ok(GpuResume { epoch: f.string("epoch")?, streams })
+    }
 }
 
 /// `gpu.data` (0x1A): the next bytes of a Vulkan stream, at `offset` from its start.
@@ -517,10 +561,14 @@ pub enum Message {
     GameDestroy {
         id: u64,
     },
-    /// The window's pictures are a Vulkan stream the client renders.
+    /// The window's pictures are a Vulkan stream the client renders. `nonce` names this stream
+    /// for resuming; `resume` says the stream continues at that offset for a client that kept
+    /// its replay (docs/gpu-stream.md, "Resuming").
     GpuCreate {
         id: u64,
         window: u64,
+        nonce: Option<String>,
+        resume: Option<u64>,
     },
     GpuData(GpuData),
     /// The stream ended: its application closed, or `reason` says why it could not go on
@@ -778,7 +826,12 @@ impl Message {
             Message::GpuDestroy { id, reason } => {
                 MapBuilder::new().put("id", *id).opt("reason", reason.clone()).build()
             }
-            Message::GpuCreate { id, window } => MapBuilder::new().put("id", *id).put("window", *window).build(),
+            Message::GpuCreate { id, window, nonce, resume } => MapBuilder::new()
+                .put("id", *id)
+                .put("window", *window)
+                .opt("nonce", nonce.clone())
+                .opt("resume", *resume)
+                .build(),
             Message::GpuData(m) => {
                 MapBuilder::new().put("id", m.id).put("offset", m.offset).put("data", m.data.clone()).build()
             }
@@ -910,6 +963,7 @@ impl Message {
                 .opt("wasm", m.wasm.then_some(true))
                 .opt("webview", m.webview.then_some(true))
                 .opt("gpu", m.gpu.then_some(true))
+                .opt("gpu_resume", m.gpu_resume.as_ref().map(GpuResume::to_value))
                 .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
@@ -1143,7 +1197,12 @@ impl Message {
                 },
             }),
             GAME_DESTROY => Message::GameDestroy { id: f.u64("id")? },
-            GPU_CREATE => Message::GpuCreate { id: f.u64("id")?, window: f.u64("window")? },
+            GPU_CREATE => Message::GpuCreate {
+                id: f.u64("id")?,
+                window: f.u64("window")?,
+                nonce: f.opt_string("nonce")?,
+                resume: f.opt_u64("resume")?,
+            },
             GPU_DATA => {
                 Message::GpuData(GpuData { id: f.u64("id")?, offset: f.u64("offset")?, data: f.bytes("data")? })
             }
@@ -1170,6 +1229,7 @@ impl Message {
                 wasm: f.opt_bool("wasm")?.unwrap_or(false),
                 webview: f.opt_bool("webview")?.unwrap_or(false),
                 gpu: f.opt_bool("gpu")?.unwrap_or(false),
+                gpu_resume: f.opt("gpu_resume", Some)?.map(GpuResume::from_value).transpose()?,
                 scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
