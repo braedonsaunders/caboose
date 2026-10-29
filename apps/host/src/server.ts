@@ -1,3 +1,4 @@
+import { CapacitySampler, capacityFor } from './capacity.js'
 import { computerSizes, expandSize } from './sizes.js'
 import { createHash } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
@@ -1085,6 +1086,8 @@ export function createCabooseServer(options: ComputerPieces & {
   host?: HostInfo
   /** The machine's memory, CPUs and disk, for `GET /v1/health`. */
   machine?: () => Promise<MachineResources>
+  /** Image filesystem for read-only capacity sampling. */
+  capacityRoot?: string
   /** Shared storage's totals, for `GET /v1/health`; null when it is off. */
   sharedStorage?: () => SharedStorageStatus | null
   /** How phones find and reach this host, for `/v1/host/reach`. */
@@ -1093,6 +1096,7 @@ export function createCabooseServer(options: ComputerPieces & {
   /** Accounts and tenants. Without it the owner token and phones are the only principals. */
   identity?: Identity
 }) {
+  const capacitySampler = new CapacitySampler(options.capacityRoot, options.host?.runtime)
   const identity = options.identity
   const authHandler = identity ? toNodeHandler(request => identity.handleAuthentication(request)) : undefined
   const throttle = new SignInThrottle()
@@ -1279,6 +1283,17 @@ export function createCabooseServer(options: ComputerPieces & {
         return json(response, 201, { token, computer: { id: runtime.id, name: runtime.settings.get().name } })
       }
       const principal = await principalOf(request)
+      const capacityTenant = /^\/v1\/tenants\/([0-9a-f-]{36})\/capacity$/.exec(path)
+      if (request.method === 'GET' && (path === '/v1/host/capacity' || capacityTenant)) {
+        const result = await capacityFor({
+          sampler: capacitySampler,
+          computers: () => [...runtimes.values()].filter(r => !deleting.has(r.id)).map(describe),
+          quotas: async id => { if (!identity) throw new AgentNotFoundError('tenant not found'); return (await identity.tenant(id)).quotas },
+          queued: () => { const stats = options.controller.stats() as { desk?: { queued?: number } }; return stats.desk?.queued ?? null },
+        }, principal, capacityTenant?.[1])
+        response.setHeader('cache-control', 'no-store')
+        return json(response, result.status, result.body)
+      }
       if (tenancy && await tenancyRoute(tenancy, request, response, path, principal) !== NOT_FOUND) return
       if (!principal) return json(response, 401, { error: 'unauthorized' })
       const fleetRoute = path === '/v1/computers' || /^\/v1\/computers\/[^/]+(?:\/pairing|\/phones(?:\/[^/]+)?)?$/.test(path)

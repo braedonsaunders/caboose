@@ -92,7 +92,7 @@ function withoutCredentials(value: string): string {
 /** The machine the host runs on, as `GET /v1/health` reports it in `machine`: what its computers share. */
 export interface MachineResources {
   memoryMb: number
-  /** Memory the kernel reports available now. */
+  /** Legacy field name: OS free memory (freemem), not Linux MemAvailable. */
   availableMemoryMb: number
   cpus: number
   /** The volume holding CABOOSE_IMAGE_ROOT (disks and memory snapshots); null when it cannot be read. */

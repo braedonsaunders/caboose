@@ -701,3 +701,9 @@ It preserves any memory inode pinned by a descendant. For an incomplete source
 with no pins, it reports the directory to move aside before retrying. A source
 without a valid build receipt requires manual inspection. Never remove a source
 or child memory inode while a VMM may still map it.
+
+### Capacity API
+
+The read-only host and tenant capacity endpoints expose allocations, measured OS
+resources and bounded storage scans. See [capacity and usage](../../docs/capacity.md)
+for authorization, units, unavailable categories and focused checks.
