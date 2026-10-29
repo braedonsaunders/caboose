@@ -286,6 +286,11 @@ pub fn all(media: &Media) -> Vec<Vector> {
             "A lossless tile.",
             Message::Tile(Tile { id: 7, rect: Rect::new(16, 32, 16, 16), format: TileFormat::Png, data: media.png.clone() }),
         ),
+        one(
+            "frame-copy",
+            "A scroll by 18 picture pixels: the picture's rows 120..1062 of columns 0..1920 move up to row 102.",
+            Message::FrameCopy(FrameCopy { id: 7, src: Rect::new(0, 120, 1920, 942), dst: [0, 102] }),
+        ),
         one("cursor-image", "", Message::Cursor(Cursor { id: Some(7), image: media.png.clone(), hotspot: [3, 1] })),
         one("cursor-named-text", "A text cursor: the client may show the keyboard.", Message::CursorNamed { name: "text".into() }),
         one(
@@ -463,6 +468,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
+                copy: false,
             }),
         ),
         one(
@@ -471,6 +477,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
             Message::ClientHello(ClientHello {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true,
+                copy: false,
             }),
         ),
         one(
@@ -487,6 +494,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
+                copy: false,
             }),
         ),
         one(
@@ -503,6 +511,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
+                copy: false,
             }),
         ),
         one(
@@ -519,6 +528,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: true,
                 scaled_motion: false,
+                copy: false,
             }),
         ),
         one(
@@ -535,6 +545,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
+                copy: false,
             }),
         ),
         one(
@@ -544,6 +555,17 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false, scaled_motion: false,
+                copy: false,
+            }),
+        ),
+        one(
+            "client-hello-copy",
+            "A client that applies frame.copy.",
+            Message::ClientHello(ClientHello {
+                version: 0, token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::H264], displays: vec![phone()],
+                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: false,
+                copy: true,
             }),
         ),
         one("vsync", "", Message::Vsync { display: 1, t_us: 5_000_008_333 }),

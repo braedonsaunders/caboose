@@ -563,6 +563,7 @@ fn run(args: Args) -> Result<bool, String> {
             webview: false,
             gpu: args.gpu_save.is_some(),
             scaled_motion: args.scaled_motion,
+            copy: false,
         }),
     )?;
 

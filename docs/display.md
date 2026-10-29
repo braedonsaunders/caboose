@@ -224,7 +224,7 @@ client's windows are exactly the server's. A server that sends `epoch` guarantee
 order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`. A feature is listed only
+`cursor-named`, `tiles`, `copy`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`. A feature is listed only
 when the server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
 `text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
@@ -247,6 +247,19 @@ streams (the owner's display) and the client's hello says `gpu: true`; `webview`
   frame repaints the whole picture, tiles included. The server makes that frame carry
   the current content of every tiled area. The server lists `tiles` in `features` when
   it sends them.
+- **Copies.** A scroll can arrive as a `frame.copy` instead of a frame: the client copies
+  the `src` rectangle of the window's displayed picture so that its top-left pixel lands
+  at `dst`, as if from a copy of the picture taken before the message (source and
+  destination may overlap). Both are in picture pixels and map to the window as tiles
+  do. A copy is applied in order with frames and tiles and is not acknowledged. It paints
+  the displayed picture only: the decoder's reference pictures are untouched, and a later
+  frame repaints the whole picture, the copied area included. The server follows a copy
+  at once with tiles for every 16×16 block the copy does not reproduce exactly (the
+  exposed edge and anything else that changed), so the copy and its tiles turn the
+  content the client showed into the window's new content; copied pixels keep the quality
+  they were shown at. The server makes the next frame carry the current content of every
+  copied and tiled area. A server sends copies only to a client whose hello says
+  `copy: true`, and lists `copy` in `features` when it will send them.
 - A frame can change no content and only sharpen it: once part of a window has been
   unchanged for a while, the server codes it once more at a lower QP (progressive
   refinement). It is an ordinary non-key `frame` under the same flow control. Its `pts_us`
@@ -279,6 +292,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x1B` | `gpu.destroy` | `id`, `reason?: "spool-limit"` |
 | `0x1C` | `webview.create` | `id`, `window`, `app: text`, `root: text`, `entry: text`, `bridge: text`, `grant: text` |
 | `0x1D` | `webview.destroy` | `id` |
+| `0x1E` | `frame.copy` | `id`, `src: rect`, `dst: [x, y]` (picture pixels) |
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
@@ -292,7 +306,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool` (booleans present only when true) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `copy?: bool` (booleans present only when true) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |

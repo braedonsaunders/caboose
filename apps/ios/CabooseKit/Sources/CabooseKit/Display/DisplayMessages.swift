@@ -29,6 +29,7 @@ public enum DisplayProtocol {
         case gpuDestroy = 0x1B
         case webviewCreate = 0x1C
         case webviewDestroy = 0x1D
+        case frameCopy = 0x1E
         case cursor = 0x20
         case cursorNamed = 0x21
         case textInput = 0x22
@@ -191,6 +192,29 @@ public struct LosslessTile: Sendable {
         self.rect = rect
         self.format = format
         self.data = data
+    }
+}
+
+/// Part of a window's displayed picture moved within it (a scroll), in picture pixels: the
+/// `source` rectangle lands with its top-left pixel at `destination`. Tiles for whatever the
+/// copy does not reproduce follow it.
+public struct FrameCopy: Equatable, Sendable {
+    public var window: Int
+    public var source: CGRect
+    public var destination: CGPoint
+
+    public init(window: Int, source: CGRect, destination: CGPoint) {
+        self.window = window
+        self.source = source
+        self.destination = destination
+    }
+
+    init?(_ body: CBOR) {
+        guard let window = body["id"]?.int, let source = body["src"].flatMap(WindowFields.rect),
+              let destination = body["dst"]?.ints, destination.count == 2 else { return nil }
+        self.window = window
+        self.source = source
+        self.destination = CGPoint(x: destination[0], y: destination[1])
     }
 }
 
@@ -381,6 +405,7 @@ public enum ServerMessage: Sendable {
     case windowDestroy(id: Int)
     case frame(EncodedFrame)
     case tile(LosslessTile)
+    case frameCopy(FrameCopy)
     case cursorImage(window: Int?, image: Data, hotspot: CGPoint)
     case cursorNamed(String)
     case textInput(window: Int, enabled: Bool, purpose: String?, surrounding: SurroundingText?)
@@ -423,6 +448,7 @@ public enum ServerMessage: Sendable {
         case .windowDestroy: parsed = body["id"]?.int.map { .windowDestroy(id: $0) }
         case .frame: parsed = EncodedFrame(body).map(ServerMessage.frame)
         case .tile: parsed = LosslessTile(body).map(ServerMessage.tile)
+        case .frameCopy: parsed = FrameCopy(body).map(ServerMessage.frameCopy)
         case .cursor:
             let hotspot = body["hotspot"]?.ints.flatMap { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil } ?? .zero
             parsed = body["image"]?.data.map { .cursorImage(window: body["id"]?.int, image: $0, hotspot: hotspot) }
@@ -595,8 +621,10 @@ public enum ClientMessage: Sendable {
     /// `audioDecoders`: the sound codecs the client plays ("opus"); absent, the server sends no sound.
     /// `wasm`: the client runs handed-off games (`"wasm": true`); the key is absent otherwise.
     /// `gpu`: the client renders GPU streams (`"gpu": true`); the key is absent otherwise.
+    /// `copy`: the client applies `frame.copy` (`"copy": true`); the key is absent otherwise.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
-               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false)
+               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false,
+               copy: Bool = false)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -631,7 +659,8 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview,
+                    let copy):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
@@ -641,6 +670,7 @@ public enum ClientMessage: Sendable {
                 ("gpu", gpu ? CBOR(true) : nil),
                 ("scaled_motion", scaledMotion ? CBOR(true) : nil),
                 ("webview", webview ? CBOR(true) : nil),
+                ("copy", copy ? CBOR(true) : nil),
             ]))
         case .videoAck(let video, let seq):
             return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))

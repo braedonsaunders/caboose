@@ -365,7 +365,7 @@ public final class CabooseDisplaySession: DisplaySession {
                 } else {
                     endGPUStream(of: window)
                 }
-            case .frame, .tile, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
+            case .frame, .tile, .frameCopy, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
                 continue // pictures and streams were routed on the socket's queue; unknown types are not used
             }
         }

@@ -208,6 +208,28 @@ import Testing
         #expect(frame.crop == CGRect(x: 0, y: 0, width: 62, height: 60))
         guard case .tile(let tile) = try server("tile-png").first else { Issue.record("tile"); return }
         #expect(tile.window == 7 && tile.format == "png")
+        guard case .frameCopy(let copy) = try server("frame-copy").first else { Issue.record("frame.copy"); return }
+        #expect(copy == FrameCopy(window: 7, source: CGRect(x: 0, y: 120, width: 1920, height: 942), destination: CGPoint(x: 0, y: 102)))
+    }
+
+    /// A frame.copy without its window, source or a two-number destination cannot be applied.
+    @Test func incompleteCopiesAreMalformed() {
+        let complete: [(CBOR, CBOR)] = [("id", 7), ("src", [0, 16, 64, 48]), ("dst", [0, 0])]
+        for missing in ["id", "src", "dst"] {
+            guard case .malformed(0x1E) = ServerMessage(DisplayFrame(type: 0x1E, body: .map(complete.filter { $0.0 != CBOR(missing) }))) else {
+                Issue.record("without \(missing)"); continue
+            }
+        }
+        guard case .malformed(0x1E) = ServerMessage(DisplayFrame(type: 0x1E, body: ["id": 7, "src": [0, 16, 64, 48], "dst": [0]])) else {
+            Issue.record("one-number destination"); return
+        }
+    }
+
+    /// `copy` is only ever sent as true, like `wasm`.
+    @Test func helloSaysCopyOnlyWhenTrue() {
+        let display = DisplayInfo(id: 1, width: 10, height: 10, scale: 1, refreshHz: 60)
+        #expect(ClientMessage.hello(token: "t", decoders: [.h264], displays: [display]).frame.body["copy"] == nil)
+        #expect(ClientMessage.hello(token: "t", decoders: [.h264], displays: [display], copy: true).frame.body["copy"] == .bool(true))
     }
 
     @Test func textAndCursor() throws {
@@ -358,6 +380,9 @@ import Testing
         "client-hello-webview": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], webview: true),
+        "client-hello-copy": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], copy: true),
         "client-hello-wasm": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], wasm: true),

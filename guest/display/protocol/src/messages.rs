@@ -215,6 +215,19 @@ pub struct Tile {
     pub data: Vec<u8>,
 }
 
+/// `frame.copy` (0x1E): moves part of the window's displayed picture within it, the way a
+/// scroll moves content. Picture pixels, like `tile.rect`; applied in order with frames
+/// and tiles and not acknowledged. It paints the displayed picture only: decoder
+/// reference pictures are untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameCopy {
+    pub id: u64,
+    /// The pixels to copy, as the picture showed them before this message.
+    pub src: Rect,
+    /// Where `src`'s top-left pixel lands.
+    pub dst: [i32; 2],
+}
+
 /// `cursor` (0x20).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cursor {
@@ -289,6 +302,8 @@ pub struct ClientHello {
     pub gpu: bool,
     /// The client accepts half-resolution motion streams.
     pub scaled_motion: bool,
+    /// The client applies `frame.copy`. Sent only when true.
+    pub copy: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -489,6 +504,7 @@ pub enum Message {
     },
     Frame(Frame),
     Tile(Tile),
+    FrameCopy(FrameCopy),
     Cursor(Cursor),
     CursorNamed {
         name: String,
@@ -610,6 +626,7 @@ pub mod type_id {
     pub const GPU_DESTROY: u8 = 0x1B;
     pub const WEBVIEW_CREATE: u8 = 0x1C;
     pub const WEBVIEW_DESTROY: u8 = 0x1D;
+    pub const FRAME_COPY: u8 = 0x1E;
     pub const CURSOR: u8 = 0x20;
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
@@ -682,6 +699,7 @@ impl Message {
             Message::WindowDestroy { .. } => WINDOW_DESTROY,
             Message::Frame(_) => FRAME,
             Message::Tile(_) => TILE,
+            Message::FrameCopy(_) => FRAME_COPY,
             Message::Cursor(_) => CURSOR,
             Message::CursorNamed { .. } => CURSOR_NAMED,
             Message::TextInput(_) => TEXT_INPUT,
@@ -871,6 +889,11 @@ impl Message {
                 .put("format", m.format)
                 .put("data", m.data.clone())
                 .build(),
+            Message::FrameCopy(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("src", m.src)
+                .put("dst", Value::Array(vec![m.dst[0].into(), m.dst[1].into()]))
+                .build(),
             Message::Cursor(m) => MapBuilder::new()
                 .opt("id", m.id)
                 .put("image", m.image.clone())
@@ -911,6 +934,7 @@ impl Message {
                 .opt("webview", m.webview.then_some(true))
                 .opt("gpu", m.gpu.then_some(true))
                 .opt("scaled_motion", m.scaled_motion.then_some(true))
+                .opt("copy", m.copy.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -1043,6 +1067,11 @@ impl Message {
                 format: enum_field(&f, "format", TileFormat::parse)?,
                 data: f.bytes("data")?,
             }),
+            FRAME_COPY => Message::FrameCopy(FrameCopy {
+                id: f.u64("id")?,
+                src: f.rect("src")?,
+                dst: f.req("dst", fields::as_i32_pair)?,
+            }),
             CURSOR => Message::Cursor(Cursor {
                 id: f.opt_u64("id")?,
                 image: f.bytes("image")?,
@@ -1171,6 +1200,7 @@ impl Message {
                 webview: f.opt_bool("webview")?.unwrap_or(false),
                 gpu: f.opt_bool("gpu")?.unwrap_or(false),
                 scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
+                copy: f.opt_bool("copy")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -1253,6 +1283,7 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         WINDOW_DESTROY => "window.destroy",
         FRAME => "frame",
         TILE => "tile",
+        FRAME_COPY => "frame.copy",
         VIDEO_CREATE => "video.create",
         VIDEO_FRAME => "video.frame",
         VIDEO_UPDATE => "video.update",

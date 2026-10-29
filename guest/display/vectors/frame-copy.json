@@ -1,0 +1,8 @@
+{
+  "name": "frame-copy",
+  "description": "A scroll by 18 picture pixels: the picture's rows 120..1062 of columns 0..1920 move up to row 102.",
+  "messages": [
+    {"direction": "server", "type": "frame.copy", "type_id": 30, "fields": {"id": 7, "dst": [0, 102], "src": [0, 120, 1920, 942]}}
+  ],
+  "hex": "1e1b000000a362696407636473748200186663737263840018781907801903ae"
+}
