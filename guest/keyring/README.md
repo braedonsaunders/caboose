@@ -3,7 +3,8 @@
 `caboose-keyring` initializes an empty GNOME Keyring store with a nonempty host-generated
 password, or unlocks the existing login collection with that password. It runs as uid 1000
 and uses the owner's persistent session bus. It adopts the existing Secret Service through
-standard D-Bus activation and never replaces a daemon, deletes keyrings, changes a password,
+standard D-Bus activation and sends GNOME’s PAM unlock request to its control socket after verifying the peer PID
+against the D-Bus owner. It never starts an unlock subprocess, replaces a daemon, deletes keyrings, changes a password,
 or selects a plaintext browser password store. It does not persist the supplied password.
 
 The host supplies 32 random bytes encoded as 64 lowercase hex characters on stdin. One

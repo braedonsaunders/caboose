@@ -4,11 +4,14 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import subprocess
+import socket
+import stat
+import struct
 import sys
 
 BUS = 'unix:path=/run/user/1000/bus'
 SERVICE = 'org.freedesktop.secrets'
+INTERFACE = 'org.freedesktop.Secret'
 ROOT = '/org/freedesktop/secrets'
 HOME = Path('/home/caboose')
 
@@ -37,6 +40,36 @@ def action(default, login, collections, files):
     raise MigrationRequired()
 
 
+def unlock(control, password, expected_pid):
+    """GNOME's PAM control protocol: unlock the existing peer, never start a daemon."""
+    path = Path(control) / 'control'
+    info = path.lstat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError('invalid control socket')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+        peer.settimeout(10)
+        peer.connect(str(path))
+        pid, uid, _ = struct.unpack('3i', peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        if uid != os.getuid() or pid != expected_pid:
+            raise RuntimeError('control peer does not own Secret Service')
+        # Linux credentials are checked via SO_PEERCRED after the initial NUL byte.
+        peer.sendall(b'\0')
+        peer.sendall(struct.pack('!III', 12 + len(password), 1, len(password)) + password)
+        response = bytearray()
+        while len(response) < 8:
+            chunk = peer.recv(8 - len(response))
+            if not chunk:
+                raise RuntimeError('incomplete control response')
+            response.extend(chunk)
+        size, result = struct.unpack('!II', response)
+        if size != 8 or result not in (0, 1, 2, 3):
+            raise RuntimeError('invalid control response')
+        if result == 1:
+            raise MigrationRequired()
+        if result != 0:
+            raise RuntimeError('control unlock failed')
+
+
 class Keyring:
     def __init__(self):
         from gi.repository import Gio, GLib
@@ -57,33 +90,28 @@ class Keyring:
         return result.unpack()
 
     def alias(self, name):
-        return self.call(self.owner, ROOT, SERVICE + '.Service', 'ReadAlias', '(s)', (name,))[0]
+        return self.call(self.owner, ROOT, INTERFACE + '.Service', 'ReadAlias', '(s)', (name,))[0]
 
     def property(self, path, interface, name):
         return self.call(self.owner, path, 'org.freedesktop.DBus.Properties', 'Get', '(ss)', (interface, name))[0]
 
     def ensure(self, password):
         default, login = self.alias('default'), self.alias('login')
-        if default != '/' and not self.property(default, SERVICE + '.Collection', 'Locked'):
+        if default != '/' and not self.property(default, INTERFACE + '.Collection', 'Locked'):
             return 'ready'
         directory = HOME / '.local/share/keyrings'
         files = list(directory.iterdir()) if directory.exists() else []
-        operation = action(default, login, self.property(ROOT, SERVICE + '.Service', 'Collections'), files)
+        operation = action(default, login, self.property(ROOT, INTERFACE + '.Service', 'Collections'), files)
         # Address the daemon already serving this exact bus; do not replace it or start
         # another daemon pointing at the same persistent keyring files.
         control = self.call(self.owner, '/org/gnome/keyring/daemon', 'org.gnome.keyring.Daemon', 'GetControlDirectory')[0]
         if not (Path(control) / 'control').is_socket():
             raise RuntimeError('no control socket')
-        result = subprocess.run(['/usr/bin/gnome-keyring-daemon', '--unlock', '--components=secrets',
-                                 '--control-directory=' + control], input=password,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                timeout=15, env={**os.environ, 'HOME': str(HOME),
-                                                'XDG_RUNTIME_DIR': '/run/user/1000',
-                                                'DBUS_SESSION_BUS_ADDRESS': BUS,
-                                                'GNOME_KEYRING_CONTROL': control})
-        # GNOME's CLI exit code alone does not establish that the password was accepted.
+        pid = self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+                        'GetConnectionUnixProcessID', '(s)', (self.owner,))[0]
+        unlock(control, password, pid)
         login = self.alias('login')
-        if result.returncode or login == '/' or self.property(login, SERVICE + '.Collection', 'Locked'):
+        if login == '/' or self.property(login, INTERFACE + '.Collection', 'Locked'):
             raise MigrationRequired()
         if operation == 'create':
             # A creation dialog might have raced us. Never redirect an existing default.
@@ -91,7 +119,7 @@ class Keyring:
             if current not in ('/', login):
                 raise MigrationRequired()
             if current == '/':
-                self.call(self.owner, ROOT, SERVICE + '.Service', 'SetAlias', '(so)', ('default', login))
+                self.call(self.owner, ROOT, INTERFACE + '.Service', 'SetAlias', '(so)', ('default', login))
         if self.alias('default') != login:
             raise MigrationRequired()
         return 'ready'
