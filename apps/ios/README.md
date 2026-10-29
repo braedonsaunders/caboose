@@ -560,3 +560,21 @@ speech/music, pause/resume and an audio-session interruption without choppy gaps
 Laptop reopen check: with one app open, relaunch while the phone is bent. The app fills
 the upper panel through its bottom edge; delayed window metadata or a settling safe area
 must not leave the initial cascade frame surrounded by wallpaper.
+## Paired computer menu
+
+Tap the name and chevron on Home to select a saved computer or Add Computer. Adding a
+pairing keeps the others. Manage Computers opens the host console, where an authorized
+administrator signs in to provision computers and generate pairing codes. The phone lists
+only computers explicitly paired here. Keychain failures appear as sign-in errors and do
+not disconnect the current computer.
+
+Run `python3 apps/ios/scripts/test-computer-switcher.py` from the repository root for pure
+collection tests. On a signed phone, pair two computers at one host and another on a
+second host; switch while waking, reconnecting, searching files, and loading apps. Verify
+names and the selected checkmark, no old frames/apps/tasks after switching, separate Files
+identities, and retained pairings after relaunch. Cancel Add Computer and verify the old
+pairing remains. Re-pair a computer and verify its Files identity persists. Rename it in
+settings and verify the menu retains the name after relaunch. Open Manage Computers and
+verify ordinary console sign-in with no phone bearer in the URL. With Keychain access
+unavailable, verify the failure is shown and the active connection is unchanged. Start from
+a legacy single pairing and verify migration keeps its Files identity and shortcuts.

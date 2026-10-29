@@ -1771,6 +1771,20 @@ repeated lines removed and clipped to a few lines, opens on tap.
 `caboose://task/<id>` opens a task and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 
+The name on Home opens a menu of explicitly paired computers, with the active computer
+checked. Add Computer uses the existing pairing flow and retains the other pairings.
+A single shared Keychain record stores the collection and active selection atomically;
+failed writes leave the current connection intact and show an error. The legacy pairing
+migrates with its existing Files/cache identity. Pairing metadata supplies the id and name;
+status updates refresh the saved name. Re-pairing a known id at the same host preserves its
+local identity. Switching fences old wakes and session callbacks, disconnects the old
+computer, and resets its in-memory state before connecting the selected pairing.
+Manage Computers opens the host console without a bearer in the URL. Console administrators
+provision computers and create pairing codes after web sign-in. A phone token cannot list
+the host's computers or authorize a different computer; this menu is a local collection,
+not account discovery.
+
+
 - **Vertical bar.** On iPhone Duo (iOS 27.1) the system draws the tab bar and toolbar
   items together in a bar on the side, and moves the status bar into it. Toolbar items are
   icon buttons so that they can move there. The Desktop tab keeps the tab bar whole

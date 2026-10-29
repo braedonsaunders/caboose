@@ -122,17 +122,19 @@ struct TodayHeader: View {
                     .tracking(0.8)
                     .foregroundStyle(.secondary)
             }
-            if let name {
-                Text(name)
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            } else {
-                CabooseWordmark(motion: busy ? .rolling : (lit ? .idle : .still), lit: lit)
-                    .frame(height: 32)
-                    .foregroundStyle(.white.opacity(0.94))
-                    .padding(.vertical, 4)
-                    .accessibilityLabel("Caboose")
+            ComputerSwitcher {
+                if let name {
+                    Text(name)
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                } else {
+                    CabooseWordmark(motion: busy ? .rolling : (lit ? .idle : .still), lit: lit)
+                        .frame(height: 32)
+                        .foregroundStyle(.white.opacity(0.94))
+                        .padding(.vertical, 4)
+                        .accessibilityLabel("Caboose")
+                }
             }
             HStack(spacing: 8) {
                 indicator
@@ -157,7 +159,7 @@ struct TodayHeader: View {
 
     /// The name the computer was given in its settings; nil while it is still "Caboose".
     private var name: String? {
-        guard let name = model.computerStatus?.settings.name ?? model.computer?.name,
+        guard let name = model.computerStatus?.settings.name ?? model.computer?.name ?? model.credentials?.computerName,
               !name.isEmpty, name.caseInsensitiveCompare("Caboose") != .orderedSame else { return nil }
         return name
     }

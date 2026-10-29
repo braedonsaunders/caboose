@@ -50,14 +50,16 @@ final class OpenDocumentCenter {
     }
 
     func installAndOpen(_ app: CatalogApp, model: AppModel) async {
-        guard !busy, let pending else { return }
+        guard model.documents === self, !busy, let pending else { return }
         busy = true; installing = app.id; error = nil
         defer { busy = false; installing = nil }
         await model.catalog.perform(app.id, action: "install")
+        guard model.documents === self else { return }
         if let message = model.catalog.error { error = message; return }
         for _ in 0..<1800 {
-            if Task.isCancelled { return }
+            guard !Task.isCancelled, model.documents === self else { return }
             await model.catalog.refresh()
+            guard model.documents === self else { return }
             if let state = model.catalog.apps.first(where: { $0.id == app.id }) {
                 if state.installedVersion != nil { await open(pending, app: state, model: model); return }
                 if state.progress?.phase == "failed" || (!state.busy && state.lastError != nil) {
@@ -72,7 +74,7 @@ final class OpenDocumentCenter {
     }
 
     func choose(_ app: CatalogApp, model: AppModel) async {
-        guard !busy, let pending else { return }
+        guard model.documents === self, !busy, let pending else { return }
         if app.installedVersion == nil { await installAndOpen(app, model: model); return }
         busy = true; error = nil
         defer { busy = false }
@@ -80,6 +82,7 @@ final class OpenDocumentCenter {
     }
 
     private func open(_ item: Pending, app: CatalogApp, model: AppModel) async {
+        guard model.documents === self else { return }
         guard let host = model.host, let credentials = model.credentials else { error = "Connect to your computer first."; return }
         do {
             let path: String
@@ -110,7 +113,9 @@ final class OpenDocumentCenter {
                                                                   path: path, bookmark: bookmark, localHash: hash, remoteETag: remote.etag))
                 }
             }
+            guard model.documents === self else { return }
             try await host.openDocumentLaunch(path, desktopID: app.desktopId)
+            guard model.documents === self else { return }
             model.showLaunchedDocument(app)
             dismiss()
             requestSync(model: model)
@@ -119,6 +124,7 @@ final class OpenDocumentCenter {
 
     /// Control events can arrive in bursts; reconcile again if a change arrives mid-transfer.
     func requestSync(model: AppModel) {
+        guard model.documents === self else { return }
         if syncing { syncAgain = true; return }
         syncing = true
         syncTask = Task {
@@ -131,11 +137,12 @@ final class OpenDocumentCenter {
     }
 
     private func sync(model: AppModel) async {
+        guard model.documents === self else { return }
         guard let host = model.host, let credentials = model.credentials else { return }
         do {
             let records = try OpenDocumentStore.records(domain: credentials.fileDomainIdentifier)
             for record in records where !conflicts.contains(where: { $0.id == record.id }) {
-                guard !Task.isCancelled, model.credentials?.fileDomainIdentifier == credentials.fileDomainIdentifier else { return }
+                guard !Task.isCancelled, model.documents === self, model.credentials?.fileDomainIdentifier == credentials.fileDomainIdentifier else { return }
                 do { try await reconcile(record, host: host) }
                 catch { if !Task.isCancelled { self.error = "Could not sync \(record.name): \(error.localizedDescription)" } }
             }
@@ -176,7 +183,8 @@ final class OpenDocumentCenter {
     }
 
     func resolve(_ conflict: Conflict, keepComputer: Bool, model: AppModel) async {
-        guard !busy, let host = model.host else { return }
+        guard model.documents === self, !busy, let host = model.host,
+              conflict.record.domain == model.credentials?.fileDomainIdentifier else { return }
         busy = true; error = nil
         defer { busy = false }
         do {

@@ -24,13 +24,13 @@ final class AppModel {
     }
 
     private(set) var phase: Phase
-    let agents = AgentCenter()
+    private(set) var agents = AgentCenter()
     var notificationTaskID: String?
     var askFocusRequested = false
-    let catalog = CatalogCenter()
-    let documents = OpenDocumentCenter()
+    private(set) var catalog = CatalogCenter()
+    private(set) var documents = OpenDocumentCenter()
     /// Videos playing on the computer that can move to the phone.
-    let media = MediaHandoff()
+    private(set) var media = MediaHandoff()
     let phone = PhoneHandoff()
     /// Where the computer's sound plays, and the AirPlay device it last played on.
     let airPlay = AirPlayCenter()
@@ -40,6 +40,9 @@ final class AppModel {
     private(set) var filesRegistering = false
     private var filesRegistrationRevision = 0
     private(set) var credentials: Credentials?
+    private(set) var savedComputers: [Credentials] = []
+    private var connectionRevision = 0
+    var addingComputer = false
     /// The owner's display.
     private(set) var session: (any DisplaySession)?
     private(set) var computer: HostClient.Session.Computer?
@@ -115,16 +118,30 @@ final class AppModel {
     private var observingWindows = false
 
     init() {
-        let saved = Credentials.load()
+        let collection: Credentials.Collection
+        do { collection = try Credentials.loadCollection() }
+        catch { collection = .init(); pairingFailure = error.localizedDescription }
+        let saved = collection.active
+        savedComputers = collection.computers
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
         shortcuts = Self.loadShortcuts(for: saved)
+        bindConnectionCenters()
+        registerFiles()
+        link.attempt = { [weak self] in await self?.wake(quiet: true) }
+        link.probe = { [weak self] in self?.session?.probeLiveness() }
+        link.start()
+    }
+
+    private func bindConnectionCenters() {
+        let revision = connectionRevision
         agents.onComputer = { [weak self] status in
-            self?.computerStatus = status
-            self?.registerFiles(name: status.settings.name)
+            guard let self, self.connectionRevision == revision else { return }
+            self.computerStatus = status
+            self.registerFiles(name: status.settings.name)
         }
         agents.onEvent = { [weak self] type, event in
-            guard let self else { return }
+            guard let self, self.connectionRevision == revision else { return }
             self.media.handle(type, event)
             self.catalog.handle(type, event)
             self.phone.handle(type, event)
@@ -132,13 +149,12 @@ final class AppModel {
             if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
             if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials); self.documents.requestSync(model: self) }
         }
-        registerFiles()
-        link.attempt = { [weak self] in await self?.wake(quiet: true) }
-        link.probe = { [weak self] in self?.session?.probeLiveness() }
-        link.start()
-        catalog.onChange = { [weak self] in await self?.refreshApps() }
-        media.attach(host: { [weak self] in self?.host })
-        phone.attach(host: { [weak self] in self?.host })
+        catalog.onChange = { [weak self] in
+            guard let self, self.connectionRevision == revision else { return }
+            await self.refreshApps()
+        }
+        media.attach(host: { [weak self] in self?.connectionRevision == revision ? self?.host : nil })
+        phone.attach(host: { [weak self] in self?.connectionRevision == revision ? self?.host : nil })
     }
 
     var host: HostClient? { credentials.map { HostClient(baseURL: activeHostURL ?? $0.hostURL, token: $0.token) } }
@@ -176,33 +192,84 @@ final class AppModel {
         guard !pairing else { return }
         pairing = true
         pairingFailure = nil
+        let revision = connectionRevision
         Task {
             defer { pairing = false }
-            do { connect(with: try await link.redeem(deviceName: UIDevice.current.name)) }
-            catch { pairingFailure = error.localizedDescription }
+            do {
+                let credentials = try await link.redeem(deviceName: UIDevice.current.name)
+                guard revision == connectionRevision else { return }
+                connect(with: credentials)
+            } catch {
+                guard revision == connectionRevision else { return }
+                pairingFailure = error.localizedDescription
+            }
         }
     }
 
     func connect(with credentials: Credentials) {
-        if let old = self.credentials, old.fileDomainIdentifier != credentials.fileDomainIdentifier { FileDomains.remove(old) }
-        if self.credentials != nil && self.credentials != credentials {
-            fileSearchTask?.cancel()
-            ComputerSearch.clear()
-            PushCoordinator.shared.unregister(from: host)
-            LiveActivityCoordinator.shared.unregister(from: host)
-        }
-        credentials.save()
-        if self.credentials?.fileDomainIdentifier != credentials.fileDomainIdentifier {
-            shortcuts = Self.loadShortcuts(for: credentials)
-            recentFiles = []
-        }
-        wakes.invalidate()
-        link.stop()
-        self.credentials = credentials
-        filesRegistrationError = nil
-        registerFiles(name: "Caboose")
-        activeHostURL = nil
+        // Commit first: storage failures must leave the current computer connected.
+        let saved: Credentials
+        do { saved = try credentials.save() }
+        catch { pairingFailure = error.localizedDescription; return }
+        resetConnection()
+        self.credentials = saved
+        savedComputers = (try? Credentials.loadCollection().computers) ?? savedComputers
+        shortcuts = Self.loadShortcuts(for: saved)
+        addingComputer = false
+        phase = .waking
+        registerFiles(name: saved.displayName)
         Task { await wake() }
+    }
+
+    func switchComputer(_ computer: Credentials) {
+        guard !pairing, computer.id != credentials?.id else { return }
+        connect(with: computer)
+    }
+
+    /// Stop every connection owner before another identity becomes visible to its callbacks.
+    private func resetConnection() {
+        connectionRevision += 1
+        closeDisplay() // invalidates WakeFence and stops DisplayLink retries
+        fileSearchTask?.cancel()
+        ComputerSearch.clear()
+        PushCoordinator.shared.unregister(from: host)
+        LiveActivityCoordinator.shared.unregister(from: host)
+        if let credentials { FileDomains.remove(credentials) }
+        agents.reset()
+        catalog.reset()
+        documents.reset()
+        media.reset()
+        phone.reset()
+        agents = AgentCenter()
+        catalog = CatalogCenter()
+        documents = OpenDocumentCenter()
+        media = MediaHandoff()
+        bindConnectionCenters()
+        computer = nil
+        computerStatus = nil
+        apps = []
+        appIcons = [:]
+        clearFrameCache()
+        lastDisplay = nil
+        sessionIdentity = nil
+        placedWindowIDs.removeAll()
+        launching = nil
+        launchStartedAt = nil
+        openingFileSince = nil
+        launchFailure = nil
+        notificationTaskID = nil
+        settingsPresented = false
+        recentFiles = []
+        selectedTab = .home
+        deviceDesktopActive = false
+        deviceViewport = DeviceViewport()
+        desktop = DesktopModel(pixelsPerPoint: 1)
+        yard.invalidate()
+        filesRegistrationRevision += 1
+        filesRegistering = false
+        filesRegistrationError = nil
+        activeHostURL = nil
+        parking = false
     }
 
     /// Change reachability without replacing the phone token or its Files identity.
@@ -211,46 +278,36 @@ final class AppModel {
               current.token == updated.token else { return }
         try updated.saveAddresses()
         credentials = updated
+        savedComputers = (try? Credentials.loadCollection().computers) ?? savedComputers
         if case .failed = phase { Task { await wake() } }
     }
 
     func signOut() {
-        wakes.invalidate()
-        fileSearchTask?.cancel()
-        ComputerSearch.clear()
-        PushCoordinator.shared.unregister(from: host)
-        LiveActivityCoordinator.shared.unregister(from: host)
-        session?.disconnect()
-        session = nil
-        agents.reset()
-        catalog.reset()
-        documents.reset()
-        media.reset()
-        phone.reset()
-        computerStatus = nil
-        settingsPresented = false
-        recentFiles = []
-        selectedTab = .home
-        deviceDesktopActive = false
-        deviceViewport = DeviceViewport()
-        filesRegistrationRevision += 1
-        filesRegistering = false
-        filesRegistrationError = nil
-        link.stop()
-        if let credentials { FileDomains.remove(credentials) }
-        Credentials.clear()
+        do { try Credentials.clear() }
+        catch { pairingFailure = error.localizedDescription; return }
+        resetConnection()
         credentials = nil
-        activeHostURL = nil
+        savedComputers = (try? Credentials.loadCollection().computers) ?? []
+        shortcuts = AppShortcuts()
         phase = .needsSetup
+        if let next = savedComputers.first { connect(with: next) }
     }
 
     /// Advertise the paired computer without depending on its host or display being online.
     func registerFiles(name: String? = nil) {
-        guard let credentials else { return }
+        guard var credentials else { return }
+        if let name, !name.isEmpty, credentials.computerName != name {
+            credentials.computerName = name
+            do {
+                let saved = try credentials.save()
+                self.credentials = saved
+                savedComputers = (try? Credentials.loadCollection().computers) ?? savedComputers
+            } catch { pairingFailure = error.localizedDescription }
+        }
         filesRegistrationRevision += 1
         let revision = filesRegistrationRevision
         filesRegistering = true
-        let displayName = name ?? computerStatus?.settings.name ?? computer?.name ?? "Caboose"
+        let displayName = name ?? computerStatus?.settings.name ?? computer?.name ?? credentials.displayName
         FileDomains.register(credentials, name: displayName) { [weak self] error in
             guard let self, self.filesRegistrationRevision == revision,
                   self.credentials?.fileDomainIdentifier == credentials.fileDomainIdentifier else { return }
@@ -809,14 +866,22 @@ final class AppModel {
 
     func refreshComputer() async throws {
         guard let host else { return }
-        computerStatus = try await host.computer()
+        let revision = connectionRevision
+        let status = try await host.computer()
+        guard revision == connectionRevision else { return }
+        computerStatus = status
+        registerFiles(name: status.settings.name)
         LiveActivityCoordinator.shared.sync(agents.tasks)
     }
 
     /// Saves only the given changes. Name and auto-park apply at once; memory and cores at the next restart.
     func saveSettings(_ changes: [String: JSONValue]) async throws {
         guard let host, !changes.isEmpty else { return }
-        computerStatus = try await host.updateSettings(changes)
+        let revision = connectionRevision
+        let status = try await host.updateSettings(changes)
+        guard revision == connectionRevision else { return }
+        computerStatus = status
+        registerFiles(name: status.settings.name)
     }
 
     /// A park is underway.
@@ -829,13 +894,16 @@ final class AppModel {
     /// Parks the computer with its memory, so it resumes exactly as it was.
     func parkComputer() async throws {
         guard let host else { return }
+        let revision = connectionRevision
         parking = true
-        defer { parking = false }
+        defer { if revision == connectionRevision { parking = false } }
         closeDisplay()
         do {
             try await host.park()
+            guard revision == connectionRevision else { return }
             phase = .parked
         } catch {
+            guard revision == connectionRevision else { return }
             phase = .failed(error.localizedDescription)
             throw error
         }
@@ -845,13 +913,17 @@ final class AppModel {
     /// Cold-restarts the computer and reconnects. The person has already confirmed that open apps close.
     func restartComputer() async {
         guard let host else { return }
+        let revision = connectionRevision
         settingsPresented = false
         closeDisplay()
         clearFrameCache() // the apps behind these frames are gone
         phase = .restarting
         do {
-            computerStatus = try await host.restart()
+            let status = try await host.restart()
+            guard revision == connectionRevision else { return }
+            computerStatus = status
         } catch {
+            guard revision == connectionRevision else { return }
             phase = .failed(error.localizedDescription)
             return
         }
@@ -886,9 +958,12 @@ final class AppModel {
 
     func refreshApps() async {
         guard let host else { return }
+        let revision = connectionRevision
         for attempt in 0 ..< 10 {
+            guard revision == connectionRevision else { return }
             do {
                 let list = try await host.apps()
+                guard revision == connectionRevision else { return }
                 ComputerSearch.indexApps(list)
                 apps = list.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 for app in list where appIcons[app.id] == nil {
@@ -1030,8 +1105,10 @@ final class AppModel {
     func open(_ app: HostClient.App) {
         recordOpen(app)
         if phase != .ready {
+            let revision = connectionRevision
             Task {
                 await wake()
+                guard revision == connectionRevision else { return }
                 if phase == .connecting || phase == .ready { launch(app) }
             }
             return
@@ -1087,10 +1164,13 @@ final class AppModel {
         guard let credentials else { return }
         if !(deviceDesktopActive && selectedTab == .desktop) { leaveDeviceDesktop() }
         openingFileSince = Date()
+        let revision = connectionRevision
         do {
             try await HostShortcutFiles(credentials: credentials).open(path)
+            guard revision == connectionRevision else { return }
             if desktopActive { openingFileSince = nil }
         } catch {
+            guard revision == connectionRevision else { return }
             openingFileSince = nil
             launchFailure = "\((path as NSString).lastPathComponent) didn't open. \(error.localizedDescription)"
             UINotificationFeedbackGenerator().notificationOccurred(.error)
@@ -1137,10 +1217,12 @@ final class AppModel {
         guard let host else { return }
         launching = app
         launchStartedAt = Date()
+        let revision = connectionRevision
         Task {
             do {
                 try await host.launch(app)
             } catch {
+                guard revision == connectionRevision else { return }
                 launching = nil
                 launchFailure = "\(app.name) didn't open. \(error.localizedDescription)"
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
