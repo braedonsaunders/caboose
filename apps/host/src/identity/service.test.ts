@@ -113,7 +113,7 @@ describe('tenants, administrators and invitations', () => {
     await expect(identity.tenant(family.id)).rejects.toThrow(/not found/)
   })
 
-  it('invites an administrator by link, once, and lets an existing account join with its password', async () => {
+  it('invites an administrator by link, once, and requires completed sign-in for an existing account', async () => {
     const team = await identity.createTenant({ name: 'Team' })
     const { token, invite } = await identity.invite(team.id, { email: 'Sam@Example.com' }, null)
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
@@ -130,7 +130,8 @@ describe('tenants, administrators and invitations', () => {
     // The owner joins too, with the password they already have.
     const second = await identity.invite(team.id, { email: 'owner@example.com' }, sam!.userId)
     expect((await identity.inspectInvite(second.token)).accountExists).toBe(true)
-    await expect(identity.acceptInvite(second.token, { password: 'not it at all' })).rejects.toThrow(/Sign in/)
+    await expect(identity.acceptInvite(second.token, { password: 'correct horse' })).rejects.toThrow(/Sign in/)
+    await expect(identity.acceptInvite(second.token, {}, new Headers({ cookie: cookieFrom(signedIn) }))).rejects.toThrow(/Sign in/)
     const ownerSession = await identity.signIn('owner@example.com', 'correct horse', new Headers())
     await identity.acceptInvite(second.token, {}, new Headers({ cookie: cookieFrom(ownerSession) }))
     expect((await identity.administrators(team.id)).map(admin => admin.email)).toEqual(['sam@example.com', 'owner@example.com'])

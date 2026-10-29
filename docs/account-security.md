@@ -8,7 +8,8 @@ account security requires an administrator session cookie and does not accept be
 Account security provides password changes, authenticator enrollment, recovery codes and
 signed-in sessions. Changing a password requires the current password and signs out other
 sessions. Authenticator enrollment requires the password and a valid six-digit code before
-MFA becomes active. Recovery codes are displayed when created or replaced; each works once,
+MFA becomes active. Enrollment preserves other existing sessions; use Sign out other
+sessions to revoke them. Recovery codes are displayed when created or replaced; each works once,
 and replacing them invalidates the old set. Better Auth, through AppKit, owns hashing,
 encryption, enrollment, challenges and recovery-code consumption.
 
