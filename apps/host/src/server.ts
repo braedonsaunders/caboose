@@ -1352,6 +1352,7 @@ export function createCabooseServer(options: ComputerPieces & {
             input.person = selected.name
           }
           await options.fleet.computers.assign(runtime.id, input as Partial<ComputerAssignment>)
+          await accountSockets.revalidate()
           return json(response, 200, describe(runtime))
         }
         if (!phones && request.method === 'DELETE') {
