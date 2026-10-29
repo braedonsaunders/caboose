@@ -113,16 +113,63 @@ jobs:
         run: |
           swift test --jobs 1 --list-tests 2>&1 | tee ../../../gpu-check-logs/native-tests.log | grep 'twoCapturesReplayConcurrentlyWithIndependentState'
           swift test --jobs 1 --filter GPUStream 2>&1 | tee ../../../gpu-check-logs/replay.log
-      - name: Diagnose native capture failure under LLDB
+      - name: Diagnose capture with validated-default
         if: failure()
         timeout-minutes: 5
+        env:
+          MTL_DEBUG_LAYER: '1'
         run: |
           test -x apps/ios/build/gpu-stream/check-capture
-          xcrun lldb --no-lldbinit --batch -o 'settings set auto-confirm true' -o run \
+          if xcrun lldb --no-lldbinit --batch -o 'settings set auto-confirm true' -o run -o 'process status' \
             --one-line-on-crash 'thread backtrace all' \
             --one-line-on-crash 'process status' --one-line-on-crash 'process kill' -- \
             apps/ios/build/gpu-stream/check-capture \
-            apps/ios/GPUStream/tests/fixtures/vkcube.gfxr 300 2>&1 | tee gpu-check-logs/native-backtrace.log
+            apps/ios/GPUStream/tests/fixtures/vkcube.gfxr 300 2>&1 | tee gpu-check-logs/validated-default.log; then
+            debugger_status=0
+          else
+            debugger_status=$?
+          fi
+          printf 'validated-default LLDB pipeline status: %s\n' "$debugger_status" | tee -a gpu-check-logs/validated-default.log
+          # LLDB may return zero after handling a crash. Require the program's complete
+          # frame count AND a clean process exit, rather than mistaking debugger success
+          # or a successful alternate configuration for a successful default replay.
+          if test "$debugger_status" = 0 && \
+            grep -Eq '^Standalone capture: state=1 frames=300 error=[[:space:]]*$' gpu-check-logs/validated-default.log && \
+            grep -Eq 'Process [0-9]+ exited with status = 0 ' gpu-check-logs/validated-default.log; then
+            echo 'validated-default diagnostic outcome: PASS' | tee -a gpu-check-logs/validated-default.log
+          else
+            echo 'validated-default diagnostic outcome: FAIL' | tee -a gpu-check-logs/validated-default.log
+            exit 1
+          fi
+      - name: Diagnose capture with validated-heap0
+        if: failure()
+        timeout-minutes: 5
+        env:
+          MTL_DEBUG_LAYER: '1'
+          MVK_CONFIG_USE_MTLHEAP: '0'
+        run: |
+          test -x apps/ios/build/gpu-stream/check-capture
+          if xcrun lldb --no-lldbinit --batch -o 'settings set auto-confirm true' -o run -o 'process status' \
+            --one-line-on-crash 'thread backtrace all' \
+            --one-line-on-crash 'process status' --one-line-on-crash 'process kill' -- \
+            apps/ios/build/gpu-stream/check-capture \
+            apps/ios/GPUStream/tests/fixtures/vkcube.gfxr 300 2>&1 | tee gpu-check-logs/validated-heap0.log; then
+            debugger_status=0
+          else
+            debugger_status=$?
+          fi
+          printf 'validated-heap0 LLDB pipeline status: %s\n' "$debugger_status" | tee -a gpu-check-logs/validated-heap0.log
+          # LLDB may return zero after handling a crash. Require the program's complete
+          # frame count AND a clean process exit, rather than mistaking debugger success
+          # or a successful alternate configuration for a successful default replay.
+          if test "$debugger_status" = 0 && \
+            grep -Eq '^Standalone capture: state=1 frames=300 error=[[:space:]]*$' gpu-check-logs/validated-heap0.log && \
+            grep -Eq 'Process [0-9]+ exited with status = 0 ' gpu-check-logs/validated-heap0.log; then
+            echo 'validated-heap0 diagnostic outcome: PASS' | tee -a gpu-check-logs/validated-heap0.log
+          else
+            echo 'validated-heap0 diagnostic outcome: FAIL' | tee -a gpu-check-logs/validated-heap0.log
+            exit 1
+          fi
       - name: Retain only crash reports from synthetic test processes
         if: failure()
         run: |
