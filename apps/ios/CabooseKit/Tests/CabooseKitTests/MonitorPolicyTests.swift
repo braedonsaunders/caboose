@@ -157,7 +157,8 @@ struct MonitorPolicyTests {
         let selected = policy.resolve()
         for invalid in [CGSize.zero, CGSize(width: CGFloat.nan, height: 10),
                         CGSize(width: 10, height: CGFloat.infinity), CGSize(width: -1, height: 10)] {
-            #expect(!policy.presentLaptop(panel: invalid))
+            let changed = policy.presentLaptop(panel: invalid)
+            #expect(!changed)
             #expect(policy.resolve() == selected)
         }
         policy.zoomDevice(by: 1.2)
