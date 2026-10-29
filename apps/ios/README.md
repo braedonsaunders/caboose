@@ -287,8 +287,7 @@ Restart, the wallpaper, and Change Computer. Beside the cog, the lifecycle menu 
 computer's state and offers Turn On, Park and Restart as they apply. Both use the host's
 management API (`docs/architecture.md`) and follow `computer.settings` events on the control
 socket. The Apps tab's Shelf offers optional applications from the computer's pinned
-catalog; Library groups them into packs and offers updates, rollback to a cached release,
-and removal.
+catalog and Debian's AppStream metadata. Library searches Debian applications, filters results by category, groups curated apps into packs, and offers updates, rollback to a cached release, and removal.
 
 The wallpaper lies behind every tab and the desktop, here and on a TV: the brand gradient,
 photographs that change every quarter hour, one photograph, or a picture of your own from

@@ -47,6 +47,8 @@ struct CatalogApp: Decodable, Identifiable {
     let category: String
     let packs: [String]
     let desktopId: String
+    let categories: [String]?
+    let license: String?
     let fileTypes: FileTypes
     let iconData: String?
     let source: Source
@@ -71,20 +73,44 @@ struct CatalogResponse: Decodable { let packs: [CatalogPack]; let apps: [Catalog
 final class CatalogCenter {
     private(set) var apps: [CatalogApp] = []
     private(set) var packs: [CatalogPack] = []
+    private(set) var storeApps: [CatalogApp] = []
+    private(set) var storeLoading = false
+    var storeError: String?
+    private var storeQuery = ""
+    private var storeGeneration = 0
     private(set) var recentInstalls: Set<String> = []
     var error: String?
     private var host: HostClient?
     var onChange: (() async -> Void)?
 
-    func attach(_ host: HostClient) { self.host = host; Task { await refresh() } }
-    func reset() { host = nil; apps = []; packs = []; recentInstalls = []; error = nil }
+    func attach(_ host: HostClient) { self.host = host; Task { await refresh(); await discover("") } }
+    func reset() { storeGeneration += 1; storeLoading = false; host = nil; apps = []; packs = []; recentInstalls = []; storeApps = []; storeError = nil; storeQuery = ""; error = nil }
     func refresh() async {
         guard let host else { return }
         do {
             let catalog: CatalogResponse = try await host.request("GET", "/v1/catalog", timeout: 60)
-            apps = catalog.apps; packs = catalog.packs; error = nil
+            apps = catalog.apps; packs = catalog.packs; storeApps = storeApps.compactMap { item in catalog.apps.first { $0.id == item.id } }; error = nil
         } catch HostClient.Failure.server(404, _) { apps = []; packs = [] }
         catch { self.error = error.localizedDescription }
+    }
+    func discover(_ query: String) async {
+        guard let host else { return }
+        if storeQuery != query { storeApps = [] }
+        storeQuery = query
+        storeGeneration += 1
+        let generation = storeGeneration
+        storeLoading = true
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&+=?#"))) else { return }
+        do {
+            struct Results: Decodable { let apps: [CatalogApp] }
+            let results: Results = try await host.request("GET", "/v1/catalog/discover?q=\(encoded)", timeout: 90)
+            guard storeGeneration == generation else { return }
+            storeApps = results.apps; storeError = nil; storeLoading = false
+            await refresh()
+        } catch {
+            guard storeGeneration == generation else { return }
+            storeError = error.localizedDescription; storeLoading = false
+        }
     }
     func perform(_ id: String, action: String, pack: Bool = false) async {
         guard let host else { return }
@@ -101,6 +127,9 @@ final class CatalogCenter {
            let operation = event["operation"] as? String, let phase = event["phase"] as? String,
            let index = apps.firstIndex(where: { $0.id == id }) {
             apps[index].progress = CatalogProgress(id: id, operation: operation, phase: phase, message: event["message"] as? String, stage: event["stage"] as? String, value: event["value"] as? Double, downloadedBytes: (event["downloadedBytes"] as? NSNumber)?.int64Value, totalBytes: (event["totalBytes"] as? NSNumber)?.int64Value)
+            if let storeIndex = storeApps.firstIndex(where: { $0.id == id }) {
+                storeApps[storeIndex].progress = apps[index].progress
+            }
             if phase == "finished" && operation == "install" { recentInstalls.insert(id) }
             if phase == "failed" { error = event["message"] as? String ?? "The application could not be installed." }
         }

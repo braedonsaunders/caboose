@@ -365,8 +365,14 @@ messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 
 ### Catalog
 
-`guest/catalog/catalog.json` is the source of optional applications, packs and release
-pins. Debian applications install from Debian 13's signed repositories. On arm64, the catalog
+`guest/catalog/catalog.json` supplies curated applications, packs and release pins. The
+Library also searches the guest's Debian AppStream desktop-application metadata and displays
+at most 100 matching applications with categories and project licences. The guest requires
+an APT candidate for its architecture; the host validates the package and desktop identifiers
+before offering an APT operation. A discovered application's package and AppStream identity
+are retained in its operation record so it can be rediscovered after a host restart. Search
+requires a running guest and does not wake it. The Library reports discovery failures and
+keeps curated entries available. Debian applications install from Debian 13's signed repositories. On arm64, the catalog
 omits the pinned Craft `.deb` packages, which are x86_64-only, and packs with no compatible entries. Craft releases have
 fixed URLs, byte counts and SHA-256 hashes. No pin changes automatically; a changed pin
 makes an update available for the owner to choose.
@@ -868,6 +874,7 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `GET` | `/v1/catalog/discover?q=...` | Search Debian desktop applications, or list up to 100 when `q` is empty; returns `{ apps }` |
 | `GET` | `/v1/catalog` | `{ packs, apps }`: each catalog entry with `installedVersion`, `canRollback`, `lastError`, `interrupted`, `active`, `iconData`, `pinnedVersion`, `updateAvailable` and `progress` |
 | `POST` | `/v1/catalog/:id/install`, `/update`, `/rollback` | Queue an operation → 202 `{ accepted: true }` |
 | `DELETE` | `/v1/catalog/:id` | Queue removal → 202 |

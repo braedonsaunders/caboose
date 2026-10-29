@@ -5,6 +5,7 @@ ordered file names and bytes identically. `install.sh` installs missing dependen
 updates system-owned files (including the agent runner and its pinned npm dependencies), configures services and writes the version marker only after
 success. It never modifies the owner's home. Both image builders call it in image mode;
 the host calls it through root guest exec in `vm` or `container` mode after display readiness.
+The installer provides AppStream and its Python introspection bindings for Debian application discovery. It refreshes APT metadata after adding AppStream.
 The installer preserves working `node` and `npm` commands, including npm bundled with
 NodeSource's `nodejs`. It installs Node when unusable, then checks npm again before
 requesting Debian's separate `npm` package. Both commands must run before system files

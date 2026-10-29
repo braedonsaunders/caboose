@@ -152,3 +152,22 @@ it('does not mistake a previous successful attempt for a new command failure', a
   expect(s.events).toContainEqual(expect.objectContaining({ phase: 'failed', message: 'guest channel unavailable' }))
   expect(s.events.some(event => event.phase === 'finished')).toBe(false)
 })
+
+it('discovers only validated Debian applications and installs the server-selected package', async () => {
+  const good = { id: 'debian-mousepad', package: 'mousepad', componentId: 'org.xfce.mousepad', desktopId: 'org.xfce.mousepad.desktop', name: 'Mousepad', summary: 'Text editor', categories: ['Utility'], license: 'GPL-2.0+' }
+  const calls: Array<{ action: string; args: any }> = []
+  const guest = { run: vi.fn(async (_command: string, args: string[]) => {
+    if (args.length === 3) return JSON.stringify([good, { ...good, id: 'debian--bad', package: '--bad' }, { ...good, desktopId: '../evil.desktop' }])
+    const action = args[2]!
+    calls.push({ action, args: JSON.parse(args[3]!) })
+    return action === 'list' ? '{}' : ''
+  }) }
+  const catalog = new AppCatalog(() => guest, () => {}, () => () => {}, data)
+  const result = await catalog.discover('mousepad')
+  expect(result.apps.map(app => app.id)).toEqual(['debian-mousepad'])
+  expect(() => catalog.start('debian--bad', 'install')).toThrow()
+  catalog.start('debian-mousepad', 'install')
+  await settle()
+  expect(calls.find(call => call.action === 'install')?.args).toMatchObject({ source: { kind: 'apt', packages: ['mousepad'] }, storeComponent: 'org.xfce.mousepad' })
+  await expect(catalog.discover('x'.repeat(101))).rejects.toThrow('Invalid search')
+})

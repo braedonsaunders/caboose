@@ -453,6 +453,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       await computer.park(closeSockets)
       return json(response, 200, { state: computer.state })
     }
+    if (request.method === 'GET' && path === '/v1/catalog/discover') return json(response, 200, await appCatalog.discover(new URL(request.url ?? '/', 'http://localhost').searchParams.get('q') ?? ''))
     if (request.method === 'GET' && path === '/v1/catalog') return json(response, 200, await appCatalog.list())
     const craftRun = /^\/v1\/catalog\/([^/]+)\/run$/.exec(path)
     if (request.method === 'POST' && craftRun?.[1]) {

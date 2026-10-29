@@ -1,6 +1,6 @@
 # Application catalog
 
-The optional applications a computer can install on demand. caboose-host serves the catalog
+The curated applications a computer can install on demand. The Library also discovers Debian desktop applications through the guest’s AppStream metadata and APT; see `docs/architecture.md` § Catalog. caboose-host serves the catalog
 at `GET /v1/catalog` and installs, updates, rolls back and removes its apps inside the
 computer (see [`apps/host`](../../apps/host/README.md#catalog-and-craft-jobs) and
 `docs/architecture.md` § Catalog).
