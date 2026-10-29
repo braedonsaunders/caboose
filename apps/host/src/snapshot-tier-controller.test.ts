@@ -87,7 +87,7 @@ describe('cold-tier controller integration', () => {
         async getStream() { throw new Error('not needed') }, async delete() {},
       }
       const original = { wake: async () => ({} as Session), hasSavedState: () => false } as unknown as Controller
-      const wrapped = tieredController(original, snapshot, { snapshot, store, key: randomBytes(32), delayMs: 1 })
+      const wrapped = tieredController(original, snapshot, { store, key: randomBytes(32), delayMs: 1 })
       const lifecycle = new ComputerLifecycle(wrapped.controller, 60_000)
       wrapped.attach(lifecycle)
       await ready
