@@ -64,6 +64,9 @@ it (see [Updating a running computer](#updating-a-running-computer)).
 split image with QEMU software emulation and virtio MMIO block devices. It checks
 the EROFS lower, writable `/usr` and `/opt` overlays, cloud-kernel selection,
 Python execution, a clean dpkg audit and the package exclusion configuration.
+Explicit MMIO buses attach root as `vda` and the system image as `vdb`; the check
+verifies their distinct serials and the system device's read-only flag before
+the normal system-image hook runs.
 Inputs remain unchanged: root writes go to QEMU's temporary snapshot. The check
 has a five-minute deadline, no guest networking, and requires Linux with
 `qemu-system-aarch64`, `cpio`, `timeout` and `unmkinitramfs`. It runs in the hosted split-image
