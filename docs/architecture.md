@@ -1565,6 +1565,9 @@ the app card, and a detached view releases its layers.
   the pending request.
   An external display shows the windows floating, resizing and
   stacking, with a dock and Launchpad, as does an iPad's Desktop tab set to Free.
+  Launchpad pages through the available apps, with its controls above the dock.
+  An external display scene supplies its current size and scale to the shared desktop;
+  changes reconfigure the display without transferring geometry ownership to an app card.
   The green title-bar button maximizes above the dock: its title bar meets the desktop's
   top edge, and its content ends eight UI-scaled points above the dock. Rotation and UI
   scaling update this area. Maximizing and restoring clear the guest's maximized state
@@ -1695,6 +1698,7 @@ Pinned and recent apps are kept on the phone per computer.
   trackpad, Terminal, the Agents composer and app-owned native form fields use
   CabooseKit’s shared `KeyBar` accessory. Hide Keyboard stays at the
   top right above the horizontally scrolling key row; it never enters toolbar overflow.
+  The accessory lays out within its own bounds, independently of the tab sidebar's safe area.
   The row offers Escape, Tab, sticky Ctrl/Alt, repeating arrows, navigation and shell symbols.
   Remote inputs share the same text/composition and modifier handling, with an Aa control
   for autocorrect; Terminal keeps its own terminal-byte semantics without prose correction.
