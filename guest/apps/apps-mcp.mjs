@@ -37,7 +37,8 @@ const tools = [
   {
     name: 'app_publish',
     description: 'Check ~/Apps/<id>/ and list it in the owner\'s Apps screen. Returns every problem to fix if it is '
-      + 'not valid. Publishing again after edits is safe; an open window reloads by itself when files change.',
+      + 'not valid, plus static input-layout warnings. Publishing is not an interaction test: complete the '
+      + 'app_guide acceptance checks before claiming the app is ready. Publishing again after edits is safe.',
     inputSchema: { type: 'object', properties: { id }, required: ['id'] },
   },
   {
@@ -83,7 +84,8 @@ const handlers = {
   async app_publish({ id: value }) {
     const result = await runtime('publish', appId(value))
     if (!result.ok) throw new Error(`${value} is not published:\n- ${(result.errors ?? []).join('\n- ')}`)
-    return json({ published: true, id: value, name: result.manifest.name, capabilities: result.manifest.capabilities })
+    return json({ published: true, id: value, name: result.manifest.name, capabilities: result.manifest.capabilities,
+      warnings: result.warnings ?? [] })
   },
   app_list: async () => json((await runtime('list')).apps),
   async app_open({ id: value }) {

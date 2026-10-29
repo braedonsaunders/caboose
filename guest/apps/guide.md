@@ -12,7 +12,8 @@ the screen, on iPad or a TV it is a window.
    (`budget`, `photo-sorter`, `server-status`).
 2. Write the app into `~/Apps/<id>/`: `app.json`, `index.html`, and anything else it uses.
 3. Publish it: the `app_publish` tool, or `caboose-app publish <id>`. It checks the app and
-   lists it in the Apps screen. Fix every error it reports and publish again.
+   lists it in the Apps screen. Fix every error it reports and publish again. Review its
+   input-layout warnings; they do not prevent an existing app from opening.
 4. Try it: `app_open` opens it on your own display, then use `screenshot`, `elements` and
    `click_element` to see and use it like the owner will. Edit the files and the open window
    reloads by itself. The page's console messages and script errors, including anything
@@ -58,7 +59,7 @@ Standard web APIs work, including `localStorage`, IndexedDB, canvas, WebGL, Web 
 computer parking and restarting.
 
 **Scripts must be `.js` files in the app directory.** Load them with
-`<script src="app.js">` or `<script type="module" src="main.js">`; modules may import
+`<script src="app.js" defer></script>` or `<script type="module" src="main.js"></script>`; modules may import
 other files of the app. These do not run (publishing reports the first three with their
 file and line):
 
@@ -176,7 +177,34 @@ app, not a web page.
 - **An icon.** A simple, bold, square SVG with a rounded-rectangle background reads well on
   the Apps screen.
 
-Check the result with a screenshot at a phone size and a desktop size before you finish.
+## Interaction acceptance checks
+
+Before calling an app ready, open it with `app_open` on your own seat and check it at
+390 × 780 and a desktop window size. `check` and `publish` validate files and report
+static viewport warnings; they do not execute the app or prove that its controls work.
+
+1. Inspect the layout and console. Use one device-width viewport with initial scale 1,
+   controls at least 44 CSS px across, and text inputs at least 16 CSS px. Load scripts
+   after the DOM is available. Keep browser zoom available; do not hide an input defect
+   with `user-scalable=no`, a maximum scale, or a page-wide `touch-action:none`.
+2. Use real pointer clicks through the desktop tools on the primary action and every
+   distinct control type (buttons, filters, checkboxes, links). Confirm the resulting UI
+   change, not just a pressed style. Accessibility activation is useful too, but can
+   bypass overlays and pointer hit testing. A screenshot alone does not prove input.
+3. Focus an input, type and submit; confirm the expected result. Scroll overflowing
+   content in both directions and check that controls remain reachable. Keep native
+   scrolling and touch handling; custom gestures belong only on the surface needing them.
+4. For stateful apps, use clearly test-owned records to verify save and reload, then
+   remove only those records. Preserve existing owner data, files and storage. Do not
+   enable `handoff: "files"` on an existing browser-storage app as an input workaround:
+   device and computer browser storage are separate.
+5. If a phone test is available, check a single tap and one-finger scroll in the actual
+   presentation (card or Desktop), and text entry. Record whether the app runs in guest
+   WebKitGTK or native handoff. Agent-seat pointer tests do not verify phone gestures.
+
+Report the tested sizes, interactions and observed results. If a capability or phone
+is unavailable, name the untested check plainly; do not describe it as passing. Diagnose
+page construction separately from Caboose input routing before changing either.
 
 ## What an app can do
 

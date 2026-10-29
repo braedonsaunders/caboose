@@ -62,6 +62,12 @@ window.
   scripts; WebAssembly compiles. Frames hold only the app's own pages. Styles, fonts,
   images, media and connections may come from anywhere. `check` and `publish` reject pages
   with inline script, handler attributes or `javascript:` URLs, naming file and line.
+- **Input checks.** `check`, `publish` and `list` include nonfatal `warnings` for a valid
+  app's entry page when its viewport is missing, duplicated, differs from device-width
+  with initial scale 1, or restricts zoom. Reading is bounded to 4 MiB and refuses
+  symlinks. The checker never edits app files or storage. MCP `app_publish` returns the
+  warnings too. These static hints do not establish working buttons or phone gestures;
+  the generation guide specifies pointer, text, scroll and persistence acceptance checks.
 - **Navigation.** The top frame stays on the app. A link to a web, mail or phone URL that
   the person followed opens in its default application; a redirect or a script-initiated
   navigation opens nothing; `javascript:`, `data:` and `file:` URLs never open. Permission

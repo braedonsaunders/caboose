@@ -650,6 +650,11 @@ name. Ids are `[a-z][a-z0-9-]{0,47}`. The format, the API and the runtime's rule
   security policy under which script runs only from the app's files and frames hold only
   its own pages. Publishing rejects pages with inline script. The top frame cannot leave the
   app; web, mail and phone links the person follows open in their default application.
+- Generation prompts direct agents to the app guide's interaction acceptance checks at
+  phone and desktop sizes. `check`, `publish` and `list` report nonfatal entry-page
+  viewport warnings, also returned by MCP `app_publish`; they never rewrite owner files
+  or storage. Static validation does not verify controls or phone touch routing. Agents
+  report the interactions tested and any unavailable phone checks.
 - `window.caboose` exists only in the top frame, through a relay in an isolated script world
   that admits only the current document. It offers the capabilities `app.json` declares:
   `exec` (programs, with bounded arguments, output, time and concurrency, each in its own

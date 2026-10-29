@@ -24,7 +24,11 @@ public struct AppRequest: Hashable, Sendable {
 
         Build it as a Caboose app: read app_guide first, publish it with app_publish so it \
         appears in my Apps screen, and open it with app_open to check it at a phone size and \
-        a desktop size before you finish. Tell me its name when it is ready.
+        a desktop size before you finish. Complete app_guide's interaction acceptance checks: \
+        exercise the primary action, text entry, buttons, scrolling and saved-state reload, \
+        using only test-owned data. Address input-layout warnings and preserve existing app data. \
+        Report what you actually tested, including any phone touch checks you could not run. \
+        Tell me its name when it is ready.
         """
     }
 }

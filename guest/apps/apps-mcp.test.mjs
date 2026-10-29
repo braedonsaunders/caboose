@@ -68,12 +68,17 @@ describe('caboose-apps', () => {
     await app('weather', { name: 'Weather', capabilities: ['exec'] })
     const result = await call('app_publish', { id: 'weather' })
     assert.equal(result.isError, undefined)
-    assert.deepEqual(JSON.parse(result.content[0].text), { published: true, id: 'weather', name: 'Weather', capabilities: ['exec'] })
+    const published = JSON.parse(result.content[0].text)
+    assert.deepEqual({ ...published, warnings: [] }, { published: true, id: 'weather', name: 'Weather', capabilities: ['exec'], warnings: [] })
+    assert.equal(published.warnings.length, 1)
+    assert.match(published.warnings[0], /viewport/)
     const entry = await readFile(join(home, '.local/share/applications/caboose.app.weather.desktop'), 'utf8')
     assert.match(entry, /^Exec=\/usr\/local\/bin\/caboose-app run weather$/m)
     const listed = JSON.parse((await call('app_list')).content[0].text)
     assert.equal(listed.length, 1)
     assert.equal(listed[0].published, true)
+    await app('mobile', { name: 'Mobile' }, { 'index.html': '<meta name="viewport" content="width=device-width, initial-scale=1">' })
+    assert.deepEqual(JSON.parse((await call('app_publish', { id: 'mobile' })).content[0].text).warnings, [])
   })
 
   it('says what to fix in an invalid app', async () => {
