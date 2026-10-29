@@ -83,4 +83,16 @@ final class EchoMeter: @unchecked Sendable {
         guard !samples.isEmpty else { return nil }
         return samples.sorted()[samples.count / 2]
     }
+
+    /// Seconds since a key press whose window has not drawn since.
+    var pendingSeconds: Double? {
+        lock.lock(); defer { lock.unlock() }
+        return pending.map { Double(DispatchTime.now().uptimeNanoseconds - $0.at) / 1_000_000_000 }
+    }
+
+    /// The connection closed: a key pressed before it can no longer be matched to a picture.
+    func reset() {
+        lock.lock(); defer { lock.unlock() }
+        pending = nil
+    }
 }
