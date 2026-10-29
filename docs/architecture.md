@@ -1046,7 +1046,9 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   processing is asynchronous. The host does not serve parked reads from this journal;
   reads and writes wake the computer.
 - While the computer runs and at least one control socket is connected, the host polls the
-  journal every second and broadcasts `fs.changed { anchor }` when something changed.
+  journal every second and broadcasts `fs.changed { anchor }` when something changed. It
+  keeps the last anchor through a resident freeze and resumes polling from it on thaw; park,
+  restart or the last control socket closing resets the host's polling anchor.
 - `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.

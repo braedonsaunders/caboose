@@ -233,19 +233,25 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const media = new MediaHandoff(() => controller.guest(), broadcast)
   let fileAnchor: string | undefined
   let filePoll: ReturnType<typeof setInterval> | undefined
-  let pollingFiles = false
+  let filePollGeneration = 0
+  let pollingFiles: number | undefined
   function syncFiles(): void {
     const active = computer.state === 'running' && controls.size > 0 && controller.fileService
     if (!active) {
       if (filePoll) clearInterval(filePoll)
       filePoll = undefined
-      fileAnchor = undefined
+      filePollGeneration++
+      pollingFiles = undefined
+      // Freeze preserves the guest epoch. Keep the last observed anchor for the first
+      // poll after thaw, but discard it when the guest or all observers have gone away.
+      if (computer.state !== 'frozen' || controls.size === 0) fileAnchor = undefined
       return
     }
     if (filePoll) return
     const poll = async () => {
-      if (pollingFiles || !controller.fileService || computer.state !== 'running') return
-      pollingFiles = true
+      if (pollingFiles !== undefined || !controller.fileService || computer.state !== 'running') return
+      const generation = filePollGeneration
+      pollingFiles = generation
       try {
         const service = controller.fileService()
         const url = new URL('/changes', service.url)
@@ -253,10 +259,11 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         const response = await fetch(url, { headers: { authorization: `Bearer ${service.token}` }, signal: AbortSignal.timeout(5000) })
         if (!response.ok) throw new Error('File change feed unavailable')
         const change = await response.json() as { anchor: string; changed: boolean }
+        if (generation !== filePollGeneration) return
         if (fileAnchor && change.changed) broadcast({ type: 'fs.changed', anchor: change.anchor })
         fileAnchor = change.anchor
       } catch { /* Retry with the previous anchor so missed changes trigger a rescan. */ }
-      finally { pollingFiles = false }
+      finally { if (pollingFiles === generation) pollingFiles = undefined }
     }
     void poll()
     filePoll = setInterval(() => { void poll() }, 1000)

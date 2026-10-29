@@ -1,5 +1,5 @@
 import { once } from 'node:events'
-import { createServer, request as httpRequest } from 'node:http'
+import { createServer, request as httpRequest, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, expect, it, vi } from 'vitest'
 import { WebSocket } from 'ws'
@@ -223,6 +223,63 @@ it('signals control clients when the guest change anchor advances', async () => 
   await vi.waitFor(() => expect(events).toContainEqual({ type: 'fs.changed', anchor: 'epoch:2' }), { timeout: 3000 })
   socket.terminate()
 })
+
+it('keeps a background control anchor across freeze and resets it on park', async () => {
+  let version = 1
+  let held: ServerResponse | undefined
+  const anchors: Array<string | null> = []
+  const upstream = createServer((req, res) => {
+    const url = new URL(req.url!, 'http://localhost')
+    res.writeHead(200, { 'content-type': 'application/json' })
+    if (url.pathname === '/sessions') return res.end(JSON.stringify({ sessions: [] }))
+    const anchor = url.searchParams.get('anchor')
+    anchors.push(anchor)
+    if (version === 1 && anchor && !held) { held = res; return }
+    res.end(JSON.stringify({ anchor: `epoch:${version}`, changed: anchor !== null && anchor !== `epoch:${version}`, reset: false, events: [] }))
+  })
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
+  cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
+  const guest = { run: async () => '' }
+  const service = () => ({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'test' })
+  const controller: Controller = {
+    wake: async () => ({ state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+    canFreeze: () => true, freeze: async () => { version = 2 }, thaw: async () => {}, park: async () => {},
+    stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => guest,
+    activeResources: () => null, hasSavedState: () => false, fileService: service, terminalService: service,
+  }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  cleanup.unshift(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const headers = { authorization: 'Bearer owner' }
+  await fetch(base + '/v1/session', { method: 'POST', headers })
+  const socket = new WebSocket(base.replace('http:', 'ws:') + '/v1/control?foreground=0', { headers })
+  const events: Array<{ type: string; anchor?: string; state?: string }> = []
+  socket.on('message', data => events.push(JSON.parse(data.toString())))
+  await once(socket, 'open')
+  await vi.waitFor(() => expect(anchors).toContain(null))
+  await vi.waitFor(() => expect(held).toBeDefined(), { timeout: 2500 })
+  await vi.waitFor(() => expect(events).toContainEqual({ type: 'computer.state', state: 'frozen' }), { timeout: 6000 })
+  const beforeThaw = anchors.length
+  await fetch(base + '/v1/session', { method: 'POST', headers })
+  await vi.waitFor(() => expect(events).toContainEqual({ type: 'fs.changed', anchor: 'epoch:2' }))
+  expect(anchors[beforeThaw]).toBe('epoch:1')
+  held!.end(JSON.stringify({ anchor: 'epoch:1', changed: false, reset: false, events: [] }))
+  const afterLateResponse = anchors.length
+  await vi.waitFor(() => expect(anchors.length).toBeGreaterThan(afterLateResponse), { timeout: 2500 })
+  expect(anchors[afterLateResponse]).toBe('epoch:2')
+  const closed = once(socket, 'close')
+  await fetch(base + '/v1/session/park', { method: 'POST', headers, body: '{}' })
+  await closed
+  await fetch(base + '/v1/session', { method: 'POST', headers })
+  const beforeReconnect = anchors.length
+  const next = new WebSocket(base.replace('http:', 'ws:') + '/v1/control?foreground=0', { headers })
+  await once(next, 'open')
+  await vi.waitFor(() => expect(anchors.length).toBeGreaterThan(beforeReconnect))
+  expect(anchors[beforeReconnect]).toBeNull()
+  next.terminate()
+}, 10_000)
 
 
 it('allows only public operations after URL normalization', () => {
