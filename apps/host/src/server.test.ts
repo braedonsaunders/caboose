@@ -232,6 +232,7 @@ it('serves the catalog and serializes authenticated application operations', asy
   await req('/v1/session', 'POST')
   const list = await (await req('/v1/catalog')).json() as { apps: { id: string }[] }
   expect(list.apps.some(a => a.id === 'gridcraft')).toBe(true)
+  expect((await req('/v1/catalog/packs/creative-studio/install', 'POST')).status).toBe(404)
   expect((await req('/v1/catalog/no-such-app/install', 'POST')).status).toBe(404)
   expect((await req('/v1/catalog/gridcraft/install', 'POST')).status).toBe(202)
   expect((await req('/v1/catalog/gimp/install', 'POST')).status).toBe(409)

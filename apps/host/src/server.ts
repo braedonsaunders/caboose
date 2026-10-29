@@ -518,8 +518,6 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         })
       } finally { craftBusy--; craftJobs.delete(input.job) }
     }
-    const packInstall = /^\/v1\/catalog\/packs\/([^/]+)\/install$/.exec(path)
-    if (request.method === 'POST' && packInstall?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
     const appAction = /^\/v1\/catalog\/([^/]+)\/(install|update|rollback)$/.exec(path)
     if (request.method === 'POST' && appAction?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
     const removeApp = /^\/v1\/catalog\/([^/]+)$/.exec(path)

@@ -123,10 +123,6 @@ export class AppCatalog {
     return app
   }
   start(id: string, action: 'install' | 'update' | 'rollback' | 'remove'): void { this.startMany([this.find(id)], action) }
-  startPack(id: string): void {
-    if (!this.data.packs.some(p => p.id === id)) throw new AgentNotFoundError('Pack not found')
-    this.startMany(this.data.apps.filter(app => app.packs.includes(id)), 'install')
-  }
   private startMany(apps: CatalogEntry[], action: 'install' | 'update' | 'rollback' | 'remove'): void {
     if (this.busy) throw new AgentConflictError('Another catalog operation is in progress')
     if (!this.guest()) throw new AgentUnavailableError()

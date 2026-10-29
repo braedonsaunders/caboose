@@ -395,8 +395,8 @@ retry of failed or interrupted work completes pending dpkg configuration before 
 the requested operation again, even when dpkg already reports the application installed.
 
 Only one catalog operation runs at a time, and it holds a computer lease. A second
-operation, a park, a restart or a Craft job receives 409 while one runs. A pack installs
-its entries in order and continues past individual failures. The listing reports the last
+operation, a park, a restart or a Craft job receives 409 while one runs. Applications are
+installed individually; collections do not install applications. The listing reports the last
 observed state while the computer is parked and never wakes it. `/v1/apps` discovers
 installed desktop entries independently. Listings include the active operation's progress;
 a host that rediscovers it holds a lease and observes it until it ends. A command-channel
@@ -891,7 +891,6 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
 | `GET` | `/v1/catalog` | `{ packs, apps }`: each catalog entry with `installedVersion`, `canRollback`, `lastError`, `interrupted`, `active`, `iconData`, `pinnedVersion`, `updateAvailable` and `progress` |
 | `POST` | `/v1/catalog/:id/install`, `/update`, `/rollback` | Queue an operation → 202 `{ accepted: true }` |
 | `DELETE` | `/v1/catalog/:id` | Queue removal → 202 |
-| `POST` | `/v1/catalog/packs/:id/install` | Queue every application in a pack → 202 |
 | `POST` | `/v1/catalog/:id/run` | **Wakes.** Run a Craft job (below) |
 
 Catalog mutations answer 409 while the computer is not running, another catalog operation
