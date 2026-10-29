@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.caboose
+Exec=/usr/bin/python3 /opt/caboose/bridge/caboose-portal

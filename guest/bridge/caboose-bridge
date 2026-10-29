@@ -1,0 +1,325 @@
+#!/usr/bin/python3
+"""The native bridge's guest side (docs/native-bridge.md).
+
+The host runs, as the owner:
+  caboose-bridge drain              claim pending file requests and withdrawn ones, as JSON
+  caboose-bridge respond JSON       answer a claimed request
+  caboose-bridge appearance JSON    the phone's appearance
+and caboose-bridge.service runs `caboose-bridge daemon` on the owner's session bus: the
+MPRIS watcher behind Now Playing, the phone's appearance for X11 GTK applications, and the
+seat's launch environment for D-Bus-activated services such as the portals.
+"""
+import json
+import os
+import pathlib
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import bridgecore as core  # noqa: E402
+
+
+def drain():
+    core.prepare()
+    core.expire()
+    core.PRESENT.touch(mode=0o600)
+    os.utime(core.PRESENT)
+    requests = []
+    for path in sorted(core.REQUESTS.glob('*.json'), key=lambda p: p.stat().st_mtime if p.exists() else 0):
+        if len(requests) == core.MAX_DRAIN:
+            break
+        ident = path.stem
+        if not core.ID.match(ident):
+            path.unlink(missing_ok=True)
+            continue
+        claimed = core.CLAIMED / path.name
+        try:
+            os.replace(path, claimed)
+        except FileNotFoundError:
+            continue  # withdrawn by the portal meanwhile
+        request = core.read_json(claimed)
+        # The host validates every field; one it cannot use it answers with "computer".
+        requests.append(request if isinstance(request, dict) else {'id': ident})
+    cancels = []
+    for marker in sorted(core.CANCELS.iterdir()):
+        if len(cancels) == core.MAX_DRAIN:
+            break
+        if core.ID.match(marker.name):
+            cancels.append(marker.name)
+        marker.unlink(missing_ok=True)
+    print(json.dumps({'requests': requests, 'cancels': cancels}, separators=(',', ':')))
+
+
+def respond(raw):
+    core.prepare()
+    try:
+        answer = json.loads(raw)
+    except ValueError:
+        raise SystemExit('The answer is not JSON')
+    ident = answer.get('id') if isinstance(answer, dict) else None
+    claimed = core.CLAIMED / f'{ident}.json' if isinstance(ident, str) and core.ID.match(ident) else None
+    request = core.read_json(claimed) if claimed else None
+    if not isinstance(request, dict):
+        # Withdrawn, timed out to the computer's dialog, or never claimed.
+        print(json.dumps({'answered': False}))
+        return
+    try:
+        answer = core.check_answer(answer, request if request.get('type') in ('file.open', 'file.save') and isinstance(request.get('filters'), list) else None)
+    except core.Invalid as error:
+        raise SystemExit(f'Invalid answer: {error}')
+    core.write_json(core.RESPONSES / f'{ident}.json', answer)
+    print(json.dumps({'answered': True}))
+
+
+def set_appearance(raw):
+    try:
+        look = core.check_appearance(json.loads(raw))
+    except (ValueError, core.Invalid) as error:
+        raise SystemExit(f'Invalid appearance: {error}')
+    core.prepare()
+    core.write_json(core.APPEARANCE, look)
+
+
+class Daemon:
+    """MPRIS to now-playing.json, commands back, appearance and the activation environment."""
+
+    def __init__(self):
+        import gi
+        gi.require_version('Gio', '2.0')
+        from gi.repository import Gio, GLib
+        self.Gio, self.GLib = Gio, GLib
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.players = {}       # well-known name -> state
+        self.owners = {}        # unique name -> well-known name
+        self.shown = None       # the JSON last written
+        self.last_seq = 0
+        self.env_seen = {}
+
+    # Startup ------------------------------------------------------------------------------
+
+    def run(self):
+        core.prepare()
+        core.DAEMON_PID.write_text(str(os.getpid()))
+        # A command left from before this daemon started is history, not an instruction.
+        command = core.read_json(core.NOW_PLAYING_COMMAND)
+        if isinstance(command, dict) and isinstance(command.get('seq'), int):
+            self.last_seq = command['seq']
+        self.bus.signal_subscribe('org.freedesktop.DBus', 'org.freedesktop.DBus', 'NameOwnerChanged', '/org/freedesktop/DBus',
+                                  'org.mpris.MediaPlayer2', self.Gio.DBusSignalFlags.MATCH_ARG0_NAMESPACE, self.name_owner_changed)
+        self.bus.signal_subscribe(None, 'org.freedesktop.DBus.Properties', 'PropertiesChanged', '/org/mpris/MediaPlayer2',
+                                  'org.mpris.MediaPlayer2.Player', self.Gio.DBusSignalFlags.NONE, self.properties_changed)
+        self.bus.signal_subscribe(None, 'org.mpris.MediaPlayer2.Player', 'Seeked', '/org/mpris/MediaPlayer2',
+                                  None, self.Gio.DBusSignalFlags.NONE, self.seeked)
+        names = self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'ListNames', None)
+        for name in (names[0] if names else []):
+            if name.startswith('org.mpris.MediaPlayer2.'):
+                self.add_player(name)
+        self.publish()
+        self.GLib.timeout_add_seconds(5, self.sample)
+        self.GLib.timeout_add(500, self.poll_command)
+        self.watch(core.APPEARANCE, self.apply_appearance)
+        self.watch(core.OWNER_ENV, self.share_environment)
+        self.apply_appearance()
+        self.share_environment()
+        loop = self.GLib.MainLoop()
+        for signal in (15, 2):
+            self.GLib.unix_signal_add(self.GLib.PRIORITY_DEFAULT, signal, lambda: loop.quit() or False)
+        try:
+            loop.run()
+        finally:
+            core.NOW_PLAYING.unlink(missing_ok=True)
+            core.DAEMON_PID.unlink(missing_ok=True)
+
+    def watch(self, path, callback):
+        monitor = self.Gio.File.new_for_path(str(path)).monitor_file(self.Gio.FileMonitorFlags.WATCH_MOVES, None)
+        monitor.connect('changed', lambda *_: callback())
+        setattr(self, f'_monitor_{abs(hash(str(path)))}', monitor)
+
+    def call(self, name, path, interface, method, args, reply=None, timeout=2000):
+        try:
+            return self.bus.call_sync(name, path, interface, method, args,
+                                      self.GLib.VariantType(reply) if reply else None,
+                                      self.Gio.DBusCallFlags.NO_AUTO_START, timeout, None).unpack()
+        except self.GLib.Error:
+            return None
+
+    # Activation environment ---------------------------------------------------------------
+
+    def share_environment(self):
+        """D-Bus-activated services on this bus (the portals, their dialogs) start with the
+        owner display's environment."""
+        env = core.read_env(core.OWNER_ENV)
+        if not env.get('WAYLAND_DISPLAY') or env == self.env_seen:
+            return
+        env['GTK_USE_PORTAL'] = '1'
+        self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'UpdateActivationEnvironment',
+                  self.GLib.Variant('(a{ss})', (env,)))
+        # A systemd user manager starts activated services itself.
+        self.call('org.freedesktop.systemd1', '/org/freedesktop/systemd1', 'org.freedesktop.systemd1.Manager', 'SetEnvironment',
+                  self.GLib.Variant('(as)', ([f'{k}={v}' for k, v in env.items()],)))
+        self.env_seen = env
+
+    # Appearance ---------------------------------------------------------------------------
+
+    def apply_appearance(self):
+        """caboose-portal serves the appearance to running Wayland applications; X11 GTK
+        applications started from now on read it from settings.ini."""
+        look = core.appearance()
+        available = {p.name for root in (pathlib.Path('/usr/share/themes'), core.HOME / '.themes', core.HOME / '.local/share/themes')
+                     if root.is_dir() for p in root.iterdir()}
+        for version in ('3.0', '4.0'):
+            path = core.HOME / f'.config/gtk-{version}/settings.ini'
+            try:
+                existing = path.read_text(encoding='utf-8')
+            except OSError:
+                existing = None
+            updated = core.settings_ini(existing, look, available)
+            if updated != existing:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = path.with_name('.settings.ini.caboose')
+                temporary.write_text(updated, encoding='utf-8')
+                os.replace(temporary, path)
+
+    # MPRIS --------------------------------------------------------------------------------
+
+    def name_owner_changed(self, _bus, _sender, _path, _iface, _signal, params):
+        name, old, new = params.unpack()
+        if not name.startswith('org.mpris.MediaPlayer2.'):
+            return
+        if old:
+            self.owners.pop(old, None)
+            self.players.pop(name, None)
+        if new:
+            self.add_player(name)
+        self.publish()
+
+    def add_player(self, name):
+        owner = self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'GetNameOwner', self.GLib.Variant('(s)', (name,)))
+        if not owner:
+            return
+        root = self.call(name, '/org/mpris/MediaPlayer2', 'org.freedesktop.DBus.Properties', 'GetAll', self.GLib.Variant('(s)', ('org.mpris.MediaPlayer2',)))
+        props = self.call(name, '/org/mpris/MediaPlayer2', 'org.freedesktop.DBus.Properties', 'GetAll', self.GLib.Variant('(s)', ('org.mpris.MediaPlayer2.Player',)))
+        if props is None:
+            return
+        self.owners[owner[0]] = name
+        self.players[name] = {'identity': (root[0] if root else {}).get('Identity', ''), 'props': props[0], 'status': props[0].get('PlaybackStatus', 'Stopped'),
+                              'playedAt': 0.0, 'pausedAt': 0.0, 'generation': 0, 'track': core.track_identity(props[0].get('Metadata', {})),
+                              'position': props[0].get('Position', 0), 'sampledAt': time.time()}
+        self.stamp(self.players[name])
+
+    @staticmethod
+    def stamp(player):
+        if player['status'] == 'Playing':
+            player['playedAt'] = time.time()
+        elif player['status'] == 'Paused':
+            player['pausedAt'] = time.time()
+
+    def properties_changed(self, _bus, sender, _path, _iface, _signal, params):
+        name = self.owners.get(sender)
+        player = self.players.get(name) if name else None
+        if not player:
+            return
+        interface, changed, invalidated = params.unpack()
+        if interface != 'org.mpris.MediaPlayer2.Player':
+            return
+        player['props'].update(changed)
+        if invalidated:
+            fresh = self.call(name, '/org/mpris/MediaPlayer2', 'org.freedesktop.DBus.Properties', 'GetAll', self.GLib.Variant('(s)', ('org.mpris.MediaPlayer2.Player',)))
+            if fresh:
+                player['props'] = fresh[0]
+        status = player['props'].get('PlaybackStatus', 'Stopped')
+        if status != player['status']:
+            player['status'] = status
+            self.stamp(player)
+        track = core.track_identity(player['props'].get('Metadata', {}))
+        if track != player['track']:
+            player['track'] = track
+            player['generation'] += 1
+        self.resample(name)
+        self.publish()
+
+    def seeked(self, _bus, sender, _path, _iface, _signal, params):
+        name = self.owners.get(sender)
+        if name in self.players:
+            self.players[name]['position'] = params.unpack()[0]
+            self.players[name]['sampledAt'] = time.time()
+            self.publish()
+
+    def resample(self, name):
+        reply = self.call(name, '/org/mpris/MediaPlayer2', 'org.freedesktop.DBus.Properties', 'Get', self.GLib.Variant('(ss)', ('org.mpris.MediaPlayer2.Player', 'Position')))
+        player = self.players[name]
+        if reply is not None and isinstance(reply[0], int):
+            player['position'] = reply[0]
+            player['sampledAt'] = time.time()
+
+    def sample(self):
+        """Position is not signalled: sample the shown player every 5 seconds while it plays."""
+        name = self.current()
+        if name and self.players[name]['status'] == 'Playing':
+            self.resample(name)
+            self.publish()
+        return True
+
+    def current(self):
+        return core.pick_player({n: {'status': p['status'], 'playedAt': p['playedAt'], 'pausedAt': p['pausedAt']} for n, p in self.players.items()})
+
+    def state(self, name):
+        p = self.players[name]
+        props = p['props']
+        return core.track_state(name, p['generation'], p['identity'], p['status'], props.get('Metadata', {}), p['position'],
+                                props.get('Rate', 1.0), props if props.get('CanControl', True) else {}, p['sampledAt'] * 1000)
+
+    def publish(self):
+        name = self.current()
+        if name is None:
+            if self.shown is not None:
+                core.NOW_PLAYING.unlink(missing_ok=True)
+                self.shown = None
+            return
+        state = self.state(name)
+        text = json.dumps(state, sort_keys=True)
+        if text != self.shown:
+            core.write_json(core.NOW_PLAYING, state)
+            self.shown = text
+
+    def poll_command(self):
+        command = core.check_command(core.read_json(core.NOW_PLAYING_COMMAND), self.last_seq)
+        if command:
+            self.last_seq = command['seq']
+            name = self.current()
+            if name and self.state(name)['id'] == command['id']:
+                self.apply(name, command)
+        return True
+
+    def apply(self, name, command):
+        player = 'org.mpris.MediaPlayer2.Player'
+        methods = {'play': 'Play', 'pause': 'Pause', 'toggle': 'PlayPause', 'next': 'Next', 'previous': 'Previous'}
+        if command['action'] in methods:
+            self.call(name, '/org/mpris/MediaPlayer2', player, methods[command['action']], None)
+            return
+        target = int(command['position'] * 1e6)
+        trackid = self.players[name]['props'].get('Metadata', {}).get('mpris:trackid')
+        if trackid:
+            self.call(name, '/org/mpris/MediaPlayer2', player, 'SetPosition', self.GLib.Variant('(ox)', (str(trackid), target)))
+        else:
+            self.resample(name)
+            self.call(name, '/org/mpris/MediaPlayer2', player, 'Seek', self.GLib.Variant('(x)', (target - int(self.players[name]['position']),)))
+        self.resample(name)
+        self.publish()
+
+
+def main(argv):
+    if len(argv) == 2 and argv[1] == 'drain':
+        drain()
+    elif len(argv) == 3 and argv[1] == 'respond':
+        respond(argv[2])
+    elif len(argv) == 3 and argv[1] == 'appearance':
+        set_appearance(argv[2])
+    elif len(argv) == 2 and argv[1] == 'daemon':
+        Daemon().run()
+    else:
+        raise SystemExit('Usage: caboose-bridge drain | respond JSON | appearance JSON | daemon')
+
+
+if __name__ == '__main__':
+    main(sys.argv)

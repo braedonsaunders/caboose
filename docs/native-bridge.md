@@ -11,7 +11,7 @@ behaviour; one that does not keeps its own.
 | Linux standard | Answered with | Component |
 | --- | --- | --- |
 | `org.freedesktop.impl.portal.FileChooser` | The iOS document picker; a native save and folder sheet | `caboose-portal` |
-| `org.freedesktop.impl.portal.Settings` (`org.freedesktop.appearance`), GSettings `org.gnome.desktop.interface` | The phone's appearance, contrast, Reduce Motion and text size | `caboose-portal`, `caboose-bridge` |
+| `org.freedesktop.impl.portal.Settings` (`org.freedesktop.appearance`, `org.gnome.desktop.interface`) | The phone's appearance, accent, contrast, Reduce Motion and text size | `caboose-portal`, `caboose-bridge` |
 | MPRIS (`org.mpris.MediaPlayer2.*`) | `MPNowPlayingInfoCenter`, `MPRemoteCommandCenter` | `caboose-bridge` |
 | GeoClue (static source) | Core Location, opt-in | the host, as root |
 
@@ -21,16 +21,23 @@ This document is the contract between `guest/bridge`, the host (`apps/host/src/b
 
 ## Guest
 
-`guest/bridge` is a guest component (`guest/components/manifest.json`); its installer adds
-`xdg-desktop-portal`, `xdg-desktop-portal-gtk` and `geoclue-2.0`. It installs:
+`guest/bridge` is a guest component (`guest/components/manifest.json`); the components
+installer adds `xdg-desktop-portal`, `xdg-desktop-portal-gtk` and `geoclue-2.0`. It installs
+into `/opt/caboose/bridge`:
 
-- `/usr/local/bin/caboose-bridge`, the command the host runs as `caboose`, and the
-  `caboose-bridge.service` user daemon on the owner's session bus (MPRIS and appearance).
-- `/usr/libexec/caboose-portal`, the portal backend `org.freedesktop.impl.portal.desktop.caboose`,
-  with `caboose.portal` and its D-Bus activation file.
-- `portals.conf` choosing `caboose` for FileChooser and Settings and `gtk` for the rest.
-- The environment that makes toolkits use the portal: `GTK_USE_PORTAL=1`, Qt's
-  `xdgdesktopportal` platform theme, and Firefox's portal file picker preference.
+- `caboose-bridge` (also `/usr/local/bin/caboose-bridge`), the command the host runs as
+  `caboose`, and its daemon on the owner's session bus (`caboose-bridge.service` in the
+  microVM, started by `caboose-session` in the container): MPRIS, the appearance for X11
+  applications, and the owner display's launch environment for D-Bus-activated services
+  (`UpdateActivationEnvironment`, and the systemd user manager's environment), so the
+  portals' dialogs open on the right display.
+- `caboose-portal`, the portal backend `org.freedesktop.impl.portal.desktop.caboose`, with
+  `caboose.portal` and its D-Bus activation file.
+- `/etc/xdg/xdg-desktop-portal/portals.conf` choosing `caboose` for FileChooser and Settings
+  and `gtk` for the rest.
+- What makes applications use the portal: `GTK_USE_PORTAL=1` in each seat's launch
+  environment (caboose-display), and Firefox's portal preferences for its file picker,
+  appearance and location. Qt applications keep the GTK platform theme and its dialogs.
 
 State lives in `/home/caboose/.cache/caboose/bridge/` (mode 0700, owned by `caboose`). It is
 the owner seat's only. The agent seat has its own session bus: there the portal backend
@@ -79,13 +86,19 @@ A request:
 Patterns are the portal's glob patterns (`*.odt`); a pattern of the form `*.ext` is
 treated as an extension, other patterns only as a hint.
 
-The answer, written by `caboose-bridge respond` to `bridge/responses/<id>.json`:
+`caboose-bridge drain` prints a request it cannot read as `{ id }` only; the host answers
+such a request with `computer`. The answer, written by `caboose-bridge respond` to
+`bridge/responses/<id>.json`:
 
 ```ts
 { id, response: "ok", paths: string[], filter: number | null }   // absolute paths under /home/caboose
 { id, response: "cancel" }                                         // the owner cancelled: portal response 1
 { id, response: "computer" }                                       // show the computer's own dialog instead
 ```
+
+`respond` prints `{ "answered": true }`, or `{ "answered": false }` when the request is no
+longer claimed (withdrawn, or gone to the computer's dialog), and exits non-zero for an
+invalid answer.
 
 For `file.open` every path must exist, be a regular file (a directory when `directory`),
 and there is exactly one unless `multiple`. For `file.save` there is exactly one path, its
@@ -106,16 +119,21 @@ path that fails these checks answers response 2. The portal returns `file://` UR
 }
 ```
 
-The daemon applies it to the owner's session: `org.freedesktop.appearance` `color-scheme`
-(1 dark, 2 light), `accent-color` (sRGB 0–1), `contrast` (1 high) and `reduced-motion` (1
-reduced) through `caboose-portal`'s Settings, emitting `SettingChanged`; and the GSettings
-keys GTK 3, Qt (through its GTK platform theme) and Xfce read: `org.gnome.desktop.interface`
-`color-scheme`, `gtk-theme` (`Adwaita` or `Adwaita-dark`, or `HighContrast` /
-`HighContrastInverse`), `accent-color` (the nearest named accent), `enable-animations` and
-`text-scaling-factor`, and the matching Xfce settings. Applications that follow neither
-keep their own appearance.
+`caboose-portal` serves it on the owner's seat, emitting `SettingChanged` for each value
+that changes:
 
-Without a phone the computer keeps the appearance it last received.
+- `org.freedesktop.appearance`: `color-scheme` (1 dark, 2 light), `accent-color` (sRGB
+  0–1), `contrast` (1 high) and `reduced-motion` (1 reduced).
+- `org.gnome.desktop.interface`, which GTK reads through the portal on Wayland:
+  `gtk-theme` (`WhiteSur-Dark` or `WhiteSur-Light`, `Adwaita-dark` or `Adwaita` when that
+  WhiteSur variant is not installed), `icon-theme`, `cursor-theme`, `font-name`,
+  `color-scheme` (`prefer-dark` or `default`), `accent-color` (the GNOME accent matching
+  the phone's system colour), `text-scaling-factor` and `enable-animations`.
+
+The daemon also writes the theme keys of `~/.config/gtk-3.0/settings.ini` and
+`gtk-4.0/settings.ini`, which X11 GTK applications read when they start. The agent seat
+always has the image's own appearance (dark). Without a phone the computer keeps the
+appearance it last received; with none received, the image's own.
 
 ### Now playing
 

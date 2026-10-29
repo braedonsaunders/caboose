@@ -50,9 +50,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Environment for applications started under the compositor. Toolkits are pointed at
-/// Wayland first, X11 (through Xwayland) second.
+/// Wayland first, X11 (through Xwayland) second, and GTK 3 at the desktop portal, which
+/// answers file choosing and appearance from the phone (docs/native-bridge.md).
 const TOOLKIT_ENV: &[(&str, &str)] = &[
     ("GDK_BACKEND", "wayland,x11"),
+    ("GTK_USE_PORTAL", "1"),
     ("QT_QPA_PLATFORM", "wayland;xcb"),
     ("MOZ_ENABLE_WAYLAND", "1"),
     ("SDL_VIDEODRIVER", "wayland,x11"),

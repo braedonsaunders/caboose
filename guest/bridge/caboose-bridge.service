@@ -1,0 +1,18 @@
+[Unit]
+Description=Caboose native bridge: Now Playing, appearance and the seat's activation environment
+Requires=user@1000.service
+After=user@1000.service caboose-display.service
+PartOf=caboose-display.service
+
+[Service]
+User=caboose
+Group=caboose
+Environment=HOME=/home/caboose
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+ExecStart=/usr/bin/python3 /opt/caboose/bridge/caboose-bridge daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=caboose-display.service

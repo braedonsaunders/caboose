@@ -107,5 +107,19 @@ if ! $monitor_running; then
     echo 'The notification monitor did not start.' >&2; exit 1
   fi
 fi
+# The native bridge runs with the owner's display (caboose-session); an update restarts a
+# running one so it loads the new code.
+bridge_pid="$runtime/caboose-bridge.pid"
+if [ "${1:-}" = restart ] && [ -s "$bridge_pid" ]; then
+  pid=$(cat "$bridge_pid")
+  if [[ "$pid" =~ ^[0-9]+$ ]] && [ -r "/proc/$pid/cmdline" ] && runuser -u caboose -- grep -zFxq /opt/caboose/bridge/caboose-bridge "/proc/$pid/cmdline"; then
+    runuser -u caboose -- kill -TERM "$pid" || true
+    rm -f "$bridge_pid"
+    runuser -u caboose -- touch /home/caboose/.cache/caboose-bridge.log
+    runuser -u caboose -- env HOME=/home/caboose XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+      /bin/sh -c 'echo $$ > "$0"; exec /usr/bin/python3 /opt/caboose/bridge/caboose-bridge daemon' "$bridge_pid" \
+      >>/home/caboose/.cache/caboose-bridge.log 2>&1 < /dev/null &
+  fi
+fi
 if ! lpstat -r 2>/dev/null | grep -q 'scheduler is running'; then /usr/sbin/cupsd; fi
 /usr/local/libexec/caboose-phone-printer-setup

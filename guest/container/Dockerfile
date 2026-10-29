@@ -56,7 +56,7 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     for spec in 'WhiteSur-gtk-theme d5782652d412137e26fb8ff55b55a5572e4c6995' 'WhiteSur-icon-theme 73d8040da51a9ed74e47c7366e7e9ff437601a5c' 'WhiteSur-cursors e190baf618ed95ee217d2fd45589bd309b37672b'; do \
       set -- $spec; git clone -q "https://github.com/vinceliuice/$1.git" "/tmp/themes/$1" && git -C "/tmp/themes/$1" checkout -q "$2" || exit 1; \
     done && \
-    /tmp/themes/WhiteSur-gtk-theme/install.sh -d /usr/share/themes -c dark && \
+    /tmp/themes/WhiteSur-gtk-theme/install.sh -d /usr/share/themes -c light -c dark && \
     /tmp/themes/WhiteSur-icon-theme/install.sh -d /usr/share/icons && \
     (cd /tmp/themes/WhiteSur-cursors && ./install.sh) && \
     mkdir -p /etc/xdg/gtk-3.0 /etc/chromium.d && \

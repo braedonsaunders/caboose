@@ -59,6 +59,17 @@ notification_endpoint() {
     /bin/sh -c 'echo $$ > "$0"; exec python3 "$1"' "$pidfile" "$3" >>"$log" 2>&1 < /dev/null &
 }
 
+# The native bridge (guest/bridge): Now Playing, the phone's appearance and the seat's
+# activation environment for the portals.
+bridge_daemon() {
+  local bus=$1 pidfile="$XDG_RUNTIME_DIR/caboose-bridge.pid" log="$CABOOSE_HOME/.cache/caboose-bridge.log"
+  [ -f /opt/caboose/bridge/caboose-bridge ] || return 0
+  if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then return; fi
+  touch "$log" && chown caboose:caboose "$log"
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
+    /bin/sh -c 'echo $$ > "$0"; exec python3 /opt/caboose/bridge/caboose-bridge daemon' "$pidfile" >>"$log" 2>&1 < /dev/null &
+}
+
 start_owner() {
   local bus="$XDG_RUNTIME_DIR/bus"
   session_bus "$bus"
@@ -69,6 +80,7 @@ start_owner() {
   # on hosts with a render node); this container's node is the session user's to use.
   if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi
   start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock"
+  bridge_daemon "$bus"
 }
 
 start_agent() {
