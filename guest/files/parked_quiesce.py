@@ -173,22 +173,39 @@ def set_frozen(cgroup, frozen, timeout=5):
         raise Unsupported('cgroup freezer unavailable') from error
 
 
-def freeze_branches(nodes, trusted, root='/sys/fs/cgroup'):
+def branch_states(nodes, trusted, root='/sys/fs/cgroup'):
+    branches = plan_freezer_branches(nodes, trusted)
+    if len(branches) > 256:
+        raise Unsupported('too many freezer branches')
+    states = []
+    for branch in branches:
+        if len(branch) > 200 or not re.fullmatch(r'/[A-Za-z0-9_:@.\-]+(?:/[A-Za-z0-9_:@.\-]+)*', branch):
+            raise Unsupported('unsupported freezer branch name')
+        try:
+            events = dict(line.split() for line in (Path(root) / branch.lstrip('/') / 'cgroup.events').read_text().splitlines())
+        except (OSError, ValueError) as error:
+            raise Unsupported('cgroup freezer state unavailable') from error
+        if events.get('frozen') not in ('0', '1'):
+            raise Unsupported('cgroup freezer state unavailable')
+        states.append({'path': branch, 'frozen': events['frozen'] == '1'})
+    return states
+
+
+def freeze_branches(nodes, trusted, recorded, root='/sys/fs/cgroup'):
     """Freeze planned branches and return those changed by this invocation.
 
     A caller must durably journal the branch list *before* calling this function
     and retain it until thaw succeeds. This function rechecks the entire tree;
     a changed tree is rejected and every attempted freeze is rolled back.
     """
-    branches = plan_freezer_branches(nodes, trusted)
+    if branch_states(nodes, trusted, root) != recorded:
+        raise Unsupported('freezer state changed before freeze')
     changed = []
     try:
-        for branch in branches:
+        for entry in recorded:
+            branch = entry['path']
             directory = Path(root) / branch.lstrip('/')
-            events = dict(line.split() for line in (directory / 'cgroup.events').read_text().splitlines())
-            if events.get('frozen') not in ('0', '1'):
-                raise Unsupported('cgroup freezer state unavailable')
-            if events['frozen'] == '0':
+            if not entry['frozen']:
                 changed.append(branch)  # A failed write may still have reached the kernel.
                 set_frozen(directory, True)
         if cgroup_tree(root) != nodes:
@@ -209,7 +226,18 @@ def freeze_branches(nodes, trusted, root='/sys/fs/cgroup'):
 FITHAW = 0xC0045878
 
 
-def thaw(root='/', cgroup='/sys/fs/cgroup/caboose-workloads.slice'):
+def thaw(root='/', cgroup='/sys/fs/cgroup/caboose-workloads.slice', branches=None):
+    if branches is not None:
+        if not isinstance(branches, list) or len(branches) > 256:
+            raise Unsupported('invalid recovery branches')
+        names = []
+        for entry in branches:
+            if not isinstance(entry, dict) or set(entry) != {'path', 'frozen'} or type(entry['frozen']) is not bool or not isinstance(entry['path'], str) or len(entry['path']) > 200 or not re.fullmatch(r'/[A-Za-z0-9_:@.\-]+(?:/[A-Za-z0-9_:@.\-]+)*', entry['path']) or any(part in ('.', '..') for part in entry['path'].split('/')):
+                raise Unsupported('invalid recovery branch')
+            name = entry['path']
+            if any(within(name, old) or within(old, name) for old in names):
+                raise Unsupported('overlapping recovery branches')
+            names.append(name)
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         try:
@@ -219,6 +247,14 @@ def thaw(root='/', cgroup='/sys/fs/cgroup/caboose-workloads.slice'):
                 raise
     finally:
         os.close(fd)
+    if branches is not None:
+        if not Path('/sys/fs/cgroup/cgroup.controllers').exists():
+            raise Unsupported('cgroup v2 unavailable')
+        for entry in reversed(branches):
+            directory = Path('/sys/fs/cgroup') / entry['path'].lstrip('/')
+            if not entry['frozen'] and directory.exists():
+                set_frozen(directory, False)
+        return
     if not Path(cgroup).exists():
         if not Path('/sys/fs/cgroup/cgroup.controllers').exists():
             raise Unsupported('cgroup v2 unavailable')
@@ -227,7 +263,11 @@ def thaw(root='/', cgroup='/sys/fs/cgroup/caboose-workloads.slice'):
 
 
 if __name__ == '__main__':
+    import json
     import sys
-    if sys.argv[1:] != ['thaw']:
-        raise SystemExit('usage: parked_quiesce.py thaw')
-    thaw()
+    if sys.argv[1:] == ['thaw']:
+        thaw()
+    elif len(sys.argv) == 3 and sys.argv[1] == 'thaw':
+        thaw(branches=json.loads(sys.argv[2]))
+    else:
+        raise SystemExit('usage: parked_quiesce.py thaw [BRANCHES_JSON]')

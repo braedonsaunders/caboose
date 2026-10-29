@@ -249,7 +249,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         try {
           const intent = await parkedFilesJournal.read()
           if (intent) {
-            await command('/usr/bin/python3', ['/opt/caboose/files/parked_quiesce.py', 'thaw'], 30_000)
+            await command('/usr/bin/python3', ['/opt/caboose/files/parked_quiesce.py', 'thaw', ...(intent.version === 2 ? [JSON.stringify(intent.branches)] : [])], 30_000)
             await parkedFilesJournal.clear(intent.id)
           }
         } catch (error) {

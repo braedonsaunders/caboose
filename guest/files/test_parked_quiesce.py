@@ -3,7 +3,7 @@ import errno
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-from parked_quiesce import Unsupported, cgroup_tree, check_mounts, check_processes, freeze_branches, plan_freezer_branches, thaw
+from parked_quiesce import Unsupported, branch_states, cgroup_tree, check_mounts, check_processes, freeze_branches, plan_freezer_branches, thaw
 
 ROOT = '1 0 8:1 / / rw - ext4 /dev/vda rw\n'
 
@@ -39,8 +39,9 @@ class QuiesceChecks(unittest.TestCase):
             for name in ('user.slice', 'system.slice'):
                 (root / name).mkdir()
                 (root / name / 'cgroup.events').write_text('frozen 0\n')
+            recorded = branch_states(nodes, [1], directory)
             with patch('parked_quiesce.cgroup_tree', return_value={'/': [1]}), patch('parked_quiesce.set_frozen') as set_freeze:
-                with self.assertRaises(Unsupported): freeze_branches(nodes, [1], directory)
+                with self.assertRaises(Unsupported): freeze_branches(nodes, [1], recorded, directory)
                 self.assertEqual([call.args[1] for call in set_freeze.call_args_list], [True, True, False, False])
 
     def test_owner_outside_slice_is_refused(self):
@@ -87,6 +88,19 @@ class QuiesceChecks(unittest.TestCase):
         with patch('parked_quiesce.os.open', return_value=33), patch('parked_quiesce.os.close'), patch('parked_quiesce.Path.exists', return_value=True):
             thaw()
         freezer.assert_called_once()
+
+    @patch('parked_quiesce.set_frozen')
+    @patch('parked_quiesce.fcntl.ioctl')
+    def test_thaw_restores_only_branches_caboose_froze(self, ioctl, freezer):
+        branches = [{'path': '/user.slice', 'frozen': False}, {'path': '/system.slice', 'frozen': True}]
+        with patch('parked_quiesce.os.open', return_value=33), patch('parked_quiesce.os.close'), patch('parked_quiesce.Path.exists', return_value=True):
+            thaw(branches=branches)
+        freezer.assert_called_once_with(Path('/sys/fs/cgroup/user.slice'), False)
+
+    @patch('parked_quiesce.fcntl.ioctl')
+    def test_invalid_recovery_branch_does_not_touch_filesystem(self, ioctl):
+        with self.assertRaises(Unsupported): thaw(branches=[{'path': '/../../etc', 'frozen': False}])
+        ioctl.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()
