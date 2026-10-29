@@ -76,12 +76,16 @@ VkShaderModule shader(Cleanup& c, const std::string& file) {
     c.actions.push_back([device=c.device, module] { vkDestroyShaderModule(device, module, nullptr); });
     return module;
 }
+#include "compute_fixture.h"
+
 int render(const std::string& directory, const std::string& name, const std::string& output) {
     const bool geometry = name == "geometry_direct" || name == "geometry_indirect" || name == "geometry_indexed_indirect";
     const bool cull = name == "cull_mixed_sign";
-    const bool indirect = name == "geometry_indirect" || name == "geometry_indexed_indirect";
+    const bool feedback = name == "compute_cpu_feedback";
+    const bool compute = feedback || name == "compute_indirect";
+    const bool indirect = compute || name == "geometry_indirect" || name == "geometry_indexed_indirect";
     const bool indexed = name == "geometry_indexed_indirect";
-    if (name != "control" && !geometry && !cull) throw std::runtime_error("Unknown case");
+    if (name != "control" && !geometry && !cull && !compute) throw std::runtime_error("Unknown case");
     Cleanup cleanup;
     uint32_t count = 0; VK(vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr));
     std::vector<VkExtensionProperties> extensions(count);
@@ -111,8 +115,9 @@ int render(const std::string& directory, const std::string& name, const std::str
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count); vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, families.data());
     uint32_t family = 0;
-    while (family < count && !(families[family].queueFlags & VK_QUEUE_GRAPHICS_BIT)) ++family;
-    if (family == count) throw std::runtime_error("No graphics queue");
+    const VkQueueFlags requiredQueue = VK_QUEUE_GRAPHICS_BIT | (compute ? VK_QUEUE_COMPUTE_BIT : 0);
+    while (family < count && (families[family].queueFlags & requiredQueue) != requiredQueue) ++family;
+    if (family == count) throw std::runtime_error("No queue supporting required graphics/compute operations");
     VK(vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, nullptr)); extensions.resize(count);
     VK(vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, extensions.data()));
     std::vector<const char*> deviceExtensions;
@@ -170,14 +175,28 @@ int render(const std::string& directory, const std::string& name, const std::str
     check(result, "vkCreateGraphicsPipelines");
     Buffer readback = buffer(cleanup, physical, Width*Height*4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     Buffer arguments{}, indices{};
-    if (indirect) arguments = buffer(cleanup, physical, indexed ? 20 : 16, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, indexed ? std::vector<uint32_t>{1,1,0,0,0} : std::vector<uint32_t>{1,1,0,0});
+    ComputeFixture computeProbe{};
+    if (compute) { computeProbe = computeFixture(cleanup, physical, directory); arguments = computeProbe.output; }
+    else if (indirect) arguments = buffer(cleanup, physical, indexed ? 20 : 16, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, indexed ? std::vector<uint32_t>{1,1,0,0,0} : std::vector<uint32_t>{1,1,0,0});
     if (indexed) indices = buffer(cleanup, physical, 4, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, {0});
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; poolInfo.queueFamilyIndex = family;
     VkCommandPool pool; VK(vkCreateCommandPool(device, &poolInfo, nullptr, &pool)); cleanup.actions.push_back([device,pool] { vkDestroyCommandPool(device, pool, nullptr); });
     VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; commandInfo.commandPool = pool; commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; commandInfo.commandBufferCount = 1;
     VkCommandBuffer command; VK(vkAllocateCommandBuffers(device, &commandInfo, &command));
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; VK(vkBeginCommandBuffer(command, &begin));
-    if (indirect) {
+    if (compute) {
+        dispatchCompute(command, computeProbe, feedback);
+        if (feedback) {
+            auto observed = finishComputeFeedback(cleanup, queue, command, computeProbe);
+            // The first command buffer has completed; a second one consumes CPU feedback.
+            VK(vkAllocateCommandBuffers(device, &commandInfo, &command));
+            VK(vkBeginCommandBuffer(command, &begin));
+            metadata += ",\"gpu_feedback_words\":[";
+            for (size_t i = 0; i < observed.size(); ++i) metadata += (i ? "," : "") + std::to_string(observed[i]);
+            metadata += "]";
+        }
+    }
+    if (indirect && (!compute || feedback)) {
         VkMemoryBarrier upload{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; upload.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT; upload.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | (indexed ? VK_ACCESS_INDEX_READ_BIT : 0);
         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &upload, 0, nullptr, 0, nullptr);
     }
