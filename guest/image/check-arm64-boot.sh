@@ -26,10 +26,16 @@ PREREQ="caboose-system"
 case "${1:-}" in prereqs) echo "$PREREQ"; exit 0 ;; esac
 . /scripts/functions
 fail() { echo "CABOOSE_ARM64_BOOT_FAILED: $*" > /dev/console; poweroff -f; exit 1; }
-grep -q ' /.caboose-system erofs ' "$rootmnt/proc/mounts" 2>/dev/null ||
-  grep -q " $rootmnt/.caboose-system erofs " /proc/mounts || fail 'EROFS lower not mounted'
+# The klibc initramfs has no grep or awk. Read its mount table with shell built-ins.
+mounted_as() {
+  while read -r source target type options rest; do
+    if test "$target" = "$1" && test "$type" = "$2"; then return 0; fi
+  done < /proc/mounts
+  return 1
+}
+mounted_as "$rootmnt/.caboose-system" erofs || fail 'EROFS lower not mounted'
 for directory in usr opt; do
-  grep -q " $rootmnt/$directory overlay " /proc/mounts || fail "$directory overlay not mounted"
+  mounted_as "$rootmnt/$directory" overlay || fail "$directory overlay not mounted"
 done
 chroot "$rootmnt" /usr/bin/python3 --version || fail 'Python cannot execute'
 chroot "$rootmnt" /usr/bin/dpkg --audit > /tmp/dpkg-audit 2>&1 || fail 'dpkg audit failed'
