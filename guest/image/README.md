@@ -216,6 +216,17 @@ On Linux with `erofs-utils` installed, `guest/image/make-system-image.sh ROOT OU
 creates and checks an EROFS image containing the prepared root's `usr` and `opt`.
 It refuses to replace an existing output and leaves the source unchanged. The image
 contains uncompressed, non-inlined files; filesystem DAX additionally requires a
-DAX-capable device and guest kernel. The current microVM boot path does not attach
-this image. Run `guest/image/check-system-image.sh` on Linux to check image creation,
+DAX-capable device and guest kernel. To build a complete split image into a separate empty directory, set
+`CABOOSE_SPLIT_SYSTEM=1 OUT_DIR=/path/to/version ./guest/image/build.sh`. It contains
+`base.raw`, `vmlinux`, `initrd`, and `system.erofs`. On boot, initramfs mounts the
+image read-only and overlays `/usr` and `/opt` with writable data on the computer's
+ext4 disk. The host selects this format with `CABOOSE_SPLIT_IMAGE`; existing disks
+are not changed. The four files are one version and must remain available unchanged
+for computers that use it. Run `guest/image/check-system-image.sh` on Linux to check image creation,
 extraction, source preservation and overwrite refusal.
+
+`guest/image/check-system-overlay.sh` checks read-only EROFS and persistent overlay writes on Linux; it requires root, loop devices, mount permissions and erofs-utils.
+
+On a split microVM, run `sudo guest/image/check-split-system.sh prepare`, cold-restart
+the computer, then run `sudo guest/image/check-split-system.sh verify` to check that a
+write persists in the upper layer while the EROFS lower stays unchanged.

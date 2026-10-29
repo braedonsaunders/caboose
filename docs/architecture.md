@@ -72,6 +72,16 @@ computer's disk is a reflink copy-on-write clone of the base: it costs no space 
 and the owner's installs and home persist. A clone is independent of the base once made,
 so a new base image reaches new computers only.
 
+A Linux host can opt new computers into a split image using `CABOOSE_SPLIT_IMAGE`.
+Its `base.raw`, `vmlinux`, `initrd` and `system.erofs` form one retained version. The
+host records the absolute directory and file hashes per computer before creating its
+disk; on wake it checks the system image, kernel and initramfs, and checks the base before
+creating a disk. Initramfs mounts the EROFS image read-only and
+mounts writable overlays for `/usr` and `/opt`, whose upper and work directories live on
+the computer's ext4 disk. Package and component updates persist there. Existing disks
+and snapshots remain on their original image; switching the setting does not migrate them.
+The device uses read-only virtio-block; this does not establish DAX or a RAM saving.
+
 The image contains:
 
 - **Applications.** Chromium, Firefox ESR, VS Code, xfce4-terminal, Thunar, Mousepad,
@@ -476,8 +486,9 @@ Flatpak apps run on shared runtimes (GNOME, KDE, Freedesktop), each about a giga
 downloads each runtime once, for every computer: none is installed ahead of an app that needs it.
 
 - **One installation, read-only everywhere.** The depot is a Flatpak installation owned by the
-  host: the Docker volume `caboose-depot` on the container runtime, mounted read-only at
-  `/var/lib/caboose/depot` in each computer. `/etc/flatpak/installations.d/caboose-depot.conf`
+  host: the Docker volume `caboose-depot` on the container runtime, or the directory named
+  by `CABOOSE_VM_DEPOT` on Linux microVM hosts. The latter is shared with read-only virtio-fs.
+  Both mount read-only at `/var/lib/caboose/depot` in each computer. `/etc/flatpak/installations.d/caboose-depot.conf`
   names it; the installer adds it as the dependency source of every app transaction, so an app
   installs into its own computer and runs on the depot's runtime in place.
 - **Written only by the host's builder.** Before a Flathub install or update, the host adds the
@@ -490,7 +501,7 @@ downloads each runtime once, for every computer: none is installed ahead of an a
   computer's last reported app list needs it, including while that computer is parked. A runtime
   no computer reports using is removed. An unreadable depot record stops maintenance rather than
   collecting against an empty usage list.
-- **Without the depot** (a microVM host, or a container created before the depot existed), an
+- **Without the depot** (an unconfigured microVM host or a container created before the depot existed), an
   app's runtime installs into the computer itself.
 
 **Flatpak in a container.** Flatpak runs each app in bubblewrap, which needs user and mount
@@ -581,6 +592,8 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_BIND` | `127.0.0.1` | Listen address |
 | `CABOOSE_PORT` | `7310` | Listen port |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Golden image, overlays, snapshots and host state |
+| `CABOOSE_SPLIT_IMAGE` | unset | Retained split image version for new Linux microVM computers |
+| `CABOOSE_VM_DEPOT` | unset | Host directory for a read-only virtio-fs runtime depot on Linux microVMs |
 | `CABOOSE_MEMORY_MB` | `6144` | Initial memory setting of the owner's computer and of new computers |
 | `CABOOSE_VCPUS` | `4` | Initial vCPU setting, likewise |
 | `CABOOSE_IDLE_MS` | `600000` | Initial idle time before parking, likewise |

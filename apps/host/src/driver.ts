@@ -2,13 +2,14 @@ import { createHash, randomBytes } from 'node:crypto'
 import { constants, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
 import { access, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { createDeskHost, createCloudHypervisorBackend, createVirtualizationBackend, listenDeskPort, type DeskHandle, type DeskBackend, type DeskHost, type DeskHostOptions } from '@braedonsaunders/appkit-desk'
+import { buildDeskLaunchPlan, createDeskHost, createCloudHypervisorBackend, createVirtualizationBackend, listenDeskPort, type DeskHandle, type DeskBackend, type DeskHost, type DeskHostOptions } from '@braedonsaunders/appkit-desk'
 import type { Config } from './config.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 import { TERMINAL_PORT } from './terminal.js'
 import { configureGuest, ensureNetwork, networkSlot, removeNetwork } from './network.js'
 import type { App, Controller, Session } from './server.js'
 import { guestLaunch } from './guest-apps.js'
+import { selectSystemImage, usesSystemImage } from './system-image.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
 
 export interface ComputerResources { memoryMb: number; vcpus: number }
@@ -76,6 +77,8 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   network?: () => Promise<void>
   removeNetwork?: () => Promise<void>
   settings?: () => ComputerSettings
+  splitImage?: string
+  depotPath?: string
 } = {}): Controller {
   const nativeMac = usesVirtualization(dependencies)
   const { id, slot } = dependencies.identity ?? OWNER
@@ -99,6 +102,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   let restartWarning: string | null = null
   const overlayPath = join(config.imageRoot, 'overlays', `${id}.raw`)
   const snapshotPath = join(config.imageRoot, 'overlays', `${id}.snapshot`)
+  const bindingPath = join(config.imageRoot, 'overlays', `${id}.system-image.json`)
   const resourcesPath = join(config.imageRoot, 'overlays', `${id}.resources.json`)
   let resources: ComputerResources | null = null
   try {
@@ -159,17 +163,33 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     lastError: () => restartWarning,
     async wake(mode = 'interactive'): Promise<Session> {
       const desired = settings()
+      if (dependencies.depotPath) {
+        const probe = buildDeskLaunchPlan({ deskId: 'probe', kernelPath: '/kernel', baseImagePath: '/base', overlayPath: '/disk', vsockCid: 3,
+          ...{ shares: [{ tag: 'caboose-depot', path: '/depot', readOnly: true }], virtiofsdPath: '/virtiofsd' } },
+          { pathExists: () => true, deviceExists: () => true, ...{ isDirectory: () => true } })
+        if (probe.hypervisor !== 'cloud-hypervisor' || !probe.vmm.args.includes('--fs')) throw new Error('MicroVM depot requires an AppKit desk release with read-only shares')
+      }
+      if (nativeMac && await usesSystemImage(bindingPath, overlayPath, snapshotPath, dependencies.splitImage)) throw new Error('Split system images require Cloud Hypervisor')
+      if (await usesSystemImage(bindingPath, overlayPath, snapshotPath, dependencies.splitImage)) {
+        // Fail closed with an older AppKit: it would silently ignore the device.
+        const probe = buildDeskLaunchPlan({ deskId: 'probe', kernelPath: '/kernel', baseImagePath: '/base', overlayPath: '/disk', vsockCid: 3,
+          ...{ readOnlyAttachments: [{ path: '/system', sha256: '0'.repeat(64), kind: 'block' as const }] } },
+          { pathExists: () => true, deviceExists: () => true })
+        if (probe.hypervisor !== 'cloud-hypervisor' || !probe.vmm.args.includes('path=/system,readonly=on,image_type=raw')) throw new Error('Split images require an AppKit desk release with read-only attachments')
+      }
+      const systemImage = await selectSystemImage(bindingPath, overlayPath, snapshotPath, dependencies.splitImage)
+      const imageDirectory = systemImage?.directory ?? config.imageRoot
       await Promise.all([
         ...(nativeMac || dependencies.deviceExists ? [] : [access('/dev/kvm', constants.R_OK | constants.W_OK)]),
         access(config.vmmPath, constants.X_OK),
-        ...['base.raw', 'vmlinux', 'initrd'].map(file => access(join(config.imageRoot, file), constants.R_OK)),
+        ...['base.raw', 'vmlinux', 'initrd'].map(file => access(join(imageDirectory, file), constants.R_OK)),
       ])
       await mkdir(join(config.imageRoot, 'overlays'), { recursive: true })
       await mkdir(join(config.imageRoot, 'runtime'), { recursive: true })
       if (!nativeMac) await (dependencies.network ?? (() => ensureNetwork(slot)))()
       const restoring = existsSync(snapshotPath)
       const wasResident = Boolean(desk)
-      desk = await host.start({ deskId: id, baseImage: join(config.imageRoot, 'base.raw'), overlayPath, memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS, ...(nativeMac ? {} : { network: { tapDevice: address.tap } }) })
+      desk = await host.start({ deskId: id, baseImage: join(imageDirectory, 'base.raw'), overlayPath, ...(dependencies.depotPath ? { shares: [{ tag: 'caboose-depot', path: dependencies.depotPath, readOnly: true }] } : {}), ...systemImage && { kernelPath: join(imageDirectory, 'vmlinux'), initramfsPath: join(imageDirectory, 'initrd'), readOnlyAttachments: [{ path: join(imageDirectory, 'system.erofs'), sha256: systemImage.hashes['system.erofs'], kind: 'block' as const }] }, memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS, ...(nativeMac ? {} : { network: { tapDevice: address.tap } }) })
       try {
         if (restoring && host.stats().lastError?.includes('could not resume from its snapshot')) {
           throw new Error(host.stats().lastError ?? 'Snapshot restore failed')
@@ -177,6 +197,12 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         if (!restoring && !wasResident) {
           resources = { memoryMb: desired.memoryMb, vcpus: desired.vcpus }
           await writePrivateJson(resourcesPath, resources)
+        }
+        if (dependencies.depotPath) {
+          // A snapshot made before the share was configured restores without it; its
+          // local Flatpak installation remains usable until the next cold restart.
+          await command('/bin/systemctl', ['start', 'var-lib-caboose-depot.mount'], 60_000)
+            .catch(error => console.error('Shared runtime depot unavailable:', error))
         }
         await configureGuest(desk, slot, nativeMac ? { host: '10.0.2.2', guest: '10.0.2.15', prefix: 24 } : undefined)
         if (nativeMac && !relays.size) {
@@ -250,6 +276,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       await rm(snapshotPath, { recursive: true, force: true })
       await rm(overlayPath, { force: true })
       await rm(resourcesPath, { force: true })
+      await rm(bindingPath, { force: true })
       if (!nativeMac) await (dependencies.removeNetwork ?? (() => removeNetwork(slot)))()
     },
     async apps(): Promise<App[]> {

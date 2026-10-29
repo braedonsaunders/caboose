@@ -67,13 +67,24 @@ kernel=$(printf '%s\n' "$work/root"/boot/vmlinuz-* | sort -V | tail -1)
 # Virtualization.framework takes the uncompressed ARM64 Image; Debian may gzip it.
 if [[ $arch == arm64 ]] && gzip -t "$kernel" 2>/dev/null; then gzip -dc "$kernel" > "$work/vmlinux"
 else cp "$kernel" "$work/vmlinux"; fi
-cp "$(printf '%s\n' "$work/root"/boot/initrd.img-* | sort -V | tail -1)" "$work/initrd"
 rm -f "$work/root/usr/local/lib/libeatmydata.so.1" "$work/root/etc/dpkg/dpkg.cfg.d/99-caboose-build" "$work/root/etc/dpkg/dpkg.cfg.d/99-build-speed"
 rm -rf "$work/root/tmp/components" "$work/root/tmp/container" "$work/root/tmp/keyring" "$work/root/tmp/notifications" "$work/root/tmp/desktop-mcp" "$work/root/tmp/caboose-display" "$work/root/tmp/agentd" "$work/root/tmp/files" "$work/root/tmp/terminal" "$work/root/tmp/phone" "$work/root/tmp/bridge" "$work/root/tmp/flatpak" "$work/root/tmp/game" "$work/root/tmp/gpu" "$work/root/tmp/apps" "$work/root/tmp/media-handoff"
 rm "$work/root/tmp/configure-guest.sh" "$work/root/tmp/apps.sh" "$work/root/tmp/desktop-apps.sh" "$work/root/tmp/desktop-apps.tsv"
 # Complete update work after the final /usr changes to avoid a slow first boot.
 chroot "$work/root" /sbin/ldconfig
 chroot "$work/root" /usr/lib/systemd/systemd-update-done
+if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
+  install -m 0755 /builder/caboose-system "$work/root/etc/initramfs-tools/scripts/local-bottom/caboose-system"
+  printf 'erofs\noverlay\n' >> "$work/root/etc/initramfs-tools/modules"
+  chroot "$work/root" update-initramfs -u
+  touch "$work/root/etc/caboose-split-system"
+  /builder/make-system-image.sh "$work/root" "$work/system.erofs"
+fi
+cp "$(printf '%s\n' "$work/root"/boot/initrd.img-* | sort -V | tail -1)" "$work/initrd"
+if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
+  rm -rf "$work/root/usr" "$work/root/opt"
+  mkdir "$work/root/usr" "$work/root/opt"
+fi
 sync
 for p in dev/pts dev proc sys; do umount -l "$work/root/$p" 2>/dev/null || true; done
 umount "$work/root"
@@ -81,3 +92,4 @@ losetup -d "$loop"; loop=
 mv "$work/initrd" /output/initrd
 mv "$work/vmlinux" /output/vmlinux
 mv "$work/base.raw" /output/base.raw
+if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then mv "$work/system.erofs" /output/system.erofs; fi
