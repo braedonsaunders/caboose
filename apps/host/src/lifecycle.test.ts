@@ -6,6 +6,51 @@ import { config } from './config.js'
 afterEach(() => vi.useRealTimers())
 
 describe('computer lifecycle', () => {
+  it('invalidates parked work synchronously and serializes wake behind it', async () => {
+    let release!: () => void
+    const cancel = vi.fn()
+    const driver = { wake: vi.fn(async () => 'desk'), park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 10000)
+    computer.setParkedWorkCanceller(cancel)
+    let generation = -1
+    const parked = computer.parkedExclusive(async value => {
+      generation = value
+      await new Promise<void>(resolve => { release = resolve })
+      expect(computer.isParkedGenerationCurrent(value)).toBe(false)
+    })
+    await vi.waitFor(() => expect(release).toBeDefined())
+    const waking = computer.wake('headless')
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(computer.isParkedGenerationCurrent(generation)).toBe(false)
+    expect(driver.wake).not.toHaveBeenCalled()
+    release()
+    await parked
+    expect(await waking).toBe('desk')
+    await expect(computer.parkedExclusive(async () => {})).rejects.toThrow('not available')
+    await computer.park()
+    expect(await computer.parkedExclusive(async value => value)).not.toBe(generation)
+  })
+
+  it('cancels parked work at wake-and-run, restart and retire admission', async () => {
+    const cancel = vi.fn()
+    const computer = new ComputerLifecycle({ wake: async () => 'desk', park: async () => {}, restart: async () => 'new' }, 10000)
+    computer.setParkedWorkCanceller(cancel)
+    await computer.wakeAndRun(async () => {})
+    expect(cancel).toHaveBeenCalledTimes(1)
+    await computer.restart()
+    expect(cancel).toHaveBeenCalledTimes(2)
+    await computer.retire(async () => {})
+    expect(cancel).toHaveBeenCalledTimes(3)
+    await expect(computer.parkedExclusive(async () => {})).rejects.toThrow('not available')
+  })
+  it('rejects a parked operation queued before a wake is admitted', async () => {
+    const computer = new ComputerLifecycle({ wake: async () => 'desk', park: async () => {} }, 10000)
+    const operation = computer.parkedExclusive(async () => 'must not run')
+    const waking = computer.wake()
+    await expect(operation).rejects.toThrow('not available')
+    await waking
+    await computer.park()
+  })
   it('validates the host freeze-to-park timeout', () => {
     expect(config({}).freezeParkMs).toBe(60_000)
     expect(config({ CABOOSE_FREEZE_PARK_MS: '120000' }).freezeParkMs).toBe(120_000)

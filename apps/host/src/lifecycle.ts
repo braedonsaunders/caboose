@@ -27,6 +27,8 @@ export class ComputerLifecycle<T> {
   private mode: WakeMode = 'interactive'
   private beforeFreeze: () => Promise<boolean> = async () => true
   private freezeAllowed: () => boolean = () => true
+  private parkedGeneration = 0
+  private cancelParkedWork: () => void = () => {}
 
   constructor(private readonly driver: ComputerDriver<T>, private idleMs: number, private readonly freezeParkMs = 60_000) {
     if (!Number.isSafeInteger(idleMs) || idleMs < 1 || idleMs > 2_147_483_647) {
@@ -40,6 +42,30 @@ export class ComputerLifecycle<T> {
   get lastError(): string | null { return this.failure }
   setBeforeFreeze(work: () => Promise<boolean>): void { this.beforeFreeze = work }
   setFreezeAllowed(check: () => boolean): void { this.freezeAllowed = check }
+
+  /** Cancel external parked work synchronously before a state-changing admission is queued. */
+  setParkedWorkCanceller(cancel: () => void): void { this.cancelParkedWork = cancel }
+
+  private invalidateParkedWork(): void {
+    this.parkedGeneration++
+    this.cancelParkedWork()
+  }
+
+  /** Recheck after asynchronous work, including while holding parkedExclusive. */
+  isParkedGenerationCurrent(generation: number): boolean {
+    return !this.retired && !this.restartPending && this.current === 'parked' && this.parkedGeneration === generation
+  }
+
+  /** Serialize a parked-only action with wake, restart, park and deletion. */
+  parkedExclusive<R>(work: (generation: number) => Promise<R>): Promise<R> {
+    const generation = this.parkedGeneration
+    return this.serialize(async () => {
+      if (!this.isParkedGenerationCurrent(generation)) {
+        throw new ComputerConflictError('Computer is not available for parked work')
+      }
+      return work(generation)
+    })
+  }
 
   setIdleMs(value: number): void {
     if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647) throw new Error('Invalid idle timeout')
@@ -101,6 +127,7 @@ export class ComputerLifecycle<T> {
 
   wake(mode: WakeMode = 'interactive'): Promise<T> {
     if (this.retired) return Promise.reject(new ComputerConflictError('Computer is being deleted'))
+    this.invalidateParkedWork()
     this.clearIdle()
     return this.serialize(() => this.wakeNow(mode))
   }
@@ -149,6 +176,7 @@ export class ComputerLifecycle<T> {
   wakeAndRun<R>(work: () => Promise<R>, mode: WakeMode = 'interactive'): Promise<R> {
     if (this.retired) return Promise.reject(new ComputerConflictError('Computer is being deleted'))
     if (this.restartPending) return Promise.reject(new ComputerConflictError('Computer is restarting'))
+    this.invalidateParkedWork()
     const release = this.acquire()
     return this.serialize(async () => {
       await this.wakeNow(mode)
@@ -172,6 +200,7 @@ export class ComputerLifecycle<T> {
     if (this.retired) return Promise.reject(new ComputerConflictError('Computer is being deleted'))
     if (this.restartPending) return Promise.reject(new ComputerConflictError('Computer is already restarting'))
     if (!this.driver.restart) return Promise.reject(new ComputerConflictError('Restart is unavailable'))
+    this.invalidateParkedWork()
     this.restartPending = true
     this.clearIdle()
     return this.serialize(async () => {
@@ -236,6 +265,7 @@ export class ComputerLifecycle<T> {
    * memory is about to be thrown away with its disk.
    */
   retire(work: () => Promise<void>): Promise<void> {
+    this.invalidateParkedWork()
     this.retired = true
     this.clearIdle()
     return this.serialize(async () => {
