@@ -96,6 +96,15 @@ jobs:
             -framework IOSurface -framework AppKit -framework IOKit \
             -framework CoreGraphics -lz -o apps/ios/build/gpu-stream/check-moltenvk
           MVK_CONFIG_PERFORMANCE_TRACKING=1 MVK_CONFIG_ACTIVITY_PERFORMANCE_LOGGING_STYLE=3 apps/ios/build/gpu-stream/check-moltenvk 2>&1 | tee gpu-check-logs/moltenvk.log
+      - name: Build standalone capture diagnostics
+        run: |
+          xcrun clang++ -std=c++20 -fobjc-arc \
+            -Iapps/ios/GPUStream/include \
+            apps/ios/GPUStream/tests/capture.mm \
+            apps/ios/build/gpu-stream/lib/macos/libCabooseGPUStream.a \
+            -framework Foundation -framework Metal -framework QuartzCore \
+            -framework IOSurface -framework AppKit -framework IOKit \
+            -framework CoreGraphics -lz -o apps/ios/build/gpu-stream/check-capture
       - name: Replay, resume, file-prefix and concurrent captures
         working-directory: apps/ios/CabooseKit
         env:
@@ -104,6 +113,26 @@ jobs:
         run: |
           swift test --jobs 1 --list-tests 2>&1 | tee ../../../gpu-check-logs/native-tests.log | grep 'twoCapturesReplayConcurrentlyWithIndependentState'
           swift test --jobs 1 --filter GPUStream 2>&1 | tee ../../../gpu-check-logs/replay.log
+      - name: Diagnose native capture failure under LLDB
+        if: failure()
+        timeout-minutes: 5
+        run: |
+          test -x apps/ios/build/gpu-stream/check-capture
+          xcrun lldb --batch -o run -o 'thread backtrace all' -o 'process status' -- \
+            apps/ios/build/gpu-stream/check-capture \
+            apps/ios/GPUStream/tests/fixtures/vkcube.gfxr 300 2>&1 | tee gpu-check-logs/native-backtrace.log
+      - name: Retain only crash reports from synthetic test processes
+        if: failure()
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import shutil
+          reports = Path.home() / 'Library/Logs/DiagnosticReports'
+          for prefix in ('CabooseKitPackageTests', 'check-capture'):
+              matches = sorted(reports.glob(prefix + '*.ips'), key=lambda p: p.stat().st_mtime)[-2:]
+              for report in matches:
+                  shutil.copyfile(report, Path('gpu-check-logs') / (report.name + '.log'))
+          PYTHON
       - name: Bound retained logs
         if: always()
         run: python3 apps/ios/GPUStream/tests/bound_logs.py
