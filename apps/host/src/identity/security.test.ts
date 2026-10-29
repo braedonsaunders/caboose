@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { openIdentityDatabase, type IdentityDatabase } from './database.js'
+import { symmetricDecrypt } from 'better-auth/crypto'
 import { Identity } from './service.js'
 
 let root: string
@@ -34,7 +35,8 @@ it('requires completed MFA before granting an existing administrator invitation;
   const enabled = await request('two-factor/enable', { password: 'initial password' })
   expect(enabled.status).toBe(200)
   const enrollment = await enabled.json()
-  const secret = new URL(enrollment.totpURI).searchParams.get('secret')!
+  const encrypted = (await database.pool.query('SELECT secret FROM two_factors')).rows[0].secret
+  const secret = await symmetricDecrypt({ key: 's'.repeat(40), data: encrypted })
   const code = await identity.auth.api.generateTOTP({ body: { secret } })
   expect((await request('two-factor/verify-totp', code)).status).toBe(200)
   await request('sign-out', {})
