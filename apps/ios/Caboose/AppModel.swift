@@ -86,10 +86,12 @@ final class AppModel {
     private var frameCacheEpoch: String?
     /// Keeps the display connected: when to reconnect, and what the network is doing.
     let link = DisplayLink()
-    /// The wake in progress; a second caller waits for it instead of opening another display.
-    private var wakeInFlight: Task<Void, Never>?
-    /// The token the current session was opened with, so a wake for another computer replaces it.
-    private var sessionToken: String?
+    /// The wake in progress: a second caller for the same computer waits for it, and a
+    /// switch, sign-out, close or backgrounding makes whatever it still learns irrelevant.
+    private let wakes = WakeFence()
+    /// The paired computer (`identity(_:)`) the current session was opened for, so a wake
+    /// for another computer replaces it rather than taking it for its own.
+    private var sessionIdentity: String?
     /// The last lost connection handed to the link: the session and its connection number.
     private var handledClosure: (ObjectIdentifier, Int)?
     /// The connection and server epoch `placedWindowIDs` were placed for.
@@ -185,6 +187,8 @@ final class AppModel {
             shortcuts = Self.loadShortcuts(for: credentials)
             recentFiles = []
         }
+        wakes.invalidate()
+        link.stop()
         self.credentials = credentials
         filesRegistrationError = nil
         registerFiles(name: "Caboose")
@@ -202,6 +206,7 @@ final class AppModel {
     }
 
     func signOut() {
+        wakes.invalidate()
         fileSearchTask?.cancel()
         ComputerSearch.clear()
         PushCoordinator.shared.unregister(from: host)
@@ -255,33 +260,40 @@ final class AppModel {
     /// a second caller waits for the first instead of opening a competing display.
     func wake(quiet: Bool = false) async {
         if !quiet { link.stop() } // the person asked: whatever was scheduled is superseded
-        if let running = wakeInFlight { return await running.value }
-        let task = Task { await performWake(quiet: quiet) }
-        wakeInFlight = task
-        await task.value
-        wakeInFlight = nil
+        guard let credentials else { phase = .needsSetup; return }
+        await wakes.run(identity: Self.identity(credentials)) { [weak self] ticket in
+            await self?.performWake(credentials, ticket: ticket, quiet: quiet)
+        }
     }
 
-    private func performWake(quiet: Bool) async {
-        if let credentials {
-            let reached = await credentials.reachableURL()
-            if reached != activeHostURL { activeHostURL = reached }
+    /// The paired computer a wake is for: its primary address and this phone's token.
+    private static func identity(_ credentials: Credentials) -> String {
+        credentials.hostURL.absoluteString + " " + credentials.token
+    }
+
+    /// Every change after a suspension first checks `ticket`: a wake for a computer the app
+    /// has since left, or one superseded by sign-out, closing or backgrounding, changes nothing.
+    private func performWake(_ credentials: Credentials, ticket: WakeFence.Ticket, quiet: Bool) async {
+        let reached = await credentials.reachableURL()
+        guard wakes.isCurrent(ticket) else { return }
+        if reached != activeHostURL { activeHostURL = reached }
+        let host = HostClient(baseURL: reached, token: credentials.token)
+        let identity = Self.identity(credentials)
+        // Only this computer's own display counts as up or opening; another's is replaced.
+        switch WakePlan.plan(for: identity, owner: sessionIdentity, state: session?.state, phaseReady: phase == .ready) {
+        case .alreadyLive, .alreadyOpening: return
+        case .wake: break
         }
-        guard let host else { phase = .needsSetup; return }
-        if case .ready = phase, session?.state == .ready { return }
-        // A display already opening for this computer finishes or fails on its own.
-        if let state = session?.state, state == .connecting || state == .authenticating, sessionToken == host.token { return }
         if !quiet { phase = .waking }
         do {
             // A computer that was just running answers at once; a cold boot gets its minutes.
             let wake = try await (quiet ? host.wake(timeout: 30) : host.wake())
-            // A wake may finish after backgrounding or changing computers. Do not attach
-            // an old computer's control channel in either case.
-            guard sceneActive, self.host?.token == host.token, self.host?.baseURL == host.baseURL else { return }
+            // Do not attach a computer the app has left, or open a display in the background.
+            guard wakes.isCurrent(ticket), sceneActive else { return }
             computer = wake.computer
             registerFiles(name: wake.computer.name)
             if !quiet { phase = .connecting }
-            openDisplay(host: host, display: wake.display)
+            openDisplay(host: host, display: wake.display, identity: identity)
             agents.detach()
             agents.attach(host: host)
             PushCoordinator.shared.synchronize()
@@ -294,6 +306,7 @@ final class AppModel {
             refreshFileSearch()
             Task { try? await refreshComputer() }
         } catch {
+            guard wakes.isCurrent(ticket) else { return }
             wakeFailed(error, quiet: quiet)
         }
     }
@@ -344,6 +357,7 @@ final class AppModel {
     func sceneEnteredBackground() {
         sceneActive = false
         phone.setActive(false)
+        wakes.invalidate()
         link.stop()
         if let session {
             frameCache = session.windows.reduce(into: [:]) { cache, entry in
@@ -362,22 +376,22 @@ final class AppModel {
 
     /// Reconnects the session that lost its connection, keeping its windows on screen, or
     /// opens a new one. Never two: a resumed session is the same object.
-    private func openDisplay(host: HostClient, display: HostClient.Session.Display) {
+    private func openDisplay(host: HostClient, display: HostClient.Session.Display, identity: String) {
         if let current = session as? CabooseDisplaySession, case .closed = current.state, !current.isReplaced,
-           current.closeCause != .local, sessionToken == host.token {
+           current.closeCause != .local, sessionIdentity == identity {
             lastDisplay = display
             yard.invalidate()
             current.resume(displayURL: host.socketURL(display.path), token: host.token, password: display.token,
                            capabilities: displayCapabilities())
             return
         }
-        startSession(host: host, display: display)
+        startSession(host: host, display: display, identity: identity)
     }
 
-    private func startSession(host: HostClient, display: HostClient.Session.Display) {
+    private func startSession(host: HostClient, display: HostClient.Session.Display, identity: String) {
         session?.disconnect()
         lastDisplay = display
-        sessionToken = host.token
+        sessionIdentity = identity
         handledClosure = nil
         placedConnection = 0
         let caps = displayCapabilities()
@@ -798,6 +812,7 @@ final class AppModel {
 
     /// Drops the display and the agent channel without parking; the host decides what happens next.
     private func closeDisplay() {
+        wakes.invalidate()
         link.stop()
         presentedWindowID = nil
         presentedAgentWindowID = nil

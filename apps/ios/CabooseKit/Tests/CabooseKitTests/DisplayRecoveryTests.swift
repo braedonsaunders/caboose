@@ -416,3 +416,158 @@ import Testing
         #expect(session.health.keyAwaitingPicture != nil)
     }
 }
+
+@Suite struct NetworkPathTests {
+    let wifi = NetworkPath(satisfied: true, uses: [.wifi], gateways: ["192.168.1.1"])
+
+    /// Wi-Fi and cellular can both stay available while the route moves between them: what
+    /// the path uses is what counts.
+    @Test func aMoveToAnotherUsedInterfaceIsProbed() {
+        let cellular = NetworkPath(satisfied: true, uses: [.cellular], gateways: ["192.168.1.1"])
+        #expect(NetworkPath.response(from: wifi, to: cellular, live: true) == .probe)
+        #expect(NetworkPath.response(from: cellular, to: wifi, live: true) == .probe)
+    }
+
+    @Test func anotherNetworkOnTheSameInterfaceIsProbed() {
+        let other = NetworkPath(satisfied: true, uses: [.wifi], gateways: ["10.0.0.1"])
+        #expect(NetworkPath.response(from: wifi, to: other, live: true) == .probe)
+    }
+
+    @Test func aTunnelComingOrGoingIsProbed() {
+        let tunnelled = NetworkPath(satisfied: true, uses: [.wifi, .other], gateways: ["192.168.1.1"])
+        #expect(NetworkPath.response(from: wifi, to: tunnelled, live: true) == .probe)
+        #expect(tunnelled.name == "Wi-Fi through a VPN or tunnel")
+    }
+
+    @Test func nothingTheConnectionCouldNoticeIsIgnored() {
+        var metered = wifi
+        metered.expensive = true
+        #expect(NetworkPath.response(from: wifi, to: metered, live: true) == .none)
+        #expect(NetworkPath.response(from: nil, to: wifi, live: true) == .none) // the first report
+        #expect(NetworkPath.response(from: wifi, to: wifi, live: false) == .none)
+        #expect(NetworkPath.response(from: wifi, to: NetworkPath(satisfied: false, uses: []), live: true) == .none)
+    }
+
+    @Test func aNetworkReturningWhileDisconnectedRetries() {
+        let none = NetworkPath(satisfied: false, uses: [])
+        #expect(NetworkPath.response(from: none, to: wifi, live: false) == .retry)
+        #expect(NetworkPath.response(from: none, to: wifi, live: true) == .probe)
+        #expect(none.name == "No network")
+    }
+
+    @Test func namesSayWhatIsUsedWithoutPickingOne() {
+        #expect(NetworkPath(satisfied: true, uses: [.cellular, .wifi]).name == "Wi-Fi and Cellular")
+        #expect(NetworkPath(satisfied: true, uses: [.other]).name == "A VPN or tunnel")
+        #expect(NetworkPath(satisfied: true, uses: [.wired]).name == "Wired")
+        #expect(NetworkPath(satisfied: true, uses: [], gateways: ["b", "a"]).gateways == ["a", "b"])
+    }
+}
+
+@MainActor @Suite(.serialized) struct WakeFenceTests {
+    /// A wake held at a suspension point until the test lets it go.
+    final class Gate {
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        var started = 0
+        func wait() async {
+            started += 1
+            await withCheckedContinuation { waiting.append($0) }
+        }
+        func open() { waiting.forEach { $0.resume() }; waiting.removeAll() }
+    }
+
+    final class Log { var items: [String] = [] }
+
+    func settle() async { for _ in 0 ..< 20 { await Task.yield() } }
+
+    @Test func aSecondCallerForTheSameComputerWaits() async {
+        let fence = WakeFence(), gate = Gate()
+        let applied = Log()
+        let first = Task { await fence.run(identity: "A") { ticket in await gate.wait(); if fence.isCurrent(ticket) { applied.items.append("first") } } }
+        await settle()
+        let second = Task { await fence.run(identity: "A") { _ in applied.items.append("second") } }
+        await settle()
+        gate.open()
+        await first.value
+        await second.value
+        #expect(gate.started == 1 && applied.items == ["first"])
+    }
+
+    /// Pairing with B while A's reachability probe is suspended: B gets its own wake, and
+    /// A's late result applies nothing.
+    @Test func anotherComputerGetsItsOwnWakeAndTheOldOneIsFenced() async {
+        let fence = WakeFence(), gateA = Gate(), gateB = Gate()
+        let applied = Log()
+        let a = Task { await fence.run(identity: "A") { ticket in await gateA.wait(); if fence.isCurrent(ticket) { applied.items.append("A") } } }
+        await settle()
+        fence.invalidate() // connect(with: B)
+        let b = Task { await fence.run(identity: "B") { ticket in await gateB.wait(); if fence.isCurrent(ticket) { applied.items.append("B") } } }
+        await settle()
+        #expect(gateB.started == 1)
+        gateA.open()
+        await a.value
+        // A's completion must not have cleared B: a further caller for B still waits on it.
+        let again = Task { await fence.run(identity: "B") { _ in applied.items.append("B again") } }
+        await settle()
+        gateB.open()
+        await b.value
+        await again.value
+        #expect(applied.items == ["B"])
+    }
+
+    @Test func anotherIdentityWithoutInvalidationStillFencesTheOld() async {
+        let fence = WakeFence(), gateA = Gate(), gateB = Gate()
+        let applied = Log()
+        let a = Task { await fence.run(identity: "A") { ticket in await gateA.wait(); if fence.isCurrent(ticket) { applied.items.append("A") } } }
+        await settle()
+        let b = Task { await fence.run(identity: "B") { ticket in await gateB.wait(); if fence.isCurrent(ticket) { applied.items.append("B") } } }
+        await settle()
+        gateA.open(); gateB.open()
+        await a.value
+        await b.value
+        #expect(applied.items == ["B"])
+    }
+
+    /// Sign-out or closing while a wake fails: the failure applies nothing either.
+    @Test func invalidationFencesSuccessAndFailureAlike() async {
+        let fence = WakeFence(), gate = Gate()
+        let outcome = Log()
+        let a = Task {
+            await fence.run(identity: "A") { ticket in
+                await gate.wait()
+                let failed = true
+                guard fence.isCurrent(ticket) else { return }
+                outcome.items.append(failed ? "failed" : "woke")
+            }
+        }
+        await settle()
+        fence.invalidate()
+        gate.open()
+        await a.value
+        #expect(outcome.items.isEmpty)
+        // A fresh wake after the switch runs and applies.
+        await fence.run(identity: "A") { ticket in if fence.isCurrent(ticket) { outcome.items.append("woke") } }
+        #expect(outcome.items == ["woke"])
+    }
+}
+
+@Suite struct WakePlanTests {
+    /// Paired with B while A's display is up: B is woken and gets its own display.
+    @Test func anotherComputersDisplayIsNeverTakenForThisOnes() {
+        #expect(WakePlan.plan(for: "B", owner: "A", state: .ready, phaseReady: true) == .wake)
+        #expect(WakePlan.plan(for: "B", owner: "A", state: .connecting, phaseReady: false) == .wake)
+        #expect(WakePlan.plan(for: "B", owner: "A", state: .authenticating, phaseReady: true) == .wake)
+        #expect(WakePlan.plan(for: "B", owner: nil, state: .ready, phaseReady: true) == .wake)
+    }
+
+    @Test func thisComputersDisplayIsLeftToItself() {
+        #expect(WakePlan.plan(for: "A", owner: "A", state: .ready, phaseReady: true) == .alreadyLive)
+        #expect(WakePlan.plan(for: "A", owner: "A", state: .connecting, phaseReady: false) == .alreadyOpening)
+        #expect(WakePlan.plan(for: "A", owner: "A", state: .authenticating, phaseReady: true) == .alreadyOpening)
+    }
+
+    @Test func aLostOrMissingDisplayIsWoken() {
+        #expect(WakePlan.plan(for: "A", owner: "A", state: .closed(reason: nil), phaseReady: true) == .wake)
+        #expect(WakePlan.plan(for: "A", owner: "A", state: .ready, phaseReady: false) == .wake)
+        #expect(WakePlan.plan(for: "A", owner: nil, state: nil, phaseReady: false) == .wake)
+    }
+}
