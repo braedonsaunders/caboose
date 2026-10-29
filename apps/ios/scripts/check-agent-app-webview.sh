@@ -17,22 +17,6 @@ cp "$root/CabooseKit/Package.swift" "$tmp/package/"
 cp -R "$root/CabooseKit/Sources" "$tmp/package/"
 mkdir -p "$tmp/package/Tests/CabooseKitTests/Fixtures"
 cp "$root/CabooseKit/Tests/CabooseKitTests/AgentAppWebViewTests.swift" "$tmp/package/Tests/CabooseKitTests/"
-# MetalFX is absent from the simulator SDK. Substitute only its unrelated upscaler in
-# this disposable package; all handoff sources and resources remain unchanged.
-python3 - "$tmp/package/Sources/CabooseKit/Video/MotionUpscaler.swift" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p).read()
-start = s.index('    static var supported: Bool')
-end = s.index('    /// Bilinear fallback', start)
-s = s[:start] + '''    static var supported: Bool { false }
-    func upscale(_ picture: CVPixelBuffer) -> CVPixelBuffer? { softwareUpscale(picture) }
-    func metalUpscale(_ picture: CVPixelBuffer) -> CVPixelBuffer? { nil }
-
-''' + s[end:]
-s = s.replace('import MetalFX\n', '')
-open(p, 'w').write(s)
-PY
 python3 "$root/CabooseKit/Tests/AgentAppHandoffCheck/server.py" &
 server_pid=$!
 python3 - "$server_pid" <<'PY'

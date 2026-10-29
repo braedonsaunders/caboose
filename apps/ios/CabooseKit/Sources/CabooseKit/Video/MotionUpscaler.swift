@@ -1,26 +1,35 @@
 import CoreVideo
 import Accelerate
 import Metal
+#if canImport(MetalFX)
 import MetalFX
+#endif
 
 /// Upscales the compositor's SDR half-resolution motion pictures. A failure returns nil;
 /// the video layer then scales the decoded picture itself.
 final class MotionUpscaler {
     static var supported: Bool {
+        #if canImport(MetalFX)
         guard let device = MTLCreateSystemDefaultDevice() else { return false }
         return MTLFXSpatialScalerDescriptor.supportsDevice(device)
+        #else
+        return false
+        #endif
     }
 
+    #if canImport(MetalFX)
     private let renderer = SurfaceRenderer.shared
     private var scaler: MTLFXSpatialScaler?
     private var input: MTLTexture?
     private var output: MTLTexture?
+    #endif
 
     func upscale(_ picture: CVPixelBuffer) -> CVPixelBuffer? {
         metalUpscale(picture) ?? softwareUpscale(picture)
     }
 
     func metalUpscale(_ picture: CVPixelBuffer) -> CVPixelBuffer? {
+        #if canImport(MetalFX)
         let width = CVPixelBufferGetWidth(picture), height = CVPixelBufferGetHeight(picture)
         guard CVPixelBufferGetPixelFormatType(picture) == kCVPixelFormatType_32BGRA,
               width > 0, height > 0, width <= 2048, height <= 2048,
@@ -62,6 +71,9 @@ final class MotionUpscaler {
         commands.commit(); commands.waitUntilCompleted()
         guard commands.status == .completed else { return nil }
         return result
+        #else
+        return nil
+        #endif
     }
 
     /// Bilinear fallback for devices without MetalFX and for allocation or GPU failures.
