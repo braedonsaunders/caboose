@@ -207,6 +207,7 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Guest image, overlays, snapshots and the host's state files. |
 | `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
+| `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks. |
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
 | `CABOOSE_PUBLIC_URL` | unset | Where phones reach this host from anywhere, such as `https://caboose.example.com`; listed first in pairing links and used as the console auth base URL (auth defaults to loopback when unset). |
 | `CABOOSE_MDNS` | `on` | `off` stops advertising `_caboose._tcp` on the LAN. |
@@ -327,6 +328,17 @@ Agent tasks and routines can wake headlessly: components and file service start,
 owner display starts on an interactive session, display connection or app launch. The agent
 display starts on a desktop tool call or an agent-seat display connection. A restored memory
 snapshot keeps any displays that were already running.
+
+When AppKit supports resident pause, a microVM with no leases freezes after three seconds;
+new work resumes it. It parks at the earlier of its idle timeout or the host's
+`CABOOSE_FREEZE_PARK_MS` after freezing. Container and unsupported microVM backends park at
+the configured idle timeout.
+
+On a disposable Linux microVM host with resident pause support, run
+`CABOOSE_OWNER_TOKEN=… node apps/host/scripts/check-freeze.mjs` to check freeze, resume,
+park and snapshot restore. Set `CABOOSE_URL` for a nonlocal host and
+`CABOOSE_CHECK_TIMEOUT_MS` if the configured timeouts exceed 90 seconds. Close other clients
+and terminal sessions first; the check wakes the computer and leaves it running.
 
 `POST /v1/session` returns `{ state, display: { path: "/v1/display", token, protocol:
 "caboose-display" }, computer }`. `/v1/display` is a WebSocket (subprotocol `binary`) that

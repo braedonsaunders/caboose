@@ -772,8 +772,8 @@ describe('AgentTasks', () => {
     expect(tasks.list()[0]).toMatchObject({ prompt: 'keep going', turns: 2, agentName: 'goose' })
     expect(tasks.list()[1]).toMatchObject({ summary: 'All green.', turns: 3, approvals: 'ask', attachments: [`/home/caboose/Agents/${done}/attachments/shot.png`] })
     expect(tasks.list()[3]).toMatchObject({ summary: 'Sign in to Stand-in first.', signIn: [{ id: 'a', name: 'A', type: 'agent' }] })
-    // Only the task whose turn is still running holds the computer awake.
-    expect(acquire).toHaveBeenCalledTimes(1)
+    // Restore holds a temporary lease, and the live task keeps its own lease.
+    expect(acquire).toHaveBeenCalledTimes(2)
     expect(events).toEqual([])
     await tasks.reply(done, { prompt: 'and lint' })
     expect(JSON.parse(fake.task(done).inbox.at(-1)!)).toMatchObject({ type: 'prompt', turn: 4, text: 'and lint', deliveryId: expect.any(String) })
@@ -1120,7 +1120,7 @@ describe('durable admission and recovery', () => {
     s.fake.setListing([t.id, 'stand-in', '1790000500', '', '1', String(s.fake.task(t.id).transcript.length), b64('work'), b64(line(end(1, 'done'))), 'auto', '1', '1', '', ''].join('\t'))
     const r = await restart(s)
     expect(r.tasks.list()[0]).toMatchObject({ status: 'running', turns: 2 })
-    expect(r.release).not.toHaveBeenCalled()
+    expect(r.release).toHaveBeenCalledTimes(1) // restore's temporary lease
     await r.tasks.reply(t.id, { prompt: 'later' })
     expect(r.tasks.list()[0]?.queued).toEqual(['later'])
     expect(s.fake.task(t.id).published.size).toBe(2)

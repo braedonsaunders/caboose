@@ -586,6 +586,7 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_MEMORY_MB` | `6144` | Initial memory setting of the owner's computer and of new computers |
 | `CABOOSE_VCPUS` | `4` | Initial vCPU setting, likewise |
 | `CABOOSE_IDLE_MS` | `600000` | Initial idle time before parking, likewise |
+| `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor binary |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container` |
 | `CABOOSE_GPU` | `auto` | Container GPU: `auto`, `wsl`, `nvidia`, `dri` or `none` |
@@ -712,7 +713,7 @@ unknown keys as reserved and a higher `v` as possibly incompatible.
 
 ### Lifecycle
 
-The computer has one state: `parked`, `waking`, `running`, `parking`, `restarting` or
+The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, `restarting` or
 `error`. Wake, park and restart are serialized, so none can race another or a launch.
 
 - **Wake** (`POST /v1/session`, and routes that wake on demand) starts or restores the
@@ -724,11 +725,18 @@ The computer has one state: `parked`, `waking`, `running`, `parking`, `restartin
   Desktop MCP tools and `app_open` start the agent seat on demand; an owner display request or
   app launch promotes a headless computer to an interactive one. A memory restore retains any
   display already running in the snapshot; headless wake does not stop existing applications.
-- **Leases.** Each open display, control or terminal WebSocket holds a lease, as do running agent
+- **Leases.** Each open display, terminal or foreground control WebSocket holds a lease, as do running agent
   tasks, catalog operations, Craft jobs, agent installs and sign-ins, and each `/v1/fs`
-  request until its response completes. With no lease, the computer parks after the
-  `idleMs` setting. HTTP polling of `/v1/computer` holds no lease, so leaving the web
-  console open does not keep the computer awake.
+  request until its response completes. Control sockets marked `foreground=0` do not hold a
+  lease; unmarked sockets retain the foreground behavior for compatibility. HTTP polling of
+  `/v1/computer` holds no lease, so leaving the web console open does not keep it awake.
+- **Freeze.** On a microVM backend that supports resident pause, three seconds without a
+  lease pauses the guest in memory. A new operation resumes it before guest access. The
+  computer parks at the earlier of its configured idle timeout or the freeze-to-park timeout;
+  a frozen VM retains RAM until then. Backends without resident pause use the ordinary idle park. A failed pause
+  remains fenced until a resume or park reconciles the VMM state. A detached terminal can
+  still run a foreground process, so any existing terminal session defers freezing; if the
+  terminal service cannot confirm the session list, the host also defers it and retries.
 - **Park** keeps memory, so every application is where it was on resume. An explicit park
   closes all client sockets first and ignores leases.
 - **Restart** is a cold boot that keeps the disk and discards memory. It first tries a 5 s

@@ -104,7 +104,7 @@ const library = {
 void library.flathub.ready().catch(error => console.error('Flathub index unavailable:', error instanceof Error ? error.message : error))
 const host = describeHost(deployment, process.env, { push: !!sender, liveActivities: !!(apns && sender) })
 const app = createCabooseServer({
-  token: owner.token, ...ownerComputer, registry, library, host, agentIdleMs: deployment.agentIdleMs, webRoot,
+  token: owner.token, ...ownerComputer, registry, library, host, agentIdleMs: deployment.agentIdleMs, freezeParkMs: deployment.freezeParkMs, webRoot,
   machine: () => machineResources(deployment.imageRoot), reach,
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null, diskBytes },
   identity,

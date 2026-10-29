@@ -109,6 +109,9 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   const { id, slot } = dependencies.identity ?? OWNER
   const address = networkSlot(slot)
   const host = dependencies.desks ?? createDeskPool(config, dependencies)
+  // AppKit 0.9 provides resident pause. Older installs and other backends keep the existing
+  // idle park behavior until the capability is available.
+  const pausable = host as DeskHost & { canPause?: (id: string) => boolean; pause?: (id: string) => Promise<void> }
   let desk: DeskHandle | undefined
   let heartbeat: ReturnType<typeof setInterval> | undefined
   let serviceVsock = false
@@ -234,6 +237,12 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       }
     },
     async promote() { await ownerDisplay(); return session() },
+    canFreeze: () => Boolean(desk && pausable.canPause?.(id) && pausable.pause),
+    async freeze() {
+      if (!pausable.pause) throw new Error('Resident pause is unavailable')
+      await pausable.pause(id)
+    },
+    async thaw() { desk = await host.resume(id) },
     async park() {
       clearHeartbeat()
       await closeRelays()

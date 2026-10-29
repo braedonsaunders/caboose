@@ -112,14 +112,15 @@ function withAdmission(controller: Controller, admit: () => Promise<void>): Cont
 /** The Library's host-wide parts, shared by every computer. */
 export interface Library { flathub?: FlathubIndex; releases?: CraftReleases; depot?: RuntimeDepot; arch?: Architecture; mcp?: { catalog: SmitheryCatalog; hostId: string; request?: import('./smithery.js').Requester } }
 
-function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; admit?: Admission; library?: Library; gpuEnabled: boolean; validateSize: (input: Record<string, unknown>) => Promise<void> }) {
+function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; freezeParkMs?: number; admit?: Admission; library?: Library; gpuEnabled: boolean; validateSize: (input: Record<string, unknown>) => Promise<void> }) {
   const { settings, push, activities } = pieces
   const admit = shared.admit
   const controller = admit ? withAdmission(pieces.controller, () => admit(id)) : pieces.controller
-  const computer = new ComputerLifecycle(controller, settings.get().idleMs)
+  const computer = new ComputerLifecycle(controller, settings.get().idleMs, shared.freezeParkMs)
   const sockets = new Set<WebSocket>()
   const controls = new Set<WebSocket>()
   const foregroundClients = new Set<WebSocket>()
+  const backgroundControls = new Set<WebSocket>()
   const phoneControls = new Set<WebSocket>()
   /** Open terminals by who opened them (a phone, or the owner), for the per-client cap. */
   const terminals = new Map<WebSocket, string>()
@@ -157,7 +158,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const autoUpdates = setInterval(() => {
     if (computer.state === 'running' && !upgrading && !craftBusy) void appCatalog.autoUpdate().catch(error => console.error('Automatic app updates failed:', error))
     // The MCP Library's day-long token is replaced well before it ends.
-    if (computer.state === 'running' && mcp) void mcp.sync().catch(error => console.error('MCP Library token refresh failed:', error instanceof Error ? error.message : error))
+    if (computer.state === 'running' && mcp) {
+      const release = computer.acquire()
+      void mcp.sync().catch(error => console.error('MCP Library token refresh failed:', error instanceof Error ? error.message : error)).finally(release)
+    }
   }, 3600_000)
   autoUpdates.unref()
   let toolsError: string | null = null
@@ -215,6 +219,15 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     broadcast({ type: 'notification', ...event })
     if (push) void push.desktop(event, foregroundClients.size > 0).catch(error => console.error('Desktop push failed:', error))
   })
+  computer.setBeforeFreeze(async () => {
+    await Promise.all([desktopNotifications.quiesce(), agents.drainToolWork(), location.quiesce()])
+    // A detached terminal can still run a foreground child. Until the service can prove it
+    // idle, keep every extant terminal session resident; an unavailable service fails closed.
+    try {
+      if (!controller.terminalService?.() || !controller.guest()) return false
+      return (await listTerminalSessions(controller.terminalService())).length === 0
+    } catch { return false }
+  })
   let craftBusy = 0
   const craftJobs = new Set<string>()
   const media = new MediaHandoff(() => controller.guest(), broadcast)
@@ -263,13 +276,14 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     }
   })
   const location = new LocationShare(() => controller.guest())
+  computer.setFreezeAllowed(() => !location.sharing)
   const nowPlaying = new NowPlaying(() => controller.guest(), broadcast)
   /** Media is polled only while the computer is already running and someone is watching it. */
   function syncMedia(): void {
     const watching = computer.state === 'running' && sockets.size - controls.size - terminals.size > 0
     media.setActive(watching)
     nowPlaying.setActive(watching)
-    const phones = computer.state === 'running' && phoneControls.size > 0
+    const phones = computer.state === 'running' && [...phoneControls].some(socket => !backgroundControls.has(socket))
     phone.setActive(phones)
     bridge.setActive(phones)
   }
@@ -278,14 +292,17 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
    * appearance once its components (which bring caboose-bridge) are up to date.
    */
   function bridgeWake(): void {
-    void location.computerRunning()
-    if (!bridge.appearance) return
+    const release = computer.acquire()
     const work = upgradeWork
     void (async () => {
-      await work
-      if (computer.state !== 'running') return
-      await bridge.applyAppearance().catch(error => console.error('Could not apply the phone appearance:', error instanceof Error ? error.message : error))
-    })()
+      try {
+        await location.computerRunning()
+        if (!bridge.appearance) return
+        await work
+        if (computer.state !== 'running') return
+        await bridge.applyAppearance().catch(error => console.error('Could not apply the phone appearance:', error instanceof Error ? error.message : error))
+      } finally { release() }
+    })().catch(error => console.error('Could not prepare phone bridge:', error instanceof Error ? error.message : error))
   }
   /** The terminal service is a guest component: wait for a pending update to install it. */
   async function ensureTerminalReady(): Promise<TerminalService> {
@@ -326,16 +343,23 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
    * parked under it, without queueing every other request behind it as computer.run would.
    */
   async function leased<R>(work: () => Promise<R>): Promise<R> {
-    if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running')
     const release = computer.acquire()
-    try { return await work() } finally { release() }
+    try {
+      if (computer.state === 'frozen') await computer.wake('headless')
+      if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running')
+      return await work()
+    } finally { release() }
   }
   function broadcastSettings(): void { broadcast({ type: 'computer.settings', computer: managementStatus() }) }
   function closeSockets(): void { for (const socket of sockets) socket.terminate() }
+  let previousState = computer.state
   computer.subscribe(state => {
+    const resumed = state === 'running' && previousState === 'frozen'
+    previousState = state
+    if (state === 'parking') closeSockets()
     broadcast({ type: 'computer.state', state })
-    if (state !== 'running') { keyringGeneration++; keyring = null }
-    if (state === 'running' && controller.componentsMode && !upgrading) {
+    if (state !== 'running' && state !== 'frozen') { keyringGeneration++; keyring = null }
+    if (state === 'running' && !resumed && controller.componentsMode && !upgrading) {
       const guest = controller.guest()
       if (guest) {
         upgrading = true
@@ -355,7 +379,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         }).finally(() => { upgrading = false; release() })
       }
     }
-    if (state === 'running') { agents.resume(); bridgeWake() }
+    if (state === 'running') { agents.resume(); if (!resumed) bridgeWake() }
+    else if (state === 'frozen') agents.pause()
     else { agents.pause(); media.computerStopped(); nowPlaying.computerStopped(); bridge.computerStopped(); location.computerStopped() }
     syncMedia()
     syncFiles()
@@ -593,7 +618,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       return json(response, 200, await appCatalog.discover(params.get('q') ?? '', params.get('category') ?? '', Number(offset)))
     }
     if (request.method === 'GET' && path === '/v1/catalog/storefront') return json(response, 200, await appCatalog.storefront())
-    if (request.method === 'GET' && path === '/v1/catalog') return json(response, 200, await appCatalog.list())
+    if (request.method === 'GET' && path === '/v1/catalog') {
+      if (computer.state === 'running' || computer.state === 'frozen') return json(response, 200, await leased(() => appCatalog.list()))
+      return json(response, 200, await appCatalog.list())
+    }
     const craftRun = /^\/v1\/catalog\/([^/]+)\/run$/.exec(path)
     if (request.method === 'POST' && craftRun?.[1]) {
       const id = decodeURIComponent(craftRun[1])
@@ -626,9 +654,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       } finally { craftBusy--; craftJobs.delete(input.job) }
     }
     const appAction = /^\/v1\/catalog\/([^/]+)\/(install|update)$/.exec(path)
-    if (request.method === 'POST' && appAction?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); await appCatalog.ready(); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update'); return json(response, 202, { accepted: true }) }
+    if (request.method === 'POST' && appAction?.[1]) return leased(async () => { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); await appCatalog.ready(); appCatalog.start(decodeURIComponent(appAction[1]!), appAction[2] as 'install' | 'update'); return json(response, 202, { accepted: true }) })
     const removeApp = /^\/v1\/catalog\/([^/]+)$/.exec(path)
-    if (request.method === 'DELETE' && removeApp?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); await appCatalog.ready(); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
+    if (request.method === 'DELETE' && removeApp?.[1]) return leased(async () => { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); await appCatalog.ready(); appCatalog.start(decodeURIComponent(removeApp[1]!), 'remove'); return json(response, 202, { accepted: true }) })
     if (request.method === 'GET' && path === '/v1/apps') {
       return json(response, 200, await computer.run(() => controller.apps()))
     }
@@ -749,11 +777,11 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       location.computerStopped()
       return noContent(response)
     }
-    if (request.method === 'GET' && path === '/v1/screen/elements') return json(response, 200, await computer.run(() => screenElements(controller.guest())))
+    if (request.method === 'GET' && path === '/v1/screen/elements') return json(response, 200, await computer.wakeAndRun(() => screenElements(controller.guest())))
     const screen = { '/v1/screen/act': screenAct, '/v1/screen/type': screenType, '/v1/screen/keys': screenKeys }[path]
     if (request.method === 'POST' && screen) {
       const input = await readJson(request)
-      return json(response, 200, await computer.run(() => screen(controller.guest(), input)))
+      return json(response, 200, await computer.wakeAndRun(() => screen(controller.guest(), input)))
     }
     const phoneFile = /^\/v1\/phone\/files\/([^/]+)$/.exec(path)
     if (request.method === 'GET' && phoneFile?.[1]) return json(response, 200, await leased(() => readPhoneFile(controller.guest(), phoneFile[1]!)))
@@ -785,7 +813,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     }
     if (request.method === 'POST' && path === '/v1/open') {
       const input = await readJson(request)
-      return json(response, 200, await computer.run(async () => { await ensureKeyringReady(); return openUrl(controller.guest(), input) }))
+      return json(response, 200, await computer.wakeAndRun(async () => { await ensureKeyringReady(); return openUrl(controller.guest(), input) }))
     }
     return NOT_FOUND
   }
@@ -824,7 +852,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const release = computer.acquire()
     socket.once('close', release)
     pendingTerminals.set(client, (pendingTerminals.get(client) ?? 0) + 1)
-    const ready = computer.acceptsConnections ? Promise.resolve() : computer.wakeAndRun(async () => {})
+    const ready = computer.state === 'frozen' ? computer.wake('headless') : computer.acceptsConnections ? Promise.resolve() : computer.wakeAndRun(async () => {})
     ready.then(ensureTerminalReady).then(service => {
       if (socket.destroyed) return
       if (!computer.acceptsConnections) return refuse('409 Conflict')
@@ -849,9 +877,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (!computer.acceptsConnections) { socket.end('HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n'); return }
     const offered = request.headers['sec-websocket-protocol']?.split(',').map(value => value.trim()) ?? []
     if (path === '/v1/display' && !offered.includes('binary')) { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return }
+    const background = path === '/v1/control' && url.searchParams.get('foreground') === '0'
     const release = computer.acquire()
     socket.once('close', release)
-    const ready = path === '/v1/display' && url.searchParams.get('seat') !== 'agent' ? computer.wake() : Promise.resolve()
+    const ready = path === '/v1/display' && url.searchParams.get('seat') !== 'agent' ? computer.wake() : computer.state === 'frozen' ? computer.wake('headless') : Promise.resolve()
     void ready.then(() => {
       if (socket.destroyed) return
       try {
@@ -860,13 +889,15 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         if (principal.phoneId) phoneSockets.set(client, principal.phoneId)
         if (path === '/v1/control') {
           controls.add(client)
+          if (url.searchParams.get('foreground') === '0') backgroundControls.add(client)
           if (url.searchParams.get('foreground') === '1') foregroundClients.add(client)
           if (url.searchParams.get('phone') === '1') phoneControls.add(client)
+          if (background) release()
         }
         syncMedia()
         syncFiles()
         client.on('error', () => client.terminate())
-        client.once('close', () => { sockets.delete(client); phoneSockets.delete(client); controls.delete(client); foregroundClients.delete(client); phoneControls.delete(client); release(); syncMedia(); syncFiles() })
+        client.once('close', () => { sockets.delete(client); phoneSockets.delete(client); controls.delete(client); foregroundClients.delete(client); backgroundControls.delete(client); phoneControls.delete(client); release(); syncMedia(); syncFiles() })
         if (path === '/v1/control') {
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))
@@ -958,6 +989,7 @@ export function createCabooseServer(options: ComputerPieces & {
   library?: Library
   /** How long a task's runner keeps its agent after a turn, waiting for a reply. */
   agentIdleMs?: number
+  freezeParkMs?: number
   /** How this host was started, for `GET /v1/host`. */
   host?: HostInfo
   /** The machine's memory, CPUs and disk, for `GET /v1/health`. */
@@ -983,6 +1015,7 @@ export function createCabooseServer(options: ComputerPieces & {
     },
     ...(options.library ? { library: options.library } : {}),
     ...(options.agentIdleMs !== undefined ? { agentIdleMs: options.agentIdleMs } : {}),
+    ...(options.freezeParkMs !== undefined ? { freezeParkMs: options.freezeParkMs } : {}),
     ...(identity ? { admit: (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'>) => admit(id, next, !next) } : {}),
   }
   const owner = createComputerRuntime(OWNER_COMPUTER, options, shared)
