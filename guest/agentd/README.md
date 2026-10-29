@@ -112,7 +112,9 @@ Every event has `type` and `at` (ISO time).
 
 A completed turn ends with exactly one of `turn_end`, `turn_failed` or `auth_required`
 carrying its turn number. An interrupted runner leaves a claim without a completed receipt;
-its signal handler writes a notice instead of fabricating a terminal result. Updates outside
+its signal handler writes a notice instead of fabricating a terminal result. A runner stopped
+after its turn's terminal event is durable, or while it waits for a prompt, interrupts nothing:
+it writes no notice and claims no further prompt. Updates outside
 a turn (including the history an agent replays on `session/load`) are not written.
 
 ## Behaviour
@@ -247,6 +249,8 @@ identity/instruction/memory snapshot (at most 400 KB). The runner supplies this 
 text block on every turn; user transcript entries retain only the actual owner prompt.
 Missing or oversized profile context fails the runner instead of silently dropping identity.
 The host keeps `profile-id` alongside the config to restore the task's identity after restart.
+The runner reads `task.json` when it starts, so a configuration the host changes between
+turns applies to the next runner, which reopens the same session with the new MCP servers.
 
 Profile tasks configured by the host with its agent-tool journal advertise the
 `caboose-agent-tools` stdio MCP server. It uses `tool-turn` and the bounded

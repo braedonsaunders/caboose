@@ -783,6 +783,7 @@ export class Task {
     let message
     try { message = JSON.parse(text) } catch { throw new Error('Invalid inbox JSON') }
     if (message?.type === 'prompt') {
+      this.idle = false
       if (!Number.isSafeInteger(message.turn) || message.turn < 1 || message.turn > 999999
           || typeof message.text !== 'string' || !message.text.trim() || message.text.length > 32000
           || (message.deliveryId !== undefined && (typeof message.deliveryId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(message.deliveryId)))
@@ -820,6 +821,8 @@ export class Task {
     const deadline = Date.now() + waitMs
     for (;;) {
       for (const name of await this.entries()) {
+        // A runner being stopped between turns never claims a prompt meant for its successor.
+        if (this.interrupted) return undefined
         const message = await this.take(name)
         if (message?.type === 'prompt' && typeof message.text === 'string' && Number.isSafeInteger(message.turn)) return message
       }
@@ -831,6 +834,7 @@ export class Task {
   async run() {
     await this.load()
     await mkdir(this.approvals, { recursive: true })
+    this.idle = true
     let message = await this.nextPrompt(STARTUP_WAIT_MS)
     while (message) {
       const keepGoing = await this.runTurn(message)
@@ -841,6 +845,8 @@ export class Task {
       if (this.transcript.error) throw this.transcript.error
       const transcript = await open(join(this.dir, 'transcript.jsonl'), 'r')
       try { await transcript.sync() } finally { await transcript.close() }
+      // The terminal event is durable: stopping from here on interrupts nothing.
+      this.idle = true
       await writeJson(join(this.dir, 'receipts', `${String(message.turn).padStart(6, '0')}.json`), {
         turn: message.turn, deliveryId: message.deliveryId ?? null, state: 'completed', result: this.transcript.lastResult,
       })
@@ -1689,7 +1695,8 @@ async function main(argv) {
     const task = new Task(argument)
     const stop = async signal => {
       task.interrupted = true
-      await task.transcript.write({ type: 'notice', text: 'Runner interrupted; the active turn may have performed external actions. Delivery is uncertain and is not replayed.' }).catch(() => {})
+      // Between turns nothing is in flight: the host retires idle runners to reload their configuration.
+      if (!task.idle) await task.transcript.write({ type: 'notice', text: 'Runner interrupted; the active turn may have performed external actions. Delivery is uncertain and is not replayed.' }).catch(() => {})
       await task.agent?.close().catch(() => {})
       await task.transcript.flushed()
       process.exit(signal === 'SIGTERM' ? 143 : 130)

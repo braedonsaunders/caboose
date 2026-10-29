@@ -161,6 +161,29 @@ describe('a turn', () => {
     await expect(stat(join(t.dir, 'tool-turn'))).rejects.toThrow()
   })
 
+  for (const caps of ['resume', 'load']) it(`reopens an upgraded idle chat (${caps}) in the same session with profile tools, without an interruption notice`, async () => {
+    const t = await task({ caps })
+    await t.prompt(1, 'hello', { deliveryId: '22222222-2222-4222-8222-222222222222' })
+    const first = t.start()
+    await t.turnEnd(1)
+    expect((await t.texts(1)).some(text => text.includes('mcp: caboose-desktop;'))).toBe(true)
+    const receipt = join(t.dir, 'receipts/000001.json')
+    for (let i = 0; i < 100 && !(await readFile(receipt, 'utf8').catch(() => '')).includes('completed'); i++) await new Promise(resolve => setTimeout(resolve, 20))
+    // The host retires a provably idle runner, then adds only the identity to its configuration.
+    first.child.kill('SIGTERM')
+    expect(await first.exited).toBe(143)
+    expect((await t.events()).some(event => event.type === 'notice')).toBe(false)
+    const config = JSON.parse(await readFile(join(t.dir, 'task.json'), 'utf8'))
+    await writeFile(join(t.dir, 'task.json'), JSON.stringify({ ...config, profileId: '11111111-1111-4111-8111-111111111111', agentTools: true }))
+    await writeFile(join(t.dir, 'profile-instructions.txt'), 'Use your routine tools.')
+    await t.prompt(2, 'again')
+    t.start()
+    await t.turnEnd(2)
+    const session = (await t.events()).filter(event => event.type === 'session').at(-1)
+    expect(session.continuity).toBe(caps)
+    expect((await t.texts(2)).some(text => text.includes('turns in session: 2; mcp: caboose-desktop,caboose-agent-tools'))).toBe(true)
+  })
+
   it('offers installed catalog servers to an ACP session', async () => {
     const t = await task({ craftServers: [
       { name: 'caboose-photocraft', command: 'photocraft-cli', args: ['mcp'], env: [] },
