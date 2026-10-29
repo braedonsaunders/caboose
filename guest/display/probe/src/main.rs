@@ -29,6 +29,8 @@ OPTIONS:
     --decoders LIST        comma-separated codecs [default: hevc,h264]
     --video-decoders LIST  codecs to accept as video.* streams [default: none]
     --audio                play the computer's sound (decoded and measured, not heard)
+    --wasm                 run games handed off to the client (reports game.create and
+                           game.destroy; a game's window is a target like any other)
     --duration SECS        how long to run [default: 10]
     --stall-after SECS     then stop reading and sending, the socket left open (a
                            suspended client)
@@ -45,7 +47,7 @@ OPTIONS:
                            mod1, mod4), text:STRING, edit:N:STRING (delete N before,
                            then commit), copy:STRING (the phone's clipboard), tap:X,Y,
                            click:X,Y, wait:MS, maximize (fill the display),
-                           scroll:X,Y,DY (precise, DY pixels), resize:W,H
+                           scroll:X,Y,DY (precise, DY pixels), resize:W,H, close,
                            finger-down:X,Y, finger-move:X,Y, finger-up:X,Y (16 ms apart)
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
@@ -58,6 +60,7 @@ struct Args {
     decoders: Vec<Codec>,
     video_decoders: Option<Vec<Codec>>,
     audio: bool,
+    wasm: bool,
     duration: Duration,
     /// Stop reading and sending after this long, keeping the connection open.
     stall_after: Option<Duration>,
@@ -96,6 +99,7 @@ fn parse_args() -> Result<Args, String> {
         decoders: vec![Codec::Hevc, Codec::H264],
         video_decoders: None,
         audio: false,
+        wasm: false,
         duration: Duration::from_secs(10),
         stall_after: None,
         windows: None,
@@ -126,6 +130,7 @@ fn parse_args() -> Result<Args, String> {
                 a.displays.push(parse_display(id, &v).ok_or_else(|| format!("bad --display {v}"))?);
             }
             "--audio" => a.audio = true,
+            "--wasm" => a.wasm = true,
             "--video-decoders" => {
                 a.video_decoders = Some(
                     value()?
@@ -194,6 +199,11 @@ fn process_cpu_ms(pid: u32) -> Option<f64> {
     // SAFETY: sysconf has no preconditions.
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
     Some((utime + stime) * 1000.0 / ticks)
+}
+
+struct GameStats {
+    game: proto::GameCreate,
+    destroyed: bool,
 }
 
 #[derive(Default)]
@@ -440,6 +450,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 .map(|buttons| Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None }))
                 .to_vec()
         }
+        "close" => vec![Message::Close { id }],
         "wait" => vec![Message::Ping { t_us: arg.parse().map_err(|_| format!("bad wait {arg}"))? }],
         // The window fills its display, as the phone shows one window at a time.
         "maximize" => vec![Message::Configure(proto::Configure {
@@ -527,6 +538,7 @@ fn run(args: Args) -> Result<bool, String> {
             displays: args.displays.clone(),
             video_decoders: args.video_decoders.clone(),
             audio_decoders: args.audio.then(|| vec!["opus".to_owned()]),
+            wasm: args.wasm,
         }),
     )?;
 
@@ -545,6 +557,7 @@ fn run(args: Args) -> Result<bool, String> {
     let mut next_vsync = Instant::now();
     let mut text_input_events = 0u32;
     let mut videos: BTreeMap<u64, VideoStats> = BTreeMap::new();
+    let mut games: BTreeMap<u64, GameStats> = BTreeMap::new();
     let mut clipboard: Option<String> = None;
     let mut sound = AudioStats::default();
     let mut ping_sent: Option<u64> = None;
@@ -749,6 +762,18 @@ fn run(args: Args) -> Result<bool, String> {
                     }
                 }
                 Message::TextInput(_) => text_input_events += 1,
+                Message::GameCreate(g) => {
+                    // A game's window sends no pictures, so it becomes the target when its game binds.
+                    if target.is_none() && args.window.is_none_or(|w| w == g.window) {
+                        target = Some(g.window);
+                    }
+                    games.insert(g.id, GameStats { game: g, destroyed: false });
+                }
+                Message::GameDestroy { id } => {
+                    if let Some(g) = games.get_mut(&id) {
+                        g.destroyed = true;
+                    }
+                }
                 Message::ServerClipboard(c) => clipboard = Some(String::from_utf8_lossy(&c.data).into_owned()),
                 Message::Audio(a) => sound.packet(&a),
                 Message::VideoCreate(c) => {
@@ -897,7 +922,25 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
+            games
+                .iter()
+                .map(|(id, g)| format!(
+                    "{{\"id\":{id},\"window\":{},\"root\":{:?},\"entry\":{:?},\"saves\":[{}],\"destroyed\":{}}}",
+                    g.game.window,
+                    g.game.root,
+                    g.game.entry,
+                    g.game
+                        .saves
+                        .iter()
+                        .flatten()
+                        .map(|s| format!("{{\"mount\":{:?},\"path\":{:?}}}", s.mount, s.path))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    g.destroyed
+                ))
+                .collect::<Vec<_>>()
+                .join(","),
             videos
                 .iter()
                 .map(|(id, v)| format!(
@@ -963,6 +1006,15 @@ fn run(args: Args) -> Result<bool, String> {
                 percentile(&w.latency_us, 0.5) / 1000.0,
                 percentile(&w.latency_us, 0.95) / 1000.0,
                 w.decode_errors
+            );
+        }
+        for (id, g) in &games {
+            println!(
+                "game {id}: window {}, {}/{}{}",
+                g.game.window,
+                g.game.root,
+                g.game.entry,
+                if g.destroyed { ", destroyed" } else { "" }
             );
         }
         if let Some(c) = cpu_ms {

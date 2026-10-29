@@ -281,6 +281,8 @@ pub struct ClientHello {
     pub video_decoders: Option<Vec<Codec>>,
     /// Audio codecs the client plays (`"opus"`); absent means no audio is sent.
     pub audio_decoders: Option<Vec<String>>,
+    /// The client runs games handed off to it (docs/game-handoff.md). Sent only when true.
+    pub wasm: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -334,6 +336,27 @@ pub struct VideoUpdate {
     pub rect: Option<Rect>,
     pub clip: Option<Rect>,
     pub z: Option<i32>,
+}
+
+/// A directory a game persists through IDBFS: `mount` in the game's file system, `path` on
+/// the computer, relative to the home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameSave {
+    pub mount: String,
+    pub path: String,
+}
+
+/// `game.create` (0x17): the window's game runs on the client (docs/game-handoff.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameCreate {
+    pub id: u64,
+    pub window: u64,
+    /// The directory the game's files are served from, relative to the home.
+    pub root: String,
+    /// The page the client loads, relative to `root`.
+    pub entry: String,
+    /// Absent when the game saves nothing.
+    pub saves: Option<Vec<GameSave>>,
 }
 
 /// `configure` (0x84).
@@ -458,6 +481,10 @@ pub enum Message {
         seq: u64,
         pts_us: u64,
     },
+    GameCreate(GameCreate),
+    GameDestroy {
+        id: u64,
+    },
     Pong {
         t_us: u64,
     },
@@ -517,6 +544,8 @@ pub mod type_id {
     pub const VIDEO_UPDATE: u8 = 0x14;
     pub const VIDEO_DESTROY: u8 = 0x15;
     pub const VIDEO_PRESENT: u8 = 0x16;
+    pub const GAME_CREATE: u8 = 0x17;
+    pub const GAME_DESTROY: u8 = 0x18;
     pub const CURSOR: u8 = 0x20;
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
@@ -597,6 +626,8 @@ impl Message {
             Message::VideoUpdate(_) => VIDEO_UPDATE,
             Message::VideoDestroy { .. } => VIDEO_DESTROY,
             Message::VideoPresent { .. } => VIDEO_PRESENT,
+            Message::GameCreate(_) => GAME_CREATE,
+            Message::GameDestroy { .. } => GAME_DESTROY,
             Message::Pong { .. } => PONG,
             Message::Bye { .. } => BYE,
             Message::ClientHello(_) => CLIENT_HELLO,
@@ -666,7 +697,25 @@ impl Message {
             | Message::Close { id }
             | Message::RequestKeyframe { id }
             | Message::VideoDestroy { id }
+            | Message::GameDestroy { id }
             | Message::VideoKeyframe { id } => MapBuilder::new().put("id", *id).build(),
+            Message::GameCreate(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("window", m.window)
+                .put("root", m.root.as_str())
+                .put("entry", m.entry.as_str())
+                .opt(
+                    "saves",
+                    m.saves.as_ref().map(|saves| {
+                        Value::Array(
+                            saves
+                                .iter()
+                                .map(|s| MapBuilder::new().put("mount", s.mount.as_str()).put("path", s.path.as_str()).build())
+                                .collect(),
+                        )
+                    }),
+                )
+                .build(),
             Message::VideoCreate(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("window", m.window)
@@ -753,6 +802,7 @@ impl Message {
                 .put("displays", displays_value(&m.displays))
                 .opt("video_decoders", m.video_decoders.as_deref().map(codecs_value))
                 .opt("audio_decoders", m.audio_decoders.clone())
+                .opt("wasm", m.wasm.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -954,6 +1004,25 @@ impl Message {
             }),
             VIDEO_DESTROY => Message::VideoDestroy { id: f.u64("id")? },
             VIDEO_PRESENT => Message::VideoPresent { id: f.u64("id")?, seq: f.u64("seq")?, pts_us: f.u64("pts_us")? },
+            GAME_CREATE => Message::GameCreate(GameCreate {
+                id: f.u64("id")?,
+                window: f.u64("window")?,
+                root: f.string("root")?,
+                entry: f.string("entry")?,
+                saves: match f.opt("saves", fields::as_array)? {
+                    None => None,
+                    Some(saves) => Some(
+                        saves
+                            .iter()
+                            .map(|s| {
+                                let s = Fields::new("game.create.saves", s)?;
+                                Ok(GameSave { mount: s.string("mount")?, path: s.string("path")? })
+                            })
+                            .collect::<Result<_, ProtocolError>>()?,
+                    ),
+                },
+            }),
+            GAME_DESTROY => Message::GameDestroy { id: f.u64("id")? },
             VIDEO_ACK => Message::VideoAck { id: f.u64("id")?, seq: f.u64("seq")? },
             VIDEO_KEYFRAME => Message::VideoKeyframe { id: f.u64("id")? },
             PONG => Message::Pong { t_us: f.u64("t_us")? },
@@ -971,6 +1040,7 @@ impl Message {
                     None => None,
                     Some(_) => Some(f.strings("audio_decoders")?),
                 },
+                wasm: f.opt_bool("wasm")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -1060,6 +1130,8 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         VIDEO_PRESENT => "video.present",
         VIDEO_ACK => "video.ack",
         VIDEO_KEYFRAME => "video.keyframe",
+        GAME_CREATE => "game.create",
+        GAME_DESTROY => "game.destroy",
         CURSOR => "cursor",
         CURSOR_NAMED => "cursor.named",
         TEXT_INPUT => "text_input",

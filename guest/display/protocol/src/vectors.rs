@@ -380,6 +380,29 @@ pub fn all(media: &Media) -> Vec<Vector> {
             Message::VideoPresent { id: 1, seq: 17, pts_us: 1_234_633_333 },
         ),
         one("video-ack", "", Message::VideoAck { id: 2, seq: 41 }),
+        one(
+            "game-create",
+            "Window 7's game runs on the client: its files are served from root, it loads entry, and it persists /powder in a directory of the home.",
+            Message::GameCreate(GameCreate {
+                id: 1,
+                window: 7,
+                root: ".local/share/caboose/games/powder-toy/web".into(),
+                entry: "index.html".into(),
+                saves: Some(vec![GameSave { mount: "/powder".into(), path: ".local/share/The Powder Toy".into() }]),
+            }),
+        ),
+        one(
+            "game-create-no-saves",
+            "A game that saves nothing: no saves key.",
+            Message::GameCreate(GameCreate {
+                id: 2,
+                window: 12,
+                root: "Games/doom".into(),
+                entry: "index.html".into(),
+                saves: None,
+            }),
+        ),
+        one("game-destroy", "", Message::GameDestroy { id: 1 }),
         one("video-keyframe", "", Message::VideoKeyframe { id: 1 }),
         one(
             "audio-opus-stereo",
@@ -403,6 +426,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 displays: vec![phone(), tv()],
                 video_decoders: None,
                 audio_decoders: None,
+                wasm: false,
             }),
         ),
         one(
@@ -415,6 +439,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 displays: vec![phone()],
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: None,
+                wasm: false,
             }),
         ),
         one(
@@ -427,6 +452,20 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 displays: vec![phone()],
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: Some(vec!["opus".into()]),
+                wasm: false,
+            }),
+        ),
+        one(
+            "client-hello-wasm",
+            "client-hello-audio from a client that also runs games handed off to it.",
+            Message::ClientHello(ClientHello {
+                version: 0,
+                token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264],
+                displays: vec![phone()],
+                video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
+                audio_decoders: Some(vec!["opus".into()]),
+                wasm: true,
             }),
         ),
         one("vsync", "", Message::Vsync { display: 1, t_us: 5_000_008_333 }),
