@@ -86,10 +86,12 @@ final class DesktopModel {
         layout.frame(for: window.id, app: app(window), in: workArea, minimum: minimumChrome(window)).map(linuxFrame)
     }
 
-    /// A window that has no place yet gets its first one, and keeps it.
+    /// A window that has no place yet gets its first one, and keeps it. One whose app is
+    /// not known yet is placed without taking over a place kept under its id.
     func place(_ window: RemoteWindow, index: Int) -> CGRect {
         if let frame = placedFrame(window) { return frame }
         let frame = placement(for: window, index: index)
+        guard app(window) != nil || layout.places[window.id] == nil else { return frame }
         layout.setPreferred(window.id, frame: chromeRect(frame: frame), in: workArea, app: app(window))
         save()
         return frame
@@ -137,6 +139,14 @@ final class DesktopModel {
 
     init(pixelsPerPoint: CGFloat) { self.pixelsPerPoint = pixelsPerPoint }
 
+    /// The computer has announced every window it has: places of windows it no longer has
+    /// (closed while away, or from before a cold boot) are dropped.
+    func windowsAnnounced(_ ids: Set<Int>) {
+        let before = layout
+        layout.prune(keeping: ids)
+        if layout != before { save() }
+    }
+
     /// The windows a ready session last showed, to tell a closed window from a reconnect.
     private var liveWindows: (session: ObjectIdentifier, ids: Set<Int>)?
 
@@ -146,7 +156,10 @@ final class DesktopModel {
     func sync(with windows: [RemoteWindow], session: (any DisplaySession)? = nil) {
         let ids = Set(windows.map(\.id))
         stacking.removeAll { !ids.contains($0) }
-        for window in windows.sorted(by: { $0.id < $1.id }) where !stacking.contains(window.id) { stacking.append(window.id) }
+        for window in windows.sorted(by: { $0.id < $1.id }) where !stacking.contains(window.id) {
+            stacking.append(window.id)
+            if layout.isMinimized(window.id, app: app(window)) { minimized.insert(window.id) }
+        }
         minimized.formIntersection(ids)
         guard let session, case .ready = session.state else { return }
         let identity = ObjectIdentifier(session)
@@ -161,10 +174,20 @@ final class DesktopModel {
     func raise(_ id: Int) {
         stacking.removeAll { $0 == id }
         stacking.append(id)
-        minimized.remove(id)
+        if minimized.remove(id) != nil { keepMinimized(id, false) }
     }
 
-    func minimize(_ id: Int) { minimized.insert(id) }
+    func minimize(_ id: Int) {
+        minimized.insert(id)
+        keepMinimized(id, true)
+    }
+
+    /// Minimized windows stay in the dock across launches, with their places.
+    private func keepMinimized(_ id: Int, _ value: Bool) {
+        let before = layout
+        layout.setMinimized(id, value)
+        if layout != before { save() }
+    }
 
     func isVisible(_ id: Int) -> Bool { !minimized.contains(id) }
 

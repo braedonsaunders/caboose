@@ -85,9 +85,9 @@ struct FreeDesktopLayoutTests {
         layout.setSnap(3, nil, current: .zero, in: tv, app: "Code")
         #expect(layout.frame(for: 3, app: "Code", in: pad) == chosen)
         // A window snapped before it was ever placed returns to where it was.
-        layout.setSnap(4, .maximized, current: chosen, in: pad, app: nil)
-        layout.setSnap(4, nil, current: .zero, in: pad, app: nil)
-        #expect(layout.frame(for: 4, app: nil, in: pad) == chosen)
+        layout.setSnap(4, .maximized, current: chosen, in: pad, app: "Mousepad")
+        layout.setSnap(4, nil, current: .zero, in: pad, app: "Mousepad")
+        #expect(layout.frame(for: 4, app: "Mousepad", in: pad) == chosen)
     }
 
     @Test func draggingOutOfASnapRestoresTheSizeUnderTheFinger() {
@@ -100,6 +100,45 @@ struct FreeDesktopLayoutTests {
         let wide = FreeDesktopLayout.unsnapped(size: CGSize(width: 1000, height: 600), from: snapped,
                                                grab: CGPoint(x: 600, y: 10), in: pad)
         #expect(wide == CGRect(x: 0, y: 0, width: 1000, height: 600))
+    }
+
+    @Test func zoomingAcrossSizesNeverDrifts() {
+        var layout = FreeDesktopLayout()
+        let chosen = CGRect(x: 301, y: 77, width: 733, height: 511)
+        layout.setPreferred(1, frame: chosen, in: pad, app: "Code")
+        layout.setSnap(1, .maximized, current: chosen, in: pad, app: "Code")
+        // Maximized through every size: it fills each.
+        for area in [upright, tv, CGRect(x: 0, y: 0, width: 640, height: 400), pad] {
+            #expect(layout.frame(for: 1, app: "Code", in: area) == area)
+        }
+        // Zoomed back on another screen, and again on the first: the same frame each time.
+        layout.setSnap(1, nil, current: tv, in: tv, app: "Code")
+        let onTV = layout.frame(for: 1, app: "Code", in: tv)
+        for _ in 0..<5 {
+            layout.setSnap(1, .maximized, current: onTV!, in: tv, app: "Code")
+            layout.setSnap(1, nil, current: tv, in: tv, app: "Code")
+        }
+        #expect(layout.frame(for: 1, app: "Code", in: tv) == onTV)
+        #expect(layout.frame(for: 1, app: "Code", in: pad) == chosen)
+    }
+
+    @Test func minimizedWindowsStayMinimizedAndKeepTheirPlace() {
+        var layout = FreeDesktopLayout()
+        let chosen = CGRect(x: 40, y: 60, width: 500, height: 400)
+        layout.setPreferred(6, frame: chosen, in: pad, app: "Thunar")
+        layout.setMinimized(6, true)
+        #expect(layout.isMinimized(6, app: "Thunar") && !layout.isMinimized(6, app: "Mousepad"))
+        // Moving it after it comes back does not lose the state, and the place is the same.
+        layout.setSnap(6, .left, current: chosen, in: pad, app: "Thunar")
+        #expect(layout.isMinimized(6, app: "Thunar"))
+        layout.setSnap(6, nil, current: .zero, in: pad, app: "Thunar")
+        #expect(layout.frame(for: 6, app: "Thunar", in: pad) == chosen)
+        layout.setMinimized(6, false)
+        #expect(!layout.isMinimized(6, app: "Thunar"))
+        // A window without a place keeps nothing.
+        layout.setMinimized(99, true)
+        #expect(layout.places[99] == nil)
+        #expect(FreeDesktopLayout.decoded(from: layout.encoded()) == layout)
     }
 
     // MARK: Magnetism
@@ -147,8 +186,20 @@ struct FreeDesktopLayoutTests {
         #expect(layout.frame(for: 9, app: "thunar", in: pad) != nil)
         // After a restart the id belongs to another app: its place is not taken.
         #expect(layout.frame(for: 9, app: "Mousepad", in: pad) == nil)
+        // Nor by a window whose class is not known, nor one kept without a class.
+        #expect(layout.frame(for: 9, app: nil, in: pad) == nil)
+        layout.setPreferred(10, frame: CGRect(x: 10, y: 10, width: 300, height: 200), in: pad, app: nil)
+        #expect(layout.frame(for: 10, app: nil, in: pad) == nil && layout.frame(for: 10, app: "Thunar", in: pad) == nil)
         layout.remove(9)
-        #expect(layout.places.isEmpty)
+        #expect(layout.places.keys.sorted() == [10])
+    }
+
+    @Test func theAnnouncedWindowsAreTheOnlyOnesKept() {
+        var layout = FreeDesktopLayout()
+        for id in [1, 2, 3] { layout.setPreferred(id, frame: CGRect(x: 0, y: 0, width: 300, height: 200), in: pad, app: "Code") }
+        // A cold boot: the computer comes back with only window 2.
+        layout.prune(keeping: [2, 8])
+        #expect(layout.places.keys.sorted() == [2])
     }
 
     @Test func theLeastRecentPlacesGoFirst() {
@@ -163,7 +214,8 @@ struct FreeDesktopLayoutTests {
     @Test func survivesEncoding() {
         var layout = FreeDesktopLayout()
         layout.setPreferred(2, frame: CGRect(x: 40, y: 50, width: 600, height: 400), in: tv, app: "Chromium")
-        layout.setSnap(5, .right, current: CGRect(x: 0, y: 0, width: 500, height: 400), in: tv, app: nil)
+        layout.setSnap(5, .right, current: CGRect(x: 0, y: 0, width: 500, height: 400), in: tv, app: "Code")
+        layout.setMinimized(5, true)
         #expect(FreeDesktopLayout.decoded(from: layout.encoded()) == layout)
         #expect(FreeDesktopLayout.decoded(from: Data("nonsense".utf8)) == FreeDesktopLayout())
     }

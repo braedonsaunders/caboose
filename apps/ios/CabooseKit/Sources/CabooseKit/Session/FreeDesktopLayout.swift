@@ -11,8 +11,10 @@ import Foundation
 /// compounds: going back to the original area gives back the original frame exactly.
 ///
 /// Window ids survive reconnects and parking, so places are kept by id between launches.
-/// Each also records its window's app class, and is not applied to a window of another app,
-/// which is what an id means after the computer restarts.
+/// Each also records its window's app class, and applies only to a window of exactly that
+/// class, never to another app's or to one whose class is not known: after a cold boot an id
+/// can name another window. Once the computer has announced its windows, places of windows it
+/// no longer has are dropped (`prune`).
 public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     /// A side, a corner or the whole work area, which the window keeps as the area changes.
     public enum Snap: String, Codable, Sendable, CaseIterable {
@@ -28,6 +30,8 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
         public var snap: Snap?
         /// The window's app class, lowercased, when it had one.
         public var app: String?
+        /// The window was minimized to the dock.
+        public var minimized: Bool?
         /// When the place was last changed, as an ever-increasing count.
         public var touched: Int
     }
@@ -41,12 +45,12 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     public init() {}
 
     public func place(for id: Int, app: String?) -> Place? {
-        guard let place = places[id] else { return nil }
-        if let kept = place.app, let app, kept != app.lowercased() { return nil }
+        guard let place = places[id], let app, place.app == app.lowercased() else { return nil }
         return place
     }
 
     public func snap(of id: Int) -> Snap? { places[id]?.snap }
+    public func isMinimized(_ id: Int, app: String?) -> Bool { place(for: id, app: app)?.minimized == true }
 
     /// Where the window belongs in `area`, if it has a place.
     public func frame(for id: Int, app: String?, in area: CGRect, minimum: CGSize = .zero) -> CGRect? {
@@ -58,7 +62,8 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     /// The owner moved or resized the window to `frame`: it is the window's frame now, unsnapped.
     public mutating func setPreferred(_ id: Int, frame: CGRect, in area: CGRect, app: String?) {
         clock += 1
-        places[id] = Place(preferred: frame, area: area, snap: nil, app: app?.lowercased(), touched: clock)
+        let minimized = places[id]?.minimized
+        places[id] = Place(preferred: frame, area: area, snap: nil, app: app?.lowercased(), minimized: minimized, touched: clock)
         trim()
     }
 
@@ -70,12 +75,24 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
             ?? Place(preferred: current, area: area, snap: nil, app: app?.lowercased(), touched: clock)
         place.snap = snap
         place.touched = clock
-        if place.app == nil { place.app = app?.lowercased() }
         places[id] = place
         trim()
     }
 
+    /// Minimizes the window to the dock, or brings it back; a window without a place has
+    /// nothing to keep.
+    public mutating func setMinimized(_ id: Int, _ minimized: Bool) {
+        guard places[id] != nil, (places[id]?.minimized == true) != minimized else { return }
+        places[id]?.minimized = minimized ? true : nil
+    }
+
     public mutating func remove(_ id: Int) { places[id] = nil }
+
+    /// Keeps only the places of these windows: the computer's complete set, once it has
+    /// announced them after connecting.
+    public mutating func prune(keeping live: Set<Int>) {
+        places = places.filter { live.contains($0.key) }
+    }
 
     private mutating func trim() {
         guard places.count > Self.capacity else { return }
