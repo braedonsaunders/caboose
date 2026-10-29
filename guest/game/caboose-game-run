@@ -1,0 +1,556 @@
+#!/usr/bin/python3
+"""Open a game's window on the display and hand the game to the client, or play it here.
+
+    caboose-game-run BUNDLE_OR_MANIFEST
+
+The bundle and the game socket are specified in docs/game-handoff.md.
+"""
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import signal
+import socket
+import stat
+import struct
+import sys
+
+MANIFEST = 'caboose-game.json'
+# Beside the manifest, the icon shown when the icon theme has none named after app_id.
+ICON = 'icon.png'
+LIMIT = 64 * 1024
+MANIFEST_LIMIT = 1024 * 1024
+HELLO = 0x01
+MODE = 0x81
+ANSWER_SECONDS = 5
+APP_ID = re.compile(r'^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$')
+STARTING = 'Starting…'
+PLAYING = 'Playing on your device'
+ASK = 'Open Caboose on your iPhone or iPad to play'
+NOT_STARTED = 'Could not start the game on this computer'
+
+
+class ManifestError(ValueError):
+    pass
+
+
+class ProtocolError(ValueError):
+    pass
+
+
+# Canonical CBOR (RFC 8949 §4.2.1, length-first key order), the subset the socket uses.
+
+def _head(major, value):
+    if value < 24:
+        return bytes([major << 5 | value])
+    for extra, size in ((24, 1), (25, 2), (26, 4), (27, 8)):
+        if value < 1 << (8 * size):
+            return bytes([major << 5 | extra]) + value.to_bytes(size, 'big')
+    raise ValueError('integer too large for CBOR')
+
+
+def encode(value):
+    """Definite lengths, shortest integers, map keys sorted by their encoded bytes."""
+    if value is False or value is True:
+        return b'\xf5' if value else b'\xf4'
+    if value is None:
+        return b'\xf6'
+    if isinstance(value, int):
+        return _head(0, value) if value >= 0 else _head(1, -1 - value)
+    if isinstance(value, str):
+        data = value.encode('utf-8')
+        return _head(3, len(data)) + data
+    if isinstance(value, bytes):
+        return _head(2, len(value)) + value
+    if isinstance(value, (list, tuple)):
+        return _head(4, len(value)) + b''.join(encode(item) for item in value)
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError('CBOR map keys must be text')
+        pairs = sorted(((encode(k), encode(v)) for k, v in value.items()), key=lambda p: (len(p[0]), p[0]))
+        return _head(5, len(pairs)) + b''.join(k + v for k, v in pairs)
+    raise ValueError(f'cannot encode {type(value).__name__} as CBOR')
+
+
+def decode(data):
+    """One CBOR item that fills `data` exactly. Text map keys; no tags or indefinite lengths."""
+    value, end = _item(memoryview(data), 0, 0)
+    if end != len(data):
+        raise ProtocolError('trailing bytes after CBOR item')
+    return value
+
+
+def _item(data, at, depth):
+    if depth > 16:
+        raise ProtocolError('CBOR nested too deeply')
+    if at >= len(data):
+        raise ProtocolError('truncated CBOR')
+    major, info = data[at] >> 5, data[at] & 31
+    at += 1
+    if major == 7:
+        simple = {20: False, 21: True, 22: None}
+        if info in simple:
+            return simple[info], at
+        sizes = {25: ('>e', 2), 26: ('>f', 4), 27: ('>d', 8)}
+        if info not in sizes:
+            raise ProtocolError('unsupported CBOR simple value')
+        fmt, size = sizes[info]
+        if at + size > len(data):
+            raise ProtocolError('truncated CBOR')
+        return struct.unpack(fmt, data[at:at + size])[0], at + size
+    if info < 24:
+        n = info
+    elif info <= 27:
+        size = 1 << (info - 24)
+        if at + size > len(data):
+            raise ProtocolError('truncated CBOR')
+        n = int.from_bytes(data[at:at + size], 'big')
+        at += size
+    else:
+        raise ProtocolError('indefinite or reserved CBOR length')
+    if major == 0:
+        return n, at
+    if major == 1:
+        return -1 - n, at
+    if major in (2, 3):
+        if at + n > len(data):
+            raise ProtocolError('truncated CBOR')
+        raw = bytes(data[at:at + n])
+        if major == 2:
+            return raw, at + n
+        try:
+            return raw.decode('utf-8'), at + n
+        except UnicodeDecodeError:
+            raise ProtocolError('CBOR text is not UTF-8') from None
+    if major == 4:
+        items = []
+        for _ in range(n):
+            item, at = _item(data, at, depth + 1)
+            items.append(item)
+        return items, at
+    if major == 5:
+        result = {}
+        for _ in range(n):
+            key, at = _item(data, at, depth + 1)
+            if not isinstance(key, str) or key in result:
+                raise ProtocolError('CBOR map keys must be distinct text')
+            result[key], at = _item(data, at, depth + 1)
+        return result, at
+    raise ProtocolError('CBOR tags are not used on the game socket')
+
+
+def frame(kind, message):
+    payload = encode(message)
+    if len(payload) > LIMIT:
+        raise ValueError('message larger than 64 KiB')
+    return bytes([kind]) + len(payload).to_bytes(4, 'little') + payload
+
+
+class Frames:
+    """Splits the stream into (type, payload); a payload over 64 KiB is a protocol error."""
+
+    def __init__(self):
+        self.buffer = bytearray()
+
+    def feed(self, data):
+        self.buffer += data
+        messages = []
+        while len(self.buffer) >= 5:
+            length = int.from_bytes(self.buffer[1:5], 'little')
+            if length > LIMIT:
+                raise ProtocolError('message larger than 64 KiB')
+            if len(self.buffer) < 5 + length:
+                break
+            messages.append((self.buffer[0], bytes(self.buffer[5:5 + length])))
+            del self.buffer[:5 + length]
+        return messages
+
+
+def modes(frames, data):
+    """The `mode` values in `data`; other message types are skipped by their length."""
+    found = []
+    for kind, payload in frames.feed(data):
+        if kind != MODE:
+            continue
+        message = decode(payload)
+        mode = message.get('mode') if isinstance(message, dict) else None
+        if mode in ('handoff', 'local'):
+            found.append(mode)
+    return found
+
+
+# The manifest.
+
+def _parts(text, what):
+    """A relative path as its components: no absolute path, no `..`, no empty text."""
+    if not isinstance(text, str) or not text or '\0' in text or text.startswith('/'):
+        raise ManifestError(f'{what} must be a relative path')
+    parts = [p for p in PurePosixPath(text).parts if p != '.']
+    if '..' in parts:
+        raise ManifestError(f'{what} must not contain ..')
+    return parts
+
+
+def _no_symlinks(home, path, what):
+    """Every existing component of `path` below `home` is a real directory or file."""
+    try:
+        relative = path.relative_to(home)
+    except ValueError:
+        raise ManifestError(f'{what} must be inside {home}') from None
+    current = home
+    for part in relative.parts:
+        current = current / part
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(mode):
+            raise ManifestError(f'{what} passes through a symbolic link: {current}')
+
+
+def _size(value, what):
+    if (not isinstance(value, list) or len(value) != 2
+            or not all(isinstance(n, int) and not isinstance(n, bool) and 0 < n <= 16384 for n in value)):
+        raise ManifestError(f'window.{what} must be [width, height] in logical pixels')
+    return tuple(value)
+
+
+class Game:
+    """A validated bundle."""
+
+    def __init__(self, target, home):
+        home = Path(os.path.abspath(home))
+        target = Path(os.path.abspath(target))
+        manifest = target if target.name == MANIFEST or not os.path.isdir(target) else target / MANIFEST
+        bundle = manifest.parent
+        _no_symlinks(home, manifest, 'The manifest')
+        try:
+            with open(manifest, 'rb') as source:
+                text = source.read(MANIFEST_LIMIT + 1)
+            if len(text) > MANIFEST_LIMIT:
+                raise ValueError('larger than 1 MiB')
+            data = json.loads(text)
+        except (OSError, ValueError) as error:
+            raise ManifestError(f'Cannot read {manifest}: {error}') from None
+        if not isinstance(data, dict):
+            raise ManifestError('The manifest must be a JSON object')
+        if data.get('version') != 1 or isinstance(data.get('version'), bool):
+            raise ManifestError('Unsupported manifest version')
+        title, app_id = data.get('title'), data.get('app_id')
+        if not isinstance(title, str) or not title.strip() or len(title) > 200:
+            raise ManifestError('title must be text')
+        if not isinstance(app_id, str) or len(app_id) > 255 or not APP_ID.match(app_id):
+            raise ManifestError('app_id must be a Wayland application id such as org.example.Game')
+        root_parts = _parts(data.get('root', '.'), 'root')
+        root = bundle.joinpath(*root_parts)
+        _no_symlinks(home, root, 'root')
+        if root == home:
+            raise ManifestError('root must be a directory below the home, not the home itself')
+        if not root.is_dir():
+            raise ManifestError(f'root is not a directory: {root}')
+        entry_parts = _parts(data.get('entry'), 'entry')
+        if not entry_parts:
+            raise ManifestError('entry must name a file')
+        _no_symlinks(home, root.joinpath(*entry_parts), 'entry')
+        if not root.joinpath(*entry_parts).is_file():
+            raise ManifestError(f"entry is not a file in {root}")
+        saves, mounts = [], set()
+        raw_saves = data.get('saves', [])
+        if not isinstance(raw_saves, list) or len(raw_saves) > 32:
+            raise ManifestError('saves must be a list of at most 32 entries')
+        for save in raw_saves:
+            if not isinstance(save, dict):
+                raise ManifestError('Each save must be an object')
+            mount = save.get('mount')
+            if (not isinstance(mount, str) or not mount.startswith('/') or mount == '/' or '\0' in mount
+                    or len(mount) > 1024 or '..' in PurePosixPath(mount).parts or mount in mounts):
+                raise ManifestError('Each save mount must be a distinct absolute directory below /')
+            path_parts = _parts(save.get('path'), 'save path')
+            if not path_parts:
+                raise ManifestError('A save path must name a directory below the home')
+            _no_symlinks(home, home.joinpath(*path_parts), 'save path')
+            mounts.add(mount)
+            saves.append({'mount': mount, 'path': '/'.join(path_parts)})
+        fallback = data.get('native_fallback')
+        if fallback is not None:
+            if (not isinstance(fallback, list) or not fallback or len(fallback) > 64
+                    or not all(isinstance(a, str) and a and '\0' not in a for a in fallback)):
+                raise ManifestError('native_fallback must be a nonempty list of arguments')
+            program = fallback[0]
+            if program.startswith('~/'):
+                _no_symlinks(home, home.joinpath(*_parts(program[2:], 'native_fallback')), 'native_fallback')
+            elif '/' in program:
+                _no_symlinks(home, bundle.joinpath(*_parts(program, 'native_fallback')), 'native_fallback')
+        window = data.get('window', {})
+        if not isinstance(window, dict):
+            raise ManifestError('window must be an object')
+        self.size = _size(window['size'], 'size') if 'size' in window else None
+        self.min = _size(window['min'], 'min') if 'min' in window else None
+        self.max = _size(window['max'], 'max') if 'max' in window else None
+        if self.min and self.max and (self.min[0] > self.max[0] or self.min[1] > self.max[1]):
+            raise ManifestError('window.min must not exceed window.max')
+        self.home, self.bundle, self.root = home, bundle, root
+        icon = bundle / ICON
+        _no_symlinks(home, icon, 'The icon')
+        self.icon = icon if icon.is_file() else None
+        self.title, self.app_id, self.saves, self.fallback = title, app_id, saves, fallback
+        served = root.relative_to(home).as_posix()
+        self.hello = {'version': 1, 'title': title, 'app_id': app_id, 'root': served,
+                      'entry': '/'.join(entry_parts)}
+        if saves:
+            self.hello['saves'] = saves
+        if len(encode(self.hello)) > LIMIT:
+            raise ManifestError('The manifest is too large to announce')
+
+    def prepare_saves(self):
+        """Create each save directory, refusing a symbolic link or a file on the way."""
+        for save in self.saves:
+            current = self.home
+            for part in save['path'].split('/'):
+                current = current / part
+                try:
+                    os.mkdir(current, 0o755)
+                except FileExistsError:
+                    mode = os.lstat(current).st_mode
+                    if not stat.S_ISDIR(mode):
+                        raise ManifestError(f'A save path is not a directory: {current}') from None
+
+    def native_command(self, path=None):
+        """The resolved native_fallback, or None when the bundle has none for this computer."""
+        if not self.fallback:
+            return None
+        program, *args = self.fallback
+        home = str(self.home)
+        args = [home + a[1:] if a.startswith('~/') else a for a in args]
+        if program.startswith('~/'):
+            candidate = self.home.joinpath(*_parts(program[2:], 'native_fallback'))
+        elif '/' in program:
+            candidate = self.bundle.joinpath(*_parts(program, 'native_fallback'))
+        else:
+            found = shutil.which(program, path=path)
+            return [found, *args] if found else None
+        _no_symlinks(self.home, candidate, 'native_fallback')
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            return None
+        return [str(candidate), *args]
+
+
+class Link:
+    """The launcher's end of the game socket: says hello, then reads `mode` answers."""
+
+    def __init__(self, path, hello):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            self.sock.settimeout(ANSWER_SECONDS)
+            self.sock.connect(path)
+            self.sock.sendall(frame(HELLO, hello))
+            self.sock.setblocking(False)
+        except OSError:
+            self.sock.close()
+            raise
+        self.frames = Frames()
+
+    def fileno(self):
+        return self.sock.fileno()
+
+    def receive(self):
+        """The modes that have arrived. Raises OSError or ProtocolError when the link ends."""
+        try:
+            data = self.sock.recv(65536)
+        except BlockingIOError:
+            return []
+        if not data:
+            raise ConnectionError('the display closed the game socket')
+        return modes(self.frames, data)
+
+    def close(self):
+        self.sock.close()
+
+
+class Answers:
+    """What each answer from the display means for the launcher."""
+
+    def __init__(self, native):
+        self.native = native
+        self.answered = False
+
+    def mode(self, mode):
+        """Returns ('native', None) to run the native game, else ('status', text)."""
+        first = not self.answered
+        self.answered = True
+        if mode == 'handoff':
+            return 'status', PLAYING
+        if first and self.native:
+            return 'native', None
+        return 'status', ASK
+
+
+def run_native(command):
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(command[0], command)
+
+
+CSS = b'''
+window.caboose-game { background-color: #111216; }
+.caboose-game label { color: #f3f3f5; }
+.caboose-game .title { font-size: 20pt; font-weight: 600; }
+.caboose-game .status { color: #a3a6ae; font-size: 12pt; }
+'''
+
+
+def show(game, socket_path, native):
+    import gi
+    gi.require_version('Gtk', '3.0')
+    gi.require_version('Gdk', '3.0')
+    gi.require_version('GdkPixbuf', '2.0')
+    from gi.repository import GLib
+    # GTK names the Wayland toplevel (xdg_toplevel.set_app_id) and the X11 class after the
+    # program name, which must be set before GTK initialises.
+    GLib.set_prgname(game.app_id)
+    GLib.set_application_name(game.title)
+    from gi.repository import Gdk, Gtk
+    if not Gtk.init_check(sys.argv[:1])[0]:
+        print('caboose-game-run: cannot open the display', file=sys.stderr)
+        return 1
+
+    window = Gtk.Window(title=game.title)
+    picture = None
+    if game.icon and not Gtk.IconTheme.get_default().has_icon(game.app_id):
+        from gi.repository import GdkPixbuf
+        try:
+            picture = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(game.icon), 128, 128, True)
+        except GLib.Error as error:
+            print(f'caboose-game-run: {game.icon}: {error.message}', file=sys.stderr)
+    if picture:
+        window.set_icon(picture)
+    else:
+        window.set_icon_name(game.app_id)
+    window.get_style_context().add_class('caboose-game')
+    if game.size:
+        window.set_default_size(*game.size)
+    geometry, hints = Gdk.Geometry(), Gdk.WindowHints(0)
+    if game.min:
+        geometry.min_width, geometry.min_height = game.min
+        hints |= Gdk.WindowHints.MIN_SIZE
+    if game.max:
+        geometry.max_width, geometry.max_height = game.max
+        hints |= Gdk.WindowHints.MAX_SIZE
+    if hints:
+        window.set_geometry_hints(None, geometry, hints)
+    css = Gtk.CssProvider()
+    css.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+    if picture:
+        icon = Gtk.Image.new_from_pixbuf(picture)
+    else:
+        icon = Gtk.Image.new_from_icon_name(game.app_id, Gtk.IconSize.DIALOG)
+        icon.set_pixel_size(128)
+    title = Gtk.Label(label=game.title, wrap=True, justify=Gtk.Justification.CENTER)
+    title.get_style_context().add_class('title')
+    status = Gtk.Label(label=STARTING, wrap=True, justify=Gtk.Justification.CENTER)
+    status.get_style_context().add_class('status')
+    for widget in (icon, title, status):
+        box.pack_start(widget, False, False, 0)
+    window.add(box)
+
+    answers = Answers(native)
+    link = {'link': None, 'watch': None}
+
+    def disconnect():
+        if link['watch'] is not None:
+            GLib.source_remove(link['watch'])
+            link['watch'] = None
+        if link['link'] is not None:
+            link['link'].close()
+            link['link'] = None
+
+    def answer(mode):
+        action, text = answers.mode(mode)
+        if action == 'native':
+            disconnect()
+            try:
+                run_native(native)
+            except OSError as error:
+                print(f'caboose-game-run: {native[0]}: {error}', file=sys.stderr)
+                status.set_text(NOT_STARTED)
+            return
+        status.set_text(text)
+
+    def readable(_fd, _condition):
+        try:
+            found = link['link'].receive()
+        except (OSError, ProtocolError) as error:
+            print(f'caboose-game-run: {error}', file=sys.stderr)
+            link['watch'] = None
+            disconnect()
+            answer('local')
+            return False
+        for mode in found:
+            answer(mode)
+            if link['link'] is None:
+                return False
+        return True
+
+    def unanswered():
+        if not answers.answered:
+            print('caboose-game-run: no answer on the game socket', file=sys.stderr)
+            answer('local')
+        return False
+
+    def connect():
+        try:
+            link['link'] = Link(socket_path, game.hello)
+        except OSError as error:
+            print(f'caboose-game-run: {socket_path}: {error}', file=sys.stderr)
+            answer('local')
+            return
+        link['watch'] = GLib.io_add_watch(link['link'].fileno(), GLib.PRIORITY_DEFAULT,
+                                          GLib.IOCondition.IN | GLib.IOCondition.HUP | GLib.IOCondition.ERR, readable)
+        GLib.timeout_add_seconds(ANSWER_SECONDS, unanswered)
+
+    def mapped(*_):
+        window.disconnect(handler)
+        if socket_path:
+            connect()
+        else:
+            answer('local')
+        return False
+
+    handler = window.connect('map-event', mapped)
+    window.connect('destroy', lambda *_: Gtk.main_quit())
+    for number in (signal.SIGINT, signal.SIGTERM):
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, number, lambda *_: window.destroy() or False)
+    window.show_all()
+    Gtk.main()
+    disconnect()
+    return 0
+
+
+def main(argv):
+    if len(argv) != 2 or argv[1] in ('-h', '--help'):
+        print(__doc__.strip(), file=sys.stderr if len(argv) != 2 else sys.stdout)
+        return 0 if len(argv) == 2 else 2
+    try:
+        game = Game(argv[1], Path.home())
+        game.prepare_saves()
+        native = game.native_command()
+    except (ManifestError, OSError) as error:
+        print(f'caboose-game-run: {error}', file=sys.stderr)
+        return 2
+    socket_path = os.environ.get('CABOOSE_GAME_SOCKET') or None
+    if not socket_path and native:
+        # No display offers handoff here; play natively without opening a window first.
+        try:
+            run_native(native)
+        except OSError as error:
+            print(f'caboose-game-run: {native[0]}: {error}', file=sys.stderr)
+            native = None
+    return show(game, socket_path, native)
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

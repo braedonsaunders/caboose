@@ -103,7 +103,9 @@ it (see [Updating a running computer](#updating-a-running-computer)).
     the display units require;
   - [`guest/phone`](../phone/README.md): `caboose-open`, `caboose-share`, Thunar's **Share to
     iPhone** action and the `iPhone` CUPS queue (`cups.service` and
-    `caboose-phone-printer.service`, enabled).
+    `caboose-phone-printer.service`, enabled);
+  - [`guest/game`](../game/README.md): `caboose-game-run` and the game bundles Caboose ships,
+    in `/usr/local/share/caboose/games`.
 - **Appearance.** WhiteSur GTK, icon and cursor themes at pinned commits (dark), Inter and
   JetBrains Mono as the default fonts with Noto CJK and colour emoji as fallbacks, and
   `QT_QPA_PLATFORMTHEME=gtk3`.
@@ -168,7 +170,7 @@ sh guest/agentd/install.sh
 sh guest/media-handoff/install.sh
 ```
 
-None of these reboots the computer. The agent runner, file service, notifications and phone handoff are
+None of these reboots the computer. The agent runner, file service, notifications, phone handoff and `caboose-game-run` are
 updated by the host itself through [`guest/components`](../components/README.md);
 [`guest/display`](../display/README.md) describes updating Caboose Display.
 
@@ -203,5 +205,5 @@ Against a deployed host (see [`apps/host`](../../apps/host/README.md#real-host-c
 
 The components have their own checks: `guest/desktop-mcp/check-a11y.sh` (Docker),
 `guest/notifications/check.sh` and `check-container.sh`, `guest/phone/check.sh`,
-`guest/media-handoff/check.sh`, `guest/files/check-service.py` and
+`guest/game/check.sh`, `guest/media-handoff/check.sh`, `guest/files/check-service.py` and
 `guest/terminal/check-service.py`.

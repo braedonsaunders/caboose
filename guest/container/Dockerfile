@@ -51,6 +51,7 @@ COPY notifications /tmp/bundle/notifications
 COPY phone /tmp/bundle/phone
 COPY bridge /tmp/bundle/bridge
 COPY flatpak /tmp/bundle/flatpak
+COPY game /tmp/bundle/game
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff
