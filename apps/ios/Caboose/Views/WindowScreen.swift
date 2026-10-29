@@ -28,6 +28,7 @@ struct WindowScreen: View {
                 } else {
                     ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                ConnectionBanner()
             }
             .navigationTitle(model.window(model.presentedWindowID)?.title ?? "Window")
             .navigationBarTitleDisplayMode(.inline)

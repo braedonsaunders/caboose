@@ -1614,7 +1614,39 @@ the app card, and a detached view releases its layers.
   and parking). The layout engine is `CabooseKit/Switchyard` and is unit-tested.
 - **Lifecycle.** The display socket closes when the app goes to the background; the
   computer parks on idle and resumes on the next foreground. The last frame of every window
-  is cached, so reopening is instant while the stream reconnects.
+  is cached with the server's `epoch`, and shown on reopening only when the new hello has
+  the same epoch.
+- **Connection recovery.** While the app is in use, one display connection is open at a
+  time, and one wake (`POST /v1/session`) runs at a time; other callers wait for it. A
+  connection is given up when the socket closes, when nothing arrives for 15 s (the client
+  pings every 5 s and the server answers each), when the hello does not come within 15 s of
+  opening, or, after a network path change (`NWPathMonitor`: Wi-Fi to cellular, a tunnel
+  coming or going), when a probe ping gets no answer within 5 s. The app then tries again
+  after 0.5, 1, 2, 4, 8, 15, 15 and 15 s, each time choosing among the saved addresses
+  and waking with a 30 s timeout. A connection that stays up for 10 s starts the count
+  again; one that drops at once does not. A new network path, the app returning to the
+  foreground, or Try Again starts a new series at once; without a network the series
+  waits. It stops when the display refuses a fresh token twice, speaks another protocol
+  version, or the host answers with an error, and the tab shows Out of Reach. Another
+  device taking the display over (`replaced`) is never retried.
+  The session reconnects in place: the same `CabooseDisplaySession`, its windows still on
+  screen with their last pictures and their keyboard focus, and a banner that says input
+  is paused. When the new hello carries the epoch of the last one, each window the server
+  announces again keeps its object and picture, and keeps being painted; any it does not
+  announce before the pong to the ping sent after the hello is removed, and
+  `windowsAnnounced` is bumped. Another epoch, or none, removes the kept windows before the
+  new ones arrive. Pictures still queued from the closed connection are dropped, and
+  nothing a closed socket delivers reaches the session. Input sent while disconnected is
+  dropped, not replayed; the server releases held keys and buttons when a connection ends.
+- **Connection diagnostics.** Computer settings › Display shows what the current
+  connection measured on the phone: ping round trip (last, median, worst of the last 20),
+  seconds since data last arrived, the receive rate and pictures per second over the last
+  5 s, decode time and the wait before decoding (the client's own queue), failed decodes,
+  messages waiting to be sent and the oldest one's age, the typing echo (key to next
+  picture of that window), and the presented window's last-picture age. It also shows the
+  network path, the address in use, reconnects and recent losses with their reasons. The
+  computer's encode time and the one-way network delay are not measured, because the
+  phone and the computer share no clock.
 
 ### Shell
 

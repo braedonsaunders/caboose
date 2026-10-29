@@ -56,6 +56,8 @@ struct RootView: View {
             if model.phase == .ready, !model.externalDisplayActive, [.desktop, .apps].contains(model.selectedTab) { ApprovalBanner() }
         }
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
+        .overlay(alignment: .top) { if model.phase == .ready { ConnectionBanner() } }
+        .animation(.snappy, value: model.link.status)
         .sheet(item: Binding(get: { model.phase == .ready ? model.documents.pending : nil }, set: { _ in })) { item in
             OpenDocumentPicker(item: item).environment(model).interactiveDismissDisabled()
         }
@@ -128,6 +130,7 @@ struct Backdrop: View {
 }
 
 struct WakeView: View {
+    @Environment(AppModel.self) private var model
     let connecting: Bool
     @State private var pulse = false
 
@@ -139,6 +142,17 @@ struct WakeView: View {
             Text(connecting ? "Connecting" : "Waking")
                 .font(.title3.weight(.semibold))
             ProgressView().tint(.white)
+            // While the computer cannot be reached, say so and when the next try is.
+            if model.link.statusLine != nil {
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    VStack(spacing: 4) {
+                        Text(model.link.statusLine ?? "").font(.footnote.monospacedDigit())
+                        Text(HostMessage.clipped(model.link.reason ?? "", maxLines: 2, maxCharacters: 140))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
         .multilineTextAlignment(.center)
         .padding(32)

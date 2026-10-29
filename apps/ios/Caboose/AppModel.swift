@@ -82,8 +82,19 @@ final class AppModel {
     private var placedWindowIDs = Set<Int>()
     /// Last frames of the computer's windows, by window id, for instant resume.
     private var frameCache: [Int: CGImage] = [:]
-    private var reconnectAttempts = 0
-    private var reconnectTask: Task<Void, Never>?
+    /// The server epoch the cached frames belong to: ids name the same windows only within one.
+    private var frameCacheEpoch: String?
+    /// Keeps the display connected: when to reconnect, and what the network is doing.
+    let link = DisplayLink()
+    /// The wake in progress; a second caller waits for it instead of opening another display.
+    private var wakeInFlight: Task<Void, Never>?
+    /// The token the current session was opened with, so a wake for another computer replaces it.
+    private var sessionToken: String?
+    /// The last lost connection handed to the link: the session and its connection number.
+    private var handledClosure: (ObjectIdentifier, Int)?
+    /// The connection and server epoch `placedWindowIDs` were placed for.
+    private var placedConnection = 0
+    private var placedEpoch: String?
     private var fileSearchTask: Task<Void, Never>?
     private var sceneActive = true
 
@@ -111,6 +122,9 @@ final class AppModel {
             if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials); self.documents.requestSync(model: self) }
         }
         registerFiles()
+        link.attempt = { [weak self] in await self?.wake(quiet: true) }
+        link.probe = { [weak self] in self?.session?.probeLiveness() }
+        link.start()
         catalog.onChange = { [weak self] in await self?.refreshApps() }
         media.attach(host: { [weak self] in self?.host })
         phone.attach(host: { [weak self] in self?.host })
@@ -208,6 +222,7 @@ final class AppModel {
         filesRegistrationRevision += 1
         filesRegistering = false
         filesRegistrationError = nil
+        link.stop()
         if let credentials { FileDomains.remove(credentials) }
         Credentials.clear()
         credentials = nil
@@ -236,24 +251,37 @@ final class AppModel {
     // MARK: Lifecycle
 
     /// Wakes the computer and opens the display. `quiet` keeps the current screen in place,
-    /// for reconnects the person should not have to notice.
+    /// for reconnects the person should not have to notice. Only one wake runs at a time:
+    /// a second caller waits for the first instead of opening a competing display.
     func wake(quiet: Bool = false) async {
+        if !quiet { link.stop() } // the person asked: whatever was scheduled is superseded
+        if let running = wakeInFlight { return await running.value }
+        let task = Task { await performWake(quiet: quiet) }
+        wakeInFlight = task
+        await task.value
+        wakeInFlight = nil
+    }
+
+    private func performWake(quiet: Bool) async {
         if let credentials {
             let reached = await credentials.reachableURL()
             if reached != activeHostURL { activeHostURL = reached }
         }
         guard let host else { phase = .needsSetup; return }
         if case .ready = phase, session?.state == .ready { return }
+        // A display already opening for this computer finishes or fails on its own.
+        if let state = session?.state, state == .connecting || state == .authenticating, sessionToken == host.token { return }
         if !quiet { phase = .waking }
         do {
-            let wake = try await host.wake()
+            // A computer that was just running answers at once; a cold boot gets its minutes.
+            let wake = try await (quiet ? host.wake(timeout: 30) : host.wake())
             // A wake may finish after backgrounding or changing computers. Do not attach
             // an old computer's control channel in either case.
             guard sceneActive, self.host?.token == host.token, self.host?.baseURL == host.baseURL else { return }
             computer = wake.computer
             registerFiles(name: wake.computer.name)
             if !quiet { phase = .connecting }
-            startSession(host: host, display: wake.display)
+            openDisplay(host: host, display: wake.display)
             agents.detach()
             agents.attach(host: host)
             PushCoordinator.shared.synchronize()
@@ -266,8 +294,29 @@ final class AppModel {
             refreshFileSearch()
             Task { try? await refreshComputer() }
         } catch {
-            phase = .failed(error.localizedDescription)
+            wakeFailed(error, quiet: quiet)
         }
+    }
+
+    /// A host that cannot be reached is tried again on the link's schedule; one that answers
+    /// with an error has said what is wrong, and retrying will not change it.
+    private func wakeFailed(_ error: Error, quiet: Bool) {
+        let reason = error.localizedDescription
+        let unreachable: Bool = switch error {
+        case HostClient.Failure.unreachable: true
+        case is URLError: true
+        // A proxy in front of the host (Tailscale Serve, a reverse proxy) while the host restarts.
+        case HostClient.Failure.server(let status, _) where [502, 503, 504].contains(status): true
+        default: false
+        }
+        guard sceneActive, unreachable else {
+            link.stop()
+            phase = .failed(reason)
+            return
+        }
+        // The current screen stays while the link retries: the kept windows, or Waking.
+        link.lost(.wakeFailed, reason: reason)
+        if case .lost(let last) = link.status { phase = .failed(last) }
     }
 
     func sceneBecameActive() {
@@ -277,18 +326,30 @@ final class AppModel {
         documents.requestSync(model: self)
         showSharedDocumentIfAvailable()
         offerPasteboardIfChanged()
-        if phase != .displayElsewhere, session == nil || session?.state != .ready { Task { await wake() } }
+        guard phase != .displayElsewhere else { return }
+        switch link.status {
+        case .reconnecting, .waitingForNetwork: return // already on it
+        case .idle, .live, .lost: break
+        }
+        // A session kept through a lost connection resumes quietly behind its windows; back
+        // from the background there is none, so the computer is woken and a new one opened.
+        if let session, case .closed(let reason) = session.state {
+            link.retryNow(reason: reason ?? "The display connection closed.")
+        } else if session == nil {
+            Task { await wake() }
+        }
     }
 
     /// Leaving the app closes the display; the computer keeps every app running and parks on idle.
     func sceneEnteredBackground() {
         sceneActive = false
         phone.setActive(false)
-        reconnectTask?.cancel()
+        link.stop()
         if let session {
             frameCache = session.windows.reduce(into: [:]) { cache, entry in
                 if let image = entry.value.surface.snapshot() { cache[entry.key] = image }
             }
+            frameCacheEpoch = (session as? CabooseDisplaySession)?.server?.epoch
         }
         session?.disconnect()
         session = nil
@@ -299,9 +360,26 @@ final class AppModel {
 
     private var lastDisplay: HostClient.Session.Display?
 
+    /// Reconnects the session that lost its connection, keeping its windows on screen, or
+    /// opens a new one. Never two: a resumed session is the same object.
+    private func openDisplay(host: HostClient, display: HostClient.Session.Display) {
+        if let current = session as? CabooseDisplaySession, case .closed = current.state, !current.isReplaced,
+           current.closeCause != .local, sessionToken == host.token {
+            lastDisplay = display
+            yard.invalidate()
+            current.resume(displayURL: host.socketURL(display.path), token: host.token, password: display.token,
+                           capabilities: displayCapabilities())
+            return
+        }
+        startSession(host: host, display: display)
+    }
+
     private func startSession(host: HostClient, display: HostClient.Session.Display) {
         session?.disconnect()
         lastDisplay = display
+        sessionToken = host.token
+        handledClosure = nil
+        placedConnection = 0
         let caps = displayCapabilities()
         placedWindowIDs.removeAll()
         let url = host.socketURL(display.path)
@@ -316,7 +394,12 @@ final class AppModel {
             guard let self else { return }
             if self.yardActive { self.yard.focus(wid) } else if !self.desktopActive { self.presentedWindowID = wid }
         }
-        session.cachedFrame = { [weak self] wid in self?.frameCache[wid] }
+        // A cached frame is shown only for the server epoch it came from; a computer that
+        // restarted since (or a guest that sends no epoch) reuses ids for other windows.
+        session.cachedFrame = { [weak self, weak session] wid in
+            guard let self, let epoch = self.frameCacheEpoch, epoch == (session as? CabooseDisplaySession)?.server?.epoch else { return nil }
+            return self.frameCache[wid]
+        }
         self.session = session
         yard.session = session
         yard.invalidate()
@@ -324,11 +407,18 @@ final class AppModel {
         observeSession()
     }
 
-    /// "Typing 85 ms · Ping 4 ms": how responsive the computer is right now.
+    /// "Typing 85 ms · Ping 4 ms": how responsive the computer is right now, or what the
+    /// connection is doing instead.
     var connectionSummary: String {
+        if let line = link.statusLine { return line }
+        guard session?.state == .ready else { return "Connecting" }
+        let health = session?.health ?? .empty
         var parts: [String] = []
-        if let echo = session?.typingEchoMs { parts.append("Typing \(echo) ms") }
-        if let ping = session?.latencyMs { parts.append("Ping \(Int(ping.rounded())) ms") }
+        if let echo = health.typingEchoMs { parts.append("Typing \(echo) ms") }
+        if let ping = health.roundTrip?.last { parts.append("Ping \(Int(ping.rounded())) ms") }
+        if let silent = health.sinceLastReceive, silent >= LinkWatchdog.pingInterval * 2 {
+            parts.append("Nothing received for \(Int(silent)) s")
+        }
         return parts.isEmpty ? "Connected" : parts.joined(separator: " · ")
     }
 
@@ -373,21 +463,32 @@ final class AppModel {
         guard let session else { return }
         switch session.state {
         case .ready:
-            reconnectAttempts = 0
+            if link.status != .live { link.connected() }
             if phase != .ready { phase = .ready }
+            // A resumed connection to the same server epoch has the same windows where they
+            // were; any other has new windows (perhaps under old ids) to place.
+            if let display = session as? CabooseDisplaySession, display.connections != placedConnection {
+                if display.epoch == nil || display.epoch != placedEpoch { placedWindowIDs.removeAll() }
+                placedConnection = display.connections
+                placedEpoch = display.epoch
+            }
         case .closed(let reason):
             // Another device has the display: taking it back on our own would start a tug of war.
             if session.isReplaced {
-                reconnectTask?.cancel()
-                reconnectTask = nil
+                link.stop()
                 phase = .displayElsewhere
-            // A dropped connection while the app is in use is retried quietly; only give up after a few tries.
-            } else if sceneActive, reconnectAttempts < 4 {
-                scheduleReconnect()
-            } else if case .ready = phase {
+            // A lost connection while the app is in use is retried quietly on the link's schedule;
+            // the windows stay on screen meanwhile.
+            } else if sceneActive, let cause = session.closeCause?.reconnect {
+                // Each lost connection counts once, however often its state is looked at again.
+                let closure = (ObjectIdentifier(session), (session as? CabooseDisplaySession)?.connections ?? 0)
+                guard handledClosure.map({ $0 != closure }) ?? true else { break }
+                handledClosure = closure
+                link.lost(cause, reason: reason ?? "The display connection closed.")
+                if case .lost(let last) = link.status { phase = .failed(last) }
+            } else if sceneActive, session.closeCause != .local {
+                link.stop()
                 phase = .failed(reason ?? "The display connection closed.")
-            } else if phase == .connecting {
-                phase = .failed(reason ?? "Could not open the display.")
             }
         default:
             break
@@ -439,19 +540,6 @@ final class AppModel {
                 shared?.removeObject(forKey: "document-open-desktop-id")
                 shared?.removeObject(forKey: "document-open-domain")
             }
-        }
-    }
-
-    private func scheduleReconnect() {
-        guard reconnectTask == nil else { return }
-        reconnectAttempts += 1
-        let delay = Double(1 << (reconnectAttempts - 1))
-        reconnectTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            guard let self, !Task.isCancelled else { return }
-            self.reconnectTask = nil
-            self.session = nil
-            await self.wake(quiet: true)
         }
     }
 
@@ -641,10 +729,10 @@ final class AppModel {
             sessionChanged()
             return
         }
-        // While waking, the coming session is opened for the new screen; in the background, nothing opens.
-        guard sceneActive, phase == .ready || phase == .connecting, let host, let lastDisplay else { return }
-        phase = .connecting
-        startSession(host: host, display: lastDisplay)
+        // A session opening or waiting to reconnect keeps the new screen for its hello (or
+        // sends it after one already sent); a second session would compete with it.
+        // Without a session, the coming wake opens one for the new screen.
+        session?.reconfigure(displayCapabilities())
     }
 
     // MARK: Computer settings
@@ -697,6 +785,7 @@ final class AppModel {
         settingsPresented = false
         closeDisplay()
         frameCache.removeAll() // the apps behind these frames are gone
+        frameCacheEpoch = nil
         phase = .restarting
         do {
             computerStatus = try await host.restart()
@@ -709,8 +798,7 @@ final class AppModel {
 
     /// Drops the display and the agent channel without parking; the host decides what happens next.
     private func closeDisplay() {
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        link.stop()
         presentedWindowID = nil
         presentedAgentWindowID = nil
         session?.disconnect()

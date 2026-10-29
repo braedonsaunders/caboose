@@ -103,7 +103,8 @@ struct HostClient: Sendable {
     var baseURL: URL
     var token: String
 
-    func wake() async throws -> Session { try await request("POST", "/v1/session", timeout: 300) }
+    /// A cold boot can take minutes; reconnecting to a computer that was just running passes a shorter `timeout`.
+    func wake(timeout: TimeInterval = 300) async throws -> Session { try await request("POST", "/v1/session", timeout: timeout) }
     func apps() async throws -> [App] { try await request("GET", "/v1/apps", timeout: 60) }
 
     func launch(_ app: App) async throws {
