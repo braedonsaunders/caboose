@@ -923,7 +923,21 @@ checked when a computer is made, resized or moved, and all three when it wakes.
 
 A tenant an administrator does not administer answers 404, as if it were not there.
 
+### Capacity and usage
+
+The console Usage page shows authorized host or tenant capacity, resource allocations,
+measured OS counters and bounded storage totals. Only the operator sees host measurements;
+tenant administrators see their own tenants. Reads acquire no leases and never wake a
+computer. See [capacity and usage](capacity.md) for units, unavailable measurements and
+storage accounting. Quotas remain admission checks, not write-time storage caps.
+
 ### Authentication
+
+Account security provides password changes, configured recovery email, authenticator MFA,
+single-use recovery codes and session revocation; see [administrator account security](account-security.md).
+Existing-account invitations require completed sign-in including MFA. Revocation revalidates
+open administrator sockets before returning; expiry is checked every thirty seconds.
+
 
 A request is from one of three kinds of caller:
 

@@ -147,3 +147,6 @@ results, captures a coherent parked disk on request, and requires typed confirma
 replacing its disk. It explains the distinction between local recovery, device-encrypted
 phone backups and independent whole-server backups. The panel uses the scoped management
 recovery API and AppKit controls.
+
+Administrator password recovery, authenticator enrollment and session management are
+documented in [account security](../../docs/account-security.md).

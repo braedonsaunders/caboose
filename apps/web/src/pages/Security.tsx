@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { Alert, AlertDescription, Button, Input, Label, SettingsSection } from '@braedonsaunders/appkit-ui'
+import { QrCode } from '../components/QrCode.js'
 import { securityRequest } from '../security-api.js'
 
 interface Session { id: string; userAgent?: string; ipAddress?: string; createdAt: string; expiresAt: string }
@@ -54,7 +55,8 @@ export function Security({ onSignOut }: { onSignOut: () => void }) {
         {enrollment && <form className="space-y-3" onSubmit={event => { event.preventDefault(); void run(async () => {
           await securityRequest('two-factor/verify-totp', { code }); setEnrollment(null); setNotice('Authenticator enabled. Keep your recovery codes in a safe place.')
         }) }}>
-          <p>Add this setup key to your authenticator, then enter its six-digit code.</p>
+          <p>Scan this code with your authenticator, or enter the setup key below. Then enter its six-digit code.</p>
+          <QrCode value={enrollment.totpURI} label="Authenticator setup" />
           <code className="block break-all select-all">{new URL(enrollment.totpURI).searchParams.get('secret')}</code>
           <Label htmlFor="enrollment-code">Authenticator code</Label><Input id="enrollment-code" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={event => setCode(event.target.value)} />
           <Button disabled={busy || !code}>Verify and enable</Button>

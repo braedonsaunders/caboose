@@ -718,3 +718,6 @@ The operator's [offline recovery procedure](scripts/RECOVERY.md) covers protecte
 capture, bounded hash verification, restoration to empty staging, identity databases,
 image dependencies, secrets and isolated restore drills. Run its focused checks with
 `python3 scripts/tests/test-offline-recovery.py`.
+
+Administrator password recovery, authenticator enrollment and session management are
+documented in [account security](../../docs/account-security.md).
