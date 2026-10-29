@@ -1869,6 +1869,21 @@ in `Caches/CabooseGames`, bounded at 1 GiB and keyed by computer, path and etag.
 writes IDBFS changes within two seconds and retries every five seconds while the game runs.
 An on-screen controller reaches the page's Gamepad API through `RemoteGame.gamepad`.
 
+### GPU streams
+
+A window that arrives as a GPU stream ([gpu-stream.md](gpu-stream.md)) is replayed on the
+device. `CabooseDisplaySession.rendersGPUStreams`, true where the player is built in, puts
+`gpu: true` in the hello. `gpu.create` sets `RemoteWindow.gpuStream`; `gpu.data` goes from the
+socket's queue to the stream's replay in order, and the session answers with `gpu.ack` as the
+replay takes the bytes. The player, `GPUStreamPlayer`, is GFXReconstruct's Vulkan replay (tag
+`vulkan-sdk-1.4.363.0`, capture format 1.0.5, MIT) over MoltenVK 1.4.2 (Apache-2.0), linked
+statically behind a C API in `apps/ios/GPUStream` and built by
+`apps/ios/scripts/build-gpu-stream.sh`; without that library CabooseKit builds without the
+player and says nothing of GPU streams. It replays as `gfxrecon-replay --remove-unsupported -m
+rebind` does, through the virtual swapchain, on its own thread, into the `CAMetalLayer` of a
+`GPUStreamView` that the window's interactive view lays over its picture. Input to the window
+still goes to the computer. One stream replays at a time per process.
+
 ### Shell
 
 The app is a system tab view (SwiftUI `TabView` with `Tab`). Outside wide portrait Desktop,

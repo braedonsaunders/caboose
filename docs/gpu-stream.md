@@ -12,7 +12,7 @@ encoding for the window; the client draws it at its own resolution.
 | `caboose-gpu-run`, the launcher | [guest/gpu](../guest/gpu/README.md) |
 | The relay, its spool and its flow control | caboose-display, `compositor/src/game.rs` |
 | `gpu.create`, `gpu.data`, `gpu.destroy`, `gpu.ack` | [display.md, "GPU streams"](display.md#gpu-streams) |
-| The player | CabooseKit, `Sources/CabooseKit/GPU` |
+| The player | CabooseKit, `Sources/CabooseKit/GPU` and `UI/GPUStreamView`, over `apps/ios/GPUStream` |
 
 ## On the computer
 
