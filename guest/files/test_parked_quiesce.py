@@ -32,7 +32,7 @@ class QuiesceChecks(unittest.TestCase):
             argv = b'/usr/bin/socat\0VSOCK-LISTEN:5252,fork,reuseaddr\0UNIX-CONNECT:/run/desk-guest-agent.sock\0'
             for pid, parent in ((20, 1), (21, 20)):
                 base = proc / str(pid); base.mkdir()
-                (base / 'exe').symlink_to('/usr/bin/socat')
+                (base / 'exe').symlink_to('/usr/bin/socat1')
                 (base / 'cmdline').write_bytes(argv)
                 (base / 'status').write_text(f'PPid:\t{parent}\n')
             nodes = {'/': [1], '/system.slice': [], '/system.slice/desk-guest-agent.service': [10, 11], '/system.slice/desk-vsock-bridge.service': [20, 21], '/system.slice/writer.service': [30]}
@@ -40,6 +40,10 @@ class QuiesceChecks(unittest.TestCase):
             self.assertEqual(bridge, [20, 21])
             self.assertEqual(plan_freezer_branches(nodes, [1, 10, 11, *bridge]), ['/system.slice/writer.service'])
             (proc / '21' / 'cmdline').write_bytes(b'/bin/unknown\0')
+            with self.assertRaises(Unsupported): bridge_processes(nodes, directory)
+            (proc / '21' / 'cmdline').write_bytes(argv)
+            (proc / '21' / 'exe').unlink()
+            (proc / '21' / 'exe').symlink_to('/tmp/socat1')
             with self.assertRaises(Unsupported): bridge_processes(nodes, directory)
 
     def test_changed_bridge_after_freeze_rolls_back_via_thaw(self):

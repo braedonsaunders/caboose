@@ -189,7 +189,9 @@ def bridge_processes(nodes, proc='/proc'):
     try:
         for pid in pids:
             base = Path(proc) / str(pid)
-            if os.readlink(base / 'exe') != '/usr/bin/socat':
+            # Debian's packaged /usr/bin/socat resolves to socat1; procfs
+            # reports the executable target, while argv retains the unit path.
+            if os.readlink(base / 'exe') != '/usr/bin/socat1':
                 raise Unsupported('unknown private vsock bridge process')
             argv = (base / 'cmdline').read_bytes().split(b'\0')
             if argv and argv[-1] == b'': argv.pop()
