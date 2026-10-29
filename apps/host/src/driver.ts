@@ -139,6 +139,14 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   const snapshotPath = join(config.imageRoot, 'overlays', `${id}.snapshot`)
   const bindingPath = join(config.imageRoot, 'overlays', `${id}.system-image.json`)
   const resourcesPath = join(config.imageRoot, 'overlays', `${id}.resources.json`)
+  const migrationPath = join(config.imageRoot, 'overlays', `${id}.migration.json`)
+  function assertNoMigration(): void {
+    try { lstatSync(migrationPath) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    throw new Error('Computer has an unfinished disk migration')
+  }
   let resources: ComputerResources | null = null
   try {
     const saved = JSON.parse(readFileSync(resourcesPath, 'utf8')) as ComputerResources
@@ -197,6 +205,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     hasSavedState: () => Boolean(desk) || existsSync(snapshotPath) || existsSync(`${snapshotPath}.cold.json`),
     lastError: () => restartWarning,
     async wake(mode = 'interactive'): Promise<Session> {
+      assertNoMigration()
       const desired = settings()
       if (dependencies.depotPath) {
         const probe = buildDeskLaunchPlan({ deskId: 'probe', kernelPath: '/kernel', baseImagePath: '/base', overlayPath: '/disk', vsockCid: 3,
@@ -289,6 +298,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       }
     },
     async restart() {
+      assertNoMigration()
       if (!nativeMac) invalidateNetwork(slot)
       restartWarning = null
       // A wedged guest still needs a restart. Try to flush briefly, then surface the
@@ -316,6 +326,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     },
     /** Deletes the computer: its memory, snapshot and disk, and its network. Nothing of it is kept. */
     async destroy() {
+      assertNoMigration()
       clearHeartbeat()
       await closeRelays()
       await host.destroy(id).catch(error => console.error(`Desk ${id} could not be destroyed cleanly:`, error))
