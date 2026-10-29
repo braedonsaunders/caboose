@@ -1694,7 +1694,11 @@ agent on the computer gets them, in new chats. There is no choosing per agent or
   it in the computer's `mcp-library.json` (0600) and never returns it, logs it, puts it in a URL
   or gives it to the computer. Connections live in the account's namespace, each tagged
   `metadata.caboose = "<host id>/<computer id>"` and named `cb-<hash of that>-<hash of the
-  server>`; one belonging to another computer is never changed or removed.
+  server>`; one belonging to another computer is never changed or removed. A computer has one
+  account at a time: replacing it means disconnecting, which takes the computer's access
+  away and removes its servers from Smithery. If Smithery cannot remove one, the account stays
+  connected (its key is the only way to remove them) and the owner is told to try again.
+  Changes to the Library run one at a time.
 - **Adding.** The host asks Smithery Connect for the connection (`PUT /connect/{namespace}/{id}`).
   Smithery's status decides what follows: settings it asks for become a form whose values go
   to Smithery's write-only store (the host keeps no copy, and accepts only the fields asked
@@ -1707,8 +1711,12 @@ agent on the computer gets them, in new chats. There is no choosing per agent or
   carries the computer's connected servers with tool names prefixed by connection. It reads
   `~/.local/state/caboose/mcp-library.json` (0600) for every message: the endpoint and a
   Smithery service token scoped to this computer's connections (read and execute, metadata
-  `caboose`, 24 hours), which the host writes before chats start and continue and replaces
-  every four hours while the computer runs. Which servers a chat reaches is the Library's at
+  `caboose`, valid until the expiry Smithery gives it, at most 24 hours), which the host writes
+  through the computer's file service (never a command line) before chats start and continue,
+  and replaces hourly once it has less than 20 hours left. A token that cannot be minted takes
+  the computer's access away rather than leaving an old one. The proxy reads the file for every
+  message, passes an event stream's messages on as they arrive, answers any failure with an
+  MCP error that names nothing from it, and starts a new MCP session when the account changes. Which servers a chat reaches is the Library's at
   each call: a server added later is there, and a removed one (deleted from Smithery at once)
   is gone. A chat started without the Library never gets it; one whose Library is gone gets a
   notice. No secret is written to a task's records or transcript.

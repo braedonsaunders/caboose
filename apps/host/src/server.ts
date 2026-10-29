@@ -141,7 +141,14 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const catalog = new AgentCatalog(shared.registry, () => controller.guest(), settings, home)
   const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire(), { ...shared.library, computer: id })
   const mcp = shared.library?.mcp && pieces.mcpLibraryFile
-    ? new McpLibrary({ file: pieces.mcpLibraryFile, tag: `${shared.library.mcp.hostId}/${id}`, catalog: shared.library.mcp.catalog, guest: () => controller.guest(), emit: broadcast, ...(shared.library.mcp.request ? { request: shared.library.mcp.request } : {}) })
+    ? new McpLibrary({ file: pieces.mcpLibraryFile, tag: `${shared.library.mcp.hostId}/${id}`, catalog: shared.library.mcp.catalog, guest: () => controller.guest(), emit: broadcast, ...(shared.library.mcp.request ? { request: shared.library.mcp.request } : {}),
+      // Through the computer's file service, so a token never travels on a command line.
+      writeFile: async (relative, data) => {
+        const service = controller.fileService?.()
+        if (!service) throw new AgentUnavailableError()
+        const response = await fetch(`${service.url}/content?path=${encodeURIComponent(relative)}`, { method: 'PUT', body: new Uint8Array(data), headers: { authorization: `Bearer ${service.token}`, 'content-length': String(data.length) }, signal: AbortSignal.timeout(15_000) })
+        if (!response.ok) throw new Error(`The computer did not take its MCP Library access (${response.status})`)
+      } })
     : undefined
   // Installed apps update once a day while the computer runs; a parked computer is not woken.
   const autoUpdates = setInterval(() => {
@@ -162,7 +169,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (job && activities) void activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
   }, () => computer.acquire(), {
     ...(pieces.openToolJournal ? { toolJournal: async () => { const journal = await toolJournalReady; if (!journal) throw new AgentConflictError(toolsError ?? 'Agent tools are unavailable'); return journal } } : {}),
-    resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), ...(mcp ? { mcpLibrary: () => { mcp.forgetSync(); return mcp.sync() } } : {}), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(shared.agentIdleMs !== undefined ? { idleMs: shared.agentIdleMs } : {}),
+    resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), ...(mcp ? { mcpLibrary: () => mcp.sync(true) } : {}), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(shared.agentIdleMs !== undefined ? { idleMs: shared.agentIdleMs } : {}),
   })
   let routineError: string | null = null
   const routineTask = (task: ReturnType<AgentTasks['list']>[number]): RoutineTask => ({

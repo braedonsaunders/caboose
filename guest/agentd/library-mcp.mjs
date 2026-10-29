@@ -19,8 +19,10 @@ export async function descriptor(path = DESCRIPTOR, now = Date.now()) {
   let url
   try { url = new URL(value.url) } catch { return null }
   if (url.protocol !== 'https:' || !(url.hostname === 'smithery.run' || url.hostname.endsWith('.smithery.run'))) return null
-  if (typeof value.expiresAt === 'string' && Date.parse(value.expiresAt) <= now) return null
-  return { url: url.href, token: value.token }
+  const expires = typeof value.expiresAt === 'string' ? Date.parse(value.expiresAt) : NaN
+  if (!Number.isFinite(expires) || expires <= now) return null
+  if (typeof value.account !== 'string' || !/^[0-9a-f-]{36}$/.test(value.account)) return null
+  return { url: url.href, token: value.token, identity: `${value.account} ${url.href}` }
 }
 
 /** JSON-RPC messages in a Streamable HTTP answer: one JSON value, or an SSE stream's events. */
@@ -37,44 +39,70 @@ export function messages(contentType, text) {
   return found.filter(message => message && typeof message === 'object')
 }
 
-export function createProxy({ read = descriptor, fetcher = fetch, write = line => process.stdout.write(line + '\n') } = {}) {
+/** Messages in an event stream so far, and what is left of a partial event. */
+export function events(buffer) {
+  const parts = buffer.split(/\r?\n\r?\n/)
+  const rest = parts.pop()
+  return { found: messages('text/event-stream', parts.join('\n\n') + (parts.length ? '\n\n' : '')), rest }
+}
+
+export function createProxy({ read = descriptor, fetcher = fetch, write = line => process.stdout.write(line + '\n'), timeoutMs = TIMEOUT_MS } = {}) {
   let session = null
   let protocol = null
+  let identity = null
   const fail = (id, text) => { if (id !== undefined && id !== null) write(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: text } })) }
-  return async function forward(message) {
+  async function exchange(message, target) {
     const id = message.id
-    const target = await read()
-    if (!target) return fail(id, "This computer's MCP Library is not available. Check it in Caboose's Agents tab.")
-    let response
-    try {
-      response = await fetcher(target.url, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS), body: JSON.stringify(message),
-        headers: { authorization: `Bearer ${target.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream',
-          ...(session ? { 'mcp-session-id': session } : {}), ...(protocol ? { 'mcp-protocol-version': protocol } : {}) },
-      })
-    } catch { return fail(id, 'The MCP Library could not be reached.') }
+    // A session belongs to one account's endpoint; a changed account starts afresh.
+    if (identity !== target.identity) { session = null; protocol = null; identity = target.identity }
+    const response = await fetcher(target.url, {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs), body: JSON.stringify(message),
+      headers: { authorization: `Bearer ${target.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream',
+        ...(session ? { 'mcp-session-id': session } : {}), ...(protocol ? { 'mcp-protocol-version': protocol } : {}) },
+    })
     if (response.status === 404 && session) { session = null; protocol = null; return fail(id, 'The MCP Library session ended; ask again.') }
     if (response.status === 401 || response.status === 403) return fail(id, "The MCP Library's access has expired. Caboose renews it within the hour.")
     if (response.status === 202 || response.status === 204) return
     if (!response.ok) return fail(id, `The MCP Library answered ${response.status}.`)
     const sessionHeader = response.headers.get('mcp-session-id')
     if (sessionHeader && /^[\x21-\x7e]{1,200}$/.test(sessionHeader)) session = sessionHeader
-    const reader = response.body?.getReader()
-    const chunks = []
-    let size = 0
-    if (reader) for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      size += value.length
-      if (size > MAX_BODY) { await reader.cancel(); return fail(id, 'The MCP Library sent too much at once.') }
-      chunks.push(value)
-    }
-    const replies = messages(response.headers.get('content-type'), Buffer.concat(chunks).toString('utf8'))
-    for (const reply of replies) {
+    const stream = String(response.headers.get('content-type') ?? '').includes('text/event-stream')
+    let answered = false
+    const deliver = reply => {
       if (message.method === 'initialize' && reply.id === id && typeof reply.result?.protocolVersion === 'string') protocol = reply.result.protocolVersion.slice(0, 40)
+      if (reply.id === id && ('result' in reply || 'error' in reply)) answered = true
       write(JSON.stringify(reply))
     }
-    if (id !== undefined && id !== null && !replies.some(reply => reply.id === id)) fail(id, 'The MCP Library did not answer.')
+    const reader = response.body?.getReader()
+    const decoder = new TextDecoder()
+    let buffer = '', size = 0
+    if (reader) {
+      try {
+        // An event stream may stay open: each event is passed on as it arrives, and the stream
+        // is let go once the request's answer has come.
+        while (!(stream && answered)) {
+          const { done, value } = await reader.read()
+          if (done) break
+          size += value.length
+          if (size > MAX_BODY) throw new Error('too large')
+          buffer += decoder.decode(value, { stream: true })
+          if (stream) { const { found, rest } = events(buffer); buffer = rest; found.forEach(deliver) }
+        }
+      } finally { await reader.cancel().catch(() => {}) }
+    }
+    if (stream) events(buffer + '\n\n').found.forEach(deliver)
+    else messages(response.headers.get('content-type'), buffer).forEach(deliver)
+    if (id !== undefined && id !== null && !answered) fail(id, 'The MCP Library did not answer.')
+  }
+  return async function forward(message) {
+    try {
+      const target = await read()
+      if (!target) return fail(message.id, "This computer's MCP Library is not available. Check it in Caboose's Agents tab.")
+      await exchange(message, target)
+    } catch {
+      // Nothing from the failure itself is passed on: it could name the endpoint or worse.
+      fail(message.id, 'The MCP Library could not be reached.')
+    }
   }
 }
 
@@ -85,7 +113,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (line.length > MAX_BODY) return
     let message
     try { message = JSON.parse(line) } catch { return }
-    if (message && typeof message === 'object') void forward(message)
+    if (message && typeof message === 'object') forward(message).catch(() => {})
   })
   lines.on('close', () => process.exit(0))
 }

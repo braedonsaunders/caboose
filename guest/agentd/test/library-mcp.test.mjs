@@ -14,12 +14,16 @@ async function file(value) {
   return path
 }
 const TOKEN = 'svc-scoped-token-123'
+const ACCOUNT = '11111111-2222-4333-8444-555555555555'
+const LATER = '2999-01-01T00:00:00Z'
 
 describe('the Library descriptor', () => {
   it('is used only for Smithery Connect over https, with a token that has not run out', async () => {
-    expect(await descriptor(await file({ url: 'https://mcp.smithery.run/space', token: TOKEN, expiresAt: '2999-01-01T00:00:00Z' }))).toEqual({ url: 'https://mcp.smithery.run/space', token: TOKEN })
-    for (const bad of [{ url: 'https://evil.example/space', token: TOKEN }, { url: 'http://mcp.smithery.run/space', token: TOKEN }, { url: 'https://mcp.smithery.run/space', token: 'x' },
-      { url: 'https://mcp.smithery.run/space', token: TOKEN, expiresAt: '2000-01-01T00:00:00Z' }]) expect(await descriptor(await file(bad))).toBeNull()
+    const good = { url: 'https://mcp.smithery.run/space', token: TOKEN, account: ACCOUNT, expiresAt: LATER }
+    expect(await descriptor(await file(good))).toEqual({ url: 'https://mcp.smithery.run/space', token: TOKEN, identity: `${ACCOUNT} https://mcp.smithery.run/space` })
+    for (const bad of [{ url: 'https://evil.example/space' }, { url: 'http://mcp.smithery.run/space' }, { token: 'x' }, { expiresAt: '2000-01-01T00:00:00Z' }, { expiresAt: undefined }, { expiresAt: 'soon' }, { account: undefined }]) {
+      expect(await descriptor(await file({ ...good, ...bad }))).toBeNull()
+    }
     expect(await descriptor(await file('not json'))).toBeNull()
     expect(await descriptor('/nonexistent/mcp-library.json')).toBeNull()
   })
@@ -38,8 +42,9 @@ describe('the Library proxy', () => {
       const next = responses.shift()
       return new Response(next.body ?? null, { status: next.status ?? 200, headers: next.headers ?? { 'content-type': 'application/json' } })
     }
-    const forward = createProxy({ read: async () => ({ url: 'https://mcp.smithery.run/space', token: TOKEN }), fetcher, write: line => written.push(JSON.parse(line)) })
-    return { forward, sent, written }
+    let target = { url: 'https://mcp.smithery.run/space', token: TOKEN, identity: 'a' }
+    const forward = createProxy({ read: async () => target, fetcher, write: line => written.push(JSON.parse(line)), timeoutMs: 2000 })
+    return { forward, sent, written, switchAccount: () => { target = { ...target, identity: 'b' } } }
   }
   it('forwards each message with the token and the session the endpoint gave it', async () => {
     const s = stand([
@@ -55,6 +60,37 @@ describe('the Library proxy', () => {
     expect(s.sent[2].headers['mcp-session-id']).toBe('session-1')
     expect(s.sent[2].headers['mcp-protocol-version']).toBe('2025-06-18')
     expect(s.written).toEqual([{ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18' } }, { jsonrpc: '2.0', id: 2, result: { tools: [{ name: 'brave.search' }] } }])
+  })
+  it('passes on an open event stream\'s answer without waiting for the stream to end', async () => {
+    const written = []
+    let cancelled = false
+    const fetcher = async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode('data: {"jsonrpc":"2.0","method":"notifications/progress"}\n\ndata: {"jsonrpc":"2.0","id":3,"result":{"ok":true}}\n\n')) },
+      cancel() { cancelled = true },
+    }), { headers: { 'content-type': 'text/event-stream' } })
+    const forward = createProxy({ read: async () => ({ url: 'https://mcp.smithery.run/space', token: TOKEN, identity: 'a' }), fetcher, write: line => written.push(JSON.parse(line)), timeoutMs: 2000 })
+    await forward({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: {} })
+    expect(written).toEqual([{ jsonrpc: '2.0', method: 'notifications/progress' }, { jsonrpc: '2.0', id: 3, result: { ok: true } }])
+    expect(cancelled).toBe(true)
+  })
+  it('turns a failing stream into an error answer instead of failing the process', async () => {
+    const written = []
+    const fetcher = async () => new Response(new ReadableStream({ pull() { throw new Error(`stream broke ${TOKEN}`) } }), { headers: { 'content-type': 'text/event-stream' } })
+    const forward = createProxy({ read: async () => ({ url: 'https://mcp.smithery.run/space', token: TOKEN, identity: 'a' }), fetcher, write: line => written.push(line), timeoutMs: 2000 })
+    await forward({ jsonrpc: '2.0', id: 4, method: 'tools/list' })
+    expect(written.map(line => JSON.parse(line).error.message)).toEqual(['The MCP Library could not be reached.'])
+    expect(written.join()).not.toContain(TOKEN)
+  })
+  it('starts a new session when the account behind the Library changes', async () => {
+    const s = stand([
+      { body: '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}', headers: { 'content-type': 'application/json', 'mcp-session-id': 'old-session' } },
+      { body: '{"jsonrpc":"2.0","id":2,"result":{}}' },
+    ])
+    await s.forward({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+    s.switchAccount()
+    await s.forward({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+    expect(s.sent[1].headers['mcp-session-id']).toBeUndefined()
+    expect(s.sent[1].headers['mcp-protocol-version']).toBeUndefined()
   })
   it('answers with an error, never the token, when the Library is unavailable or refuses', async () => {
     const written = []

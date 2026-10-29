@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, type AgentGuest } from './agents.js'
@@ -16,13 +16,15 @@ import { API, QUALIFIED, type McpServer, type Requester, type SmitheryCatalog } 
  * Smithery, which stores them write-only; Caboose keeps no copy.
  */
 export const MAX_CONNECTIONS = 20
-const DESCRIPTOR = '/home/caboose/.local/state/caboose/mcp-library.json'
+/** The computer's Library access: where, relative to the home, and as a path for removal. */
+export const DESCRIPTOR_PATH = '.local/state/caboose/mcp-library.json'
+const DESCRIPTOR = `/home/caboose/${DESCRIPTOR_PATH}`
 const CONNECTION_ID = /^cb-[0-9a-f]{12}-[0-9a-f]{16}$/
 const FIELD = /^[A-Za-z0-9_.-]{1,80}$/
 const MAX_VALUE = 4096
 const TOKEN_MS = 24 * 3600_000
-/** A token is replaced once it is this old, so a computer always holds one with hours left. */
-const REFRESH_MS = 4 * 3600_000
+/** A token with less than this left is replaced, so a computer always holds one with hours left. */
+const RENEW_BEFORE_MS = 20 * 3600_000
 
 export type ConnectionStatus =
   | { state: 'connected'; tools: number }
@@ -32,7 +34,13 @@ export type ConnectionStatus =
   | { state: 'checking' }
 
 interface Record_ { id: string; server: string; name: string; iconUrl: string | null; addedAt: string; mcpUrl: string | null }
-interface Stored { apiKey: string | null; namespace: string | null; connections: Record_[] }
+interface Stored {
+  apiKey: string | null
+  namespace: string | null
+  /** A fresh id for each account connected, so the computer starts new sessions on a change. */
+  account: string | null
+  connections: Record_[]
+}
 
 class SmitheryAuthError extends AgentConflictError {}
 
@@ -101,23 +109,24 @@ export function rpcResult(response: SafeResponse, id: number): Record<string, un
 }
 
 export class McpLibrary {
-  private state: Stored = { apiKey: null, namespace: null, connections: [] }
+  private state: Stored = { apiKey: null, namespace: null, account: null, connections: [] }
   private loaded: Promise<void> | undefined
   private saving: Promise<void> = Promise.resolve()
-  private token: { value: string; mintedAt: number; account: number } | null = null
-  /** Bumped when the account is connected, replaced or disconnected: a token minted for an
-   *  older account is never handed to the computer. */
-  private account_ = 0
-  /** Bumped on every change: work that started under an older generation does not write back. */
-  private generation = 0
+  /** Every change to the account, the connections and the computer's access, one at a time. */
+  private queue: Promise<unknown> = Promise.resolve()
+  private token: { value: string; expiresAt: number; account: string } | null = null
   private statuses = new Map<string, ConnectionStatus>()
-  private syncedFor: string | null = null
+  /** What the computer was last given: the token's expiry and account, or '' for nothing. */
+  private published: string | null = null
   constructor(private readonly options: {
     file: string
     /** This computer, as Smithery metadata: `<host id>/<computer id>`. */
     tag: string
     catalog: SmitheryCatalog
     guest: () => AgentGuest | undefined
+    /** Writes a file under the computer's home privately (0600), without passing its contents
+     *  through a command line: the computer's file service. */
+    writeFile?: (relative: string, data: Buffer) => Promise<void>
     emit: (event: unknown) => void
     request?: Requester
     now?: () => number
@@ -131,6 +140,7 @@ export class McpLibrary {
       this.state = {
         apiKey: typeof raw.apiKey === 'string' && raw.apiKey.length <= 400 ? raw.apiKey : null,
         namespace: typeof raw.namespace === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/i.test(raw.namespace) ? raw.namespace : null,
+        account: typeof raw.account === 'string' && /^[0-9a-f-]{36}$/.test(raw.account) ? raw.account : null,
         connections: (Array.isArray(raw.connections) ? raw.connections : []).slice(0, MAX_CONNECTIONS).filter(c =>
           c && CONNECTION_ID.test(c.id) && typeof c.server === 'string' && QUALIFIED.test(c.server) && typeof c.name === 'string' && typeof c.addedAt === 'string'),
       }
@@ -147,7 +157,13 @@ export class McpLibrary {
     this.saving = next.catch(() => {})
     return next
   }
-  private changed(id?: string): void { this.generation++; this.options.emit({ type: 'mcp.changed', ...(id ? { id } : {}) }) }
+  /** Runs one change after another: no two see or write the Library at the same time. */
+  private exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.queue.then(async () => { await this.load(); return work() })
+    this.queue = next.catch(() => {})
+    return next
+  }
+  private changed(id?: string): void { this.options.emit({ type: 'mcp.changed', ...(id ? { id } : {}) }) }
 
   private async smithery(path: string, init: { method?: 'GET' | 'POST' | 'DELETE' | 'PUT'; body?: unknown; bearer?: string } = {}): Promise<SafeResponse> {
     const bearer = init.bearer ?? this.state.apiKey
@@ -165,88 +181,191 @@ export class McpLibrary {
     await this.load()
     return { connected: !!this.state.apiKey, namespace: this.state.namespace }
   }
-  /** Connects a Smithery account by its API key: checked, and its namespace chosen. */
-  async connect(apiKey: unknown) {
+  /**
+   * Connects a Smithery account by its API key: checked, and its namespace chosen. A computer
+   * has one account; replacing it means disconnecting the first, which removes its servers.
+   */
+  connect(apiKey: unknown) {
     if (typeof apiKey !== 'string' || !/^[\x21-\x7e]{8,400}$/.test(apiKey)) throw new AgentInputError('Paste a Smithery API key')
-    await this.load()
-    const generation = ++this.generation
-    const listed = await this.request(`${API}/namespaces`, 1024 * 1024, { headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' } })
-    if (listed.status !== 200) throw failure(listed, 'List namespaces')
-    const names = (Array.isArray(json(listed).namespaces) ? json(listed).namespaces as unknown[] : []).flatMap(n => {
-      const name = (n as { name?: unknown })?.name
-      return typeof name === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/i.test(name) ? [name] : []
+    return this.exclusive(async () => {
+      if (this.state.apiKey) throw new AgentConflictError('This computer already has a Smithery account. Disconnect it first.')
+      const listed = await this.request(`${API}/namespaces`, 1024 * 1024, { headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' } })
+      if (listed.status !== 200) throw failure(listed, 'List namespaces')
+      const names = (Array.isArray(json(listed).namespaces) ? json(listed).namespaces as unknown[] : []).flatMap(n => {
+        const name = (n as { name?: unknown })?.name
+        return typeof name === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/i.test(name) ? [name] : []
+      })
+      let namespace = names[0]
+      if (!namespace) {
+        const created = await this.request(`${API}/namespaces`, 64 * 1024, { method: 'POST', headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', accept: 'application/json' }, body: '{}' })
+        if (created.status !== 201 && created.status !== 200) throw failure(created, 'Create a namespace')
+        const name = json(created).name
+        if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/i.test(name)) throw new Error('Smithery returned no namespace')
+        namespace = name
+      }
+      this.state = { apiKey, namespace, account: randomUUID(), connections: [] }
+      this.token = null
+      this.statuses.clear()
+      await this.save()
+      this.changed()
+      return { connected: true, namespace }
     })
-    let namespace = names[0]
-    if (!namespace) {
-      const created = await this.request(`${API}/namespaces`, 64 * 1024, { method: 'POST', headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', accept: 'application/json' }, body: '{}' })
-      if (created.status !== 201 && created.status !== 200) throw failure(created, 'Create a namespace')
-      const name = json(created).name
-      if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/i.test(name)) throw new Error('Smithery returned no namespace')
-      namespace = name
-    }
-    if (generation !== this.generation) throw new AgentConflictError('The Library changed while connecting; try again')
-    this.state = { apiKey, namespace, connections: this.state.namespace === namespace ? this.state.connections : [] }
-    this.token = null
-    this.account_++
-    await this.save()
-    this.changed()
-    await this.sync().catch(error => console.error('Cannot update the computer\'s Library:', error instanceof Error ? error.message : error))
-    return this.account()
   }
-  /** Removes this computer's servers from Smithery, then forgets the account. */
-  async disconnect() {
-    await this.load()
-    for (const connection of [...this.state.connections]) await this.remove(connection.id).catch(() => {})
-    this.state = { apiKey: null, namespace: null, connections: [] }
-    this.token = null
-    this.account_++
-    await this.save()
-    this.changed()
-    await this.sync().catch(() => {})
-    return this.account()
+  /**
+   * Takes the computer's access away, removes its servers from Smithery, then forgets the
+   * account. If Smithery cannot remove one, the account is kept so the removal can be retried:
+   * its key is the only way to remove them.
+   */
+  disconnect() {
+    return this.exclusive(async () => {
+      await this.withdraw()
+      const left: string[] = []
+      for (const connection of [...this.state.connections]) {
+        try { await this.deleteRemote(connection.id); this.forget(connection.id) } catch { left.push(connection.name) }
+      }
+      await this.save()
+      if (left.length) {
+        this.changed()
+        throw new AgentConflictError(`Smithery could not remove ${left.join(', ')} yet. The account stays connected so you can try again.`)
+      }
+      this.state = { apiKey: null, namespace: null, account: null, connections: [] }
+      this.token = null
+      await this.save()
+      this.changed()
+      return { connected: false, namespace: null }
+    })
   }
 
   /** The computer's servers and how each is doing, as Smithery last reported it. */
   async connections() {
     await this.load()
-    return { account: !!this.state.apiKey, limit: MAX_CONNECTIONS, connections: this.state.connections.map(connection => ({
-      id: connection.id, server: connection.server, name: connection.name, iconId: this.options.catalog.iconId(connection.iconUrl), addedAt: connection.addedAt,
-      status: this.statuses.get(connection.id) ?? { state: 'checking' as const },
-    })) }
+    return { account: !!this.state.apiKey, limit: MAX_CONNECTIONS, connections: this.state.connections.map(connection => this.viewOf(connection)) }
   }
-  /** Checks every server's status with Smithery, a few at a time. */
+  /** Checks every server with Smithery. */
   async refresh() {
     await this.load()
-    if (!this.state.apiKey) return this.connections()
-    const queue = [...this.state.connections]
-    await Promise.all(Array.from({ length: 4 }, async () => {
-      for (let connection = queue.shift(); connection; connection = queue.shift()) await this.check(connection.id, false).catch(() => {})
-    }))
+    for (const connection of [...this.state.connections]) await this.check(connection.id, false).catch(() => {})
     return this.connections()
   }
 
   /** Adds a server to this computer. Nothing is added until Smithery has the connection. */
-  async add(server: unknown) {
+  add(server: unknown) {
     if (typeof server !== 'string' || !QUALIFIED.test(server)) throw new AgentInputError('Choose a server from the Library')
-    await this.load()
-    if (!this.state.apiKey || !this.state.namespace) throw new AgentConflictError('Connect a Smithery account first')
-    const existing = this.state.connections.find(c => c.server === server)
-    if (existing) return this.check(existing.id)
-    if (this.state.connections.length >= MAX_CONNECTIONS) throw new AgentConflictError(`A computer holds up to ${MAX_CONNECTIONS} MCP servers. Remove one to add another.`)
-    const detail: McpServer = await this.options.catalog.detail(server)
-    const id = connectionId(this.options.tag, server)
-    const generation = ++this.generation
-    await this.remote(id)
-    const response = await this.smithery(`/connect/${this.state.namespace}/${id}`, { method: 'PUT', body: { server, name: detail.name.slice(0, 100), metadata: { caboose: this.options.tag } } })
-    if (response.status !== 200 && response.status !== 201) throw failure(response, 'Add the server')
-    const body = json(response)
-    if (generation !== this.generation && this.state.connections.some(c => c.id === id)) throw new AgentConflictError('The Library changed while adding; try again')
-    this.state.connections.push({ id, server, name: detail.name, iconUrl: detail.iconUrl, addedAt: new Date(this.now).toISOString(), mcpUrl: typeof body.mcpUrl === 'string' ? body.mcpUrl.slice(0, 1000) : null })
-    await this.save()
-    this.changed(id)
-    return this.settle(id, readStatus(body.status))
+    return this.exclusive(async () => {
+      if (!this.state.apiKey || !this.state.namespace) throw new AgentConflictError('Connect a Smithery account first')
+      const existing = this.state.connections.find(c => c.server === server)
+      if (existing) return this.checkLocked(existing.id)
+      if (this.state.connections.length >= MAX_CONNECTIONS) throw new AgentConflictError(`A computer holds up to ${MAX_CONNECTIONS} MCP servers. Remove one to add another.`)
+      const detail: McpServer = await this.options.catalog.detail(server)
+      const id = connectionId(this.options.tag, server)
+      await this.remote(id)
+      const response = await this.smithery(`/connect/${this.state.namespace}/${id}`, { method: 'PUT', body: { server, name: detail.name.slice(0, 100), metadata: { caboose: this.options.tag } } })
+      if (response.status !== 200 && response.status !== 201) throw failure(response, 'Add the server')
+      const body = json(response)
+      this.state.connections.push({ id, server, name: detail.name, iconUrl: detail.iconUrl, addedAt: new Date(this.now).toISOString(), mcpUrl: typeof body.mcpUrl === 'string' ? body.mcpUrl.slice(0, 1000) : null })
+      await this.save()
+      this.changed(id)
+      return this.settle(id, readStatus(body.status))
+    })
   }
 
+  /** Gives a server the settings it asked for. Only the fields it asked for are accepted. */
+  configure(id: string, input: unknown) {
+    return this.exclusive(async () => {
+      const connection = this.find(id)
+      const status = this.statuses.get(id)
+      if (status?.state !== 'needs-setup') throw new AgentConflictError('This server is not waiting for settings')
+      const values = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+      const headers: Record<string, string> = {}, query: Record<string, string> = {}
+      for (const [key, value] of Object.entries(values)) {
+        const field = status.fields.find(f => f.key === key)
+        if (!field) throw new AgentInputError(`${key.slice(0, 80)} is not a setting this server asked for`)
+        if (typeof value !== 'string' || value.length > MAX_VALUE || /[\x00-\x1f\x7f]/.test(value)) throw new AgentInputError(`${field.label} has an invalid value`)
+        if (value) (field.where === 'header' ? headers : query)[key] = value
+      }
+      for (const field of status.fields) if (field.required && !(field.key in headers || field.key in query)) throw new AgentInputError(`${field.label} is required`)
+      let mcpUrl: string | undefined
+      if (Object.keys(query).length) {
+        if (!connection.mcpUrl) throw new AgentConflictError('Smithery did not say where this server is; remove and add it again')
+        const url = new URL(connection.mcpUrl)
+        for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value)
+        mcpUrl = url.href
+      }
+      if (!await this.remote(id)) throw new AgentNotFoundError('Smithery no longer has this server. Remove it, then add it again.')
+      const response = await this.smithery(`/connect/${this.state.namespace}/${id}`, { method: 'PUT', body: { ...(mcpUrl ? { mcpUrl } : {}), ...(Object.keys(headers).length ? { headers } : {}) } })
+      if (response.status !== 200 && response.status !== 201) throw failure(response, 'Save the settings')
+      return this.settle(id, readStatus(json(response).status))
+    })
+  }
+
+  /** Asks Smithery how the server is; connected means it listed its tools. */
+  check(id: string, announce = true) { return this.exclusive(() => this.checkLocked(id, announce)) }
+  private async checkLocked(id: string, announce = true) {
+    this.find(id)
+    const body = await this.remote(id)
+    if (!body) { this.statuses.set(id, { state: 'failed', message: 'Smithery no longer has this server. Remove it, then add it again.' }); return this.view(id) }
+    const connection = this.state.connections.find(c => c.id === id)
+    if (connection && typeof body.mcpUrl === 'string') connection.mcpUrl = body.mcpUrl.slice(0, 1000)
+    return this.settle(id, readStatus(body.status), announce)
+  }
+  /** Runs inside a change: nothing else touches the Library until it returns. */
+  private async settle(id: string, status: ConnectionStatus, announce = true) {
+    let settled = status
+    if (status.state === 'connected') {
+      const tools = await this.listTools(id).catch(() => null)
+      settled = tools === null ? { state: 'failed', message: 'Smithery connected, but the server did not list its tools. Check it again later.' }
+        : tools === 0 ? { state: 'failed', message: 'The server connected but offers no tools.' } : { state: 'connected', tools }
+    }
+    this.statuses.set(id, settled)
+    if (announce) this.changed(id)
+    if (settled.state === 'connected') await this.publish().catch(error => console.error('Cannot update the computer\'s Library:', error instanceof Error ? error.message : error))
+    return this.view(id)
+  }
+  private viewOf(connection: Record_) {
+    return { id: connection.id, server: connection.server, name: connection.name, iconId: this.options.catalog.iconId(connection.iconUrl), addedAt: connection.addedAt, status: this.statuses.get(connection.id) ?? { state: 'checking' as const } }
+  }
+  private view(id: string) { return this.viewOf(this.find(id)) }
+  /** The tools the server lists, through Smithery's stateless MCP endpoint for one connection. */
+  private async listTools(id: string): Promise<number> {
+    const token = (await this.serviceToken()).value
+    const call = async (rpc: Record<string, unknown>) => this.request(`${API}/connect/${this.state.namespace}/${id}/mcp`, 4 * 1024 * 1024, {
+      method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', ...rpc }), timeoutMs: 30_000,
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    })
+    const init = await call({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'caboose', version: '1' } } })
+    if (init.status !== 200 || !rpcResult(init, 1)) throw new Error('initialize failed')
+    const tools = await call({ id: 2, method: 'tools/list', params: {} })
+    const result = tools.status === 200 ? rpcResult(tools, 2) : null
+    if (!result || !Array.isArray(result.tools)) throw new Error('tools/list failed')
+    return Math.min(result.tools.length, 10_000)
+  }
+
+  /** Removes a server from Smithery and this computer; running chats lose it on their next call. */
+  remove(id: string) {
+    return this.exclusive(async () => {
+      this.find(id)
+      await this.deleteRemote(id)
+      this.forget(id)
+      await this.save()
+      this.changed(id)
+      if (!this.state.connections.length) await this.withdraw()
+      return { removed: true }
+    })
+  }
+  private async deleteRemote(id: string): Promise<void> {
+    if (!await this.remote(id)) return
+    const response = await this.smithery(`/connect/${this.state.namespace}/${id}`, { method: 'DELETE' })
+    if (response.status !== 200 && response.status !== 204 && response.status !== 404) throw failure(response, 'Remove the server')
+  }
+  private forget(id: string): void {
+    this.state.connections = this.state.connections.filter(c => c.id !== id)
+    this.statuses.delete(id)
+  }
+  private find(id: string): Record_ {
+    const connection = CONNECTION_ID.test(id) ? this.state.connections.find(c => c.id === id) : undefined
+    if (!connection) throw new AgentNotFoundError('That server is not in this computer\'s Library')
+    return connection
+  }
   /**
    * Smithery's record of a connection, if it is this computer's: one another computer on the
    * same account made is never changed or removed from here.
@@ -261,153 +380,61 @@ export class McpLibrary {
     return body
   }
 
-  /** Gives a server the settings it asked for. Only the fields it asked for are accepted. */
-  async configure(id: string, input: unknown) {
-    await this.load()
-    const connection = this.find(id)
-    const status = this.statuses.get(id)
-    if (status?.state !== 'needs-setup') throw new AgentConflictError('This server is not waiting for settings')
-    const values = input && typeof input === 'object' ? input as Record<string, unknown> : {}
-    const headers: Record<string, string> = {}, query: Record<string, string> = {}
-    for (const [key, value] of Object.entries(values)) {
-      const field = status.fields.find(f => f.key === key)
-      if (!field) throw new AgentInputError(`${key.slice(0, 80)} is not a setting this server asked for`)
-      if (typeof value !== 'string' || value.length > MAX_VALUE || /[\x00-\x1f\x7f]/.test(value)) throw new AgentInputError(`${field.label} has an invalid value`)
-      if (value) (field.where === 'header' ? headers : query)[key] = value
-    }
-    for (const field of status.fields) if (field.required && !(field.key in headers || field.key in query)) throw new AgentInputError(`${field.label} is required`)
-    let mcpUrl: string | undefined
-    if (Object.keys(query).length) {
-      if (!connection.mcpUrl) throw new AgentConflictError('Smithery did not say where this server is; remove and add it again')
-      const url = new URL(connection.mcpUrl)
-      for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value)
-      mcpUrl = url.href
-    }
-    const generation = this.generation
-    if (!await this.remote(id)) throw new AgentNotFoundError('Smithery no longer has this server. Remove it, then add it again.')
-    const response = await this.smithery(`/connect/${this.state.namespace}/${id}`, { method: 'PUT', body: { ...(mcpUrl ? { mcpUrl } : {}), ...(Object.keys(headers).length ? { headers } : {}) } })
-    if (response.status !== 200 && response.status !== 201) throw failure(response, 'Save the settings')
-    if (generation !== this.generation && !this.state.connections.some(c => c.id === id)) throw new AgentNotFoundError('The server was removed')
-    return this.settle(id, readStatus(json(response).status))
-  }
-
-  /** Asks Smithery how the server is; connected means it listed its tools. */
-  async check(id: string, announce = true) {
-    await this.load()
-    this.find(id)
-    const body = await this.remote(id)
-    if (!body) { this.statuses.set(id, { state: 'failed', message: 'Smithery no longer has this server. Remove it, then add it again.' }); return this.view(id) }
-    const connection = this.state.connections.find(c => c.id === id)
-    if (connection && typeof body.mcpUrl === 'string') connection.mcpUrl = body.mcpUrl.slice(0, 1000)
-    return this.settle(id, readStatus(body.status), announce)
-  }
-  private async settle(id: string, status: ConnectionStatus, announce = true) {
-    const generation = this.generation
-    let settled = status
-    if (status.state === 'connected') {
-      const tools = await this.listTools(id).catch(() => null)
-      settled = tools === null ? { state: 'failed', message: 'Smithery connected, but the server did not list its tools. Check it again later.' }
-        : tools === 0 ? { state: 'failed', message: 'The server connected but offers no tools.' } : { state: 'connected', tools }
-    }
-    // A server removed while this ran is not brought back.
-    if (!this.state.connections.some(c => c.id === id)) throw new AgentNotFoundError('The server was removed')
-    this.statuses.set(id, settled)
-    if (announce || generation !== this.generation) this.options.emit({ type: 'mcp.changed', id })
-    if (settled.state === 'connected') await this.sync().catch(error => console.error('Cannot update the computer\'s Library:', error instanceof Error ? error.message : error))
-    return this.view(id)
-  }
-  private view(id: string) {
-    const connection = this.find(id)
-    return { id, server: connection.server, name: connection.name, iconId: this.options.catalog.iconId(connection.iconUrl), addedAt: connection.addedAt, status: this.statuses.get(id) ?? { state: 'checking' as const } }
-  }
-  /** The tools the server lists, through Smithery's stateless MCP endpoint for one connection. */
-  private async listTools(id: string): Promise<number> {
-    const token = await this.serviceToken()
-    const call = async (rpc: Record<string, unknown>) => this.request(`${API}/connect/${this.state.namespace}/${id}/mcp`, 4 * 1024 * 1024, {
-      method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', ...rpc }), timeoutMs: 30_000,
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
-    })
-    const init = await call({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'caboose', version: '1' } } })
-    if (init.status !== 200 || !rpcResult(init, 1)) throw new Error('initialize failed')
-    const tools = await call({ id: 2, method: 'tools/list', params: {} })
-    const result = tools.status === 200 ? rpcResult(tools, 2) : null
-    if (!result || !Array.isArray(result.tools)) throw new Error('tools/list failed')
-    return Math.min(result.tools.length, 10_000)
-  }
-
-  /** Removes a server from Smithery and this computer; running chats lose it on their next call. */
-  async remove(id: string) {
-    await this.load()
-    this.find(id)
-    if (await this.remote(id)) {
-      const response = await this.smithery(`/connect/${this.state.namespace}/${id}`, { method: 'DELETE' })
-      if (response.status !== 200 && response.status !== 204 && response.status !== 404) throw failure(response, 'Remove the server')
-    }
-    this.state.connections = this.state.connections.filter(c => c.id !== id)
-    this.statuses.delete(id)
-    await this.save()
-    this.changed(id)
-    await this.sync().catch(error => console.error('Cannot update the computer\'s Library:', error instanceof Error ? error.message : error))
-    return { removed: true }
-  }
-  private find(id: string): Record_ {
-    const connection = CONNECTION_ID.test(id) ? this.state.connections.find(c => c.id === id) : undefined
-    if (!connection) throw new AgentNotFoundError('That server is not in this computer\'s Library')
-    return connection
-  }
-
-  /** A day-long token for this computer's connections only, minted with the account's key. */
-  private async serviceToken(): Promise<string> {
-    const account = this.account_
-    if (this.token && this.token.account === account && this.now - this.token.mintedAt < REFRESH_MS) return this.token.value
+  /** A token for this computer's connections only, minted with the account's key; Smithery says when it ends. */
+  private async serviceToken(): Promise<{ value: string; expiresAt: number }> {
+    const account = this.state.account!
+    if (this.token && this.token.account === account && this.token.expiresAt - this.now > RENEW_BEFORE_MS) return this.token
     const response = await this.smithery('/tokens', { method: 'POST', body: { policy: [{ namespaces: this.state.namespace, resources: 'connections', operations: ['read', 'execute'], metadata: { caboose: this.options.tag }, ttl: TOKEN_MS / 1000 }] } })
     if (response.status !== 200 && response.status !== 201) throw failure(response, 'Create an access token')
-    const value = json(response).token
-    if (typeof value !== 'string' || !/^[\x21-\x7e]{8,4000}$/.test(value)) throw new Error('Smithery returned no access token')
-    // Fail closed: a token for an account that has since changed is thrown away.
-    if (account !== this.account_) throw new AgentConflictError('The Smithery account changed')
-    this.token = { value, mintedAt: this.now, account }
-    return value
+    const body = json(response)
+    const expiresAt = typeof body.expiresAt === 'string' ? Date.parse(body.expiresAt) : NaN
+    if (typeof body.token !== 'string' || !/^[\x21-\x7e]{8,4000}$/.test(body.token) || !Number.isFinite(expiresAt) || expiresAt <= this.now) throw new Error('Smithery returned no usable access token')
+    this.token = { value: body.token, expiresAt: Math.min(expiresAt, this.now + TOKEN_MS), account }
+    return this.token
   }
 
   /**
-   * Brings the computer's descriptor up to date: the namespace endpoint and a current token
-   * while the Library has servers, nothing once it has none. Run before chats start, on wake,
-   * after changes, and hourly; the computer must be running.
+   * Brings the computer's access up to date: the namespace endpoint and a current token while
+   * the Library has servers, nothing otherwise. Run before chats start and continue, after
+   * changes, and hourly; the computer must be running.
    */
-  async sync(): Promise<boolean> {
-    await this.load()
-    const guest = this.options.guest()
-    if (!guest) return false
-    if (!this.state.apiKey || !this.state.namespace || !this.state.connections.length) {
-      if (this.syncedFor === '') return false
-      await guest.run('/bin/rm', ['-f', '--', DESCRIPTOR], 15_000)
-      this.syncedFor = ''
-      return false
-    }
-    const account = this.account_
-    let token: string
+  sync(force = false): Promise<boolean> {
+    return this.exclusive(async () => {
+      if (force) this.published = null
+      return this.publish()
+    })
+  }
+  private async publish(): Promise<boolean> {
+    if (!this.options.guest()) return false
+    if (!this.state.apiKey || !this.state.namespace || !this.state.account || !this.state.connections.length) { await this.withdraw(); return false }
+    let token: { value: string; expiresAt: number }
     try { token = await this.serviceToken() } catch (error) {
-      // No token, no access: the computer keeps none it cannot refresh.
-      await guest.run('/bin/rm', ['-f', '--', DESCRIPTOR], 15_000).catch(() => {})
-      this.syncedFor = null
+      // No token, no access: the computer keeps none Caboose cannot renew.
+      await this.withdraw().catch(() => {})
       throw error
     }
-    if (account !== this.account_) return false
-    const key = `${this.state.namespace}:${this.token!.mintedAt}`
-    if (this.syncedFor === key) return true
-    const descriptor = JSON.stringify({ url: `https://mcp.smithery.run/${this.state.namespace}`, token, expiresAt: new Date(this.token!.mintedAt + TOKEN_MS).toISOString() })
-    // Written as root and handed to the computer's user, private to it.
-    await guest.run('/bin/sh', ['-c', 'umask 077 && mkdir -p "${1%/*}" && printf %s "$2" | base64 -d > "$1.tmp" && chown -R caboose:caboose "${1%/*/*/*}/state" && chmod 600 "$1.tmp" && mv -f "$1.tmp" "$1"',
-      'sh', DESCRIPTOR, Buffer.from(descriptor).toString('base64')], 15_000)
-    this.syncedFor = key
+    const key = `${this.state.account}:${token.expiresAt}`
+    if (this.published === key) return true
+    if (!this.options.writeFile) throw new Error('This computer has no private file transfer')
+    const guest = this.options.guest()
+    if (!guest) return false
+    await guest.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/bin/mkdir', '-p', '-m', '700', '/home/caboose/.local/state/caboose'], 15_000)
+    const descriptor = { url: `https://mcp.smithery.run/${this.state.namespace}`, account: this.state.account, token: token.value, expiresAt: new Date(token.expiresAt).toISOString() }
+    await this.options.writeFile(DESCRIPTOR_PATH, Buffer.from(JSON.stringify(descriptor)))
+    this.published = key
     return true
+  }
+  /** Takes the computer's access away. */
+  private async withdraw(): Promise<void> {
+    if (this.published === '') return
+    const guest = this.options.guest()
+    if (!guest) { this.published = null; return }
+    await guest.run('/bin/rm', ['-f', '--', DESCRIPTOR], 15_000)
+    this.published = ''
   }
   /** Whether new chats should be given the `caboose-library` server. */
   async active(): Promise<boolean> {
     await this.load()
     return !!this.state.apiKey && this.state.connections.length > 0
   }
-  /** The guest dropped its state (a restart, a new container): write it again on the next sync. */
-  forgetSync(): void { this.syncedFor = null }
 }
