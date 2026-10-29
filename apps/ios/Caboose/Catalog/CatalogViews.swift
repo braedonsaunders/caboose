@@ -18,36 +18,9 @@ private func symbol(_ category: String) -> String {
     }
 }
 
-struct ShelfTile: View {
-    let app: CatalogApp
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 18).fill(.white.opacity(0.08))
-                    if let icon = app.icon { Image(uiImage: icon).resizable().scaledToFit().padding(8).opacity(app.installedVersion == nil ? 0.58 : 1) }
-                    else { Image(systemName: symbol(app.category)).font(.title).foregroundStyle(.secondary) }
-                    if app.busy {
-                        RoundedRectangle(cornerRadius: 18).fill(.black.opacity(0.45))
-                        if let value = app.progress?.downloadFraction {
-                            Circle().stroke(.white.opacity(0.25), lineWidth: 4).frame(width: 32, height: 32)
-                            Circle().trim(from: 0, to: value).stroke(.white, style: StrokeStyle(lineWidth: 4, lineCap: .round)).rotationEffect(.degrees(-90)).frame(width: 32, height: 32)
-                        } else { ProgressView().tint(.white) }
-                    }
-                }
-                .frame(width: 68, height: 68)
-                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
-                Text(app.name).font(.caption).lineLimit(1)
-                Text(app.busy ? (app.progress?.label ?? "Preparing") : app.needsRecovery ? "Needs attention" : app.installedVersion != nil ? "Open" : (app.size.map { "Get · \($0)" } ?? "Get")).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-            }
-        }.buttonStyle(.plain).disabled(app.busy)
-    }
-}
-
-/// Every app the computer can add. Its front page is shelves of icons: Popular, then each
+/// Every app the computer can add. Its front page is rows of icons: Popular, then each
 /// category, Caboose's own apps among them. A search lists every match; See All lists a
-/// shelf's whole category. Each app installs on its own.
+/// row's whole category. Each app installs on its own.
 struct CatalogLibrary: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -96,7 +69,7 @@ struct CatalogLibrary: View {
                     }
                 }
                 ForEach(catalog.storefront) { group in
-                    StorefrontShelf(group: group, close: { dismiss() })
+                    StorefrontRow(group: group, close: { dismiss() })
                 }
                 if let error = catalog.storefrontError {
                     VStack(alignment: .leading, spacing: 8) {
@@ -114,8 +87,8 @@ struct CatalogLibrary: View {
     }
 }
 
-/// One shelf of the front page: its title, See All, and a row of app tiles.
-private struct StorefrontShelf: View {
+/// One row of the front page: its title, See All, and a row of app tiles.
+private struct StorefrontRow: View {
     let group: StorefrontGroup
     let close: () -> Void
 
@@ -138,7 +111,7 @@ private struct StorefrontShelf: View {
     }
 }
 
-/// An app on a shelf: its icon, name and what it is, and Get, its progress, or Open.
+/// An app in a row: its icon, name and what it is, and Get, its progress, or Open.
 private struct StoreTile: View {
     @Environment(AppModel.self) private var model
     let app: CatalogApp

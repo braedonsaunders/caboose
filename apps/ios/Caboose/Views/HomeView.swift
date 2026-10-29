@@ -897,21 +897,6 @@ struct AppButton: View {
     }
 }
 
-struct SectionHeader: View {
-    let title: String
-    var more: (() -> Void)?
-
-    var body: some View {
-        HStack {
-            Text(title).font(.title3.weight(.bold))
-            Spacer()
-            if let more {
-                Button("See All", action: more).font(.subheadline.weight(.semibold))
-            }
-        }
-    }
-}
-
 struct AppTile: View {
     static let cornerRadius: CGFloat = 18
     let app: HostClient.App

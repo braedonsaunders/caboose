@@ -38,9 +38,9 @@ tasks and choosing a default agent live in the app, and the console does not rep
     create a folder, rename, or move to the Trash. The folder is in the address
     (`/computers/<id>/files?path=…`), so back and forward work. File requests wake a parked
     computer, so a parked one is woken only when you ask.
-  - **Apps** — the Library: every app the computer can add. Its front page is shelves of
+  - **Apps** — the Library: every app the computer can add. Its front page is rows of
     app cards (Popular, then one per category, Caboose's curated apps among them), each with
-    its icon and its one action; **See all** lists a shelf's whole category. Search (after a
+    its icon and its one action; **See all** lists a row's whole category. Search (after a
     300 ms pause) lists matches across everything. Lists show each app's developer (and a
     mark for Flathub's verified publishers) and license, and load more as you scroll, or with
     **Show more**. Each app installs on its own. **Updates**: apps update on their own, and

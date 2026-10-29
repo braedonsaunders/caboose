@@ -379,11 +379,11 @@ The Library is every application a computer can add: Caboose's curated entries
 applications. A Flathub application that is also a curated entry (`flathub` in `catalog.json`)
 is shown once, as the curated entry. Every operation is on one application.
 
-- **Storefront.** The Library's front page is shelves: Popular (every application by installs
+- **Storefront.** The Library's front page is rows: Popular (every application by installs
   in the last month, a curated entry counted by its Flathub twin's), then one per category
   with Caboose's entries first and the category's most installed Flathub applications after,
-  15 to a shelf.
-- **Lists.** A search, or a shelf's whole category, is one ranked list: curated matches first,
+  15 to a row.
+- **Lists.** A search, or a row's whole category, is one ranked list: curated matches first,
   then Flathub's by popularity, or with a query by relevance weighted by popularity.
 
 - **Flathub.** The host keeps its own index of Flathub's desktop applications for the
@@ -483,7 +483,7 @@ percentage. `downloadedBytes` and `totalBytes` accompany it. Preparation, verifi
 repository refresh, package installation, package configuration (including triggers) and
 removal are indeterminate, with `value: null`. Package setup can continue after dpkg
 reports the application's version; only the installer finishing completes the operation.
-The Shelf names the current stage. The Library also shows download bytes and offers
+The Library names the current stage, shows download bytes and offers
 Retry for failed or interrupted operations even when the application is already installed.
 
 Craft applications (`ai.storyteller.<name>.desktop`) are launched on the owner display's
@@ -1866,7 +1866,7 @@ repeated lines removed and clipped to a few lines, opens on tap.
 | Home | Today: the computer's state; its windows live in most-recently-used order, or while it rests their last pictures, kept on the phone; approvals (answered in place) and agents at work; agent turns that ended and visible files that changed since the app last left the screen, else the newest visible files (from the same `/v1/fs` scan that feeds Spotlight); pinned and recent apps; AirPlay; and Ask, which opens a window, app or file by name or starts a chat with the default agent |
 | Desktop | The computer's desktop on this screen, configured for exactly the space beside or between the bars, with Keyboard, AirPlay and Full Screen in the toolbar; while a TV shows the desktop, the phone's trackpad |
 | Agents | The Ask bar, approvals, tasks and the agent seat's windows |
-| Apps | Every desktop entry, the Shelf and Library |
+| Apps | Every desktop entry, System Settings & Tools last, and Library |
 | Terminal | A native terminal, present when the app is built with it |
 
 `caboose://home`, `desktop`, `agents`, `apps` and `terminal` select a tab;

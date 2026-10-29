@@ -1,8 +1,8 @@
 import CabooseKit
 import SwiftUI
 
-/// Every app on the computer, and the curated apps to add: the Shelf, and Library for every
-/// app there is to get, collections, updates and removal.
+/// Every app on the computer, with System Settings & Tools last. Library, in the toolbar, is
+/// where apps are added, updated and removed.
 struct AppsScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.shellTabPlacement) private var placement
@@ -18,7 +18,6 @@ struct AppsScreen: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 28) {
                             installed
-                            if search.isEmpty { shelf }
                         }
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
@@ -95,26 +94,6 @@ struct AppsScreen: View {
                         .foregroundStyle(.secondary)
                 }
                 .tint(.secondary)
-            }
-        }
-    }
-
-    /// Curated apps: just installed first, then the ones to get. Other apps join only while
-    /// they install or need attention; once installed they are with the rest above.
-    @ViewBuilder private var shelf: some View {
-        let recent = model.catalog.apps.filter { model.catalog.recentInstalls.contains($0.id) }
-        let available = recent + model.catalog.apps.filter { $0.installedVersion == nil && !model.catalog.recentInstalls.contains($0.id) }
-        if !available.isEmpty {
-            VStack(alignment: .leading, spacing: 14) {
-                SectionHeader(title: "Shelf") { showLibrary = true }
-                LazyVGrid(columns: columns, spacing: 22) {
-                    ForEach(available) { app in
-                        ShelfTile(app: app) {
-                            if app.installedVersion != nil, let installed = model.apps.first(where: { $0.id == app.desktopId }) { model.open(installed) }
-                            else if app.installedVersion == nil { Task { await model.catalog.perform(app.id, action: "install") } }
-                        }
-                    }
-                }
             }
         }
     }

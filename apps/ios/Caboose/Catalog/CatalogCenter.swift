@@ -94,7 +94,7 @@ struct CatalogApp: Decodable, Identifiable {
     }
 }
 struct CatalogResponse: Decodable { let apps: [CatalogApp] }
-/// A shelf of the Library's front page: Popular, then one per category.
+/// A row of the Library's front page: Popular, then one per category.
 struct StorefrontGroup: Decodable, Identifiable {
     let id: String
     let title: String
@@ -106,7 +106,7 @@ struct StorefrontGroup: Decodable, Identifiable {
 @MainActor @Observable
 final class CatalogCenter {
     private(set) var apps: [CatalogApp] = []
-    /// The Library's front page, a shelf at a time; it shows until a search or category.
+    /// The Library's front page, a row at a time; it shows until a search or category.
     private(set) var storefront: [StorefrontGroup] = []
     private(set) var storefrontError: String?
     /// The Library: one ranked list from discover, curated apps first, a page at a time.
@@ -122,7 +122,6 @@ final class CatalogCenter {
     private var nextOffset: Int?
     private var failedOffset = 0
     private var libraryGeneration = 0
-    private(set) var recentInstalls: Set<String> = []
     var error: String?
     private var hostGeneration = 0
     private var host: HostClient?
@@ -138,7 +137,7 @@ final class CatalogCenter {
     }
     /// The Library works while the computer is parked, so it attaches before any wake has.
     func prepare(_ host: HostClient?) { if self.host == nil, let host { attach(host) } }
-    func reset() { hostGeneration += 1; clearLibrary(); host = nil; apps = []; storefront = []; storefrontError = nil; recentInstalls = []; categories = []; error = nil }
+    func reset() { hostGeneration += 1; clearLibrary(); host = nil; apps = []; storefront = []; storefrontError = nil; categories = []; error = nil }
     private func clearLibrary() {
         libraryGeneration += 1; libraryLoading = false; libraryLoaded = false; library = []; libraryError = nil; nextOffset = nil; libraryQuery = LibraryQuery()
     }
@@ -223,7 +222,6 @@ final class CatalogCenter {
             if let index = apps.firstIndex(where: { $0.id == id }) { apps[index].progress = progress }
             if let index = library.firstIndex(where: { $0.id == id }) { library[index].progress = progress }
             for group in storefront.indices { if let index = storefront[group].apps.firstIndex(where: { $0.id == id }) { storefront[group].apps[index].progress = progress } }
-            if phase == "finished" && operation == "install" { recentInstalls.insert(id) }
             if phase == "failed" { error = event["message"] as? String ?? "The application could not be installed." }
         }
         if type == "catalog.changed" { Task { await refresh(); await onChange?() } }

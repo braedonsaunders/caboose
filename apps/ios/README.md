@@ -376,10 +376,10 @@ what the phone measured on the current connection (round trip, data received, de
 queue times, send backlog, typing echo). A figure without a sample shows a dash. Beside the cog, the lifecycle menu shows the
 computer's state and offers Turn On, Park and Restart as they apply. Both use the host's
 management API (`docs/architecture.md`) and follow `computer.settings` events on the control
-socket. The Apps tab's Shelf offers Caboose's curated applications to get; apps installed from
-anywhere join the rest of the computer's apps above it. **Library** is every app the computer can add. Its front page is shelves of icons: Popular,
+socket. The Apps tab lists every app on the computer, with System Settings & Tools last; its
+Library button (top right) opens **Library**, every app the computer can add. Its front page is rows of icons: Popular,
 then one per category, Caboose's curated apps among them, each with Get, its progress, Retry or
-Open. See All lists a shelf's whole category, and Search (after a 300 ms pause) lists matches
+Open. See All lists a row's whole category, and Search (after a 300 ms pause) lists matches
 across everything; those lists show each app's developer (with a seal for Flathub's verified
 publishers) and license, and load more as you scroll. Each app installs on its own. Apps update
 on their own; an app with a newer version waiting is listed under Updates with Update Now. An
@@ -444,8 +444,8 @@ by a simulator build. On a signed device paired to a deployed computer, check:
 - **Shortcuts, widgets and Spotlight.** Run each shortcut and check its input and output
   files; configure and tap the widgets and controls; create, rename and delete a nested file
   and check Spotlight; sign out and verify the entries disappear.
-- **Shelf and Library.** Install PhotoCraft from the Shelf, follow its progress, open it, and
-  remove it from Library.
+- **Library.** Open Library from the Apps tab, install PhotoCraft, follow its progress, open
+  it, and remove it.
 - **Tabs and the vertical bar.** On iPhone Duo, closed and open in landscape, every tab's
   bar is on the side with the tabs, the cog and the lifecycle menu; on the Desktop tab the
   desktop fills the space beside the bar and resizes when the device folds or rotates; on a
