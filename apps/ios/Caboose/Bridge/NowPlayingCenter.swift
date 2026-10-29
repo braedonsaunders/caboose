@@ -1,5 +1,6 @@
 import CabooseKit
 import CoreLocation
+import ImageIO
 import MediaPlayer
 import UIKit
 
@@ -144,8 +145,10 @@ private final class ArtworkLoader {
     }
 
     private nonisolated static func fetch(_ url: URL, session: URLSession) async -> UIImage? {
-        guard url.scheme == "https", let (bytes, response) = try? await session.bytes(from: url),
-              let http = response as? HTTPURLResponse, http.statusCode == 200,
+        guard url.scheme == "https", let (bytes, response) = try? await session.bytes(from: url) else { return nil }
+        // Every exit, the cap included, ends the transfer.
+        defer { bytes.task.cancel() }
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               http.mimeType?.hasPrefix("image/") == true, http.expectedContentLength <= Int64(limit) else { return nil }
         var data = Data()
         do {
@@ -154,7 +157,20 @@ private final class ArtworkLoader {
                 if data.count > limit { return nil }
             }
         } catch { return nil }
-        return UIImage(data: data)
+        return thumbnail(data)
+    }
+
+    /// At most 512 pixels on a side, decoded only at that size: a small file can name huge
+    /// dimensions.
+    private nonisolated static func thumbnail(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 512,
+                  kCGImageSourceShouldCacheImmediately: true,
+              ] as CFDictionary) else { return nil }
+        return UIImage(cgImage: image)
     }
 }
 

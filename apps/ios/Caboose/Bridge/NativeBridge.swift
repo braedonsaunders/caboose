@@ -198,9 +198,10 @@ final class NativeBridge {
     /// The document picker returned: computer files answer with their own paths, others are
     /// copied to the computer the request came from and kept in sync with their originals.
     private func picked(_ urls: [URL], ticket: BridgeLifecycle.Ticket) {
-        pickerDelegate = nil
-        // A picker from before a reset, a lost connection or the background does nothing.
+        // A picker from before a reset, a lost connection or the background does nothing,
+        // and leaves the current picker's delegate alone.
         guard life.isCurrent(ticket), let (request, computer) = requests[ticket.request] else { return }
+        pickerDelegate = nil
         guard !urls.isEmpty else { finish(ticket, .cancel); return }
         let progress = UIHostingController(rootView: BridgeSendingView(count: urls.count))
         progress.modalPresentationStyle = .overFullScreen
