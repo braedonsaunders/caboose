@@ -47,6 +47,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var presentedGeneration: UInt64 = .max
     private var lastPointer = CGPoint.zero
     private var directDrag = DirectPointerDrag()
+    private let pointerClicks = PointerClickDriver()
     private let scrollDriver = ScrollDriver()
     private var scrollUsesDirectTouch = false
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
@@ -202,8 +203,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         caretAnchor = point
         move(to: point)
         session.focus(window)
-        session.pointerButton(in: window, button: button, pressed: true, at: lastPointer)
-        session.pointerButton(in: window, button: button, pressed: false, at: lastPointer)
+        pointerClicks.click(in: window, session: session, at: lastPointer, button: button)
         if button == 3 { showSecondaryClick(at: point) }
     }
 
@@ -391,6 +391,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let point = gesture.location(in: self)
         switch gesture.state {
         case .began:
+            pointerClicks.cancel()
             stopMomentum()
             focusCheck = nil
             if let window = remoteWindow { session?.focus(window) }
@@ -421,6 +422,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let point = gesture.location(in: self)
         switch gesture.state {
         case .began:
+            pointerClicks.cancel()
             stopMomentum()
             move(to: point)
             session.pointerButton(in: window, button: 1, pressed: true, at: lastPointer)
@@ -572,6 +574,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     /// Lifts every finger the app still thinks is down, e.g. when the view leaves the screen.
     @objc private func cancelTouches() {
+        pointerClicks.cancel()
         stopMomentum()
         sendDirectDrag(directDrag.cancel())
         if let window = remoteWindow, let session {

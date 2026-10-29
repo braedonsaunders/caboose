@@ -2257,3 +2257,5 @@ For chats created before model-state reporting, idle model discovery reads provi
 without claiming to know that chat’s current model (`currentModelKnown: false`). Selecting a
 model retires only the identified idle runner before saving the request; the next reply
 resumes its conversation with the new runner and applies the choice before prompting.
+
+Synthetic mouse clicks from app cards, the desktop and its trackpad retain a 100 ms button-down interval and a 20 ms up interval between queued clicks. This lets frame-sampled desktop interfaces observe both edges. A drag or detached input view cancels pending clicks and releases the active button; queued input is fenced to the original session connection and window. Native touch sequences retain their original phases.

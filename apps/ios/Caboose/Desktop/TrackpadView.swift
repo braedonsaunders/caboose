@@ -113,6 +113,7 @@ final class TrackpadSurface: RemoteTextInputView {
     weak var model: AppModel?
     var dismissInline: (() -> Void)?
     var wantsKeyboard = false
+    private let pointerClicks = PointerClickDriver()
     var inputEnabled = true
     var pointerEnabled = true
     weak var target: RemoteWindow? {
@@ -294,16 +295,16 @@ final class TrackpadSurface: RemoteTextInputView {
             point.y = min(0.999, max(0, point.y + delta.y * scale / max(1, target.frame.height)))
             session.pointerMove(in: target, to: pixel())
         case .scroll(let delta): session.scroll(in: target, dx: delta.x, dy: delta.y, at: pixel())
-        case .beginDrag: session.focus(target); button(1, true)
+        case .beginDrag: pointerClicks.cancel(); session.focus(target); button(1, true)
         case .endDrag: button(1, false)
         case .click(let number):
             session.focus(target)
-            button(number, true); button(number, false)
+            pointerClicks.click(in: target, session: session, at: pixel(), button: number)
             if number == 1 { checkTextFocus(session, target: target) }
             haptics.impactOccurred()
         case .doubleClick:
             session.focus(target)
-            button(1, true); button(1, false)
+            pointerClicks.click(in: target, session: session, at: pixel())
             checkTextFocus(session, target: target)
         }
         LaptopPointer.shared.show(in: target, session: session, at: point, owner: self)
@@ -370,6 +371,7 @@ final class TrackpadSurface: RemoteTextInputView {
     }
 
     func endInteraction() {
+        pointerClicks.cancel()
         scrollDriver.cancel()
         scrolling = false
         zoomGesture.reset()

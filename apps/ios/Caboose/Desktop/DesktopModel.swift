@@ -172,12 +172,14 @@ final class DesktopModel {
     }
 
     /// The windows a ready session last showed, to tell a closed window from a reconnect.
+    private let pointerClicks = PointerClickDriver()
     private var liveWindows: (session: ObjectIdentifier, ids: Set<Int>)?
 
     /// Follows the computer's windows. A window's place is forgotten when it closes: when it
     /// leaves a session that is still ready. A dropped or replaced connection forgets nothing,
     /// since window ids survive reconnects and parking.
     func sync(with windows: [RemoteWindow], session: (any DisplaySession)? = nil) {
+        if session?.state != .ready || session.map(ObjectIdentifier.init) != liveWindows?.session { pointerClicks.cancel() }
         let ids = Set(windows.map(\.id))
         stacking.removeAll { !ids.contains($0) }
         for window in windows.sorted(by: { $0.id < $1.id }) where !stacking.contains(window.id) {
@@ -382,14 +384,14 @@ final class DesktopModel {
             if !window.isAuxiliary { raise(id) }
             focus(id, session)
             session.pointerMove(in: window, to: local)
-            session.pointerButton(in: window, button: button, pressed: true, at: local)
-            session.pointerButton(in: window, button: button, pressed: false, at: local)
+            pointerClicks.click(in: window, session: session, at: local, button: button)
         case .none:
             break
         }
     }
 
     func beginDrag(session: (any DisplaySession)?) {
+        pointerClicks.cancel()
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
         switch hit {
