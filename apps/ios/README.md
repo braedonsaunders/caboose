@@ -550,3 +550,7 @@ separate motion or passthrough layers. Test an ordinary video page through resiz
 fullscreen/exit, minimize/restore and Laptop/Tablet transitions: one picture must move
 with its window. Audio packets play on a continuous sample timeline; test sustained
 speech/music, pause/resume and an audio-session interruption without choppy gaps.
+
+Laptop reopen check: with one app open, relaunch while the phone is bent. The app fills
+the upper panel through its bottom edge; delayed window metadata or a settling safe area
+must not leave the initial cascade frame surrounded by wallpaper.

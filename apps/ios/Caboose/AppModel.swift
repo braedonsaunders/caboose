@@ -563,8 +563,9 @@ final class AppModel {
             }
             if laptopNeedsInitialFit, laptopDesktopActive, !externalDisplayActive,
                let front = desktop.frontWindow(in: session.windows) {
-                laptopNeedsInitialFit = false
-                desktop.snap(front.id, .maximized, session)
+                // Window class and minimum size may arrive after its first announcement.
+                // Keep the fit pending until there is a real, usable placement.
+                if desktop.snap(front.id, .maximized, session) { laptopNeedsInitialFit = false }
             }
             // Dialogs and tool windows: over their parent, or centred, never left at the origin.
             // Menus and tooltips (override-redirect) keep the place the app chose.

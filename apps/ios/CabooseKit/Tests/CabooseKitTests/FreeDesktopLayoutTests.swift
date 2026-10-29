@@ -238,6 +238,20 @@ struct FreeDesktopLayoutTests {
         #expect(layout.places[0] == nil && layout.places[4] == nil && layout.places[5] != nil)
     }
 
+    @Test func aLateWindowClassCanStillFillTheLaptopPanel() {
+        var layout = FreeDesktopLayout()
+        let panel = CGRect(x: 0, y: 0, width: 669, height: 440)
+        let provisional = CGRect(x: 6, y: 50, width: 657, height: 300)
+        layout.setPreferred(29, frame: provisional, in: panel, app: nil)
+        // A provisional id is not yet an applicable placement; do not consume an
+        // initial-fit request until the class arrives and a snap can be resolved.
+        #expect(layout.frame(for: 29, app: nil, in: panel) == nil)
+        layout.setSnap(29, .maximized, current: provisional, in: panel, app: "Chromium")
+        #expect(layout.frame(for: 29, app: "Chromium", in: panel) == panel)
+        let finalPanel = CGRect(x: 0, y: 0, width: 669, height: 486)
+        #expect(layout.frame(for: 29, app: "Chromium", in: finalPanel) == finalPanel)
+    }
+
     @Test func survivesEncoding() {
         var layout = FreeDesktopLayout()
         layout.setPreferred(2, frame: CGRect(x: 40, y: 50, width: 600, height: 400), in: tv, app: "Chromium")

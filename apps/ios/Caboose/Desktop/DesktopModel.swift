@@ -550,14 +550,17 @@ final class DesktopModel {
 
     /// Snaps a window to a side, a corner or the whole work area, or (nil) back to its own
     /// frame, and focuses it.
-    func snap(_ id: Int, _ snap: FreeDesktopLayout.Snap?, _ session: any DisplaySession) {
-        guard let window = session.windows[id], !window.isAuxiliary else { return }
-        if let snap, !FreeDesktopLayout.allows(snap, in: workArea, minimum: minimumChrome(window)) { return }
+    @discardableResult
+    func snap(_ id: Int, _ snap: FreeDesktopLayout.Snap?, _ session: any DisplaySession) -> Bool {
+        guard let window = session.windows[id], !window.isAuxiliary, app(window) != nil,
+              size.width > 0, size.height > 0 else { return false }
+        if let snap, !FreeDesktopLayout.allows(snap, in: workArea, minimum: minimumChrome(window)) { return false }
         raise(id)
         focus(id, session)
         layout.setSnap(id, snap, current: chromeRect(window), in: workArea, app: app(window))
         save()
         applyPlace(window, session)
+        return placedFrame(window) != nil
     }
 
     private func applyPlace(_ window: RemoteWindow, _ session: any DisplaySession) {
