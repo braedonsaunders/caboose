@@ -1,3 +1,58 @@
 @import '@braedonsaunders/appkit-ui/styles.css';
 @import '@braedonsaunders/appkit-dashboard/primitives.css';
 @source './';
+
+/* Product rhythm stays on AppKit's semantic channels in both themes. */
+html.light { color-scheme: light; }
+html.dark { color-scheme: dark; }
+.console-page-header { padding-block: .125rem .875rem; border-bottom: 1px solid rgb(var(--ch-border)); }
+.console-page-header h1 { font-size: clamp(1.6rem, 2.4vw, 2rem); letter-spacing: -.035em; line-height: 1.2; }
+.console-page-header header { align-items: center; }
+.console-page-header p { display: block; max-width: 46rem; line-height: 1.6; margin-top: .5rem; }
+.console-metric { border-left-width: 1px; padding: 1rem; box-shadow: inset 0 1px 0 rgb(var(--ch-fg) / .035), 0 2px 5px rgb(var(--ch-fg) / .025); background: linear-gradient(135deg, rgb(var(--ch-primary) / .045), transparent 75%), rgb(var(--ch-surface)); }
+.console-metric:hover { transform: none; box-shadow: none; }
+.console-metric .truncate { white-space: normal; overflow-wrap: anywhere; }
+.console-metric .text-2xl { font-size: 1.8rem; letter-spacing: -.04em; }
+.console-metric .uppercase { text-transform: none; letter-spacing: 0; font-size: .8125rem; font-weight: 500; }
+.console-panel { box-shadow: 0 2px 8px rgb(var(--ch-fg) / .035), inset 0 1px 0 rgb(var(--ch-fg) / .025); }
+.console-panel > header { min-height: 2.875rem; padding-inline: 1rem; background: rgb(var(--ch-bg-subtle) / .4); }
+.console-panel > header h3 { white-space: normal; }
+.console-panel > div { padding: 1rem; }
+.console-panel table th { font-size: .75rem; color: rgb(var(--ch-fg-muted)); font-weight: 500; }
+.console-panel table td { padding-block: .75rem; }
+.console-panel dd { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.console-meter { height: .375rem; overflow: hidden; border-radius: 1rem; background: rgb(var(--ch-border) / .65); }
+.console-meter > span { display: block; height: 100%; border-radius: inherit; }
+.console-notes { border-top: 1px solid rgb(var(--ch-border)); margin-top: 1.25rem; padding-top: 1rem; }
+.console-notes summary { cursor: pointer; font-size: .75rem; color: rgb(var(--ch-fg-muted)); }
+.console-link-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-block: .75rem; border-bottom: 1px solid rgb(var(--ch-border)); }
+.console-link-row:last-child { border-bottom: 0; }
+.console-link-row:hover { color: rgb(var(--ch-primary)); }
+.console-link-row:focus-visible { outline: 2px solid rgb(var(--ch-primary)); outline-offset: 4px; }
+.console-security section { min-width: 0; }
+.console-security input { max-width: 28rem; }
+@media (max-width: 640px) {
+  .console-panel > header, .console-panel > div { padding-inline: 1rem; }
+  .console-metric { padding: 1rem; }
+  .console-page-header { padding-bottom: 1rem; }
+}
+
+/* Short, finite transitions give live data and navigation a readable cadence. */
+.console-metric::before { content: ''; position: absolute; inset: 0 0 auto; height: 2px; background: linear-gradient(90deg, rgb(var(--ch-primary) / .65), rgb(var(--ch-primary) / .05)); }
+.console-panel > header h3 > span { display: grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: .5rem; background: rgb(var(--ch-primary) / .08); }
+.console-panel table tbody tr { transition: background-color 160ms ease; }
+.console-panel table tbody tr:hover { background: rgb(var(--ch-primary) / .035); }
+.console-link-row > svg:last-child { transition: transform 160ms ease; }
+.console-link-row:hover > svg:last-child { transform: translate(2px, -2px); }
+.console-meter > span { transition: width 500ms cubic-bezier(.22,1,.36,1); }
+@keyframes console-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: no-preference) {
+  .console-panel, .console-metric { animation: console-enter 320ms cubic-bezier(.22,1,.36,1) both; }
+  .console-metric:nth-child(2) { animation-delay: 35ms; }
+  .console-metric:nth-child(3) { animation-delay: 70ms; }
+  .console-metric:nth-child(4) { animation-delay: 105ms; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .console-meter > span, .console-link-row > svg, .console-panel table tbody tr { transition: none; }
+  .console-link-row:hover > svg:last-child { transform: none; }
+}

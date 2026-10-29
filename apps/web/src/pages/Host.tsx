@@ -1,9 +1,7 @@
+import { PageHeader, DashboardMetricCard, DashboardPanel } from '../components/console-ui.js'
 import * as React from 'react'
-import { DashboardMetricCard, DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
-import {
-  Alert, AlertDescription, AlertTitle, Badge, PageContainer, PageHeader, Spinner,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@braedonsaunders/appkit-ui'
+
+import { Alert, AlertDescription, AlertTitle, Badge, PageContainer, Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,  } from '@braedonsaunders/appkit-ui'
 import { Activity, Bell, Cpu, HardDrive, MemoryStick, Server, SlidersHorizontal } from 'lucide-react'
 import { formatMemoryMb } from '../api.js'
 import { formatBytes } from '../files.js'
@@ -25,7 +23,7 @@ export function Host({ host, client, onUnauthorized }: { host: HostHandle; clien
       <div className="space-y-6">
         <PageHeader
           title="Host"
-          description="The machine this console talks to: what it runs, how it was started, how it is doing, and where phones can reach it."
+          description="Runtime, health and connection settings for this server."
         />
 
         {hostError ? (
@@ -88,11 +86,11 @@ export function Host({ host, client, onUnauthorized }: { host: HostHandle; clien
 
         {hostInfo ? (
           <DashboardPanel title="Configuration" icon={<SlidersHorizontal className="size-4" aria-hidden />}>
-            <p className="mb-3 text-sm text-fg-muted">
+            <details className="mb-4 text-sm text-fg-muted"><summary className="cursor-pointer">How to change host configuration</summary><p className="mt-3 max-w-3xl leading-relaxed">
               The host reads these when it starts. To change one, set it in the host's environment (<code>deploy/.env</code> for
               Docker Compose, or the service's environment file) and restart caboose-host; it parks the computer before it stops.
               A computer's name, memory, vCPUs and auto-park are edited in its Settings instead.
-            </p>
+            </p></details>
             <Table containerClassName="border-0 shadow-none">
               <TableHeader>
                 <TableRow noAnimate>

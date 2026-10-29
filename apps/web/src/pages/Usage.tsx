@@ -16,16 +16,14 @@ export function Usage({ client, me, onUnauthorized }: {
 
   if (scope === undefined) return <PageContainer><EmptyState title="No households or teams" description="Usage is available for households and teams you administer." /></PageContainer>
 
-  return <>
-    <div className="px-4 pt-6 sm:px-6">
-      <div className="max-w-sm space-y-2">
-        <Label htmlFor="usage-scope">Show usage for</Label>
-        <Select id="usage-scope" value={scope} onChange={event => setSelected(event.target.value)}>
-          {me.operator ? <option value="">Entire host</option> : null}
-          {me.tenants.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </Select>
-      </div>
+  return <Capacity key={scope || 'host'} client={client} onUnauthorized={onUnauthorized} tenantId={scope || undefined} tenantName={name} scopeControl={
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-surface px-5 py-4">
+      <Label htmlFor="usage-scope">Resource scope</Label>
+      <Select className="max-w-sm" id="usage-scope" value={scope} onChange={event => setSelected(event.target.value)}>
+        {me.operator ? <option value="">Entire host</option> : null}
+        {me.tenants.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+      </Select>
+      <p className="text-xs text-fg-muted">{scope ? 'Resources assigned to this household or team' : 'All computers and host measurements'}</p>
     </div>
-    <Capacity key={scope || 'host'} client={client} onUnauthorized={onUnauthorized} tenantId={scope || undefined} tenantName={name} />
-  </>
+  } />
 }

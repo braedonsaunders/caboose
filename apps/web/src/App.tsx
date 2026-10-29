@@ -127,12 +127,14 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
         // a lit train rolls now and then, a parked one stays still.
         <Wordmark height={30} lit={awake} motion={awake ? 'idle' : 'none'} className="text-fg" />
       }
+      headerMiddle={<div className="flex min-w-0 items-center gap-2 text-sm"><span className="truncate font-medium">Administrator console</span><span className="hidden text-fg-muted sm:inline">/ {operator ? 'Host operator' : 'Tenant administrator'}</span></div>}
+      sidebarFooter={<div className="px-3 py-2 text-xs text-fg-muted"><p className="font-medium text-fg">{operator ? 'Host workspace' : 'Your workspace'}</p><p className="mt-1 truncate">{operator ? 'Computers, access & resources' : me.tenants.map(tenant => tenant.name).join(', ')}</p></div>}
       header={
         <AccountMenu
           name={me.user?.name ?? 'Owner token'}
           email={me.user?.email ?? 'Signed in with CABOOSE_OWNER_TOKEN'}
           roleLabel={operator ? 'Operator' : 'Administrator'}
-          showTheme={false}
+          showTheme={true}
           onSignOut={onSignOut}
         />
       }
