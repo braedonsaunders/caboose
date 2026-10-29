@@ -75,8 +75,9 @@ Switchyard (Desktop tab, no external display):
    to reveal them, then use Hide Sidebar or swipe outward on its controls to hide.
    Card Full Screen is also in Window Options. Collapse the sidebar
    until toolbar actions overflow; open Full Screen, Switch App and Window Options:
-   their system dialogs escape the sidebar group, with every action reachable and
-   no clipped or near-zero-height submenu. Repeat with the keyboard open.
+   their system dialogs point to the button that opened them, beside the sidebar,
+   with every action reachable and no clipped or near-zero-height submenu. They
+   must not point at the middle of the app. Repeat with the keyboard open.
    On an ordinary iPhone, repeat upright and landscape with large accessibility
    text: the compact horizontal toolbar and all four icon controls stay usable,
    clear of the sensor housing, home indicator and app content.
