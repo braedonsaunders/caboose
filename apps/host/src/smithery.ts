@@ -94,6 +94,8 @@ export class SmitheryCatalog {
   private rows: { at: number; groups: Array<{ id: string; title: string; note: string | null; servers: McpServer[] }>; popular: McpServer[] } | null = null
   private loading: Promise<void> | undefined
   private icons = new Map<string, string>()
+  /** Listings seen recently: a server's detail page carries no use count or verification. */
+  private seen = new Map<string, McpServer>()
   /** Icons being fetched, so two requests for one icon share a fetch. */
   private fetching = new Map<string, Promise<Buffer | null>>()
   /** Cache writes and trims, one at a time, so the budget holds. */
@@ -110,6 +112,10 @@ export class SmitheryCatalog {
     const body = JSON.parse(response.body.toString('utf8')) as { servers?: unknown; pagination?: { totalCount?: unknown } }
     if (!Array.isArray(body.servers)) throw new Error("Smithery's registry sent no servers")
     const servers = body.servers.slice(0, 100).flatMap(value => { const server = parseServer(value); return server ? [server] : [] })
+    for (const server of servers) {
+      this.seen.delete(server.id); this.seen.set(server.id, server)
+      if (this.seen.size > 5000) this.seen.delete(this.seen.keys().next().value!)
+    }
     const total = Number.isSafeInteger(body.pagination?.totalCount) ? Math.min(body.pagination!.totalCount as number, 100_000) : servers.length
     return { servers, total }
   }
@@ -201,8 +207,12 @@ export class SmitheryCatalog {
     if (response.status === 404) throw new RangeError('Server not found')
     if (response.status !== 200) throw new Error(`Smithery's registry answered ${response.status}`)
     const raw = JSON.parse(response.body.toString('utf8')) as Record<string, unknown>
-    const server = parseServer({ ...raw, useCount: raw.useCount ?? 0, verified: raw.verified })
-    if (!server) throw new RangeError('Server not available through Smithery')
+    const parsed = parseServer(raw)
+    if (!parsed) throw new RangeError('Server not available through Smithery')
+    // The detail has no use count or verification; they come from its listing.
+    let listed = this.seen.get(id)
+    if (!listed) listed = (await this.list({ q: id, pageSize: '20' }).catch(() => ({ servers: [] as McpServer[] }))).servers.find(server => server.id === id)
+    const server = { ...parsed, uses: listed?.uses ?? parsed.uses, verified: listed?.verified ?? parsed.verified }
     const tools = (Array.isArray(raw.tools) ? raw.tools : []).slice(0, 200).flatMap(tool => {
       const t = tool as Record<string, unknown>
       const name = text(t.name, 120)

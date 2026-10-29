@@ -75,6 +75,12 @@ describe('the MCP Library catalog', () => {
     await expect(catalog.search('ok', 0)).rejects.toThrow('Invalid page')
     await expect(catalog.detail('../../etc')).rejects.toThrow('Invalid server')
   })
+  it('gives a server\'s details its listing\'s use count and verification, which the detail lacks', async () => {
+    const detail = { qualifiedName: 'brave', displayName: 'Brave Search', description: 'Search the web', remote: true, iconUrl: 'https://api.smithery.ai/servers/brave/icon', tools: [{ name: 'brave_web_search', description: 'Search' }] }
+    const { request } = requester({ brave: [listing('brave', 87579, { verified: true })], 'detail:brave': detail })
+    const catalog = new SmitheryCatalog(root(), request)
+    expect(await catalog.detail('brave')).toMatchObject({ id: 'brave', uses: 87579, verified: true, tools: [{ name: 'brave_web_search' }] })
+  })
   it('serves icons it handed out, refusing oversized images and rasterizing SVG', async () => {
     const dir = root()
     const icons: Record<string, ReturnType<typeof answer>> = {
