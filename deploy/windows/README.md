@@ -71,6 +71,36 @@ and shows the command above; a configured `CABOOSE_PUBLIC_URL` still leads the p
 | `-Revert` | | Restore the networking mode, the firewall rules (a rule that existed gets its own enabled state, action and profiles back; one the script made is removed) and the portproxy rules. A `.wslconfig` the script created is removed. A restored portproxy rule keeps its old target, and WSL can give Linux another NAT address when it starts. |
 | `-WhatIf` | | Print every change and make none. |
 
+## Starting with Windows
+
+Windows Update can restart the PC with nobody signed in. WSL then starts only when something
+asks for it, and a disk attached with `wsl --mount` is no longer attached. `start-wsl.ps1`
+brings the host back for a scheduled task that runs at startup and at sign-in:
+
+1. it attaches each `-Vhd` with `wsl --mount --vhd <path> --bare` before the distribution
+   starts, so the distribution's fstab mounts find it;
+2. it starts the distribution through `-KeepaliveTask`, a scheduled task that keeps it running,
+   or keeps it running itself;
+3. it makes sure `-MountPoint` is mounted from a disk, never from a loop device over an image
+   file, and only then starts each `-Service`.
+
+A second run changes nothing that is already up. It logs each step to
+`%ProgramData%\Caboose\start-wsl.log`. Register it to run as the user who owns the
+distribution, whether or not that user is signed in, with highest privileges (attaching a
+disk needs them):
+
+```powershell
+$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\Caboose\start-wsl.ps1" ' +
+  '-Distro Ubuntu-24.04 -MountPoint /var/lib/caboose -Service docker,caboose-host'
+Register-ScheduledTask -TaskName 'Caboose-Start' `
+  -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments) `
+  -Trigger (New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME") `
+  -Principal (New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Highest) `
+  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero))
+```
+
+Add `-Vhd <path>` for a data disk kept outside the distribution.
+
 ## Checks
 
 `setup-wsl.tests.ps1` tests the script's logic: editing `.wslconfig`, reading netsh's
@@ -81,6 +111,13 @@ runs in Windows PowerShell 5.1 or in `pwsh` on any system:
 
 ```sh
 pwsh -NoProfile -File deploy/windows/setup-wsl.tests.ps1
+```
+
+`start-wsl.tests.ps1` tests the order of `start-wsl.ps1`'s steps and what it refuses to do (no
+service starts on a missing disk or a loop-mounted image), against a recorded runner:
+
+```sh
+pwsh -NoProfile -File deploy/windows/start-wsl.tests.ps1
 ```
 
 `check.ps1` checks a real PC without changing it, in an elevated PowerShell after setup and a
