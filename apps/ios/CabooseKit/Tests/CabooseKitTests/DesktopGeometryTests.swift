@@ -4,7 +4,7 @@ import Testing
 
 struct DesktopGeometryTests {
     @Test func externalResolutionRespectsScreenAndRenderLimit() {
-        #expect(DesktopGeometry.externalPixelsPerPoint(width: 1920, scale: 2, fullResolution: false) == 2560.0 / 1920.0)
+        #expect(abs(DesktopGeometry.externalPixelsPerPoint(width: 1920, scale: 2, fullResolution: false) - 4.0 / 3.0) < 0.000001)
         #expect(DesktopGeometry.externalPixelsPerPoint(width: 1920, scale: 2, fullResolution: true) == 2)
         #expect(DesktopGeometry.externalPixelsPerPoint(width: 3000, scale: 2, fullResolution: false) == 1)
         #expect(DesktopGeometry.externalPixelsPerPoint(width: 800, scale: 1, fullResolution: false) == 1)
