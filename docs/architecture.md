@@ -79,7 +79,12 @@ disk; on wake it checks the system image, kernel and initramfs, and checks the b
 creating a disk. Initramfs mounts the EROFS image read-only and
 mounts writable overlays for `/usr` and `/opt`, whose upper and work directories live on
 the computer's ext4 disk. Package and component updates persist there. Existing disks
-and snapshots remain on their original image; switching the setting does not migrate them.
+and snapshots remain on their original image when the setting changes. An operator can
+explicitly migrate a cold-stopped legacy disk using the offline Linux migration tool. The
+tool retains the original disk and kernel, uses a crash-recovery journal, refuses parked
+memory, and holds host and Cloud Hypervisor-compatible disk locks. Guest filesystems and
+initramfs hooks run only in isolated appliances, using separate clones. Rollback requires
+explicit acknowledgement that writes since migration will be lost.
 The device uses read-only virtio-block; this does not establish DAX or a RAM saving.
 
 The image contains:

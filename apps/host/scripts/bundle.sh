@@ -78,6 +78,10 @@ mkdir -p "$root/app/apps/host" "$root/app/apps/web" "$root/app/guest/catalog" "$
 cp -R "$work/host/node_modules" "$work/host/package.json" "$root/app/apps/host/"
 cp -R "$repo/apps/host/dist" "$root/app/apps/host/dist"
 cp -R "$repo/apps/host/migrations" "$root/app/apps/host/migrations"
+mkdir -p "$root/app/apps/host/scripts" "$root/app/apps/host/src" "$root/app/guest/image/initramfs"
+cp "$repo/apps/host/scripts/migrate-disk.py" "$root/app/apps/host/scripts/"
+cp "$repo/apps/host/src/migration_transaction.py" "$repo/apps/host/src/migration_appliance.py" "$root/app/apps/host/src/"
+cp "$repo/guest/image/initramfs/caboose-system" "$root/app/guest/image/initramfs/"
 cp -R "$repo/apps/web/dist" "$root/app/apps/web/dist"
 # The guest components the host installs: exactly the files their manifest lists.
 ( cd "$repo/guest" && node -e '
