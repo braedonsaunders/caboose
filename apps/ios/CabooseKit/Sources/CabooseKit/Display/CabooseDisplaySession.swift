@@ -47,6 +47,9 @@ public final class CabooseDisplaySession: DisplaySession {
     /// Whether to run the games the computer hands off (`wasm` in the hello), where this build
     /// has WebKit to run them in. Set before `connect()`.
     public var runsGames = RemoteGame.isSupported
+    /// Whether to render windows from their applications' Vulkan calls (`gpu` in the hello,
+    /// docs/gpu-stream.md), where this build has the player. Set before `connect()`.
+    public var rendersGPUStreams = RemoteGPUStream.isSupported
     /// How game surfaces reach the computer's files: the host behind the display URL, with its token.
     public private(set) var gameHost: GameHostAccess?
 
@@ -69,6 +72,7 @@ public final class CabooseDisplaySession: DisplaySession {
     /// a closed socket still delivers can reach the next.
     private var pipelines = FramePipelineRegistry()
     private var videos = VideoRegistry()
+    private var gpuFeeds = GPUStreamFeeds()
     /// This connection's sound, on the clock its video layers share; nil when it plays none.
     private(set) var sound: SoundPlayer?
     private let echo = EchoMeter()
@@ -138,6 +142,7 @@ public final class CabooseDisplaySession: DisplaySession {
         self.stream = stream
         pipelines = FramePipelineRegistry()
         videos = VideoRegistry()
+        gpuFeeds = GPUStreamFeeds()
         metrics = ConnectionMetrics()
         let now = CACurrentMediaTime()
         watchdog = LinkWatchdog(openedAt: now)
@@ -145,7 +150,7 @@ public final class CabooseDisplaySession: DisplaySession {
         startLivenessTimer()
         let clock = MediaClock()
         sound = playsAudio ? SoundPlayer(clock: clock) : nil
-        let incoming = Incoming(pipelines: pipelines, videos: videos, clock: clock, sound: sound, echo: echo, metrics: metrics,
+        let incoming = Incoming(pipelines: pipelines, videos: videos, gpuFeeds: gpuFeeds, clock: clock, sound: sound, echo: echo, metrics: metrics,
                                 carried: Carried(retained, epoch: server?.epoch),
                                 makeDecoder: makeDecoder, retire: { [weak self] id, generation in
             Task { @MainActor in if self?.stream === stream { self?.retireVideo(id, after: generation) } }
@@ -238,6 +243,9 @@ public final class CabooseDisplaySession: DisplaySession {
         let closed = pipelines.removeAll()
         for pipeline in closed { pipeline.close() }
         for video in videos.removeAll() { video.close() }
+        // A GPU stream replays from its first byte on the next connection.
+        for window in windows.values { endGPUStream(of: window) }
+        _ = gpuFeeds.removeAll()
         sound?.stop()
         sound = nil
         pendingGeometry.removeAll()
@@ -273,6 +281,7 @@ public final class CabooseDisplaySession: DisplaySession {
 
     private func removeWindow(_ id: Int) {
         endGame(of: windows[id])
+        endGPUStream(of: windows[id])
         windows[id] = nil
         placement[id] = nil
         if focusedWindow == id { focusedWindow = nil }
@@ -287,7 +296,7 @@ public final class CabooseDisplaySession: DisplaySession {
     private func sendHello() {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
-                    audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames))
+                    audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams))
     }
 
     // MARK: Server messages
@@ -337,6 +346,8 @@ public final class CabooseDisplaySession: DisplaySession {
             case .videoDestroy(let id): retireVideo(id, after: 0)
             case .gameCreate(let descriptor): createGame(descriptor)
             case .gameDestroy(let id): endGame(of: windows.values.first { $0.game?.id == id })
+            case .gpuCreate(let id, let window): createGPUStream(id, window: window)
+            case .gpuDestroy(let id): endGPUStream(of: windows.values.first { $0.gpuStream?.id == id })
             case .frame, .tile, .videoFrame, .videoPresent, .audio, .unknown, .malformed:
                 continue // pictures were routed on the socket's queue; sound and unknown types are not used yet
             }
@@ -478,6 +489,7 @@ public final class CabooseDisplaySession: DisplaySession {
         retained[id] = nil
         for video in windows[id]?.videos ?? [] { removeVideo(video.id) }
         endGame(of: windows[id])
+        endGPUStream(of: windows[id])
         pipelines.remove(id)?.close()
         windows[id] = nil
         placement[id] = nil
@@ -529,6 +541,26 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     private func removeVideo(_ id: Int) { retireVideo(id, after: 0) }
+
+    // MARK: GPU streams
+
+    /// The window is drawn on this device from stream `id`; its bytes are already arriving on
+    /// the socket's queue.
+    private func createGPUStream(_ id: Int, window windowID: Int) {
+        guard rendersGPUStreams, let window = windows[windowID], let feed = gpuFeeds[id] else { return }
+        if window.gpuStream?.id == id { return }
+        endGPUStream(of: window)
+        window.gpuStream = RemoteGPUStream(id: id, window: windowID, feed: feed) { [weak self] bytes in
+            self?.send(.gpuAck(id: id, offset: bytes))
+        }
+    }
+
+    private func endGPUStream(of window: RemoteWindow?) {
+        guard let window, let stream = window.gpuStream else { return }
+        window.gpuStream = nil
+        gpuFeeds[stream.id] = nil
+        stream.end()
+    }
 
     // MARK: Games
 
@@ -843,6 +875,7 @@ private final class Incoming: @unchecked Sendable {
     private var parser = DisplayFrameParser()
     private let pipelines: FramePipelineRegistry
     private let videos: VideoRegistry
+    private let gpuFeeds: GPUStreamFeeds
     private let clock: MediaClock
     private let sound: SoundPlayer?
     private let echo: EchoMeter
@@ -852,13 +885,14 @@ private final class Incoming: @unchecked Sendable {
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private let send: @Sendable (ClientMessage) -> Void
 
-    init(pipelines: FramePipelineRegistry, videos: VideoRegistry, clock: MediaClock, sound: SoundPlayer?, echo: EchoMeter,
+    init(pipelines: FramePipelineRegistry, videos: VideoRegistry, gpuFeeds: GPUStreamFeeds, clock: MediaClock, sound: SoundPlayer?, echo: EchoMeter,
          metrics: ConnectionMetrics, carried: Carried,
          makeDecoder: @escaping (DisplayCodec) -> PictureDecoder, retire: @escaping @Sendable (Int, UInt64) -> Void,
          send: @escaping @Sendable (ClientMessage) -> Void) {
         self.retire = retire
         self.pipelines = pipelines
         self.videos = videos
+        self.gpuFeeds = gpuFeeds
         self.clock = clock
         self.sound = sound
         self.echo = echo
@@ -895,6 +929,12 @@ private final class Incoming: @unchecked Sendable {
                 }
                 let retire = retire
                 pipeline.whenApplied { generation in retire(id, generation) }
+            case .gpuCreate(let id, _):
+                // Made here, like a window's pipeline: the stream's bytes follow at once.
+                if gpuFeeds[id] == nil { gpuFeeds[id] = GPUStreamFeed() }
+                others.append(message)
+            case .gpuData(let id, let offset, let data):
+                gpuFeeds[id]?.receive(offset: offset, data: data)
             case .videoCreate(let fields):
                 // Made here, like a window's pipeline, because its first picture follows at once.
                 if videos[fields.id] == nil, let video = RemoteVideo(fields, clock: clock, send: send) { videos[fields.id] = video }

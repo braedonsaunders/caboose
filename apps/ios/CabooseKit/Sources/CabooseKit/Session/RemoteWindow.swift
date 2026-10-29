@@ -37,6 +37,9 @@ public final class RemoteWindow: Identifiable {
     /// The game this device runs in the window instead of showing the computer's picture
     /// (docs/game-handoff.md); nil for every other window.
     public internal(set) var game: RemoteGame?
+    /// The GPU stream this device draws the window from instead of the computer's picture
+    /// (docs/gpu-stream.md); nil for every other window.
+    public internal(set) var gpuStream: RemoteGPUStream?
     public nonisolated let surface: WindowSurface
 
     init(id: Int, frame: CGRect, overrideRedirect: Bool, surface: WindowSurface) {

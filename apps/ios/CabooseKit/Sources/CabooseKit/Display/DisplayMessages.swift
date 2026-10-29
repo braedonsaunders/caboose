@@ -23,6 +23,10 @@ public enum DisplayProtocol {
         // Game handoff (docs/game-handoff.md).
         case gameCreate = 0x17
         case gameDestroy = 0x18
+        // GPU streams (docs/gpu-stream.md).
+        case gpuCreate = 0x19
+        case gpuData = 0x1A
+        case gpuDestroy = 0x1B
         case cursor = 0x20
         case cursorNamed = 0x21
         case textInput = 0x22
@@ -48,6 +52,7 @@ public enum DisplayProtocol {
         case pointer = 0x92
         case key = 0x93
         case text = 0x94
+        case gpuAck = 0x96
         case clipboard = 0xA0
         case ping = 0xFE
     }
@@ -362,6 +367,11 @@ public enum ServerMessage: Sendable {
     case videoPresent(id: Int, seq: Int, ptsMicros: UInt64)
     case gameCreate(GameDescriptor)
     case gameDestroy(id: Int)
+    /// Window `window` is drawn on this device from stream `id`, an application's Vulkan calls.
+    case gpuCreate(id: Int, window: Int)
+    /// The next bytes of stream `id`, `offset` bytes from its start.
+    case gpuData(id: Int, offset: UInt64, data: Data)
+    case gpuDestroy(id: Int)
     case unknown(type: UInt8)
     /// A known type whose fields are missing or of the wrong kind.
     case malformed(type: UInt8)
@@ -417,6 +427,15 @@ public enum ServerMessage: Sendable {
             }
         case .gameCreate: parsed = GameDescriptor(body).map(ServerMessage.gameCreate)
         case .gameDestroy: parsed = body["id"]?.int.map { .gameDestroy(id: $0) }
+        case .gpuCreate:
+            if let id = body["id"]?.int, let window = body["window"]?.int { parsed = .gpuCreate(id: id, window: window) } else { parsed = nil }
+        case .gpuData:
+            if let id = body["id"]?.int, let offset = body["offset"]?.uint64, let data = body["data"]?.data {
+                parsed = .gpuData(id: id, offset: offset, data: data)
+            } else {
+                parsed = nil
+            }
+        case .gpuDestroy: parsed = body["id"]?.int.map { .gpuDestroy(id: $0) }
         }
         self = parsed ?? .malformed(type: frame.type)
     }
@@ -540,8 +559,9 @@ public enum ClientMessage: Sendable {
     /// `videoDecoders`: what the client plays as video streams; absent, the server sends none.
     /// `audioDecoders`: the sound codecs the client plays ("opus"); absent, the server sends no sound.
     /// `wasm`: the client runs handed-off games (`"wasm": true`); the key is absent otherwise.
+    /// `gpu`: the client renders GPU streams (`"gpu": true`); the key is absent otherwise.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
-               audioDecoders: [String]? = nil, wasm: Bool = false)
+               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -560,6 +580,8 @@ public enum ClientMessage: Sendable {
     case videoAck(video: Int, seq: Int)
     /// The client could not decode a video stream; it drops frames until the next keyframe.
     case videoKeyframe(video: Int)
+    /// The client has consumed GPU stream `id` up to `offset`.
+    case gpuAck(id: Int, offset: UInt64)
 
     public var frame: DisplayFrame {
         typealias T = DisplayProtocol.ClientType
@@ -570,18 +592,21 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
                 ("video_decoders", videoDecoders.map { .array($0.map { CBOR($0.rawValue) }) }),
                 ("audio_decoders", audioDecoders.map { .array($0.map { CBOR($0) }) }),
                 ("wasm", wasm ? CBOR(true) : nil),
+                ("gpu", gpu ? CBOR(true) : nil),
             ]))
         case .videoAck(let video, let seq):
             return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))
         case .videoKeyframe(let video):
             return DisplayFrame(type: T.videoKeyframe.rawValue, body: map([("id", CBOR(video))]))
+        case .gpuAck(let id, let offset):
+            return DisplayFrame(type: T.gpuAck.rawValue, body: map([("id", CBOR(id)), ("offset", CBOR(offset))]))
         case .vsync(let display, let micros):
             return DisplayFrame(type: T.vsync.rawValue, body: map([("display", CBOR(display)), ("t_us", CBOR(micros))]))
         case .ack(let window, let pts, let decoded):

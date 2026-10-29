@@ -44,6 +44,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// The game this view runs over the window's picture, when the window has one and this is
     /// its main view (see `layoutGame()`).
     private weak var gameSurface: GameSurfaceView?
+    #if canImport(CabooseGPUStream)
+    /// The GPU stream this view shows over the window's picture (see `layoutGPUStream()`).
+    private weak var gpuStreamView: GPUStreamView?
+    #endif
     /// The window is a game: its input goes to the game, not to the computer.
     private var holdsGameInput = false
 
@@ -157,6 +161,26 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             if focused { surface.focus() }
         }
         if let surface = gameSurface, surface.frame != bounds { surface.frame = bounds }
+    }
+
+    /// Lays the window's GPU stream over its picture in the window's interactive view. Touches
+    /// pass through to this view: the application runs on the computer and takes its input there.
+    func layoutGPUStream() {
+        #if canImport(CabooseGPUStream)
+        let shown = remoteWindow?.gpuStream.flatMap { isInteractive && showsVideo && window != nil ? $0.view : nil }
+        if let current = gpuStreamView, current !== shown {
+            if current.superview === self { current.removeFromSuperview() }
+            gpuStreamView = nil
+        }
+        guard let shown else { return }
+        if gpuStreamView == nil {
+            if shown.superview != nil, shown.superview !== self, shown.window != nil { return }
+            shown.isUserInteractionEnabled = false
+            insertSubview(shown, at: 0)
+            gpuStreamView = shown
+        }
+        if shown.frame != bounds { shown.frame = bounds }
+        #endif
     }
 
     private func updateGestures() {
@@ -817,6 +841,7 @@ private final class DisplayLinkTarget: NSObject {
         view.checkFocus()
         view.adoptSurroundingText()
         view.layoutGame()
+        view.layoutGPUStream()
         view.layoutVideos()
         view.present()
     }

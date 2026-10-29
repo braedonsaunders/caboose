@@ -253,6 +253,31 @@ import Testing
         guard case .gameDestroy(1) = try server("game-destroy").first else { Issue.record("game.destroy"); return }
     }
 
+    @Test func gpuStreams() throws {
+        guard case .gpuCreate(1, 7) = try server("gpu-create").first else { Issue.record("gpu.create"); return }
+        guard case .gpuData(1, 0, let data) = try server("gpu-data").first else { Issue.record("gpu.data"); return }
+        #expect(data == Data("GFXR".utf8) + Data(count: 12))
+        guard case .gpuDestroy(1) = try server("gpu-destroy").first else { Issue.record("gpu.destroy"); return }
+    }
+
+    /// A stream's bytes arrive in order once; a repeat from the start (a resent stream) and
+    /// anything out of order are dropped, and what arrives before the replay starts is held.
+    @Test func aGPUStreamFeedKeepsOrder() {
+        let feed = GPUStreamFeed()
+        feed.receive(offset: 0, data: Data([1, 2]))
+        feed.receive(offset: 5, data: Data([9]))
+        final class Received { var chunks: [Data] = [] }
+        let received = Received()
+        feed.attach { data in received.chunks.append(data) }
+        feed.receive(offset: 2, data: Data([3]))
+        feed.receive(offset: 0, data: Data([1, 2]))
+        #expect(received.chunks == [Data([1, 2]), Data([3])])
+        #expect(feed.offset == 3)
+        feed.detach()
+        feed.receive(offset: 3, data: Data([4]))
+        #expect(received.chunks.count == 2)
+    }
+
     /// A game.create without its window, root or entry cannot be run; a save without both
     /// halves is left out.
     @Test func incompleteGamesAreMalformed() {
@@ -313,6 +338,10 @@ import Testing
         "client-hello-audio": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"]),
+        "client-hello-gpu": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], gpu: true),
+        "gpu-ack": .gpuAck(id: 1, offset: 65536),
         "client-hello-wasm": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], wasm: true),
