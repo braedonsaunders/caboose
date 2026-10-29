@@ -1,0 +1,20 @@
+[package]
+name = "caboose-disk"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/braedonsaunders/caboose"
+rust-version = "1.85"
+description = "Shared storage and backup manifests for Caboose microVM disks"
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[profile.release]
+opt-level = 3
+strip = "debuginfo"
+lto = "thin"
