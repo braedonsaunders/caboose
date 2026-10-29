@@ -265,9 +265,12 @@ func temporaryGameCache() throws -> GameCache {
     @Test func aSecondEndingWithinAMinuteIsTheLast() {
         var terminations = GameTerminations()
         let start = Date()
-        #expect(!terminations.record(start))
-        #expect(!terminations.record(start.addingTimeInterval(61)))
-        #expect(terminations.record(start.addingTimeInterval(90)))
+        let first = terminations.record(start)
+        let longAfter = terminations.record(start.addingTimeInterval(61))
+        let soonAfter = terminations.record(start.addingTimeInterval(90))
+        #expect(!first)
+        #expect(!longAfter)
+        #expect(soonAfter)
     }
 }
 
@@ -276,7 +279,8 @@ func temporaryGameCache() throws -> GameCache {
     let wasm = Data((0 ..< 1000).map { UInt8($0 % 251) })
 
     func respond(_ responder: GameFileResponder, _ path: String, range: String? = nil, head: Bool = false,
-                 sink: RecordedResponse = RecordedResponse()) async -> RecordedResponse {
+                 sink: RecordedResponse? = nil) async -> RecordedResponse {
+        let sink = sink ?? RecordedResponse()
         await responder.respond(path: path, range: range, head: head, to: sink)
         return sink
     }
