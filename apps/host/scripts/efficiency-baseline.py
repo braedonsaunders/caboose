@@ -93,8 +93,9 @@ def main():
         if args.sample_seconds:
             time.sleep(args.sample_seconds)
         last = metrics(args.pid, args.snapshot)
+        observed = time.perf_counter() - started
         record = {'sample': i + 1, 'operation': args.operation, 'before': before, 'after': state(),
-                  'status': status, 'elapsedMs': elapsed, 'observationSeconds': time.perf_counter() - started,
+                  'status': status, 'elapsedMs': elapsed, 'observationSeconds': observed,
                   'metricsBeforeObservation': first, 'metricsAfterObservation': last}
         samples.append(record)
         print(json.dumps(record), flush=True)
