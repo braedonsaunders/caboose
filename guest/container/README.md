@@ -185,3 +185,7 @@ Other checks for this image:
 
 The image builds natively on amd64 and arm64. Its app downloads and VA-API driver path
 match that architecture. The release tag selects the matching image automatically.
+
+The session bus is probed before reuse. A socket left behind by a stopped container is
+replaced only when connecting reports missing or refused; other errors stop startup.
+Run `python3 guest/container/test-session-bus.py` from the repository root to check the probe.

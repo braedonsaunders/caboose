@@ -20,7 +20,22 @@ install -d -o caboose -g caboose -m 0700 "$CABOOSE_HOME/.cache"
 # Each seat has its own session bus, so the agents' notifications never reach the owner.
 session_bus() {
   local bus=$1
-  if [ ! -S "$bus" ]; then runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork; fi
+  # /run survives a container stop. A socket file alone does not prove its daemon lives.
+  if runuser -u caboose -- python3 - "$bus" <<'PY'
+import errno, socket, sys
+with socket.socket(socket.AF_UNIX) as connection:
+    connection.settimeout(2)
+    try:
+        connection.connect(sys.argv[1])
+    except OSError as error:
+        sys.exit(1 if error.errno in (errno.ENOENT, errno.ECONNREFUSED) else 2)
+PY
+  then return; else
+    local status=$?
+    [ "$status" = 1 ] || return "$status"
+  fi
+  rm -f -- "$bus"
+  runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork
 }
 
 # Starts the seat's accessibility bus before any app, so every app on its Xwayland joins that
