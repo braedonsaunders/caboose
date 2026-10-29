@@ -6,6 +6,7 @@ import SwiftUI
 /// either side edge goes to the next or previous open app, in the order they opened.
 struct WindowScreen: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var chromeVisible = true
     @State private var laptopActive = false
     @State private var verticalEdge: HorizontalEdge?
@@ -14,6 +15,8 @@ struct WindowScreen: View {
     @State private var showingApps = false
     @State private var showingOptions = false
     @State private var cardFit = CardWindowFit()
+    @State private var controlInteraction = 0
+    @State private var screenWidth: CGFloat = 0
     /// How far the card has been swiped sideways, and the picture of the app it reveals.
     @State private var swipe: CGFloat = 0
     @State private var neighbour: (id: Int, picture: CGImage?)?
@@ -65,6 +68,30 @@ struct WindowScreen: View {
             .persistentSystemOverlays(chromeVisible && !laptopActive ? .automatic : .hidden)
         }
         .onAppear { chromeVisible = !model.windowCardBorderless }
+        .coordinateSpace(name: "window-controls")
+        .background {
+            GeometryReader { proxy in
+                Color.clear.onChange(of: proxy.size.width, initial: true) { _, width in screenWidth = width }
+            }
+        }
+        .simultaneousGesture(DragGesture(minimumDistance: 10, coordinateSpace: .named("window-controls"))
+            .onChanged { _ in if chromeVisible { controlInteraction += 1 } }
+            .onEnded { value in
+                guard chromeVisible, let edge = verticalEdge,
+                      abs(value.translation.width) > 30,
+                      abs(value.translation.width) > abs(value.translation.height) else { return }
+                let onBar = edge == .trailing ? value.startLocation.x > screenWidth - 100 : value.startLocation.x < 100
+                let outward = edge == .trailing ? value.translation.width > 0 : value.translation.width < 0
+                if onBar && outward { withAnimation(.snappy) { chromeVisible = false } }
+            })
+        .simultaneousGesture(TapGesture().onEnded { controlInteraction += 1 })
+        .task(id: controlsDismissalKey) {
+            guard chromeVisible, !laptopActive, !voiceOverEnabled, !showingApps, !showingOptions,
+                  askingAbout == nil, !model.keyboardVisible,
+                  enteredVerticalLayout || model.windowCardBorderless else { return }
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            withAnimation(.snappy) { chromeVisible = false }
+        }
         .tint(Brand.amber)
         .fullScreenCover(item: Binding(
             get: { model.media.handedOff },
@@ -74,6 +101,13 @@ struct WindowScreen: View {
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }
+    }
+
+    private var controlsDismissalKey: [Int] {
+        [chromeVisible ? 1 : 0, laptopActive ? 1 : 0, voiceOverEnabled ? 1 : 0,
+         showingApps ? 1 : 0, showingOptions ? 1 : 0, askingAbout == nil ? 0 : 1,
+         model.keyboardVisible ? 1 : 0, enteredVerticalLayout ? 1 : 0,
+         model.windowCardBorderless ? 1 : 0, controlInteraction]
     }
 
     /// The native bar paints the selected wallpaper itself, rather than sampling the
@@ -370,10 +404,10 @@ private struct WindowCardViewport<Content: View>: View {
             .onChange(of: barEdge) { _, edge in
                 // Keep the reveal edge while hidden; read current placement again
                 // when controls are visible after a fold or orientation change.
-                if controlsVisible || edge != nil { verticalEdge = edge }
+                if let edge { verticalEdge = edge }
             }
             .onChange(of: controlsVisible) { _, visible in
-                if visible { verticalEdge = barEdge }
+                if visible, let barEdge { verticalEdge = barEdge }
             }
     }
 
@@ -402,6 +436,7 @@ struct RemoteWindowCanvas: UIViewRepresentable {
 
     func updateUIView(_ view: YardSurfaceView, context: Context) {
         view.content.session = model.session
+        view.locallyRendered = window.game != nil
         view.content.pixelsPerPoint = model.pixelsPerPoint
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.natural = CGSize(width: window.frame.width / model.pixelsPerPoint,

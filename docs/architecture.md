@@ -1921,7 +1921,11 @@ the app card, and a detached view releases its layers.
   to the phone. On a device with a vertical toolbar, the card starts with its controls
   hidden and fills the screen. A swipe inward from the toolbar edge reveals the native
   toolbar over the card; a swipe outward on its controls or the Hide window controls button
-  hides it. The toolbar uses the selected wallpaper as its background, with the shell's
+  hides it. Revealed controls also hide after five seconds without interaction, except
+  while a menu, keyboard, or VoiceOver is active. The reveal edge survives the toolbar's
+  temporary removal from the layout. Handed-off web content reflows to the local viewport,
+  independently of the guest window's last dimensions, including after a fold or rotation.
+  The toolbar uses the selected wallpaper as its background, with the shell's
   dusk colours while no wallpaper picture is available. The opposite edge switches to the
   neighbouring app; where there is no vertical toolbar, either edge switches apps.
   Back, the app switcher, Keyboard and Window Options use the system toolbar. The window

@@ -180,6 +180,7 @@ struct YardSurface: UIViewRepresentable {
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.onTouch = onTouch
         view.stretch = stretch
+        view.locallyRendered = window.game != nil
         view.natural = CGSize(width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
         view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
         if keyboard && model.yardActive && !laptopInputOwned, !view.content.isFirstResponder {
@@ -194,6 +195,7 @@ final class YardSurfaceView: UIView {
     let content: RemoteWindowView
     var onTouch: (() -> Void)?
     var stretch = false { didSet { if stretch != oldValue { setNeedsLayout() } } }
+    var locallyRendered = false { didSet { if locallyRendered != oldValue { setNeedsLayout() } } }
     var natural: CGSize = .zero { didSet { if natural != oldValue { setNeedsLayout() } } }
     var laptopPoint: CGPoint? { didSet { if laptopPoint != oldValue { setNeedsLayout() } } }
     private let laptopCursor = UIImageView(image: UIImage(systemName: "cursorarrow"))
@@ -224,7 +226,7 @@ final class YardSurfaceView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let size = natural.width > 0 && natural.height > 0 ? natural : bounds.size
+        let size = DesktopGeometry.surfaceSize(natural: natural, available: bounds.size, locallyRendered: locallyRendered)
         content.transform = .identity
         content.bounds = CGRect(origin: .zero, size: size)
         let shown = DesktopGeometry.surfaceFrame(natural: size, available: bounds.size, resizing: stretch)

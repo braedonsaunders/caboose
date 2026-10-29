@@ -869,7 +869,11 @@ GPU access uses the host GPU and is shared; availability reflects host configura
 Desktop checks: launch a handed-off game directly in Laptop mode, then flatten and fold
 the device; the live game stays visible and fits its window. In tablet portrait, the
 window’s green Full Screen control hides the dock and chrome; the return handle restores
-controls. Swipe horizontally across All Apps to change pages; vertical drags and short
+controls. Reveal the sidebar, swipe it outward over its buttons or empty space, and reveal
+it again: after five idle seconds it hides. An open menu, keyboard, or VoiceOver keeps the
+controls available. Rotate or fold a handed-off game with the sidebar visible and hidden:
+the game fills the viewport without a wallpaper strip or a restart.
+Swipe horizontally across All Apps to change pages; vertical drags and short
 taps do not page. Opening Caboose does not read the system pasteboard.
 
 Agent selection check: open a chat whose last message is “hey”, open the composer agent
