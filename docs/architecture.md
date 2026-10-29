@@ -1414,6 +1414,10 @@ GTK on X11; explicit application headerbars and menus remain application content
 
 ## 5. Agents
 
+Restored completed chats retain their transcript completion time. Older records without a
+completion time remain undated and do not appear as new activity after a host restart.
+Real-host verification scripts remove the test chats they create.
+
 An agent is any program that speaks the [Agent Client Protocol](https://agentclientprotocol.com)
 (ACP) and is listed in the public [ACP registry](https://github.com/agentclientprotocol/registry).
 Caboose has no list of its own and no code for any particular agent: it runs whatever the

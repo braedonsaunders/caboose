@@ -78,6 +78,7 @@ const { id } = await request('/v1/agent/tasks', 'POST', {
   agent, approvals: 'ask',
   attachments: [{ name: 'word.txt', type: 'text/plain', data: b64('pelican\n') }],
 })
+try {
 const started = await task(id)
 assert.equal(started.approvals, 'ask')
 assert.deepEqual(started.attachments, [`/home/caboose/Agents/${id}/attachments/word.txt`])
@@ -94,3 +95,7 @@ assert.equal(second.task.status, 'succeeded', second.task.summary)
 assert.match(second.task.summary, /PELICAN/)
 console.log('The reply continued the conversation.')
 console.log('Agent checks passed.')
+
+} finally {
+  await request(`/v1/agent/tasks/${id}`, 'DELETE', { stop: true })
+}

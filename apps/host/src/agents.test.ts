@@ -814,7 +814,7 @@ describe('AgentTasks', () => {
     const legacyFailed = '66666666-6666-4666-8666-666666666666'
     const listing = [
       [running, 'goose', '1790000500', '', '1', '512', b64('keep going'), b64(line(end(1, 'earlier turn'))), 'auto', '2', '1', '', b64('goose')],
-      [done, 'stand-in', '1790000400', '0', '0', '900', b64('run tests'), b64(line(end(3, 'All green.'))), 'ask', '3', '1', b64('shot.png\n'), b64('Stand-in')],
+      [done, 'stand-in', '1790000400', '0', '0', '900', b64('run tests'), b64(line({ ...end(3, 'All green.'), at: '2025-01-02T03:04:05.000Z' })), 'ask', '3', '1', b64('shot.png\n'), b64('Stand-in')],
       [orphan, 'stand-in', '1790000300', '', '0', '10', b64('lost'), '', 'auto', '1', '1', '', b64('Stand-in')],
       [waiting, 'stand-in', '1790000200', '', '1', '40', b64('signed out'), b64(line({ type: 'auth_required', turn: 1, authMethods: [{ id: 'a', name: 'A', type: 'agent' }] })), 'auto', '1', '1', '', b64('Stand-in')],
       [legacy, 'claude', '1790000100', '0', '0', '10', b64('old'), '', 'auto', '1', '0', '', ''],
@@ -828,6 +828,10 @@ describe('AgentTasks', () => {
       [running, 'running', 'goose'], [done, 'succeeded', 'stand-in'], [orphan, 'failed', 'stand-in'], [waiting, 'failed', 'stand-in'], [legacy, 'succeeded', 'claude-acp'],
       [legacyFailed, 'failed', 'codex-acp'],
     ])
+    expect(tasks.list().find(task => task.id === done)?.finishedAt).toBe('2025-01-02T03:04:05.000Z')
+    for (const id of [orphan, waiting, legacy, legacyFailed]) {
+      expect(tasks.list().find(task => task.id === id)?.finishedAt).toBeUndefined()
+    }
     // A task from before the runner says where its transcript is, not that a runner failed.
     expect(tasks.list()[5]!.summary).toBe(`${LEGACY_SUMMARY} /home/caboose/Agents/${legacyFailed}/transcript.jsonl.`)
     expect(tasks.list()[0]).toMatchObject({ prompt: 'keep going', turns: 2, agentName: 'goose' })

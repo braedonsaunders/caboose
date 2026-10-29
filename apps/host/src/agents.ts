@@ -285,7 +285,7 @@ const CANCEL_SCRIPT = [
 ].join('\n')
 
 type Output = { kind: 'text' | 'tool' | 'error'; text: string }
-export interface TurnResult { uncertain?: boolean; turn: number; status: 'succeeded' | 'failed' | 'cancelled'; summary: string; signIn?: SignInMethod[] }
+export interface TurnResult { finishedAt?: string; uncertain?: boolean; turn: number; status: 'succeeded' | 'failed' | 'cancelled'; summary: string; signIn?: SignInMethod[] }
 
 /**
  * Turns one line of the runner's transcript into display events, the start of a turn, or a
@@ -295,6 +295,8 @@ export function interpretLine(line: string): { outputs: Output[]; turn?: number;
   let event: any
   try { event = JSON.parse(line) } catch { return { outputs: [] } }
   const turn = Number.isSafeInteger(event?.turn) ? event.turn as number : undefined
+  const timestamp = typeof event?.at === 'string' && event.at.length <= 40 ? Date.parse(event.at) : NaN
+  const completion = Number.isFinite(timestamp) && timestamp <= Date.now() ? { finishedAt: new Date(timestamp).toISOString() } : {}
   switch (event?.type) {
     case 'user':
       return turn === undefined ? { outputs: [] } : { outputs: [], turn }
@@ -309,17 +311,17 @@ export function interpretLine(line: string): { outputs: Output[]; turn?: number;
       if (turn === undefined) return { outputs: [] }
       const stop = event.stopReason
       const status = stop === 'end_turn' ? 'succeeded' : stop === 'cancelled' ? 'cancelled' : 'failed'
-      return { outputs: [], result: { turn, status, summary: typeof event.summary === 'string' && event.summary ? event.summary : 'Done.' } }
+      return { outputs: [], result: { ...completion, turn, status, summary: typeof event.summary === 'string' && event.summary ? event.summary : 'Done.' } }
     }
     case 'turn_failed': {
       if (turn === undefined) return { outputs: [] }
       const message = typeof event.message === 'string' && event.message ? event.message : 'The agent failed.'
-      return { outputs: [{ kind: 'error', text: message }], result: { turn, status: 'failed', summary: message, ...(event.uncertain === true ? { uncertain: true } : {}) } }
+      return { outputs: [{ kind: 'error', text: message }], result: { ...completion, turn, status: 'failed', summary: message, ...(event.uncertain === true ? { uncertain: true } : {}) } }
     }
     case 'auth_required': {
       if (turn === undefined) return { outputs: [] }
       const signIn = readSignIn(event.authMethods)
-      return { outputs: [], result: { turn, status: 'failed', summary: '', signIn } }
+      return { outputs: [], result: { ...completion, turn, status: 'failed', summary: '', signIn } }
     }
     default:
       return { outputs: [] }
@@ -1234,15 +1236,15 @@ export class AgentTasks {
     entry.completedTurn = result.turn
     if (result.uncertain && entry.journal.intent) {
       entry.task.delivery = { turn: result.turn, state: 'uncertain', message: result.summary.slice(0, 2000) }
-      this.finish(entry, 'failed', result.summary, announce)
+      this.finish(entry, 'failed', result.summary, announce, undefined, false, result.finishedAt)
       if (announce) void this.serial(entry, () => this.uncertain(entry)).catch(error => console.error('Cannot persist uncertain delivery:', error))
       return
     }
     if (result.signIn) {
       const name = entry.task.agentName ?? entry.task.agent
-      return this.finish(entry, 'failed', `Sign in to ${name} first.`, announce, result.signIn)
+      return this.finish(entry, 'failed', `Sign in to ${name} first.`, announce, result.signIn, false, result.finishedAt)
     }
-    this.finish(entry, result.status, result.summary, announce, undefined, keepLease)
+    this.finish(entry, result.status, result.summary, announce, undefined, keepLease, result.finishedAt)
   }
 
   /** Announces new approval requests and forgets ones answered elsewhere. */
@@ -1287,11 +1289,13 @@ export class AgentTasks {
     else delete entry.task.pendingApproval
   }
 
-  private finish(entry: Tracked, status: TaskStatus, summary: string, announce = true, signIn?: SignInMethod[], keepLease = false): void {
+  private finish(entry: Tracked, status: TaskStatus, summary: string, announce = true, signIn?: SignInMethod[], keepLease = false, finishedAt?: string): void {
     if (!isLive(entry.task.status)) return
     this.setDraft(entry, null)
     entry.task.status = status
-    entry.task.finishedAt = new Date().toISOString()
+    // Restoring old history is not a new completion. Legacy records without a
+    // durable timestamp stay undated rather than resurfacing after every restart.
+    entry.task.finishedAt = finishedAt ?? (announce ? new Date().toISOString() : undefined)
     entry.task.summary = summary.slice(0, 2000)
     if (signIn) entry.task.signIn = signIn
     entry.pending = []
