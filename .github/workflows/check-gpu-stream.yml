@@ -1,0 +1,73 @@
+name: Check GPU streams
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/check-gpu-stream.yml'
+      - 'apps/ios/GPUStream/**'
+      - 'apps/ios/CabooseKit/**'
+      - 'apps/ios/scripts/build-gpu-stream.sh'
+      - 'guest/display/**'
+      - 'docs/gpu-stream.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-stream-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
+      JOBS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify toolchain and synthetic fixture
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          swift --version
+          echo '90db2232be2940106b852eb8af5959872c1d2d2cc69dedccc57d981bcbaae123  apps/ios/GPUStream/tests/fixtures/vkcube.gfxr' | shasum -a 256 -c -
+      - name: Check Swift without the native player
+        working-directory: apps/ios/CabooseKit
+        run: swift test --jobs 1
+      - name: Build the exact native player source
+        run: |
+          command -v ninja >/dev/null || brew install ninja
+          sh apps/ios/scripts/build-gpu-stream.sh macos
+      - name: Check actual MoltenVK proc lookup and instance concurrency
+        run: |
+          xcrun clang++ -std=c++20 -pthread \
+            -Iapps/ios/GPUStream/src \
+            -Iapps/ios/build/gpu-stream/gfxreconstruct/external/Vulkan-Headers/include \
+            apps/ios/GPUStream/tests/moltenvk.cpp \
+            apps/ios/build/gpu-stream/lib/macos/libCabooseGPUStream.a \
+            -framework Foundation -framework Metal -framework QuartzCore \
+            -framework IOSurface -framework AppKit -framework IOKit \
+            -framework CoreGraphics -lz -o apps/ios/build/gpu-stream/check-moltenvk
+          MVK_CONFIG_PERFORMANCE_TRACKING=1 MVK_CONFIG_ACTIVITY_PERFORMANCE_LOGGING_STYLE=3 apps/ios/build/gpu-stream/check-moltenvk
+      - name: Replay, resume, file-prefix and concurrent captures
+        working-directory: apps/ios/CabooseKit
+        env:
+          CABOOSE_GPU_CAPTURE: ${{ github.workspace }}/apps/ios/GPUStream/tests/fixtures/vkcube.gfxr
+          CABOOSE_GPU_CAPTURE_FRAMES: '300'
+        run: |
+          swift test --jobs 1 --list-tests | grep 'twoCapturesReplayConcurrentlyWithIndependentState'
+          swift test --jobs 1 --filter GPUStream
+  relay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the display test environment
+        run: docker build -t caboose-display-dev guest/display
+      - name: Check protocol and relay
+        env:
+          CABOOSE_DISPLAY_CPUS: '2'
+          CABOOSE_DISPLAY_MEMORY: 4g
+        run: guest/display/scripts/dev.sh cargo test --workspace
