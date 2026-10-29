@@ -52,6 +52,8 @@ answers with `gpu.ack { id, offset }` as it consumes it. At most 4 MiB are sent 
 last acknowledgement, so the application runs at the pace the client renders. A client that
 connects later replays the spool from the start. `gpu.destroy` follows when the application
 ends or its window closes, and the spool is deleted with it.
+Client acknowledgements apply only to the connection, window and stream that consumed
+the bytes; queued callbacks from a replaced connection are ignored.
 
 A spool holds at most `--gpu-spool-limit` bytes (2 GiB unless set). A stream that would
 outgrow it ends: its spool is emptied, `gpu.destroy { id, reason: "spool-limit" }` tells the

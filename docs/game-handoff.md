@@ -136,7 +136,8 @@ file, `POST /v1/fs/mkdir` for directories and `DELETE /v1/fs/item` (to the Trash
 removals. When the computer's copy changed underneath (412), the device's version is written
 next to it as `<name> (iPhone).<ext>` (or `(iPad)`), so neither is lost. Writes go out within
 two seconds; before the client sends `close` for a game window it waits, for up to five
-seconds, for the writes in flight.
+seconds, for the writes in flight. The delayed close applies only to the same connection,
+window and game; replacing any of them cancels that close.
 
 **Input.** Touch, the hardware keyboard, the pointer and game controllers (the Gamepad API,
 from GameController) go to the web view on the device; none of it is sent to the computer.

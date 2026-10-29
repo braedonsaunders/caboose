@@ -560,11 +560,14 @@ public final class CabooseDisplaySession: DisplaySession {
     /// The window is drawn on this device from stream `id`; its bytes are already arriving on
     /// the socket's queue.
     private func createGPUStream(_ id: Int, window windowID: Int) {
-        guard rendersGPUStreams, let window = windows[windowID], let feed = gpuFeeds[id] else { return }
+        guard rendersGPUStreams, let window = windows[windowID], let feed = gpuFeeds[id], let connection = stream else { return }
         if window.gpuStream?.id == id { return }
         endGPUStream(of: window)
-        window.gpuStream = RemoteGPUStream(id: id, window: windowID, feed: feed) { [weak self] bytes in
-            self?.send(.gpuAck(id: id, offset: bytes))
+        window.gpuStream = RemoteGPUStream(id: id, window: windowID, feed: feed) { [weak self, weak connection, weak window, weak feed] bytes in
+            guard let self, let connection, let window, let feed,
+                  self.stream === connection, self.windows[windowID] === window,
+                  window.gpuStream?.feed === feed, case .ready = self.state else { return }
+            self.send(.gpuAck(id: id, offset: bytes))
         }
     }
 
@@ -683,10 +686,14 @@ public final class CabooseDisplaySession: DisplaySession {
     /// A game window first waits, for up to five seconds, for the game's saves still on their way.
     public func close(_ window: RemoteWindow) {
         guard let game = window.game else { return send(.close(window: window.id)) }
+        guard let connection = stream else { return }
         let id = window.id
-        Task { [weak self] in
+        Task { [weak self, weak connection, weak window] in
             await game.flushSaves(within: 5)
-            self?.send(.close(window: id))
+            guard let self, let connection, let window,
+                  self.stream === connection, self.windows[id] === window,
+                  window.game === game, !game.isEnded, case .ready = self.state else { return }
+            self.send(.close(window: id))
         }
     }
 

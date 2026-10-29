@@ -172,6 +172,32 @@ import Testing
         #expect(resume.streams.last.take().filter { $0.type == close }.map { $0.body["id"]?.int } == [8])
     }
 
+    @Test func aPendingGameCloseCannotReachAReplacementConnection() async throws {
+        let session = makeSession()
+        session.connect()
+        try await resume.handshake(session, epoch: "e1", windows: [7])
+        resume.streams.last.server([(.gameCreate, game(1, window: 7))])
+        try await helpers.until("game") { session.windows[7]?.game != nil }
+        let window = try #require(session.windows[7])
+        var gate: CheckedContinuation<Void, Never>?
+        window.game?.savesFlusher = {
+            await withCheckedContinuation { gate = $0 }
+        }
+        session.close(window)
+        try await helpers.until("save wait") { gate != nil }
+        try await resume.dropAndResume(session)
+        try await resume.handshake(session, epoch: "e2", windows: [7])
+        let replacement = try #require(session.windows[7])
+        #expect(replacement !== window)
+        _ = resume.streams.last.take()
+        gate?.resume()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!resume.streams.last.take().contains { $0.type == DisplayProtocol.ClientType.close.rawValue })
+        session.close(replacement)
+        #expect(resume.streams.last.take().contains { $0.type == DisplayProtocol.ClientType.close.rawValue })
+        session.disconnect()
+    }
+
     /// Input addressed to a game window is the game's, on the device; configure still goes.
     @Test func nothingTypedOrTouchedInAGameWindowGoesToTheComputer() async throws {
         let session = makeSession()
