@@ -156,7 +156,8 @@ function Write-FileAtomic([string]$Path, [string]$Text) {
     $temporary = "$Path.tmp"
     # UTF-8 without a byte order mark, which WSL reads.
     [IO.File]::WriteAllText($temporary, $Text, (New-Object Text.UTF8Encoding($false)))
-    if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, $null) } else { [IO.File]::Move($temporary, $Path) }
+    # [NullString]::Value: Windows PowerShell passes $null to a string parameter as ''.
+    if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) } else { [IO.File]::Move($temporary, $Path) }
 }
 
 # Everything the script reads and changes on the machine. Tests substitute their own.

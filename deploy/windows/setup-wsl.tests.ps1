@@ -65,6 +65,16 @@ Check 'reads the portproxy entries on one port from netsh output' {
     if ((ConvertFrom-PortProxyTable $table 0).Count -ne 3) { throw 'port 0 should list every entry' }
 }
 
+Check 'an atomic write creates and then replaces a file, leaving no temporary' {
+    $path = Join-Path ([IO.Path]::GetTempPath()) "caboose-atomic-$PID.txt"
+    try {
+        Write-FileAtomic $path 'one'
+        Write-FileAtomic $path 'two'
+        Same ([IO.File]::ReadAllText($path)) 'two'
+        if (Test-Path -LiteralPath "$path.tmp") { throw 'the temporary file remains' }
+    } finally { Remove-Item -LiteralPath $path -ErrorAction SilentlyContinue }
+}
+
 # A machine in memory: .wslconfig, Hyper-V firewall rules, portproxy rules and the state
 # file (kept as JSON text, as on disk). $script:failAt makes the Nth change throw, the way
 # a crash or a failing netsh would interrupt a run.
