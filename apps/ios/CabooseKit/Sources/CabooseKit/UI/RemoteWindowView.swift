@@ -431,7 +431,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     fileprivate func checkFocus() {
         guard let check = focusCheck, let session, let onKeyboardWanted else { return }
         guard let isText = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial,
-                                               isText: session.cursorIsText) else { return }
+                                               isText: session.cursorIsText, keyboardVisible: isFirstResponder) else { return }
         // The app says what the field takes: no autocorrect in a terminal or a password.
         if isText, autocorrectChoice == nil, let purpose = session.textPurpose {
             prefersProse = !["terminal", "password", "pin", "url", "email", "number", "digits", "phone", "date", "time", "datetime"]

@@ -474,6 +474,23 @@ final class FakeDecoder: PictureDecoder {
         #expect(typed.textPurpose == "terminal")
     }
 
+    @Test func xwaylandBitmapCursorUsesUnknownFocusFallback() async throws {
+        let session = try await ready()
+        defer { session.disconnect() }
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100], xwayland: true)),
+                       (.cursorNamed, ["name": "default"])])
+        try await until("X11 window and cursor") { session.windows[7] != nil && session.cursorName == "default" }
+        session.focus(try #require(session.windows[7]))
+        #expect(session.cursorIsText == nil)
+        let tap = TapTextFocus(since: 10, serial: session.cursorSerial)
+        #expect(tap.keyboardWanted(at: 11.3, serial: session.cursorSerial, isText: session.cursorIsText) == true)
+        stream.server([(.cursorNamed, ["name": "text"])])
+        try await until("text cursor") { session.cursorIsText == true }
+        stream.server([(.textInput, ["id": 7, "enabled": false])])
+        try await until("explicit text focus") { session.textInput != nil }
+        #expect(session.cursorIsText == false)
+    }
+
     @Test func touchAndPencilFocusOnContact() async throws {
         let session = try await ready()
         stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100]))])

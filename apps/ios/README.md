@@ -373,7 +373,9 @@ unit-tested with staggered fingers, because real fingers never land or lift toge
 The iOS keyboard types through `UITextInput` (`CabooseKit/UI/RemoteTextInputView.swift`),
 and `CabooseKit/Input/TypingBuffer.swift` turns its edits into text-input commits and
 deletions, unit-tested for autocorrect, swipe words, marked text and deletes. The keyboard
-follows the app's own text-input state, and the field's purpose turns autocorrect off in
+opens from the app's own text-input state or text cursor. An unclassified Xwayland bitmap
+cursor uses the delayed legacy opening fallback. Tapping again does not dismiss an
+already-open keyboard; use its dismiss control. The field's purpose turns autocorrect off in
 terminals and password fields. Where the app supports text input, marked text (Chinese,
 Japanese, Korean) is a real preedit. Hardware keys are sent as keys, with ⌘ mapped to
 Control so ⌘C, ⌘V and ⌘T do what Mac users expect.

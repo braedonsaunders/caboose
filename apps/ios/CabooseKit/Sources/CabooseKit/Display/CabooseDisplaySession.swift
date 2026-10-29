@@ -982,6 +982,10 @@ public final class CabooseDisplaySession: DisplaySession {
             return textInput.enabled
         }
         guard let cursorName else { return nil }
+        // Xwayland supplies a cursor surface; the compositor currently represents
+        // that unclassified bitmap as "default", even when it draws an I-beam.
+        // It is not evidence that the focused X11 field rejects typing.
+        if cursorName == "default", let focusedWindow, xwaylandWindows.contains(focusedWindow) { return nil }
         return ["text", "vertical-text", "xterm", "ibeam"].contains(cursorName)
     }
 

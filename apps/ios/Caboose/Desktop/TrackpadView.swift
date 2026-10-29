@@ -390,7 +390,8 @@ final class TrackpadSurface: RemoteTextInputView {
                 try? await Task.sleep(for: .milliseconds(50))
                 guard !Task.isCancelled, let self, let target, let session,
                       self.inputEnabled, self.focusedWindow === target, self.session === session, self.window != nil else { return }
-                if let wanted = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial, isText: session.cursorIsText) {
+                if let wanted = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial,
+                                                    isText: session.cursorIsText, keyboardVisible: self.model?.keyboardVisible == true) {
                     self.prefersProse = self.autocorrectChoice ?? !RemoteWindowView.isCodeApp(target)
                     self.model?.keyboardVisible = wanted
                     return

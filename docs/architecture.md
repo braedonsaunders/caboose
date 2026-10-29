@@ -2339,7 +2339,10 @@ and restores its dock.
   the caret, so predictions, autocorrect and dictation work with the words already in the
   field and can correct them; a report that races fresh keystrokes waits until the app has
   caught up. Otherwise the buffer is what was typed since the last click, Return or non-text
-  key. Where an app has text-input-v3, the keyboard follows its state, its content purpose
+  key. A tap opens the keyboard from text-input-v3 or a named text cursor. An Xwayland
+  bitmap cursor reported as the compositor's generic arrow has unknown editing state and
+  uses the delayed legacy opening fallback. Tap focus checks preserve an already-open
+  keyboard; its dismiss control remains authoritative. Where an app has text-input-v3, its content purpose
   turns autocorrect off for terminals and passwords, and marked text is a preedit. Return commits any marked
   text and sends a real Enter key press/release, so a browser address bar submits. An
   unmodified software Return dismisses the keyboard except in terminals and code editors;

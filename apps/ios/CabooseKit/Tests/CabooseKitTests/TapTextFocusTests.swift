@@ -19,4 +19,11 @@ struct TapTextFocusTests {
         #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: nil) == nil)
         #expect(request.keyboardWanted(at: 11.3, serial: 5, isText: nil) == true)
     }
+
+    @Test func tappingAFieldCannotDismissAnAlreadyVisibleKeyboard() {
+        #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: false, keyboardVisible: true) == true)
+        #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: nil, keyboardVisible: true) == true)
+        // Once explicitly dismissed, an ordinary pointer does not reopen it.
+        #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: false, keyboardVisible: false) == false)
+    }
 }
