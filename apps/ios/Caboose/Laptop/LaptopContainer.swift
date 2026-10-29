@@ -166,7 +166,9 @@ private struct LaptopControls: View {
                         .background(Color(uiColor: .systemGray5))
                     }
                     if input == .gamepad {
-                        GamepadPanel(target: { [surface] in surface.focusedWindow }, enabled: enabled)
+                        // A card's target comes from the model, the desktop's front window from the
+                        // desktop, so the panel sees either change as it happens.
+                        GamepadPanel(target: { isCard ? target : surface.focusedWindow }, enabled: enabled)
                     }
                 }
             }

@@ -681,8 +681,9 @@ controller through the page's Gamepad API; every other window, and a game when C
 so, gets keys, each held for as long as its control is (by default the d-pad and left stick are
 the arrow keys, the right stick W A S D, A Space, B Escape, Start Return). The computer gets no
 controller device. A caption under Customize names where the pad goes. Customize sets the
-layout, size, haptics and every key, and remembers them; leaving the mode, changing window or
-leaving the app releases everything held. The dock becomes a thin, full-width taskbar at the top of the lower half; controls stay below
+layout, size, haptics and every key, and remembers them; leaving the mode, a change of window, game,
+connection or settings, opening Customize or leaving the app releases everything held, and a
+finger still on the pad then controls nothing until it lifts. The dock becomes a thin, full-width taskbar at the top of the lower half; controls stay below
 the hinge. The upper desktop hides Caboose title bars and gives their space to the app;
 app-owned chrome remains. Its pointer reaches both the app and relocated dock. Tablet
 mode retains its saved arrangement. One-finger movement, tap/double-tap, two-finger

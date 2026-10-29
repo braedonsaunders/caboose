@@ -34,7 +34,9 @@ Laptop layout — signed app on the paired physical Duo:
    Gamepad: the controller fills the lower panel, nothing above the hinge. With a game
    on this device (Platformer 3D) the caption says "Controller for …": the left stick
    or d-pad runs, A jumps, two thumbs at once work, and lifting stops at once.
-   Background the app mid-run and return: nothing is held. In a text editor the caption
+   Background the app mid-run and return: nothing is held. Hold the stick, then switch
+   window with the other hand (rail or four-finger swipe) or open Customize: the run
+   stops at once, and moving the still-held thumb does nothing until it lifts. In a text editor the caption
    says "Keys to …": the d-pad moves the caret, holding it repeats, A types spaces.
    Customize: switch to stick, add the right stick, resize, reassign A to Return,
    choose Keys for games; each applies at once and survives relaunching the app.

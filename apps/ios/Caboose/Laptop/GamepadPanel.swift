@@ -13,11 +13,36 @@ struct GamepadPanel: View {
     let enabled: Bool
     @State private var driver = GamepadDriver()
     @State private var customizing = false
+    /// Bumped to take every finger on the pad away from what it held.
+    @State private var ownership = 0
 
     private var settings: LaptopGamepad.Settings { LaptopGamepad.Settings.decode(stored) }
 
+    /// What the pad's presses belong to. When any of it changes, everything held is released
+    /// and the fingers on the pad let go of their controls, so a press made for one window,
+    /// game or arrangement never continues into another.
+    private struct Destination: Equatable {
+        var window: ObjectIdentifier?
+        var session: ObjectIdentifier?
+        var game: ObjectIdentifier?
+        var live = false
+    }
+
+    private func destination(_ window: RemoteWindow?) -> Destination {
+        let session = model.session
+        return Destination(window: window.map(ObjectIdentifier.init), session: session.map { ObjectIdentifier($0 as AnyObject) },
+                           game: window?.game.map(ObjectIdentifier.init),
+                           live: window.map { window in session?.state == .ready && session?.windows[window.id] === window } ?? false)
+    }
+
+    private func letGo() {
+        driver.release()
+        ownership += 1
+    }
+
     var body: some View {
         let settings = settings
+        let current = target()
         GeometryReader { proxy in
             let items = LaptopGamepad.items(in: proxy.size, settings: settings)
             ZStack(alignment: .topLeading) {
@@ -26,7 +51,7 @@ struct GamepadPanel: View {
                         .frame(width: item.frame.width, height: item.frame.height)
                         .position(x: item.frame.midX, y: item.frame.midY)
                 }
-                GamepadTouchArea(items: items, enabled: enabled) { held in
+                GamepadTouchArea(items: items, enabled: enabled && !customizing, ownership: ownership) { held in
                     driver.apply(LaptopGamepad.state(held: held, items: items), to: target(),
                                  session: model.session, settings: settings)
                 }
@@ -34,9 +59,8 @@ struct GamepadPanel: View {
                     Button("Customize Gamepad", systemImage: "slider.horizontal.3") { customizing = true }
                         .labelStyle(.iconOnly)
                         .frame(width: 44, height: 36)
-                    Text(driver.destination(of: target(), settings: settings))
+                    Text(driver.destination(of: current, settings: settings))
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                        .accessibilityLabel(driver.destination(of: target(), settings: settings))
                 }
                 .frame(width: proxy.size.width)
                 .padding(.top, 8)
@@ -47,7 +71,10 @@ struct GamepadPanel: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Gamepad")
         .sheet(isPresented: $customizing) { GamepadCustomizer(stored: $stored) }
-        .onChange(of: enabled) { _, enabled in if !enabled { driver.release() } }
+        .onChange(of: enabled) { _, enabled in if !enabled { letGo() } }
+        .onChange(of: destination(current)) { letGo() }
+        .onChange(of: stored) { letGo() }
+        .onChange(of: customizing) { _, open in if open { letGo() } }
         .onDisappear { driver.release() }
     }
 }
@@ -128,13 +155,18 @@ final class GamepadDriver {
 private struct GamepadTouchArea: UIViewRepresentable {
     let items: [LaptopGamepad.Item]
     let enabled: Bool
+    /// A new value takes every finger on the pad away from its control.
+    let ownership: Int
     let changed: ([(control: LaptopGamepad.Control, point: CGPoint)]) -> Void
 
     func makeUIView(context: Context) -> Surface { Surface() }
     func updateUIView(_ view: Surface, context: Context) {
         view.items = items
         view.changed = changed
-        if !enabled { view.clear() }
+        if view.ownership != ownership || !enabled {
+            view.ownership = ownership
+            view.disown()
+        }
         view.isUserInteractionEnabled = enabled
     }
     static func dismantleUIView(_ view: Surface, coordinator: ()) { view.clear() }
@@ -142,6 +174,7 @@ private struct GamepadTouchArea: UIViewRepresentable {
     final class Surface: UIView {
         var items: [LaptopGamepad.Item] = []
         var changed: (([(control: LaptopGamepad.Control, point: CGPoint)]) -> Void)?
+        var ownership = 0
         private var fingers: [ObjectIdentifier: (control: LaptopGamepad.Control, point: CGPoint)] = [:]
 
         override init(frame: CGRect) {
@@ -159,9 +192,10 @@ private struct GamepadTouchArea: UIViewRepresentable {
             report()
         }
         override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-            for touch in touches where fingers[ObjectIdentifier(touch)] != nil {
-                fingers[ObjectIdentifier(touch)]?.point = touch.location(in: self)
-            }
+            // A finger that was let go keeps moving without a control until it lifts.
+            let owned = touches.filter { fingers[ObjectIdentifier($0)] != nil }
+            guard !owned.isEmpty else { return }
+            for touch in owned { fingers[ObjectIdentifier(touch)]?.point = touch.location(in: self) }
             report()
         }
         override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { lift(touches) }
@@ -171,12 +205,17 @@ private struct GamepadTouchArea: UIViewRepresentable {
             if window == nil { clear() }
         }
 
+        /// Every finger lets go of its control without a report: whoever asked has released
+        /// what the pad held.
+        func disown() { fingers.removeAll() }
+
         func clear() {
             guard !fingers.isEmpty else { return }
             fingers.removeAll()
             report()
         }
         private func lift(_ touches: Set<UITouch>) {
+            guard touches.contains(where: { fingers[ObjectIdentifier($0)] != nil }) else { return }
             for touch in touches { fingers[ObjectIdentifier(touch)] = nil }
             report()
         }
