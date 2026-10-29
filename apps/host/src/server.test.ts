@@ -8,7 +8,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, expect, it, vi } from 'vitest'
-import { START_SCRIPT, REPLY_SCRIPT } from './agents.js'
+import { AgentNotFoundError, START_SCRIPT, REPLY_SCRIPT } from './agents.js'
 import { AgentRegistry } from './registry.js'
 import { createCabooseServer, type Controller } from './server.js'
 import { SettingsStore, settingsLimits } from './settings.js'
@@ -60,7 +60,7 @@ it('routes agent replies, approvals, files and links with the right status codes
   close.push(() => new Promise(resolve => fileServer.close(() => resolve())))
   const runs: string[][] = []
   const transcripts = new Map<string, string>()
-  const launch = vi.fn(async (_id: string, _path?: string) => {})
+  const launch = vi.fn(async (_id: string, _path?: string, _action?: string) => {})
   const guest = { ownerEnv: ['DISPLAY=:110'], run: async (command: string, args: string[]) => {
     runs.push([command, ...args])
     if (command === '/usr/bin/python3' && args[2] === 'list') return '{}'
@@ -94,6 +94,18 @@ it('routes agent replies, approvals, files and links with the right status codes
   expect(launch).toHaveBeenCalledWith('ai.storyteller.photocraft.desktop', 'Documents/a.psd')
   expect((await post('/v1/fs/open', { path: '../bad', app: 'a.desktop' })).status).toBe(400)
   expect((await post('/v1/fs/open', { path: 'a', app: '../bad.desktop' })).status).toBe(400)
+  // A launch takes no body, or { action } naming one of the entry's desktop actions.
+  expect((await fetch(base + '/v1/apps/firefox.desktop/launch', { method: 'POST', headers: { authorization: 'Bearer owner' } })).status).toBe(200)
+  expect(launch).toHaveBeenLastCalledWith('firefox.desktop', undefined, undefined)
+  expect((await post('/v1/apps/firefox.desktop/launch', { action: 'new-private-window' })).status).toBe(200)
+  expect(launch).toHaveBeenLastCalledWith('firefox.desktop', undefined, 'new-private-window')
+  launch.mockClear()
+  for (const action of ['new window', '../x', '', 'a'.repeat(65), 7]) expect((await post('/v1/apps/firefox.desktop/launch', { action })).status).toBe(400)
+  expect(launch).not.toHaveBeenCalled()
+  launch.mockRejectedValueOnce(new AgentNotFoundError('Application action not found'))
+  const unknown = await post('/v1/apps/firefox.desktop/launch', { action: 'missing' })
+  expect(unknown.status).toBe(404)
+  expect(await unknown.json()).toEqual({ error: 'Application action not found' })
   expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(404)
   expect((await post(`/v1/agent/tasks/${missing}/approvals/${missing}`, { allow: true })).status).toBe(404)
   const { id } = await (await post('/v1/agent/tasks', { prompt: 'hi' })).json() as { id: string }

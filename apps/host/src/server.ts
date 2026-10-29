@@ -8,7 +8,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
-import { NOT_FOUND, json, readJson } from './http.js'
+import { NOT_FOUND, json, noContent, readJson } from './http.js'
+import { parseAppLaunch, type AppAction } from './guest-apps.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import { loadCatalog } from './app-catalog-data.js'
@@ -17,6 +18,8 @@ import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWN
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
 import { HomeOwnership } from './home.js'
 import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
+import { BridgeInputError, BridgeRateLimitError, BridgeRelay, LocationShare, parseAppearance, parseLocation, type BridgeEvent } from './bridge.js'
+import { NowPlaying, NowPlayingInputError, parseNowPlayingCommand } from './now-playing.js'
 import { AgentRegistry } from './registry.js'
 import { PhoneHandoff, readPhoneFile } from './phone.js'
 import { SettingsInputError, settingsLimits, updateSettings, type ComputerSettings, type SettingsStore } from './settings.js'
@@ -41,14 +44,15 @@ import { type AgentRoutines, type RoutineOptions, type RoutineTask } from './age
 import { AgentProfiles, prepareProfileStart } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
 
-export interface App { id: string; name: string; icon: string; categories: string[]; exec: string }
+export interface App { id: string; name: string; icon: string; categories: string[]; exec: string; actions: AppAction[] }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
 export interface Controller extends ComputerDriver<Session> {
   componentsMode?: ComponentsMode
   componentsWarning?(): string | undefined
   stats(): unknown
   apps(): Promise<App[]>
-  launch(id: string, path?: string): Promise<void>
+  /** Starts an entry, opening a home-relative file with it or running one of its actions. */
+  launch(id: string, path?: string, action?: string): Promise<void>
   /** The owner's display in the guest: caboose-display's WebSocket. */
   displayUrl: string
   /** The agent seat's caboose-display, started on demand by ensureAgentSeat. */
@@ -222,10 +226,38 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const message = JSON.stringify(event)
     for (const socket of phoneControls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
   })
+  /** File chooser requests go to phone sockets only; an answered one is withdrawn from the other phones. */
+  const bridge = new BridgeRelay(() => controller.guest(), (event: BridgeEvent, exceptPhone?: string) => {
+    const message = JSON.stringify(event)
+    for (const socket of phoneControls) {
+      if (exceptPhone !== undefined && phoneSockets.get(socket) === exceptPhone) continue
+      if (socket.readyState === WebSocket.OPEN) socket.send(message)
+    }
+  })
+  const location = new LocationShare(() => controller.guest())
+  const nowPlaying = new NowPlaying(() => controller.guest(), broadcast)
   /** Media is polled only while the computer is already running and someone is watching it. */
   function syncMedia(): void {
-    media.setActive(computer.state === 'running' && sockets.size - controls.size - terminals.size > 0)
-    phone.setActive(computer.state === 'running' && phoneControls.size > 0)
+    const watching = computer.state === 'running' && sockets.size - controls.size - terminals.size > 0
+    media.setActive(watching)
+    nowPlaying.setActive(watching)
+    const phones = computer.state === 'running' && phoneControls.size > 0
+    phone.setActive(phones)
+    bridge.setActive(phones)
+  }
+  /**
+   * At each wake the computer starts without the phone's location, and gets the phone's
+   * appearance once its components (which bring caboose-bridge) are up to date.
+   */
+  function bridgeWake(): void {
+    void location.computerRunning()
+    if (!bridge.appearance) return
+    const work = upgradeWork
+    void (async () => {
+      await work
+      if (computer.state !== 'running') return
+      await bridge.applyAppearance().catch(error => console.error('Could not apply the phone appearance:', error instanceof Error ? error.message : error))
+    })()
   }
   /** The terminal service is a guest component: wait for a pending update to install it. */
   async function ensureTerminalReady(): Promise<TerminalService> {
@@ -277,8 +309,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         upgradeWork = upgradeComponents(guest, controller.componentsMode, publishUpgrade).finally(() => { upgrading = false; release() })
       }
     }
-    if (state === 'running') agents.resume()
-    else { agents.pause(); media.computerStopped() }
+    if (state === 'running') { agents.resume(); bridgeWake() }
+    else { agents.pause(); media.computerStopped(); nowPlaying.computerStopped(); bridge.computerStopped(); location.computerStopped() }
     syncMedia()
     syncFiles()
     desktopNotifications.setActive(state === 'running')
@@ -497,7 +529,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     }
     const match = /^\/v1\/apps\/([^/]+)\/launch$/.exec(path)
     if (request.method === 'POST' && match?.[1]) {
-      await computer.run(() => controller.launch(decodeURIComponent(match[1]!)))
+      const { action } = parseAppLaunch(await readJson(request))
+      await computer.run(() => controller.launch(decodeURIComponent(match[1]!), undefined, action))
       return json(response, 200, { launched: true })
     }
     if (request.method === 'GET' && path === '/v1/agents') return json(response, 200, await catalog.list())
@@ -568,6 +601,40 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       const command = parseMediaCommand(control[1], await readJson(request))
       await computer.run(() => media.send(command))
       return json(response, 200, { sent: true })
+    }
+    if (request.method === 'GET' && path === '/v1/now-playing') {
+      return json(response, 200, { nowPlaying: await nowPlaying.read(computer.state === 'running') })
+    }
+    const nowPlayingControl = /^\/v1\/now-playing\/([^/]+)\/control$/.exec(path)
+    if (request.method === 'POST' && nowPlayingControl?.[1]) {
+      const command = parseNowPlayingCommand(nowPlayingControl[1], await readJson(request))
+      await computer.run(() => nowPlaying.send(command))
+      return json(response, 200, { sent: true })
+    }
+    const bridgeAnswer = /^\/v1\/bridge\/requests\/([^/]+)$/.exec(path)
+    if (request.method === 'POST' && bridgeAnswer?.[1]) {
+      const input = await readJson(request)
+      await computer.run(() => bridge.answer(bridgeAnswer[1]!, input, principal.phoneId))
+      return noContent(response)
+    }
+    if (request.method === 'PUT' && path === '/v1/bridge/appearance') {
+      bridge.appearance = parseAppearance(await readJson(request))
+      // While components update, the wake's own apply runs once caboose-bridge is installed.
+      if (computer.state === 'running' && !upgrading) await computer.run(() => bridge.applyAppearance())
+      return noContent(response)
+    }
+    if (request.method === 'PUT' && path === '/v1/bridge/location') {
+      const shared = parseLocation(await readJson(request))
+      await computer.run(() => location.set(shared))
+      return noContent(response)
+    }
+    if (request.method === 'DELETE' && path === '/v1/bridge/location') {
+      // A parked computer's file is removed when it next runs.
+      if (computer.state === 'running') {
+        await computer.run(() => location.clear()).catch(error => { if (!(error instanceof ComputerConflictError)) throw error })
+      }
+      location.computerStopped()
+      return noContent(response)
     }
     if (request.method === 'GET' && path === '/v1/screen/elements') return json(response, 200, await computer.run(() => screenElements(controller.guest())))
     const screen = { '/v1/screen/act': screenAct, '/v1/screen/type': screenType, '/v1/screen/keys': screenKeys }[path]
@@ -689,6 +756,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))
           const playing = media.watched()
           if (playing) client.send(JSON.stringify({ type: 'media.playing', media: playing }))
+          const track = nowPlaying.watched()
+          if (track) client.send(JSON.stringify({ type: 'now-playing.changed', nowPlaying: track }))
           return
         }
         if (url.searchParams.get('seat') === 'agent') {
@@ -1035,10 +1104,10 @@ export function createCabooseServer(options: ComputerPieces & {
       if (!routed) return json(response, 404, { error: 'computer not found' })
       if (await routed.runtime.handle(request, response, routed.path, principal) === NOT_FOUND) return json(response, 404, { error: 'not found' })
     })().catch(error => {
-      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
+      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError || error instanceof IdentityNotFoundError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError || error instanceof IdentityConflictError || error instanceof ReachUnavailableError) return json(response, 409, { error: error.message })
-      if (error instanceof PairingRateLimitError) return json(response, 429, { error: error.message })
+      if (error instanceof PairingRateLimitError || error instanceof BridgeRateLimitError) return json(response, 429, { error: error.message })
       if (error instanceof AgentOperationError || error instanceof TerminalServiceError) return json(response, 502, { error: error.message })
       console.error('Caboose request failed:', error)
       if (!response.headersSent) json(response, 500, { error: 'computer operation failed' })
