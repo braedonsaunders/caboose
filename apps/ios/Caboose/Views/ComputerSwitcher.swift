@@ -39,7 +39,18 @@ struct ComputerSwitcher<Content: View>: View {
         .accessibilityHint("Switch between paired computers or add a computer")
         .sheet(isPresented: $model.addingComputer) {
             NavigationStack {
-                ScrollView { SetupView() }
+                ScrollView {
+                    VStack(spacing: 0) {
+                        if let failure = model.pairingFailure {
+                            Text(failure)
+                                .font(.callout)
+                                .foregroundStyle(.orange)
+                                .padding(.horizontal, 28)
+                                .accessibilityLabel("Pairing failed: \(failure)")
+                        }
+                        SetupView()
+                    }
+                }
                     .navigationTitle("Add Computer")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
