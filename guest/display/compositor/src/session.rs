@@ -28,11 +28,13 @@ pub struct Session {
     pub video_decoders: Vec<Codec>,
     /// The client plays Opus audio.
     pub audio: bool,
+    /// What the client takes from the clipboard besides text.
+    pub clipboard_types: Vec<String>,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
 pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool) -> Vec<String> {
-    let mut f = vec!["vsync", "ack", "touch", "text-input-v3", "cursor-named", "clipboard"];
+    let mut f = vec!["vsync", "ack", "touch", "text-input-v3", "cursor-named", "clipboard", "clipboard-types"];
     if xwayland {
         f.push("xwayland");
     }
@@ -245,7 +247,16 @@ impl State {
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
         let video_decoders = hello.video_decoders.clone().unwrap_or_default();
         let audio = hello.audio_decoders.as_ref().is_some_and(|d| d.iter().any(|c| c == "opus"));
-        self.session = Some(Session { conn, ready: true, backend, last_vsync: HashMap::new(), video_decoders, audio });
+        let clipboard_types = hello.clipboard_types.clone().unwrap_or_default();
+        self.session = Some(Session {
+            conn,
+            ready: true,
+            backend,
+            last_vsync: HashMap::new(),
+            video_decoders,
+            audio,
+            clipboard_types,
+        });
         if audio {
             let (tx, bitrate) = (self.audio_tx.clone(), self.config.audio_bitrate);
             if let Some(a) = self.audio.as_mut() {
@@ -262,12 +273,8 @@ impl State {
         }
         self.video_session_started();
         // What the computer's clipboard holds, so the phone can paste it.
-        if let Some(text) = self.clipboard.last_sent.clone() {
-            let message = Message::ServerClipboard(proto::Clipboard {
-                mime: crate::clipboard::MIME.into(),
-                data: (*text).clone(),
-            });
-            self.net.send(conn, &message);
+        if let Some(content) = self.clipboard.last_sent.clone() {
+            self.send_clipboard(&content);
         }
         // Text input enabled before this client connected still needs the keyboard; the
         // toggle itself went to no one (or to the previous client).

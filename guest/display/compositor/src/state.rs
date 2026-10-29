@@ -753,7 +753,7 @@ impl SelectionHandler for State {
         owner: &crate::clipboard::Owner,
     ) {
         match owner {
-            crate::clipboard::Owner::Phone(data) => crate::clipboard::write_to(fd, data.clone()),
+            crate::clipboard::Owner::Phone(offer) => offer.send(&mime_type, fd),
             crate::clipboard::Owner::X11 => {
                 let handle = self.handle.clone();
                 if let Some(xwm) = self.xwm.as_mut() {

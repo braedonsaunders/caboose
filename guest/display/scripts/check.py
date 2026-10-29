@@ -14,10 +14,12 @@ arrived, and prints fps, latency and the server's CPU time per frame.
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -380,6 +382,93 @@ def check_clipboard_bridge():
     return with_server(["sh", "-c", script], run)
 
 
+def png(width, height, rgb):
+    """A solid-colour RGB PNG."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = b"".join(b"\0" + bytes(rgb) * width for _ in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def fnv1a(data):
+    h = 0xcbf29ce484222325
+    for b in data:
+        h = ((h ^ b) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+
+
+IMAGE_TYPES = ["--clipboard-types", "image/png,image/jpeg,text/uri-list"]
+
+
+def clipboard_image(copy_cmd, paste_cmd):
+    # Computer -> phone: an application copies a PNG before the phone connects; the phone,
+    # which takes images, is sent it on hello, byte for byte, and a text-only phone is not.
+    # Phone -> computer: the phone copies another PNG and the application pastes it as
+    # image/png, byte for byte.
+    work = tempfile.mkdtemp()
+    ours, theirs, out = (os.path.join(work, n) for n in ("computer.png", "phone.png", "pasted"))
+    open(ours, "wb").write(png(40, 30, (200, 30, 30)))
+    open(theirs, "wb").write(png(17, 9, (20, 90, 220)))
+    script = (f"xterm & sleep 2; {copy_cmd.format(ours)}; "
+              f"while sleep 0.3; do {paste_cmd} > {out}.tmp 2>/dev/null && cmp -s {out}.tmp {theirs} "
+              f"&& echo ok > {out} && break; done; exec sleep 60")
+    def run(proc, token):
+        time.sleep(2)
+        text_only = probe(["--token-file", token, "--duration", "2", "--windows", "1"])
+        if text_only["clipboard_entries"]:
+            raise Failed(f"a text-only phone was sent {text_only['clipboard_entries']}")
+        r = probe(["--token-file", token, "--duration", "3", "--windows", "1", *IMAGE_TYPES,
+                   "--actions", f"copy-file:image/png:{theirs};wait:500"])
+        want = {"mime": "image/png", "bytes": os.path.getsize(ours), "fnv1a": fnv1a(open(ours, "rb").read())}
+        if r["clipboard_entries"] != [want]:
+            raise Failed(f"the phone got {r['clipboard_entries']}, not the copied PNG {want}")
+        wait_for_file(out)
+        return "a copied PNG reaches the phone byte for byte (not a text-only phone), and the phone's PNG pastes byte for byte"
+    return with_server(["sh", "-c", script], run)
+
+
+def check_clipboard_image_wayland():
+    return clipboard_image("wl-copy --type image/png < {}", "wl-paste --type image/png")
+
+
+def check_clipboard_image_x11():
+    return clipboard_image("xclip -i -selection clipboard -t image/png {}", "xclip -o -selection clipboard -t image/png")
+
+
+def check_clipboard_files():
+    # Computer -> phone: a file manager's copy (x-special/gnome-copied-files) reaches the
+    # phone as a text/uri-list. Phone -> computer: files the phone uploaded to the transfer
+    # area paste as text/uri-list and as GNOME's list; a file outside the area is refused
+    # and leaves the clipboard as it was.
+    transfer = os.path.join(os.path.expanduser("~"), ".cache/caboose/transfers", os.urandom(16).hex())
+    os.makedirs(transfer, mode=0o700)
+    staged = os.path.join(transfer, "report #1.txt")
+    open(staged, "w").write("uploaded")
+    out = os.path.join(tempfile.mkdtemp(), "pasted")
+    uri = "file://" + staged.replace(" ", "%20").replace("#", "%23")
+    script = ("xterm & sleep 2; printf 'copy\n%s' 'file:///home/caboose/Documents/a%20b.odt' | "
+              "wl-copy --type x-special/gnome-copied-files; "
+              f"while sleep 0.3; do t=$(wl-paste --type x-special/gnome-copied-files 2>/dev/null); "
+              f"[ \"$t\" = \"$(printf 'copy\n%s' '{uri}')\" ] && wl-paste --type text/uri-list > {out}.tmp && mv {out}.tmp {out} "
+              "&& break; done; exec sleep 60")
+    def run(proc, token):
+        time.sleep(2)
+        r = probe(["--token-file", token, "--duration", "4", "--windows", "1", *IMAGE_TYPES,
+                   "--actions", f"copy-files:/etc/hostname;wait:800;copy-files:{staged};wait:800"])
+        want = b"file:///home/caboose/Documents/a%20b.odt\r\n"
+        if r["clipboard_entries"] != [{"mime": "text/uri-list", "bytes": len(want), "fnv1a": fnv1a(want)}]:
+            raise Failed(f"the phone got {r['clipboard_entries']}, not the copied file")
+        got = wait_for_file(out)
+        if got.strip() != uri:
+            raise Failed(f"the computer pasted {got!r}, not {uri!r}")
+        return "a file manager's copy reaches the phone as a uri-list; the phone's uploaded file pastes, a file outside the transfer area does not"
+    try:
+        return with_server(["sh", "-c", script], run)
+    finally:
+        shutil.rmtree(transfer, ignore_errors=True)
+
+
 def check_audio():
     # A 440 Hz tone played into the session's default output arrives as Opus the probe
     # decodes, at the right level; the silence before it is not sent.
@@ -721,6 +810,9 @@ CHECKS = [
     ("clipboard-wayland", check_clipboard_wayland),
     ("clipboard-x11", check_clipboard_x11),
     ("clipboard-bridge", check_clipboard_bridge),
+    ("clipboard-image-wayland", check_clipboard_image_wayland),
+    ("clipboard-image-x11", check_clipboard_image_x11),
+    ("clipboard-files", check_clipboard_files),
     ("audio", check_audio),
     ("refine", check_refine),
     ("motion", check_motion),

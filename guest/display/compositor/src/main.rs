@@ -10,11 +10,13 @@ mod input;
 mod keymap;
 mod motion;
 mod net;
+mod pipes;
 mod render;
 mod session;
 mod state;
 mod stream;
 mod text_input;
+mod transfers;
 mod video;
 mod windows;
 mod xauth;
@@ -289,11 +291,11 @@ fn run(config: Config) -> Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
-    let (clip_tx, clip_rx) = channel::<Vec<u8>>();
+    let (clip_tx, clip_rx) = channel::<clipboard::Read>();
     handle
         .insert_source(clip_rx, |event, _, state: &mut State| {
-            if let ChannelEvent::Msg(data) = event {
-                state.clipboard_read(data);
+            if let ChannelEvent::Msg(read) = event {
+                state.clipboard_read(read);
             }
         })
         .map_err(|e| e.to_string())?;
@@ -374,7 +376,7 @@ fn run(config: Config) -> Result<(), String> {
         focus_history: Vec::new(),
         videos: Default::default(),
         control: Default::default(),
-        clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
+        clipboard: clipboard::Clipboard::new(clip_tx),
         audio: None,
         audio_tx,
         generation: 0,

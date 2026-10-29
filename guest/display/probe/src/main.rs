@@ -29,6 +29,7 @@ OPTIONS:
     --decoders LIST        comma-separated codecs [default: hevc,h264]
     --video-decoders LIST  codecs to accept as video.* streams [default: none]
     --audio                play the computer's sound (decoded and measured, not heard)
+    --clipboard-types LIST MIME types to take from the computer's clipboard besides text
     --duration SECS        how long to run [default: 10]
     --stall-after SECS     then stop reading and sending, the socket left open (a
                            suspended client)
@@ -43,7 +44,10 @@ OPTIONS:
     --actions LIST         once a window shows, run `;`-separated actions 300 ms apart:
                            key:KEYSYM[+mod...] (press and release; mods shift, control,
                            mod1, mod4), text:STRING, edit:N:STRING (delete N before,
-                           then commit), copy:STRING (the phone's clipboard), tap:X,Y,
+                           then commit), copy:STRING (the phone's clipboard),
+                           copy-file:MIME:PATH (the file's bytes as MIME on the
+                           phone's clipboard), copy-files:PATH[,PATH...] (the files as
+                           the phone's text/uri-list), tap:X,Y,
                            click:X,Y, wait:MS, maximize (fill the display),
                            scroll:X,Y,DY (precise, DY pixels), resize:W,H
     --check                exit 0 as soon as the server answers hello (readiness probe)
@@ -57,6 +61,7 @@ struct Args {
     decoders: Vec<Codec>,
     video_decoders: Option<Vec<Codec>>,
     audio: bool,
+    clipboard_types: Option<Vec<String>>,
     duration: Duration,
     /// Stop reading and sending after this long, keeping the connection open.
     stall_after: Option<Duration>,
@@ -95,6 +100,7 @@ fn parse_args() -> Result<Args, String> {
         decoders: vec![Codec::Hevc, Codec::H264],
         video_decoders: None,
         audio: false,
+        clipboard_types: None,
         duration: Duration::from_secs(10),
         stall_after: None,
         windows: None,
@@ -125,6 +131,7 @@ fn parse_args() -> Result<Args, String> {
                 a.displays.push(parse_display(id, &v).ok_or_else(|| format!("bad --display {v}"))?);
             }
             "--audio" => a.audio = true,
+            "--clipboard-types" => a.clipboard_types = Some(value()?.split(',').map(str::to_owned).collect()),
             "--video-decoders" => {
                 a.video_decoders = Some(
                     value()?
@@ -174,6 +181,12 @@ fn parse_args() -> Result<Args, String> {
         a.displays.push(parse_display(1, "1920x1080@60x1").unwrap());
     }
     Ok(a)
+}
+
+/// FNV-1a, 64-bit: how the report identifies clipboard bytes (scripts/check.py computes
+/// the same).
+fn fnv1a(data: &[u8]) -> u64 {
+    data.iter().fold(0xcbf29ce484222325, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3))
 }
 
 fn monotonic_us() -> u64 {
@@ -401,7 +414,23 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
         "copy" => vec![Message::ClientClipboard(proto::Clipboard {
             mime: "text/plain;charset=utf-8".into(),
             data: arg.as_bytes().to_vec(),
+            alternatives: Vec::new(),
         })],
+        // copy-file:MIME:PATH copies the file's bytes as MIME, as copying an image does.
+        "copy-file" => {
+            let (mime, path) = arg.split_once(':').ok_or_else(|| format!("bad copy-file {arg}"))?;
+            let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            vec![Message::ClientClipboard(proto::Clipboard { mime: mime.into(), data, alternatives: Vec::new() })]
+        }
+        // copy-files:PATH,... copies files the phone uploaded, as a text/uri-list.
+        "copy-files" => {
+            let paths: Vec<&str> = arg.split(',').collect();
+            vec![Message::ClientClipboard(proto::Clipboard {
+                mime: proto::clipboard::URI_LIST.into(),
+                data: proto::clipboard::uri_list(&paths),
+                alternatives: Vec::new(),
+            })]
+        }
         // edit:N:STRING deletes N grapheme clusters before the cursor and commits STRING,
         // as an autocorrection does.
         "edit" => {
@@ -514,6 +543,7 @@ fn run(args: Args) -> Result<bool, String> {
             displays: args.displays.clone(),
             video_decoders: args.video_decoders.clone(),
             audio_decoders: args.audio.then(|| vec!["opus".to_owned()]),
+            clipboard_types: args.clipboard_types.clone(),
         }),
     )?;
 
@@ -533,6 +563,7 @@ fn run(args: Args) -> Result<bool, String> {
     let mut text_input_events = 0u32;
     let mut videos: BTreeMap<u64, VideoStats> = BTreeMap::new();
     let mut clipboard: Option<String> = None;
+    let mut clipboard_entries: Vec<(String, usize, u64)> = Vec::new();
     let mut sound = AudioStats::default();
     let mut ping_sent: Option<u64> = None;
     let mut rtt_us: Option<u64> = None;
@@ -736,7 +767,13 @@ fn run(args: Args) -> Result<bool, String> {
                     }
                 }
                 Message::TextInput(_) => text_input_events += 1,
-                Message::ServerClipboard(c) => clipboard = Some(String::from_utf8_lossy(&c.data).into_owned()),
+                Message::ServerClipboard(c) => {
+                    clipboard = c
+                        .entries()
+                        .find(|(m, _)| *m == proto::clipboard::TEXT)
+                        .map(|(_, d)| String::from_utf8_lossy(d).into_owned());
+                    clipboard_entries = c.entries().map(|(m, d)| (m.to_owned(), d.len(), fnv1a(d))).collect();
+                }
                 Message::Audio(a) => sound.packet(&a),
                 Message::VideoCreate(c) => {
                     videos.insert(
@@ -884,7 +921,7 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"clipboard_entries\":[{}],\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
             videos
                 .iter()
                 .map(|(id, v)| format!(
@@ -917,6 +954,11 @@ fn run(args: Args) -> Result<bool, String> {
             cpu_ms.filter(|_| total_frames > 0).map(|c| format!("{:.2}", c / total_frames as f64)).unwrap_or("null".into()),
             rtt_us.map(|r| format!("{:.2}", r as f64 / 1000.0)).unwrap_or("null".into()),
             clipboard.as_ref().map(|c| format!("{c:?}")).unwrap_or("null".into()),
+            clipboard_entries
+                .iter()
+                .map(|(mime, bytes, hash)| format!("{{\"mime\":{mime:?},\"bytes\":{bytes},\"fnv1a\":\"{hash:016x}\"}}"))
+                .collect::<Vec<_>>()
+                .join(","),
             sound.packets,
             sound.bytes,
             sound.decoded,
