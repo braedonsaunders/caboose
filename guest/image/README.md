@@ -64,7 +64,9 @@ it (see [Updating a running computer](#updating-a-running-computer)).
   `linux-image-cloud-arm64` kernel (Debian's virtual-machine flavour, without sound, DRM or
   `uinput` drivers), systemd, D-Bus with a user session, the `caboose` user (uid 1000, passwordless `sudo`,
   lingering enabled so its user manager runs at boot), Node 22 from NodeSource and VS Code
-  from Microsoft's repository.
+  from Microsoft's repository. Packages' documentation other than their copyright notices,
+  info pages and lintian overrides are not installed (`/etc/dpkg/dpkg.cfg.d/caboose-excludes`,
+  which applies to later installs too); manual pages and translations are.
 - **Guest agent.** The appkit-desk guest agent from Bunkhouse at a pinned revision, with the
   appkit-desk 0.6.0 protocol files, on vsock port 5252 (`desk-guest-agent.service`,
   `desk-vsock-bridge.service`). The host runs every guest command through it. It runs as root
