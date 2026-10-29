@@ -14,6 +14,10 @@ import tempfile
 ID = re.compile(r'^(?:owner|c-[0-9a-f]{10})$')
 
 
+def present(path):
+    return os.path.lexists(path)
+
+
 def sync_dir(path):
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -64,7 +68,7 @@ class Transaction:
         self.computer = computer
 
     def publish(self, binding_bytes, checkpoint=lambda phase: None):
-        if self.journal.exists() or self.binding.exists() or self.original.exists() or self.temp.exists():
+        if present(self.journal) or present(self.binding) or present(self.original) or present(self.temp):
             raise ValueError('Migration artifacts already exist')
         original_id = identity(self.disk)
         staged_id = identity(self.staged)
@@ -121,19 +125,19 @@ class Transaction:
         binding_hash = data.get('binding_sha256')
         if not isinstance(binding_hash, str) or not re.fullmatch('[0-9a-f]{64}', binding_hash):
             raise ValueError('Invalid binding hash')
-        if self.binding.exists():
+        if present(self.binding):
             identity(self.binding)
             if digest_bytes(self.binding.read_bytes()) != binding_hash:
                 raise ValueError('Binding changed during migration; refusing recovery')
         current = identity(self.disk)
         if current not in (original, staged):
             raise ValueError('Disk changed during migration; refusing recovery')
-        if self.original.exists() and identity(self.original) != original:
+        if present(self.original) and identity(self.original) != original:
             raise ValueError('Retained disk changed; refusing recovery')
         if current == staged:
-            if not self.original.exists():
+            if not present(self.original):
                 raise ValueError('Original disk is missing')
-            if self.temp.exists():
+            if present(self.temp):
                 if identity(self.temp) != original:
                     raise ValueError('Unexpected recovery file')
             else:
@@ -141,7 +145,7 @@ class Transaction:
                 sync_dir(self.dir)
             os.replace(self.temp, self.disk)
             sync_dir(self.dir)
-        if self.binding.exists():
+        if present(self.binding):
             self.binding.unlink()
             sync_dir(self.dir)
         self.journal.unlink()
@@ -152,13 +156,13 @@ def rollback(tx, acknowledge, checkpoint=lambda phase: None):
     """Journal an acknowledged rollback; retain the migrated disk for inspection."""
     if not acknowledge:
         raise ValueError('Rollback requires explicit acknowledgement of migrated writes')
-    if tx.journal.exists() or not tx.original.exists() or not tx.binding.exists():
+    if present(tx.journal) or not present(tx.original) or not present(tx.binding):
         raise ValueError('No completed migration to roll back, or recovery is required')
     original, current = identity(tx.original), identity(tx.disk)
     if original == current:
         raise ValueError('Computer already uses the retained original')
     retired = tx.dir / f'.{tx.computer}.migration-retired.raw'
-    if retired.exists() or tx.temp.exists():
+    if present(retired) or present(tx.temp):
         raise ValueError('Rollback artifacts already exist')
     identity(tx.binding)
     binding = tx.binding.read_bytes()
@@ -184,13 +188,13 @@ def finish_rollback(tx, journal, checkpoint=lambda phase: None):
     retired = tx.dir / f'.{tx.computer}.migration-retired.raw'
     if identity(tx.original) != original or identity(tx.disk) not in (original, current):
         raise ValueError('Disk identity changed during rollback')
-    if tx.binding.exists():
+    if present(tx.binding):
         identity(tx.binding)
         if digest_bytes(tx.binding.read_bytes()) != binding_hash:
             raise ValueError('Binding changed during rollback')
-    if retired.exists() and identity(retired) != current:
+    if present(retired) and identity(retired) != current:
         raise ValueError('Retired disk identity changed')
-    if not retired.exists():
+    if not present(retired):
         if identity(tx.disk) != current:
             raise ValueError('Retired disk is missing')
         os.link(tx.disk, retired, follow_symlinks=False)
@@ -199,9 +203,9 @@ def finish_rollback(tx, journal, checkpoint=lambda phase: None):
     atomic_json(tx.journal, journal)
     checkpoint('restore-original')
     if identity(tx.disk) != original:
-        if tx.temp.exists() and identity(tx.temp) != original:
+        if present(tx.temp) and identity(tx.temp) != original:
             raise ValueError('Unexpected rollback file')
-        if not tx.temp.exists():
+        if not present(tx.temp):
             os.link(tx.original, tx.temp, follow_symlinks=False)
             sync_dir(tx.dir)
         os.replace(tx.temp, tx.disk)
@@ -209,7 +213,7 @@ def finish_rollback(tx, journal, checkpoint=lambda phase: None):
     journal['phase'] = 'remove-binding'
     atomic_json(tx.journal, journal)
     checkpoint('remove-binding')
-    if tx.binding.exists():
+    if present(tx.binding):
         tx.binding.unlink()
         sync_dir(tx.dir)
     tx.journal.unlink()

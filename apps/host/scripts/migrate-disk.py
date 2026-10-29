@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from migration_transaction import Transaction, atomic_json, identity, sync_dir, rollback, recover
+from migration_transaction import Transaction, atomic_json, identity, present, sync_dir, rollback, recover
 from migration_appliance_guard import members, references
 from migration_appliance import ApplianceError, matching_kernel, pack_system_image, prepare_system_disk, rebuild_initramfs, trusted_executable
 
@@ -202,14 +202,14 @@ def image_store(root):
 
 def archive_previous_rollback(tx, root):
     retired = tx.dir / f'.{tx.computer}.migration-retired.raw'
-    if not tx.original.exists() and not retired.exists():
+    if not present(tx.original) and not present(retired):
         return
-    if tx.original.exists() and identity(tx.original) != identity(tx.disk):
+    if present(tx.original) and identity(tx.original) != identity(tx.disk):
         raise RuntimeError('Retained original differs from current disk; inspect it before migrating')
     images = image_store(root)
     archive = Path(tempfile.mkdtemp(prefix=f'{tx.computer}-rollback-', dir=images))
     sync_dir(images)
-    if tx.original.exists():
+    if present(tx.original):
         # Make the historical copy independent before the live original can be written.
         clone_or_copy(tx.original, archive / 'original.raw')
         with (archive / 'original.raw').open('rb') as f:
@@ -217,7 +217,7 @@ def archive_previous_rollback(tx, root):
         sync_dir(archive)
         tx.original.unlink()
         sync_dir(tx.dir)
-    if retired.exists():
+    if present(retired):
         identity(retired)
         os.replace(retired, archive / 'migrated.raw')
         sync_dir(archive)
@@ -225,7 +225,7 @@ def archive_previous_rollback(tx, root):
 
 
 def retain_unpublished_stage(tx, root):
-    if not tx.staged.exists():
+    if not present(tx.staged):
         raise RuntimeError('No interrupted migration journal or staged disk')
     identity(tx.staged)
     images = image_store(root)
@@ -238,7 +238,7 @@ def retain_unpublished_stage(tx, root):
 
 
 def migrate(tx, root, mkfs, fsck):
-    if tx.binding.exists() or tx.staged.exists() or tx.journal.exists():
+    if present(tx.binding) or present(tx.staged) or present(tx.journal):
         raise RuntimeError('Migration artifacts or system binding already exist')
     archive_previous_rollback(tx, root)
     for program in ('/usr/bin/cp', '/usr/bin/guestfish', '/usr/bin/prlimit', '/usr/bin/awk', mkfs, fsck):
@@ -316,19 +316,19 @@ def main():
         tx = Transaction(root, args.computer)
         assert_cold(tx)
         lock_disk(tx.disk)
-        if tx.original.exists():
+        if present(tx.original):
             lock_disk(tx.original)
-        if tx.staged.exists():
+        if present(tx.staged):
             lock_disk(tx.staged)
         assert_no_live_disk(tx)
         if args.command == 'inspect':
-            print(json.dumps({'disk': str(tx.disk), 'binding': tx.binding.exists(),
-                              'journal': tx.journal.exists(), 'original': tx.original.exists(),
-                              'staged': tx.staged.exists(), 'cold_stopped': True}, indent=2))
+            print(json.dumps({'disk': str(tx.disk), 'binding': present(tx.binding),
+                              'journal': present(tx.journal), 'original': present(tx.original),
+                              'staged': present(tx.staged), 'cold_stopped': True}, indent=2))
         elif args.command == 'migrate':
             migrate(tx, root, args.mkfs, args.fsck)
         elif args.command == 'recover':
-            if tx.journal.exists():
+            if present(tx.journal):
                 record = json.loads(tx.journal.read_text())
                 if record.get('operation') == 'prepare':
                     prepare_quiescent(tx)
@@ -336,7 +336,7 @@ def main():
                     sync_dir(tx.dir)
                 else:
                     recover(tx)
-                if tx.staged.exists():
+                if present(tx.staged):
                     retain_unpublished_stage(tx, root)
             else:
                 retain_unpublished_stage(tx, root)

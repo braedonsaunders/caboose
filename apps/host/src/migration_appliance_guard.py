@@ -165,7 +165,8 @@ def main():
                     break
             except ChildProcessError:
                 break
-        if references([appliance_dir, *disks], (os.getpid(), os.getppid())):
+        excluded = (os.getpid(), parent) if os.getppid() == parent else (os.getpid(),)
+        if references([appliance_dir, *disks], excluded):
             raise RuntimeError('An unverified process still references the appliance')
     # This durable transition is written only after every owned group member
     # has exited. A crash before it leaves a recovery fence in place.

@@ -162,6 +162,14 @@ class TransactionTests(unittest.TestCase):
         self.assertTrue(self.tx.journal.exists())
         self.assertEqual(self.tx.disk.read_bytes(), b'migrated')
 
+    def test_dangling_binding_is_not_overwritten(self):
+        self.tx.binding.symlink_to(self.root / 'missing')
+        with self.assertRaisesRegex(ValueError, 'artifacts already exist'):
+            self.tx.publish(self.binding)
+        self.assertTrue(self.tx.binding.is_symlink())
+        self.assertEqual(self.tx.disk.read_bytes(), b'original')
+        self.assertFalse(self.tx.journal.exists())
+
     def test_rejects_unsafe_computer_ids(self):
         for value in ('../owner', 'other', 'c-123', ''):
             with self.assertRaises(ValueError):
