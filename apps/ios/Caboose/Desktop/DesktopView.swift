@@ -356,6 +356,7 @@ struct Launchpad: View {
             .onEnded { value in
                 let next = layout.pageAfterSwipe(desktop.launcherPage, count: apps.count,
                     translation: value.translation, predicted: value.predictedEndTranslation)
+                guard next != desktop.launcherPage else { return }
                 movingForward = next > desktop.launcherPage
                 withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.28)) {
                     desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]
