@@ -591,6 +591,12 @@ final class AppModel {
             _ = session.state
             _ = session.windows.count
             _ = session.windowsAnnounced
+            // A window's class and minimum size can arrive after the window: Laptop fills
+            // the screen with it once they do.
+            for window in session.windows.values {
+                _ = window.appClass?.name
+                _ = window.minimumSize
+            }
         } onChange: { [weak self] in
             Task { @MainActor in
                 self?.sessionChanged()

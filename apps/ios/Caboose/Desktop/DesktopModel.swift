@@ -570,15 +570,17 @@ final class DesktopModel {
     /// Their Tablet places are another arrangement and stay as they were.
     func fillWorkArea(_ session: any DisplaySession) {
         guard size.width > 0, size.height > 0 else { return }
-        var changed = false
-        for window in session.windows.values where !window.isAuxiliary && !window.isFullscreen && app(window) != nil
-            && layout.snap(of: window.id) != .maximized
-            && FreeDesktopLayout.allows(.maximized, in: workArea, minimum: minimumChrome(window)) {
-            layout.setSnap(window.id, .maximized, current: chromeRect(window), in: workArea, app: app(window))
-            changed = true
+        let candidates = session.windows.values.map { window in
+            FreeDesktopLayout.FillCandidate(id: window.id, app: app(window), minimum: minimumChrome(window),
+                                            isAuxiliary: window.isAuxiliary, isFullscreen: window.isFullscreen)
+        }
+        let fill = layout.windowsToFill(candidates, in: workArea)
+        for id in fill {
+            guard let window = session.windows[id] else { continue }
+            layout.setSnap(id, .maximized, current: chromeRect(window), in: workArea, app: app(window))
             applyPlace(window, session)
         }
-        if changed { save() }
+        if !fill.isEmpty { save() }
     }
 
     private func applyPlace(_ window: RemoteWindow, _ session: any DisplaySession) {

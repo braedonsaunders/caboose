@@ -261,3 +261,44 @@ struct FreeDesktopLayoutTests {
         #expect(FreeDesktopLayout.decoded(from: Data("nonsense".utf8)) == FreeDesktopLayout())
     }
 }
+
+/// Laptop fills its upper screen with every app window that can (`windowsToFill`).
+struct LaptopFillTests {
+    let screen = CGRect(x: 0, y: 0, width: 680, height: 470)
+
+    @Test func everyExistingAndArrivingAppWindowFillsOnce() {
+        var layout = FreeDesktopLayout()
+        // A window with a place of its own, floating, and one without any.
+        layout.setPreferred(1, frame: CGRect(x: 4, y: 37, width: 672, height: 343), in: screen, app: "chromium")
+        var windows = [FreeDesktopLayout.FillCandidate(id: 1, app: "Chromium"), .init(id: 2, app: "gedit")]
+        #expect(layout.windowsToFill(windows, in: screen) == [1, 2])
+        for id in [1, 2] { layout.setSnap(id, .maximized, current: .zero, in: screen, app: windows[id - 1].app) }
+        #expect(layout.windowsToFill(windows, in: screen).isEmpty)
+        #expect(layout.frame(for: 1, app: "Chromium", in: screen) == screen)
+        windows.append(.init(id: 3, app: "code"))
+        #expect(layout.windowsToFill(windows, in: screen) == [3])
+    }
+
+    @Test func dialogsFullScreenAndOversizedWindowsKeepTheirPlace() {
+        let layout = FreeDesktopLayout()
+        let windows: [FreeDesktopLayout.FillCandidate] = [
+            .init(id: 4, app: "gimp", isAuxiliary: true),
+            .init(id: 5, app: "mpv", isFullscreen: true),
+            .init(id: 6, app: "big", minimum: CGSize(width: 900, height: 200)),
+            .init(id: 7, app: "tall", minimum: CGSize(width: 200, height: 600)),
+            .init(id: 8, app: "fits", minimum: CGSize(width: 680, height: 470)),
+        ]
+        #expect(layout.windowsToFill(windows, in: screen) == [8])
+    }
+
+    @Test func aWindowFillsOnceItsClassArrives() {
+        var layout = FreeDesktopLayout()
+        var window = FreeDesktopLayout.FillCandidate(id: 9, app: nil)
+        #expect(layout.windowsToFill([window], in: screen).isEmpty)
+        window.app = "Firefox"
+        #expect(layout.windowsToFill([window], in: screen) == [9])
+        // Another app's maximized place under the same id does not count as this window's.
+        layout.setSnap(9, .maximized, current: .zero, in: screen, app: "thunderbird")
+        #expect(layout.windowsToFill([window], in: screen) == [9])
+    }
+}

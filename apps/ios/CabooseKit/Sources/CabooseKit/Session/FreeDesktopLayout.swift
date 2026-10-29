@@ -52,6 +52,31 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     }
 
     public func snap(of id: Int) -> Snap? { places[id]?.snap }
+
+    /// A window as `windowsToFill` judges it: its app class (nil until the computer says) and
+    /// smallest whole frame, in the work area's units.
+    public struct FillCandidate: Equatable, Sendable {
+        public var id: Int
+        public var app: String?
+        public var minimum: CGSize
+        public var isAuxiliary: Bool
+        public var isFullscreen: Bool
+        public init(id: Int, app: String?, minimum: CGSize = .zero, isAuxiliary: Bool = false, isFullscreen: Bool = false) {
+            self.id = id; self.app = app; self.minimum = minimum; self.isAuxiliary = isAuxiliary; self.isFullscreen = isFullscreen
+        }
+    }
+
+    /// The windows to maximize so each fills `area` (Laptop's upper screen), by id: app
+    /// windows with a known class that are not maximized in their own place already and fit
+    /// `area` at their minimum size. Dialogs, full-screen windows and windows whose class has
+    /// not arrived are left alone; the last are filled once it does.
+    public func windowsToFill(_ windows: [FillCandidate], in area: CGRect) -> [Int] {
+        windows.filter { window in
+            !window.isAuxiliary && !window.isFullscreen && window.app != nil
+                && place(for: window.id, app: window.app)?.snap != .maximized
+                && window.minimum.width <= area.width && window.minimum.height <= area.height
+        }.map(\.id).sorted()
+    }
     public func isMinimized(_ id: Int, app: String?) -> Bool { place(for: id, app: app)?.minimized == true }
 
     /// Where the window belongs in `area`, if it has a place.
