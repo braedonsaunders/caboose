@@ -130,6 +130,14 @@ class QuiesceChecks(unittest.TestCase):
         for nodes in ({'/': [1], '/missing/child': [2]}, {'/': [1], '/a': [1]}):
             with self.assertRaises(Unsupported): plan_freezer_branches(nodes, [1])
 
+    def test_systemd_escaped_branch_name_is_supported(self):
+        nodes = {'/': [1], '/system.slice': [], '/system.slice/agent.service': [10], '/system.slice/system-systemd\\x2dfsck.slice': [5]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'system.slice' / 'system-systemd\\x2dfsck.slice'
+            path.mkdir(parents=True)
+            (path / 'cgroup.events').write_text('frozen 0\n')
+            self.assertEqual(branch_states(nodes, [1, 10], directory), [{'path': '/system.slice/system-systemd\\x2dfsck.slice', 'frozen': False}])
+
     def test_changed_tree_rolls_back_attempted_freezes(self):
         nodes = {'/': [1], '/user.slice': [42], '/system.slice': [55]}
         with tempfile.TemporaryDirectory() as directory:

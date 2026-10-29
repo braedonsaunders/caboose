@@ -34,10 +34,10 @@ it('persists exact branch state and rejects overlapping or unsafe paths', async 
   const root = await mkdtemp(join(tmpdir(), 'parked-files-'))
   try {
     const journal = new ParkedFilesJournal(join(root, 'intent'))
-    for (const branches of [[{ path: '/a/../b', frozen: false }], [{ path: '/a', frozen: false }, { path: '/a/b', frozen: true }]]) {
+    for (const branches of [[{ path: '/a/../b', frozen: false }], [{ path: '/a', frozen: false }, { path: '/a/b', frozen: true }], [{ path: '/system.slice/bad\\x2fpath', frozen: false }], [{ path: '/system.slice/bad\\q', frozen: false }]]) {
       await expect(journal.begin(branches)).rejects.toThrow('Invalid')
     }
-    const branches = [{ path: '/system.slice/a.service', frozen: false }, { path: '/user.slice', frozen: true }]
+    const branches = [{ path: '/system.slice/system-systemd\\x2dfsck.slice', frozen: false }, { path: '/user.slice', frozen: true }]
     await expect(journal.begin(branches, -1)).rejects.toThrow('Invalid')
     const intent = await journal.begin(branches, 64769)
     expect(await journal.read()).toEqual({ version: 2, id: intent.id, branches, homeDevice: 64769 })

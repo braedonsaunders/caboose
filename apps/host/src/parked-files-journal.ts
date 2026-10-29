@@ -10,7 +10,7 @@ function validateBranches(value: unknown): FreezeBranch[] {
   if (!Array.isArray(value) || value.length > 256) throw new Error('Invalid parked Files recovery intent')
   const branches: FreezeBranch[] = []
   for (const entry of value) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || Object.keys(entry).sort().join(',') !== 'frozen,path' || typeof entry.path !== 'string' || typeof entry.frozen !== 'boolean' || entry.path.length > 200 || !/^\/(?:[A-Za-z0-9_:@.-]+)(?:\/[A-Za-z0-9_:@.-]+)*$/.test(entry.path) || entry.path.split('/').some((part: string) => part === '.' || part === '..')) throw new Error('Invalid parked Files recovery intent')
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || Object.keys(entry).sort().join(',') !== 'frozen,path' || typeof entry.path !== 'string' || typeof entry.frozen !== 'boolean' || entry.path.length > 200 || !/^\/(?:[A-Za-z0-9_:@.-]|\\x(?!00|2f)[0-9a-f]{2})+(?:\/(?:[A-Za-z0-9_:@.-]|\\x(?!00|2f)[0-9a-f]{2})+)*$/.test(entry.path) || entry.path.split('/').some((part: string) => part === '.' || part === '..')) throw new Error('Invalid parked Files recovery intent')
     if (branches.some(other => other.path === entry.path || other.path.startsWith(entry.path + '/') || entry.path.startsWith(other.path + '/'))) throw new Error('Invalid parked Files recovery intent')
     branches.push({ path: entry.path, frozen: entry.frozen })
   }

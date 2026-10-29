@@ -201,6 +201,7 @@ def recovery_ancestry(proc='/proc', pid=None):
 
 BRIDGE_CGROUP = '/system.slice/desk-vsock-bridge.service'
 BRIDGE_ARGV = [b'/usr/bin/socat', b'VSOCK-LISTEN:5252,fork,reuseaddr', b'UNIX-CONNECT:/run/desk-guest-agent.sock']
+CGROUP_NAME = re.compile(r'/(?:[A-Za-z0-9_:@.\-]|\\x(?!00|2f)[0-9a-f]{2})+(?:/(?:[A-Za-z0-9_:@.\-]|\\x(?!00|2f)[0-9a-f]{2})+)*')
 
 
 def bridge_processes(nodes, proc='/proc'):
@@ -335,7 +336,7 @@ def branch_states(nodes, trusted, root='/sys/fs/cgroup'):
         raise Unsupported('too many freezer branches')
     states = []
     for branch in branches:
-        if len(branch) > 200 or not re.fullmatch(r'/[A-Za-z0-9_:@.\-]+(?:/[A-Za-z0-9_:@.\-]+)*', branch):
+        if len(branch) > 200 or not CGROUP_NAME.fullmatch(branch) or any(part in ('.', '..') for part in branch.split('/')):
             raise Unsupported('unsupported freezer branch name')
         try:
             events = dict(line.split() for line in (Path(root) / branch.lstrip('/') / 'cgroup.events').read_text().splitlines())
@@ -403,7 +404,7 @@ def thaw(root='/', cgroup='/sys/fs/cgroup/caboose-workloads.slice', branches=Non
             raise Unsupported('invalid recovery branches')
         names = []
         for entry in branches:
-            if not isinstance(entry, dict) or set(entry) != {'path', 'frozen'} or type(entry['frozen']) is not bool or not isinstance(entry['path'], str) or len(entry['path']) > 200 or not re.fullmatch(r'/[A-Za-z0-9_:@.\-]+(?:/[A-Za-z0-9_:@.\-]+)*', entry['path']) or any(part in ('.', '..') for part in entry['path'].split('/')):
+            if not isinstance(entry, dict) or set(entry) != {'path', 'frozen'} or type(entry['frozen']) is not bool or not isinstance(entry['path'], str) or len(entry['path']) > 200 or not CGROUP_NAME.fullmatch(entry['path']) or any(part in ('.', '..') for part in entry['path'].split('/')):
                 raise Unsupported('invalid recovery branch')
             name = entry['path']
             if any(within(name, old) or within(old, name) for old in names):
