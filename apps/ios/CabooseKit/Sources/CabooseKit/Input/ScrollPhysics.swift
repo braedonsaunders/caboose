@@ -51,7 +51,16 @@ public struct ScrollPhysics {
     }
 
     public mutating func frame(elapsed: TimeInterval) -> CGPoint {
-        guard elapsed.isFinite, elapsed >= 0, elapsed <= 0.1 else { cancel(); return .zero }
+        guard elapsed.isFinite, elapsed >= 0 else { cancel(); return .zero }
+        if elapsed > 0.1 {
+            // Drop stale movement after a rendering stall, but keep accepting a
+            // finger that is still down. Cancelling tracking here strands the
+            // recognizer's remaining changed events until the user lifts.
+            pending = .zero
+            velocity = .zero
+            isCoasting = false
+            return .zero
+        }
         var result = pending
         pending = .zero
         guard isCoasting else { return result }

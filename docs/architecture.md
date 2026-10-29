@@ -2453,7 +2453,8 @@ and restores its dock.
   content while title bars and resize handles drag immediately. Emulated scrolling uses fractional deltas paced to display refresh, with
   time-based deceleration shared by window swipes, desktop two-finger scrolling and the
   phone trackpad. A new touch, context action, target change, detach or app backgrounding
-  stops client inertia. Native touch leaves fling and gesture interpretation to the Linux app.
+  stops client inertia. A delayed display tick discards stale movement and momentum without
+  disabling the rest of an ongoing finger pan. Native touch leaves fling and gesture interpretation to the Linux app.
   Pointer taps are sent individually, retaining their real timing for double
   clicks. A stationary half-second hold in native-touch content opens context immediately
   at the held point; lifting or cancellation cannot send another click. A mouse-only

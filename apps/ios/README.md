@@ -354,7 +354,8 @@ Emulated scrolling shares `CabooseKit/Input/ScrollPhysics.swift`: fractional del
 coalesced once per display frame, and release velocity decays independently of refresh
 rate. Desktop content scrolling and the phone trackpad use the same inertia. New
 input, context actions, leaving the surface, losing the target and backgrounding stop
-client inertia; native Wayland touch keeps the application's own fling behavior.
+client inertia; native Wayland touch keeps the application's own fling behavior. A display
+stall drops old movement and momentum while continuing to accept the finger's new movement.
 Run `swift test --filter ScrollPhysicsTests` in `apps/ios/CabooseKit` for deterministic
 checks of distance at 30/60/90/120 Hz, fractional input, cancellation, stale release,
 reversal and display stalls. On a real host, check slow and fast swipes in a native

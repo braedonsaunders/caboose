@@ -90,6 +90,18 @@ struct ScrollPhysicsTests {
         #expect(!physics.needsFrame)
     }
 
+    @Test func aDisplayStallDoesNotDisableTheRestOfAFingerPan() {
+        var physics = ScrollPhysics()
+        physics.begin(at: 0)
+        physics.append(CGPoint(x: 10, y: 20), at: 0.01)
+        #expect(physics.frame(elapsed: 0.2) == .zero)
+        #expect(!physics.needsFrame)
+        physics.append(CGPoint(x: 3, y: 7), at: 0.22)
+        #expect(physics.frame(elapsed: 1.0 / 60) == CGPoint(x: 3, y: 7))
+        physics.end(at: 0.23, coast: false)
+        #expect(!physics.isCoasting)
+    }
+
     @Test func reversedMovementReversesFlingAndRejectsInvalidSamples() {
         var physics = ScrollPhysics()
         physics.begin(at: 0)
