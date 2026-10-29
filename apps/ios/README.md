@@ -408,3 +408,8 @@ The bridge requires a recent touch; keyboard-only activation is not supported.
 
 Quick Look, WebKit isolation, actual file download/share, touch and VoiceOver require the app
 on a device; unit tests cover the pure policy and fence parsing.
+
+The shared keyboard header has Keys, Move and Symbols groups with six fixed controls each;
+Hide Keyboard stays at the top right. Hold Home or End for page navigation and symbol
+keys for related punctuation. Group changes retain active Ctrl/Alt modifiers. Verify the
+header in Terminal, desktop apps and Agents at narrow width and with the Duo sidebar.

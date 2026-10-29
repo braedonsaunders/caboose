@@ -1697,7 +1697,9 @@ Pinned and recent apps are kept on the phone per computer.
 - **Keyboard accessory.** Remote app cards, tiled and free desktops, the external-display
   trackpad, Terminal, the Agents composer and app-owned native form fields use
   CabooseKit’s shared `KeyBar` accessory. Hide Keyboard stays at the
-  top right above the horizontally scrolling key row; it never enters toolbar overflow.
+  top right beside the Keys, Move and Symbols groups; it never enters toolbar overflow.
+  Each group presents six fixed keys without horizontal scrolling. Home/End and symbol keys
+  offer related actions on touch-and-hold. Switching groups preserves active modifiers.
   The accessory lays out within its own bounds, independently of the tab sidebar's safe area.
   The row offers Escape, Tab, sticky Ctrl/Alt, repeating arrows, navigation and shell symbols.
   Remote inputs share the same text/composition and modifier handling, with an Aa control
