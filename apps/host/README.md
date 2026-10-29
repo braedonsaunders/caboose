@@ -635,3 +635,51 @@ rm /tmp/caboose-delete-task-code.js
 ```
 
 Parked Files requires Linux `python3-guestfs`, a libguestfs appliance kernel readable by the host user, and KVM access. Each supported request starts one network-disabled, read-only appliance; all metadata and bounded content chunks share that appliance. Names outside the supported ASCII subset, non-owner paths, ancestor ACLs, unsupported MIME tables and oversized directories fall back to wake. Guest MIME tables are parsed as literal data; no program from the computer executes in the reader.
+On Linux, microVM hosts require Python 3 to acquire the image-root lock before
+starting. The VMM and virtio-fs daemons retain the lock if the host exits. A host
+refuses to start while an `overlays/*.migration.json` journal exists. Run
+`python3 apps/host/scripts/tests/check-host-lock.py` to check lock inheritance
+with disposable processes. The lock cannot fence VMMs started by older hosts.
+
+### Migrate a legacy microVM disk
+
+On the Linux machine that owns the image root, stop the host and make sure the
+computer is cold-stopped. Local snapshots, cold snapshot pointers and incomplete
+snapshot staging block migration; parked memory is never discarded. The tool
+requires root, Python 3, guestfish, supermin, QEMU, `erofs-utils`, and
+the pinned Cloud Hypervisor v54 binary. Set `CABOOSE_VMM_PATH` or pass `--vmm`
+if it is not `/usr/local/bin/cloud-hypervisor`. The appliance kernel must be
+installed and readable by root. The host must provide local OFD locking and
+process visibility; other backends and noncooperating writers are unsupported.
+
+From the checkout or the native bundle's `app` directory, use the computer ID
+(`owner` or `c-` followed by ten hexadecimal digits):
+
+```sh
+sudo python3 apps/host/scripts/migrate-disk.py --image-root /var/lib/caboose --computer owner inspect
+sudo python3 apps/host/scripts/migrate-disk.py --image-root /var/lib/caboose --computer owner migrate
+```
+
+Inspect reports the saved disk, binding, staged disk, retained original and
+journal without changing the computer. Migration copies the disk, preferring
+reflinks, packs its existing `/usr` and `/opt`, and rebuilds its initramfs with
+the matching installed kernel. Network-disabled libguestfs appliances parse the
+disk; guest-controlled hooks execute on a separate disposable clone. Migration
+rejects hard links crossing the system-image boundary. The original disk and
+the retained image remain in the image root. For the packing appliance, the
+image-root filesystem must have at least eight times the disk's logical size plus 5 GiB available; the tool refuses when this
+space is unavailable.
+
+If interrupted, keep the host stopped and run `recover` with the same image
+root and computer ID. Recovery refuses while a preparation appliance is running
+or cannot be verified; run it in the same PID namespace that launched the
+appliance. It restores the retained original if publication was interrupted,
+or retains an unpublished staged disk for inspection. To revert
+a completed migration, run `rollback --discard-migrated-writes` with the same
+arguments. The original disk is restored and the migrated disk is retained;
+writes made after migration are absent from the restored original. A subsequent
+migration archives the rollback artifacts in `migration-images`.
+
+The transaction and appliance checks run with `python3` on the corresponding
+`apps/host/scripts/tests/test-migration-*.py` files. Real-device checks require
+a disposable Linux microVM; never run them on a production computer.

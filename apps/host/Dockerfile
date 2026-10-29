@@ -11,7 +11,7 @@ FROM build-deps AS host-build
 COPY apps/host/tsconfig.json apps/host/tsconfig.json
 COPY apps/host/src apps/host/src
 RUN pnpm --filter caboose-host exec tsc --outDir dist && \
-    cp apps/host/src/guest-apps.py apps/host/src/guest-catalog.py apps/host/src/guest-store.py apps/host/src/guest-craft.py apps/host/src/depot-builder.py apps/host/src/parked-files-appliance.py apps/host/dist/
+    cp apps/host/src/*.py apps/host/dist/
 
 FROM build-deps AS web-build
 COPY apps/web apps/web
@@ -36,7 +36,9 @@ RUN case "$TARGETARCH" in \
     echo "$digest  /cloud-hypervisor" | sha256sum -c - && chmod 0755 /cloud-hypervisor
 
 FROM node:22-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends iproute2 iptables procps qemu-utils xfsprogs util-linux python3-guestfs "linux-image-$(dpkg --print-architecture)" && rm -rf /var/lib/apt/lists/*
+ARG TARGETARCH
+RUN case "$TARGETARCH" in amd64) kernel=linux-image-amd64; qemu=qemu-system-x86 ;; arm64) kernel=linux-image-arm64; qemu=qemu-system-arm ;; *) exit 1 ;; esac && \
+    apt-get update && apt-get install -y --no-install-recommends iproute2 iptables procps qemu-utils xfsprogs util-linux python3 python3-guestfs erofs-utils guestfish supermin "$qemu" "$kernel" && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=vmm /cloud-hypervisor /usr/local/bin/cloud-hypervisor
 COPY --from=host-deps /src/node_modules ./node_modules
@@ -64,6 +66,9 @@ COPY guest/container/caboose-seccomp.json ./guest/container/caboose-seccomp.json
 COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
 COPY guest/catalog/icons ./guest/catalog/icons
 COPY --from=web-build /src/apps/web/dist ./apps/web/dist
+COPY apps/host/scripts/migrate-disk.py ./apps/host/scripts/
+COPY apps/host/src/migration_transaction.py apps/host/src/migration_appliance.py apps/host/src/migration_appliance_guard.py ./apps/host/src/
+COPY guest/image/initramfs/caboose-system ./guest/image/initramfs/
 COPY apps/host/scripts/setup-disks.sh /usr/local/bin/setup-disks
 COPY apps/host/scripts/container-entrypoint.sh /usr/local/bin/caboose-entrypoint
 ENV CABOOSE_IMAGE_ROOT=/data/caboose/disks CABOOSE_BIND=0.0.0.0

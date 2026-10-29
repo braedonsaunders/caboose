@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { constants, createReadStream, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import * as deskApi from '@braedonsaunders/appkit-desk'
@@ -94,7 +95,7 @@ export function createDeskPool(config: Config, dependencies: DeskPoolDependencie
   if (restoreMode === 'ondemand' && (!Array.isArray(modes) || !modes.includes('ondemand'))) throw new Error('On-demand restore requires a compatible AppKit desk release')
   const backend = dependencies.backend ?? (nativeMac
     ? createVirtualizationBackend({ helperPath: config.vmmPath, connectTimeoutMs: 120_000 })
-    : createCloudHypervisorBackend({ connectTimeoutMs: 120_000, serviceVsock: true }))
+    : createCloudHypervisorBackend({ connectTimeoutMs: 120_000, serviceVsock: true, ...(process.env.CABOOSE_HOST_LOCK_FD === '3' ? { launcher: (command, args, options) => spawn(command, [...args], { stdio: ['ignore', 'pipe', 'pipe', 3], uid: options.identity?.uid, gid: options.identity?.gid }) } : {}) }))
   return createDeskHost({
     imageRoot: config.imageRoot, vmmPath: config.vmmPath,
     // Images may be downloaded after pool creation; don't let AppKit's eager existence
@@ -164,6 +165,14 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     (stage, intent, snapshot, current) => parkedFilesStore.publish(stage, intent, snapshot, current))
   const bindingPath = join(config.imageRoot, 'overlays', `${id}.system-image.json`)
   const resourcesPath = join(config.imageRoot, 'overlays', `${id}.resources.json`)
+  const migrationPath = join(config.imageRoot, 'overlays', `${id}.migration.json`)
+  function assertNoMigration(): void {
+    try { lstatSync(migrationPath) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    throw new Error('Computer has an unfinished disk migration')
+  }
   let resources: ComputerResources | null = null
   try {
     const saved = JSON.parse(readFileSync(resourcesPath, 'utf8')) as ComputerResources
@@ -234,6 +243,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     hasSavedState: () => Boolean(desk) || existsSync(snapshotPath) || existsSync(`${snapshotPath}.cold.json`) || (paths.template && existsSync(paths.directory)),
     lastError: () => restartWarning,
     async wake(mode = 'interactive'): Promise<Session> {
+      assertNoMigration()
       await parkedFilesStore.invalidate()
       const desired = settings()
       if (paths.template && config.vmRestoreMode === 'ondemand') throw new Error('Template computers cannot use on-demand restore')
@@ -371,6 +381,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       }
     },
     async restart() {
+      assertNoMigration()
       await parkedFilesStore.invalidate()
       if (!nativeMac) invalidateNetwork(slot)
       restartWarning = null
@@ -401,6 +412,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     },
     /** Deletes the computer: its memory, snapshot and disk, and its network. Nothing of it is kept. */
     async destroy() {
+      assertNoMigration()
       await parkedFilesStore.invalidate()
       clearHeartbeat()
       await closeRelays()

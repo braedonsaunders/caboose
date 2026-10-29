@@ -79,7 +79,12 @@ disk; on wake it checks the system image, kernel and initramfs, and checks the b
 creating a disk. Initramfs mounts the EROFS image read-only and
 mounts writable overlays for `/usr` and `/opt`, whose upper and work directories live on
 the computer's ext4 disk. Package and component updates persist there. Existing disks
-and snapshots remain on their original image; switching the setting does not migrate them.
+and snapshots remain on their original image when the setting changes. An operator can
+explicitly migrate a cold-stopped legacy disk using the offline Linux migration tool. The
+tool retains the original disk and kernel, uses a crash-recovery journal, refuses parked
+memory, and holds host and Cloud Hypervisor-compatible disk locks. Guest filesystems and
+initramfs hooks run only in isolated appliances, using separate clones. Rollback requires
+explicit acknowledgement that writes since migration will be lost.
 The device uses read-only virtio-block; this does not establish DAX or a RAM saving.
 
 The image contains:
@@ -294,6 +299,12 @@ caboose-session start-files  # the file service on 14700
 
 The microVM is the default because it isolates the computer as a VM and its parked state
 survives host restarts.
+
+On Linux, the microVM host holds an exclusive advisory lock at `.host.lock` in the
+image root. Its VMM and virtio-fs daemons inherit the lock, so a surviving daemon
+continues to fence other cooperating host processes after the host exits. The host
+refuses startup if an `overlays/*.migration.json` journal is present. Operators
+must stop older hosts and verify their VMMs have exited before relying on this lock.
 
 ### Network fencing
 
