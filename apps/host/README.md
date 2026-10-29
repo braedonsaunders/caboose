@@ -27,6 +27,8 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | `src/app-catalog*.ts`, `src/craft-jobs.ts` | The optional application catalog and Craft CLI jobs. |
 | `src/media.ts`, `src/phone.ts`, `src/desktop-notifications.ts` | Media handoff, iOS handoff, and desktop notifications from the guest. |
 | `src/push.ts`, `src/apns.ts`, `src/activities.ts` | APNs push and Live Activities. |
+| `src/shared-storage.ts`, `src/backup.ts`, `src/restore-journal.ts`, `src/storage.ts` | Shared storage across parked microVM disks, phone backups and journaled restores, through `disk/`. |
+| `disk/` | `caboose-disk`, the Rust helper that shares blocks between disks, describes backups and deallocates zeros ([its README](disk/README.md)). |
 | `src/guest-*.py` | Python run inside the guest: listing and launching apps, catalog operations, Craft jobs. |
 | `scripts/` | Real-host checks, the Docker entrypoint and `setup-disks.sh`. |
 | `systemd/caboose-host.service` | A user-service unit for running from a checkout. |
@@ -214,6 +216,8 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_VM_RESTORE_MODE` | `copy` | Linux Cloud Hypervisor snapshot restore: `copy`, `copyonwrite`, or `ondemand`. On-demand requires access to Linux userfaultfd and fails rather than falling back if unavailable. It cannot be combined with templates or the microVM depot. |
 | `CABOOSE_VM_COW` | `off` | `on` selects copy-on-write restore; conflicts with a different explicit restore mode. |
 | `CABOOSE_VM_FREE_PAGE_REPORTING` | `off` | `on` enables a zero-size virtio-balloon with free-page reporting on new Cloud Hypervisor boots. |
+| `CABOOSE_SHARED_STORAGE` | `off` | `on` shares identical blocks across parked microVM disks (Linux, image root on XFS with reflink or Btrfs, `caboose-disk` installed); startup fails if either is missing. Totals appear in `/v1/health` as `sharedStorage`. |
+| `CABOOSE_DISK_HELPER` | `caboose-disk` on `PATH` | The helper for shared storage and phone backups. The image and Linux bundles include it. Phone backups are offered when the helper is present and `CABOOSE_PARKED_FILES=on`. |
 | `CABOOSE_PARKED_FILES` | `off` | `on` opts Linux microVMs into parked read-only Files views when the guest, AppKit backend, reflink filesystem and libguestfs appliance support them; unsupported requests wake the computer. |
 | `CABOOSE_SNAPSHOT_TIER` | `off` | `on` archives parked Linux microVM memory to the configured private S3-compatible store after four hours. |
 | `CABOOSE_SNAPSHOT_KEY_FILE` | unset | Absolute path to a host-owned mode 0600 file containing a 32-byte encryption key as lowercase hex. Required when tiering is on. |
