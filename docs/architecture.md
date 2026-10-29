@@ -216,7 +216,7 @@ the image files `base.raw`, `vmlinux` and `initrd` in `CABOOSE_IMAGE_ROOT`, its 
 On Linux, operators can opt into Cloud Hypervisor copy-on-write restore and
 virtio-balloon free-page reporting. Copy-on-write restore retires the old
 snapshot before the VM can write and keeps its source unchanged until the VMM
-exits; an interrupted VM can leave a source file requiring verified cleanup.
+exits; an interrupted VM can leave a source file requiring verified cleanup. Native Linux bundles and the host image pin AppKit’s incremental.1 Cloud Hypervisor v54 build with archive and binary checksums. On a reflink-capable filesystem, it can reuse the unchanged CoW source extents and write private pages into a new self-contained snapshot; unavailable incremental paths write a full snapshot.
 Operators may instead select on-demand restore, which requires Linux userfaultfd
 and fails closed if the kernel or permissions cannot support it. On-demand
 restore retains its source while the VMM can use it and cannot be combined

@@ -21,10 +21,10 @@ from migration_appliance import ApplianceError, matching_kernel, pack_system_ima
 
 LOCK_FD = None
 DISK_LOCKS = {}
-# Official Cloud Hypervisor v54 static releases used by the host bundles.
+# Official v54 and the checksum-pinned AppKit incremental.1 releases.
 SUPPORTED_VMM = {
-    'x86_64': '4f4f98a3d661a40f3e5272627cc895a1b2e525f2f6bedf5f895f9cd21ba5c65b',
-    'aarch64': 'e8a6d9786ea678e739f1a386682846e93742dcb9c7b6e3e0c62e3bda6cff0ef3',
+    'x86_64': {'4f4f98a3d661a40f3e5272627cc895a1b2e525f2f6bedf5f895f9cd21ba5c65b', 'e9bd0ed2ae5b5428d275875c340b26ee28bf859ce5d3529d676569a8ed35505e'},
+    'aarch64': {'e8a6d9786ea678e739f1a386682846e93742dcb9c7b6e3e0c62e3bda6cff0ef3', '8eb570c73795313e601ff8ef9a6a9132838bf9726d589c4838996d47625caf47'},
 }
 
 
@@ -120,7 +120,7 @@ def verify_backend(path, root):
     if not expected or not path.is_absolute():
         raise RuntimeError('Migration requires the pinned Cloud Hypervisor v54 backend')
     binary = trusted_executable(path, owners=(0, root.stat().st_uid))
-    if not os.access(binary, os.X_OK) or sha(binary) != expected:
+    if not os.access(binary, os.X_OK) or sha(binary) not in expected:
         raise RuntimeError('Migration requires the pinned Cloud Hypervisor v54 backend')
 
 

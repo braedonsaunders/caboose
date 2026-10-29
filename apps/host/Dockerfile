@@ -29,18 +29,21 @@ FROM debian:bookworm-slim AS vmm
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 ARG TARGETARCH
 RUN case "$TARGETARCH" in \
-      amd64) asset=cloud-hypervisor-static; digest=4f4f98a3d661a40f3e5272627cc895a1b2e525f2f6bedf5f895f9cd21ba5c65b ;; \
-      arm64) asset=cloud-hypervisor-static-aarch64; digest=e8a6d9786ea678e739f1a386682846e93742dcb9c7b6e3e0c62e3bda6cff0ef3 ;; \
+      amd64) asset=desk-vmm-amd64.tar.gz; digest=f93fd7128779b57ac6fecb4e42e7d9a2e6ae5a3e88caea84a6c86879b08e6818 ;; \
+      arm64) asset=desk-vmm-arm64.tar.gz; digest=9fdce8ded9dff25c8c35183995fd979ca509878862d421adc60232b5f7cfd1f7 ;; \
       *) exit 1 ;; esac && \
-    curl -fsSL -o /cloud-hypervisor "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v54.0/$asset" && \
-    echo "$digest  /cloud-hypervisor" | sha256sum -c - && chmod 0755 /cloud-hypervisor
+    curl -fsSL -o /desk-vmm.tar.gz "https://github.com/braedonsaunders/appkit/releases/download/desk-vmm-v54.0-incremental.1/$asset" && \
+    echo "$digest  /desk-vmm.tar.gz" | sha256sum -c - && mkdir /desk-vmm && \
+    tar -xzf /desk-vmm.tar.gz -C /desk-vmm && cd /desk-vmm && sha256sum -c SHA256SUMS && \
+    chmod 0755 cloud-hypervisor ch-remote
 
 FROM node:22-bookworm-slim
 ARG TARGETARCH
 RUN case "$TARGETARCH" in amd64) kernel=linux-image-amd64; qemu=qemu-system-x86 ;; arm64) kernel=linux-image-arm64; qemu=qemu-system-arm ;; *) exit 1 ;; esac && \
     apt-get update && apt-get install -y --no-install-recommends iproute2 iptables procps qemu-utils xfsprogs util-linux python3 python3-guestfs erofs-utils guestfish supermin "$qemu" "$kernel" && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=vmm /cloud-hypervisor /usr/local/bin/cloud-hypervisor
+COPY --from=vmm /desk-vmm /usr/local/lib/desk-vmm
+RUN ln -s /usr/local/lib/desk-vmm/cloud-hypervisor /usr/local/bin/cloud-hypervisor
 COPY --from=host-deps /src/node_modules ./node_modules
 COPY --from=host-deps /src/apps/host/node_modules ./apps/host/node_modules
 COPY --from=host-deps /src/apps/host/package.json ./apps/host/package.json

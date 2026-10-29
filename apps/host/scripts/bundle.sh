@@ -26,12 +26,12 @@ node_sha() {
     *) return 1 ;;
   esac
 }
-CH_VERSION=v54.0
-# The static Cloud Hypervisor releases; amd64 matches apps/host/Dockerfile.
+CH_VERSION=desk-vmm-v54.0-incremental.1
+# Pinned AppKit native VMM archives; these match apps/host/Dockerfile.
 ch_asset() {
   case "$1" in
-    amd64) echo "cloud-hypervisor-static 4f4f98a3d661a40f3e5272627cc895a1b2e525f2f6bedf5f895f9cd21ba5c65b" ;;
-    arm64) echo "cloud-hypervisor-static-aarch64 e8a6d9786ea678e739f1a386682846e93742dcb9c7b6e3e0c62e3bda6cff0ef3" ;;
+    amd64) echo "desk-vmm-amd64.tar.gz f93fd7128779b57ac6fecb4e42e7d9a2e6ae5a3e88caea84a6c86879b08e6818" ;;
+    arm64) echo "desk-vmm-arm64.tar.gz 9fdce8ded9dff25c8c35183995fd979ca509878862d421adc60232b5f7cfd1f7" ;;
   esac
 }
 
@@ -107,8 +107,11 @@ mv "$work/node-$NODE_VERSION-$os-$node_arch/LICENSE" "$root/node/LICENSE"
 if [[ $os == linux ]]; then
   read -r ch_name ch_digest <<<"$(ch_asset "$arch")"
   echo "Adding Cloud Hypervisor $CH_VERSION"
-  cp "$(fetch "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/$CH_VERSION/$ch_name" "$ch_digest")" "$root/bin/cloud-hypervisor"
-  chmod 0755 "$root/bin/cloud-hypervisor"
+  mkdir -p "$root/lib/desk-vmm"
+  tar -xzf "$(fetch "https://github.com/braedonsaunders/appkit/releases/download/$CH_VERSION/$ch_name" "$ch_digest")" -C "$root/lib/desk-vmm"
+  (cd "$root/lib/desk-vmm" && while read -r digest name; do [[ $(sha256 "$name") == "$digest" ]] || exit 1; done < SHA256SUMS)
+  chmod 0755 "$root/lib/desk-vmm/cloud-hypervisor" "$root/lib/desk-vmm/ch-remote"
+  ln -s ../lib/desk-vmm/cloud-hypervisor "$root/bin/cloud-hypervisor"
 fi
 
 if [[ $os == darwin ]]; then

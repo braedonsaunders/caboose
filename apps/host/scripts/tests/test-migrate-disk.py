@@ -142,9 +142,10 @@ class MigrationTests(unittest.TestCase):
         with patch.object(m, 'trusted_executable', return_value=binary):
             with self.assertRaisesRegex(RuntimeError, 'pinned Cloud Hypervisor'):
                 m.verify_backend(binary, self.tx.dir.parent)
-            with patch.object(m, 'sha', return_value=m.SUPPORTED_VMM['x86_64']), patch.object(m.os, 'uname') as uname:
-                uname.return_value.machine = 'x86_64'
-                m.verify_backend(binary, self.tx.dir.parent)
+            for digest in m.SUPPORTED_VMM['x86_64']:
+                with patch.object(m, 'sha', return_value=digest), patch.object(m.os, 'uname') as uname:
+                    uname.return_value.machine = 'x86_64'
+                    m.verify_backend(binary, self.tx.dir.parent)
 
     def test_new_host_lock_owned_by_image_root_owner(self):
         import os

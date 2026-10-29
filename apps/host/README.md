@@ -100,7 +100,7 @@ holds one directory, `caboose-host/`:
 | Path | What |
 | --- | --- |
 | `bin/caboose-host` | The launcher: the bundled Node runs `app/apps/host/dist/index.js`. It follows symlinks, so `/usr/local/bin/caboose-host` can point at it. |
-| `bin/cloud-hypervisor` | Linux only: Cloud Hypervisor v54.0 (static, checked by SHA-256), used unless `CABOOSE_VMM_PATH` is set. |
+| `bin/cloud-hypervisor` | Linux only: AppKit incremental.1 Cloud Hypervisor v54 (static, checked by SHA-256), used unless `CABOOSE_VMM_PATH` is set. |
 | `bin/appkit-desk-vz`, `Caboose.app` | macOS only: the signed Virtualization.framework helper and menu bar application. |
 | `bin/caboose-setup-disks` | `scripts/setup-disks.sh`, which prepares a reflink-capable disk root. |
 | `node/` | Node v22.23.4 for the target, checked against nodejs.org's SHA-256. |
@@ -127,8 +127,8 @@ docker compose -f deploy/compose.yaml exec caboose-host cat /data/caboose/disks/
 ```
 
 The image builds `caboose-host` and `caboose-web` from the workspace lockfile, serves the
-console at `/` on the same port as the API, and pins Cloud Hypervisor to the matching architecture’s v54.0
-static release (checked by SHA-256). Open `http://localhost:7310` on the server, or your
+console at `/` on the same port as the API, and pins Cloud Hypervisor to the matching architecture’s AppKit incremental.1
+release (archive and binary checked by SHA-256; licenses and source manifest included). Open `http://localhost:7310` on the server, or your
 HTTPS proxy, and enter the owner token; the console keeps it in the tab's session storage.
 To choose the token yourself, put `CABOOSE_OWNER_TOKEN` in `deploy/.env` (mode 0600); it is
 supplied only at runtime, never during the build.
@@ -244,8 +244,7 @@ upload, restore and object cleanup using a disposable snapshot. The check
 retains local receipts and reports their path if cleanup fails.
 
 Copy-on-write restore cannot be combined with virtio-fs shares, including shares
-recorded in a parked snapshot. Cloud Hypervisor v54 writes complete snapshots; it does
-not provide dirty-page-only snapshot deltas. Free-page reporting requires the guest balloon driver.
+recorded in a parked snapshot. The bundled AppKit incremental.1 VMM can reflink a copy-on-write restore source and write its private pages when parking again. It falls back to a full snapshot when incremental writing is unavailable; snapshots remain self-contained files, not a delta chain. Free-page reporting requires the guest balloon driver.
 
 Cold snapshot storage also accepts `APPKIT_STORAGE_REGION` and
 `APPKIT_STORAGE_FORCE_PATH_STYLE` (`true` or `false`). Back up the snapshot key
