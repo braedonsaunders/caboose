@@ -68,6 +68,10 @@ die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 run() {
   if [[ $dry_run == 1 ]]; then printf '  would run: %s\n' "$*"; else "$@"; fi
 }
+# A package manager's progress is noise here; its errors still reach the terminal.
+quietly() {
+  if [[ $dry_run == 1 ]]; then run "$@"; else "$@" >/dev/null; fi
+}
 
 if [[ -n $domain ]]; then
   # A server: Caddy with automatic HTTPS in front of the release image (deploy/server).
@@ -130,14 +134,14 @@ for tool in curl tar zstd ip iptables findmnt; do command -v "$tool" >/dev/null 
 if [[ ${#need[@]} -gt 0 ]]; then
   say "Installing ${need[*]}"
   if command -v apt-get >/dev/null; then
-    run apt-get update -qq
-    run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates tar zstd iproute2 iptables xfsprogs util-linux
+    quietly apt-get update -qq
+    quietly env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates tar zstd iproute2 iptables xfsprogs util-linux
   elif command -v dnf >/dev/null; then
-    run dnf install -y -q curl tar zstd iproute iptables xfsprogs util-linux
+    quietly dnf install -y -q curl tar zstd iproute iptables xfsprogs util-linux
   elif command -v pacman >/dev/null; then
-    run pacman -Sy --noconfirm --needed curl tar zstd iproute2 iptables xfsprogs util-linux
+    quietly pacman -Sy --noconfirm --needed curl tar zstd iproute2 iptables xfsprogs util-linux
   elif command -v zypper >/dev/null; then
-    run zypper --non-interactive install curl tar zstd iproute2 iptables xfsprogs util-linux
+    quietly zypper --non-interactive install curl tar zstd iproute2 iptables xfsprogs util-linux
   else
     die "install these first: ${need[*]}"
   fi
@@ -165,7 +169,8 @@ else
   if [[ $dry_run == 1 ]]; then
     printf '  would download: %s/%s and %s/SHA256SUMS\n' "$base" "$asset" "$base"
   else
-    curl -fsSL --retry 3 -o "$work/$asset" "$base/$asset" || die "could not download $base/$asset"
+    curl -fsSL --retry 3 -o "$work/$asset" "$base/$asset" ||
+      die "could not download $base/$asset. Check the release has a $arch bundle (https://github.com/$REPO/releases), or build one from a checkout and pass --bundle (deploy/linux/README.md)"
     curl -fsSL --retry 3 -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "could not download $base/SHA256SUMS"
     expected=$(awk -v name="$asset" '$2 == name { print $1 }' "$work/SHA256SUMS")
     [[ -n $expected ]] || die "SHA256SUMS does not list $asset"
@@ -312,8 +317,8 @@ else
   echo "  Console:      $url (this machine only: --bind is $bind)"
 fi
 if [[ -s $images/setup-code ]]; then
-  setup_code=$(cat "$images/setup-code")
-  echo "  Set up:       $url/setup?code=$setup_code"
+  # Open it from any browser that reaches the console: the server may have no screen.
+  echo "  Set up:       ${addresses[0]:-$url}/setup?code=$(cat "$images/setup-code")"
 fi
 echo "  Owner token:  sudo cat $token_file"
 echo "  Settings:     $env_file (then: systemctl restart caboose-host)"
@@ -329,7 +334,7 @@ if [[ ${#addresses[@]} -gt 0 ]]; then
     say "Pair your iPhone: scan this with the Camera within 10 minutes, or open the link on the phone."
     if command -v qrencode >/dev/null; then qrencode -t ansiutf8 "$link"; fi
     echo "  $link"
-    echo "  A new code: Computers › Owner › Phones in the console."
+    echo "  A new code later: Computers › your computer › Phones › Sign in a phone, in the console."
   fi
 fi
 echo

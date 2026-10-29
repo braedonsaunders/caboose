@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fleetTotals, gpuLabel, healthFacts, healthProblems, runtimeLabel, sharePercent, upgradeLabel } from './host.js'
+import { fleetTotals, gpuLabel, healthFacts, healthProblems, imageLabel, runtimeLabel, sharePercent, upgradeLabel } from './host.js'
 
 describe('host', () => {
   it('names the runtime and GPU', () => {
@@ -35,6 +35,14 @@ describe('host', () => {
     ])
     // A parked container is not running, and that is not a problem.
     expect(healthProblems({ host: 'caboose-host', runtime: 'container', gpu: 'none', container: 'caboose-owner', running: false })).toEqual([])
+    // A host with no image and nothing to download says so, on either runtime.
+    expect(healthProblems({ host: 'caboose-host', kvm: true, desk, image: { state: 'missing', reference: null } })[0]).toMatch(/image is not installed/)
+    expect(healthProblems({ host: 'caboose-host', runtime: 'container', gpu: 'none', container: 'caboose-owner', running: false, image: { state: 'failed', reference: 'r', message: 'offline' } }))
+      .toEqual(["Downloading the computer's image failed: offline"])
+    expect(healthProblems({ host: 'caboose-host', kvm: true, desk, image: { state: 'fetching', reference: 'r' } })).toEqual([])
+    expect(healthFacts({ host: 'caboose-host', kvm: true, desk, image: { state: 'missing', reference: null } })).toContainEqual(expect.objectContaining({ label: 'Computer image', problem: true }))
+    expect(imageLabel({ state: 'fetching', reference: 'r', receivedBytes: 42, totalBytes: 100 })).toBe('Downloading (42%)')
+    expect(imageLabel({ state: 'ready', reference: null })).toBe('Installed')
     expect(sharePercent(6144, 32768)).toBe(19)
     expect(fleetTotals([
       { state: 'running', settings: { memoryMb: 4096, vcpus: 2 } },
