@@ -154,10 +154,21 @@ struct HostClient: Sendable {
 
     func request<T: Decodable>(_ method: String, _ path: String, body: [String: JSONValue]? = nil,
                                timeout: TimeInterval) async throws -> T {
+        let data = try await send(method, path, body: body, accept: "application/json", timeout: timeout)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// The bytes a `GET` route answers with, such as an image, signed in like every request.
+    func data(_ path: String, accept: String = "*/*", timeout: TimeInterval) async throws -> Data {
+        try await send("GET", path, body: nil, accept: accept, timeout: timeout)
+    }
+
+    private func send(_ method: String, _ path: String, body: [String: JSONValue]?, accept: String,
+                      timeout: TimeInterval) async throws -> Data {
         var request = URLRequest(url: endpoint(path), timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(accept, forHTTPHeaderField: "Accept")
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(body)
@@ -171,10 +182,10 @@ struct HostClient: Sendable {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         switch status {
         case 200 ..< 300:
-            return try JSONDecoder().decode(T.self, from: data)
+            return data
         case 401, 403:
             throw Failure.unauthorized
-        case 409 where path.hasPrefix("/v1/agent/profiles") || path.hasPrefix("/v1/agent/routines") || path.hasPrefix("/v1/computer") || path.hasPrefix("/v1/catalog") || path == "/v1/session/park":
+        case 409 where path.hasPrefix("/v1/agent/profiles") || path.hasPrefix("/v1/agent/routines") || path.hasPrefix("/v1/computer") || path.hasPrefix("/v1/catalog") || path.hasPrefix("/v1/mcp/") || path == "/v1/session/park":
             let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"]
             throw Failure.server(status, message)
         case 409:

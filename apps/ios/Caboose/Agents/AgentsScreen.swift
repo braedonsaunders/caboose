@@ -5,6 +5,7 @@ import SwiftUI
 /// agent as the next turn of one session, so it always has the whole conversation; while it
 /// works, what you send waits for its turn to end. New Chat starts a fresh session, and the
 /// chat list holds the earlier ones. Other chats still working are pinned along the top.
+/// Tools, in the toolbar, is the computer's MCP Library: servers every agent on it can use.
 struct AgentsScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.shellTabPlacement) private var placement
@@ -12,6 +13,7 @@ struct AgentsScreen: View {
     @State private var showingChats = false
     @State private var showingLibrary = false
     @State private var showingModels = false
+    @State private var showingTools = false
     @AppStorage(AskTarget.key) private var target = ""
 
     var body: some View {
@@ -53,6 +55,9 @@ struct AgentsScreen: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Teammates and Routines", systemImage: "person.2") { showingLibrary = true }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Tools", systemImage: "puzzlepiece.extension") { showingTools = true }
+                }
                 if chat != nil || agents.library.selectedProfile == nil {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Model", systemImage: "cpu") { showingModels = true }
@@ -80,6 +85,7 @@ struct AgentsScreen: View {
             Button("Chats", systemImage: "list.bullet") { showingChats = true }
             Button("New Chat", systemImage: "square.and.pencil") { agents.currentChat = nil }
             Button("Teammates and Routines", systemImage: "person.2") { showingLibrary = true }
+            Button("Tools", systemImage: "puzzlepiece.extension") { showingTools = true }
             Button("Model", systemImage: "cpu") { showingModels = true }
             Button("Agent Settings", systemImage: "slider.horizontal.3") { model.showAgentSettings = true }
         }
@@ -92,6 +98,7 @@ struct AgentsScreen: View {
             AgentModelPicker(agentID: chat?.agent ?? (agents.listing(target)?.isInstalled == true ? target : agents.defaultAgent ?? ""), taskID: chat?.id).environment(model)
         }
         .sheet(isPresented: $showingLibrary) { AgentLibraryView().environment(model) }
+        .sheet(isPresented: $showingTools) { McpLibrary().environment(model) }
         .onChange(of: agents.focusedTask, initial: true) { _, id in
             guard let id else { return }
             agents.currentChat = id

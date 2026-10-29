@@ -10,6 +10,7 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 | `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). |
 | `GPUStream/` | The GPU stream player's native side: a C API (`include/caboose_gpu_stream.h`) over GFXReconstruct's Vulkan replay, the CMake project that builds it with MoltenVK, and the patches applied to GFXReconstruct. See [GPU streams](#gpu-streams). CabooseKit's `GPU/GPUStreamPlayer` and `UI/GPUStreamView` wrap it. |
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
+| `Caboose/Catalog/`, `Caboose/McpLibrary/` | The Apps tab's Library (`CatalogCenter`, `CatalogViews`) and the Agents tab's Tools, the MCP Library (`McpCenter`, `McpLibraryViews`). Both storefronts draw with `StoreChrome`: the icon well, rows of tiles with See All, tiles and list rows. The MCP Library's routes, answers and setup form are `CabooseKit/Catalog/McpLibrary`. |
 | `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, SwiftTerm's view in the Caboose look and the key row above the keyboard. |
 | `Caboose/Switchyard/` | The Desktop tab's tiling on the device's own screen: tiles, gaps, grabber, dock, Overview, launcher and ⌘⌥ keys, over the `CabooseKit/Switchyard` layout. |
 | `Caboose/Brand/` | The logo drawn natively in SwiftUI. It shares geometry and timing with `apps/web/src/brand/brand.ts`; change both together. `scripts/render-app-icon.sh` renders the app icon from the same SVG (macOS). |
@@ -102,6 +103,11 @@ computer (through a host), connects, waits for every window's keyframe, ticks vs
 features, the windows, pictures per second, failed decodes and the round trip.
 `CABOOSE_SOUND_CHECK=1 swift test --filter LiveSound` measures sound against picture on
 the compositor's sound test page.
+
+The MCP Library's routes (a qualified name's one `/` kept as a separator, every other
+character of a segment encoded, 1-based search pages and where paging stops), its answers
+(every connection status, sign-in pages limited to https on smithery.ai) and the setup form
+(required settings, only the keys the server declared) are unit-tested in `McpLibraryTests`.
 
 The terminal's protocol, keys and connection are unit-tested over a fake transport. Against
 a real host, `CABOOSE_HOST_URL=… CABOOSE_HOST_TOKEN=… swift test --filter LiveTerminal`
@@ -367,6 +373,48 @@ while the agent works and see it wait and go with the next turn; tap Send Now an
 turn stop and the message go at once; open the chat list and switch chats; connect an
 OpenRouter key and see goose become the default and answer.
 
+### Tools
+
+**Tools** (in the Agents tab's toolbar, or the side bar's actions) is the computer's MCP
+Library: MCP servers from [Smithery](https://smithery.ai) that give agents more to work with.
+A server added here is available to every agent on this computer, in new chats; servers
+belong to the computer, like apps, so there is no choosing per agent or per teammate.
+
+The first time, the sheet asks to **Connect Smithery**: it links to Smithery's API keys page
+(`https://smithery.ai/account/api-keys`) and takes a key in a secure field. Each computer
+connects once. The key goes to the host, which keeps it and never passes it to the computer
+or back to a client; Smithery hosts each server and holds its sign-ins and settings.
+
+After that, the sheet lists **On This Computer**, the servers added, with how each is
+doing (asked of Smithery afresh each time the sheet opens, and on pull to refresh):
+connected with its tool count; **Sign In**, which opens Smithery's page for the server in
+Safari inside the app and checks the server again when it closes; **Set Up**, a form of the
+settings the server asked for (header values are entered as secrets), sent only once every
+required one has a value, with Smithery's own page for them when it offers one; or a failure with its reason and
+**Check**. Each row's menu has Check Again and Remove. A computer holds up to 20 servers;
+at the limit, Add is unavailable and the sheet says to remove one. Below come rows of
+Smithery's servers, drawn like the app Library's: Popular, ranked by uses on Smithery,
+Verified, whose publishers Smithery has verified, then topics, each with See All. Search
+lists Smithery's matches after a 300 ms pause, 40 at a time as you scroll. Adding a server
+that needs a sign-in or settings opens that step at once.
+
+A server's details show its icon, name, qualified name, Smithery's verified seal, its uses,
+what it does and the tools Smithery lists, with Add, or its status, Check Again and Remove.
+Neither popularity nor the seal is a review, and the details say so: "Smithery lists this
+server; Caboose hasn't reviewed it." Removing a server removes it from Smithery at once;
+chats lose it on their next call to it. The account sits at the end of the page, with
+**Disconnect**, which removes the computer's servers from Smithery and forgets the key.
+Icons come through the host (`/v1/mcp/icons`), decoded to at most 128 pixels and kept in
+memory; a server without one shows its initial. The routes answer from the host, so Tools
+works while the computer is parked and never wakes it, and the sheet follows
+`mcp.changed` events on the control socket.
+
+On a device paired to a computer, check Tools: connect a Smithery key; add a server that
+needs no settings and see it connect with a tool count; add one that needs a sign-in, sign
+in on Smithery's page, close it and see the server connect; add one that asks for an API
+key, fill in the form and see it connect; start a new chat and ask the agent to use one of
+its tools; remove a server; disconnect and see the servers go.
+
 ## iOS integration
 
 - **Share sheet.** A web page opens in the computer's browser; photos, files and text are
@@ -537,6 +585,7 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   the computer instead…" and then shows the computer's native build.
 - **Library.** Open Library from the Apps tab, install PhotoCraft, follow its progress, open
   it, and remove it.
+- **Tools.** Open Tools from the Agents tab and run the check under [Tools](#tools).
 - **Tabs and the vertical bar.** On iPhone Duo, closed and open in landscape, every tab's
   bar is on the side with the tabs, the cog and the lifecycle menu; on the Desktop tab the
   desktop fills the space beside the bar and resizes when the device folds or rotates; on a

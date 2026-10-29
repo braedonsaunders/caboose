@@ -28,6 +28,8 @@ final class AppModel {
     var notificationTaskID: String?
     var askFocusRequested = false
     private(set) var catalog = CatalogCenter()
+    /// The computer's MCP Library: Tools, on the Agents tab.
+    private(set) var mcp = McpCenter()
     private(set) var documents = OpenDocumentCenter()
     /// Videos playing on the computer that can move to the phone.
     private(set) var media = MediaHandoff()
@@ -148,6 +150,7 @@ final class AppModel {
             guard let self, self.connectionRevision == revision else { return }
             self.media.handle(type, event)
             self.catalog.handle(type, event)
+            self.mcp.handle(type, event)
             self.phone.handle(type, event)
             self.bridge.handle(type, event)
             if type == "fs.changed" { self.refreshFileSearch() }
@@ -257,12 +260,14 @@ final class AppModel {
         if let credentials { FileDomains.remove(credentials) }
         agents.reset()
         catalog.reset()
+        mcp.reset()
         documents.reset()
         media.reset()
         phone.reset()
         bridge.reset()
         agents = AgentCenter()
         catalog = CatalogCenter()
+        mcp = McpCenter()
         documents = OpenDocumentCenter()
         media = MediaHandoff()
         bindConnectionCenters()
@@ -386,6 +391,7 @@ final class AppModel {
             PushCoordinator.shared.synchronize()
             LiveActivityCoordinator.shared.connected()
             catalog.attach(host)
+            mcp.attach(host)
             documents.requestSync(model: self)
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await media.refresh() }

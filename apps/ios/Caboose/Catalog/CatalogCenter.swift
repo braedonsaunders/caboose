@@ -1,6 +1,5 @@
 import CabooseKit
 import Foundation
-import ImageIO
 import Observation
 import UIKit
 
@@ -81,14 +80,7 @@ struct CatalogApp: Decodable, Identifiable {
     private static func decodeIcon(_ url: String) -> UIImage? {
         if let cached = icons.object(forKey: url as NSString) { return cached }
         guard let comma = url.firstIndex(of: ","), let data = Data(base64Encoded: String(url[url.index(after: comma)...])),
-              let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                  kCGImageSourceCreateThumbnailFromImageAlways: true,
-                  kCGImageSourceCreateThumbnailWithTransform: true,
-                  kCGImageSourceThumbnailMaxPixelSize: 128,
-                  kCGImageSourceShouldCacheImmediately: true,
-              ] as CFDictionary) else { return nil }
-        let icon = UIImage(cgImage: image)
+              let icon = storeIconImage(data) else { return nil }
         icons.setObject(icon, forKey: url as NSString)
         return icon
     }

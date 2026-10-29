@@ -69,7 +69,7 @@ struct CatalogLibrary: View {
                     }
                 }
                 ForEach(catalog.storefront) { group in
-                    StorefrontRow(group: group, close: { dismiss() })
+                    StoreShelf(title: group.title, seeAll: group.category, items: group.apps) { AppTile(app: $0, close: { dismiss() }) }
                 }
                 if let error = catalog.storefrontError {
                     VStack(alignment: .leading, spacing: 8) {
@@ -87,49 +87,18 @@ struct CatalogLibrary: View {
     }
 }
 
-/// One row of the front page: its title, See All, and a row of app tiles.
-private struct StorefrontRow: View {
-    let group: StorefrontGroup
-    let close: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(group.title).font(.title3.weight(.semibold))
-                Spacer()
-                NavigationLink("See All", value: group.category)
-            }
-            .padding(.horizontal, 20)
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: 14) {
-                    ForEach(group.apps) { StoreTile(app: $0, close: close) }
-                }
-                .padding(.horizontal, 20)
-            }
-            .scrollIndicators(.hidden)
-        }
-    }
-}
-
 /// An app in a row: its icon, name and what it is, and Get, its progress, or Open.
-private struct StoreTile: View {
+private struct AppTile: View {
     @Environment(AppModel.self) private var model
     let app: CatalogApp
     let close: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 20).fill(.quaternary)
-                if let image = model.appIcons[app.desktopId] ?? app.icon { Image(uiImage: image).resizable().scaledToFit().padding(8) }
-                else { Image(systemName: symbol(app.category)).font(.title).foregroundStyle(.secondary) }
-            }
-            .frame(width: 88, height: 88)
-            Text(app.name).font(.subheadline.weight(.medium)).lineLimit(1)
-            Text(app.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2, reservesSpace: true)
-            action.padding(.top, 2)
+        StoreTile(name: app.name, summary: app.summary) {
+            StoreIcon(image: model.appIcons[app.desktopId] ?? app.icon, size: .tile) { Image(systemName: symbol(app.category)).font(.title) }
+        } action: {
+            action
         }
-        .frame(width: 112, alignment: .leading)
     }
 
     @ViewBuilder private var action: some View {
@@ -198,26 +167,19 @@ private struct LibraryRow: View {
     let remove: (CatalogApp) -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10).fill(.quaternary)
-                if let image = model.appIcons[app.desktopId] ?? app.icon { Image(uiImage: image).resizable().scaledToFit().padding(4) }
-                else { Image(systemName: symbol(app.category)).foregroundStyle(.secondary) }
-            }.frame(width: 44, height: 44)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(app.name).font(.body.weight(.medium))
-                Text(app.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                credits
-                if app.busy, let progress = app.progress {
-                    Text(progress.label).font(.caption2).foregroundStyle(.secondary)
-                    if let detail = progress.downloadDetail { Text(detail).font(.caption2).foregroundStyle(.secondary) }
-                }
-                else if let error = app.progress?.message ?? app.lastError, app.needsRecovery, !error.isEmpty { Text(error).font(.caption2).foregroundStyle(.red).lineLimit(2) }
-                else if app.interrupted && !app.busy { Text("Installation interrupted; try again.").font(.caption2).foregroundStyle(.orange) }
-                else if let reason = app.unavailable, app.installedVersion == nil { Text(reason).font(.caption2).foregroundStyle(.secondary) }
-                else if let size = app.size, app.installedVersion == nil { Text(size).font(.caption2).foregroundStyle(.secondary) }
+        StoreListRow(name: app.name, summary: app.summary) {
+            StoreIcon(image: model.appIcons[app.desktopId] ?? app.icon) { Image(systemName: symbol(app.category)) }
+        } details: {
+            credits
+            if app.busy, let progress = app.progress {
+                Text(progress.label).font(.caption2).foregroundStyle(.secondary)
+                if let detail = progress.downloadDetail { Text(detail).font(.caption2).foregroundStyle(.secondary) }
             }
-            Spacer()
+            else if let error = app.progress?.message ?? app.lastError, app.needsRecovery, !error.isEmpty { Text(error).font(.caption2).foregroundStyle(.red).lineLimit(2) }
+            else if app.interrupted && !app.busy { Text("Installation interrupted; try again.").font(.caption2).foregroundStyle(.orange) }
+            else if let reason = app.unavailable, app.installedVersion == nil { Text(reason).font(.caption2).foregroundStyle(.secondary) }
+            else if let size = app.size, app.installedVersion == nil { Text(size).font(.caption2).foregroundStyle(.secondary) }
+        } trailing: {
             if app.busy { ProgressView() }
             else if app.needsRecovery {
                 Button("Retry") { Task { await model.catalog.perform(app.id, action: app.progress?.operation ?? "install") } }.buttonStyle(.bordered)
