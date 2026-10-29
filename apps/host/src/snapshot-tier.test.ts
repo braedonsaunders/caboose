@@ -177,4 +177,19 @@ describe('snapshot cold tier', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
+  it('does not publish if wake admission changes during pointer staging', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'snapshot-tier-')), snapshot = join(root, 'vm.snapshot')
+    try {
+      await mkdir(snapshot); await writeFile(join(snapshot, 'memory-ranges'), 'memory')
+      const { store, objects } = storage()
+      let checks = 0
+      const tier = new SnapshotTier(snapshot, store, randomBytes(32), async work => work(1), () => ++checks < 3)
+      await expect(tier.archive()).rejects.toThrow('changed during publication')
+      expect(await readFile(join(snapshot, 'memory-ranges'), 'utf8')).toBe('memory')
+      await expect(readFile(tier.pointer)).rejects.toMatchObject({ code: 'ENOENT' })
+      await tier.drainCleanup()
+      expect(objects.size).toBe(0)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
 })
