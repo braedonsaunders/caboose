@@ -49,6 +49,7 @@ struct CatalogApp: Decodable, Identifiable {
     let desktopId: String
     let categories: [String]?
     let license: String?
+    let curated: Bool?
     let fileTypes: FileTypes
     let iconData: String?
     let source: Source
@@ -80,18 +81,21 @@ final class CatalogCenter {
     private var storeGeneration = 0
     private(set) var recentInstalls: Set<String> = []
     var error: String?
+    private var hostGeneration = 0
     private var host: HostClient?
     var onChange: (() async -> Void)?
 
-    func attach(_ host: HostClient) { self.host = host; Task { await refresh(); await discover("") } }
-    func reset() { storeGeneration += 1; storeLoading = false; host = nil; apps = []; packs = []; recentInstalls = []; storeApps = []; storeError = nil; storeQuery = ""; error = nil }
+    func attach(_ host: HostClient) { hostGeneration += 1; storeGeneration += 1; storeLoading = false; storeApps = []; storeError = nil; self.host = host; Task { await refresh() } }
+    func reset() { hostGeneration += 1; storeGeneration += 1; storeLoading = false; host = nil; apps = []; packs = []; recentInstalls = []; storeApps = []; storeError = nil; storeQuery = ""; error = nil }
     func refresh() async {
         guard let host else { return }
+        let generation = hostGeneration
         do {
             let catalog: CatalogResponse = try await host.request("GET", "/v1/catalog", timeout: 60)
+            guard hostGeneration == generation else { return }
             apps = catalog.apps; packs = catalog.packs; storeApps = storeApps.compactMap { item in catalog.apps.first { $0.id == item.id } }; error = nil
-        } catch HostClient.Failure.server(404, _) { apps = []; packs = [] }
-        catch { self.error = error.localizedDescription }
+        } catch HostClient.Failure.server(404, _) { if hostGeneration == generation { apps = []; packs = [] } }
+        catch { if hostGeneration == generation { self.error = error.localizedDescription } }
     }
     func discover(_ query: String) async {
         guard let host else { return }
@@ -99,16 +103,17 @@ final class CatalogCenter {
         storeQuery = query
         storeGeneration += 1
         let generation = storeGeneration
+        let hostVersion = hostGeneration
         storeLoading = true
         guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&+=?#"))) else { return }
         do {
             struct Results: Decodable { let apps: [CatalogApp] }
             let results: Results = try await host.request("GET", "/v1/catalog/discover?q=\(encoded)", timeout: 90)
-            guard storeGeneration == generation else { return }
+            guard storeGeneration == generation && hostGeneration == hostVersion else { return }
             storeApps = results.apps; storeError = nil; storeLoading = false
             await refresh()
         } catch {
-            guard storeGeneration == generation else { return }
+            guard storeGeneration == generation && hostGeneration == hostVersion else { return }
             storeError = error.localizedDescription; storeLoading = false
         }
     }

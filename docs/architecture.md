@@ -367,7 +367,7 @@ messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 
 `guest/catalog/catalog.json` supplies curated applications, packs and release pins. The
 Library also searches the guest's Debian AppStream desktop-application metadata and displays
-at most 100 matching applications with categories and project licences. The guest requires
+at most 100 matching applications with categories and project licences. The initial selection labels Caboose picks as curated; it does not claim a popularity ranking. The guest requires
 an APT candidate for its architecture; the host validates the package and desktop identifiers
 before offering an APT operation. A discovered application's package and AppStream identity
 are retained in its operation record so it can be rediscovered after a host restart. Search

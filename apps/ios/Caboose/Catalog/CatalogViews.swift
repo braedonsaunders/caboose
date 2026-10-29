@@ -62,7 +62,12 @@ struct CatalogLibrary: View {
                             ForEach(categories, id: \.self) { Text($0).tag($0) }
                         }
                     }
-                    ForEach(model.catalog.storeApps.filter { category == "All" || ($0.categories ?? []).contains(category) }) { row($0) }
+                    let shown = model.catalog.storeApps.filter { category == "All" || ($0.categories ?? []).contains(category) }
+                    if search.isEmpty && shown.contains(where: { $0.curated == true }) {
+                        Text("Caboose picks").font(.subheadline.weight(.semibold))
+                        ForEach(shown.filter { $0.curated == true }) { row($0) }
+                    }
+                    ForEach(search.isEmpty ? shown.filter { $0.curated != true } : shown) { row($0) }
                     if !model.catalog.storeLoading && model.catalog.storeApps.isEmpty && model.catalog.storeError == nil { Text("No applications found.").foregroundStyle(.secondary) }
                 }
                 Section { Text("Curated collections").font(.headline) }
