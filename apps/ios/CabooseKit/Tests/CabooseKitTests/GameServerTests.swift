@@ -206,6 +206,16 @@ func temporaryGameCache() throws -> GameCache {
         #expect(GameHTTP.route(make("/\(token)/data/../index.html"), origin: origin, root: root) == .file(path: "\(root)/index.html", range: nil, head: false))
     }
 
+    @Test func agentAppPathsRejectTraversalAndEncodedSeparators() {
+        let token = origin.token
+        let route = { (path: String) in GameHTTP.route(make("/\(token)/" + path), origin: origin, root: "Apps/notes", appPolicy: true, appEntry: "index.html") }
+        #expect(route("") == .file(path: "Apps/notes/index.html", range: nil, head: false))
+        #expect(route("docs/") == .file(path: "Apps/notes/docs/index.html", range: nil, head: false))
+        for path in ["../secret", "%2e%2e/secret", "x%2fy", "x%5cy", "x//y", "x/./y"] {
+            #expect(route(path) == .status(403))
+        }
+    }
+
     @Test func requestsWithoutTheTokenOrOutsideTheRootAreRefused() {
         let token = origin.token
         for (target, status) in [
@@ -283,6 +293,17 @@ func temporaryGameCache() throws -> GameCache {
         let sink = sink ?? RecordedResponse()
         await responder.respond(path: path, range: range, head: head, to: sink)
         return sink
+    }
+
+    @Test func agentAppDirectoryServesItsIndex() async throws {
+        let cache = try temporaryGameCache()
+        defer { try? FileManager.default.removeItem(at: cache.directory) }
+        let files = MemoryGameFiles(["Apps/notes/docs/index.html": Data("hello".utf8)])
+        let responder = GameFileResponder(cache: cache, directoryIndex: true, source: { files })
+        let result = await respond(responder, "Apps/notes/docs")
+        #expect(result.status == 200 && result.body == Data("hello".utf8))
+        let game = GameFileResponder(cache: cache, source: { files })
+        #expect(await respond(game, "Apps/notes/docs").status == 404)
     }
 
     @Test func aFileStreamsFromTheComputerThenComesFromTheCache() async throws {

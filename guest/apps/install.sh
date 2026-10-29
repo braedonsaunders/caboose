@@ -12,6 +12,7 @@ put() {
   mv -f "$dest/.$2.tmp" "$dest/$2"
 }
 put 0644 appcore.py
+put 0644 remote.py
 put 0644 page.js
 put 0644 world.js
 put 0644 guide.md

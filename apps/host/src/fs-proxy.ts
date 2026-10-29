@@ -24,6 +24,22 @@ export async function proxyFiles(service: FileService, input: IncomingMessage, o
   if (input.aborted || output.destroyed) return
   const url = publicFileUrl(input.url ?? '/', service.url)
   if (!url) { output.writeHead(404, { connection: 'close' }); output.end(); return }
+  return proxyGuest(service, url, input, output, idleTimeoutMs)
+}
+
+/** Relay an agent-app bridge request to its private guest endpoint. */
+export async function proxyWebview(service: FileService, instance: string, input: IncomingMessage, output: ServerResponse): Promise<void> {
+  if (input.method !== 'POST' || !/^[0-9a-f]{32}$/.test(instance) || input.headers['transfer-encoding'] ||
+      !/^(0|[1-9][0-9]*)$/.test(String(input.headers['content-length'] ?? '')) ||
+      Number(input.headers['content-length']) > 96 * 1024 * 1024) {
+    output.writeHead(400, { connection: 'close' }); output.end(); return
+  }
+  return proxyGuest(service, new URL(`/webview/${instance}`, service.url), input, output, 11 * 60_000)
+}
+
+/** Relay only the explicitly selected guest endpoint, never a client-supplied origin. */
+async function proxyGuest(service: FileService, url: URL, input: IncomingMessage, output: ServerResponse, idleTimeoutMs: number): Promise<void> {
+  if (input.aborted || output.destroyed) return
   const headers: Record<string, string> = { authorization: `Bearer ${service.token}` }
   for (const name of ['content-type', 'content-length', 'range', 'if-match', 'if-none-match']) {
     const value = input.headers[name]
@@ -60,7 +76,7 @@ export async function proxyFiles(service: FileService, input: IncomingMessage, o
       guestResponse = response
       response.on('data', progress)
       const forwarded: Record<string, string> = {}
-      for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag']) {
+      for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'cache-control']) {
         const value = response.headers[name]
         if (typeof value === 'string') forwarded[name] = value
       }

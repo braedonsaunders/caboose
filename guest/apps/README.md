@@ -8,10 +8,11 @@ any Linux app. [guide.md](guide.md) is the format and API as agents read it.
 
 | File | Is |
 | --- | --- |
-| `caboose-app` | The CLI and the runtime: a GTK 3 window around a WebKitGTK 4.1 view, in Python |
+| `caboose-app` | The CLI and runtime: a GTK 3 window with a local WebKitGTK view or native handoff, in Python |
 | `appcore.py` | Its logic that needs no display: manifests, URLs, desktop entries, the content policy, bridge bounds and file operations |
 | `page.js` | `window.caboose`, injected into the app's top frame |
 | `world.js` | The relay between the page and the native bridge, in its own script world |
+| `remote.py` | The private, per-instance bridge socket and session grant gate |
 | `apps-mcp.mjs` | `caboose-apps`, the MCP server agents use to make apps |
 | `guide.md` | How to write an app, served by `app_guide` and `caboose-app guide` |
 | `install.sh` | Installs the above at `/opt/caboose/apps` and `caboose-app` in `/usr/local/bin` |
@@ -36,7 +37,7 @@ Everything but `run` prints one JSON object and exits 1 when the app is invalid.
 | `~/Apps/<id>/` | The app: `app.json` and its files, written by the agent |
 | `~/.local/share/applications/caboose.app.<id>.desktop` | Its desktop entry, written by `publish` |
 | `~/.local/share/caboose/apps/<id>/files/` | `caboose.app.dataDir`, where relative `files` paths go |
-| `~/.local/share/caboose/apps/<id>/web/` | Its `localStorage`, IndexedDB and cookies |
+| `~/.local/share/caboose/apps/<id>/web/` | Local WebKitGTK `localStorage`, IndexedDB and cookies |
 | `~/.local/share/caboose/apps/<id>/icon.svg` | The monogram icon, for an app without one |
 | `~/.local/share/caboose/apps/<id>/console.log` | The page's console messages and errors and the runtime's own, from the current run (when not started from a terminal) |
 | `~/.cache/caboose/apps/<id>/` | Its web cache |
@@ -102,6 +103,30 @@ code runs as `caboose` with everything its capabilities give it, and `exec` give
 terminal's authority. Agents write apps in the owner's home, where the owner can read and
 remove them.
 
+## Native handoff
+
+An app opts in with `"handoff": "files"` in `app.json`: it keeps all persistent state in
+`caboose.files`, so its computer and device views see the same state. Apps without this
+opt-in run in WebKitGTK. Browser storage (localStorage, IndexedDB and cookies) is not
+transferred between the device and computer; it must not hold state the opted-in app needs
+when it falls back. On the device, the app has a stable per-computer, per-app loopback origin
+and a persistent WebKit data store. If its origin cannot be opened, the app returns to the
+computer. The agent seat and displays without a handoff client run locally.
+
+The launcher connects to the display's game socket and binds to its own window. The client
+receives a random instance identifier and a fresh display-session grant over its authenticated
+display connection. A private socket in the guest handles the bridge; the host's authenticated
+`POST /v1/webview/<instance>/bridge` relays to it through the authenticated guest file
+service. The guest checks the grant and the current document revision, then dispatches through
+the app's startup capability set. The owner token stays in native code. A takeover changes
+the grant; a replaced or inactive document's processes are terminated. The client polls for
+spawn output and reloads, and no request is replayed after a disconnect. If the socket or
+client goes away, the local WebKit view starts in the same window.
+
+The device origin serves only the app directory through the host's fenced file service, with
+a content security policy and an isolated top-frame bridge. `caboose.open` file targets use
+the computer's default handler and follow symlinks; the `caboose.files` operations do not.
+
 ## `caboose-apps` (MCP)
 
 `caboose-agentd` passes `apps-mcp.mjs` to every agent as the `caboose-apps` stdio server,
@@ -128,8 +153,9 @@ are replaced atomically; an open app keeps the code it loaded.
 
 ```sh
 python3 -m unittest discover -s guest/apps -p 'test_*.py'   # appcore
-node --test guest/apps/apps-mcp.test.mjs                   # the MCP server and the CLI
+node --test guest/apps/apps-mcp.test.mjs guest/apps/agent-page.test.mjs  # MCP and page relay
 guest/apps/check-runtime.sh                                 # the runtime, in Docker
+guest/apps/check-handoff.sh                                # handoff, bridge and fallback in Docker
 ```
 
 `check-runtime.sh` builds a Debian 13 image with Xvfb and WebKitGTK 4.1 and runs

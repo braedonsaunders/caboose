@@ -31,6 +31,7 @@ let package = Package(
         .target(
             name: "CabooseKit",
             dependencies: gpuStream ? ["CabooseGPUStream"] : [],
+            resources: [.process("Resources")],
             linkerSettings: gpuStream ? gpuStreamLinking : []),
         .testTarget(name: "CabooseKitTests", dependencies: ["CabooseKit"], exclude: ["Fixtures"]),
     ] + (gpuStream ? [.binaryTarget(name: "CabooseGPUStream", path: "Frameworks/CabooseGPUStream.xcframework")] : []),

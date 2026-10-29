@@ -17,6 +17,7 @@ import Testing
 
     func makeSession(runsGames: Bool = true) -> CabooseDisplaySession {
         let session = resume.makeSession()
+        session.playsAudio = false
         session.runsGames = runsGames
         return session
     }
@@ -34,6 +35,7 @@ import Testing
             try await helpers.until("hello") { session.state == .authenticating }
             let hello = try #require(stream.take().first)
             #expect(hello.body["wasm"] == (runs ? .bool(true) : nil))
+            #expect(hello.body["webview"] == (runs ? .bool(true) : nil))
             session.disconnect()
         }
     }
@@ -55,6 +57,37 @@ import Testing
         try await helpers.until("game over") { session.windows[7]?.game == nil }
         #expect(game.isEnded)
         #expect(session.windows[7] != nil) // the window stays until the server withdraws it
+    }
+
+    func webview(_ grant: String) -> CBOR {
+        ["id": 4, "window": 7, "app": "notes", "root": "Apps/notes", "entry": "index.html",
+         "bridge": "0123456789abcdef0123456789abcdef", "grant": CBOR(grant)]
+    }
+
+    @Test func webviewTakeoverReplacesTheOldDocumentAndDeclinesAsWebview() async throws {
+        let session = makeSession()
+        session.connect()
+        try await resume.handshake(session, epoch: "e1", windows: [7])
+        let first = String(repeating: "a", count: 32), second = String(repeating: "b", count: 32)
+        resume.streams.last.server([(.webviewCreate, webview(first))])
+        try await helpers.until("webview") { session.windows[7]?.game?.webview != nil }
+        let old = try #require(session.windows[7]?.game)
+        resume.streams.last.server([(.webviewCreate, webview(second))])
+        try await helpers.until("new grant") { session.windows[7]?.game?.webview?.grant == second }
+        #expect(old.isEnded)
+        let current = try #require(session.windows[7]?.game)
+        _ = resume.streams.last.take()
+        current.decline("cannot serve")
+        var sent: [DisplayFrame] = []
+        try await helpers.until("webview decline") {
+            sent += resume.streams.last.take().filter { $0.type == DisplayProtocol.ClientType.webviewDecline.rawValue }
+            return !sent.isEmpty
+        }
+        #expect(sent.first?.body["id"]?.int == 4)
+        resume.streams.last.server([(.webviewDestroy, ["id": 4])])
+        try await helpers.until("webview ended") { session.windows[7]?.game == nil }
+        #expect(current.isEnded)
+        session.disconnect()
     }
 
     @Test func aClientThatDoesNotRunGamesIgnoresThem() async throws {

@@ -68,6 +68,7 @@
   "apps/install.sh",
   "apps/caboose-app",
   "apps/appcore.py",
+  "apps/remote.py",
   "apps/page.js",
   "apps/world.js",
   "apps/guide.md",

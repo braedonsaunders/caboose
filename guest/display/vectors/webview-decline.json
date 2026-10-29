@@ -1,0 +1,8 @@
+{
+  "name": "webview-decline",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "webview.decline", "type_id": 152, "fields": {"id": 1, "reason": "web view failed"}}
+  ],
+  "hex": "981c000000a26269640166726561736f6e6f7765622076696577206661696c6564"
+}

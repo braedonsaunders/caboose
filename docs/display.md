@@ -218,13 +218,13 @@ client's windows are exactly the server's. A server that sends `epoch` guarantee
 order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`. A feature is listed only
+`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`. A feature is listed only
 when the server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
 `text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
 plays sound; `tiles` unless tiles are turned off; `wasm` when it hands games off (the
 owner's display) and the client's hello says `wasm: true`; and `gpu` when it relays GPU
-streams (the owner's display) and the client's hello says `gpu: true`.
+streams (the owner's display) and the client's hello says `gpu: true`; `webview` when the owner display and client support agent-app handoff.
 
 ### Pacing and flow control
 
@@ -271,6 +271,8 @@ Server → client (`0x01`–`0x7F`):
 | `0x19` | `gpu.create` | `id`, `window` |
 | `0x1A` | `gpu.data` | `id`, `offset: uint`, `data: bytes` |
 | `0x1B` | `gpu.destroy` | `id`, `reason?: "spool-limit"` |
+| `0x1C` | `webview.create` | `id`, `window`, `app: text`, `root: text`, `entry: text`, `bridge: text`, `grant: text` |
+| `0x1D` | `webview.destroy` | `id` |
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
@@ -284,7 +286,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool` (booleans present only when true) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool` (booleans present only when true) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
@@ -300,6 +302,7 @@ Client → server (`0x81`–`0xFF`):
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
 | `0x96` | `gpu.ack` | `id`, `offset`: the client has consumed the stream up to `offset` |
 | `0x97` | `game.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes; the server logs no more): the client cannot run game `id` ([game-handoff.md, "Declining"](game-handoff.md#declining)) |
+| `0x98` | `webview.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes) |
 | `0xA0` | `clipboard` | `mime`, `data: bytes` |
 | `0xFE` | `ping` | `t_us`, answered by `pong` for round-trip time |
 
@@ -437,6 +440,19 @@ process's lifetime. While a client runs a window's game, the window sends no `fr
 work as for any window, and once the game ends a remaining window sends its picture again
 from a keyframe. The launcher, its socket and the client's side are specified in
 [game-handoff.md](game-handoff.md).
+
+### Agent-app web views
+
+A client that says `webview: true` may receive `webview.create` after its window is
+announced. The app id determines `root` as `Apps/<id>` under the home; `entry` is a relative
+page. `bridge` is a random app-instance socket identifier and `grant` is a random display
+session grant. They reach the native client over the authenticated display connection, not
+the page. The launcher hears the current grant in the game socket's `mode` message. The
+guest accepts bridge calls only for its current grant and document revision. A reconnect or
+takeover rotates the grant, closes the previous document and ends its processes. A client
+that cannot run the view sends `webview.decline`; the compositor withdraws it and the app
+runs locally. The window sends no pictures during handoff. See
+[agent apps](../guest/apps/README.md#native-handoff).
 
 ### GPU streams
 

@@ -253,6 +253,13 @@ import Testing
         guard case .gameDestroy(1) = try server("game-destroy").first else { Issue.record("game.destroy"); return }
     }
 
+    @Test func webviews() throws {
+        guard case .webviewCreate(let app) = try server("webview-create").first else { Issue.record("webview.create"); return }
+        #expect(app.id == 1 && app.window == 7 && app.app == "notes" && app.root == "Apps/notes")
+        #expect(app.bridge == "0123456789abcdef0123456789abcdef" && app.grant == "fedcba9876543210fedcba9876543210" && app.entry == "index.html")
+        guard case .webviewDestroy(1) = try server("webview-destroy").first else { Issue.record("webview.destroy"); return }
+    }
+
     @Test func gpuStreams() throws {
         guard case .gpuCreate(1, 7) = try server("gpu-create").first else { Issue.record("gpu.create"); return }
         guard case .gpuData(1, 0, let data) = try server("gpu-data").first else { Issue.record("gpu.data"); return }
@@ -347,6 +354,10 @@ import Testing
         ], scaledMotion: true),
         "gpu-ack": .gpuAck(id: 1, offset: 65536),
         "game-decline": .gameDecline(id: 1, reason: "the page is not cross-origin isolated"),
+        "webview-decline": .webviewDecline(id: 1, reason: "web view failed"),
+        "client-hello-webview": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], webview: true),
         "client-hello-wasm": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], wasm: true),

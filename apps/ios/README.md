@@ -71,6 +71,11 @@ swiftc Caboose/Host/Credentials.swift tests/RemoteAddresses.swift -o /tmp/caboos
 sh scripts/check-remote-access.sh
 ```
 
+Opted-in agent apps use a native WebKit view and the authenticated guest bridge, with a
+stable per-app origin. Apps that depend on computer-side browser storage stay on the
+computer; the `handoff: "files"` contract and fallback are in
+[guest/apps](../../guest/apps/README.md#native-handoff).
+
 The unit tests replay the compositor's golden vectors from `guest/display/vectors` (every
 message decodes, re-encodes byte for byte and parses, and every client message the app
 sends matches its vector), drive `CabooseDisplaySession` over a mocked transport

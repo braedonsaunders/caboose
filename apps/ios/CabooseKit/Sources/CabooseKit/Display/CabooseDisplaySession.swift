@@ -108,10 +108,10 @@ public final class CabooseDisplaySession: DisplaySession {
     ///   - displayURL: the host's `/v1/display` WebSocket.
     ///   - token: the host's bearer token.
     ///   - password: the per-wake display token from `/v1/session`, sent in hello.
-    public convenience init(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities) {
+    public convenience init(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities, computerIdentity: String? = nil) {
         self.init(stream: { WebSocketStream(url: displayURL, token: token) }, token: password,
                   displays: [DisplayInfo(capabilities)], decoders: Self.hardwareDecoders)
-        gameHost = GameHostAccess(displayURL: displayURL, token: token)
+        gameHost = GameHostAccess(displayURL: displayURL, token: token, computerIdentity: computerIdentity)
     }
 
     init(stream: @escaping () -> ByteStream, token: String, displays: [DisplayInfo], decoders: [DisplayCodec],
@@ -183,9 +183,9 @@ public final class CabooseDisplaySession: DisplaySession {
     /// of the host's addresses, perhaps) with the display token from a new `/v1/session`.
     /// The windows stay on screen with their last pictures; the server's hello decides
     /// whether they are still the same windows (see `resume(stream:password:displays:)`).
-    public func resume(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities) {
+    public func resume(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities, computerIdentity: String? = nil) {
         guard isClosed, !isReplaced else { return }
-        gameHost = GameHostAccess(displayURL: displayURL, token: token)
+        gameHost = GameHostAccess(displayURL: displayURL, token: token, computerIdentity: computerIdentity ?? gameHost?.webviewComputerKey)
         for window in windows.values { window.game?.host = gameHost }
         resume(stream: { WebSocketStream(url: displayURL, token: token) }, password: password,
                displays: [DisplayInfo(capabilities)])
@@ -303,7 +303,7 @@ public final class CabooseDisplaySession: DisplaySession {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
-                    scaledMotion: true))
+                    scaledMotion: true, webview: runsGames))
     }
 
     // MARK: Server messages
@@ -351,6 +351,8 @@ public final class CabooseDisplaySession: DisplaySession {
             case .videoCreate(let fields): addVideo(fields.id)
             case .videoUpdate(let fields): updateVideo(fields)
             case .videoDestroy(let id): retireVideo(id, after: 0)
+            case .webviewCreate(let descriptor): createWebview(descriptor)
+            case .webviewDestroy(let id): endGame(of: windows.values.first { $0.game?.id == id && $0.game?.webview != nil })
             case .gameCreate(let descriptor): createGame(descriptor)
             case .gameDestroy(let id): endGame(of: windows.values.first { $0.game?.id == id })
             case .gpuCreate(let id, let window): createGPUStream(id, window: window)
@@ -607,6 +609,23 @@ public final class CabooseDisplaySession: DisplaySession {
         window.game = game
     }
 
+    private func createWebview(_ descriptor: WebviewDescriptor) {
+        guard runsGames, let window = windows[descriptor.window] else { return }
+        announcedGames.insert(descriptor.id)
+        if let game = window.game, game.id == descriptor.id, game.webview == descriptor {
+            if game.isDeclineReady, let reason = game.declineReason { declineGame(game, reason: reason) }
+            else { game.resumeSink?() }
+            return
+        }
+        endGame(of: window)
+        let game = RemoteGame(GameDescriptor(id: descriptor.id, window: descriptor.window, root: descriptor.root, entry: descriptor.entry), host: gameHost, picture: window.surface, webview: descriptor)
+        game.onDecline = { [weak self, weak game] reason in
+            guard let self, let game else { return }
+            self.declineGame(game, reason: reason)
+        }
+        window.game = game
+    }
+
     /// Asks the computer to run `game` itself (`game.decline`): only once its saves are
     /// written, while it is its window's game, announced on the current ready connection, and
     /// once per connection. A game declined while the connection is down, or whose decline
@@ -617,7 +636,8 @@ public final class CabooseDisplaySession: DisplaySession {
               case .ready = state, announcedGames.contains(game.id),
               let window = windows[game.descriptor.window], window.game === game else { return }
         game.declineSentOn = connections
-        send(.gameDecline(id: game.id, reason: reason))
+        if game.webview != nil { send(.webviewDecline(id: game.id, reason: reason)) }
+        else { send(.gameDecline(id: game.id, reason: reason)) }
     }
 
     private func endGame(of window: RemoteWindow?) {

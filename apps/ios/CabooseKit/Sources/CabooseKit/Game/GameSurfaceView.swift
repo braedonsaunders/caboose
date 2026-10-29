@@ -24,9 +24,11 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
     private(set) weak var game: RemoteGame?
     let webView: WKWebView
     private let server: GameServer
+    private let hasStableOrigin: Bool
     /// The origin the page was loaded from, once it was.
     private var origin: GameOrigin?
     private let saves: GameSaveSync
+    private var appBridge: AgentAppBridge?
     private let content: WKUserContentController
     private let message = UILabel()
     private let progress = UIActivityIndicatorView(style: .large)
@@ -44,14 +46,17 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
 
     private init(game: RemoteGame) {
         self.game = game
-        server = GameServer(root: game.descriptor.root, responder: GameFileResponder(source: { [weak game] in
+        let stable = game.webview.flatMap { app in game.host.flatMap { WebviewOriginStore().origin(computer: $0.webviewComputerKey, app: app.app) } }
+        hasStableOrigin = game.webview == nil || stable != nil
+        server = GameServer(root: game.descriptor.root, responder: GameFileResponder(directoryIndex: game.webview != nil, source: { [weak game] in
             game?.host.map { GameFileClient(host: $0) }
-        }))
+        }), token: stable?.token ?? GameOrigin.newToken(), appPolicy: game.webview != nil,
+            appEntry: game.webview?.entry, preferredPort: stable?.port)
         let device = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
         saves = GameSaveSync(saves: game.descriptor.saves, device: device, host: { [weak game] in game?.host })
         content = WKUserContentController()
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
+        configuration.websiteDataStore = game.webview == nil ? .nonPersistent() : .default()
         configuration.userContentController = content
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
@@ -60,8 +65,8 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
         backgroundColor = .black
         webView.isOpaque = true
         webView.backgroundColor = .black
-        webView.scrollView.isScrollEnabled = false
-        webView.scrollView.bounces = false
+        webView.scrollView.isScrollEnabled = game.webview != nil
+        webView.scrollView.bounces = game.webview != nil
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.navigationDelegate = self
         #if DEBUG
@@ -74,7 +79,16 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
         tap.delaysTouchesEnded = false
         tap.delegate = self
         webView.addGestureRecognizer(tap)
-        content.addScriptMessageHandler(GameMessages(self), contentWorld: .page, name: GameFSScript.handlerName)
+        if game.webview == nil {
+            content.addScriptMessageHandler(GameMessages(self), contentWorld: .page, name: GameFSScript.handlerName)
+        }
+        if game.webview != nil {
+            let bridge = AgentAppBridge(game: game, webView: webView)
+            appBridge = bridge
+            bridge.onFailure = { [weak self] in self?.decline("The app bridge disconnected") }
+            bridge.onReload = { [weak self] in self?.load() }
+            content.addScriptMessageHandler(bridge, contentWorld: AgentAppBridge.world, name: "caboose")
+        }
         addSubview(webView)
         progress.color = .white
         progress.hidesWhenStopped = true
@@ -91,6 +105,7 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
         game.gamepadSink = { [weak self] state in self?.send(gamepad: state) }
         game.inputSink = { [weak self] events in self?.send(input: events) }
         game.stateSink = { [weak self] in self?.showState() }
+        if game.webview != nil { game.resumeSink = { [weak self] in self?.load() } }
         game.onEnd { [weak self] in self?.end() }
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
@@ -144,6 +159,7 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
     /// Starts the game's origin and brings the saves down, then loads the page with them.
     private func load() {
         loading?.cancel()
+        guard hasStableOrigin else { return decline("The app could not reserve its origin") }
         message.isHidden = true
         progress.startAnimating()
         loading = Task { [weak self] in
@@ -154,6 +170,27 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
             } catch {
                 guard !Task.isCancelled else { return }
                 return decline(GameDecline.notServed(error))
+            }
+            if let appBridge {
+                do {
+                    let page = try await appBridge.prepare(origin: origin)
+                    let world = try AgentAppBridge.worldScript()
+                    guard !Task.isCancelled, let game, !game.isEnded, game.state == .running,
+                          let url = origin.url(game.descriptor.entry) else { return }
+                    self.origin = origin
+                    content.removeAllUserScripts()
+                    content.addUserScript(WKUserScript(source: world, injectionTime: .atDocumentStart,
+                                                       forMainFrameOnly: true, in: AgentAppBridge.world))
+                    content.addUserScript(WKUserScript(source: page, injectionTime: .atDocumentStart,
+                                                       forMainFrameOnly: true, in: .page))
+                    content.addUserScript(WKUserScript(source: GameInputScript.source, injectionTime: .atDocumentStart,
+                                                       forMainFrameOnly: true, in: .page))
+                    webView.load(URLRequest(url: url))
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    decline("The app bridge could not be started")
+                }
+                return
             }
             do {
                 let seed = try await saves.load()
@@ -194,17 +231,28 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
         // The page goes nowhere but the game's origin, in a frame or not; a link elsewhere opens
         // nothing. A frame may be blank, and so may the page once the game has stopped.
-        guard let url = navigationAction.request.url, navigationAction.targetFrame != nil else { return .cancel }
-        if let origin, origin.contains(url) { return .allow }
+        guard let url = navigationAction.request.url else { return .cancel }
+        if let origin, origin.contains(url), navigationAction.targetFrame != nil { return .allow }
+        if game?.webview != nil, navigationAction.navigationType == .linkActivated,
+           ["http", "https", "mailto", "tel", "sms"].contains(url.scheme?.lowercased() ?? "") {
+            await UIApplication.shared.open(url)
+            return .cancel
+        }
+        guard navigationAction.targetFrame != nil else { return .cancel }
         guard url.scheme == "about", url.absoluteString == "about:blank" || url.absoluteString == "about:srcdoc" else { return .cancel }
         return !isRunning || navigationAction.targetFrame?.isMainFrame == false ? .allow : .cancel
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
         if navigationResponse.isForMainFrame, isRunning, let response = navigationResponse.response as? HTTPURLResponse, response.statusCode >= 400 {
-            show("The game's page could not be loaded from the computer (\(response.statusCode)).")
+            if game?.webview != nil { decline("The app page could not be loaded") }
+            else { show("The game's page could not be loaded from the computer (\(response.statusCode)).") }
         }
         return .allow
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        appBridge?.committed()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -223,7 +271,8 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
 
     private func failed(_ error: Error) {
         if !isRunning || (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled { return }
-        show("The game could not be loaded. \(error.localizedDescription)")
+        if game?.webview != nil { decline("The app page could not be loaded") }
+        else { show("The game could not be loaded. \(error.localizedDescription)") }
     }
 
     /// WebKit ended the page (memory pressure, for one): start again from the saves written so
@@ -251,9 +300,9 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
     private func showState() {
         switch game?.state {
         case .declined:
-            show("Running this game on the computer instead…")
+            show(game?.webview != nil ? "Running this app on the computer instead…" : "Running this game on the computer instead…")
         case .declineUnanswered:
-            show("This game cannot run on this device, and the computer did not take it back. Close the window.")
+            show(game?.webview != nil ? "This app cannot run on this device, and the computer did not take it back. Close the window." : "This game cannot run on this device, and the computer did not take it back. Close the window.")
         case .running, nil:
             break
         }
@@ -261,6 +310,7 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
 
     /// The page and its origin stop; the saves it wrote still go to the computer.
     private func stopPage() {
+        appBridge?.end()
         loading?.cancel()
         server.stop()
         webView.stopLoading()

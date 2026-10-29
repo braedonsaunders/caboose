@@ -2,7 +2,7 @@ import { computerSizes, expandSize } from './sizes.js'
 import { createHash } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
 import { parseCraftRequest, runCraft } from './craft-jobs.js'
-import { proxyFiles, type FileService } from './fs-proxy.js'
+import { proxyFiles, proxyWebview, type FileService } from './fs-proxy.js'
 import { agentJob, parseJob, type ActivityService } from './activities.js'
 import { rm } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -467,6 +467,14 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         if (typeof input.app === 'string') await controller.launch(input.app, relative)
         else await openOnDisplay(controller.guest()!, `/home/caboose/${relative}`)
         return json(response, 200, { opened: true })
+      })
+    }
+    const webviewBridge = /^\/v1\/webview\/([0-9a-f]{32})\/bridge$/.exec(path)
+    if (webviewBridge) {
+      return computer.wakeAndRun(async () => {
+        await ensureFilesReady()
+        if (!controller.fileService) throw new AgentUnavailableError()
+        await proxyWebview(controller.fileService(), webviewBridge[1]!, request, response)
       })
     }
     if (path.startsWith('/v1/fs/')) {

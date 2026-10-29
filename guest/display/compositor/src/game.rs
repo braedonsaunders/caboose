@@ -42,6 +42,8 @@ pub struct Hello {
 pub enum Kind {
     /// A WebAssembly game the client runs (docs/game-handoff.md).
     Game { root: String, entry: String, saves: Option<Vec<proto::GameSave>> },
+    /// An agent app rendered by the client.
+    Webview { app: String, bridge: String, root: String, entry: String },
     /// An application whose Vulkan calls arrive on this FIFO for the client to render
     /// (docs/gpu-stream.md).
     Gpu { stream: PathBuf },
@@ -128,6 +130,31 @@ impl Hello {
                 && stream.file_name().and_then(|n| n.to_str()).is_some_and(|n| contained(n) && n.ends_with(".gfxr"));
             return inside.then_some(Hello { title, app_id, kind: Kind::Gpu { stream } });
         }
+        if text(&map, "kind") == Some("webview") {
+            let app = text(&map, "app")?;
+            let bridge = text(&map, "bridge")?;
+            let root = text(&map, "root")?;
+            let entry = text(&map, "entry")?;
+            if app.len() > 48
+                || !app.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                || !app.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                || bridge.len() != 32
+                || !bridge.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || app_id != format!("caboose.app.{app}")
+                || root != format!("Apps/{app}")
+                || !contained(entry)
+            {
+                return None;
+            }
+            return Some(Hello {
+                title,
+                app_id,
+                kind: Kind::Webview { app: app.into(), bridge: bridge.into(), root: root.into(), entry: entry.into() },
+            });
+        }
+        if text(&map, "kind").is_some_and(|kind| kind != "game") {
+            return None;
+        }
         let saves = match map.iter().find(|(k, _)| k == "saves").map(|(_, v)| v) {
             None => None,
             Some(Value::Array(items)) => Some(
@@ -159,12 +186,19 @@ impl Hello {
 /// `mode` with its header. `declined` (sent only true) says the client could not run the game
 /// it was given, so a launcher with a native build runs it now.
 pub fn mode_message(mode: Mode, window: Option<u64>, declined: bool) -> Vec<u8> {
+    mode_message_with_grant(mode, window, declined, None)
+}
+
+fn mode_message_with_grant(mode: Mode, window: Option<u64>, declined: bool, grant: Option<&str>) -> Vec<u8> {
     let mut map = vec![("mode".to_owned(), Value::Text(mode.as_str().into()))];
     if let Some(w) = window {
         map.push(("window".into(), Value::Int(w as i128)));
     }
     if declined {
         map.push(("declined".into(), Value::Bool(true)));
+    }
+    if let Some(grant) = grant {
+        map.push(("grant".into(), Value::Text(grant.into())));
     }
     let payload = cbor::encode(&Value::Map(map));
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
@@ -289,6 +323,7 @@ impl State {
         match l.hello.as_ref().map(|h| &h.kind) {
             Some(Kind::Game { .. }) => !l.declined && self.client_runs_games(),
             Some(Kind::Gpu { .. }) => self.client_renders_gpu(),
+            Some(Kind::Webview { .. }) => !l.declined && self.session.as_ref().is_some_and(|s| s.ready && s.webview),
             None => false,
         }
     }
@@ -397,6 +432,7 @@ impl State {
         let pid = self.games.launchers[&conn].pid;
         match &hello.kind {
             Kind::Game { root, entry, .. } => tracing::info!("game {:?} (pid {pid}): {root}/{entry}", hello.title),
+            Kind::Webview { app, .. } => tracing::info!("agent app {app} (pid {pid})"),
             Kind::Gpu { stream } => {
                 tracing::info!("gpu stream {:?} (pid {pid}): {}", hello.title, stream.display());
                 match self.open_gpu_stream(conn, stream) {
@@ -512,6 +548,18 @@ impl State {
                 saves: saves.clone(),
             }),
             Kind::Gpu { .. } => Message::GpuCreate { id, window },
+            Kind::Webview { app, bridge, root, entry } => {
+                let Some(grant) = self.session.as_ref().and_then(|s| s.webview_grant.clone()) else { return };
+                Message::WebviewCreate(proto::WebviewCreate {
+                    id,
+                    window,
+                    app: app.clone(),
+                    bridge: bridge.clone(),
+                    grant,
+                    root: root.clone(),
+                    entry: entry.clone(),
+                })
+            }
         };
         self.net.send(session, &message);
         let l = self.games.launchers.get_mut(&conn).unwrap();
@@ -548,9 +596,12 @@ impl State {
         let (Some((id, _)), true) = (l.bound, l.announced) else { return };
         l.announced = false;
         let gpu = l.gpu.is_some();
+        let webview = matches!(l.hello.as_ref().map(|h| &h.kind), Some(Kind::Webview { .. }));
         if let Some(session) = self.session.as_ref().map(|s| s.conn) {
             let message = if gpu {
                 Message::GpuDestroy { id, reason: reason.map(str::to_owned) }
+            } else if webview {
+                Message::WebviewDestroy { id }
             } else {
                 Message::GameDestroy { id }
             };
@@ -576,6 +627,7 @@ impl State {
         for conn in conns {
             if let Some(l) = self.games.launchers.get_mut(&conn) {
                 l.announced = false;
+                l.sent = None;
                 if let Some(gpu) = l.gpu.as_mut() {
                     gpu.sent = 0;
                     gpu.acked = 0;
@@ -588,6 +640,7 @@ impl State {
 
     fn update_game_mode(&mut self, conn: u64) {
         let runs = self.client_takes(conn);
+        let grant = self.session.as_ref().and_then(|s| s.webview_grant.clone());
         let Some(l) = self.games.launchers.get_mut(&conn) else { return };
         if l.hello.is_none() {
             return;
@@ -606,7 +659,9 @@ impl State {
         }
         l.sent = Some(now);
         let declined = l.declined;
-        l.pending.extend_from_slice(&mode_message(now.0, now.1, declined));
+        let webview = matches!(l.hello.as_ref().map(|h| &h.kind), Some(Kind::Webview { .. }));
+        let grant = if webview && now.0 == Mode::Handoff { grant.as_deref() } else { None };
+        l.pending.extend_from_slice(&mode_message_with_grant(now.0, now.1, declined, grant));
         self.flush_launcher(conn);
         // A window whose game the client stopped running sends its picture again.
         if let (Mode::Local, Some(window)) = now {
@@ -786,11 +841,25 @@ impl State {
     /// Only the connected client's own announced game counts; a repeated or late decline, or
     /// one for a game this client was never given, changes nothing.
     pub fn decline_game(&mut self, id: u64, reason: &str) {
+        self.decline_handoff(id, reason, false);
+    }
+
+    pub fn decline_webview(&mut self, id: u64, reason: &str) {
+        self.decline_handoff(id, reason, true);
+    }
+
+    fn decline_handoff(&mut self, id: u64, reason: &str, webview: bool) {
         let conn = self
             .games
             .launchers
             .iter()
-            .find(|(_, l)| l.gpu.is_none() && l.announced && !l.declined && l.bound.is_some_and(|(g, _)| g == id))
+            .find(|(_, l)| {
+                l.gpu.is_none()
+                    && matches!(l.hello.as_ref().map(|h| &h.kind), Some(Kind::Webview { .. })) == webview
+                    && l.announced
+                    && !l.declined
+                    && l.bound.is_some_and(|(g, _)| g == id)
+            })
             .map(|(c, _)| *c);
         let Some(conn) = conn else { return };
         let mut shown = reason.chars().take(200).collect::<String>();
@@ -857,6 +926,35 @@ mod tests {
             saves,
             Some(vec![proto::GameSave { mount: "/powder".into(), path: ".local/share/The Powder Toy".into() }])
         );
+    }
+
+    #[test]
+    fn webview_hello_is_bound_to_its_app_directory() {
+        let message = |app: &str, root: &str, entry: &str, bridge: &str| {
+            hello(vec![
+                ("version", Value::Int(1)),
+                ("title", Value::Text("Notes".into())),
+                ("app_id", Value::Text("caboose.app.notes".into())),
+                ("kind", Value::Text("webview".into())),
+                ("app", Value::Text(app.into())),
+                ("bridge", Value::Text(bridge.into())),
+                ("root", Value::Text(root.into())),
+                ("entry", Value::Text(entry.into())),
+            ])
+        };
+        assert!(matches!(
+            Hello::parse(&message("notes", "Apps/notes", "index.html", "0123456789abcdef0123456789abcdef"), None),
+            Some(Hello { kind: Kind::Webview { .. }, .. })
+        ));
+        assert_eq!(Hello::parse(&message("notes", "Apps/notes", "index.html", "../bad"), None), None);
+        for (app, root, entry) in [
+            ("../x", "Apps/../x", "index.html"),
+            ("notes", "Apps/other", "index.html"),
+            ("notes", "Apps/notes", "../secret"),
+            ("1notes", "Apps/1notes", "index.html"),
+        ] {
+            assert_eq!(Hello::parse(&message(app, root, entry, "0123456789abcdef0123456789abcdef"), None), None);
+        }
     }
 
     #[test]
@@ -934,6 +1032,17 @@ mod tests {
         );
         // Canonical: "mode" (4 bytes) sorts before "window" (6 bytes).
         assert_eq!(&bytes[HEADER_LEN..HEADER_LEN + 6], &[0xa2, 0x64, b'm', b'o', b'd', b'e']);
+    }
+
+    #[test]
+    fn webview_mode_carries_its_session_grant() {
+        let grant = "0123456789abcdef0123456789abcdef";
+        let bytes = mode_message_with_grant(Mode::Handoff, Some(7), false, Some(grant));
+        let Value::Map(map) = cbor::decode(&bytes[HEADER_LEN..]).unwrap() else { panic!("map") };
+        assert_eq!(text(&map, "grant"), Some(grant));
+        let local = mode_message_with_grant(Mode::Local, Some(7), false, None);
+        let Value::Map(map) = cbor::decode(&local[HEADER_LEN..]).unwrap() else { panic!("map") };
+        assert_eq!(text(&map, "grant"), None);
     }
 
     #[test]

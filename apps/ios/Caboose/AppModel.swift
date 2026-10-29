@@ -513,7 +513,7 @@ final class AppModel {
             lastDisplay = display
             yard.invalidate()
             current.resume(displayURL: host.socketURL(display.path), token: host.token, password: display.token,
-                           capabilities: displayCapabilities())
+                           capabilities: displayCapabilities(), computerIdentity: credentials?.fileDomainIdentifier)
             return
         }
         startSession(host: host, display: display, identity: identity)
@@ -528,7 +528,7 @@ final class AppModel {
         let caps = displayCapabilities()
         placedWindowIDs.removeAll()
         let url = host.socketURL(display.path)
-        let session: any DisplaySession = CabooseDisplaySession(displayURL: url, token: host.token, password: display.token, capabilities: caps)
+        let session: any DisplaySession = CabooseDisplaySession(displayURL: url, token: host.token, password: display.token, capabilities: caps, computerIdentity: credentials?.fileDomainIdentifier)
         let isCurrent: () -> Bool = { [weak self, weak session] in
             guard let self, let session else { return false }
             return self.session === session

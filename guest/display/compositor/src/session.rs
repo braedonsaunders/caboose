@@ -30,6 +30,8 @@ pub struct Session {
     pub audio: bool,
     /// The client runs games handed off to it, and this instance hands them off.
     pub wasm: bool,
+    pub webview: bool,
+    pub webview_grant: Option<String>,
     /// The client renders Vulkan streams, and this instance relays them.
     pub gpu: bool,
     pub scaled_motion: bool,
@@ -201,6 +203,7 @@ impl State {
             Message::Close { id } => self.close_window(id),
             Message::GpuAck { id, offset } => self.gpu_ack(id, offset),
             Message::GameDecline { id, reason } => self.decline_game(id, &reason),
+            Message::WebviewDecline { id, reason } => self.decline_webview(id, &reason),
             Message::Displays { displays } => self.set_displays(&displays),
             Message::Touch(t) => self.touch(&t),
             Message::Pointer(p) => self.pointer(&p),
@@ -258,22 +261,39 @@ impl State {
         let encoders: Vec<Codec> = offered.into_iter().filter(|c| hello.decoders.contains(c)).collect();
         let wasm = hello.wasm && self.games.socket.is_some();
         let gpu = hello.gpu && self.games.socket.is_some();
+        let webview_grant = if hello.webview && self.games.socket.is_some() {
+            use std::io::Read;
+            let mut bytes = [0u8; 16];
+            std::fs::File::open("/dev/urandom")
+                .and_then(|mut file| file.read_exact(&mut bytes))
+                .ok()
+                .map(|_| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+        } else {
+            None
+        };
+        let webview = webview_grant.is_some();
         self.net.send(
             conn,
             &Message::ServerHello(proto::ServerHello {
                 version: proto::VERSION,
                 displays: self.displays.ids(),
                 encoders,
-                features: features(
-                    self.xwm.is_some() || self.config.x_display.is_some(),
-                    ((self.videos.socket.is_some() || self.config.motion)
-                        && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()))
-                        || (self.config.motion && hello.scaled_motion),
-                    self.audio.is_some(),
-                    self.encoders.settings.tile_max_px > 0,
-                    wasm,
-                    gpu,
-                ),
+                features: {
+                    let mut supported = features(
+                        self.xwm.is_some() || self.config.x_display.is_some(),
+                        ((self.videos.socket.is_some() || self.config.motion)
+                            && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()))
+                            || (self.config.motion && hello.scaled_motion),
+                        self.audio.is_some(),
+                        self.encoders.settings.tile_max_px > 0,
+                        wasm,
+                        gpu,
+                    );
+                    if webview {
+                        supported.push("webview".into());
+                    }
+                    supported
+                },
                 epoch: Some(self.epoch.clone()),
             }),
         );
@@ -288,6 +308,8 @@ impl State {
             video_decoders,
             audio,
             wasm,
+            webview,
+            webview_grant,
             gpu,
             scaled_motion: hello.scaled_motion,
         });

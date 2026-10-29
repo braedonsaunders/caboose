@@ -560,6 +560,7 @@ fn run(args: Args) -> Result<bool, String> {
             video_decoders: args.video_decoders.clone(),
             audio_decoders: args.audio.then(|| vec!["opus".to_owned()]),
             wasm: args.wasm,
+            webview: false,
             gpu: args.gpu_save.is_some(),
             scaled_motion: args.scaled_motion,
         }),

@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { WebSocket } from 'ws'
 import { createCabooseServer, type Controller } from './server.js'
 import { ComputerLifecycle } from './lifecycle.js'
-import { proxyFiles, publicFileUrl } from './fs-proxy.js'
+import { proxyFiles, proxyWebview, publicFileUrl } from './fs-proxy.js'
 import { SettingsStore, settingsLimits } from './settings.js'
 
 const cleanup: Array<() => Promise<void>> = []
@@ -290,4 +290,52 @@ it('allows only public operations after URL normalization', () => {
     expect(publicFileUrl(path, base), path).toBeUndefined()
   }
   expect(publicFileUrl('/v1/fs/content?path=keyring', base)?.href).toBe(base + '/content?path=keyring')
+})
+
+
+it('relays only a bounded bridge POST with the guest credential', async () => {
+  const seen: Array<{ url?: string; auth?: string; cookie?: string }> = []
+  const upstream = createServer((req, res) => {
+    seen.push({ url: req.url, auth: req.headers.authorization, cookie: req.headers.cookie })
+    req.resume(); req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}') })
+  })
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
+  cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
+  const service = { url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'guest' }
+  const app = createServer((req, res) => { void proxyWebview(service, req.url!.slice(1), req, res) })
+  app.listen(0, '127.0.0.1'); await once(app, 'listening')
+  cleanup.unshift(() => new Promise(resolve => app.close(() => resolve())))
+  const base = `http://127.0.0.1:${(app.address() as AddressInfo).port}`
+  const instance = 'a'.repeat(32)
+  const ok = await fetch(`${base}/${instance}`, { method: 'POST', headers: { authorization: 'Bearer owner', cookie: 'secret' }, body: '{}' })
+  expect(ok.status).toBe(200)
+  expect(seen).toEqual([{ url: `/webview/${instance}`, auth: 'Bearer guest', cookie: undefined }])
+  expect((await fetch(`${base}/../bad`, { method: 'POST', body: '{}' })).status).toBe(400)
+  expect((await fetch(`${base}/${instance}`)).status).toBe(400)
+  expect(seen).toHaveLength(1)
+})
+
+it('authorizes the app bridge through the selected computer', async () => {
+  const upstream = createServer((req, res) => {
+    expect(req.url).toBe(`/webview/${'a'.repeat(32)}`)
+    expect(req.headers.authorization).toBe('Bearer guest')
+    req.resume(); req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}') })
+  })
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
+  cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
+  const controller: Controller = {
+    wake: async () => ({ state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+    park: async () => {}, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined,
+    activeResources: () => null, hasSavedState: () => false,
+    fileService: () => ({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'guest' }),
+  }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  cleanup.unshift(() => app.shutdown())
+  const url = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}/v1/webview/${'a'.repeat(32)}/bridge`
+  expect((await fetch(url, { method: 'POST', body: '{}' })).status).toBe(401)
+  const response = await fetch(url, { method: 'POST', headers: { authorization: 'Bearer owner' }, body: '{}' })
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({ ok: true })
 })

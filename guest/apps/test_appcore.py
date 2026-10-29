@@ -39,6 +39,25 @@ class Home(unittest.TestCase):
         return directory
 
 
+class BridgeRequests(unittest.TestCase):
+    def test_capability_is_checked_before_calling_handler(self):
+        called = []
+        methods = {'exec': ('exec', lambda params: called.append(params))}
+        request = {'method': 'exec', 'params': {'argv': ['id']}}
+        with self.assertRaisesRegex(apps.AppError, 'does not declare'):
+            apps.bridge_request(request, methods, frozenset())
+        self.assertEqual(called, [])
+        apps.bridge_request(request, methods, frozenset({'exec'}))
+        self.assertEqual(called, [{'argv': ['id']}])
+
+    def test_malformed_requests_do_not_dispatch(self):
+        methods = {'exec': ('exec', lambda params: self.fail('dispatched'))}
+        for request in (None, [], {}, {'method': [], 'params': {}},
+                        {'method': 'exec', 'params': []}, {'method': 'other', 'params': {}}):
+            with self.subTest(request=request), self.assertRaises(apps.AppError):
+                apps.bridge_request(request, methods, frozenset({'exec'}))
+
+
 class Ids(unittest.TestCase):
     def test_ids(self):
         for good in ('a', 'notes', 'photo-sorter', 'x' * 48, 'a1'):
@@ -60,6 +79,18 @@ class Manifest(Home):
         self.assertEqual(manifest['capabilities'], [])
         self.assertEqual(manifest['window'], {'width': 1024, 'height': 720})
         self.assertIsNone(manifest['icon'])
+
+    def test_handoff_requires_explicit_files_contract(self):
+        manifest, errors = apps.load_manifest(self.app(manifest={'name': 'Notes'}))
+        self.assertEqual(errors, [])
+        self.assertIsNone(manifest['handoff'])
+        manifest, errors = apps.load_manifest(self.app(manifest={'name': 'Notes', 'handoff': 'files'}))
+        self.assertEqual(errors, [])
+        self.assertEqual(manifest['handoff'], 'files')
+        for invalid in (True, False, None, 'localStorage', 1):
+            manifest, errors = apps.load_manifest(self.app(manifest={'name': 'Notes', 'handoff': invalid}))
+            self.assertIsNone(manifest)
+            self.assertTrue(any('handoff' in error for error in errors))
 
     def test_full(self):
         directory = self.app(manifest={
@@ -377,6 +408,16 @@ class Files(Home):
         for bad in ('../x', 'a/../../x', '/etc/passwd', f'{self.home}x/y', '~/../x', 'a\0', 7, 'x' * 5000):
             with self.assertRaises(apps.AppError):
                 self.split(bad)
+
+    def test_working_directory_refuses_symlinks(self):
+        os.mkdir(os.path.join(self.home, 'work'))
+        fd = apps.open_cwd('~/work', self.home, self.files)
+        os.close(fd)
+        os.symlink(self.root, os.path.join(self.home, 'escape'))
+        with self.assertRaises((apps.AppError, OSError)):
+            apps.open_cwd('~/escape', self.home, self.files)
+        fd = apps.open_cwd(None, self.home, self.files)
+        os.close(fd)
 
     def test_round_trip(self):
         root, parts = self.split('deep/er/data.bin')

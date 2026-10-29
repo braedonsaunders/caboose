@@ -21,7 +21,7 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | `src/network.ts` | Each guest's TAP device and /30, NAT and the network fence. |
 | `src/agents.ts`, `src/registry.ts`, `src/agent-catalog.ts` | Agent tasks, the Agent Client Protocol registry, and agent install and sign-in. |
 | `src/agent-routines.ts` | Persistent per-computer routines, same-UUID task recovery and bounded run history; [adapter contract and tests](../../docs/agent-routines.md). |
-| `src/fs-proxy.ts`, `src/files.ts` | `/v1/fs` and `/v1/files`, through the guest's file service. |
+| `src/fs-proxy.ts`, `src/files.ts` | `/v1/fs`, `/v1/files` and the authenticated agent-app bridge, through the guest's file service. |
 | `src/terminal.ts` | `/v1/terminal`: the terminal relay to the guest's terminal service, its control messages and session routes. |
 | `src/screen.ts` | `/v1/screen/*`, the owner's display through its accessibility tree. |
 | `src/app-catalog*.ts`, `src/craft-jobs.ts` | The optional application catalog and Craft CLI jobs. |

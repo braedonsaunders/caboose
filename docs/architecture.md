@@ -559,16 +559,17 @@ Xwayland, with `WAYLAND_DISPLAY` removed and `GDK_BACKEND`, `WINIT_UNIX_BACKEND`
 
 An agent app is a web app an agent writes into `~/Apps/<id>/` (`app.json` and its files)
 that runs as an application of its own. `caboose-app` (`guest/apps`, installed with the
-guest components at `/opt/caboose/apps`) runs each in a GTK 3 window around a WebKitGTK 4.1
-view. `caboose-app publish <id>` validates it and writes
+guest components at `/opt/caboose/apps`) runs each in a GTK 3 window. Apps that opt in to
+`handoff: "files"` run in the phone's WebKit view when the display client supports it;
+otherwise WebKitGTK 4.1 runs on the computer. `caboose-app publish <id>` validates it and writes
 `~/.local/share/applications/caboose.app.<id>.desktop`, so `/v1/apps` lists it and
 `/v1/apps/:id/launch` opens it like any desktop entry; the window's `app_id` is the entry's
 name. Ids are `[a-z][a-z0-9-]{0,47}`. The format, the API and the runtime's rules are in
 [guest/apps](../guest/apps/README.md).
 
-- The page is served only from `caboose-app://<id>/`, from regular files inside the app
-  directory after decoding and resolving symlinks, with a content security policy (header
-  and `<meta>`) under which script runs only from the app's own files and frames hold only
+- The local page is served from `caboose-app://<id>/`, and the handed-off page from its
+  device's loopback origin. Each serves only files in the app directory with a content
+  security policy under which script runs only from the app's files and frames hold only
   its own pages. Publishing rejects pages with inline script. The top frame cannot leave the
   app; web, mail and phone links the person follows open in their default application.
 - `window.caboose` exists only in the top frame, through a relay in an isolated script world
@@ -578,8 +579,13 @@ name. Ids are `[a-z][a-z0-9-]{0,47}`. The format, the API and the runtime's rule
   (symlink-safe file operations in the home), `notify` (a desktop notification, which
   reaches the phone) and `open`. Declared capabilities describe the app; they are not a
   sandbox. An app runs as `caboose`, and `exec` has that user's full authority.
-- Each app keeps its web storage and files under `~/.local/share/caboose/apps/<id>/`. Edits
-  to the app's files reload its open windows; capabilities apply from the next start.
+- App files live under `~/.local/share/caboose/apps/<id>/files/`. Apps that opt in to
+  handoff keep persistent app state in those files: WebKitGTK storage and device WebKit
+  storage are separate and are not migrated. Device origins are stable per computer and app.
+  Edits reload open windows; capabilities apply from the next start. The authenticated
+  `/v1/webview/<instance>/bridge` relay passes requests to the running app, which enforces
+  its session grant, document revision and startup capabilities. The owner token stays in
+  native code. See [native handoff](../guest/apps/README.md#native-handoff).
 
 ## 3. Host
 
