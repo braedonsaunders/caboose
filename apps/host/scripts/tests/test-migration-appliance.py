@@ -130,7 +130,7 @@ class ApplianceTests(unittest.TestCase):
             m.prepare_system_disk(self.clone, '6.12.0-test', hook, initrd, self.root)
         args = calls[0]
         self.assertNotIn('sh', [arg for i, arg in enumerate(args) if i == 0 or args[i - 1] != 'debug'])
-        self.assertIn('rm-r', args)
+        self.assertIn('rm-rf', args)
         self.assertEqual(args[args.index('set-network') + 1], 'false')
 
     def test_hooks_use_only_independent_clone_and_fresh_readonly_download(self):

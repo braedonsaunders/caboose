@@ -423,6 +423,6 @@ def prepare_system_disk(staged_clone, kernel_version, hook, initrd, work, *,
             'write-append', '/etc/initramfs-tools/modules', '\nerofs\noverlay\n', ':',
             'upload', str(initrd.resolve()), initrd_path, ':',
             'touch', '/etc/caboose-split-system', ':',
-            'rm-r', '/usr', ':', 'rm-r', '/opt', ':', 'mkdir', '/usr', ':', 'mkdir', '/opt', ':',
+            'rm-rf', '/usr', ':', 'rm-rf', '/opt', ':', 'mkdir', '/usr', ':', 'mkdir', '/opt', ':',
             'sync', ':', 'shutdown']
         _guestfish(args, _environment(directory), directory / 'appliance.log', timeout, size + 1024 ** 3, guard)
