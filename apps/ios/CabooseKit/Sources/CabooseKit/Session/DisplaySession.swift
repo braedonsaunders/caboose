@@ -23,6 +23,16 @@ public protocol DisplaySession: AnyObject {
     var latencyMs: Double? { get }
     /// The median time from a key leaving the phone to the next picture of that window.
     var typingEchoMs: Int? { get }
+    /// What the connection has measured; empty where an implementation measures nothing.
+    var health: DisplayLinkHealth { get }
+    /// Why the connection last closed, nil while it has not.
+    var closeCause: DisplayCloseCause? { get }
+    /// Bumped once the server has announced all its windows after a hello, when the server
+    /// guarantees that order (it sends an epoch): `windows` is then exactly the server's.
+    var windowsAnnounced: Int { get }
+    /// The server process's epoch from its last hello; window ids name the same windows
+    /// only within one. Nil for a server that sends none.
+    var epoch: String? { get }
 
     var onClipboardText: ((String) -> Void)? { get set }
     var clipboardProvider: (() -> String?)? { get set }
@@ -36,6 +46,8 @@ public protocol DisplaySession: AnyObject {
 
     func connect()
     func disconnect()
+    /// The network changed: confirm the connection still answers, or close it.
+    func probeLiveness()
 
     // MARK: Windows
 
@@ -136,4 +148,9 @@ public extension DisplaySession {
     func displayWillRefresh(_ display: Int, targetTimestamp: CFTimeInterval) {}
     var textPurpose: String? { nil }
     var isReplaced: Bool { false }
+    var health: DisplayLinkHealth { .empty }
+    var closeCause: DisplayCloseCause? { nil }
+    var windowsAnnounced: Int { 0 }
+    var epoch: String? { nil }
+    func probeLiveness() {}
 }

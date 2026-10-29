@@ -168,6 +168,17 @@ import Testing
         #expect(hello.displays == [1, 2])
         #expect(hello.encoders == ["hevc", "h264"])
         #expect(hello.features == ["vsync", "ack", "touch", "text-input-v3", "cursor-named", "xwayland"])
+        #expect(hello.epoch == nil)
+        guard case .hello(let epoch) = try server("server-hello-epoch").first else { Issue.record("not a hello"); return }
+        #expect(epoch.epoch == "5f3a9c01d2e4b678" && epoch.displays == [1] && epoch.features == ["vsync", "ack"])
+    }
+
+    /// An epoch that is not short text cannot prove anything, so it reads as absent.
+    @Test func invalidEpochIsAbsent() {
+        for value: CBOR in [.unsigned(7), .text(""), .text(String(repeating: "e", count: 65)), .bytes(Data([1, 2]))] {
+            #expect(ServerHello(.map([(.text("version"), .unsigned(0)), (.text("epoch"), value)])).epoch == nil)
+        }
+        #expect(ServerHello(.map([(.text("version"), .unsigned(0)), (.text("epoch"), .text("ab"))])).epoch == "ab")
     }
 
     @Test func windows() throws {

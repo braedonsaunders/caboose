@@ -66,7 +66,9 @@ sh scripts/check-remote-access.sh
 The unit tests replay the compositor's golden vectors from `guest/display/vectors` (every
 message decodes, re-encodes byte for byte and parses, and every client message the app
 sends matches its vector), drive `CabooseDisplaySession` over a mocked transport
-(handshake, windows, acks and keyframe recovery, vsync, input, text and preedit, sound),
+(handshake, windows, acks and keyframe recovery, vsync, input, text and preedit, sound,
+and reconnecting: epoch-checked window resume, the post-hello announcement marker, stale
+streams and pipelines, the watchdog, the retry policy and the measured metrics),
 and decode the vectors' H.264 and HEVC keyframes and an AV1 stream
 (`Tests/CabooseKitTests/Fixtures`) in hardware. The AV1 test runs where the Mac has an AV1
 decoder (M3 and later).
@@ -283,7 +285,10 @@ OpenRouter key and see goose become the default and answer.
 
 The cog in every tab's toolbar opens **Computer**: the computer's name, the memory and cores
 it boots with (applied on the next restart), how long it waits before parking, Park Now,
-Restart, the wallpaper, and Change Computer. Beside the cog, the lifecycle menu shows the
+Restart, the wallpaper, and Change Computer. Its Display row opens the connection's
+diagnostics: the reconnect state and recent losses, the network path and address, and
+what the phone measured on the current connection (round trip, data received, decode and
+queue times, send backlog, typing echo). A figure without a sample shows a dash. Beside the cog, the lifecycle menu shows the
 computer's state and offers Turn On, Park and Restart as they apply. Both use the host's
 management API (`docs/architecture.md`) and follow `computer.settings` events on the control
 socket. The Apps tab's Shelf offers optional applications from the computer's pinned
@@ -316,6 +321,10 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   unavailable without discarding an offline edit, and that a conflicting Linux edit is not
   overwritten.
 - **Open in place.** Run `apps/ios/scripts/check-open-in-place.sh` and follow its checks.
+- **Connection recovery.** Run `apps/ios/scripts/check-reconnect.sh` and follow its checks:
+  Wi-Fi and cellular hand-offs, no network, a link that stalls without closing, locking,
+  an external monitor unplugged, asleep or plugged in mid-reconnect, another device, a
+  cold boot, and the figures in Computer settings › Display.
 - **Drops.** On an iPad, drop selected text into a Linux text editor, then an image from
   Photos and a document from Files, in both the full-screen and desktop layouts; a file over
   50 MiB shows an error.

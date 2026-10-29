@@ -21,6 +21,17 @@ public final class CabooseDisplaySession: DisplaySession {
     public private(set) var latencyMs: Double?
     /// The server ended this session for another client (`bye { reason: "replaced" }`).
     public private(set) var isReplaced = false
+    /// Why the connection last closed; nil while it has not.
+    public private(set) var closeCause: DisplayCloseCause?
+    /// Bumped once the server has announced every window it had at a hello, so `windows`
+    /// is then exactly the server's. Only a server that sends an `epoch` is counted on for
+    /// the order this relies on; against one that does not, it stays put.
+    public private(set) var windowsAnnounced = 0
+    /// Connections opened so far, counting the first: each resume is one more.
+    public private(set) var connections = 0
+    /// The epoch of the server's last hello (kept while the connection is lost, until the
+    /// next hello replaces it); nil for a server that sends none.
+    public var epoch: String? { server?.epoch }
     public var typingEchoMs: Int? { echo.median }
 
     public var onClipboardText: ((String) -> Void)?
@@ -40,8 +51,8 @@ public final class CabooseDisplaySession: DisplaySession {
     /// The focused app's text-input-v3 state, where the server reports it.
     public private(set) var textInput: (window: Int, enabled: Bool, purpose: String?)?
 
-    private let makeStream: () -> ByteStream
-    private let displayToken: String
+    private var makeStream: () -> ByteStream
+    private var displayToken: String
     private var displays: [DisplayInfo]
     private let decoders: [DisplayCodec]
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
@@ -53,7 +64,17 @@ public final class CabooseDisplaySession: DisplaySession {
     /// This connection's sound, on the clock its video layers share; nil when it plays none.
     private(set) var sound: SoundPlayer?
     private let echo = EchoMeter()
-    private var pingTimer: Timer?
+    /// This connection's measurements; a new connection starts with none.
+    private var metrics = ConnectionMetrics()
+    private var watchdog: LinkWatchdog?
+    private var livenessTimer: Timer?
+    private var lastPing: CFTimeInterval = 0
+    /// Windows kept through a lost connection, with their pictures and the closed pipelines
+    /// that last painted them, until the next hello says whether they are still the same.
+    private var retained: [Int: FramePipeline] = [:]
+    /// After a hello from the same server epoch: the ping whose pong follows every
+    /// `window.create` of the hello, and the ids announced so far.
+    private var reconciling: (marker: UInt64, announced: Set<Int>)?
     private var buttons = 0
     private var focusedWindow: Int?
     /// What the server said about each window: geometry is relative to the parent for
@@ -97,24 +118,35 @@ public final class CabooseDisplaySession: DisplaySession {
     public func connect() {
         guard state == .idle || isClosed else { return }
         state = .connecting
+        connections += 1
         isReplaced = false
+        closeCause = nil
+        latencyMs = nil
         let stream = makeStream()
         self.stream = stream
         pipelines = FramePipelineRegistry()
         videos = VideoRegistry()
+        metrics = ConnectionMetrics()
+        let now = CACurrentMediaTime()
+        watchdog = LinkWatchdog(openedAt: now)
+        lastPing = now
+        startLivenessTimer()
         let clock = MediaClock()
         sound = playsAudio ? SoundPlayer(clock: clock) : nil
-        let incoming = Incoming(pipelines: pipelines, videos: videos, clock: clock, sound: sound, echo: echo,
+        let incoming = Incoming(pipelines: pipelines, videos: videos, clock: clock, sound: sound, echo: echo, metrics: metrics,
+                                carried: Carried(retained, epoch: server?.epoch),
                                 makeDecoder: makeDecoder, retire: { [weak self] id, generation in
             Task { @MainActor in if self?.stream === stream { self?.retireVideo(id, after: generation) } }
         }) { message in
             stream.send(DisplayFraming.encode(message.frame))
         }
+        let meter = metrics
         stream.open { [weak self] event in
             switch event {
             case .opened:
                 Task { @MainActor in if self?.stream === stream { self?.sendHello() } }
             case .data(let data):
+                meter.receive(bytes: data.count, at: CACurrentMediaTime())
                 do {
                     let others = try incoming.receive(data)
                     if !others.isEmpty { Task { @MainActor in if self?.stream === stream { self?.handle(others) } } }
@@ -127,10 +159,34 @@ public final class CabooseDisplaySession: DisplaySession {
         }
     }
 
+    /// Opens the display again after the connection was lost, through `displayURL` (another
+    /// of the host's addresses, perhaps) with the display token from a new `/v1/session`.
+    /// The windows stay on screen with their last pictures; the server's hello decides
+    /// whether they are still the same windows (see `resume(stream:password:displays:)`).
+    public func resume(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities) {
+        resume(stream: { WebSocketStream(url: displayURL, token: token) }, password: password,
+               displays: [DisplayInfo(capabilities)])
+    }
+
+    /// Reconnects a closed session. A window keeps its object, its picture and its place
+    /// only when the new hello carries the same server `epoch` as the last one, and only
+    /// until the hello's `window.create` burst ends without it; otherwise it is removed
+    /// before the server's windows arrive, as on a first connection.
+    func resume(stream: @escaping () -> ByteStream, password: String, displays: [DisplayInfo]) {
+        guard isClosed, !isReplaced else { return }
+        makeStream = stream
+        displayToken = password
+        self.displays = displays
+        connect()
+    }
+
+    /// Ends the connection for good: nothing is kept for a later resume.
     public func disconnect() {
         stream?.close()
         stream = nil
-        didClose(nil)
+        close(.local, reason: nil, keepWindows: false)
+        closeCause = .local
+        dropRetained()
     }
 
     private var isClosed: Bool {
@@ -138,35 +194,71 @@ public final class CabooseDisplaySession: DisplaySession {
         return false
     }
 
+    /// The socket closed or failed under the session.
     private func didClose(_ error: Error?) {
-        pingTimer?.invalidate()
-        pingTimer = nil
-        if case .closed = state { return }
-        state = .closed(reason: error.map { ($0 as? LocalizedError)?.errorDescription ?? String(describing: $0) })
-        tearDown()
+        let reason = error.map { ($0 as? LocalizedError)?.errorDescription ?? String(describing: $0) }
+        close(.transport(reason), reason: reason, keepWindows: true)
     }
 
-    private func fail(_ reason: String) {
-        pingTimer?.invalidate()
-        pingTimer = nil
+    /// The client gives the connection up: the server said goodbye, or it stopped answering.
+    private func fail(_ cause: DisplayCloseCause, _ reason: String) {
         stream?.close()
         stream = nil
-        state = .closed(reason: reason)
-        tearDown()
+        close(cause, reason: reason, keepWindows: cause.keepsWindows)
     }
 
-    private func tearDown() {
-        for pipeline in pipelines.removeAll() { pipeline.close() }
+    private func close(_ cause: DisplayCloseCause, reason: String?, keepWindows: Bool) {
+        livenessTimer?.invalidate()
+        livenessTimer = nil
+        watchdog = nil
+        if isClosed { return }
+        closeCause = cause
+        // State first: an observer that sees windows go while the state is still `.ready`
+        // takes it for the window really closing.
+        state = .closed(reason: reason)
+        tearDown(keepWindows: keepWindows)
+    }
+
+    private func tearDown(keepWindows: Bool) {
+        let closed = pipelines.removeAll()
+        for pipeline in closed { pipeline.close() }
         for video in videos.removeAll() { video.close() }
         sound?.stop()
         sound = nil
-        windows.removeAll()
-        placement.removeAll()
         pendingGeometry.removeAll()
         lastVsync.removeAll()
-        focusedWindow = nil
+        buttons = 0 // the server releases what was held when the connection ends
         preedit = nil
+        reconciling = nil
+        echo.reset()
+        if keepWindows, server?.epoch != nil {
+            for pipeline in closed where windows[pipeline.windowID] != nil { retained[pipeline.windowID] = pipeline }
+            for window in windows.values where !window.videos.isEmpty || !window.retiringVideos.isEmpty {
+                window.videos = []
+                window.retiringVideos = [:]
+                window.videoLayout &+= 1
+            }
+            // A window whose pipeline was already gone cannot be resumed.
+            for id in windows.keys where retained[id] == nil { removeWindow(id) }
+            return
+        }
+        dropRetained()
+        windows.removeAll()
+        placement.removeAll()
+        focusedWindow = nil
         textInput = nil
+    }
+
+    private func dropRetained() {
+        for id in retained.keys { removeWindow(id) }
+        retained.removeAll()
+    }
+
+    private func removeWindow(_ id: Int) {
+        windows[id] = nil
+        placement[id] = nil
+        if focusedWindow == id { focusedWindow = nil }
+        if textInput?.window == id { textInput = nil }
     }
 
     private func send(_ message: ClientMessage) {
@@ -205,10 +297,14 @@ public final class CabooseDisplaySession: DisplaySession {
                 onNotification?(RemoteNotification(id: id, appName: app, summary: summary, body: body))
             case .pong(let sent):
                 let now = Self.monotonicMicros()
-                if now >= sent { latencyMs = Double(now - sent) / 1000 }
+                if now >= sent {
+                    latencyMs = Double(now - sent) / 1000
+                    metrics.roundTrip(ms: Double(now - sent) / 1000)
+                }
+                if let reconciling, reconciling.marker == sent { finishReconciling(reconciling.announced) }
             case .bye(let reason):
                 isReplaced = reason == "replaced"
-                fail(Self.describe(bye: reason))
+                fail(.bye(reason), Self.describe(bye: reason))
             case .videoCreate(let fields): addVideo(fields.id)
             case .videoUpdate(let fields): updateVideo(fields)
             case .videoDestroy(let id): retireVideo(id, after: 0)
@@ -231,16 +327,82 @@ public final class CabooseDisplaySession: DisplaySession {
 
     private func didReceiveHello(_ hello: ServerHello) {
         guard hello.version == DisplayProtocol.version else {
-            return fail("The computer's display speaks protocol version \(hello.version); this Caboose speaks \(DisplayProtocol.version).")
+            return fail(.incompatible, "The computer's display speaks protocol version \(hello.version); this Caboose speaks \(DisplayProtocol.version).")
         }
+        let sameServer = hello.epoch != nil && hello.epoch == server?.epoch
         server = hello
+        if !sameServer { dropRetained() }
         state = .ready
-        pingTimer?.invalidate()
-        pingTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.send(.ping(micros: Self.monotonicMicros())) }
-        }
-        send(.ping(micros: Self.monotonicMicros()))
+        let now = CACurrentMediaTime()
+        watchdog?.ready(at: now)
+        lastPing = now
+        // The server writes every window.create of a hello before it reads the next message,
+        // and answers a ping on the same ordered socket, so this pong ends the burst.
+        let marker = Self.monotonicMicros()
+        if hello.epoch != nil { reconciling = (marker, []) }
+        send(.ping(micros: marker))
         for window in windows.values { applyCapabilities(window, xwayland: nil) }
+    }
+
+    /// The hello's windows have all been announced: a kept window that was not is gone.
+    private func finishReconciling(_ announced: Set<Int>) {
+        reconciling = nil
+        for (id, pipeline) in retained where !announced.contains(id) {
+            pipeline.close()
+            removeWindow(id)
+        }
+        retained.removeAll()
+        windowsAnnounced &+= 1
+    }
+
+    // MARK: Liveness
+
+    private func startLivenessTimer() {
+        livenessTimer?.invalidate()
+        // Common modes, so pings continue while a scroll view tracks a finger.
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] timer in
+            // A session let go without disconnect() stops its own timer.
+            guard self != nil else { return timer.invalidate() }
+            Task { @MainActor in self?.checkLiveness(at: CACurrentMediaTime()) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        livenessTimer = timer
+    }
+
+    /// Pings while connected, and gives the connection up once the watchdog finds it silent.
+    func checkLiveness(at now: CFTimeInterval) {
+        guard var watchdog else { return }
+        if state == .ready, now - lastPing >= LinkWatchdog.pingInterval {
+            lastPing = now
+            send(.ping(micros: Self.monotonicMicros()))
+        }
+        let verdict = watchdog.verdict(at: now, lastReceive: metrics.lastReceiveTime)
+        self.watchdog = watchdog
+        if case .stalled(let reason) = verdict { fail(.stalled(reason), reason) }
+    }
+
+    /// The network path changed: ask the server for an answer now, and give the connection
+    /// up if none comes within `LinkWatchdog.probeLimit`.
+    public func probeLiveness() {
+        guard state == .ready else { return }
+        let now = CACurrentMediaTime()
+        watchdog?.probe(at: now)
+        lastPing = now
+        send(.ping(micros: Self.monotonicMicros()))
+    }
+
+    /// What this connection has measured so far.
+    public var health: DisplayLinkHealth {
+        var health = metrics.snapshot(at: CACurrentMediaTime())
+        health.sendBacklog = stream?.sendBacklog
+        health.typingEchoMs = echo.median
+        health.keyAwaitingPicture = echo.pendingSeconds
+        return health
+    }
+
+    /// Seconds since the window's last picture on this connection; nil before its first.
+    public func pictureAge(of window: RemoteWindow) -> Double? {
+        metrics.pictureAge(window: window.id, at: CACurrentMediaTime())
     }
 
     private func createWindow(_ fields: WindowFields) {
@@ -248,6 +410,14 @@ public final class CabooseDisplaySession: DisplaySession {
         let kind = fields.kind ?? .toplevel
         let geometry = fields.geometry ?? CGRect(x: 0, y: 0, width: pipeline.surface.pixelSize.width, height: pipeline.surface.pixelSize.height)
         placement[fields.id] = (kind, fields.parent, geometry)
+        reconciling?.announced.insert(fields.id)
+        // The same window from the same server epoch, painting on into the picture it kept.
+        if let kept = windows[fields.id], kept.surface === pipeline.surface {
+            retained[fields.id] = nil
+            apply(fields, to: kept)
+            place(kept)
+            return
+        }
         let window = RemoteWindow(id: fields.id, frame: absoluteFrame(fields.id) ?? geometry, overrideRedirect: kind == .popup,
                                   surface: pipeline.surface)
         apply(fields, to: window)
@@ -274,6 +444,7 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     private func destroyWindow(_ id: Int) {
+        retained[id] = nil
         for video in windows[id]?.videos ?? [] { removeVideo(video.id) }
         pipelines.remove(id)?.close()
         windows[id] = nil
@@ -418,7 +589,8 @@ public final class CabooseDisplaySession: DisplaySession {
     public func reconfigure(_ capabilities: ClientCapabilities) {
         displays = [DisplayInfo(capabilities)]
         lastVsync.removeAll()
-        send(.displays(displays))
+        // Before the hello, the new screen goes in the hello itself.
+        if state == .ready || state == .authenticating { send(.displays(displays)) }
     }
 
     public func offerClipboard(_ text: String) {
@@ -439,6 +611,9 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     nonisolated static func monotonicMicros() -> UInt64 { UInt64(CACurrentMediaTime() * 1_000_000) }
+
+    /// Shift, Control, Caps Lock, Meta, Alt, Super and Hyper (X keysyms 0xFFE1–0xFFEE).
+    nonisolated static func isModifier(_ keysym: Int) -> Bool { (0xFFE1 ... 0xFFEE).contains(keysym) }
 
     // MARK: Input — positions are in the window's own pixels.
 
@@ -464,7 +639,8 @@ public final class CabooseDisplaySession: DisplaySession {
 
     public func key(_ stroke: KeyStroke, pressed: Bool, in window: RemoteWindow?, extraModifiers: [String] = []) {
         if let window {
-            if pressed { echo.keySent(window.id) }
+            // A modifier alone draws nothing, so it would wait for a picture that never comes.
+            if pressed, !Self.isModifier(stroke.keyval) { echo.keySent(window.id) }
             if focusedWindow != window.id { focus(window) }
         }
         let modifiers = Array(Set(stroke.modifiers + extraModifiers)).sorted()
@@ -603,11 +779,14 @@ private final class Incoming: @unchecked Sendable {
     private let clock: MediaClock
     private let sound: SoundPlayer?
     private let echo: EchoMeter
+    private let metrics: ConnectionMetrics
+    private var carried: Carried
     private let retire: @Sendable (Int, UInt64) -> Void
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private let send: @Sendable (ClientMessage) -> Void
 
     init(pipelines: FramePipelineRegistry, videos: VideoRegistry, clock: MediaClock, sound: SoundPlayer?, echo: EchoMeter,
+         metrics: ConnectionMetrics, carried: Carried,
          makeDecoder: @escaping (DisplayCodec) -> PictureDecoder, retire: @escaping @Sendable (Int, UInt64) -> Void,
          send: @escaping @Sendable (ClientMessage) -> Void) {
         self.retire = retire
@@ -616,6 +795,8 @@ private final class Incoming: @unchecked Sendable {
         self.clock = clock
         self.sound = sound
         self.echo = echo
+        self.metrics = metrics
+        self.carried = carried
         self.makeDecoder = makeDecoder
         self.send = send
     }
@@ -651,11 +832,18 @@ private final class Incoming: @unchecked Sendable {
                 // Made here, like a window's pipeline, because its first picture follows at once.
                 if videos[fields.id] == nil, let video = RemoteVideo(fields, clock: clock, send: send) { videos[fields.id] = video }
                 others.append(message)
+            case .hello(let hello):
+                carried.hello(epoch: hello.epoch)
+                others.append(message)
             case .windowCreate(let fields):
                 if pipelines[fields.id] == nil {
                     let size = fields.geometry?.size ?? CGSize(width: 1, height: 1)
-                    pipelines[fields.id] = FramePipeline(windowID: fields.id, width: max(1, Int(size.width)), height: max(1, Int(size.height)),
-                                                         makeDecoder: makeDecoder, send: send)
+                    let width = max(1, Int(size.width)), height = max(1, Int(size.height))
+                    pipelines[fields.id] = if let closed = carried.take(fields.id) {
+                        FramePipeline(succeeding: closed, width: width, height: height, metrics: metrics, makeDecoder: makeDecoder, send: send)
+                    } else {
+                        FramePipeline(windowID: fields.id, width: width, height: height, metrics: metrics, makeDecoder: makeDecoder, send: send)
+                    }
                 }
                 others.append(message)
             case .windowUpdate(let fields):
@@ -668,6 +856,29 @@ private final class Incoming: @unchecked Sendable {
             }
         }
         return others
+    }
+}
+
+/// The closed pipelines of windows kept through a lost connection, offered to the next one
+/// on its socket queue. They are taken only after a hello from the same server epoch, and
+/// only for a window that hello's server announces again.
+struct Carried {
+    private var pipelines: [Int: FramePipeline]
+    private let epoch: String?
+    private var allowed = false
+
+    init(_ pipelines: [Int: FramePipeline], epoch: String?) {
+        self.pipelines = pipelines
+        self.epoch = epoch
+    }
+
+    mutating func hello(epoch: String?) {
+        allowed = epoch != nil && epoch == self.epoch
+        if !allowed { pipelines.removeAll() }
+    }
+
+    mutating func take(_ id: Int) -> FramePipeline? {
+        allowed ? pipelines.removeValue(forKey: id) : nil
     }
 }
 

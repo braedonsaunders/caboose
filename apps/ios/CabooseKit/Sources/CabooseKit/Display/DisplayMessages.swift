@@ -281,12 +281,16 @@ public struct ServerHello: Equatable, Sendable {
     public var displays: [Int]
     public var encoders: [String]
     public var features: Set<String>
+    /// The server process's epoch: window ids name the same windows only within one. Nil
+    /// from a server that sends none, or one that is not 1–64 bytes of text.
+    public var epoch: String?
 
     init(_ body: CBOR) {
         version = body["version"]?.int ?? 0
         displays = body["displays"]?.array?.compactMap { $0.int ?? $0["id"]?.int } ?? []
         encoders = body["encoders"]?.array?.compactMap(\.string) ?? []
         features = Set(body["features"]?.array?.compactMap(\.string) ?? [])
+        epoch = body["epoch"]?.string.flatMap { (1 ... 64).contains($0.utf8.count) ? $0 : nil }
     }
 }
 
