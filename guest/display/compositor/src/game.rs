@@ -1,6 +1,8 @@
-//! Game handoff (docs/game-handoff.md): the game socket `caboose-game-run` connects to,
-//! the binding of a launcher to its window, and the `game.*` messages that tell a client
-//! to run the window's game itself. While a client runs it, the window sends no pictures.
+//! Game handoff (docs/game-handoff.md) and GPU streams (docs/gpu-stream.md): the game
+//! socket `caboose-game-run` and `caboose-gpu-run` connect to, the binding of a launcher to
+//! its window, and the messages that tell a client to run the window's game itself
+//! (`game.*`) or to render the window from its application's Vulkan stream (`gpu.*`).
+//! While a client does either, the window sends no pictures.
 
 use crate::state::State;
 use caboose_display_protocol::cbor::{self, Value};
@@ -9,7 +11,9 @@ use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode as Trigger, PostAction, RegistrationToken};
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::{FileExt, FileTypeExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -18,6 +22,11 @@ use std::time::Duration;
 pub const MAX_PAYLOAD: usize = 64 * 1024;
 /// How long a launcher's window may take to appear after its hello.
 pub const BIND_TIMEOUT: Duration = Duration::from_secs(5);
+/// How far a client may fall behind a Vulkan stream before sending pauses.
+pub const GPU_WINDOW: u64 = 4 << 20;
+/// How far the spool may run ahead of the client before the application is held back.
+pub const GPU_BACKLOG: u64 = 64 << 20;
+const GPU_CHUNK: usize = 512 << 10;
 const HELLO: u8 = 0x01;
 const MODE: u8 = 0x81;
 
@@ -26,9 +35,35 @@ const MODE: u8 = 0x81;
 pub struct Hello {
     pub title: String,
     pub app_id: String,
-    pub root: String,
-    pub entry: String,
-    pub saves: Option<Vec<proto::GameSave>>,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    /// A WebAssembly game the client runs (docs/game-handoff.md).
+    Game { root: String, entry: String, saves: Option<Vec<proto::GameSave>> },
+    /// An application whose Vulkan calls arrive on this FIFO for the client to render
+    /// (docs/gpu-stream.md).
+    Gpu { stream: PathBuf },
+}
+
+/// The directory GPU stream FIFOs live in: `$XDG_RUNTIME_DIR/caboose-gpu`.
+pub fn gpu_stream_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR").map(|d| Path::new(&d).join("caboose-gpu"))
+}
+
+/// A Vulkan stream being relayed: the FIFO its application writes, the spool every byte is
+/// kept in (a client that connects later replays it from the start), and how far the
+/// connected client has been sent and has consumed.
+struct GpuStream {
+    fifo: Option<File>,
+    token: Option<RegistrationToken>,
+    reading: bool,
+    spool: File,
+    spool_path: PathBuf,
+    length: u64,
+    sent: u64,
+    acked: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,12 +99,22 @@ fn contained(path: &str) -> bool {
 }
 
 impl Hello {
-    /// `None` for anything but a version 1 hello with contained paths.
-    pub fn parse(payload: &[u8]) -> Option<Hello> {
+    /// `None` for anything but a version 1 hello with contained paths, or a GPU stream in
+    /// `stream_dir`.
+    pub fn parse(payload: &[u8], stream_dir: Option<&Path>) -> Option<Hello> {
         let Value::Map(map) = cbor::decode(payload).ok()? else { return None };
         let version = map.iter().find(|(k, _)| k == "version").map(|(_, v)| v);
         if !matches!(version, Some(Value::Int(1))) {
             return None;
+        }
+        let title = text(&map, "title")?.to_owned();
+        let app_id = text(&map, "app_id")?.to_owned();
+        if let Some(stream) = text(&map, "stream") {
+            let stream = PathBuf::from(stream);
+            let dir = stream_dir?;
+            let inside = stream.parent() == Some(dir)
+                && stream.file_name().and_then(|n| n.to_str()).is_some_and(|n| contained(n) && n.ends_with(".gfxr"));
+            return inside.then_some(Hello { title, app_id, kind: Kind::Gpu { stream } });
         }
         let saves = match map.iter().find(|(k, _)| k == "saves").map(|(_, v)| v) {
             None => None,
@@ -88,11 +133,13 @@ impl Hello {
             Some(_) => return None,
         };
         Some(Hello {
-            title: text(&map, "title")?.to_owned(),
-            app_id: text(&map, "app_id")?.to_owned(),
-            root: text(&map, "root").filter(|r| contained(r))?.to_owned(),
-            entry: text(&map, "entry").filter(|e| contained(e))?.to_owned(),
-            saves,
+            title,
+            app_id,
+            kind: Kind::Game {
+                root: text(&map, "root").filter(|r| contained(r))?.to_owned(),
+                entry: text(&map, "entry").filter(|e| contained(e))?.to_owned(),
+                saves,
+            },
         })
     }
 }
@@ -156,6 +203,7 @@ struct Launcher {
     /// A bound launcher that may still get its first `handoff`.
     waiting: bool,
     token: Option<RegistrationToken>,
+    gpu: Option<GpuStream>,
 }
 
 #[derive(Default)]
@@ -212,9 +260,24 @@ impl State {
         self.session.as_ref().is_some_and(|s| s.ready && s.wasm)
     }
 
-    /// The window's game runs on the client, so the window sends no pictures.
+    /// Whether the connected client renders Vulkan streams.
+    fn client_renders_gpu(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| s.ready && s.gpu)
+    }
+
+    /// Whether the connected client takes over this launcher's window.
+    fn client_takes(&self, conn: u64) -> bool {
+        match self.games.launchers.get(&conn).and_then(|l| l.hello.as_ref()).map(|h| &h.kind) {
+            Some(Kind::Game { .. }) => self.client_runs_games(),
+            Some(Kind::Gpu { .. }) => self.client_renders_gpu(),
+            None => false,
+        }
+    }
+
+    /// The window's game runs on the client, or the client renders it from its Vulkan
+    /// stream, so the window sends no pictures.
     pub fn game_shown(&self, window: u64) -> bool {
-        self.client_runs_games() && self.games.of_window(window).is_some()
+        self.games.of_window(window).is_some_and(|conn| self.client_takes(conn))
     }
 
     fn accept_launcher(&mut self, stream: UnixStream) {
@@ -238,6 +301,7 @@ impl State {
                 sent: None,
                 waiting: false,
                 token: None,
+                gpu: None,
             },
         );
         let token = self.handle.insert_source(
@@ -290,7 +354,7 @@ impl State {
         loop {
             let Some(l) = self.games.launchers.get_mut(&conn) else { return };
             match l.framer.next_message() {
-                Ok(Some((HELLO, payload))) => match Hello::parse(&payload) {
+                Ok(Some((HELLO, payload))) => match Hello::parse(&payload, gpu_stream_dir().as_deref()) {
                     Some(hello) => self.on_launcher_hello(conn, hello),
                     None => {
                         tracing::warn!("game launcher {conn}: invalid hello; closing");
@@ -311,18 +375,32 @@ impl State {
 
     fn on_launcher_hello(&mut self, conn: u64, hello: Hello) {
         let pid = self.games.launchers[&conn].pid;
-        tracing::info!("game {:?} (pid {pid}): {}/{}", hello.title, hello.root, hello.entry);
+        match &hello.kind {
+            Kind::Game { root, entry, .. } => tracing::info!("game {:?} (pid {pid}): {root}/{entry}", hello.title),
+            Kind::Gpu { stream } => {
+                tracing::info!("gpu stream {:?} (pid {pid}): {}", hello.title, stream.display());
+                match self.open_gpu_stream(conn, stream) {
+                    Ok(gpu) => self.games.launchers.get_mut(&conn).unwrap().gpu = Some(gpu),
+                    Err(e) => {
+                        tracing::warn!("gpu stream {}: {e}; closing", stream.display());
+                        self.drop_launcher(conn);
+                        return;
+                    }
+                }
+            }
+        }
         // A second connection from the same process replaces the first.
         let older: Vec<u64> =
             self.games.launchers.iter().filter(|(c, l)| **c != conn && l.pid == pid).map(|(c, _)| *c).collect();
         for c in older {
             self.drop_launcher(c);
         }
+        let gpu = matches!(hello.kind, Kind::Gpu { .. });
         let l = self.games.launchers.get_mut(&conn).unwrap();
         l.hello = Some(hello);
-        l.waiting = true;
+        l.waiting = !gpu;
         self.bind_launcher(conn);
-        if self.games.launchers.get(&conn).is_some_and(|l| l.bound.is_none()) {
+        if !gpu && self.games.launchers.get(&conn).is_some_and(|l| l.bound.is_none()) {
             let timer = Timer::from_duration(BIND_TIMEOUT);
             let armed = self.handle.insert_source(timer, move |_, _, state: &mut State| {
                 if let Some(l) = state.games.launchers.get_mut(&conn).filter(|l| l.bound.is_none()) {
@@ -349,9 +427,15 @@ impl State {
         let dh = self.dh.clone();
         let window = self.windows.find(|w| {
             use smithay::reexports::wayland_server::Resource;
-            let crate::windows::Surface::Toplevel(t) = &w.surface else { return false };
-            let owner = dh.get_client(t.wl_surface().id()).ok().and_then(|c| c.get_credentials(&dh).ok());
-            owner.is_some_and(|c| c.pid as u32 == pid) && !taken.contains(&w.id)
+            let owner = match &w.surface {
+                crate::windows::Surface::Toplevel(t) => {
+                    dh.get_client(t.wl_surface().id()).ok().and_then(|c| c.get_credentials(&dh).ok()).map(|c| c.pid as u32)
+                }
+                // A Vulkan application through Xwayland names itself with _NET_WM_PID.
+                crate::windows::Surface::X11(x) if w.parent.is_none() => x.pid(),
+                _ => None,
+            };
+            owner == Some(pid) && !taken.contains(&w.id)
         });
         let Some(window) = window else { return };
         self.games.next_game += 1;
@@ -376,9 +460,9 @@ impl State {
         }
     }
 
-    /// Sends `game.create` for a bound game whose window the client knows.
+    /// Sends `game.create` or `gpu.create` for a bound launcher whose window the client knows.
     fn announce_game(&mut self, conn: u64) {
-        if !self.client_runs_games() {
+        if !self.client_takes(conn) {
             return;
         }
         let Some(session) = self.session.as_ref().map(|s| s.conn) else { return };
@@ -387,19 +471,31 @@ impl State {
         if self.windows.get(window).is_none_or(|w| w.announced.is_none()) {
             return;
         }
-        let message = Message::GameCreate(proto::GameCreate {
-            id,
-            window,
-            root: hello.root.clone(),
-            entry: hello.entry.clone(),
-            saves: hello.saves.clone(),
-        });
+        let message = match &hello.kind {
+            Kind::Game { root, entry, saves } => Message::GameCreate(proto::GameCreate {
+                id,
+                window,
+                root: root.clone(),
+                entry: entry.clone(),
+                saves: saves.clone(),
+            }),
+            Kind::Gpu { .. } => Message::GpuCreate { id, window },
+        };
         self.net.send(session, &message);
-        self.games.launchers.get_mut(&conn).unwrap().announced = true;
+        let l = self.games.launchers.get_mut(&conn).unwrap();
+        l.announced = true;
+        if let Some(gpu) = l.gpu.as_mut() {
+            // A new client renders the stream from its first byte.
+            gpu.sent = 0;
+            gpu.acked = 0;
+            self.pump_gpu_stream(conn);
+        }
     }
 
     /// The window was just announced to the client: its game follows it.
     pub fn window_announced(&mut self, window: u64) {
+        // An X11 window names its process only once it maps.
+        self.bind_waiting_games();
         if let Some(conn) = self.games.of_window(window) {
             self.announce_game(conn);
         }
@@ -415,8 +511,9 @@ impl State {
         let Some(l) = self.games.launchers.get_mut(&conn) else { return };
         let (Some((id, _)), true) = (l.bound, l.announced) else { return };
         l.announced = false;
+        let gpu = l.gpu.is_some();
         if let Some(session) = self.session.as_ref().map(|s| s.conn) {
-            self.net.send(session, &Message::GameDestroy { id });
+            self.net.send(session, &if gpu { Message::GpuDestroy { id } } else { Message::GameDestroy { id } });
         }
     }
 
@@ -444,13 +541,15 @@ impl State {
     }
 
     fn update_game_mode(&mut self, conn: u64) {
-        let runs = self.client_runs_games();
+        let runs = self.client_takes(conn);
         let Some(l) = self.games.launchers.get_mut(&conn) else { return };
         if l.hello.is_none() {
             return;
         }
         let now = match l.bound {
             Some((_, window)) if runs => (Mode::Handoff, Some(window)),
+            // A Vulkan application makes its window only after it hears this answer.
+            None if runs && l.gpu.is_some() => (Mode::Handoff, None),
             // Still looking for its window: the answer waits, for up to BIND_TIMEOUT.
             None if runs && l.waiting && l.sent.is_none() => return,
             Some((_, window)) => (Mode::Local, Some(window)),
@@ -494,6 +593,13 @@ impl State {
         if let Some(t) = l.token {
             self.handle.remove(t);
         }
+        if let Some(gpu) = l.gpu {
+            if let Some(t) = gpu.token {
+                self.handle.remove(t);
+            }
+            let _ = std::fs::remove_file(&gpu.spool_path);
+            tracing::info!("gpu stream (pid {}) ended after {} bytes", l.pid, gpu.length);
+        }
         if let Some((game, window)) = l.bound {
             tracing::info!("game {game} (pid {}) gone", l.pid);
             if let Some(w) = self.windows.get_mut(window) {
@@ -501,6 +607,122 @@ impl State {
                 w.stream.dirty = true;
             }
         }
+    }
+}
+
+impl State {
+    /// Opens the application's FIFO (read and write, so it never reports end of file between
+    /// writers) and a spool for everything it carries.
+    fn open_gpu_stream(&mut self, conn: u64, stream: &Path) -> io::Result<GpuStream> {
+        let meta = std::fs::symlink_metadata(stream)?;
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: getuid has no preconditions.
+        if !meta.file_type().is_fifo() || meta.uid() != unsafe { libc::getuid() } {
+            return Err(io::Error::other("not a FIFO of this user"));
+        }
+        let fifo = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(stream)?;
+        let dir = std::env::var_os("HOME")
+            .map(|h| Path::new(&h).join(".cache/caboose/gpu-streams"))
+            .ok_or_else(|| io::Error::other("HOME is not set"))?;
+        std::fs::create_dir_all(&dir)?;
+        let spool_path = dir.join(format!("{}-{conn}.gfxr", std::process::id()));
+        let spool = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&spool_path)?;
+        let source = fifo.try_clone()?;
+        let token = self
+            .handle
+            .insert_source(Generic::new(source, Interest::READ, Trigger::Level), move |_, _, state: &mut State| {
+                state.read_gpu_stream(conn);
+                Ok(PostAction::Continue)
+            })
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        // Nothing is read until a client renders the stream: the application waits.
+        self.handle.disable(&token).map_err(|e| io::Error::other(e.to_string()))?;
+        Ok(GpuStream {
+            fifo: Some(fifo),
+            token: Some(token),
+            reading: false,
+            spool,
+            spool_path,
+            length: 0,
+            sent: 0,
+            acked: 0,
+        })
+    }
+
+    /// Reads what the application wrote into the spool, while the client keeps up.
+    fn read_gpu_stream(&mut self, conn: u64) {
+        let Some(gpu) = self.games.launchers.get_mut(&conn).and_then(|l| l.gpu.as_mut()) else { return };
+        let mut buf = vec![0u8; GPU_CHUNK];
+        while gpu.length - gpu.acked < GPU_BACKLOG {
+            let Some(fifo) = gpu.fifo.as_mut() else { break };
+            match fifo.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Err(e) = gpu.spool.write_all_at(&buf[..n], gpu.length) {
+                        tracing::warn!("gpu stream spool: {e}");
+                        break;
+                    }
+                    gpu.length += n as u64;
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => {
+                    tracing::warn!("gpu stream: {e}");
+                    break;
+                }
+            }
+        }
+        self.pump_gpu_stream(conn);
+    }
+
+    /// Sends the client what it has room for, and reads from the application only while the
+    /// client is close enough behind.
+    fn pump_gpu_stream(&mut self, conn: u64) {
+        let takes = self.client_takes(conn);
+        let session = self.session.as_ref().map(|s| s.conn);
+        let Some(l) = self.games.launchers.get_mut(&conn) else { return };
+        let (Some((id, _)), announced) = (l.bound, l.announced) else { return };
+        let Some(gpu) = l.gpu.as_mut() else { return };
+        if let (true, true, Some(session)) = (takes, announced, session) {
+            while gpu.sent < gpu.length && gpu.sent - gpu.acked < GPU_WINDOW {
+                let n = (gpu.length - gpu.sent).min(GPU_CHUNK as u64) as usize;
+                let mut data = vec![0u8; n];
+                if gpu.spool.read_exact_at(&mut data, gpu.sent).is_err() {
+                    break;
+                }
+                let message = Message::GpuData(proto::GpuData { id, offset: gpu.sent, data });
+                gpu.sent += n as u64;
+                self.net.send(session, &message);
+            }
+        }
+        let should_read = takes && announced && gpu.length - gpu.acked < GPU_BACKLOG;
+        if should_read != gpu.reading {
+            if let Some(token) = gpu.token.as_ref() {
+                let toggled = if should_read { self.handle.enable(token) } else { self.handle.disable(token) };
+                if toggled.is_ok() {
+                    gpu.reading = should_read;
+                }
+            }
+        }
+    }
+
+    /// The client consumed a stream up to `offset`.
+    pub fn gpu_ack(&mut self, id: u64, offset: u64) {
+        let conn = self
+            .games
+            .launchers
+            .iter()
+            .find(|(_, l)| l.gpu.is_some() && l.bound.is_some_and(|(g, _)| g == id))
+            .map(|(c, _)| *c);
+        let Some(conn) = conn else { return };
+        if let Some(gpu) = self.games.launchers.get_mut(&conn).and_then(|l| l.gpu.as_mut()) {
+            gpu.acked = gpu.acked.max(offset.min(gpu.sent));
+        }
+        self.pump_gpu_stream(conn);
     }
 }
 
@@ -524,9 +746,10 @@ mod tests {
 
     #[test]
     fn a_hello_parses_with_and_without_saves() {
-        let h = Hello::parse(&hello(valid())).unwrap();
-        assert_eq!(h.root, ".local/share/caboose/games/powder-toy/web");
-        assert_eq!(h.saves, None);
+        let h = Hello::parse(&hello(valid()), None).unwrap();
+        let Kind::Game { root, saves, .. } = h.kind else { panic!("a game") };
+        assert_eq!(root, ".local/share/caboose/games/powder-toy/web");
+        assert_eq!(saves, None);
         let mut with = valid();
         with.push((
             "saves",
@@ -535,11 +758,9 @@ mod tests {
                 ("path".into(), Value::Text(".local/share/The Powder Toy".into())),
             ])]),
         ));
-        let h = Hello::parse(&hello(with)).unwrap();
-        assert_eq!(
-            h.saves,
-            Some(vec![proto::GameSave { mount: "/powder".into(), path: ".local/share/The Powder Toy".into() }])
-        );
+        let h = Hello::parse(&hello(with), None).unwrap();
+        let Kind::Game { saves, .. } = h.kind else { panic!("a game") };
+        assert_eq!(saves, Some(vec![proto::GameSave { mount: "/powder".into(), path: ".local/share/The Powder Toy".into() }]));
     }
 
     #[test]
@@ -547,7 +768,7 @@ mod tests {
         for root in ["/etc", "../x", "a/../../b", "a//b", "", "./a"] {
             let mut h = valid();
             h[3] = ("root", Value::Text(root.into()));
-            assert_eq!(Hello::parse(&hello(h)), None, "{root}");
+            assert_eq!(Hello::parse(&hello(h), None), None, "{root}");
         }
         let mut h = valid();
         h.push((
@@ -557,14 +778,33 @@ mod tests {
                 ("path".into(), Value::Text("../outside".into())),
             ])]),
         ));
-        assert_eq!(Hello::parse(&hello(h)), None);
+        assert_eq!(Hello::parse(&hello(h), None), None);
+    }
+
+    #[test]
+    fn a_gpu_stream_must_be_a_fifo_name_in_the_stream_directory() {
+        let dir = Path::new("/run/user/1000/caboose-gpu");
+        let gpu = |stream: &str| {
+            hello(vec![
+                ("version", Value::Int(1)),
+                ("title", Value::Text("vkcube".into())),
+                ("app_id", Value::Text("vkcube".into())),
+                ("stream", Value::Text(stream.into())),
+            ])
+        };
+        let h = Hello::parse(&gpu("/run/user/1000/caboose-gpu/4242.gfxr"), Some(dir)).unwrap();
+        assert_eq!(h.kind, Kind::Gpu { stream: dir.join("4242.gfxr") });
+        for bad in ["/tmp/4242.gfxr", "/run/user/1000/caboose-gpu/../x.gfxr", "/run/user/1000/caboose-gpu/a/b.gfxr", "/run/user/1000/caboose-gpu/x"] {
+            assert_eq!(Hello::parse(&gpu(bad), Some(dir)), None, "{bad}");
+        }
+        assert_eq!(Hello::parse(&gpu("/run/user/1000/caboose-gpu/4242.gfxr"), None), None);
     }
 
     #[test]
     fn other_versions_are_refused() {
         let mut h = valid();
         h[0] = ("version", Value::Int(2));
-        assert_eq!(Hello::parse(&hello(h)), None);
+        assert_eq!(Hello::parse(&hello(h), None), None);
     }
 
     #[test]

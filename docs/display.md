@@ -212,12 +212,13 @@ client's windows are exactly the server's. A server that sends `epoch` guarantee
 order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`. A feature is listed only
+`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`. A feature is listed only
 when the server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
 `text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
-plays sound; `tiles` unless tiles are turned off; and `wasm` when it hands games off (the
-owner's display) and the client's hello says `wasm: true`.
+plays sound; `tiles` unless tiles are turned off; `wasm` when it hands games off (the
+owner's display) and the client's hello says `wasm: true`; and `gpu` when it relays GPU
+streams (the owner's display) and the client's hello says `gpu: true`.
 
 ### Pacing and flow control
 
@@ -261,6 +262,9 @@ Server → client (`0x01`–`0x7F`):
 | `0x16` | `video.present` | `id`, `seq`, `pts_us` |
 | `0x17` | `game.create` | `id`, `window`, `root: text`, `entry: text`, `saves?: [{ mount: text, path: text }]` |
 | `0x18` | `game.destroy` | `id` |
+| `0x19` | `gpu.create` | `id`, `window` |
+| `0x1A` | `gpu.data` | `id`, `offset: uint`, `data: bytes` |
+| `0x1B` | `gpu.destroy` | `id` |
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
@@ -274,7 +278,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool` (present only when true) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool` (each present only when true) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
@@ -288,6 +292,7 @@ Client → server (`0x81`–`0xFF`):
 | `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool }` (pixels when precise, otherwise wheel clicks) |
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
+| `0x96` | `gpu.ack` | `id`, `offset`: the client has consumed the stream up to `offset` |
 | `0xA0` | `clipboard` | `mime`, `data: bytes` |
 | `0xFE` | `ping` | `t_us`, answered by `pong` for round-trip time |
 
@@ -422,6 +427,17 @@ process's lifetime. While a client runs a window's game, the window sends no `fr
 work as for any window, and once the game ends a remaining window sends its picture again
 from a keyframe. The launcher, its socket and the client's side are specified in
 [game-handoff.md](game-handoff.md).
+
+### GPU streams
+
+A client whose hello says `gpu: true` renders windows from their applications' Vulkan calls.
+`gpu.create` binds stream `id` to `window`; `gpu.data` carries the stream's bytes in order,
+`offset` counting from its first byte, which is a GFXReconstruct capture file the client
+replays on its own GPU into the window. The client answers with `gpu.ack` as it consumes the
+stream; the server sends at most 4 MiB beyond the last acknowledged offset. A client that
+connects later receives the stream from offset 0. `gpu.destroy` ends it. While a client renders
+a window's stream, the window sends no `frame`, `tile` or video stream. The launcher and the
+relay are specified in [gpu-stream.md](gpu-stream.md).
 
 ## Measurements
 
