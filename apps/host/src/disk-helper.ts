@@ -197,6 +197,13 @@ export async function diskManifest(binary: string, image: string, base: { path: 
   return parseManifest(JSON.parse(await runHelper(binary, args, undefined, options.signal, options.spawn)))
 }
 
+/** The SHA-256 of a base image, computed once and cached beside its chunk map. */
+export async function baseHash(binary: string, base: string, cache: string, options: { spawn?: Spawn } = {}): Promise<{ sha256: string; size: number }> {
+  const value = JSON.parse(await runHelper(binary, ['base-hash', '--base', base, '--cache', cache], undefined, undefined, options.spawn)) as { sha256?: unknown; size?: unknown }
+  if (typeof value.sha256 !== 'string' || !HASH.test(value.sha256) || !Number.isSafeInteger(value.size)) throw new Error('Invalid base hash')
+  return { sha256: value.sha256, size: value.size as number }
+}
+
 /** Deallocate ranges of a file the caller owns. `discard` drops data; otherwise every range must read as zeros. */
 export async function punchRanges(binary: string, file: string, ranges: Array<[offset: number, length: number]>, options: { discard?: boolean; spawn?: Spawn } = {}): Promise<void> {
   if (!ranges.length) return
