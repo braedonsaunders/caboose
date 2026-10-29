@@ -1698,11 +1698,12 @@ the app card, and a detached view releases its layers.
   the app redraws. A long press on the title or the options button opens the tile's menu
   (full screen, width, ask an agent, redraw, close). Holding a dock icon opens Open, Pin/Unpin and per-window Close
   actions (`DockMenu`), as a menu with the tap as its primary action, so the hold itself
-  presents it; tapping it focuses its existing desktop window or opens the app. An app asking for full screen covers the desktop
-  edge to edge: the bars, dock, status bar and home indicator step aside, and a pull down
-  from the small tab at its top edge shrinks it back into its tile. The app is told when
-  it is pulled back. Menus and
-  dialogs appear above the covering window and fit within the display. Auxiliary windows
+  presents it; tapping it focuses its existing desktop window or opens the app. An app asking for full screen covers the workspace
+  above the dock. Desktop keeps its dock and shell navigation through rotation, folding,
+  reconnecting and returning from another tab. A pull down from the small tab at its top
+  edge shrinks it back into its tile and tells the app to exit full screen. Separate app
+  cards keep their own controls. Menus and dialogs appear above the covering window and
+  fit within the workspace. Auxiliary windows
   follow their parent's displayed scale and position, including nested menus; trees whose
   owner is offscreen, or is not the covering window, are hidden. A window
   whose own minimum is wider than its tile is shown whole, scaled to fit.

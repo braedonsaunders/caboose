@@ -352,8 +352,8 @@ system's bar across the bottom: a glass cluster beside Ask when the phone is upr
 sidebar down the trailing edge with the tabs at its foot once the screen is 600 points wide
 (an iPhone Duo opened out, or any phone on its side). The cluster goes under the software
 keyboard, as the system's tab bar does; the sidebar stays, its tabs riding above the
-keyboard, as the system's vertical bar does. Both step aside for a window covering the
-Desktop. Where the system
+keyboard, as the system's vertical bar does. Desktop keeps its navigation and dock even
+when a Linux app requests fullscreen; that app fills the workspace above the dock. Where the system
 draws its vertical bar (iPhone Duo, iOS 27.1), and on iPad, the system's tab bar is used,
 except wide portrait Desktop, whose controls and navigation share the compact dock-side panel.
 
@@ -424,7 +424,7 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   phone without the bar the toolbar is horizontal and the tabs are a cluster at the bottom
   right beside Home's Ask, or a sidebar on the trailing edge on a Duo opened out or a phone
   on its side; the cluster hides under the keyboard, the sidebar's tabs stay above it, both
-  hide behind a full-screen Switchyard window, and Agents shows its approval count. Open the Desktop's
+  stay available around a fullscreen Switchyard window, and Agents shows its approval count. Open the Desktop's
   Launchpad on the closed phone and check that it and the dock fit. Capture either display
   with `xcrun devicectl device capture screenshot --display-unique-id <id>` (ids from
   `devicectl device info displays`); `caboose://home`, `desktop`, `agents` and `apps`
@@ -616,3 +616,9 @@ Terminal fold and keyboard checks:
 - Open Sessions from both the sidebar and Laptop deck: the popup points to that button.
 - Leave a full-screen desktop app for Terminal, then select Desktop again: its dock
   and navigation return. Full Screen remains an explicit action inside the desktop.
+
+- **Desktop fullscreen chrome regression.** With an app fullscreen inside Desktop, fold
+  to the front phone, unfold, and rotate both ways. The app ends above the dock; navigation
+  remains visible (or in the dock's compact portrait control). There is no empty reserved
+  sidebar. Switch to Terminal and back, then background and reopen: controls remain.
+  Separate app cards retain their own hide/reveal controls, and Laptop keeps its lower deck.

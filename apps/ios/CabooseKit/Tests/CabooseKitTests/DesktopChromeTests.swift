@@ -3,6 +3,23 @@ import Testing
 @testable import CabooseKit
 
 struct DesktopChromeTests {
+    @Test func desktopKeepsNavigationUnlessLaptopProvidesItsReplacement() {
+        for tab in ShellTab.allCases {
+            #expect(!DesktopChrome.hidesShell(tab: tab, laptopDesktop: false, laptopTerminal: false))
+            #expect(DesktopChrome.hidesShell(tab: tab, laptopDesktop: true, laptopTerminal: false) == (tab == .desktop))
+            #expect(DesktopChrome.hidesShell(tab: tab, laptopDesktop: false, laptopTerminal: true) == (tab == .terminal))
+        }
+    }
+
+    @Test func fullscreenWorkspaceLeavesTheDockVisibleAcrossFolding() {
+        for size in [CGSize(width: 466, height: 678), CGSize(width: 686, height: 980), CGSize(width: 980, height: 686)] {
+            let workspace = DesktopChrome.workspaceSize(in: size, dockHeight: 64, bottomInset: 8)
+            #expect(workspace.width == size.width)
+            #expect(workspace.height + 64 + 6 + 8 == size.height)
+        }
+        #expect(DesktopChrome.workspaceSize(in: .zero, dockHeight: 64, bottomInset: 8) == .zero)
+    }
+
     @Test func widePortraitOverridesWidthBasedAndSystemTabs() {
         // Open Duo and iPad portrait windows use compact controls in the dock.
         for size in [CGSize(width: 686, height: 980),

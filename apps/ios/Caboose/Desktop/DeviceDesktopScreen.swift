@@ -27,7 +27,7 @@ struct DesktopScreen: View {
                             if laptop { LaptopExternalOverview() }
                             else { TrackpadScreen(desktop: model.desktop) }
                         } else {
-                            DesktopStage(fullScreen: immersive)
+                            DesktopStage()
                         }
                     }
                 }
@@ -60,24 +60,18 @@ struct DesktopScreen: View {
                 Button("Wallpaper", systemImage: "photo.on.rectangle") { model.wallpaperPickerPresented = true }
             }
             .keepsTabBarInVerticalBar()
-            .toolbarVisibility(immersive || laptopActive || portraitDesktop || tabPlacement == .sidebar ? .hidden : .automatic, for: .navigationBar)
+            .toolbarVisibility(laptopActive || portraitDesktop || tabPlacement == .sidebar ? .hidden : .visible, for: .navigationBar)
             // A child automatic preference must not restore the system bar beneath
             // the shell's custom tabs after rotation.
-            .toolbarVisibility(immersive || laptopActive || portraitDesktop || tabPlacement != .system ? .hidden : .automatic, for: .tabBar)
-            .statusBarHidden(immersive || laptopActive || portraitDesktop || tabPlacement == .sidebar)
-            .persistentSystemOverlays(immersive || laptopActive ? .hidden : .automatic)
-            .animation(.snappy, value: immersive)
+            .toolbarVisibility(laptopActive || portraitDesktop || tabPlacement != .system ? .hidden : .visible, for: .tabBar)
+            .statusBarHidden(laptopActive || portraitDesktop || tabPlacement == .sidebar)
+            .persistentSystemOverlays(laptopActive ? .hidden : .automatic)
+            .animation(.snappy, value: laptopActive)
             .sheet(isPresented: $showAirPlay) {
                 AirPlaySheet().environment(model)
                     .presentationDetents([.medium])
             }
         }
-    }
-
-    /// A Switchyard window covering the screen: the bars,
-    /// the status bar and the home indicator step aside.
-    private var immersive: Bool {
-        model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil
     }
 
     /// The desktop's own actions. Agents and Apps are tabs beside them and Launchpad is in
@@ -228,7 +222,6 @@ private struct DesktopStage: View {
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
     @Environment(\.laptopInputOwned) private var laptopInputOwned
     @Environment(\.portraitDesktopChrome) private var portraitDesktop
-    let fullScreen: Bool
 
     var body: some View {
         GeometryReader { proxy in

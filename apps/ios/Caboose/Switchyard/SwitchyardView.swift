@@ -19,7 +19,7 @@ struct SwitchyardView: View {
         GeometryReader { proxy in
             // The dock keeps the bottom, just clear of the home indicator; tiles have the rest.
             let bottom = max(6, proxy.safeAreaInsets.bottom - 10)
-            let area = CGSize(width: proxy.size.width, height: max(0, proxy.size.height - YardDock.height - 6 - bottom))
+            let area = DesktopChrome.workspaceSize(in: proxy.size, dockHeight: YardDock.height, bottomInset: bottom)
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     tracks(size: area)
@@ -29,11 +29,11 @@ struct SwitchyardView: View {
                         .frame(maxWidth: .infinity)
                 }
                 if let id = yard.coverWindow, let window = model.session?.windows[id] {
-                    cover(window, screen: proxy.size)
+                    cover(window, screen: area)
                         .zIndex(4)
                 }
                 popups(model.session?.windows ?? [:], keyTarget: yard.keyTarget(in: model.session?.windows ?? [:]),
-                       size: yard.coverWindow == nil ? area : proxy.size)
+                       size: area)
                     .zIndex(4.5)
                 if yard.overviewOpen {
                     YardOverview(yard: yard)
@@ -53,8 +53,8 @@ struct SwitchyardView: View {
                     .zIndex(7)
                 YardKeyCommands(yard: yard)
             }
-            .onAppear { yard.screenSize = proxy.size }
-            .onChange(of: proxy.size) { _, size in yard.screenSize = size }
+            .onAppear { yard.screenSize = area }
+            .onChange(of: area) { _, size in yard.screenSize = size }
         }
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
@@ -102,8 +102,8 @@ struct SwitchyardView: View {
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .coordinateSpace(name: Self.space)
         .clipped()
-        // While a window covers the screen the bars step aside and this space grows; the
-        // tiles keep their layout under it, so nothing behind relayouts.
+        // A fullscreen app covers only this workspace. The dock and shell remain usable;
+        // the tiles keep their layout behind the covering window.
         .onAppear { yard.resize(to: size) }
         .onChange(of: size) { _, size in if yard.coverWindow == nil { yard.resize(to: size) } }
         .onChange(of: yard.coverWindow) { _, cover in

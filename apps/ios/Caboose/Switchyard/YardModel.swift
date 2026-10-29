@@ -62,13 +62,12 @@ final class YardModel {
     }
     /// The window zoomed to the whole screen, edge to edge, until it is pulled back.
     private(set) var zoomed: Int?
-    /// The window covering the whole screen, edge to edge with no bars, until it is pulled
-    /// back into its tile: zoomed, or full screen at the app's own request.
+    /// The window covering the workspace above the dock until pulled back into its tile:
+    /// zoomed, or full screen at the app's own request. Desktop navigation stays visible.
     var coverWindow: Int? { zoomed.flatMap { layout.contains($0) ? $0 : nil } ?? fullscreenWindow }
     /// How far the covering window is back toward its tile: 0 covering, 1 in its tile.
     private(set) var coverProgress: CGFloat = 0
-    /// The whole screen the covering window fills, in points; the display grows to it once
-    /// the bars are hidden.
+    /// The workspace above the dock that a covering window fills, in points.
     var screenSize: CGSize = .zero {
         didSet { if coverWindow != nil, screenSize != oldValue { apply() } }
     }
@@ -468,8 +467,7 @@ final class YardModel {
 
     // MARK: Full screen
 
-    /// Zooms a window to the whole screen: it grows out of its tile, and the bars, the dock
-    /// and the status bar step aside.
+    /// Zooms a window to the workspace above the dock, keeping Desktop navigation.
     func zoom(_ window: Int) {
         guard layout.contains(window), coverWindow == nil else { return }
         focus(window, animated: false)

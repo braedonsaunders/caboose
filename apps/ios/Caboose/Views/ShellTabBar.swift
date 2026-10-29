@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Portrait Desktop uses one compact bottom control regardless of the system's tab
 /// placement. Other tabs retain the shell cluster or sidebar, and landscape Desktop
-/// retains its native bar where available. Laptop and covering windows own their controls.
+/// retains its native bar where available. Laptop and separate app cards own their controls.
 struct ShellTabChrome: ViewModifier {
     @Environment(AppModel.self) private var model
     @Environment(\.portraitDesktopChrome) private var portraitDesktop
@@ -78,14 +78,13 @@ struct ShellTabChrome: ViewModifier {
         }
     }
 
-    /// Under the keyboard, as the system's tab bar is, and out of the way of a window that
-    /// covers the Desktop.
+    /// The keyboard and Laptop's own navigation replace the bottom cluster.
     private var hidden: Bool { keyboard.visible || immersive }
 
     /// The same test the Desktop uses to hide its own bars.
     private var immersive: Bool {
-        (tab == .desktop && (model.laptopDesktopActive || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil))) ||
-        (tab == .terminal && model.terminalLaptopActive)
+        DesktopChrome.hidesShell(tab: tab, laptopDesktop: model.laptopDesktopActive,
+                                 laptopTerminal: model.terminalLaptopActive)
     }
 }
 
