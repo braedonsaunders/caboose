@@ -12,7 +12,9 @@ import { NOT_FOUND, json, noContent, readJson } from './http.js'
 import { parseAppLaunch, type AppAction } from './guest-apps.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
-import { loadCatalog } from './app-catalog-data.js'
+import type { FlathubIndex } from './flathub.js'
+import type { CraftReleases } from './releases.js'
+import type { RuntimeDepot } from './depot.js'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
 import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWNLOADS } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
@@ -102,7 +104,10 @@ function withAdmission(controller: Controller, admit: () => Promise<void>): Cont
   return gated
 }
 
-function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; admit?: Admission; guestArchitecture?: 'amd64' | 'arm64' }) {
+/** The Library's host-wide parts, shared by every computer. */
+export interface Library { flathub?: FlathubIndex; releases?: CraftReleases; depot?: RuntimeDepot }
+
+function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; admit?: Admission; library?: Library }) {
   const { settings, push, activities } = pieces
   const admit = shared.admit
   const controller = admit ? withAdmission(pieces.controller, () => admit(id)) : pieces.controller
@@ -131,7 +136,12 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   }
   const home = new HomeOwnership()
   const catalog = new AgentCatalog(shared.registry, () => controller.guest(), settings, home)
-  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire(), loadCatalog(shared.guestArchitecture))
+  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire(), { ...shared.library, computer: id })
+  // Installed apps update once a day while the computer runs; a parked computer is not woken.
+  const autoUpdates = setInterval(() => {
+    if (computer.state === 'running' && !upgrading && !craftBusy) void appCatalog.autoUpdate().catch(error => console.error('Automatic app updates failed:', error))
+  }, 3600_000)
+  autoUpdates.unref()
   let toolsError: string | null = null
   const toolJournalReady: Promise<AgentToolJournal | null> = pieces.openToolJournal && pieces.profiles
     ? pieces.openToolJournal(agentAutomation(pieces.profiles, () => routinesReady, () => broadcast({ type: 'agent.profiles.changed' })))
@@ -485,7 +495,12 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       await computer.park(closeSockets)
       return json(response, 200, { state: computer.state })
     }
-    if (request.method === 'GET' && path === '/v1/catalog/discover') return json(response, 200, await appCatalog.discover(new URL(request.url ?? '/', 'http://localhost').searchParams.get('q') ?? ''))
+    if (request.method === 'GET' && path === '/v1/catalog/discover') {
+      const params = new URL(request.url ?? '/', 'http://localhost').searchParams
+      const offset = params.get('offset') ?? '0'
+      if (!/^\d{1,6}$/.test(offset)) throw new AgentInputError('Invalid offset')
+      return json(response, 200, await appCatalog.discover(params.get('q') ?? '', params.get('category') ?? '', Number(offset)))
+    }
     if (request.method === 'GET' && path === '/v1/catalog') return json(response, 200, await appCatalog.list())
     const craftRun = /^\/v1\/catalog\/([^/]+)\/run$/.exec(path)
     if (request.method === 'POST' && craftRun?.[1]) {
@@ -520,10 +535,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     }
     const packInstall = /^\/v1\/catalog\/packs\/([^/]+)\/install$/.exec(path)
     if (request.method === 'POST' && packInstall?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); appCatalog.startPack(decodeURIComponent(packInstall[1])); return json(response, 202, { accepted: true }) }
-    const appAction = /^\/v1\/catalog\/([^/]+)\/(install|update|rollback)$/.exec(path)
-    if (request.method === 'POST' && appAction?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update' | 'rollback'); return json(response, 202, { accepted: true }) }
+    const appAction = /^\/v1\/catalog\/([^/]+)\/(install|update)$/.exec(path)
+    if (request.method === 'POST' && appAction?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); await appCatalog.ready(); appCatalog.start(decodeURIComponent(appAction[1]), appAction[2] as 'install' | 'update'); return json(response, 202, { accepted: true }) }
     const removeApp = /^\/v1\/catalog\/([^/]+)$/.exec(path)
-    if (request.method === 'DELETE' && removeApp?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
+    if (request.method === 'DELETE' && removeApp?.[1]) { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (computer.state !== 'running') throw new ComputerConflictError('Computer is not running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); await appCatalog.ready(); appCatalog.start(decodeURIComponent(removeApp[1]), 'remove'); return json(response, 202, { accepted: true }) }
     if (request.method === 'GET' && path === '/v1/apps') {
       return json(response, 200, await computer.run(() => controller.apps()))
     }
@@ -778,6 +793,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   }
 
   async function shutdown(): Promise<void> {
+    clearInterval(autoUpdates)
     await (await routinesReady)?.close()
     agents.pause()
     await agents.drainToolWork()
@@ -791,6 +807,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
    * disk goes. A components upgrade the host started on its own is waited for, not refused.
    */
   async function destroy(): Promise<void> {
+    clearInterval(autoUpdates)
     await (await routinesReady)?.close()
     agents.pause()
     await agents.drainToolWork()
@@ -835,7 +852,8 @@ export function createCabooseServer(options: ComputerPieces & {
   token: string; webRoot?: string
   /** The ACP agent registry; defaults to the public registry, cached in memory only. */
   registry?: AgentRegistry
-  guestArchitecture?: 'amd64' | 'arm64'
+  /** Flathub, Craft releases and the shared runtime depot. */
+  library?: Library
   /** How long a task's runner keeps its agent after a turn, waiting for a reply. */
   agentIdleMs?: number
   /** How this host was started, for `GET /v1/host`. */
@@ -853,7 +871,7 @@ export function createCabooseServer(options: ComputerPieces & {
   const throttle = new SignInThrottle()
   const shared = {
     registry: options.registry ?? new AgentRegistry(),
-    guestArchitecture: options.guestArchitecture,
+    ...(options.library ? { library: options.library } : {}),
     ...(options.agentIdleMs !== undefined ? { agentIdleMs: options.agentIdleMs } : {}),
     ...(identity ? { admit: (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'>) => admit(id, next, !next) } : {}),
   }
@@ -989,6 +1007,7 @@ export function createCabooseServer(options: ComputerPieces & {
       pairing.revokeComputer(runtime.id)
       await fleet.phones.revokeComputer(runtime.id)
       await fleet.computers.remove(runtime.id)
+      await options.library?.depot?.forget(runtime.id)
       await rm(fleet.computers.dataDir(runtime.id), { recursive: true, force: true })
       runtimes.delete(runtime.id)
     } finally { deleting.delete(runtime.id) }

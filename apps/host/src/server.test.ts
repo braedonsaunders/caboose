@@ -221,7 +221,7 @@ it('routes Live Activity registrations and distinguishes foreground app sockets'
 it('serves the catalog and serializes authenticated application operations', async () => {
   let finish!: () => void
   const gate = new Promise<void>(resolve => { finish = resolve })
-  const guest = { run: async (_command: string, args: string[]) => { if (args[2] === 'list') return '{}'; if (args[1]?.includes('AppStream.Pool.new')) return '[]'; await gate; return '' } }
+  const guest = { run: async (_command: string, args: string[]) => { if (args[2] === 'list') return '{"apps":{}}'; if (args[1]?.includes('AppStream.Pool.new')) return '[]'; await gate; return '' } }
   const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const app = createCabooseServer({ token: 'owner', settings, controller })
@@ -233,11 +233,12 @@ it('serves the catalog and serializes authenticated application operations', asy
   const list = await (await req('/v1/catalog')).json() as { apps: { id: string }[] }
   expect(list.apps.some(a => a.id === 'gridcraft')).toBe(true)
   expect((await req('/v1/catalog/no-such-app/install', 'POST')).status).toBe(404)
-  expect((await req('/v1/catalog/gridcraft/install', 'POST')).status).toBe(202)
-  expect((await req('/v1/catalog/gimp/install', 'POST')).status).toBe(409)
+  expect((await req('/v1/catalog/gimp/install', 'POST')).status).toBe(202)
+  expect((await req('/v1/catalog/krita/install', 'POST')).status).toBe(409)
+  expect((await req('/v1/catalog/gimp/rollback', 'POST')).status).toBe(404)
   expect((await req('/v1/session/park', 'POST')).status).toBe(409)
   finish()
-  await vi.waitFor(async () => { const result = await (await req('/v1/catalog')).json() as { apps: { id: string; progress: { phase: string } }[] }; expect(result.apps.find(a => a.id === 'gridcraft')?.progress.phase).toBe('finished') })
+  await vi.waitFor(async () => { const result = await (await req('/v1/catalog')).json() as { apps: { id: string; progress: { phase: string } }[] }; expect(result.apps.find(a => a.id === 'gimp')?.progress.phase).toBe('finished') })
 })
 
 it('relays phone events only to authenticated phone controls and serves staged files', async () => {
@@ -284,7 +285,7 @@ it('runs only a whitelisted installed Craft app and publishes job progress', asy
   let finish!: () => void
   const gate = new Promise<void>(resolve => { finish = resolve })
   const guest = { run: vi.fn(async (_command: string, args: string[]) => {
-    if (args[2] === 'list') return JSON.stringify({ photocraft: { installedVersion: '0.16.0', canRollback: false, lastError: null, interrupted: false } })
+    if (args[2] === 'list') return JSON.stringify({ apps: { photocraft: { installedVersion: '0.16.0', lastError: null, interrupted: false } }, environment: {} })
     if (args[0] === '-c' && args[1]?.includes('Run one host-whitelisted')) { await gate; return JSON.stringify({ outputs: [`.caboose-jobs/${job}/output-0.png`] }) }
     return ''
   }) }

@@ -9,11 +9,14 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = Path('/var/lib/caboose/catalog')
+DEPOT = Path('/var/lib/caboose/depot')
 ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
 action = sys.argv[1]
 args = json.loads(sys.argv[2])
+APP_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+){2,}')
 
 def save(path, value):
     tmp = path.with_suffix('.tmp')
@@ -31,6 +34,29 @@ def version(package):
     result = subprocess.run(['dpkg-query', '-W', '-f=${db:Status-Status}\t${Version}', package], capture_output=True, text=True)
     parts = result.stdout.split('\t', 1)
     return parts[1] if result.returncode == 0 and len(parts) == 2 and parts[0] == 'installed' else None
+
+def flatpak():
+    """libflatpak, or None on a computer whose components predate Flatpak support."""
+    try:
+        import gi
+        gi.require_version('Flatpak', '1.0')
+        from gi.repository import Flatpak
+        return Flatpak
+    except (ImportError, ValueError):
+        return None
+
+def depot(Flatpak):
+    """The host's shared runtimes, when this computer has them mounted."""
+    if not (DEPOT / 'repo' / 'config').is_file():
+        return None
+    from gi.repository import Gio
+    return Flatpak.Installation.new_for_path(Gio.File.new_for_path(str(DEPOT)), False, None)
+
+def sandbox_works():
+    # Flatpak runs every app in bubblewrap; a container without the Caboose seccomp
+    # profile refuses the namespaces it needs, and no app could start.
+    result = subprocess.run(['bwrap', '--unshare-all', '--die-with-parent', '--ro-bind', '/', '/', 'true'], capture_output=True)
+    return result.returncode == 0
 
 def stage(name, message=None):
     record.update(stage=name, message=message)
@@ -75,17 +101,22 @@ def progress(record, running):
     phase = 'installing' if running else 'failed' if interrupted or record.get('error') else 'finished'
     result = {'operation': record.get('operation', 'install'), 'phase': phase,
               'stage': record.get('stage', 'installing'), 'value': None}
+    if result['operation'] not in ('install', 'update', 'remove'):
+        result['operation'] = 'update'
     if interrupted:
         result['message'] = 'Operation interrupted. Retry to complete package setup.'
     elif record.get('error'):
         result['message'] = record['error']
     elif record.get('message'):
         result['message'] = record['message']
-    if running and result['stage'] == 'downloading' and record.get('downloadFile') and record.get('size'):
-        try:
-            downloaded = (ROOT / record['downloadFile']).stat().st_size
-        except FileNotFoundError:
-            downloaded = 0
+    if running and result['stage'] == 'downloading' and record.get('size'):
+        if record.get('downloadFile'):
+            try:
+                downloaded = (ROOT / record['downloadFile']).stat().st_size
+            except FileNotFoundError:
+                downloaded = 0
+        else:
+            downloaded = int(record.get('downloaded') or 0)
         result.update(downloadedBytes=downloaded, totalBytes=record['size'],
                       value=min(1, downloaded / record['size']))
     return result
@@ -97,18 +128,65 @@ def checksum(path):
             h.update(chunk)
     return h.hexdigest()
 
+def state(ident, installed, extra=None):
+    record, running = snapshot(ident)
+    return {'installedVersion': installed, 'lastError': record.get('error'),
+            'interrupted': bool(record.get('running') and not running), 'active': running,
+            'operationId': record.get('operationId'), 'progress': progress(record, running), **(extra or {})}
+
 def listing():
-    result = {}
+    apps = {}
     for app in args:
         source = app['source']
+        if source['kind'] == 'flatpak':
+            continue
         versions = [version(p) for p in (source['packages'] if source['kind'] == 'apt' else [source['package']])]
-        installed = versions[0] if all(versions) else None
-        record, running = snapshot(app['id'])
-        previous = record.get('previous')
-        can_rollback = bool(installed and previous and (ROOT / previous['file']).is_file())
-        result[app['id']] = {'installedVersion': installed, 'canRollback': can_rollback,
-                             'lastError': record.get('error'), 'interrupted': bool(record.get('running') and not running),
-                             'active': running, 'operationId': record.get('operationId'), 'progress': progress(record, running)}
+        apps[app['id']] = state(app['id'], versions[0] if all(versions) else None)
+    environment = {'flatpak': False, 'depot': False, 'arch': None}
+    Flatpak = flatpak()
+    installed = {}
+    if Flatpak:
+        environment.update(flatpak=True, arch=Flatpak.get_default_arch(), depot=(DEPOT / 'repo' / 'config').is_file())
+        system = Flatpak.Installation.new_system(None)
+        for ref in system.list_installed_refs_by_kind(Flatpak.RefKind.APP, None):
+            if ref.get_origin() != 'flathub' or not APP_ID.fullmatch(ref.get_name() or ''):
+                continue
+            runtime = None
+            try:
+                metadata = ref.load_metadata(None).get_data().decode('utf-8', 'replace')
+                found = re.search(r'^runtime=(\S+)$', metadata, re.M)
+                runtime = found[1] if found else None
+            except Exception:
+                pass
+            installed[ref.get_name()] = {'version': ref.get_appdata_version() or ref.get_commit()[:12],
+                                         'name': (ref.get_appdata_name() or '')[:160], 'summary': (ref.get_appdata_summary() or '')[:500],
+                                         'runtime': runtime}
+    # Flathub apps with an operation record or an installation, whatever the host already knows.
+    names = set(installed) | {f.stem[len('flathub-'):] for f in ROOT.glob('flathub-*.json')}
+    for name in sorted(names)[:500]:
+        if not APP_ID.fullmatch(name):
+            continue
+        info = installed.get(name)
+        apps['flathub-' + name] = state('flathub-' + name, info['version'] if info else None,
+                                        {'flatpak': info or None})
+    print(json.dumps({'apps': apps, 'environment': environment}))
+
+def updates():
+    """Installed apps with something newer: Flathub commits, and Debian packages APT can
+    upgrade. Contacts Flathub and the Debian mirrors."""
+    result = {'flatpak': [], 'apt': []}
+    Flatpak = flatpak()
+    if Flatpak:
+        system = Flatpak.Installation.new_system(None)
+        refs = system.list_installed_refs_for_update(None)
+        result['flatpak'] = sorted({ref.get_name() for ref in refs if ref.get_kind() == Flatpak.RefKind.APP and ref.get_origin() == 'flathub'})
+    if args:
+        with (ROOT / 'install.lock').open('a') as shared:
+            fcntl.flock(shared, fcntl.LOCK_EX)
+            subprocess.run(['apt-get', 'update'], capture_output=True, env={**os.environ, 'LC_ALL': 'C'}, timeout=600)
+        listed = subprocess.run(['apt', 'list', '--upgradable'], capture_output=True, text=True, env={**os.environ, 'LC_ALL': 'C'}).stdout
+        upgradable = {line.split('/', 1)[0] for line in listed.splitlines() if '/' in line}
+        result['apt'] = [app['id'] for app in args if app['source']['kind'] == 'apt' and upgradable & set(app['source']['packages'])]
     print(json.dumps(result))
 
 if action == 'list':
@@ -118,6 +196,73 @@ if action == 'progress':
     record, running = snapshot(args)
     print(json.dumps(progress(record, running)))
     sys.exit(0)
+if action == 'updates':
+    updates()
+    sys.exit(0)
+
+def flatpak_operation(app):
+    Flatpak = flatpak()
+    if not Flatpak:
+        raise RuntimeError('Flatpak is not installed on this computer yet. Wake it again after Caboose components update.')
+    if not sandbox_works():
+        raise RuntimeError("This computer's container cannot start Flatpak's sandbox. Recreate it so the host applies Caboose's seccomp profile; its home volume is kept.")
+    from gi.repository import GLib
+    app_id = app['source']['appId']
+    if not APP_ID.fullmatch(app_id):
+        raise RuntimeError('Invalid Flathub application')
+    arch = Flatpak.get_default_arch()
+    ref = f'app/{app_id}/{arch}/stable'
+    system = Flatpak.Installation.new_system(None)
+    transaction = Flatpak.Transaction.new_for_installation(system, None)
+    transaction.set_no_interaction(True)
+    shared = depot(Flatpak)
+    if shared:
+        transaction.add_dependency_source(shared)
+    if action == 'remove':
+        stage('removing')
+        transaction.add_uninstall(ref)
+    elif action == 'install':
+        transaction.add_install('flathub', ref, None)
+    else:
+        transaction.add_update(ref, None, None)
+    totals = {'size': 0, 'done': 0, 'saved': 0.0}
+    def ready(t):
+        totals['size'] = sum(op.get_download_size() for op in t.get_operations())
+        if action != 'remove':
+            if totals['size']:
+                record.update(stage='downloading', message=None, size=totals['size'], downloaded=0)
+                save(path, record)
+            else:
+                stage('installing')
+        return True
+    def operation(t, op, prog):
+        prog.set_update_frequency(500)
+        def changed(p):
+            now = time.monotonic()
+            if totals['size'] and now - totals['saved'] > 0.5:
+                totals['saved'] = now
+                record['downloaded'] = min(totals['size'], totals['done'] + p.get_bytes_transferred())
+                save(path, record)
+        prog.connect('changed', changed)
+    def done(t, op, commit, result):
+        totals['done'] += op.get_download_size()
+    errors = []
+    def failed(t, op, error, details):
+        errors.append(error.message)
+        return False
+    transaction.connect('ready', ready)
+    transaction.connect('new-operation', operation)
+    transaction.connect('operation-done', done)
+    transaction.connect('operation-error', failed)
+    try:
+        transaction.run(None)
+    except GLib.Error as error:
+        raise RuntimeError((errors[-1] if errors else error.message)[-3000:])
+    if action == 'remove':
+        # Runtimes this computer installed itself, and no app here still needs.
+        subprocess.run(['flatpak', 'uninstall', '--system', '--unused', '--noninteractive', '-y'], capture_output=True)
+    record.pop('downloaded', None)
+    record.pop('size', None)
 
 app = args
 ident, source = app['id'], app['source']
@@ -135,54 +280,50 @@ with (ROOT / 'install.lock').open('a') as lock, (ROOT / (ident + '.lock')).open(
     record.update(running=True, operation=action, operationId=app.get('operationId'), error=None, stage='preparing', message=None)
     save(path, record)
     try:
-        if recover:
+        if recover and source['kind'] != 'flatpak':
             stage('configuring', 'Completing interrupted package setup')
             run(['dpkg', '--configure', '-a'])
-        if action == 'remove':
+        if source['kind'] == 'flatpak':
+            flatpak_operation(app)
+        elif action == 'remove':
             stage('removing')
             packages = source['packages'] if source['kind'] == 'apt' else [source['package']]
             run(['apt-get', 'remove', '-y', *packages])
+        elif action not in ('install', 'update'):
+            raise RuntimeError(f'Unknown operation {action}')
         elif source['kind'] == 'apt':
-            if action != 'install' and action != 'update':
-                raise RuntimeError('Rollback is unavailable for Debian packages')
             stage('refreshing')
             run(['apt-get', 'update'])
             stage('installing')
             run(['apt-get', 'install', '-y', '--no-install-recommends', *(['--no-upgrade'] if action == 'install' else []), *source['packages']])
         else:
-            current = record.get('current')
-            stage('verifying')
-            if action == 'rollback':
-                target = record.get('previous')
-                if not target:
-                    raise RuntimeError('No previous release is available')
-                artifact = ROOT / target['file']
-                if not artifact.is_file() or checksum(artifact) != target['sha256']:
-                    raise RuntimeError('Previous release is missing or its checksum is wrong')
-            else:
-                artifact = ROOT / f"{ident}-{source['version']}.deb"
-                if not artifact.is_file() or artifact.stat().st_size != source['size'] or checksum(artifact) != source['sha256']:
-                    fd, temporary = tempfile.mkstemp(prefix=ident + '-', suffix='.download', dir=ROOT)
-                    os.close(fd)
-                    record.update(stage='downloading', message=None, downloadFile=Path(temporary).name, size=source['size'])
-                    save(path, record)
-                    try:
-                        run(['curl', '--fail', '--location', '--silent', '--show-error', '--retry', '3', '--output', temporary, source['url']])
-                        downloaded = Path(temporary)
-                        stage('verifying')
-                        if downloaded.stat().st_size != source['size'] or checksum(downloaded) != source['sha256']:
-                            raise RuntimeError('Downloaded release size or SHA-256 does not match the catalog')
-                        os.replace(temporary, artifact)
-                    finally:
-                        Path(temporary).unlink(missing_ok=True)
-                target = {'file': artifact.name, 'sha256': source['sha256'], 'version': source['version']}
-            stage('refreshing')
-            run(['apt-get', 'update'])
-            stage('installing')
-            run(['apt-get', 'install', '-y', '--no-install-recommends', '--allow-downgrades', str(artifact), 'mesa-vulkan-drivers', 'libgl1-mesa-dri'])
-            if current and current != target:
-                record['previous'] = current
-            record['current'] = target
+            artifact = ROOT / f"{ident}-{source['version']}.deb"
+            fd, temporary = tempfile.mkstemp(prefix=ident + '-', suffix='.download', dir=ROOT)
+            os.close(fd)
+            record.update(stage='downloading', message=None, downloadFile=Path(temporary).name, size=source['size'])
+            save(path, record)
+            try:
+                run(['curl', '--fail', '--location', '--silent', '--show-error', '--retry', '3', '--output', temporary, source['url']])
+                downloaded = Path(temporary)
+                stage('verifying')
+                if downloaded.stat().st_size != source['size'] or checksum(downloaded) != source['sha256']:
+                    raise RuntimeError("Downloaded release size or SHA-256 does not match the release's published checksum")
+                os.replace(temporary, artifact)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+                record.pop('downloadFile', None)
+                record.pop('size', None)
+            try:
+                stage('refreshing')
+                run(['apt-get', 'update'])
+                stage('installing')
+                run(['apt-get', 'install', '-y', '--no-install-recommends', '--allow-downgrades', str(artifact), 'mesa-vulkan-drivers', 'libgl1-mesa-dri'])
+            finally:
+                # Releases are not kept once installed; the latest is always downloaded again.
+                for stale in ROOT.glob(f'{ident}-*.deb'):
+                    stale.unlink(missing_ok=True)
+            record.pop('current', None)
+            record.pop('previous', None)
         record.update(running=False, stage='finished', message=None)
         save(path, record)
     except Exception as error:

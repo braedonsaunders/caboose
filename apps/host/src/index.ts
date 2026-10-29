@@ -5,7 +5,10 @@ import { APNsSender, apnsFromEnvironment } from './apns.js'
 import { PushDevices, PushService } from './push.js'
 import { config } from './config.js'
 import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens, type ComputerRecord } from './computers.js'
-import { createContainerController } from './container-driver.js'
+import { createContainerController, DEPOT_VOLUME, securityArgs } from './container-driver.js'
+import { containerDepotRunner, RuntimeDepot } from './depot.js'
+import { FlathubIndex } from './flathub.js'
+import { CraftReleases } from './releases.js'
 import { createController, createDeskPool } from './driver.js'
 import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
 import { describeHost, machineResources } from './host-info.js'
@@ -15,7 +18,7 @@ import { ComputerConflictError } from './lifecycle.js'
 import { ownerToken, secretFile } from './owner-token.js'
 import { openIdentityDatabase } from './identity/database.js'
 import { Identity } from './identity/service.js'
-import { lstat, readdir } from 'node:fs/promises'
+import { lstat, readdir, readFile } from 'node:fs/promises'
 import { containerImage, describeImage, microvmImage, type ImageProvisioner } from './provision.js'
 import { openSettings, type ComputerSettings } from './settings.js'
 import { hostId, machineName, ReachService } from './reach.js'
@@ -80,9 +83,20 @@ const reach = new ReachService({
     return name === 'Caboose' ? `Caboose on ${machineName()}` : name
   },
 })
+// The Library's host-wide parts: Flathub's index, the Craft releases and the shared runtimes.
+const flatpakArch = guestArchitecture === 'arm64' ? 'aarch64' : 'x86_64'
+const depotRunner = deployment.runtime === 'container'
+  ? containerDepotRunner({ image: deployment.containerImage, volume: DEPOT_VOLUME, securityArgs: securityArgs(deployment.containerArgs), script: () => readFile(new URL('./depot-builder.py', import.meta.url), 'utf8') })
+  : null
+const library = {
+  flathub: new FlathubIndex(join(deployment.imageRoot, 'flathub'), flatpakArch),
+  releases: new CraftReleases(join(deployment.imageRoot, 'releases'), flatpakArch),
+  depot: new RuntimeDepot(depotRunner, join(deployment.imageRoot, 'depot.json')),
+}
+void library.flathub.ready().catch(error => console.error('Flathub index unavailable:', error instanceof Error ? error.message : error))
 const host = describeHost(deployment, process.env, { push: !!sender, liveActivities: !!(apns && sender) })
 const app = createCabooseServer({
-  token: owner.token, ...ownerComputer, registry, guestArchitecture, host, agentIdleMs: deployment.agentIdleMs, webRoot,
+  token: owner.token, ...ownerComputer, registry, library, host, agentIdleMs: deployment.agentIdleMs, webRoot,
   machine: () => machineResources(deployment.imageRoot), reach,
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null, diskBytes },
   identity,
