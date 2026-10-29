@@ -34,6 +34,9 @@ public final class RemoteWindow: Identifiable {
     /// their container: the surface generation that repaints it. A view keeps showing each
     /// such video until it has presented that generation, so the stale pixels under it never show.
     public internal(set) var retiringVideos: [ObjectIdentifier: UInt64] = [:]
+    /// The game this device runs in the window instead of showing the computer's picture
+    /// (docs/game-handoff.md); nil for every other window.
+    public internal(set) var game: RemoteGame?
     public nonisolated let surface: WindowSurface
 
     init(id: Int, frame: CGRect, overrideRedirect: Bool, surface: WindowSurface) {

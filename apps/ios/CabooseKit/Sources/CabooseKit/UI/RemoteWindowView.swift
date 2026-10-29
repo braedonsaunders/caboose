@@ -38,9 +38,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     public var isInteractive = true {
         didSet {
             if !isInteractive { cancelTouches() }
-            gestureRecognizers?.forEach { $0.isEnabled = isInteractive }
+            updateGestures()
         }
     }
+    /// The game this view runs over the window's picture, when the window has one and this is
+    /// its main view (see `layoutGame()`).
+    private weak var gameSurface: GameSurfaceView?
+    /// The window is a game: its input goes to the game, not to the computer.
+    private var holdsGameInput = false
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     private var displayLink: CADisplayLink?
@@ -89,6 +94,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         prefersProse = autocorrectChoice ?? !Self.isCodeApp(window)
         presentedGeneration = .max
         metalLayer.isOpaque = !(window?.hasAlpha ?? false)
+        layoutGame()
     }
 
     public override func didMoveToWindow() {
@@ -115,6 +121,54 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         laidOutVideos = nil
         metalLayer.contentsScale = pixelsPerPoint
         presentedGeneration = .max
+        layoutGame()
+    }
+
+    // MARK: Games
+
+    /// Lays the window's game (`RemoteWindow.game`) over its picture when this view runs it:
+    /// an interactive view on screen with a session that plays the window's media. Display-only
+    /// views show the window's picture, which is the game's last snapshot. One web view runs
+    /// each game, so a view takes it only from a view that is not on screen. Touch, the pointer
+    /// and keys of a game window never go to the computer.
+    func layoutGame() {
+        let game = remoteWindow?.game
+        if (game != nil) != holdsGameInput {
+            holdsGameInput = game != nil
+            if holdsGameInput {
+                cancelTouches()
+                stopMomentum()
+                resetTyping()
+            }
+            updateGestures()
+        }
+        let runs = game.map { !$0.isEnded } == true && isInteractive && showsVideo && session != nil && window != nil
+        if let surface = gameSurface, !runs || surface.game !== game || surface.superview !== self {
+            if surface.superview === self { surface.removeFromSuperview() }
+            gameSurface = nil
+        }
+        guard runs, let game else { return }
+        if gameSurface == nil {
+            let surface = GameSurfaceView.surface(for: game)
+            if surface.superview != nil, surface.superview !== self, surface.window != nil { return }
+            let focused = isFirstResponder
+            insertSubview(surface, at: 0)
+            gameSurface = surface
+            if focused { surface.focus() }
+        }
+        if let surface = gameSurface, surface.frame != bounds { surface.frame = bounds }
+    }
+
+    private func updateGestures() {
+        let enabled = isInteractive && !holdsGameInput
+        gestureRecognizers?.forEach { $0.isEnabled = enabled }
+    }
+
+    /// The keyboard of a game window is the game's.
+    @discardableResult
+    public override func becomeFirstResponder() -> Bool {
+        if let gameSurface, gameSurface.superview === self { return gameSurface.focus() }
+        return super.becomeFirstResponder()
     }
 
     /// Puts each of the window's videos over its picture: the stream's layer at its `rect`,
@@ -467,7 +521,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private func isNative(_ touch: UITouch) -> Bool { nativeTouches.contains(ObjectIdentifier(touch)) }
 
     private func routesNatively(_ touch: UITouch) -> Bool {
-        guard isInteractive, session != nil, let window = remoteWindow else { return false }
+        guard isInteractive, session != nil, let window = remoteWindow, window.game == nil else { return false }
         switch touch.type {
         case .direct: return window.acceptsTouch
         case .pencil: return window.acceptsPencil
@@ -658,6 +712,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func send(_ edits: [TypingBuffer.Edit]) {
+        guard !holdsGameInput else { return }
         session?.edit(edits, in: remoteWindow)
     }
 
@@ -665,6 +720,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     public override var sendsMarkedTextAsPreedit: Bool { session?.composesText ?? false }
 
     public override func sendPreedit(_ text: String, selection: NSRange) {
+        guard !holdsGameInput else { return }
         session?.compose(text, selection: selection, in: remoteWindow)
     }
 
@@ -683,11 +739,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func sendKey(_ stroke: KeyStroke, modifiers: [String]) {
+        guard !holdsGameInput else { return }
         session?.key(stroke, pressed: true, in: remoteWindow, extraModifiers: modifiers)
         session?.key(stroke, pressed: false, in: remoteWindow, extraModifiers: modifiers)
     }
 
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // Keys the game's page left unhandled travel on up the responder chain, not to the computer.
+        guard !holdsGameInput else { return super.pressesBegan(presses, with: event) }
         resetTyping()
         var unhandled = Set<UIPress>()
         for press in presses {
@@ -701,6 +760,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard !holdsGameInput else { return super.pressesEnded(presses, with: event) }
         var unhandled = Set<UIPress>()
         for press in presses {
             if let (stroke, modifiers) = Self.stroke(for: press) {
@@ -756,6 +816,7 @@ private final class DisplayLinkTarget: NSObject {
         }
         view.checkFocus()
         view.adoptSurroundingText()
+        view.layoutGame()
         view.layoutVideos()
         view.present()
     }

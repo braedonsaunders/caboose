@@ -244,6 +244,40 @@ import Testing
         #expect(packet.codec == "opus" && packet.ptsMicros == 1_234_580_000 && packet.channels == 2 && packet.data == Data([0xF8, 0xFF, 0xFE]))
     }
 
+    @Test func games() throws {
+        guard case .gameCreate(let game) = try server("game-create").first else { Issue.record("game.create"); return }
+        #expect(game == GameDescriptor(id: 1, window: 7, root: ".local/share/caboose/games/powder-toy/web", entry: "index.html",
+                                       saves: [GameSave(mount: "/powder", path: ".local/share/The Powder Toy")]))
+        guard case .gameCreate(let bare) = try server("game-create-no-saves").first else { Issue.record("no saves"); return }
+        #expect(bare == GameDescriptor(id: 2, window: 12, root: "Games/doom", entry: "index.html"))
+        guard case .gameDestroy(1) = try server("game-destroy").first else { Issue.record("game.destroy"); return }
+    }
+
+    /// A game.create without its window, root or entry cannot be run; a save without both
+    /// halves is left out.
+    @Test func incompleteGamesAreMalformed() {
+        let complete: [(CBOR, CBOR)] = [("id", 3), ("window", 7), ("root", "web"), ("entry", "index.html")]
+        for missing in ["id", "window", "root", "entry"] {
+            let body = CBOR.map(complete.filter { $0.0 != CBOR(missing) })
+            guard case .malformed(0x17) = ServerMessage(DisplayFrame(type: 0x17, body: body)) else {
+                Issue.record("without \(missing)"); continue
+            }
+        }
+        let saves = CBOR.map(complete + [("saves", [["mount": "/a", "path": "a"], ["mount": "/b"], "c"])])
+        guard case .gameCreate(let game) = ServerMessage(DisplayFrame(type: 0x17, body: saves)) else { Issue.record("saves"); return }
+        #expect(game.saves == [GameSave(mount: "/a", path: "a")])
+        guard case .malformed(0x18) = ServerMessage(DisplayFrame(type: 0x18, body: ["window": 7])) else { Issue.record("destroy"); return }
+    }
+
+    /// `wasm` is only ever sent as true; without it the hello is the one older servers know.
+    @Test func helloSaysWasmOnlyWhenTrue() {
+        let display = DisplayInfo(id: 1, width: 10, height: 10, scale: 1, refreshHz: 60)
+        let plain = ClientMessage.hello(token: "t", decoders: [.h264], displays: [display]).frame.body
+        #expect(plain["wasm"] == nil)
+        #expect(ClientMessage.hello(token: "t", decoders: [.h264], displays: [display], wasm: false).frame.body.encoded() == plain.encoded())
+        #expect(ClientMessage.hello(token: "t", decoders: [.h264], displays: [display], wasm: true).frame.body["wasm"] == .bool(true))
+    }
+
     // MARK: Client messages, byte for byte
 
     static let clientMessages: [String: ClientMessage] = [
@@ -279,6 +313,9 @@ import Testing
         "client-hello-audio": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"]),
+        "client-hello-wasm": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], wasm: true),
         "video-ack": .videoAck(video: 2, seq: 41),
         "video-keyframe": .videoKeyframe(video: 1),
     ]

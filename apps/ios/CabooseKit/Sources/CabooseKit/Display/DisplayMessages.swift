@@ -20,6 +20,9 @@ public enum DisplayProtocol {
         case videoUpdate = 0x14
         case videoDestroy = 0x15
         case videoPresent = 0x16
+        // Game handoff (docs/game-handoff.md).
+        case gameCreate = 0x17
+        case gameDestroy = 0x18
         case cursor = 0x20
         case cursorNamed = 0x21
         case textInput = 0x22
@@ -276,6 +279,47 @@ public struct AudioPacket: Sendable {
     }
 }
 
+/// One directory a handed-off game persists through IDBFS: `mount` in the game's Emscripten
+/// file system (and the IndexedDB database IDBFS names after it), `path` the directory on the
+/// computer that holds it, relative to the home.
+public struct GameSave: Equatable, Sendable {
+    public var mount: String
+    public var path: String
+
+    public init(mount: String, path: String) {
+        self.mount = mount
+        self.path = path
+    }
+}
+
+/// `game.create`: window `window` is a game the client runs itself. Its files are served from
+/// `root` (relative to the home), its page is `entry` (relative to `root`). Game ids are their
+/// own namespace, unique for the server process's lifetime.
+public struct GameDescriptor: Equatable, Sendable {
+    public var id: Int
+    public var window: Int
+    public var root: String
+    public var entry: String
+    public var saves: [GameSave]
+
+    public init(id: Int, window: Int, root: String, entry: String, saves: [GameSave] = []) {
+        self.id = id
+        self.window = window
+        self.root = root
+        self.entry = entry
+        self.saves = saves
+    }
+
+    init?(_ body: CBOR) {
+        guard let id = body["id"]?.int, let window = body["window"]?.int, let root = body["root"]?.string,
+              let entry = body["entry"]?.string else { return nil }
+        self.init(id: id, window: window, root: root, entry: entry, saves: body["saves"]?.array?.compactMap { save in
+            guard let mount = save["mount"]?.string, let path = save["path"]?.string else { return nil }
+            return GameSave(mount: mount, path: path)
+        } ?? [])
+    }
+}
+
 public struct ServerHello: Equatable, Sendable {
     public var version: Int
     public var displays: [Int]
@@ -316,6 +360,8 @@ public enum ServerMessage: Sendable {
     case videoDestroy(id: Int)
     /// The app is showing passthrough frame `seq` now.
     case videoPresent(id: Int, seq: Int, ptsMicros: UInt64)
+    case gameCreate(GameDescriptor)
+    case gameDestroy(id: Int)
     case unknown(type: UInt8)
     /// A known type whose fields are missing or of the wrong kind.
     case malformed(type: UInt8)
@@ -369,6 +415,8 @@ public enum ServerMessage: Sendable {
             } else {
                 parsed = nil
             }
+        case .gameCreate: parsed = GameDescriptor(body).map(ServerMessage.gameCreate)
+        case .gameDestroy: parsed = body["id"]?.int.map { .gameDestroy(id: $0) }
         }
         self = parsed ?? .malformed(type: frame.type)
     }
@@ -491,8 +539,9 @@ public enum PointerButtons {
 public enum ClientMessage: Sendable {
     /// `videoDecoders`: what the client plays as video streams; absent, the server sends none.
     /// `audioDecoders`: the sound codecs the client plays ("opus"); absent, the server sends no sound.
+    /// `wasm`: the client runs handed-off games (`"wasm": true`); the key is absent otherwise.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
-               audioDecoders: [String]? = nil)
+               audioDecoders: [String]? = nil, wasm: Bool = false)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -521,12 +570,13 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
                 ("video_decoders", videoDecoders.map { .array($0.map { CBOR($0.rawValue) }) }),
                 ("audio_decoders", audioDecoders.map { .array($0.map { CBOR($0) }) }),
+                ("wasm", wasm ? CBOR(true) : nil),
             ]))
         case .videoAck(let video, let seq):
             return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))

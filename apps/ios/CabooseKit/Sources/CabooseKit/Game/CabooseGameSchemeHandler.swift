@@ -1,0 +1,190 @@
+#if canImport(WebKit)
+import Foundation
+import WebKit
+
+/// Serves `caboose-game://<id>/<path>` for one game's web view (docs/game-handoff.md, "Files").
+///
+/// `<path>` is resolved against the game's `root` (a `..` that leaves it is answered 403),
+/// looked up with `/v1/fs/stat`, and served from `GameCache` when the device has that version
+/// of the file. Otherwise it streams from `/v1/fs/content` to WebKit as it arrives, into a
+/// staging file at the same time, which moves into the cache once complete. A `Range` request
+/// is answered 206 from a cached file, or passed to the computer and relayed without caching.
+///
+/// Every call to a task happens on the main actor and only while WebKit has not stopped it.
+@MainActor
+public final class CabooseGameSchemeHandler: NSObject, WKURLSchemeHandler {
+    private weak var game: RemoteGame?
+    private let gameID: Int
+    private let root: String
+    private let cache: GameCache
+    /// The tasks being served, each with the token of its serving: one WebKit stops is removed
+    /// at once, so nothing more reaches it (even when WebKit reuses its address for a new task).
+    private var serving: [ObjectIdentifier: (token: UInt64, work: Task<Void, Never>)] = [:]
+    private var nextToken: UInt64 = 0
+    static let chunk = 256 * 1024
+
+    public init(game: RemoteGame) {
+        self.game = game
+        gameID = game.id
+        root = game.descriptor.root
+        cache = .shared
+    }
+
+    // WebKit calls both on the main thread.
+    public nonisolated func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
+        MainActor.assumeIsolated {
+            let key = ObjectIdentifier(urlSchemeTask)
+            nextToken &+= 1
+            let token = nextToken
+            let work = Task { [weak self] in
+                await self?.serve(urlSchemeTask, key: key, token: token)
+                if self?.serving[key]?.token == token { self?.serving[key] = nil }
+            }
+            serving[key] = (token, work)
+        }
+    }
+
+    public nonisolated func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
+        MainActor.assumeIsolated {
+            serving.removeValue(forKey: ObjectIdentifier(urlSchemeTask))?.work.cancel()
+        }
+    }
+
+    /// Stops serving everything: the web view is going away.
+    func invalidate() {
+        for entry in serving.values { entry.work.cancel() }
+        serving.removeAll()
+    }
+
+    private func serve(_ task: any WKURLSchemeTask, key: ObjectIdentifier, token: UInt64) async {
+        let live = { [weak self] in self?.serving[key]?.token == token && !Task.isCancelled }
+        let reply = Reply(task: task, live: live)
+        guard let url = task.request.url, url.host == String(gameID) else { return reply.status(404, path: "") }
+        let path: String
+        switch GameFiles.resolve(url.path, root: root) {
+        case .file(let resolved): path = resolved
+        case .forbidden: return reply.status(403, path: "")
+        case .notFound: return reply.status(404, path: "")
+        }
+        guard let host = game?.host else { return reply.status(502, path: path) }
+        let client = GameFileClient(host: host)
+        let rangeHeader = task.request.value(forHTTPHeaderField: "Range")
+        let range = rangeHeader.flatMap(GameByteRange.init(header:))
+        let item: GameFileItem?
+        do { item = try await client.stat(path) } catch { return reply.fail(error) }
+        guard let item, !item.isDirectory else { return reply.status(404, path: path) }
+        let key = item.etag.isEmpty ? nil : GameFiles.cacheKey(computer: host.computerKey, path: path, etag: item.etag)
+        if let key, let file = cache.file(key) {
+            cache.touch(file)
+            return await reply.file(file, path: path, range: range)
+        }
+        await relay(client.stream(path, range: range == nil ? nil : rangeHeader, teeInto: range == nil && key != nil ? cache.stagingFile() : nil),
+                    path: path, item: item, computer: host.computerKey, reply: reply)
+    }
+
+    /// Streams the computer's answer to WebKit; a whole file that arrived complete is cached.
+    private func relay(_ download: GameDownload, path: String, item: GameFileItem, computer: String, reply: Reply) async {
+        var cached = false
+        defer { if !cached, let staged = download.stagedFile { try? FileManager.default.removeItem(at: staged) } }
+        var etag: String?
+        var status = 0
+        do {
+            for try await event in download.events {
+                switch event {
+                case .response(let response):
+                    status = response.statusCode
+                    switch status {
+                    case 200, 206:
+                        etag = response.value(forHTTPHeaderField: "ETag")
+                        let length = response.value(forHTTPHeaderField: "Content-Length").flatMap(Int.init) ?? (status == 200 ? item.size : nil)
+                        reply.start(status, headers: GameFiles.responseHeaders(
+                            for: path, length: length, contentRange: response.value(forHTTPHeaderField: "Content-Range")))
+                    case 416:
+                        return reply.status(416, path: path, contentRange: response.value(forHTTPHeaderField: "Content-Range"))
+                    case 404: return reply.status(404, path: path)
+                    default: return reply.status(502, path: path)
+                    }
+                case .data(let data):
+                    reply.send(data)
+                }
+            }
+        } catch {
+            return reply.fail(error)
+        }
+        guard reply.isLive else { return }
+        reply.finish()
+        guard let staged = download.stagedFile, status == 200, download.teed,
+              let version = etag ?? (item.etag.isEmpty ? nil : item.etag) else { return }
+        cached = true
+        let cache = cache, key = GameFiles.cacheKey(computer: computer, path: path, etag: version)
+        Task.detached { cache.store(staged, as: key) }
+    }
+}
+
+/// The answers to one scheme task, each given only while the task is live.
+@MainActor
+private struct Reply {
+    let task: any WKURLSchemeTask
+    let live: () -> Bool
+
+    var isLive: Bool { live() }
+
+    func start(_ status: Int, headers: [String: String]) {
+        guard live(), let url = task.request.url,
+              let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers) else { return }
+        task.didReceive(response)
+    }
+
+    func send(_ data: Data) {
+        guard live(), !data.isEmpty else { return }
+        task.didReceive(data)
+    }
+
+    func finish() {
+        guard live() else { return }
+        task.didFinish()
+    }
+
+    /// A complete answer without a body.
+    func status(_ status: Int, path: String, contentRange: String? = nil) {
+        var headers = GameFiles.responseHeaders(for: path, length: 0, contentRange: contentRange)
+        if status >= 400 { headers["Content-Type"] = "text/plain" }
+        start(status, headers: headers)
+        finish()
+    }
+
+    func fail(_ error: Error) {
+        guard live() else { return }
+        task.didFailWithError(error)
+    }
+
+    /// A cached file, whole or the requested range of it, read off the main actor.
+    func file(_ url: URL, path: String, range: GameByteRange?) async {
+        let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.intValue ?? 0
+        var bytes = 0 ..< size
+        var contentRange: String?
+        if let range {
+            guard let wanted = range.bytes(ofSize: size) else { return status(416, path: path, contentRange: "bytes */\(size)") }
+            bytes = wanted.lowerBound ..< wanted.upperBound + 1
+            contentRange = "bytes \(wanted.lowerBound)-\(wanted.upperBound)/\(size)"
+        }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return status(404, path: path) }
+        defer { try? handle.close() }
+        start(range == nil ? 200 : 206, headers: GameFiles.responseHeaders(for: path, length: bytes.count, contentRange: contentRange))
+        do {
+            try handle.seek(toOffset: UInt64(bytes.lowerBound))
+            var remaining = bytes.count
+            while remaining > 0, live() {
+                let count = min(remaining, CabooseGameSchemeHandler.chunk)
+                let data = try await Task.detached { try handle.read(upToCount: count) ?? Data() }.value
+                guard !data.isEmpty else { throw CocoaError(.fileReadCorruptFile) }
+                send(data)
+                remaining -= data.count
+            }
+            finish()
+        } catch {
+            fail(error)
+        }
+    }
+}
+#endif

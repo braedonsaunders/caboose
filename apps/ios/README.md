@@ -7,7 +7,7 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 
 | Path | What |
 | --- | --- |
-| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input. |
+| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame`, the `caboose-game://` scheme handler and its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. |
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
 | `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, SwiftTerm's view in the Caboose look and the key row above the keyboard. |
 | `Caboose/Switchyard/` | The Desktop tab's tiling on the device's own screen: tiles, gaps, grabber, dock, Overview, launcher and ⌘⌥ keys, over the `CabooseKit/Switchyard` layout. |
@@ -74,8 +74,13 @@ message decodes, re-encodes byte for byte and parses, and every client message t
 sends matches its vector), drive `CabooseDisplaySession` over a mocked transport
 (handshake, windows, acks and keyframe recovery, vsync, input, text and preedit, sound,
 and reconnecting: epoch-checked window resume, the post-hello announcement marker, stale
-streams and pipelines, the watchdog, the retry policy and the measured metrics),
-and decode the vectors' H.264 and HEVC keyframes and an AV1 stream
+streams and pipelines, the watchdog, the retry policy and the measured metrics, and game
+handoff: `game.create` and `game.destroy`, games kept across a resume, saves flushed before
+`close`, and no input to a game window reaching the computer), check the game rules (path
+resolution, ranges, content types, the cache and its eviction, conflict names, the save
+planner and save sync against an in-memory file service), run the game page's IndexedDB and
+gamepad scripts in JavaScriptCore the way Emscripten's IDBFS and a Gamepad API poll use
+them, and decode the vectors' H.264 and HEVC keyframes and an AV1 stream
 (`Tests/CabooseKitTests/Fixtures`) in hardware. The AV1 test runs where the Mac has an AV1
 decoder (M3 and later).
 
@@ -444,6 +449,15 @@ by a simulator build. On a signed device paired to a deployed computer, check:
 - **Shortcuts, widgets and Spotlight.** Run each shortcut and check its input and output
   files; configure and tap the widgets and controls; create, rename and delete a nested file
   and check Spotlight; sign out and verify the entries disappear.
+- **Game handoff.** Install The Powder Toy from the Shelf and open it. Its window shows the
+  game running on the device, with sound, touch, a hardware keyboard and a game controller;
+  nothing it draws comes from the computer. Draw something and save it in the game, close the
+  window, and find the save under `~/.local/share/The Powder Toy` on the computer; open the
+  game again and load it. Change that file on the computer while the game runs and save from
+  the game again: the device's version arrives beside it as `<name> (iPhone).<ext>`. Leave the
+  window for Home: its picture is the game's last frame. Lose the network mid-game and come
+  back: the same game is still running. A debug build lets Safari's Web Inspector attach to
+  the game's page.
 - **Shelf and Library.** Install PhotoCraft from the Shelf, follow its progress, open it, and
   remove it from Library.
 - **Tabs and the vertical bar.** On iPhone Duo, closed and open in landscape, every tab's
