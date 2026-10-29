@@ -64,3 +64,19 @@ it('requires completed MFA before granting an existing administrator invitation;
   expect(await identity.principal(headers())).toBeUndefined()
   unsubscribe()
 }, 60_000)
+
+it('returns bounded wrapper input errors and protects reset redirects', async () => {
+  const recovery = Identity.create({ database, baseURL: 'https://console.example.test', secret: 's'.repeat(40), setupCodePath: join(root, 'setup-code'), sendEmail: async () => {} })
+  for (const path of ['request-password-reset', 'revoke-session']) {
+    for (const [body, status] of [['{private-secret', 400], [JSON.stringify({ value: 'a'.repeat(65_536) }), 413]] as const) {
+      const response = await recovery.handleAuthentication(new Request(`https://console.example.test/v1/auth/${path}`, { method: 'POST', body }))
+      expect(response.status).toBe(status)
+      expect(await response.text()).not.toContain('private-secret')
+    }
+  }
+  const redirect = await recovery.handleAuthentication(new Request('https://console.example.test/v1/auth/reset-password/invalid?callbackURL=https://attacker.example.test'))
+  expect(redirect.status).toBe(302)
+  expect(redirect.headers.get('location')).toBe('https://console.example.test/recover?error=INVALID_TOKEN')
+  expect(redirect.headers.get('cache-control')).toBe('no-store')
+  expect(redirect.headers.get('referrer-policy')).toBe('no-referrer')
+})

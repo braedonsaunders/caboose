@@ -3,6 +3,7 @@ import { rm } from 'node:fs/promises'
 import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm'
 import { createAppkitAuth, type AppkitAuth, type AuthEmailSender } from '@braedonsaunders/appkit-auth'
 import { authAccounts, memberships, tenants, users } from '@braedonsaunders/appkit-db/schema'
+import { AuthInputError, readAuthObject } from './auth-input.js'
 import { accountEmail } from './email.js'
 import { secretFile } from '../owner-token.js'
 import type { IdentityDatabase } from './database.js'
@@ -147,7 +148,7 @@ export class Identity {
     const path = url.pathname.replace('/v1/auth', '')
     const auth = path === '/request-password-reset' || path.startsWith('/reset-password')
       ? this.auth : this.transports[url.protocol === 'https:' ? 'https' : 'http']
-    const reply = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } })
+    const reply = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } })
     const allowed = new Set([
       'POST /sign-in/email', 'POST /sign-out', 'GET /get-session',
       'POST /change-password', 'POST /request-password-reset', 'POST /reset-password',
@@ -158,15 +159,21 @@ export class Identity {
     if (path === '/security-config' && request.method === 'GET') return reply({ recoveryAvailable: this.recoveryAvailable })
     if (!allowed.has(`${request.method} ${path}`) && !(request.method === 'GET' && /^\/reset-password\/[^/]+$/.test(path))) return reply({ error: 'not found' }, 404)
     if (path === '/request-password-reset' && !this.recoveryAvailable) return reply({ message: 'Password recovery email is not configured on this host.' }, 503)
+    let body: Record<string, unknown> = {}
+    if (path === '/request-password-reset' || path === '/revoke-session') {
+      try { body = await readAuthObject(request) }
+      catch (error) {
+        if (error instanceof AuthInputError) return reply({ message: error.message }, error.status)
+        throw error
+      }
+    }
     if (path === '/request-password-reset') {
-      const body = await request.json() as { email?: unknown }
       // Recovery links always return to the configured public origin, never Host or input.
       request = new Request(request.url, { method: 'POST', headers: request.headers,
         body: JSON.stringify({ email: body.email, redirectTo: `${this.publicOrigin}/recover` }) })
     }
     // Session tokens are credentials. Only IDs cross the account-management boundary.
     if (path === '/revoke-session') {
-      const body = await request.json() as { id?: unknown }
       if (typeof body.id !== 'string') return reply({ message: 'A session ID is required' }, 400)
       const sessions = await auth.api.listSessions({ headers: request.headers }).catch(() => null)
       if (!sessions) return reply({ message: 'Sign in to manage sessions' }, 401)
