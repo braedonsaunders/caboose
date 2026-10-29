@@ -781,7 +781,11 @@ mod tests {
         assert_eq!((frame.width(), frame.height()), (32, 32));
         assert!(done.changed.contains(&Rect::new(32, 16, 64, 64)));
         let mut image = done.image;
-        for y in 20..24 { for x in 36..40 { image.data[y * image.stride + x * 4] = 255; } }
+        for y in 20..24 {
+            for x in 36..40 {
+                image.data[y * image.stride + x * 4] = 255;
+            }
+        }
         let next = work(job(image, Some(vec![Rect::new(36, 20, 4, 4)])), &mut encoders);
         assert!(next.changed.contains(&Rect::new(36, 20, 4, 4)));
         let picture = next.motion.unwrap().1.unwrap();
