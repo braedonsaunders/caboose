@@ -61,6 +61,17 @@ struct AgentsScreen: View {
             }
         }
         .shellRailActions {
+            if let chat {
+                if chat.isRunning {
+                    if let window = agents.seat?.windows.values.filter({ !$0.isAuxiliary }).sorted(by: { $0.id < $1.id }).last {
+                        Button("Watch", systemImage: "eye") { model.presentAgentWindow(window.id) }
+                    }
+                    Button("Stop", systemImage: "stop", role: .destructive) { Task { await agents.cancel(chat) } }
+                } else if let summary = chat.summary, !summary.isEmpty {
+                    Button("Copy Answer", systemImage: "doc.on.doc") { UIPasteboard.general.string = summary }
+                }
+            }
+            Button("Connect a Model…", systemImage: "key") { connectingModel = true }
             Button("Chats", systemImage: "list.bullet") { showingChats = true }
             Button("New Chat", systemImage: "square.and.pencil") { agents.currentChat = nil }
             Button("Teammates and Routines", systemImage: "person.2") { showingLibrary = true }

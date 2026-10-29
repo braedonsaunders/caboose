@@ -46,6 +46,19 @@ struct DesktopScreen: View {
                     ComputerToolbar()
                 }
             }
+            .shellRailActions {
+                LaptopModeMenu()
+                Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible.toggle() }
+                Button("AirPlay", systemImage: "airplay.video") { showAirPlay = true }
+                if !model.externalDisplayActive, UIDevice.current.userInterfaceIdiom == .pad {
+                    @Bindable var model = model
+                    Picker("Arrangement", selection: $model.deviceDesktopStyle) {
+                        Label("Tiled", systemImage: "rectangle.split.3x1").tag(AppModel.DeviceDesktopStyle.tiled)
+                        Label("Free", systemImage: "macwindow.on.rectangle").tag(AppModel.DeviceDesktopStyle.free)
+                    }
+                }
+                Button("Wallpaper", systemImage: "photo.on.rectangle") { model.wallpaperPickerPresented = true }
+            }
             .keepsTabBarInVerticalBar()
             .toolbarVisibility(immersive || laptopActive || portraitDesktop || tabPlacement == .sidebar ? .hidden : .automatic, for: .navigationBar)
             // A child automatic preference must not restore the system bar beneath
