@@ -95,9 +95,11 @@ The computer runs two instances of caboose-display, one for the owner and one fo
   (`pulse/native`) and its control socket (`control.sock`) under
   `$XDG_RUNTIME_DIR/caboose-display/<Wayland socket name>/`, owner-only, so the two never
   share them.
-- **Readiness.** `caboose-display-ready [TIMEOUT] [PORT]` exits 0 once the instance on
-  `PORT` (default 14600) answers a `hello` made with the per-wake token, trying for
-  `TIMEOUT` seconds (default 60).
+- **Readiness.** `caboose-display-ready [TIMEOUT] [PORT] [ENV_FILE]` exits 0 once the
+  instance on `PORT` (default 14600) answers a `hello` made with the per-wake token and has
+  written its launch environment (`/run/caboose/display.env`, or `agent-display.env` for
+  14601), trying for `TIMEOUT` seconds (default 60). The `hello` answers before Xwayland
+  is up; the launch environment is written after it.
 - **Control socket.** The computer's own tools see and act on a seat through its
   control socket rather than through X: the window list (each window's process, geometry,
   surface and focus, Wayland and X11 alike), the seat's pointer and keyboard, and pictures

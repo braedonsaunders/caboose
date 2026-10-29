@@ -312,8 +312,8 @@ owner `caboose`): the microVM gets a new one at every wake, a container when it 
 restarted, or first woken by a newly started host. At each wake the host then starts the
 file service and the owner's display
 (`caboose-display.service` in the microVM, `caboose-session start` and `ready` in a
-container) and waits until it answers a hello carrying the token
-(`caboose-display-ready`). It then reads the launch environment the display wrote to
+container) and waits until it answers a hello carrying the token and has written its
+launch environment (`caboose-display-ready`). It then reads the launch environment the display wrote to
 `/run/caboose/display.env` (its Wayland socket, Xwayland's `DISPLAY` and `XAUTHORITY`,
 toolkit hints, `PULSE_SERVER`); apps, sign-in windows, opened files and the screen routes are
 started with it.
