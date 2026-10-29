@@ -78,11 +78,6 @@ struct CatalogLibrary: View {
                     } header: {
                         HStack {
                             Text(pack.name)
-                            Spacer()
-                            if entries.contains(where: { $0.installedVersion == nil }) {
-                                Button("Get Pack") { Task { await model.catalog.perform(pack.id, action: "install", pack: true) } }
-                                    .textCase(nil)
-                            }
                         }
                     }
                 }
