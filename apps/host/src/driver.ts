@@ -2,13 +2,43 @@ import { createHash, randomBytes } from 'node:crypto'
 import { constants, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
 import { access, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { createDeskHost, createCloudHypervisorBackend, createVirtualizationBackend, listenDeskPort, type DeskHandle, type DeskBackend, type DeskHost, type DeskHostOptions } from '@braedonsaunders/appkit-desk'
+import { buildDeskLaunchPlan, createDeskHost, createCloudHypervisorBackend, createVirtualizationBackend, listenDeskPort, type DeskHandle, type DeskBackend, type DeskHost, type DeskHostOptions } from '@braedonsaunders/appkit-desk'
 import type { Config } from './config.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 import { TERMINAL_PORT } from './terminal.js'
-import { configureGuest, ensureNetwork, networkSlot, removeNetwork } from './network.js'
+import { configureGuest, ensureNetwork, invalidateNetwork, networkSlot, removeNetwork } from './network.js'
 import type { App, Controller, Session } from './server.js'
+import { guestLaunch } from './guest-apps.js'
+import { selectSystemImage, usesSystemImage } from './system-image.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
+
+/** Verify the Files service through vsock before choosing it for this guest. */
+export async function probeServiceVsock(desk: DeskHandle, timeoutMs = 2_000): Promise<boolean> {
+  let expired = false
+  let stream: Awaited<ReturnType<DeskHandle['connect']>> | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<boolean>(resolve => {
+    timer = setTimeout(() => { expired = true; stream?.destroy(); resolve(false) }, timeoutMs)
+  })
+  const probe = (async () => {
+    try {
+      stream = await desk.connect(14700, { transport: 'vsock' })
+      if (expired) { stream.destroy(); return false }
+      return await new Promise<boolean>(resolve => {
+        let header = ''
+        stream!.on('error', () => resolve(false))
+        stream!.on('close', () => resolve(false))
+        stream!.on('data', (chunk: Buffer) => {
+          header += chunk.toString('latin1')
+          if (header.includes('\n') || header.length > 1024) resolve(/^HTTP\/1\.[01] [1-5]\d\d[ \r\n]/.test(header))
+        })
+        stream!.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')
+      })
+    } catch { return false }
+  })()
+  try { return await Promise.race([probe, timeout]) }
+  finally { if (timer) clearTimeout(timer); stream?.destroy() }
+}
 
 export interface ComputerResources { memoryMb: number; vcpus: number }
 
@@ -48,9 +78,10 @@ function macRuntimeDirectory(imageRoot: string): string {
  */
 export function createDeskPool(config: Config, dependencies: DeskPoolDependencies = {}): DeskHost {
   const nativeMac = usesVirtualization(dependencies)
+  if (nativeMac && (config.vmCow || config.vmFreePageReporting)) throw new Error('Cloud Hypervisor memory options are unavailable on macOS')
   const backend = dependencies.backend ?? (nativeMac
     ? createVirtualizationBackend({ helperPath: config.vmmPath, connectTimeoutMs: 120_000 })
-    : createCloudHypervisorBackend({ connectTimeoutMs: 120_000 }))
+    : createCloudHypervisorBackend({ connectTimeoutMs: 120_000, serviceVsock: true }))
   return createDeskHost({
     imageRoot: config.imageRoot, vmmPath: config.vmmPath,
     // Images may be downloaded after pool creation; don't let AppKit's eager existence
@@ -63,7 +94,7 @@ export function createDeskPool(config: Config, dependencies: DeskPoolDependencie
     ...(nativeMac ? { guestNetwork: { guestAddress: '10.0.2.15', gatewayAddress: '10.0.2.2', prefixLength: 24, allowLan: false } } : {}),
     ...(dependencies.deviceExists ? { deviceExists: dependencies.deviceExists } : {}),
     ...dependencies.snapshotSignature,
-    parkWithMemory: true, idleSuspendMs: APPKIT_LEASE_MS, defaultLeaseMs: APPKIT_LEASE_MS, capacity: config.maxRunning,
+    parkWithMemory: true, ...(config.vmCow ? { memoryRestoreMode: 'copyonwrite' as const } : {}), idleSuspendMs: APPKIT_LEASE_MS, defaultLeaseMs: APPKIT_LEASE_MS, capacity: config.maxRunning,
     ports: { onEvent: () => {}, audit: () => {} },
   })
 }
@@ -75,21 +106,28 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   network?: () => Promise<void>
   removeNetwork?: () => Promise<void>
   settings?: () => ComputerSettings
+  splitImage?: string
+  depotPath?: string
 } = {}): Controller {
   const nativeMac = usesVirtualization(dependencies)
   const { id, slot } = dependencies.identity ?? OWNER
   const address = networkSlot(slot)
   const host = dependencies.desks ?? createDeskPool(config, dependencies)
+  // AppKit 0.9 provides resident pause. Older installs and other backends keep the existing
+  // idle park behavior until the capability is available.
+  const pausable = host as DeskHost & { canPause?: (id: string) => boolean; pause?: (id: string) => Promise<void> }
   let desk: DeskHandle | undefined
   let heartbeat: ReturnType<typeof setInterval> | undefined
+  let serviceVsock = false
   const relays = new Map<number, Awaited<ReturnType<typeof listenDeskPort>>>()
   async function closeRelays(): Promise<void> {
     const open = [...relays.values()]
     relays.clear()
+    serviceVsock = false
     await Promise.all(open.map(relay => relay.close()))
   }
   function endpoint(port: number, scheme: 'http' | 'ws'): string {
-    if (!nativeMac) return `${scheme}://${address.guest}:${port}${scheme === 'ws' ? '/' : ''}`
+    if (!nativeMac && !serviceVsock) return `${scheme}://${address.guest}:${port}${scheme === 'ws' ? '/' : ''}`
     const relay = relays.get(port)
     if (!relay) throw new Error('Computer is not running')
     return `${scheme}://${relay.host}:${relay.port}${scheme === 'ws' ? '/' : ''}`
@@ -98,6 +136,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   let restartWarning: string | null = null
   const overlayPath = join(config.imageRoot, 'overlays', `${id}.raw`)
   const snapshotPath = join(config.imageRoot, 'overlays', `${id}.snapshot`)
+  const bindingPath = join(config.imageRoot, 'overlays', `${id}.system-image.json`)
   const resourcesPath = join(config.imageRoot, 'overlays', `${id}.resources.json`)
   let resources: ComputerResources | null = null
   try {
@@ -122,13 +161,22 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     if (result.exitCode !== 0 || result.truncated) throw new Error(`Guest command failed: ${result.stderr || result.exitCode}`)
     return result.stdout
   }
-  async function guestApps(action: string, id?: string, path?: string): Promise<string> {
+  async function guestApps(...args: string[]): Promise<string> {
     const script = await readFile(new URL('./guest-apps.py', import.meta.url), 'utf8')
-    return command('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/env', ...launchEnv, '/usr/bin/python3', '-c', script, action, ...(id ? [id] : []), ...(path ? [path] : [])], 60_000)
+    return command('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/env', ...launchEnv, '/usr/bin/python3', '-c', script, ...args], 60_000)
   }
   /** A caboose-display instance is ready once it answers a hello carrying this wake's token (the image's probe). */
   async function startDisplay(service: string, port: number): Promise<void> {
     await command('/bin/sh', ['-c', 'systemctl start "$1" && caboose-display-ready 60 "$2"', 'sh', service, String(port)], 240_000)
+  }
+  async function ownerDisplay(): Promise<void> {
+    await command('/bin/sh', ['-c', 'systemctl start caboose-phone-printer.service'], 60_000).catch(error => console.error('Printing unavailable:', error))
+    await startDisplay('caboose-display.service', OWNER_DISPLAY_PORT)
+    launchEnv = parseEnvFile(await command('/bin/cat', [DISPLAY_ENV_PATH]))
+    if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
+  }
+  function session(): Session {
+    return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'caboose-display' }, computer: { name: settings().name, image: 'Debian 13', ...(resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }) } }
   }
   const controller: Controller = {
     componentsMode: 'vm',
@@ -137,30 +185,51 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     fileService: () => ({ url: endpoint(14700, 'http'), token: displayToken }),
     terminalService: () => ({ url: endpoint(TERMINAL_PORT, 'http'), token: displayToken }),
     async ensureAgentSeat() {
-      // Same per-wake token and user as the owner's display; started only when wanted.
-      await startDisplay('caboose-display-agent.service', AGENT_DISPLAY_PORT)
+      await command('/usr/local/libexec/caboose-agent-seat', [], 180_000)
     },
     guest() {
       if (!desk) return undefined
       return { run: (cmd: string, args: string[], timeoutMs?: number) => command(cmd, args, timeoutMs), ownerEnv: launchEnv }
     },
     stats: () => ({ host: 'caboose-host', hypervisor: nativeMac ? 'virtualization' : 'cloud-hypervisor', kvm: existsSync('/dev/kvm'), desk: host.stats() }),
-    activeResources: () => desk || existsSync(snapshotPath) ? resources : null,
-    hasSavedState: () => Boolean(desk) || existsSync(snapshotPath),
+    activeResources: () => desk || existsSync(snapshotPath) || existsSync(`${snapshotPath}.cold.json`) ? resources : null,
+    hasSavedState: () => Boolean(desk) || existsSync(snapshotPath) || existsSync(`${snapshotPath}.cold.json`),
     lastError: () => restartWarning,
-    async wake(): Promise<Session> {
+    async wake(mode = 'interactive'): Promise<Session> {
       const desired = settings()
+      if (dependencies.depotPath) {
+        const probe = buildDeskLaunchPlan({ deskId: 'probe', kernelPath: '/kernel', baseImagePath: '/base', overlayPath: '/disk', vsockCid: 3,
+          ...{ shares: [{ tag: 'caboose-depot', path: '/depot', readOnly: true }], virtiofsdPath: '/virtiofsd' } },
+          { pathExists: () => true, deviceExists: () => true, ...{ isDirectory: () => true } })
+        if (probe.hypervisor !== 'cloud-hypervisor' || !probe.vmm.args.includes('--fs')) throw new Error('MicroVM depot requires an AppKit desk release with read-only shares')
+      }
+      if (nativeMac && await usesSystemImage(bindingPath, overlayPath, snapshotPath, dependencies.splitImage)) throw new Error('Split system images require Cloud Hypervisor')
+      if (await usesSystemImage(bindingPath, overlayPath, snapshotPath, dependencies.splitImage)) {
+        // Fail closed with an older AppKit: it would silently ignore the device.
+        const probe = buildDeskLaunchPlan({ deskId: 'probe', kernelPath: '/kernel', baseImagePath: '/base', overlayPath: '/disk', vsockCid: 3,
+          ...{ readOnlyAttachments: [{ path: '/system', sha256: '0'.repeat(64), kind: 'block' as const }] } },
+          { pathExists: () => true, deviceExists: () => true })
+        if (probe.hypervisor !== 'cloud-hypervisor' || !probe.vmm.args.includes('path=/system,readonly=on,image_type=raw')) throw new Error('Split images require an AppKit desk release with read-only attachments')
+      }
+      const systemImage = await selectSystemImage(bindingPath, overlayPath, snapshotPath, dependencies.splitImage)
+      const imageDirectory = systemImage?.directory ?? config.imageRoot
       await Promise.all([
         ...(nativeMac || dependencies.deviceExists ? [] : [access('/dev/kvm', constants.R_OK | constants.W_OK)]),
         access(config.vmmPath, constants.X_OK),
-        ...['base.raw', 'vmlinux', 'initrd'].map(file => access(join(config.imageRoot, file), constants.R_OK)),
+        ...['base.raw', 'vmlinux', 'initrd'].map(file => access(join(imageDirectory, file), constants.R_OK)),
       ])
       await mkdir(join(config.imageRoot, 'overlays'), { recursive: true })
       await mkdir(join(config.imageRoot, 'runtime'), { recursive: true })
       if (!nativeMac) await (dependencies.network ?? (() => ensureNetwork(slot)))()
       const restoring = existsSync(snapshotPath)
       const wasResident = Boolean(desk)
-      desk = await host.start({ deskId: id, baseImage: join(config.imageRoot, 'base.raw'), overlayPath, memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS, ...(nativeMac ? {} : { network: { tapDevice: address.tap } }) })
+      desk = await host.start({ deskId: id, baseImage: join(imageDirectory, 'base.raw'), overlayPath,
+        ...(dependencies.depotPath ? { shares: [{ tag: 'caboose-depot', path: dependencies.depotPath, readOnly: true }] } : {}),
+        ...(systemImage ? { kernelPath: join(imageDirectory, 'vmlinux'), initramfsPath: join(imageDirectory, 'initrd'), readOnlyAttachments: [{ path: join(imageDirectory, 'system.erofs'), sha256: systemImage.hashes['system.erofs'], kind: 'block' as const }] } : {}),
+        ...(config.vmFreePageReporting ? { freePageReporting: true } : {}),
+        memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS,
+        ...(nativeMac ? {} : { network: { tapDevice: address.tap, guestAddress: address.guest } }),
+      }).catch(error => { if (!nativeMac) invalidateNetwork(slot); throw error })
       try {
         if (restoring && host.stats().lastError?.includes('could not resume from its snapshot')) {
           throw new Error(host.stats().lastError ?? 'Snapshot restore failed')
@@ -169,24 +238,30 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
           resources = { memoryMb: desired.memoryMb, vcpus: desired.vcpus }
           await writePrivateJson(resourcesPath, resources)
         }
+        if (dependencies.depotPath) {
+          // A snapshot made before the share was configured restores without it; its
+          // local Flatpak installation remains usable until the next cold restart.
+          await command('/bin/systemctl', ['start', 'var-lib-caboose-depot.mount'], 60_000)
+            .catch(error => console.error('Shared runtime depot unavailable:', error))
+        }
         await configureGuest(desk, slot, nativeMac ? { host: '10.0.2.2', guest: '10.0.2.15', prefix: 24 } : undefined)
-        if (nativeMac && !relays.size) {
+        if (!nativeMac && !relays.size) serviceVsock = await probeServiceVsock(desk)
+        if ((nativeMac || serviceVsock) && !relays.size) {
           for (const port of [OWNER_DISPLAY_PORT, AGENT_DISPLAY_PORT, 14700, TERMINAL_PORT]) {
-            relays.set(port, await listenDeskPort(desk, port))
+            relays.set(port, await listenDeskPort(nativeMac ? desk : { connect: (target) => desk!.connect(target, { transport: 'vsock' }) }, port))
           }
         }
         displayToken = randomBytes(32).toString('hex')
         await command('/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
-        await startDisplay('caboose-display.service', OWNER_DISPLAY_PORT)
-        launchEnv = parseEnvFile(await command('/bin/cat', [DISPLAY_ENV_PATH]))
-        if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
+        if (mode === 'interactive') await ownerDisplay()
         clearHeartbeat()
         heartbeat = setInterval(() => {
           try { desk?.renewLease(APPKIT_LEASE_MS) } catch (error) { console.error('Desk lease renewal failed:', error) }
         }, 20_000)
         heartbeat.unref()
-        return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'caboose-display' }, computer: { name: settings().name, image: 'Debian 13', ...(resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }) } }
+        return session()
       } catch (error) {
+        if (!nativeMac) invalidateNetwork(slot)
         clearHeartbeat()
         await closeRelays().catch(failure => console.error('Failed to close guest relays:', failure))
         await host.suspend(id).catch(failure => console.error('Failed to park after wake error:', failure))
@@ -194,17 +269,26 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         throw error
       }
     },
+    async promote() { await ownerDisplay(); return session() },
+    canFreeze: () => Boolean(desk && pausable.canPause?.(id) && pausable.pause),
+    async freeze() {
+      if (!pausable.pause) throw new Error('Resident pause is unavailable')
+      await pausable.pause(id)
+    },
+    async thaw() { desk = await host.resume(id) },
     async park() {
       clearHeartbeat()
       await closeRelays()
       await host.suspend(id)
       desk = undefined
       displayToken = ''
+      launchEnv = []
       if (!existsSync(snapshotPath)) {
         throw new Error(host.stats().lastError ?? 'Memory snapshot was not created')
       }
     },
     async restart() {
+      if (!nativeMac) invalidateNetwork(slot)
       restartWarning = null
       // A wedged guest still needs a restart. Try to flush briefly, then surface the
       // failure while proceeding with the explicitly confirmed cold restart.
@@ -241,6 +325,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       await rm(snapshotPath, { recursive: true, force: true })
       await rm(overlayPath, { force: true })
       await rm(resourcesPath, { force: true })
+      await rm(bindingPath, { force: true })
       if (!nativeMac) await (dependencies.removeNetwork ?? (() => removeNetwork(slot)))()
     },
     async apps(): Promise<App[]> {
@@ -251,7 +336,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         if (page.length < 10) return apps
       }
     },
-    async launch(id: string, path?: string): Promise<void> { await guestApps('launch', id, path) },
+    async launch(id: string, path?: string, action?: string): Promise<void> { await guestLaunch(args => guestApps(...args), id, path, action) },
   }
   return controller
 }

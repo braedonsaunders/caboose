@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreMedia
 import Foundation
+import OSLog
 
 /// Decodes Opus with the system's own decoder (AudioToolbox) into interleaved 32-bit float
 /// PCM at 48 kHz, the rate Opus always decodes at.
@@ -66,6 +67,18 @@ final class SoundPlayer: @unchecked Sendable {
     private var decoder: OpusDecoder?
     private var format: CMAudioFormatDescription?
     private var sessionActive = false
+    private var interrupted = false
+    private var timeline = AudioPacketTimeline()
+    private let log = Logger(subsystem: "com.braedonsaunders.caboose", category: "display-audio")
+    private var reportsAt: TimeInterval = 0
+    private var restarts = 0
+    private var frameMin = Int.max
+    private var frameMax = 0
+    private var arrivalAt: TimeInterval?
+    private var arrivalMax: TimeInterval = 0
+    private var lastServerPTS: Int64?
+    private var timestampRegressions = 0
+    private var interruptionObserver: NSObjectProtocol?
     private(set) var played = 0
     private(set) var failed = 0
 
@@ -76,12 +89,37 @@ final class SoundPlayer: @unchecked Sendable {
     }) {
         self.clock = clock
         self.activate = activate
+        renderer.audioTimePitchAlgorithm = .spectral
         clock.add(renderer)
+        #if os(iOS)
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: nil
+        ) { [weak self] notification in
+            guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            self?.setInterrupted(type == .began)
+        }
+        #endif
+    }
+
+    deinit {
+        if let interruptionObserver { NotificationCenter.default.removeObserver(interruptionObserver) }
+        clock.remove(renderer)
+    }
+
+    private func setInterrupted(_ value: Bool) {
+        queue.async { [self] in
+            interrupted = value
+            sessionActive = false
+            timeline.reset()
+            renderer.flush()
+            clock.stop()
+        }
     }
 
     func play(_ packet: AudioPacket) {
         queue.async { [self] in
-            guard packet.codec == "opus" else { return }
+            guard packet.codec == "opus", !interrupted else { return }
             do {
                 if decoder?.channels != packet.channels {
                     decoder = try OpusDecoder(channels: packet.channels)
@@ -90,27 +128,53 @@ final class SoundPlayer: @unchecked Sendable {
                 guard let decoder else { return }
                 let pcm = try decoder.decode(packet.data)
                 guard pcm.frameLength > 0 else { return }
+                let arrived = ProcessInfo.processInfo.systemUptime
+                if let arrivalAt { arrivalMax = max(arrivalMax, arrived - arrivalAt) }
+                arrivalAt = arrived
+                frameMin = min(frameMin, Int(pcm.frameLength))
+                frameMax = max(frameMax, Int(pcm.frameLength))
                 try activateSession()
                 if renderer.status == .failed {
                     renderer.flush()
                     clock.stop()
                 }
-                let placement = clock.place(audio: Int64(packet.ptsMicros))
-                if case .restart = placement { renderer.flush() }
-                renderer.enqueue(try sample(pcm, decoder: decoder, pts: Int64(packet.ptsMicros)))
+                let rawPTS = Int64(packet.ptsMicros)
+                if let lastServerPTS, rawPTS <= lastServerPTS { timestampRegressions += 1 }
+                lastServerPTS = rawPTS
+                let pts = timeline.place(server: rawPTS, frames: Int(pcm.frameLength))
+                let placement = clock.place(audio: pts)
+                if case .restart = placement {
+                    restarts += 1
+                    if restarts <= 10 || restarts % 50 == 0 {
+                        let rendered = CMTimeConvertScale(clock.synchronizer.currentTime(), timescale: 1_000_000, method: .default).value
+                        log.notice("display audio restart n=\(self.restarts) raw=\(rawPTS) pts=\(pts) projected=\(self.clock.now ?? -1) rendered=\(rendered) delay=\(self.clock.delay) regressions=\(self.timestampRegressions)")
+                    }
+                    renderer.flush()
+                }
+                renderer.enqueue(try sample(pcm, decoder: decoder, pts: pts))
                 switch placement {
                 case .play: break
                 case .start(let time), .restart(let time): clock.start(at: time)
                 }
                 played += 1
+                if arrived - reportsAt >= 5 {
+                    log.notice("display audio packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(self.clock.delay) frames=\(self.frameMin)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(self.renderer.status.rawValue) rate=\(self.clock.rate) regressions=\(self.timestampRegressions)")
+                    reportsAt = arrived
+                    frameMin = Int.max; frameMax = 0; arrivalMax = 0
+                }
             } catch {
                 failed += 1
+                if ProcessInfo.processInfo.systemUptime - reportsAt >= 5 {
+                    log.error("display audio failure count=\(self.failed) error=\(String(describing: error), privacy: .public)")
+                    reportsAt = ProcessInfo.processInfo.systemUptime
+                }
             }
         }
     }
 
     func stop() {
         queue.async { [self] in
+            timeline.reset()
             renderer.flush()
             clock.stop()
         }
@@ -153,4 +217,25 @@ final class SoundPlayer: @unchecked Sendable {
         try activate()
         sessionActive = true
     }
+}
+
+/// PCM is contiguous even when an older server timestamps each pipe read rather than
+/// each sample. Small capture-time jitter must not create audible holes or overlaps.
+/// A real silence gap or discontinuity reanchors to the server instead of filling it.
+struct AudioPacketTimeline {
+    private var next: Int64?
+    static let maximumJitter: Int64 = 200_000
+
+    mutating func place(server: Int64, frames: Int) -> Int64 {
+        let pts: Int64
+        if let next, server >= next - Self.maximumJitter, server <= next + Self.maximumJitter {
+            pts = next
+        } else {
+            pts = server
+        }
+        next = pts + Int64(frames) * 1_000_000 / 48_000
+        return pts
+    }
+
+    mutating func reset() { next = nil }
 }

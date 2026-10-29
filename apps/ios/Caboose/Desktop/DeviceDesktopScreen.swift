@@ -6,27 +6,34 @@ import UIKit
 /// Switchyard (or, on an iPad that chooses Free, floating with the dock and Launchpad); or,
 /// while a TV shows the desktop, this phone as its trackpad.
 ///
-/// Its actions sit in the toolbar, so on iPhone Duo they join the tab bar in the vertical bar
-/// on the side, which stays fully shown as on every tab. The desktop fills everything beside
-/// the vertical bar, or between horizontal bars, and the computer lays its windows out for
-/// exactly that space; when the bars change, so does the desktop. Full Screen opens the focused app as a native card. Behind it all, under the
-/// bar as well, is the desktop's photograph with a sheer of the brand gradient.
+/// Portrait puts controls and app navigation in a compact panel above the dock, with
+/// no reserved strip. Landscape keeps its native toolbar or custom rail. Full Screen
+/// opens the focused app as a native card; there is no separate desktop screen.
 struct DesktopScreen: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.portraitDesktopChrome) private var portraitDesktop
+    @Environment(\.shellTabPlacement) private var tabPlacement
     @State private var showAirPlay = false
+    @State private var laptopActive = false
 
     var body: some View {
         NavigationStack {
             Group {
                 if model.phase != .ready {
                     ComputerStateView()
-                } else if model.externalDisplayActive {
-                    TrackpadScreen(desktop: model.desktop)
                 } else {
-                    DesktopStage(fullScreen: immersive)
+                    LaptopContainer(activeChanged: { laptopActive = $0 }) { laptop in
+                        if model.externalDisplayActive {
+                            if laptop { LaptopExternalOverview() }
+                            else { TrackpadScreen(desktop: model.desktop) }
+                        } else {
+                            DesktopStage()
+                        }
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.container, edges: portraitDesktop && !laptopActive ? [.top, .bottom] : [])
             .background { ShellBackground() }
             .navigationTitle("Desktop")
             .navigationBarTitleDisplayMode(.inline)
@@ -34,14 +41,32 @@ struct DesktopScreen: View {
             // edge then belongs to the desktop alone.
             .toolbar(removing: .title)
             .toolbar {
-                if model.phase == .ready { actions }
-                ComputerToolbar()
+                if !laptopActive && !portraitDesktop && tabPlacement != .sidebar {
+                    if model.phase == .ready { actions }
+                    ComputerToolbar()
+                }
+            }
+            .shellRailActions {
+                LaptopModeMenu()
+                Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible.toggle() }
+                Button("AirPlay", systemImage: "airplay.video") { showAirPlay = true }
+                if !model.externalDisplayActive, UIDevice.current.userInterfaceIdiom == .pad {
+                    @Bindable var model = model
+                    Picker("Arrangement", selection: $model.deviceDesktopStyle) {
+                        Label("Tiled", systemImage: "rectangle.split.3x1").tag(AppModel.DeviceDesktopStyle.tiled)
+                        Label("Free", systemImage: "macwindow.on.rectangle").tag(AppModel.DeviceDesktopStyle.free)
+                    }
+                }
+                Button("Wallpaper", systemImage: "photo.on.rectangle") { model.wallpaperPickerPresented = true }
             }
             .keepsTabBarInVerticalBar()
-            .toolbarVisibility(immersive ? .hidden : .automatic, for: .navigationBar, .tabBar)
-            .statusBarHidden(immersive)
-            .persistentSystemOverlays(immersive ? .hidden : .automatic)
-            .animation(.snappy, value: immersive)
+            .toolbarVisibility(laptopActive || portraitDesktop || tabPlacement == .sidebar ? .hidden : .visible, for: .navigationBar)
+            // A child automatic preference must not restore the system bar beneath
+            // the shell's custom tabs after rotation.
+            .toolbarVisibility(laptopActive || portraitDesktop || tabPlacement != .system ? .hidden : .visible, for: .tabBar)
+            .statusBarHidden(laptopActive || portraitDesktop || tabPlacement == .sidebar)
+            .persistentSystemOverlays(laptopActive ? .hidden : .automatic)
+            .animation(.snappy, value: laptopActive)
             .sheet(isPresented: $showAirPlay) {
                 AirPlaySheet().environment(model)
                     .presentationDetents([.medium])
@@ -49,16 +74,11 @@ struct DesktopScreen: View {
         }
     }
 
-    /// A Switchyard window covering the screen: the bars,
-    /// the status bar and the home indicator step aside.
-    private var immersive: Bool {
-        model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil
-    }
-
     /// The desktop's own actions. Agents and Apps are tabs beside them and Launchpad is in
     /// the dock, so they are not repeated here. Full Screen gives way first when room runs out.
     @ToolbarContentBuilder private var actions: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
+            LaptopModeMenu()
             if !model.keyboardVisible {
                 Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible = true }
             }
@@ -87,7 +107,7 @@ struct DesktopScreen: View {
             ToolbarOverflowMenu {
                 Button("Wallpaper", systemImage: "photo.on.rectangle") { model.wallpaperPickerPresented = true }
                 if WallpaperStore.shared.choice.usesLibrary {
-                    Button("Next Photograph", systemImage: "arrow.triangle.2.circlepath") { WallpaperStore.shared.next() }
+                    Button("Next Wallpaper", systemImage: "arrow.triangle.2.circlepath") { WallpaperStore.shared.next() }
                 }
             }
         }
@@ -106,13 +126,102 @@ struct DesktopScreen: View {
 
 }
 
+/// Desktop actions share the custom shell rail with its tabs when the system has
+/// horizontal bars. The native vertical toolbar continues to own landscape controls.
+struct DesktopRailControls: View {
+    @Environment(AppModel.self) private var model
+    @State private var showAirPlay = false
+    var compact = false
+
+    var body: some View {
+        let layout = compact ? AnyLayout(HStackLayout(spacing: 8)) : AnyLayout(VStackLayout(spacing: 0))
+        layout {
+            if model.phase == .ready {
+                Menu {
+                    LaptopModeMenu()
+                    Button("AirPlay", systemImage: "airplay.video") { showAirPlay = true }
+                    if !model.externalDisplayActive, UIDevice.current.userInterfaceIdiom == .pad {
+                        @Bindable var model = model
+                        Picker("Arrangement", selection: $model.deviceDesktopStyle) {
+                            Label("Tiled", systemImage: "rectangle.split.3x1").tag(AppModel.DeviceDesktopStyle.tiled)
+                            Label("Free", systemImage: "macwindow.on.rectangle").tag(AppModel.DeviceDesktopStyle.free)
+                        }
+                    }
+                    Button("Wallpaper", systemImage: "photo.on.rectangle") { model.wallpaperPickerPresented = true }
+                    if WallpaperStore.shared.choice.usesLibrary {
+                        Button("Next Wallpaper", systemImage: "arrow.triangle.2.circlepath") { WallpaperStore.shared.next() }
+                    }
+                } label: { Image(systemName: "ellipsis").frame(width: 56, height: 44) }
+                .accessibilityLabel("Desktop controls")
+                Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible.toggle() }
+                    .frame(width: 56, height: 44)
+            }
+            Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
+                .frame(width: 56, height: 44)
+            LifecycleMenu().frame(width: 56, height: 44)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showAirPlay) {
+            AirPlaySheet().environment(model).presentationDetents([.medium])
+        }
+    }
+}
+
+/// A single bottom control owns the portrait presentation. The popover is attached to
+/// the button itself; its scrollable content is bounded, including with Dynamic Type.
+struct DesktopPanelButton: View {
+    @Environment(AppModel.self) private var model
+    @State private var presented = false
+
+    var body: some View {
+        Button {
+            presented.toggle()
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Desktop controls and navigation")
+        .accessibilityHint("Opens desktop controls and app navigation")
+        .popover(isPresented: $presented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+            ScrollView { panel }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(width: 72, height: 512)
+                // Even a narrow phone keeps the panel anchored and dismissible, rather
+                // than adapting it into a full-screen presentation.
+                .presentationCompactAdaptation(.popover)
+        }
+        .onChange(of: model.selectedTab) { _, _ in presented = false }
+        .onDisappear { presented = false }
+    }
+
+    private var panel: some View {
+        VStack(spacing: 4) {
+            DesktopRailControls()
+            Divider().frame(width: 32).padding(.vertical, 4)
+            ShellTabButtons(axis: .vertical, iconsOnly: true)
+            Button("Close desktop controls", systemImage: "chevron.down") { presented = false }
+                .labelStyle(.iconOnly)
+                .frame(width: 56, height: 44)
+                .buttonStyle(.plain)
+        }
+        .padding(.vertical, 8)
+        .frame(width: 72)
+        .accessibilityAction(.escape) { presented = false }
+    }
+}
+
 /// The phone's own desktop, edge to edge. Beside a vertical bar it takes the full height and
 /// everything up to the bar; with horizontal bars, the space between them; in full screen,
 /// the whole display. The computer is configured for exactly that size.
 private struct DesktopStage: View {
     @Environment(AppModel.self) private var model
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
-    let fullScreen: Bool
+    @Environment(\.laptopInputOwned) private var laptopInputOwned
+    @Environment(\.portraitDesktopChrome) private var portraitDesktop
 
     var body: some View {
         GeometryReader { proxy in
@@ -121,9 +230,18 @@ private struct DesktopStage: View {
                     SwitchyardView(yard: model.yard)
                 } else {
                     ZStack {
-                        DesktopView(desktop: model.desktop, fillsScreen: false)
+                        DesktopView(desktop: model.desktop, fillsScreen: false, showsDock: !portraitDesktop)
                         DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
+                            .allowsHitTesting(!model.desktop.launchpadOpen)
+                        DesktopKeyCommands(desktop: model.desktop)
+                        if portraitDesktop, !model.desktop.detachedChrome,
+                           let session = model.session, model.desktop.fullscreenWindow(in: session.windows) == nil {
+                            Dock(desktop: model.desktop, interactive: true)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                .padding(.bottom, model.desktop.dockBottomInset)
+                        }
                     }
+                    .coordinateSpace(name: "desktop")
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -135,17 +253,9 @@ private struct DesktopStage: View {
                 if tab == .desktop { model.desktopStageResized(to: proxy.size) }
             }
         }
-        .ignoresSafeArea(edges: ignoredEdges)
     }
 
-    private var ignoredEdges: Edge.Set {
-        if fullScreen { return .all }
-        switch barEdge {
-        case .trailing: return [.top, .bottom]
-        case .leading: return [.top, .bottom]
-        case nil: return []
-        }
-    }
+
 }
 
 extension EnvironmentValues {
@@ -161,6 +271,7 @@ extension EnvironmentValues {
 /// An iPad pointer hovers and clicks like a Mac's. Keys go to the frontmost window.
 struct DesktopTouchArea: UIViewRepresentable {
     @Environment(AppModel.self) private var model
+    @Environment(\.laptopInputOwned) private var laptopInputOwned
     let desktop: DesktopModel
     let keyboardVisible: Bool
 
@@ -174,8 +285,8 @@ struct DesktopTouchArea: UIViewRepresentable {
     func updateUIView(_ view: DesktopTouchSurface, context: Context) {
         view.desktop = desktop
         view.model = model
-        if keyboardVisible && !model.windowCardOwnsGeometry, !view.isFirstResponder { DispatchQueue.main.async { view.becomeFirstResponder() } }
-        if (!keyboardVisible || model.windowCardOwnsGeometry), view.isFirstResponder { DispatchQueue.main.async { view.resignFirstResponder() } }
+        if keyboardVisible && !model.windowCardOwnsGeometry && !laptopInputOwned, !view.isFirstResponder { DispatchQueue.main.async { view.becomeFirstResponder() } }
+        if (!keyboardVisible || model.windowCardOwnsGeometry || laptopInputOwned), view.isFirstResponder { DispatchQueue.main.async { view.resignFirstResponder() } }
     }
 }
 
@@ -183,12 +294,20 @@ final class DesktopTouchSurface: RemoteTextInputView {
     weak var desktop: DesktopModel?
     weak var model: AppModel?
 
+    private let scrollDriver = ScrollDriver()
+    private var scrolling = false
+    private var scrollSuppressed = false
+    private var scrollOrigin = CGPoint.zero
+    private var scrollOriginTime: TimeInterval = 0
+
     private var began: TimeInterval = 0
     private var travel: CGFloat = 0
     private var touchOrigin = CGPoint.zero
     private var maxFingers = 0
     private var dragging = false
     private var contextOpened = false
+    /// A finger held on Launchpad is sliding through Quick Switch.
+    private var switchHolding = false
     private var press = DirectPointerPress()
     private var holdTimer: Timer?
     private var lastCentroid: CGPoint?
@@ -246,31 +365,45 @@ final class DesktopTouchSurface: RemoteTextInputView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { cancelHold() }
+        if window == nil { cancelHold(); scrollDriver.cancel() }
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        scrollDriver.cancel()
+        scrolling = false
         let fingers = live(event)
         if maxFingers == 0 {
+            scrollSuppressed = false
             began = event?.timestamp ?? 0
             travel = 0
             dragging = false
             contextOpened = false
+            switchHolding = false
             cancelHold()
             if let first = touches.first, touches.first?.type != .indirectPointer { desktop?.pointerHovering = false; point(at: first.location(in: self)) }
             else if let first = touches.first { point(at: first.location(in: self)) }
         }
         maxFingers = max(maxFingers, fingers.count)
         lastCentroid = centroid(fingers)
+        if let center = lastCentroid {
+            scrollOrigin = center
+            scrollOriginTime = event?.timestamp ?? ProcessInfo.processInfo.systemUptime
+        }
         if maxFingers == 1, let point = lastCentroid { touchOrigin = point }
         if maxFingers == 1, let first = touches.first, first.type == .direct {
             press.begin(at: first.location(in: self), time: ProcessInfo.processInfo.systemUptime)
             holdTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
                 guard let self, let desktop = self.desktop, !self.dragging,
                       let point = self.press.context(at: ProcessInfo.processInfo.systemUptime) else { return }
+                self.scrollDriver.cancel()
                 self.contextOpened = true
                 self.lastTap = nil
                 self.point(at: point)
+                // Held on Launchpad: Quick Switch, slid through with the same finger.
+                if desktop.beginSwitchHold(session: self.session) {
+                    self.switchHolding = true
+                    return
+                }
                 desktop.click(button: 3, session: self.session, open: self.open)
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
@@ -279,7 +412,11 @@ final class DesktopTouchSurface: RemoteTextInputView {
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         let fingers = live(event)
-        guard !contextOpened else { return }
+        if switchHolding, let finger = fingers.first {
+            desktop?.trackSwitchHold(at: finger.location(in: self))
+            return
+        }
+        guard !contextOpened, !scrollSuppressed else { return }
         guard let desktop, let now = centroid(fingers), let last = lastCentroid else { return }
         let delta = CGPoint(x: now.x - last.x, y: now.y - last.y)
         lastCentroid = now
@@ -287,8 +424,27 @@ final class DesktopTouchSurface: RemoteTextInputView {
         press.move(to: now)
         if maxFingers >= 2 {
             cancelHold()
-            // Content follows the fingers, like any iOS scroll view.
-            desktop.scroll(by: CGPoint(x: -delta.x, y: -delta.y), session: session)
+            // Capture the original target so inertia cannot cross windows or chrome.
+            let time = event?.timestamp ?? ProcessInfo.processInfo.systemUptime
+            var scrollDelta = delta
+            if !scrolling {
+                scrollDelta = CGPoint(x: now.x - scrollOrigin.x, y: now.y - scrollOrigin.y)
+                guard hypot(scrollDelta.x, scrollDelta.y) >= 4 else { return }
+                guard let session, case .content(let id, let anchor) = desktop.hitTest(desktop.cursor, windows: session.windows),
+                      let target = session.windows[id] else { return }
+                scrolling = true
+                session.resetScroll()
+                let scale = desktop.pixelsPerPoint
+                scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak target, weak desktop] delta in
+                    guard let self, let session, let target, let desktop, self.window != nil,
+                          self.session === session, self.desktop === desktop, session.state == .ready,
+                          session.windows[id] === target, desktop.isVisible(id),
+                          case .content(let current, _) = desktop.hitTest(desktop.cursor, windows: session.windows), current == id else { return false }
+                    session.scroll(in: target, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
+                    return true
+                }
+            }
+            scrollDriver.append(CGPoint(x: -scrollDelta.x, y: -scrollDelta.y), at: time)
             return
         }
         if !dragging, travel > 8 {
@@ -300,11 +456,24 @@ final class DesktopTouchSurface: RemoteTextInputView {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard live(event).isEmpty, let desktop else { return }
+        if scrolling {
+            scrollDriver.end(at: event?.timestamp ?? ProcessInfo.processInfo.systemUptime)
+            scrolling = false
+            scrollSuppressed = true
+        }
+        guard live(event).isEmpty, let desktop else {
+            lastCentroid = centroid(live(event))
+            return
+        }
         let now = event?.timestamp ?? 0
         let duration = now - began
         defer { maxFingers = 0; lastCentroid = nil; cancelHold() }
-        if contextOpened { return }
+        if switchHolding {
+            switchHolding = false
+            desktop.endSwitchHold()
+            return
+        }
+        if contextOpened || scrollSuppressed { return }
         if dragging {
             desktop.endDrag(session: session)
             dragging = false
@@ -329,7 +498,14 @@ final class DesktopTouchSurface: RemoteTextInputView {
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        scrollDriver.cancel()
+        scrolling = false
+        scrollSuppressed = false
         cancelHold()
+        if switchHolding {
+            switchHolding = false
+            desktop?.cancelSwitchHold()
+        }
         if dragging { desktop?.endDrag(session: session) }
         dragging = false
         maxFingers = 0

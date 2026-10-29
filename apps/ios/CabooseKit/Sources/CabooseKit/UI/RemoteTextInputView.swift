@@ -32,7 +32,32 @@ open class RemoteTextInputView: UIView, UITextInput {
         return bar
     }()
 
-    open override var inputAccessoryView: UIView? { keyBar }
+    /// Inline Laptop controls use the exact same header and action pipeline.
+    public var keyboardControls: KeyBar { keyBar }
+    public var inlineKeyboardControls = false {
+        didSet { if inlineKeyboardControls != oldValue, isFirstResponder { reloadInputViews() } }
+    }
+    private let hiddenKeyboard = UIView(frame: .zero)
+    open override var inputView: UIView? { inlineKeyboardControls ? hiddenKeyboard : nil }
+    public func performKeyboardAction(_ action: KeyBar.Action) { keyBarAction(action) }
+    open override var inputAccessoryView: UIView? {
+        if inlineKeyboardControls {
+            inputAssistantItem.leadingBarButtonGroups = []
+            inputAssistantItem.trailingBarButtonGroups = []
+            return nil
+        }
+        return keyBar.accessory(for: self)
+    }
+    private var wideKeyboardHeader = false
+    open override func layoutSubviews() {
+        super.layoutSubviews()
+        let wide = (window?.bounds.width ?? bounds.width) >= 600
+        if wide != wideKeyboardHeader {
+            wideKeyboardHeader = wide
+            if isFirstResponder, !inlineKeyboardControls { reloadInputViews() }
+        }
+    }
+
     /// Sends a complete press/release to the view's current remote target.
     open func sendKey(_ stroke: KeyStroke, modifiers: [String]) {}
     /// Subclasses also clear their shared visibility state or pending focus requests.
@@ -53,8 +78,16 @@ open class RemoteTextInputView: UIView, UITextInput {
             resetTyping()
             sendKey(stroke, modifiers: Array(stickyModifiers))
             releaseSticky()
-        case .text(let text): insertText(text)
+        case .text(let text):
+            if stickyModifiers == ["control"], text.lowercased() == "v" { paste(nil) }
+            else { insertText(text) }
         }
+    }
+
+    /// Read the system clipboard only in response to the user's Paste action.
+    open override func paste(_ sender: Any?) {
+        releaseSticky()
+        if let text = UIPasteboard.general.string { insertText(text) }
     }
 
     private func releaseSticky() {
@@ -74,8 +107,28 @@ open class RemoteTextInputView: UIView, UITextInput {
     /// `send(_:)` whenever it changes, with "" once it is committed or cancelled.
     open func sendPreedit(_ text: String, selection: NSRange) {}
 
+    /// When this view last sent edits or forgot its text; an app's report from before then
+    /// may be stale.
+    private var lastEdit: CFTimeInterval = 0
+
+    /// The remote field reported the text before its caret. It becomes the buffer when it
+    /// agrees with what was typed (the app has caught up) or nothing was typed for a moment
+    /// (the app changed it, or its caret moved); a report racing fresh keystrokes waits.
+    public func adoptRemoteText(beforeCaret text: String) {
+        let caughtUp = !buffer.text.isEmpty && text.hasSuffix(buffer.text)
+        guard caughtUp || CACurrentMediaTime() - lastEdit > 0.35 else { return }
+        var next = buffer
+        guard next.adopt(beforeCaret: text) else { return }
+        inputDelegate?.selectionWillChange(self)
+        inputDelegate?.textWillChange(self)
+        buffer = next
+        inputDelegate?.textDidChange(self)
+        inputDelegate?.selectionDidChange(self)
+    }
+
     /// Forgets the typed text, e.g. when focus may have moved in the remote app.
     public func resetTyping() {
+        lastEdit = CACurrentMediaTime()
         guard buffer != TypingBuffer() else { return }
         inputDelegate?.selectionWillChange(self)
         inputDelegate?.textWillChange(self)
@@ -88,7 +141,7 @@ open class RemoteTextInputView: UIView, UITextInput {
         buffer.marksAsPreedit = sendsMarkedTextAsPreedit
         let preedit = buffer.preedit
         let edits = edit(&buffer)
-        if !edits.isEmpty { send(edits) }
+        if !edits.isEmpty { lastEdit = CACurrentMediaTime(); send(edits) }
         if sendsMarkedTextAsPreedit, buffer.preedit != preedit {
             let marked = buffer.marked ?? NSRange(location: 0, length: 0)
             let caret = NSRange(location: max(0, buffer.selection.location - marked.location), length: buffer.selection.length)

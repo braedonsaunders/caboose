@@ -8,7 +8,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, expect, it, vi } from 'vitest'
-import { START_SCRIPT, REPLY_SCRIPT } from './agents.js'
+import { AgentNotFoundError, START_SCRIPT, REPLY_SCRIPT } from './agents.js'
 import { AgentRegistry } from './registry.js'
 import { createCabooseServer, type Controller } from './server.js'
 import { SettingsStore, settingsLimits } from './settings.js'
@@ -47,10 +47,19 @@ it('authenticates routes and relays binary websocket messages while holding a le
   expect(park).not.toHaveBeenCalled()
   client.close()
   await once(client, 'close')
+  const background = new WebSocket(base.replace('http:', 'ws:') + '/v1/control?foreground=0', { headers: { authorization: 'Bearer owner' } })
+  await once(background, 'open')
+  const backgroundClosed = once(background, 'close')
   await vi.waitFor(() => expect(park).toHaveBeenCalledTimes(1))
+  await backgroundClosed
 })
 
 it('routes agent replies, approvals, files and links with the right status codes', async () => {
+  const timing = vi.spyOn(console, 'info').mockImplementation(() => {})
+  close.push(async () => { timing.mockRestore() })
+  const display = new WebSocketServer({ port: 0 })
+  await once(display, 'listening')
+  close.push(() => new Promise(resolve => display.close(() => resolve())))
   const fileServer = createServer((req, res) => {
     req.resume()
     req.on('end', () => { res.writeHead(201, { 'content-type': 'application/json' }); res.end('{}') })
@@ -60,9 +69,10 @@ it('routes agent replies, approvals, files and links with the right status codes
   close.push(() => new Promise(resolve => fileServer.close(() => resolve())))
   const runs: string[][] = []
   const transcripts = new Map<string, string>()
-  const launch = vi.fn(async (_id: string, _path?: string) => {})
+  const launch = vi.fn(async (_id: string, _path?: string, _action?: string) => {})
   const guest = { ownerEnv: ['DISPLAY=:110'], run: async (command: string, args: string[]) => {
     runs.push([command, ...args])
+    if (args.includes('/opt/caboose/a11y.py')) return '0\n{"elements":[]}'
     if (command === '/usr/bin/python3' && args[2] === 'list') return '{}'
     // This route fixture models a runner that immediately claims admitted prompts.
     // Durable delivery now asks for that evidence before draining queued replies.
@@ -74,9 +84,11 @@ it('routes agent replies, approvals, files and links with the right status codes
     if (args[8]?.startsWith('// caboose delivery evidence')) return JSON.stringify({ journal: '', receipt: '', receiptExists: false, inbox: '', published: '', transcript: transcripts.get(args[7]!) ?? '', alive: true })
     return args[5]?.includes('while [ -e "$target" ]') ? '/home/caboose/Downloads/a.txt' : ''
   } }
-  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+  const session = { state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }
+  const wake = vi.fn(async () => session), promote = vi.fn(async () => session)
+  const controller: Controller = { wake, promote,
     park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch,
-    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest,
+    displayUrl: `ws://127.0.0.1:${(display.address() as AddressInfo).port}`, agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest,
     fileService: () => ({ url: `http://127.0.0.1:${(fileServer.address() as AddressInfo).port}`, token: 'test' }) }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: 'claude-acp' }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const registry = new AgentRegistry({ fetch: (async () => new Response(await readFile(new URL('./fixtures/acp-registry.json', import.meta.url)))) as unknown as typeof fetch })
@@ -87,13 +99,59 @@ it('routes agent replies, approvals, files and links with the right status codes
   const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
   const post = (path: string, body: unknown) => fetch(base + path, { method: 'POST', headers: { authorization: 'Bearer owner' }, body: JSON.stringify(body) })
   const missing = '11111111-1111-4111-8111-111111111111'
-  expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(409)
+  const headlessTask = await post('/v1/agent/tasks', { prompt: 'headless' })
+  expect(headlessTask.status).toBe(200)
+  expect(wake).toHaveBeenCalledWith('headless')
+  expect(promote).not.toHaveBeenCalled()
+  expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(404)
+  const displayClient = new WebSocket(base.replace('http:', 'ws:') + '/v1/display', 'binary', { headers: { authorization: 'Bearer owner' } })
+  const [opened, launched, uploaded, screen] = await Promise.all([
+    post('/v1/open', { url: 'https://example.com' }),
+    post('/v1/apps/firefox.desktop/launch', {}),
+    post('/v1/files', { name: 'open.txt', data: 'aGk=', open: true }),
+    fetch(base + '/v1/screen/elements', { headers: { authorization: 'Bearer owner' } }),
+    once(displayClient, 'open'),
+  ])
+  expect(opened.status).toBe(200)
+  expect(launched.status).toBe(200)
+  expect(await launched.json()).toEqual({ launched: true })
+  expect(timing).toHaveBeenCalledWith('App launch timing', {
+    initialState: expect.any(String), phase: 'dispatch', outcome: 'acknowledged',
+    wakeMs: expect.any(Number), prepareMs: expect.any(Number), totalMs: expect.any(Number),
+  })
+  expect(uploaded.status).toBe(200)
+  expect(screen.status).toBe(200)
+  expect(promote).toHaveBeenCalledOnce()
+  displayClient.close()
+  await once(displayClient, 'close')
   expect(await (await post('/v1/files', { name: 'a.txt', data: 'aGk=' })).json()).toEqual({ path: '/home/caboose/Downloads/a.txt' })
   await post('/v1/session', {})
+  expect(promote).toHaveBeenCalledOnce()
   expect((await post('/v1/fs/open', { path: 'Documents/a.psd', app: 'ai.storyteller.photocraft.desktop' })).status).toBe(200)
   expect(launch).toHaveBeenCalledWith('ai.storyteller.photocraft.desktop', 'Documents/a.psd')
   expect((await post('/v1/fs/open', { path: '../bad', app: 'a.desktop' })).status).toBe(400)
   expect((await post('/v1/fs/open', { path: 'a', app: '../bad.desktop' })).status).toBe(400)
+  expect((await fetch(base + '/v1/apps/firefox.desktop/desktop-shortcut', { method: 'POST' })).status).toBe(401)
+  const shortcut = await post('/v1/apps/firefox.desktop/desktop-shortcut', {})
+  expect(shortcut.status).toBe(201)
+  expect(await shortcut.json()).toEqual({ path: 'Desktop/firefox.desktop' })
+  expect((await post('/v1/apps/bad%2Fid.desktop/desktop-shortcut', {})).status).toBe(400)
+  // A launch takes no body, or { action } naming one of the entry's desktop actions.
+  expect((await fetch(base + '/v1/apps/firefox.desktop/launch', { method: 'POST', headers: { authorization: 'Bearer owner' } })).status).toBe(200)
+  expect(launch).toHaveBeenLastCalledWith('firefox.desktop', undefined, undefined)
+  expect((await post('/v1/apps/firefox.desktop/launch', { action: 'new-private-window' })).status).toBe(200)
+  expect(launch).toHaveBeenLastCalledWith('firefox.desktop', undefined, 'new-private-window')
+  launch.mockClear()
+  for (const action of ['new window', '../x', '', 'a'.repeat(65), 7]) expect((await post('/v1/apps/firefox.desktop/launch', { action })).status).toBe(400)
+  expect(launch).not.toHaveBeenCalled()
+  launch.mockRejectedValueOnce(new AgentNotFoundError('Application action not found'))
+  const unknown = await post('/v1/apps/firefox.desktop/launch', { action: 'missing' })
+  expect(unknown.status).toBe(404)
+  expect(await unknown.json()).toEqual({ error: 'Application action not found' })
+  expect(timing).toHaveBeenLastCalledWith('App launch timing', {
+    initialState: 'running', phase: 'dispatch', outcome: 'failed',
+    wakeMs: expect.any(Number), prepareMs: expect.any(Number), totalMs: expect.any(Number),
+  })
   expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(404)
   expect((await post(`/v1/agent/tasks/${missing}/approvals/${missing}`, { allow: true })).status).toBe(404)
   const { id } = await (await post('/v1/agent/tasks', { prompt: 'hi' })).json() as { id: string }
@@ -111,6 +169,16 @@ it('routes agent replies, approvals, files and links with the right status codes
   expect((await post('/v1/agent/tasks', { prompt: 'x', agent: 'codex', approvals: 'sometimes' })).status).toBe(400)
   expect((await post('/v1/agent/tasks', { prompt: 'x', agent: 'no-such-agent' })).status).toBe(404)
   expect((await post('/v1/agent/tasks', { prompt: 'x', agent: 'codex', approvals: 'ask' })).status).toBe(200)
+  const remove = (taskId: string, body: unknown = {}) => fetch(`${base}/v1/agent/tasks/${taskId}`, { method: 'DELETE', headers: { authorization: 'Bearer owner' }, body: JSON.stringify(body) })
+  expect((await fetch(`${base}/v1/agent/tasks/${id}`, { method: 'DELETE' })).status).toBe(401)
+  expect((await remove(id, { stop: 'yes' })).status).toBe(400)
+  expect((await remove(id)).status).toBe(409)
+  expect(await (await remove(id, { stop: true })).json()).toEqual({ deleted: true })
+  expect((await post(`/v1/agent/tasks/${id}/reply`, { prompt: 'late' })).status).toBe(404)
+  expect(await (await remove(id)).json()).toEqual({ deleted: true })
+  expect(await (await remove(missing)).json()).toEqual({ deleted: true })
+  expect((await remove('invalid')).status).toBe(404)
+
   expect(await (await post('/v1/files', { name: 'a.txt', data: 'aGk=' })).json()).toEqual({ path: '/home/caboose/Downloads/a.txt' })
   expect((await post('/v1/open', { url: 'file:///etc/passwd' })).status).toBe(400)
   expect(await (await post('/v1/open', { url: 'https://example.com' })).json()).toEqual({ opened: true })
@@ -209,7 +277,7 @@ it('routes Live Activity registrations and distinguishes foreground app sockets'
 it('serves the catalog and serializes authenticated application operations', async () => {
   let finish!: () => void
   const gate = new Promise<void>(resolve => { finish = resolve })
-  const guest = { run: async (_command: string, args: string[]) => { if (args[2] === 'list') return '{}'; if (args[1]?.includes('AppStream.Pool.new')) return '[]'; await gate; return '' } }
+  const guest = { run: async (_command: string, args: string[]) => { if (args[2] === 'list') return '{"apps":{}}'; if (args[1]?.includes('AppStream.Pool.new')) return '[]'; await gate; return '' } }
   const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const app = createCabooseServer({ token: 'owner', settings, controller })
@@ -220,12 +288,14 @@ it('serves the catalog and serializes authenticated application operations', asy
   await req('/v1/session', 'POST')
   const list = await (await req('/v1/catalog')).json() as { apps: { id: string }[] }
   expect(list.apps.some(a => a.id === 'gridcraft')).toBe(true)
+  expect((await req('/v1/catalog/packs/creative-studio/install', 'POST')).status).toBe(404)
   expect((await req('/v1/catalog/no-such-app/install', 'POST')).status).toBe(404)
-  expect((await req('/v1/catalog/gridcraft/install', 'POST')).status).toBe(202)
-  expect((await req('/v1/catalog/gimp/install', 'POST')).status).toBe(409)
+  expect((await req('/v1/catalog/gimp/install', 'POST')).status).toBe(202)
+  expect((await req('/v1/catalog/krita/install', 'POST')).status).toBe(409)
+  expect((await req('/v1/catalog/gimp/rollback', 'POST')).status).toBe(404)
   expect((await req('/v1/session/park', 'POST')).status).toBe(409)
   finish()
-  await vi.waitFor(async () => { const result = await (await req('/v1/catalog')).json() as { apps: { id: string; progress: { phase: string } }[] }; expect(result.apps.find(a => a.id === 'gridcraft')?.progress.phase).toBe('finished') })
+  await vi.waitFor(async () => { const result = await (await req('/v1/catalog')).json() as { apps: { id: string; progress: { phase: string } }[] }; expect(result.apps.find(a => a.id === 'gimp')?.progress.phase).toBe('finished') })
 })
 
 it('relays phone events only to authenticated phone controls and serves staged files', async () => {
@@ -272,7 +342,7 @@ it('runs only a whitelisted installed Craft app and publishes job progress', asy
   let finish!: () => void
   const gate = new Promise<void>(resolve => { finish = resolve })
   const guest = { run: vi.fn(async (_command: string, args: string[]) => {
-    if (args[2] === 'list') return JSON.stringify({ photocraft: { installedVersion: '0.16.0', canRollback: false, lastError: null, interrupted: false } })
+    if (args[2] === 'list') return JSON.stringify({ apps: { photocraft: { installedVersion: '0.16.0', lastError: null, interrupted: false } }, environment: {} })
     if (args[0] === '-c' && args[1]?.includes('Run one host-whitelisted')) { await gate; return JSON.stringify({ outputs: [`.caboose-jobs/${job}/output-0.png`] }) }
     return ''
   }) }
@@ -302,4 +372,46 @@ it('runs only a whitelisted installed Craft app and publishes job progress', asy
   expect(await response.json()).toEqual({ job, outputs: [`.caboose-jobs/${job}/output-0.png`], warnings: [] })
   await vi.waitFor(() => expect(events.filter(e => e.type === 'job.progress').map(e => e.job?.status)).toEqual(['running', 'succeeded']))
   socket.close(); await once(socket, 'close')
+})
+
+it('serves the MCP Library to an authorized client without ever returning its keys', async () => {
+  const { SmitheryCatalog } = await import('./smithery.js')
+  const { listing } = await import('./smithery.test.js')
+  const dir = await mkdtemp(join(tmpdir(), 'caboose-mcp-server-'))
+  close.push(() => rm(dir, { recursive: true, force: true }))
+  const key = 'sk-owner-key-1234'
+  const answer = (body: unknown, status = 200) => ({ status, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)) })
+  const request = vi.fn(async (url: string, _max: number, init: { method?: string; body?: string } = {}) => {
+    const parsed = new URL(url)
+    if (parsed.hostname === 'registry.smithery.ai') return parsed.pathname === '/servers' ? answer({ servers: [listing('brave', 900)], pagination: { totalCount: 1 } }) : answer({ ...listing('brave', 900), tools: [] })
+    if (parsed.pathname === '/namespaces') return answer({ namespaces: [{ name: 'space' }], pagination: {} })
+    if (parsed.pathname === '/tokens') return answer({ token: 'svc-scoped-token-1', expiresAt: '2999-01-01T00:00:00Z' })
+    if (parsed.pathname.endsWith('/mcp')) { const body = JSON.parse(init.body!); return answer({ jsonrpc: '2.0', id: body.id, result: body.method === 'initialize' ? {} : { tools: [{ name: 'search' }] } }) }
+    if (init.method === 'PUT') return answer({ connectionId: 'x', name: 'Brave', mcpUrl: 'https://brave.run.tools', metadata: JSON.parse(init.body!).metadata, status: { state: 'connected' } }, 201)
+    return answer({ error: 'not found' }, 404)
+  })
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }), park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller, mcpLibraryFile: join(dir, 'mcp-library.json'),
+    library: { mcp: { catalog: new SmitheryCatalog(join(dir, 'catalog'), request as never), hostId: '0123456789abcdef', request: request as never } } })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening'); close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const req = (path: string, method = 'GET', body?: unknown) => fetch(base + path, { method, headers: { authorization: 'Bearer owner' }, ...(body ? { body: JSON.stringify(body) } : {}) })
+  expect((await fetch(base + '/v1/mcp/account')).status).toBe(401)
+  expect(await (await req('/v1/mcp/account')).json()).toEqual({ connected: false, namespace: null, disconnecting: false })
+  expect((await req('/v1/mcp/connections', 'POST', { server: 'brave' })).status).toBe(409)
+  expect(await (await req('/v1/mcp/account', 'PUT', { apiKey: key })).json()).toEqual({ connected: true, namespace: 'space', disconnecting: false })
+  const storefront = await (await req('/v1/mcp/storefront')).json() as { groups: Array<{ id: string; servers: Array<Record<string, unknown>> }> }
+  expect(storefront.groups[0]?.servers[0]).toMatchObject({ id: 'brave', uses: 900, connection: null })
+  expect(storefront.groups[0]?.servers[0]).not.toHaveProperty('iconUrl')
+  const added = await (await req('/v1/mcp/connections', 'POST', { server: 'brave' })).json() as { id: string; status: unknown }
+  expect(added.status).toEqual({ state: 'connected', tools: 1 })
+  expect((await (await req('/v1/mcp/discover?q=brave')).json() as { servers: Array<{ connection: string }> }).servers[0]?.connection).toBe(added.id)
+  const everything = [await (await req('/v1/mcp/connections')).text(), await (await req('/v1/mcp/account')).text(), await (await req('/v1/mcp/storefront')).text()].join()
+  expect(everything).not.toContain(key)
+  expect(everything).not.toContain('svc-scoped-token-1')
+  expect((await req('/v1/mcp/connections/not-an-id', 'DELETE')).status).toBe(404)
+  expect((await req('/v1/mcp/icons/../../etc')).status).toBe(404)
+  expect((await req('/v1/mcp/discover?page=x')).status).toBe(400)
+  expect(await readFile(join(dir, 'mcp-library.json'), 'utf8')).toContain(key)
 })

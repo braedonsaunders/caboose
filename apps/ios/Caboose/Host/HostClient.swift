@@ -24,6 +24,14 @@ struct HostClient: Sendable {
         var icon: String
         var categories: [String]
         var exec: String
+        /// The entry's desktop actions (`New Private Window`); absent from hosts that predate them.
+        var actions: [Action]?
+        var startupWMClass: String?
+
+        struct Action: Decodable, Hashable, Sendable {
+            var id: String
+            var name: String
+        }
 
         /// The PNG behind the icon's data URL.
         var iconData: Data? {
@@ -34,6 +42,13 @@ struct HostClient: Sendable {
 
     /// `GET /v1/computer`: the computer's settings and what it is running with now.
     struct ComputerStatus: Decodable, Equatable, Sendable {
+        struct Size: Decodable, Equatable, Identifiable, Sendable {
+            var id: String
+            var name: String
+            var memoryMb: Int
+            var vcpus: Int
+            var available: Bool
+        }
         struct Settings: Codable, Equatable, Sendable {
             var name: String
             var memoryMb: Int
@@ -73,6 +88,7 @@ struct HostClient: Sendable {
         }
         var state: String
         var settings: Settings
+        var sizes: [Size]?
         var activeResources: Resources?
         var restartRequired: Bool
         var clients: Clients
@@ -103,12 +119,23 @@ struct HostClient: Sendable {
     var baseURL: URL
     var token: String
 
-    func wake() async throws -> Session { try await request("POST", "/v1/session", timeout: 300) }
+    /// A cold boot can take minutes; reconnecting to a computer that was just running passes a shorter `timeout`.
+    func wake(timeout: TimeInterval = 300) async throws -> Session { try await request("POST", "/v1/session", timeout: timeout) }
     func apps() async throws -> [App] { try await request("GET", "/v1/apps", timeout: 60) }
 
-    func launch(_ app: App) async throws {
+    /// Starts an app, or one of its desktop actions.
+    func launch(_ app: App, action: App.Action? = nil) async throws {
         let id = app.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? app.id
-        let _: [String: Bool] = try await request("POST", "/v1/apps/\(id)/launch", timeout: 30)
+        let body: [String: JSONValue]? = action.map { ["action": .string($0.id)] }
+        let reply: [String: Bool] = try await request("POST", "/v1/apps/\(id)/launch", body: body, timeout: 30)
+        guard reply["launched"] == true else {
+            throw Failure.server(200, "The computer did not acknowledge the application launch.")
+        }
+    }
+
+    func createDesktopShortcut(_ appID: String) async throws {
+        let id = appID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))) ?? appID
+        let _: [String: String] = try await request("POST", "/v1/apps/\(id)/desktop-shortcut", timeout: 30)
     }
 
     func park() async throws {
@@ -134,12 +161,31 @@ struct HostClient: Sendable {
         return components.url!
     }
 
+    /// The address of a route. `path` is percent-encoded (ids through `pathComponent`) and may
+    /// end in a query string; characters a URL cannot hold are encoded, escapes are kept.
+    func endpoint(_ path: String) -> URL {
+        var root = baseURL.absoluteString
+        while root.hasSuffix("/") { root.removeLast() }
+        return URL(string: root + path) ?? baseURL.appendingPathComponent(path)
+    }
+
     func request<T: Decodable>(_ method: String, _ path: String, body: [String: JSONValue]? = nil,
                                timeout: TimeInterval) async throws -> T {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path), timeoutInterval: timeout)
+        let data = try await send(method, path, body: body, accept: "application/json", timeout: timeout)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// The bytes a `GET` route answers with, such as an image, signed in like every request.
+    func data(_ path: String, accept: String = "*/*", timeout: TimeInterval) async throws -> Data {
+        try await send("GET", path, body: nil, accept: accept, timeout: timeout)
+    }
+
+    private func send(_ method: String, _ path: String, body: [String: JSONValue]?, accept: String,
+                      timeout: TimeInterval) async throws -> Data {
+        var request = URLRequest(url: endpoint(path), timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(accept, forHTTPHeaderField: "Accept")
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(body)
@@ -153,10 +199,10 @@ struct HostClient: Sendable {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         switch status {
         case 200 ..< 300:
-            return try JSONDecoder().decode(T.self, from: data)
+            return data
         case 401, 403:
             throw Failure.unauthorized
-        case 409 where path.hasPrefix("/v1/agent/profiles") || path.hasPrefix("/v1/agent/routines") || path.hasPrefix("/v1/computer") || path.hasPrefix("/v1/catalog") || path == "/v1/session/park":
+        case 409 where path.hasPrefix("/v1/agent/profiles") || path.hasPrefix("/v1/agent/routines") || path.hasPrefix("/v1/computer") || path.hasPrefix("/v1/catalog") || path.hasPrefix("/v1/mcp/") || path == "/v1/session/park":
             let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"]
             throw Failure.server(status, message)
         case 409:

@@ -1,0 +1,38 @@
+name: Check host and console
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/check-host.yml'
+      - 'apps/host/**'
+      - 'apps/web/**'
+      - 'guest/components/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: host-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-and-console:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter caboose-host typecheck
+      - run: pnpm --filter caboose-web typecheck
+      - run: pnpm --filter caboose-host exec vitest run --maxWorkers=2 --no-file-parallelism
+      - run: pnpm --filter caboose-web test
+      - run: pnpm --filter caboose-web build

@@ -44,6 +44,8 @@ install -m 0755 /tmp/caboose-display/caboose-display /tmp/caboose-display/caboos
 install -m 0644 /tmp/caboose-display/caboose-display.service /tmp/caboose-display/caboose-display-agent.service /etc/systemd/system/
 # Codec passthrough (guest/vaapi): the driver, and /dev/udmabuf for its decode surfaces.
 install -D -m 0644 /tmp/caboose-display/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so"
+# GPU streams (guest/gpu): the driver that renders nothing and the layers caboose-gpu-run loads.
+cp -r /tmp/caboose-display/caboose-gpu /usr/local/lib/caboose-gpu
 printf 'udmabuf\n' > /etc/modules-load.d/caboose-udmabuf.conf
 printf 'KERNEL=="udmabuf", GROUP="caboose", MODE="0660"\n' > /etc/udev/rules.d/70-caboose-udmabuf.rules
 systemctl enable desk-guest-agent.service desk-vsock-bridge.service
@@ -54,7 +56,7 @@ for spec in 'WhiteSur-gtk-theme d5782652d412137e26fb8ff55b55a5572e4c6995' 'White
  git clone -q "https://github.com/vinceliuice/$1.git" "/tmp/themes/$1"
  git -C "/tmp/themes/$1" checkout -q "$2"
 done
-/tmp/themes/WhiteSur-gtk-theme/install.sh -d /usr/share/themes -c dark
+/tmp/themes/WhiteSur-gtk-theme/install.sh -d /usr/share/themes -c light -c dark
 /tmp/themes/WhiteSur-icon-theme/install.sh -d /usr/share/icons
 (cd /tmp/themes/WhiteSur-cursors && ./install.sh)
 mkdir -p /home/caboose/.cache /home/caboose/.config/gtk-3.0 /home/caboose/.config/gtk-4.0 /home/caboose/.config/xfce4/terminal

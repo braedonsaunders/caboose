@@ -1,7 +1,28 @@
 import XCTest
+#if canImport(WebKit)
+import WebKit
+#endif
 @testable import CabooseKit
 
 final class ChatArtifactTests: XCTestCase {
+#if canImport(WebKit)
+    @MainActor func testNetworkRulesCompileInNativeWebKit() async throws {
+        let identifier = "caboose-artifact-test-\(UUID().uuidString)"
+        let list: WKContentRuleList = try await withCheckedThrowingContinuation { continuation in
+            WKContentRuleListStore.default().compileContentRuleList(forIdentifier: identifier,
+                encodedContentRuleList: ChatArtifactPolicy.contentRules) { list, error in
+                if let list { continuation.resume(returning: list) }
+                else { continuation.resume(throwing: error ?? NSError(domain: "MissingRuleList", code: 1)) }
+            }
+        }
+        XCTAssertEqual(list.identifier, identifier)
+        await withCheckedContinuation { continuation in
+            WKContentRuleListStore.default().removeContentRuleList(forIdentifier: identifier) { _ in
+                continuation.resume()
+            }
+        }
+    }
+#endif
     func testActualGeneratedFilesMapToAuthenticatedHomePaths() {
         let path = "Agents/f0868e2a-8127-44dc-8eeb-05f351c9c3b0/artifacts/xeqt-snapshot.pdf"
         for input in [path, "/home/caboose/" + path, "file:///home/caboose/" + path, "~/" + path] {

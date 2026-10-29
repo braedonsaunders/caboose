@@ -1,0 +1,8 @@
+{
+  "name": "game-create",
+  "description": "Window 7's game runs on the client: its files are served from root, it loads entry, and it persists /powder in a directory of the home.",
+  "messages": [
+    {"direction": "server", "type": "game.create", "type_id": 23, "fields": {"id": 1, "root": ".local/share/caboose/games/powder-toy/web", "entry": "index.html", "saves": [{"path": ".local/share/The Powder Toy", "mount": "/powder"}], "window": 7}}
+  ],
+  "hex": "1786000000a56269640164726f6f7478292e6c6f63616c2f73686172652f6361626f6f73652f67616d65732f706f776465722d746f792f77656265656e7472796a696e6465782e68746d6c65736176657381a26470617468781b2e6c6f63616c2f73686172652f54686520506f7764657220546f79656d6f756e74672f706f776465726677696e646f7707"
+}

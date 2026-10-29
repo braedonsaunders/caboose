@@ -2,7 +2,26 @@
   "version": "7",
   "dialect": "postgresql",
   "entries": [
-    { "idx": 0, "version": "7", "when": 1793203200000, "tag": "0000_invites", "breakpoints": true },
-    { "idx": 1, "version": "7", "when": 1793203200001, "tag": "0001_ownership", "breakpoints": true }
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1793203200000,
+      "tag": "0000_invites",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793203200001,
+      "tag": "0001_ownership",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793203200002,
+      "tag": "0002_expand_computer_slots",
+      "breakpoints": true
+    }
   ]
 }

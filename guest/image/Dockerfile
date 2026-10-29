@@ -14,18 +14,38 @@ RUN cd /src && cargo build --release --locked --jobs "$CARGO_BUILD_JOBS" -p cabo
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
 
+# The GPU stream driver and layers (guest/gpu), at the commits of one Vulkan SDK release.
+FROM debian:trixie-slim AS gpu
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates git cmake ninja-build g++ python3 python3-venv libpython3-dev pkg-config \
+      libx11-dev libx11-xcb-dev libxcb1-dev libxcb-keysyms1-dev libxrandr-dev libwayland-dev wayland-protocols && \
+    rm -rf /var/lib/apt/lists/*
+COPY gpu /gpu
+ARG GPU_BUILD_JOBS=2
+RUN CABOOSE_GPU_JOBS="$GPU_BUILD_JOBS" /gpu/build.sh /out/caboose-gpu
+
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eatmydata util-linux fdisk e2fsprogs ca-certificates curl && rm -rf /var/lib/apt/lists/*
-COPY image/build-inside.sh image/configure-guest.sh image/apps.sh /builder/
+RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eatmydata util-linux fdisk e2fsprogs erofs-utils zerofree ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv image/make-system-image.sh /builder/
+COPY image/initramfs/caboose-system /builder/caboose-system
 COPY components /builder/components
+COPY keyring /builder/keyring
+COPY container/caboose-session /builder/container/
 COPY files /builder/files
 COPY terminal /builder/terminal
 COPY desktop-mcp /builder/desktop-mcp
 COPY notifications /builder/notifications
 
 COPY phone /builder/phone
+COPY bridge /builder/bridge
+COPY flatpak /builder/flatpak
+COPY game /builder/game
+COPY gpu /builder/gpu
+COPY apps/install.sh apps/caboose-app apps/appcore.py apps/remote.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /builder/apps/
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /out/vaapi/caboose_drv_video.so /builder/display/
+COPY --from=gpu /out/caboose-gpu /builder/display/caboose-gpu
 COPY display/caboose-display-ready display/systemd/caboose-display.service display/systemd/caboose-display-agent.service /builder/display/
-COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/package.json agentd/install.sh /builder/agentd/
+COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs agentd/package.json agentd/install.sh /builder/agentd/
 COPY media-handoff /builder/media-handoff
 ENTRYPOINT ["/builder/build-inside.sh"]

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+# Serialize requests from multiple MCP servers and host-started sessions.
+exec 9>/run/caboose-agent-seat.lock
+flock 9
+if [ -x /usr/local/bin/caboose-session ]; then
+  exec /usr/local/bin/caboose-session start-agent
+fi
+systemctl start caboose-display-agent.service
+caboose-display-ready 60 14601

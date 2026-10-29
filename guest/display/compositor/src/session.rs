@@ -28,11 +28,18 @@ pub struct Session {
     pub video_decoders: Vec<Codec>,
     /// The client plays Opus audio.
     pub audio: bool,
+    /// The client runs games handed off to it, and this instance hands them off.
+    pub wasm: bool,
+    pub webview: bool,
+    pub webview_grant: Option<String>,
+    /// The client renders Vulkan streams, and this instance relays them.
+    pub gpu: bool,
+    pub scaled_motion: bool,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
-pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool) -> Vec<String> {
-    let mut f = vec!["vsync", "ack", "touch", "text-input-v3", "cursor-named", "clipboard"];
+pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool, wasm: bool, gpu: bool) -> Vec<String> {
+    let mut f = vec!["vsync", "ack", "touch", "pencil", "text-input-v3", "cursor-named", "clipboard"];
     if xwayland {
         f.push("xwayland");
     }
@@ -44,6 +51,12 @@ pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool) -> Vec<St
     }
     if tiles {
         f.push("tiles");
+    }
+    if wasm {
+        f.push("wasm");
+    }
+    if gpu {
+        f.push("gpu");
     }
     f.into_iter().map(String::from).collect()
 }
@@ -64,6 +77,23 @@ fn window_lineage(
             .map(|c| c.pid as u32),
     };
     pid.map(crate::video::lineage).unwrap_or_default()
+}
+
+/// A random identifier for this server process (16 hex characters). Window ids restart
+/// with the process, so a client keeps a window's last picture across a reconnect only
+/// when the epoch is unchanged. Without /dev/urandom, the clock and pid still differ
+/// between runs.
+pub fn new_epoch() -> String {
+    use std::io::Read;
+    let mut bytes = [0u8; 8];
+    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).is_err() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        bytes = (nanos ^ ((std::process::id() as u64) << 32)).to_le_bytes();
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Constant-time comparison, so the token cannot be guessed byte by byte.
@@ -117,6 +147,7 @@ impl State {
             a.stop_capture();
         }
         self.session = None;
+        self.games_session_changed();
         self.generation += 1;
         self.release_input();
         for w in self.windows.iter_mut() {
@@ -170,6 +201,9 @@ impl State {
             }
             Message::Configure(c) => self.configure_window(&c),
             Message::Close { id } => self.close_window(id),
+            Message::GpuAck { id, offset } => self.gpu_ack(id, offset),
+            Message::GameDecline { id, reason } => self.decline_game(id, &reason),
+            Message::WebviewDecline { id, reason } => self.decline_webview(id, &reason),
             Message::Displays { displays } => self.set_displays(&displays),
             Message::Touch(t) => self.touch(&t),
             Message::Pointer(p) => self.pointer(&p),
@@ -190,9 +224,7 @@ impl State {
                 }
             }
             Message::ClientClipboard(c) => self.clipboard_from_phone(c),
-            Message::Pencil(_) => {
-                // Pencil input is not supported; `pencil` is absent from the hello's features.
-            }
+            Message::Pencil(p) => self.pencil(&p),
             other => tracing::debug!("connection {conn}: ignoring {}", other.name()),
         }
     }
@@ -227,25 +259,61 @@ impl State {
         self.generation += 1;
         self.set_displays(&hello.displays);
         let encoders: Vec<Codec> = offered.into_iter().filter(|c| hello.decoders.contains(c)).collect();
+        let wasm = hello.wasm && self.games.socket.is_some();
+        let gpu = hello.gpu && self.games.socket.is_some();
+        let webview_grant = if hello.webview && self.games.socket.is_some() {
+            use std::io::Read;
+            let mut bytes = [0u8; 16];
+            std::fs::File::open("/dev/urandom")
+                .and_then(|mut file| file.read_exact(&mut bytes))
+                .ok()
+                .map(|_| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+        } else {
+            None
+        };
+        let webview = webview_grant.is_some();
         self.net.send(
             conn,
             &Message::ServerHello(proto::ServerHello {
                 version: proto::VERSION,
                 displays: self.displays.ids(),
                 encoders,
-                features: features(
-                    self.xwm.is_some() || self.config.x_display.is_some(),
-                    (self.videos.socket.is_some() || self.config.motion)
-                        && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()),
-                    self.audio.is_some(),
-                    self.encoders.settings.tile_max_px > 0,
-                ),
+                features: {
+                    let mut supported = features(
+                        self.xwm.is_some() || self.config.x_display.is_some(),
+                        ((self.videos.socket.is_some() || self.config.motion)
+                            && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()))
+                            || (self.config.motion && hello.scaled_motion),
+                        self.audio.is_some(),
+                        self.encoders.settings.tile_max_px > 0,
+                        wasm,
+                        gpu,
+                    );
+                    if webview {
+                        supported.push("webview".into());
+                    }
+                    supported
+                },
+                epoch: Some(self.epoch.clone()),
             }),
         );
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
         let video_decoders = hello.video_decoders.clone().unwrap_or_default();
         let audio = hello.audio_decoders.as_ref().is_some_and(|d| d.iter().any(|c| c == "opus"));
-        self.session = Some(Session { conn, ready: true, backend, last_vsync: HashMap::new(), video_decoders, audio });
+        self.session = Some(Session {
+            conn,
+            ready: true,
+            backend,
+            last_vsync: HashMap::new(),
+            video_decoders,
+            audio,
+            wasm,
+            webview,
+            webview_grant,
+            gpu,
+            scaled_motion: hello.scaled_motion,
+        });
+        self.games_session_changed();
         if audio {
             let (tx, bitrate) = (self.audio_tx.clone(), self.config.audio_bitrate);
             if let Some(a) = self.audio.as_mut() {
@@ -276,7 +344,12 @@ impl State {
                 (self.text_inputs.enabled_purpose(&surface), self.window_of_surface(&surface))
             {
                 if self.windows.get(id).is_some_and(|w| w.announced.is_some()) {
-                    let state = proto::TextInputState { id, enabled: true, purpose: purpose.map(str::to_owned) };
+                    let state = proto::TextInputState {
+                        id,
+                        enabled: true,
+                        purpose: purpose.map(str::to_owned),
+                        surrounding: self.text_inputs.surrounding(&surface),
+                    };
                     self.net.send(conn, &Message::TextInput(state));
                 }
             }
@@ -363,11 +436,13 @@ impl State {
     pub fn render_streams(&mut self) {
         let Some(session) = self.session.as_ref().filter(|s| s.ready) else { return };
         let backend = session.backend.clone();
-        let session_conn = session.conn;
         let generation = self.generation;
         let align = backend.alignment();
         let now_us = self.now_us();
         for id in self.windows.ids() {
+            if self.game_shown(id) {
+                continue; // the client runs the window's game; there is nothing to show
+            }
             let Some(w) = self.windows.get(id) else { continue };
             if let Some(a) = w.announced.as_ref().filter(|_| w.stream.refine_due(now_us) && !w.stream.need_keyframe) {
                 let rect = Rect::new(0, 0, a.geometry.w, a.geometry.h);
@@ -414,9 +489,11 @@ impl State {
                 w.stream.need_keyframe = true;
                 // The keyframe repaints everything; a motion region is found afresh.
                 w.stream.tracker = None;
-                if let Some(m) = w.stream.motion.take() {
-                    self.net.send(session_conn, &Message::VideoDestroy { id: m.id });
-                }
+                w.stream.end_motion();
+            }
+            if w.stream.rect != rect || w.stream.crop != Rect::new(0, 0, pic_w, pic_h) {
+                w.stream.end_motion();
+                w.stream.tracker = None;
             }
             // A motion stream that ends: this picture puts its region back.
             let ending = w.stream.motion.as_ref().filter(|m| m.ending).map(|m| (m.id, m.rect));
@@ -527,6 +604,7 @@ impl State {
                             id: m.id,
                             rect: m.rect,
                             keyframe: m.need_keyframe,
+                            scaled: m.scaled,
                         }),
                         ends_motion: ending.map(|(id, _)| id),
                     };
@@ -585,6 +663,7 @@ impl State {
         w.stream.encoding = false;
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         let mut refined = false;
+        let mut frame_sent = false;
         match done.result {
             None => {}
             // The relay carries at most 16 MiB per message; a picture that does not fit
@@ -630,6 +709,7 @@ impl State {
                     data: encoded.data,
                 });
                 self.net.send(conn, &message);
+                frame_sent = true;
             }
             Some(Err(e)) => {
                 tracing::warn!("window {}: encode failed: {e}", done.window);
@@ -684,8 +764,10 @@ impl State {
         }
         if let Some(id) = done.ends_motion {
             // After the window picture that repaints its region.
-            self.net.send(conn, &Message::VideoDestroy { id });
-            tracing::debug!("window {}: motion stream {id} ended", done.window);
+            if w.stream.motion_repainted(id, frame_sent) {
+                self.net.send(conn, &Message::VideoDestroy { id });
+                tracing::debug!("window {}: motion stream {id} ended", done.window);
+            }
         }
         if let Some(hits) = &done.hits {
             self.on_video_hits(done.window, hits, done.rect, done.crop, done.pts_us);
@@ -699,7 +781,7 @@ impl State {
     fn motion_possible(&self, window: u64) -> bool {
         let Some(session) = self.session.as_ref().filter(|s| s.ready) else { return false };
         self.config.motion
-            && session.video_decoders.contains(&session.backend.codec())
+            && (session.scaled_motion || session.video_decoders.contains(&session.backend.codec()))
             && !self.videos.streams.by_id.values().any(|s| s.binding.as_ref().is_some_and(|b| b.window == window))
     }
 
@@ -707,10 +789,16 @@ impl State {
     /// stream on what it decides.
     fn watch_motion(&mut self, window: u64, changed: &[Rect], rect: Rect, crop: Rect, now_ms: u64) {
         if !self.motion_possible(window) {
+            if let Some(w) = self.windows.get_mut(window) {
+                w.stream.end_motion();
+                w.stream.tracker = None;
+            }
             return;
         }
         let Some(conn) = self.session.as_ref().map(|s| s.conn) else { return };
         let codec = self.session.as_ref().map(|s| s.backend.codec()).unwrap();
+        let scaled_motion =
+            self.session.as_ref().is_some_and(|s| s.scaled_motion && matches!(s.backend, Backend::Software(_)));
         let Some(w) = self.windows.get_mut(window) else { return };
         let Some(image) = w.stream.image.as_ref() else { return };
         let size = (image.width, image.height);
@@ -725,6 +813,7 @@ impl State {
             Some(crate::motion::Change::Start(region)) if w.stream.motion.is_none() => {
                 let id = self.videos.streams.allocate_id();
                 let (video_rect, clip) = motion_to_window(region, rect, crop);
+                let scaled = scaled_motion && region.w % 4 == 0 && region.h % 4 == 0;
                 tracing::info!("window {window}: motion stream {id} for {region:?} (picture pixels)");
                 self.net.send(
                     conn,
@@ -738,6 +827,7 @@ impl State {
                         source: proto::VideoSource::Motion,
                         color: None,
                         extradata: None,
+                        scaled,
                     }),
                 );
                 w.stream.motion = Some(MotionStream {
@@ -747,13 +837,11 @@ impl State {
                     in_flight: Default::default(),
                     need_keyframe: true,
                     ending: false,
+                    scaled,
                 });
             }
             Some(crate::motion::Change::Stop) => {
-                if let Some(m) = w.stream.motion.as_mut() {
-                    m.ending = true;
-                    w.stream.dirty = true;
-                }
+                w.stream.end_motion();
             }
             _ => {}
         }
@@ -848,11 +936,22 @@ mod tests {
     }
 
     #[test]
+    fn epochs_are_hex_and_differ() {
+        let (a, b) = (new_epoch(), new_epoch());
+        assert_eq!(a.len(), 16);
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_ne!(a, b);
+    }
+
+    #[test]
     fn features_name_xwayland_only_when_running() {
-        assert!(!features(false, false, false, false).contains(&"xwayland".to_string()));
-        assert!(features(true, false, false, false).contains(&"xwayland".to_string()));
-        assert!(features(false, true, false, false).contains(&"video".to_string()));
-        assert!(features(false, false, true, false).contains(&"audio".to_string()));
-        assert!(features(false, false, false, true).contains(&"tiles".to_string()));
+        assert!(!features(false, false, false, false, false, false).contains(&"xwayland".to_string()));
+        assert!(features(true, false, false, false, false, false).contains(&"xwayland".to_string()));
+        assert!(features(false, true, false, false, false, false).contains(&"video".to_string()));
+        assert!(features(false, false, true, false, false, false).contains(&"audio".to_string()));
+        assert!(features(false, false, false, true, false, false).contains(&"tiles".to_string()));
+        assert!(features(false, false, false, false, true, false).contains(&"wasm".to_string()));
+        assert!(!features(true, true, true, true, false, false).contains(&"wasm".to_string()));
+        assert!(features(false, false, false, false, false, true).contains(&"gpu".to_string()));
     }
 }

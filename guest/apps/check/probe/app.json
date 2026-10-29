@@ -1,0 +1,6 @@
+{
+  "name": "Runtime Check",
+  "description": "Probes the caboose-app runtime's policy and bridge.",
+  "capabilities": ["exec", "files"],
+  "window": { "width": 800, "height": 600, "background": "#101418" }
+}

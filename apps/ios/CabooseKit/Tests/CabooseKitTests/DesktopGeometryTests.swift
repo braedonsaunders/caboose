@@ -3,6 +3,15 @@ import Testing
 @testable import CabooseKit
 
 struct DesktopGeometryTests {
+    @Test func localGameReflowsAfterRotationWithoutWaitingForGuestWindow() {
+        let guest = CGSize(width: 1280, height: 720)
+        for viewport in [CGSize(width: 466, height: 678), CGSize(width: 900, height: 600), CGSize(width: 900, height: 450)] {
+            let local = DesktopGeometry.surfaceSize(natural: guest, available: viewport, locallyRendered: true)
+            #expect(local == viewport)
+            #expect(DesktopGeometry.surfaceFrame(natural: local, available: viewport, resizing: false) == CGRect(origin: .zero, size: viewport))
+        }
+        #expect(DesktopGeometry.surfaceSize(natural: guest, available: CGSize(width: 466, height: 678), locallyRendered: false) == guest)
+    }
     @Test func externalResolutionRespectsScreenAndRenderLimit() {
         #expect(abs(DesktopGeometry.externalPixelsPerPoint(width: 1920, scale: 2, fullResolution: false) - 4.0 / 3.0) < 0.000001)
         #expect(DesktopGeometry.externalPixelsPerPoint(width: 1920, scale: 2, fullResolution: true) == 2)

@@ -95,6 +95,8 @@ MimeType=x-scheme-handler/obsidian;
 Terminal=false
 DESKTOP
 fi
+# Official desktop clients retain their vendor launchers, icons and sandboxes.
+bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desktop-apps.sh"
 # Application marks: pinned, checksum-verified Simple Icons (CC0) and OpenCode.
 icon_dir=/usr/local/share/icons/hicolor/scalable/apps
 install -d "$icon_dir" /usr/local/share/icons/hicolor/96x96/apps
@@ -117,7 +119,7 @@ launcher() {
 [Desktop Entry]
 Type=Application
 Name=$name
-Exec=/usr/bin/xfce4-terminal --disable-server --title=$name --execute $cmd
+Exec=/usr/bin/xfce4-terminal --disable-server --title "$name" --execute $cmd
 Icon=$icon
 Categories=Development;Utility;
 Terminal=false
@@ -128,8 +130,8 @@ launcher lazygit Lazygit /usr/bin/lazygit caboose-git
 launcher btop btop /usr/bin/btop btop
 launcher neovim Neovim /usr/bin/nvim nvim
 launcher opencode OpenCode /usr/local/bin/opencode caboose-opencode
-launcher claude Claude-Code "$(command -v claude)" caboose-claude
-launcher codex Codex "$(command -v codex)" org.xfce.terminal
+launcher claude "Claude Code CLI" "$(command -v claude)" caboose-claude
+launcher codex "Codex CLI" "$(command -v codex)" org.xfce.terminal
 launcher gemini Gemini "$(command -v gemini)" caboose-googlegemini
 launcher lazydocker Lazydocker /usr/local/bin/lazydocker caboose-docker
 if id caboose >/dev/null 2>&1; then usermod -aG docker caboose; fi

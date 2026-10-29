@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "title": "The Powder Toy",
+  "app_id": "uk.co.powdertoy.tpt",
+  "root": "web",
+  "entry": "index.html",
+  "saves": [{ "mount": "/powder", "path": ".local/share/The Powder Toy" }],
+  "native_fallback": ["native/powder", "ddir", "~/.local/share/The Powder Toy"],
+  "window": { "size": [1280, 800], "min": [640, 400] }
+}

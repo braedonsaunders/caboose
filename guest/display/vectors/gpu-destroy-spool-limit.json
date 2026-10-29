@@ -1,0 +1,8 @@
+{
+  "name": "gpu-destroy-spool-limit",
+  "description": "The computer stopped keeping stream 1: it outgrew the spool limit.",
+  "messages": [
+    {"direction": "server", "type": "gpu.destroy", "type_id": 27, "fields": {"id": 1, "reason": "spool-limit"}}
+  ],
+  "hex": "1b18000000a26269640166726561736f6e6b73706f6f6c2d6c696d6974"
+}

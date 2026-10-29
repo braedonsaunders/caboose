@@ -22,7 +22,7 @@ function fakeController(id: string, displayUrl = 'ws://127.0.0.1:1') {
     park: async () => { calls.push('park') },
     destroy: async () => { calls.push('destroy') },
     activeResources: () => null, hasSavedState: () => false, stats: () => ({ host: 'caboose-host' }),
-    apps: async () => [{ id: `${id}.desktop`, name: id, icon: '', categories: [], exec: id }], launch: async () => {},
+    apps: async () => [{ id: `${id}.desktop`, name: id, icon: '', categories: [], exec: id, actions: [] }], launch: async () => {},
     displayUrl, agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined,
   }
   return { controller, calls }
@@ -32,7 +32,7 @@ function memorySettings(value: ComputerSettings): SettingsStore {
   return new SettingsStore(value, settingsLimits(), { load: async () => undefined, save: async () => {} })
 }
 
-async function startHost() {
+async function startHost(gpu = false, small = false) {
   const root = await mkdtemp(join(tmpdir(), 'caboose-fleet-'))
   close.push(() => rm(root, { recursive: true, force: true }))
   const echo = new WebSocketServer({ port: 0 })
@@ -54,7 +54,7 @@ async function startHost() {
     return { settings: memorySettings(initial ?? { name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600_000, defaultAgent: null }), controller: fake.controller, push }
   }
   const owner = await open(computers.get(OWNER_COMPUTER)!)
-  const app = createCabooseServer({ token: 'owner', ...owner, fleet: { computers, phones, open, defaults: { memoryMb: 4096, vcpus: 2, idleMs: 600_000 }, maxRunning: 4 } })
+  const app = createCabooseServer({ token: 'owner', ...owner, ...(small ? { machine: async () => ({ memoryMb: 2048, availableMemoryMb: 1024, cpus: 2, disk: null }) } : {}), ...(gpu ? { host: { version: 'test', node: 'test', runtime: 'container' as const, gpu: 'dri' as const, image: 'test', push: false, liveActivities: false, settings: [] } } : {}), fleet: { computers, phones, open, defaults: { memoryMb: 4096, vcpus: 2, idleMs: 600_000 }, maxRunning: 4 } })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
   close.push(() => new Promise(resolve => app.server.close(() => resolve())))
@@ -70,7 +70,7 @@ async function startHost() {
 it('lists, makes and serves several computers, each through its own routes', async () => {
   const host = await startHost()
   const listed = await (await host.call('/v1/computers')).json()
-  expect(listed).toMatchObject({ canCreate: true, limits: { computers: 64, running: 4 }, computers: [{ id: 'owner', state: 'parked', settings: { name: 'Caboose' } }] })
+  expect(listed).toMatchObject({ canCreate: true, limits: { computers: 32832, running: 4 }, computers: [{ id: 'owner', state: 'parked', settings: { name: 'Caboose' } }] })
 
   expect((await host.call('/v1/computers', { method: 'POST', body: { memoryMb: 2048 } })).status).toBe(400)
   expect((await host.call('/v1/computers', { method: 'POST', body: { name: 'Kids', defaultAgent: 'claude' } })).status).toBe(400)
@@ -93,6 +93,37 @@ it('lists, makes and serves several computers, each through its own routes', asy
 
   const after = await (await host.call('/v1/computers')).json()
   expect(after.computers.map((c: { id: string }) => c.id)).toEqual(['owner', kids.id])
+})
+
+it('applies presets through creation and settings without changing custom machines', async () => {
+  const host = await startHost()
+  const status = await (await host.call('/v1/computer')).json()
+  expect(status.sizes).toContainEqual({ id: 'gpu', name: 'GPU', memoryMb: 8192, vcpus: 8, available: false })
+  expect((await host.call('/v1/computers', { method: 'POST', body: { name: 'GPU', size: 'gpu' } })).status).toBe(400)
+  const created = await (await host.call('/v1/computers', { method: 'POST', body: { name: 'Micro', size: 'micro' } })).json()
+  expect(created.settings).toMatchObject({ memoryMb: 2048, vcpus: 2 })
+  const path = `/v1/computers/${created.id}/computer/settings`
+  const resized = await host.call(path, { method: 'PATCH', body: { size: 'standard' } })
+  expect((await resized.json()).settings).toMatchObject({ memoryMb: 4096, vcpus: 4 })
+  expect((await host.call(path, { method: 'PATCH', body: { size: 'gpu' } })).status).toBe(400)
+  expect((await host.call(path, { method: 'PATCH', body: { size: 'micro', vcpus: 5 } })).status).toBe(400)
+  expect((await (await host.call(path, { method: 'PATCH', body: { vcpus: 3 } })).json()).settings).toMatchObject({ memoryMb: 4096, vcpus: 3 })
+})
+
+it('offers and applies GPU size when container GPU access is enabled', async () => {
+  const host = await startHost(true)
+  const status = await (await host.call('/v1/computer')).json()
+  expect(status.sizes.find((size: { id: string }) => size.id === 'gpu').available).toBe(true)
+  const response = await host.call('/v1/computers', { method: 'POST', body: { name: 'GPU', size: 'gpu' } })
+  expect(response.status).toBe(201)
+  expect((await response.json()).settings).toMatchObject({ memoryMb: 8192, vcpus: 8 })
+})
+
+it('rejects a preset larger than the host without altering settings', async () => {
+  const host = await startHost(false, true)
+  expect((await host.call('/v1/computers', { method: 'POST', body: { name: 'Large', size: 'standard' } })).status).toBe(409)
+  expect((await host.call('/v1/computer/settings', { method: 'PATCH', body: { size: 'standard' } })).status).toBe(409)
+  expect((await (await host.call('/v1/computer')).json()).settings).toMatchObject({ memoryMb: 2048, vcpus: 2 })
 })
 
 it('signs a phone in to one computer only, and signing it out closes what it has open', async () => {
@@ -119,6 +150,10 @@ it('signs a phone in to one computer only, and signing it out closes what it has
     expect((await host.call(path, { token: phone })).status, path).toBe(403)
   }
   expect((await host.call('/v1/computer', { token: 'cbp_not-a-token' })).status).toBe(401)
+  const chat = '11111111-1111-4111-8111-111111111111'
+  expect((await host.call(`/v1/computers/${OWNER_COMPUTER}/agent/tasks/${chat}`, { method: 'DELETE', token: phone, body: { stop: true } })).status).toBe(403)
+  expect(host.made.get(OWNER_COMPUTER)!.calls).toEqual([])
+
 
   // Notifications it registers are its computer's, and go when it is signed out.
   expect((await host.call('/v1/devices/push', { method: 'POST', token: phone, body: { token: 'ab'.repeat(32), environment: 'sandbox', kinds: ['task'] } })).status).toBe(200)

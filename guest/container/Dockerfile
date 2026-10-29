@@ -15,6 +15,17 @@ RUN cd /src && cargo build --release --locked --jobs "$CARGO_BUILD_JOBS" -p cabo
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
 
+# The GPU stream driver and layers (guest/gpu), at the commits of one Vulkan SDK release.
+FROM debian:trixie-slim AS gpu
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates git cmake ninja-build g++ python3 python3-venv libpython3-dev pkg-config \
+      libx11-dev libx11-xcb-dev libxcb1-dev libxcb-keysyms1-dev libxrandr-dev libwayland-dev wayland-protocols && \
+    rm -rf /var/lib/apt/lists/*
+COPY gpu /gpu
+ARG GPU_BUILD_JOBS=2
+RUN CABOOSE_GPU_JOBS="$GPU_BUILD_JOBS" /gpu/build.sh /out/caboose-gpu
+
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 # This disposable image build can safely skip per-package fsync on WSL's HDD.
@@ -37,18 +48,26 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
       pulseaudio pulseaudio-utils gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools && \
     useradd -m -u 1000 -s /bin/bash caboose && usermod -aG sudo caboose && \
     printf 'caboose ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/caboose && chmod 0440 /etc/sudoers.d/caboose
-COPY image/apps.sh /tmp/caboose-apps.sh
-RUN bash /tmp/caboose-apps.sh
+COPY image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv /tmp/
+RUN bash /tmp/apps.sh && rm /tmp/apps.sh /tmp/desktop-apps.sh /tmp/desktop-apps.tsv
 COPY desktop-mcp /tmp/desktop-mcp
 RUN /tmp/desktop-mcp/install.sh
-COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/package.json agentd/install.sh /tmp/agentd/
+COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs agentd/package.json agentd/install.sh /tmp/agentd/
 RUN /tmp/agentd/install.sh && rm -rf /tmp/agentd
-COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/package.json agentd/install.sh /tmp/bundle/agentd/
+COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs agentd/package.json agentd/install.sh /tmp/bundle/agentd/
 COPY components /tmp/bundle/components
+COPY desktop-mcp /tmp/bundle/desktop-mcp
+COPY keyring /tmp/bundle/keyring
+COPY container/caboose-session /tmp/bundle/container/
 COPY files /tmp/bundle/files
 COPY terminal /tmp/bundle/terminal
 COPY notifications /tmp/bundle/notifications
 COPY phone /tmp/bundle/phone
+COPY bridge /tmp/bundle/bridge
+COPY flatpak /tmp/bundle/flatpak
+COPY game /tmp/bundle/game
+COPY gpu /tmp/bundle/gpu
+COPY apps/install.sh apps/caboose-app apps/appcore.py apps/remote.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /tmp/bundle/apps/
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff
@@ -56,7 +75,7 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     for spec in 'WhiteSur-gtk-theme d5782652d412137e26fb8ff55b55a5572e4c6995' 'WhiteSur-icon-theme 73d8040da51a9ed74e47c7366e7e9ff437601a5c' 'WhiteSur-cursors e190baf618ed95ee217d2fd45589bd309b37672b'; do \
       set -- $spec; git clone -q "https://github.com/vinceliuice/$1.git" "/tmp/themes/$1" && git -C "/tmp/themes/$1" checkout -q "$2" || exit 1; \
     done && \
-    /tmp/themes/WhiteSur-gtk-theme/install.sh -d /usr/share/themes -c dark && \
+    /tmp/themes/WhiteSur-gtk-theme/install.sh -d /usr/share/themes -c light -c dark && \
     /tmp/themes/WhiteSur-icon-theme/install.sh -d /usr/share/icons && \
     (cd /tmp/themes/WhiteSur-cursors && ./install.sh) && \
     mkdir -p /etc/xdg/gtk-3.0 /etc/chromium.d && \
@@ -71,6 +90,7 @@ RUN triplet=$(dpkg --print-architecture) && \
     case "$triplet" in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) exit 1 ;; esac && \
     install -D -m 0644 /tmp/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so" && rm /tmp/caboose_drv_video.so
 COPY display/caboose-display-ready /usr/local/bin/caboose-display-ready
+COPY --from=gpu /out/caboose-gpu /usr/local/lib/caboose-gpu
 COPY container/caboose-session /usr/local/bin/caboose-session
 RUN chmod 0755 /usr/local/bin/caboose-session
 ENV LD_PRELOAD= CABOOSE_GPU=none DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus GDK_SCALE=1 QT_QPA_PLATFORMTHEME=gtk3 \

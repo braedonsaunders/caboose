@@ -10,7 +10,9 @@ import os
 import re
 import select
 import struct
+import subprocess
 import secrets
+import socket
 import stat
 import threading
 import time
@@ -23,6 +25,34 @@ PORT = int(os.environ.get('CABOOSE_FILES_PORT', '14700'))
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 rootfd = os.open(ROOT, DIR)
 lock = threading.RLock()
+keyring_lock = threading.Lock()
+bridge_slots = threading.BoundedSemaphore(20)
+BRIDGE_MAX = 96 * 1024 * 1024
+BRIDGE_RUNTIME = os.environ.get('CABOOSE_BRIDGE_RUNTIME', f'/run/user/{os.getuid()}')
+
+
+def bridge_receive(sock, count):
+    chunks = bytearray()
+    while len(chunks) < count:
+        part = sock.recv(min(65536, count - len(chunks)))
+        if not part:
+            raise ConnectionError('app bridge closed')
+        chunks.extend(part)
+    return bytes(chunks)
+
+
+def bridge_open(instance):
+    if not re.fullmatch(r'[0-9a-f]{32}', instance):
+        raise ValueError('invalid app bridge instance')
+    path = os.path.join(BRIDGE_RUNTIME, f'caboose-app-{instance}.sock')
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        connection.settimeout(660)
+        connection.connect(path)
+        return connection
+    except BaseException:
+        connection.close()
+        raise
 
 
 def parts(path):
@@ -253,6 +283,68 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return self.reply(401, {'error': 'unauthorized'})
             u = urlsplit(self.path); q = parse_qs(u.query, keep_blank_values=True)
+            bridge = re.fullmatch(r'/webview/([0-9a-f]{32})', u.path)
+            if bridge:
+                length = self.headers.get('Content-Length', '')
+                if (self.command != 'POST' or self.headers.get('Transfer-Encoding') or
+                        not re.fullmatch(r'0|[1-9][0-9]*', length) or int(length) > BRIDGE_MAX):
+                    return self.reply(400, {'error': 'invalid bridge request'})
+                if not bridge_slots.acquire(blocking=False):
+                    return self.reply(503, {'error': 'app bridge busy'})
+                sent_headers = False
+                try:
+                    self.connection.settimeout(30)
+                    with bridge_open(bridge.group(1)) as connection:
+                        remaining = int(length)
+                        connection.sendall(struct.pack('<I', remaining))
+                        while remaining:
+                            chunk = self.rfile.read(min(65536, remaining))
+                            if not chunk:
+                                raise ConnectionError('incomplete bridge request')
+                            connection.sendall(chunk)
+                            remaining -= len(chunk)
+                        size, = struct.unpack('<I', bridge_receive(connection, 4))
+                        if size > BRIDGE_MAX:
+                            raise ValueError('app bridge reply too large')
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Cache-Control', 'no-store')
+                        self.send_header('Content-Length', str(size))
+                        self.end_headers()
+                        sent_headers = True
+                        while size:
+                            chunk = connection.recv(min(65536, size))
+                            if not chunk:
+                                raise ConnectionError('incomplete bridge reply')
+                            self.wfile.write(chunk)
+                            size -= len(chunk)
+                except (OSError, ValueError):
+                    if sent_headers:
+                        self.close_connection = True
+                    else:
+                        return self.reply(503, {'error': 'app bridge unavailable'})
+                finally:
+                    bridge_slots.release()
+                return
+            if u.path == '/keyring':
+                headers = {'Cache-Control': 'no-store'}
+                if self.command != 'POST' or self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length') != '64':
+                    return self.reply(400, {'state': 'unavailable'}, headers)
+                self.connection.settimeout(10)
+                password = self.rfile.read(64)
+                if len(password) != 64 or any(c not in b'0123456789abcdef' for c in password):
+                    return self.reply(400, {'state': 'unavailable'}, headers)
+                if not keyring_lock.acquire(blocking=False):
+                    return self.reply(409, {'state': 'unavailable'}, headers)
+                try:
+                    result = subprocess.run(['/usr/bin/python3', '/opt/caboose/keyring/caboose-keyring'],
+                                            input=password, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=45)
+                    state = 'ready' if result.returncode == 0 and result.stdout.strip() == b'{"state": "ready"}' else 'migration-required' if result.returncode == 3 else 'unavailable'
+                    return self.reply(200 if state == 'ready' else 409, {'state': state}, headers)
+                except Exception:
+                    return self.reply(503, {'state': 'unavailable'}, headers)
+                finally:
+                    keyring_lock.release()
             path = q.get('path', [''])[0]
             parts(path)
             if self.command == 'GET' and u.path == '/changes':

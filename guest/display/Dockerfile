@@ -19,7 +19,7 @@ RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-to
       --component clippy,rustfmt && chmod -R a+rwX /opt/cargo /opt/rustup
 RUN apt-get update && apt-get install -y --no-install-recommends \
       xwayland weston chromium x11-apps xterm ffmpeg mesa-utils libgl1-mesa-dri \
-      mesa-va-drivers vainfo fonts-dejavu-core python3 procps && \
+      mesa-va-drivers vainfo fonts-dejavu-core python3 python3-gi gir1.2-gtk-3.0 procps && \
     rm -rf /var/lib/apt/lists/*
 # Clipboard tools for the clipboard check (X11 and Wayland).
 RUN apt-get update && apt-get install -y --no-install-recommends xclip wl-clipboard && \

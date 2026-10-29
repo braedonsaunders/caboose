@@ -1,8 +1,8 @@
-import type { CatalogOperation, CatalogResponse } from './catalog.js'
+import type { CatalogOperation, CatalogPage, CatalogResponse, CatalogStorefront, DiscoverQuery } from './catalog.js'
 import { fsQuery, joinPath, numberedName, type FileItem } from './files.js'
 import type { ComponentsUpgrade, HealthStatus, HostInfo } from './host.js'
 
-export type ComputerState = 'parked' | 'waking' | 'running' | 'parking' | 'restarting' | 'error'
+export type ComputerState = 'parked' | 'frozen' | 'waking' | 'running' | 'parking' | 'restarting' | 'error'
 
 export interface LimitRange {
   min: number
@@ -27,7 +27,10 @@ export interface ComputerResources {
   vcpus: number
 }
 
+export interface ComputerSize { id: string; name: string; memoryMb: number; vcpus: number; available: boolean }
+
 export interface ComputerStatus {
+  sizes?: ComputerSize[]
   state: ComputerState
   settings: ComputerSettings
   limits?: ComputerLimits
@@ -74,6 +77,7 @@ export interface NewComputer {
   memoryMb: number
   vcpus: number
   idleMs: number
+  size?: string
   /** Required on a host with accounts. */
   tenantId?: string
   personId?: string | null
@@ -245,6 +249,13 @@ export function computeSettingsPatch(
   if (next.vcpus !== current.vcpus) patch.vcpus = next.vcpus
   if (next.idleMs !== current.idleMs) patch.idleMs = next.idleMs
   return patch
+}
+
+/** Send a preset only when its resource values are part of the edit. */
+export function settingsSavePatch(patch: Partial<ComputerSettings>, sizeId: string): Partial<ComputerSettings> & { size?: string } {
+  if (sizeId === 'custom' || (!('memoryMb' in patch) && !('vcpus' in patch))) return patch
+  const { memoryMb: _memory, vcpus: _cpus, ...other } = patch
+  return { ...other, size: sizeId }
 }
 
 export function willRequireColdRestart(
@@ -535,7 +546,7 @@ export class CabooseClient {
     return this.request<ComputerStatus>('GET', '/v1/computer', { timeoutMs: 20_000 })
   }
 
-  updateSettings(patch: Partial<ComputerSettings>): Promise<ComputerStatus> {
+  updateSettings(patch: Partial<ComputerSettings> & { size?: string }): Promise<ComputerStatus> {
     return this.request<ComputerStatus>('PATCH', '/v1/computer/settings', { body: patch, timeoutMs: 20_000 })
   }
 
@@ -585,6 +596,19 @@ export class CabooseClient {
     return this.request<CatalogResponse>('GET', '/v1/catalog', { timeoutMs: 60_000 })
   }
 
+  /** A page of the Library from the host's own index; it works while the computer is parked and never wakes it. */
+  /** The Library's front page: shelves of apps, from the host's own index; never wakes the computer. */
+  catalogStorefront(): Promise<CatalogStorefront> {
+    return this.request<CatalogStorefront>('GET', '/v1/catalog/storefront', { timeoutMs: 60_000 })
+  }
+
+  discoverCatalog({ q = '', category = '', offset = 0 }: DiscoverQuery = {}): Promise<CatalogPage> {
+    const query = new URLSearchParams({ q: q.trim() })
+    if (category) query.set('category', category)
+    if (offset > 0) query.set('offset', String(offset))
+    return this.request<CatalogPage>('GET', `/v1/catalog/discover?${query}`, { timeoutMs: 60_000 })
+  }
+
   /** Queues an operation; the host answers 202 and the catalog then reports its progress. */
   startCatalogOperation(id: string, operation: CatalogOperation): Promise<{ accepted: true }> {
     const app = `/v1/catalog/${encodeURIComponent(id)}`
@@ -593,9 +617,6 @@ export class CabooseClient {
       : this.request<{ accepted: true }>('POST', `${app}/${operation}`, { timeoutMs: 30_000 })
   }
 
-  installPack(id: string): Promise<{ accepted: true }> {
-    return this.request<{ accepted: true }>('POST', `/v1/catalog/packs/${encodeURIComponent(id)}/install`, { timeoutMs: 30_000 })
-  }
 
   /** Lists a home-relative folder. Every /v1/fs request wakes a parked computer. */
   async listFiles(path: string): Promise<FileItem[]> {

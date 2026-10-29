@@ -83,6 +83,12 @@ public enum DesktopGeometry {
                height: max(1, size.height - dockHeight - dockBottomInset - dockGap - titleBarHeight))
     }
 
+    /// Local web content reflows at the viewport size; guest pictures keep their coordinate space.
+    public static func surfaceSize(natural: CGSize, available: CGSize, locallyRendered: Bool) -> CGSize {
+        if locallyRendered || natural.width <= 0 || natural.height <= 0 { return available }
+        return natural
+    }
+
     /// The entire remote picture stays visible, including while a new size is arriving.
     /// During resize it stretches to the tile; otherwise minimum-size windows fit inside it.
     public static func surfaceFrame(natural: CGSize, available: CGSize, resizing: Bool) -> CGRect {

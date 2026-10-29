@@ -140,6 +140,7 @@ function fakeGuest() {
         const model = state.files.get('requested-model.json')
         return JSON.stringify({ ...JSON.parse(state.files.get('models.json') ?? '{}'), ...(model ? { requestedModel: JSON.parse(model) } : {}) })
       }
+      if (rest[1]?.startsWith('// delete-agent-task')) { tasks.delete(idOf(rest[0]!)); return '' }
       if (rest[1]?.startsWith('// retire-model-runner')) { task(idOf(rest[0]!)).alive = false; return '' }
       if (script.includes('requested-model.json.part')) {
         task(idOf(rest[0]!)).files.set('requested-model.json', rest[1]!)
@@ -240,17 +241,77 @@ const REQUEST = '6f1c2a8e-1d2b-4c3d-8e4f-5a6b7c8d9e0f'
 const user = (turn: number, text = 'x') => ({ type: 'user', turn, text })
 const end = (turn: number, summary: string, stopReason = 'end_turn') => ({ type: 'turn_end', turn, stopReason, summary })
 
-function setup(options: { defaultAgent?: string | null; craftServers?: () => Promise<Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }>> } = {}) {
+function setup(options: { defaultAgent?: string | null; craftServers?: () => Promise<Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }>>; mcpLibrary?: () => Promise<boolean> } = {}) {
   const fake = fakeGuest()
   const events: AgentEvent[] = []
   const release = vi.fn()
   const acquire = vi.fn(() => release)
   const agents = resolver(options.defaultAgent === undefined ? 'stand-in' : options.defaultAgent)
-  const tasks = new AgentTasks(() => fake.guest, event => events.push(event), acquire, { resolver: agents, pollMs: 60_000, idleMs: 120_000, craftServers: options.craftServers })
+  const tasks = new AgentTasks(() => fake.guest, event => events.push(event), acquire, { resolver: agents, pollMs: 60_000, idleMs: 120_000, craftServers: options.craftServers, ...(options.mcpLibrary ? { mcpLibrary: options.mcpLibrary } : {}) })
   return { fake, events, release, acquire, agents, tasks }
 }
 
 describe('AgentTasks', () => {
+  it('requires explicit stop for live deletion, releases the lease, and survives restore', async () => {
+    const { tasks, fake, events, release } = setup()
+    await tasks.restore()
+    const task = await tasks.start({ prompt: 'hello' })
+    release.mockClear() // Initial restore has released its temporary lease; the task lease remains.
+    await expect(tasks.delete(task.id)).rejects.toThrow('Stop the agent')
+    expect(tasks.list()).toHaveLength(1)
+    await expect(tasks.delete(task.id, true)).resolves.toBe(true)
+    expect(tasks.list()).toEqual([])
+    expect(release).toHaveBeenCalledOnce()
+    expect(events.at(-1)).toEqual({ type: 'agent.task.deleted', id: task.id })
+    await expect(tasks.reply(task.id, { prompt: 'late reply' })).rejects.toThrow(AgentNotFoundError)
+    const restored = new AgentTasks(() => fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000 })
+    await restored.restore()
+    expect(restored.list()).toEqual([])
+    tasks.pause(); restored.pause()
+  })
+
+  it('fences a reply queued behind deletion and leaves another computer untouched', async () => {
+    const first = setup(), second = setup()
+    const id = '11111111-1111-4111-8111-111111111111'
+    await first.tasks.start({ prompt: 'first computer' }, { id })
+    await second.tasks.start({ prompt: 'second computer' }, { id })
+    let entered!: () => void, release!: () => void
+    const deleting = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const run = first.fake.guest.run.bind(first.fake.guest)
+    first.fake.guest.run = async (command, args, timeout) => {
+      if (args.some(arg => arg.startsWith('// delete-agent-task'))) { entered(); await gate }
+      return run(command, args, timeout)
+    }
+    const removal = first.tasks.delete(id, true)
+    await deleting
+    const reply = first.tasks.reply(id, { prompt: 'late message' })
+    const rejected = expect(reply).rejects.toThrow(AgentNotFoundError)
+    release()
+    await removal; await rejected
+    expect(first.tasks.list()).toEqual([])
+    expect(second.tasks.list().map(task => task.prompt)).toEqual(['second computer'])
+    first.tasks.pause(); second.tasks.pause()
+  })
+
+  it('retains the chat and lease when runner retirement fails', async () => {
+    const { tasks, fake, events, release } = setup()
+    await tasks.restore()
+    const task = await tasks.start({ prompt: 'hello' })
+    release.mockClear() // Assert deletion preserves the task lease, independently of restore.
+    const run = fake.guest.run.bind(fake.guest)
+    fake.guest.run = async (command, args, timeout) => {
+      if (args.some(arg => arg.startsWith('// delete-agent-task'))) throw new Error('Cannot identify this chat runner')
+      return run(command, args, timeout)
+    }
+    await expect(tasks.delete(task.id, true)).rejects.toThrow('Cannot identify')
+    expect(tasks.list()).toHaveLength(1)
+    expect(release).not.toHaveBeenCalled()
+    expect(events.some(event => event.type === 'agent.task.deleted')).toBe(false)
+    tasks.pause()
+  })
+
+
   it('persists requested models and fences stable task retries by model', async () => {
     const { fake, tasks } = setup()
     const id = '11111111-1111-4111-8111-111111111111'
@@ -308,11 +369,26 @@ describe('AgentTasks', () => {
     await expect(tasks.start({ prompt: 'edit', craftMcp: 'no' })).rejects.toThrow('craftMcp must be a boolean')
   })
 
+  it('gives new chats the MCP Library while it has servers, recording only that, and starts without it when it fails', async () => {
+    let active: boolean | Error = true
+    const library = vi.fn(async () => { if (active instanceof Error) throw active; return active })
+    const { fake, tasks } = setup({ mcpLibrary: library })
+    const first = await tasks.start({ prompt: 'search' })
+    const config = fake.task(first.id).files.get('task.json')!
+    expect(JSON.parse(config).mcpLibrary).toBe(true)
+    expect(config).not.toMatch(/token|smithery/i)
+    active = false
+    expect(JSON.parse(fake.task((await tasks.start({ prompt: 'search' })).id).files.get('task.json')!).mcpLibrary).toBeUndefined()
+    active = new Error('Smithery is down')
+    expect(JSON.parse(fake.task((await tasks.start({ prompt: 'search' })).id).files.get('task.json')!).mcpLibrary).toBeUndefined()
+    expect(library).toHaveBeenCalledTimes(3)
+  })
+
   it('starts a task through the runner, streams its transcript, and releases the lease when the turn ends', async () => {
     const { fake, events, release, tasks } = setup()
     const task = await tasks.start({ prompt: 'Run the tests', agent: 'stand-in' })
     expect(task).toMatchObject({ status: 'running', turns: 1, approvals: 'auto', agent: 'stand-in', agentName: 'Stand-in' })
-    expect(fake.calls.some(call => call.join(' ').includes('caboose-display-agent.service'))).toBe(true)
+    expect(fake.calls.some(call => call.join(' ').includes('caboose-display-agent.service'))).toBe(false)
     const state = fake.task(task.id)
     expect(JSON.parse(state.files.get('task.json')!)).toEqual({
       agent: { id: 'stand-in', name: 'Stand-in', version: '1.0.0', distribution: 'npx', package: '@example/stand-in@1.0.0', args: [], env: {} },
@@ -376,12 +452,12 @@ describe('AgentTasks', () => {
     await expect(none.tasks.start({ prompt: 'x' })).rejects.toThrow('Choose an agent')
   })
 
-  it('starts the seat through the driver when it has its own way', async () => {
+  it('does not start the seat for a new task', async () => {
     const fake = fakeGuest()
     const ensureSeat = vi.fn(async () => {})
     const tasks = new AgentTasks(() => fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000, ensureSeat })
     await tasks.start({ prompt: 'hi' })
-    expect(ensureSeat).toHaveBeenCalledTimes(1)
+    expect(ensureSeat).not.toHaveBeenCalled()
     expect(fake.calls.some(call => call.join(' ').includes('systemctl'))).toBe(false)
   })
 
@@ -738,7 +814,7 @@ describe('AgentTasks', () => {
     const legacyFailed = '66666666-6666-4666-8666-666666666666'
     const listing = [
       [running, 'goose', '1790000500', '', '1', '512', b64('keep going'), b64(line(end(1, 'earlier turn'))), 'auto', '2', '1', '', b64('goose')],
-      [done, 'stand-in', '1790000400', '0', '0', '900', b64('run tests'), b64(line(end(3, 'All green.'))), 'ask', '3', '1', b64('shot.png\n'), b64('Stand-in')],
+      [done, 'stand-in', '1790000400', '0', '0', '900', b64('run tests'), b64(line({ ...end(3, 'All green.'), at: '2025-01-02T03:04:05.000Z' })), 'ask', '3', '1', b64('shot.png\n'), b64('Stand-in')],
       [orphan, 'stand-in', '1790000300', '', '0', '10', b64('lost'), '', 'auto', '1', '1', '', b64('Stand-in')],
       [waiting, 'stand-in', '1790000200', '', '1', '40', b64('signed out'), b64(line({ type: 'auth_required', turn: 1, authMethods: [{ id: 'a', name: 'A', type: 'agent' }] })), 'auto', '1', '1', '', b64('Stand-in')],
       [legacy, 'claude', '1790000100', '0', '0', '10', b64('old'), '', 'auto', '1', '0', '', ''],
@@ -752,13 +828,17 @@ describe('AgentTasks', () => {
       [running, 'running', 'goose'], [done, 'succeeded', 'stand-in'], [orphan, 'failed', 'stand-in'], [waiting, 'failed', 'stand-in'], [legacy, 'succeeded', 'claude-acp'],
       [legacyFailed, 'failed', 'codex-acp'],
     ])
+    expect(tasks.list().find(task => task.id === done)?.finishedAt).toBe('2025-01-02T03:04:05.000Z')
+    for (const id of [orphan, waiting, legacy, legacyFailed]) {
+      expect(tasks.list().find(task => task.id === id)?.finishedAt).toBeUndefined()
+    }
     // A task from before the runner says where its transcript is, not that a runner failed.
     expect(tasks.list()[5]!.summary).toBe(`${LEGACY_SUMMARY} /home/caboose/Agents/${legacyFailed}/transcript.jsonl.`)
     expect(tasks.list()[0]).toMatchObject({ prompt: 'keep going', turns: 2, agentName: 'goose' })
     expect(tasks.list()[1]).toMatchObject({ summary: 'All green.', turns: 3, approvals: 'ask', attachments: [`/home/caboose/Agents/${done}/attachments/shot.png`] })
     expect(tasks.list()[3]).toMatchObject({ summary: 'Sign in to Stand-in first.', signIn: [{ id: 'a', name: 'A', type: 'agent' }] })
-    // Only the task whose turn is still running holds the computer awake.
-    expect(acquire).toHaveBeenCalledTimes(1)
+    // Restore holds a temporary lease, and the live task keeps its own lease.
+    expect(acquire).toHaveBeenCalledTimes(2)
     expect(events).toEqual([])
     await tasks.reply(done, { prompt: 'and lint' })
     expect(JSON.parse(fake.task(done).inbox.at(-1)!)).toMatchObject({ type: 'prompt', turn: 4, text: 'and lint', deliveryId: expect.any(String) })
@@ -1105,7 +1185,7 @@ describe('durable admission and recovery', () => {
     s.fake.setListing([t.id, 'stand-in', '1790000500', '', '1', String(s.fake.task(t.id).transcript.length), b64('work'), b64(line(end(1, 'done'))), 'auto', '1', '1', '', ''].join('\t'))
     const r = await restart(s)
     expect(r.tasks.list()[0]).toMatchObject({ status: 'running', turns: 2 })
-    expect(r.release).not.toHaveBeenCalled()
+    expect(r.release).toHaveBeenCalledTimes(1) // restore's temporary lease
     await r.tasks.reply(t.id, { prompt: 'later' })
     expect(r.tasks.list()[0]?.queued).toEqual(['later'])
     expect(s.fake.task(t.id).published.size).toBe(2)

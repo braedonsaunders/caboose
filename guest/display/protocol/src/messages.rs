@@ -141,6 +141,9 @@ pub struct ServerHello {
     /// The server's encoders that the client can decode, in preference order.
     pub encoders: Vec<Codec>,
     pub features: Vec<String>,
+    /// Random for each server process. Window ids are unique within one epoch, so a client
+    /// may keep a window's last picture across a reconnect only when the epoch matches.
+    pub epoch: Option<String>,
 }
 
 /// `window.create` (0x02).
@@ -227,6 +230,17 @@ pub struct TextInputState {
     pub id: u64,
     pub enabled: bool,
     pub purpose: Option<String>,
+    /// The application's text around the caret, while enabled and when it reports it.
+    pub surrounding: Option<Surrounding>,
+}
+
+/// text-input-v3 surrounding text: at most 4000 bytes of UTF-8 around the caret, with the
+/// caret (`cursor`) and the selection's other end (`anchor`) as byte offsets into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Surrounding {
+    pub text: String,
+    pub cursor: u64,
+    pub anchor: u64,
 }
 
 /// `clipboard` (0x30 server → client, 0xA0 client → server).
@@ -267,6 +281,14 @@ pub struct ClientHello {
     pub video_decoders: Option<Vec<Codec>>,
     /// Audio codecs the client plays (`"opus"`); absent means no audio is sent.
     pub audio_decoders: Option<Vec<String>>,
+    /// The client runs games handed off to it (docs/game-handoff.md). Sent only when true.
+    pub wasm: bool,
+    /// The client can host agent app web views.
+    pub webview: bool,
+    /// The client renders Vulkan streams itself (docs/gpu-stream.md). Sent only when true.
+    pub gpu: bool,
+    /// The client accepts half-resolution motion streams.
+    pub scaled_motion: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -295,6 +317,8 @@ pub struct VideoCreate {
     /// Out-of-band codec configuration, only for a codec whose parameters cannot travel
     /// in band.
     pub extradata: Option<Vec<u8>>,
+    /// This motion stream is encoded at half the region's width and height.
+    pub scaled: bool,
 }
 
 /// `video.frame` (0x13): one access unit, in decode order.
@@ -320,6 +344,47 @@ pub struct VideoUpdate {
     pub rect: Option<Rect>,
     pub clip: Option<Rect>,
     pub z: Option<i32>,
+}
+
+/// A directory a game persists through IDBFS: `mount` in the game's file system, `path` on
+/// the computer, relative to the home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameSave {
+    pub mount: String,
+    pub path: String,
+}
+
+/// `game.create` (0x17): the window's game runs on the client (docs/game-handoff.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameCreate {
+    pub id: u64,
+    pub window: u64,
+    /// The directory the game's files are served from, relative to the home.
+    pub root: String,
+    /// The page the client loads, relative to `root`.
+    pub entry: String,
+    /// Absent when the game saves nothing.
+    pub saves: Option<Vec<GameSave>>,
+}
+
+/// `webview.create`: an agent app handed to the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebviewCreate {
+    pub id: u64,
+    pub window: u64,
+    pub app: String,
+    pub bridge: String,
+    pub grant: String,
+    pub root: String,
+    pub entry: String,
+}
+
+/// `gpu.data` (0x1A): the next bytes of a Vulkan stream, at `offset` from its start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuData {
+    pub id: u64,
+    pub offset: u64,
+    pub data: Vec<u8>,
 }
 
 /// `configure` (0x84).
@@ -444,6 +509,26 @@ pub enum Message {
         seq: u64,
         pts_us: u64,
     },
+    WebviewCreate(WebviewCreate),
+    WebviewDestroy {
+        id: u64,
+    },
+    GameCreate(GameCreate),
+    GameDestroy {
+        id: u64,
+    },
+    /// The window's pictures are a Vulkan stream the client renders.
+    GpuCreate {
+        id: u64,
+        window: u64,
+    },
+    GpuData(GpuData),
+    /// The stream ended: its application closed, or `reason` says why it could not go on
+    /// (`"spool-limit"`: the computer would keep more of it than it allows).
+    GpuDestroy {
+        id: u64,
+        reason: Option<String>,
+    },
     Pong {
         t_us: u64,
     },
@@ -486,6 +571,21 @@ pub enum Message {
     VideoKeyframe {
         id: u64,
     },
+    /// The client has consumed a stream up to `offset`.
+    GpuAck {
+        id: u64,
+        offset: u64,
+    },
+    /// The client cannot run game `id` (docs/game-handoff.md, "Declining"); `reason` says
+    /// why, for the computer's log.
+    WebviewDecline {
+        id: u64,
+        reason: String,
+    },
+    GameDecline {
+        id: u64,
+        reason: String,
+    },
     Ping {
         t_us: u64,
     },
@@ -503,6 +603,13 @@ pub mod type_id {
     pub const VIDEO_UPDATE: u8 = 0x14;
     pub const VIDEO_DESTROY: u8 = 0x15;
     pub const VIDEO_PRESENT: u8 = 0x16;
+    pub const GAME_CREATE: u8 = 0x17;
+    pub const GAME_DESTROY: u8 = 0x18;
+    pub const GPU_CREATE: u8 = 0x19;
+    pub const GPU_DATA: u8 = 0x1A;
+    pub const GPU_DESTROY: u8 = 0x1B;
+    pub const WEBVIEW_CREATE: u8 = 0x1C;
+    pub const WEBVIEW_DESTROY: u8 = 0x1D;
     pub const CURSOR: u8 = 0x20;
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
@@ -525,6 +632,9 @@ pub mod type_id {
     pub const POINTER: u8 = 0x92;
     pub const KEY: u8 = 0x93;
     pub const TEXT: u8 = 0x94;
+    pub const GPU_ACK: u8 = 0x96;
+    pub const GAME_DECLINE: u8 = 0x97;
+    pub const WEBVIEW_DECLINE: u8 = 0x98;
     pub const CLIENT_CLIPBOARD: u8 = 0xA0;
     pub const PING: u8 = 0xFE;
 }
@@ -583,6 +693,14 @@ impl Message {
             Message::VideoUpdate(_) => VIDEO_UPDATE,
             Message::VideoDestroy { .. } => VIDEO_DESTROY,
             Message::VideoPresent { .. } => VIDEO_PRESENT,
+            Message::WebviewCreate(_) => WEBVIEW_CREATE,
+            Message::WebviewDestroy { .. } => WEBVIEW_DESTROY,
+            Message::WebviewDecline { .. } => WEBVIEW_DECLINE,
+            Message::GameCreate(_) => GAME_CREATE,
+            Message::GameDestroy { .. } => GAME_DESTROY,
+            Message::GpuCreate { .. } => GPU_CREATE,
+            Message::GpuData(_) => GPU_DATA,
+            Message::GpuDestroy { .. } => GPU_DESTROY,
             Message::Pong { .. } => PONG,
             Message::Bye { .. } => BYE,
             Message::ClientHello(_) => CLIENT_HELLO,
@@ -600,6 +718,8 @@ impl Message {
             Message::ClientClipboard(_) => CLIENT_CLIPBOARD,
             Message::VideoAck { .. } => VIDEO_ACK,
             Message::VideoKeyframe { .. } => VIDEO_KEYFRAME,
+            Message::GpuAck { .. } => GPU_ACK,
+            Message::GameDecline { .. } => GAME_DECLINE,
             Message::Ping { .. } => PING,
         }
     }
@@ -616,6 +736,7 @@ impl Message {
                 .put("displays", Value::Array(m.displays.iter().map(|d| Value::from(*d)).collect()))
                 .put("encoders", codecs_value(&m.encoders))
                 .put("features", m.features.clone())
+                .opt("epoch", m.epoch.clone())
                 .build(),
             Message::WindowCreate(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -651,7 +772,54 @@ impl Message {
             | Message::Close { id }
             | Message::RequestKeyframe { id }
             | Message::VideoDestroy { id }
+            | Message::GameDestroy { id }
+            | Message::WebviewDestroy { id }
             | Message::VideoKeyframe { id } => MapBuilder::new().put("id", *id).build(),
+            Message::GpuDestroy { id, reason } => {
+                MapBuilder::new().put("id", *id).opt("reason", reason.clone()).build()
+            }
+            Message::GpuCreate { id, window } => MapBuilder::new().put("id", *id).put("window", *window).build(),
+            Message::GpuData(m) => {
+                MapBuilder::new().put("id", m.id).put("offset", m.offset).put("data", m.data.clone()).build()
+            }
+            Message::GpuAck { id, offset } => MapBuilder::new().put("id", *id).put("offset", *offset).build(),
+            Message::WebviewCreate(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("window", m.window)
+                .put("app", m.app.as_str())
+                .put("bridge", m.bridge.as_str())
+                .put("grant", m.grant.as_str())
+                .put("root", m.root.as_str())
+                .put("entry", m.entry.as_str())
+                .build(),
+            Message::WebviewDecline { id, reason } => {
+                MapBuilder::new().put("id", *id).put("reason", reason.as_str()).build()
+            }
+            Message::GameDecline { id, reason } => {
+                MapBuilder::new().put("id", *id).put("reason", reason.as_str()).build()
+            }
+            Message::GameCreate(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("window", m.window)
+                .put("root", m.root.as_str())
+                .put("entry", m.entry.as_str())
+                .opt(
+                    "saves",
+                    m.saves.as_ref().map(|saves| {
+                        Value::Array(
+                            saves
+                                .iter()
+                                .map(|s| {
+                                    MapBuilder::new()
+                                        .put("mount", s.mount.as_str())
+                                        .put("path", s.path.as_str())
+                                        .build()
+                                })
+                                .collect(),
+                        )
+                    }),
+                )
+                .build(),
             Message::VideoCreate(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("window", m.window)
@@ -672,6 +840,7 @@ impl Message {
                     }),
                 )
                 .opt("extradata", m.extradata.clone())
+                .opt("scaled", m.scaled.then_some(true))
                 .build(),
             Message::VideoFrame(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -708,9 +877,14 @@ impl Message {
                 .put("hotspot", Value::Array(vec![m.hotspot[0].into(), m.hotspot[1].into()]))
                 .build(),
             Message::CursorNamed { name } => MapBuilder::new().put("name", name.as_str()).build(),
-            Message::TextInput(m) => {
-                MapBuilder::new().put("id", m.id).put("enabled", m.enabled).opt("purpose", m.purpose.clone()).build()
-            }
+            Message::TextInput(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("enabled", m.enabled)
+                .opt("purpose", m.purpose.clone())
+                .opt("surrounding", m.surrounding.as_ref().map(|s| s.text.as_str()))
+                .opt("cursor", m.surrounding.as_ref().map(|s| s.cursor))
+                .opt("anchor", m.surrounding.as_ref().map(|s| s.anchor))
+                .build(),
             Message::ServerClipboard(c) | Message::ClientClipboard(c) => clipboard_value(c),
             Message::Notification(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -733,6 +907,10 @@ impl Message {
                 .put("displays", displays_value(&m.displays))
                 .opt("video_decoders", m.video_decoders.as_deref().map(codecs_value))
                 .opt("audio_decoders", m.audio_decoders.clone())
+                .opt("wasm", m.wasm.then_some(true))
+                .opt("webview", m.webview.then_some(true))
+                .opt("gpu", m.gpu.then_some(true))
+                .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -814,6 +992,7 @@ impl Message {
                 displays: f.req("displays", |v| fields::as_array(v)?.iter().map(fields::as_u32).collect())?,
                 encoders: codecs_from(&f, "encoders")?,
                 features: f.strings("features")?,
+                epoch: f.opt_string("epoch")?,
             }),
             WINDOW_CREATE => Message::WindowCreate(WindowCreate {
                 id: f.u64("id")?,
@@ -874,6 +1053,14 @@ impl Message {
                 id: f.u64("id")?,
                 enabled: f.bool("enabled")?,
                 purpose: f.opt_string("purpose")?,
+                surrounding: match f.opt_string("surrounding")? {
+                    None => None,
+                    Some(text) => {
+                        let cursor = f.u64("cursor")?;
+                        let anchor = f.u64("anchor")?;
+                        Some(Surrounding { text, cursor, anchor })
+                    }
+                },
             }),
             CLIPBOARD => Message::ServerClipboard(clipboard_from(&f)?),
             NOTIFICATION => Message::Notification(Notification {
@@ -909,6 +1096,7 @@ impl Message {
                     }
                 },
                 extradata: f.opt_bytes("extradata")?,
+                scaled: f.opt_bool("scaled")?.unwrap_or(false),
             }),
             VIDEO_FRAME => Message::VideoFrame(VideoFrame {
                 id: f.u64("id")?,
@@ -925,6 +1113,43 @@ impl Message {
             }),
             VIDEO_DESTROY => Message::VideoDestroy { id: f.u64("id")? },
             VIDEO_PRESENT => Message::VideoPresent { id: f.u64("id")?, seq: f.u64("seq")?, pts_us: f.u64("pts_us")? },
+            WEBVIEW_CREATE => Message::WebviewCreate(WebviewCreate {
+                id: f.u64("id")?,
+                window: f.u64("window")?,
+                app: f.string("app")?,
+                bridge: f.string("bridge")?,
+                grant: f.string("grant")?,
+                root: f.string("root")?,
+                entry: f.string("entry")?,
+            }),
+            WEBVIEW_DESTROY => Message::WebviewDestroy { id: f.u64("id")? },
+            WEBVIEW_DECLINE => Message::WebviewDecline { id: f.u64("id")?, reason: f.string("reason")? },
+            GAME_CREATE => Message::GameCreate(GameCreate {
+                id: f.u64("id")?,
+                window: f.u64("window")?,
+                root: f.string("root")?,
+                entry: f.string("entry")?,
+                saves: match f.opt("saves", fields::as_array)? {
+                    None => None,
+                    Some(saves) => Some(
+                        saves
+                            .iter()
+                            .map(|s| {
+                                let s = Fields::new("game.create.saves", s)?;
+                                Ok(GameSave { mount: s.string("mount")?, path: s.string("path")? })
+                            })
+                            .collect::<Result<_, ProtocolError>>()?,
+                    ),
+                },
+            }),
+            GAME_DESTROY => Message::GameDestroy { id: f.u64("id")? },
+            GPU_CREATE => Message::GpuCreate { id: f.u64("id")?, window: f.u64("window")? },
+            GPU_DATA => {
+                Message::GpuData(GpuData { id: f.u64("id")?, offset: f.u64("offset")?, data: f.bytes("data")? })
+            }
+            GPU_DESTROY => Message::GpuDestroy { id: f.u64("id")?, reason: f.opt_string("reason")? },
+            GPU_ACK => Message::GpuAck { id: f.u64("id")?, offset: f.u64("offset")? },
+            GAME_DECLINE => Message::GameDecline { id: f.u64("id")?, reason: f.string("reason")? },
             VIDEO_ACK => Message::VideoAck { id: f.u64("id")?, seq: f.u64("seq")? },
             VIDEO_KEYFRAME => Message::VideoKeyframe { id: f.u64("id")? },
             PONG => Message::Pong { t_us: f.u64("t_us")? },
@@ -942,6 +1167,10 @@ impl Message {
                     None => None,
                     Some(_) => Some(f.strings("audio_decoders")?),
                 },
+                wasm: f.opt_bool("wasm")?.unwrap_or(false),
+                webview: f.opt_bool("webview")?.unwrap_or(false),
+                gpu: f.opt_bool("gpu")?.unwrap_or(false),
+                scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -1031,6 +1260,16 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         VIDEO_PRESENT => "video.present",
         VIDEO_ACK => "video.ack",
         VIDEO_KEYFRAME => "video.keyframe",
+        WEBVIEW_CREATE => "webview.create",
+        WEBVIEW_DESTROY => "webview.destroy",
+        WEBVIEW_DECLINE => "webview.decline",
+        GAME_CREATE => "game.create",
+        GAME_DESTROY => "game.destroy",
+        GPU_CREATE => "gpu.create",
+        GPU_DATA => "gpu.data",
+        GPU_DESTROY => "gpu.destroy",
+        GPU_ACK => "gpu.ack",
+        GAME_DECLINE => "game.decline",
         CURSOR => "cursor",
         CURSOR_NAMED => "cursor.named",
         TEXT_INPUT => "text_input",

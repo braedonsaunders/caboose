@@ -23,6 +23,16 @@ public protocol DisplaySession: AnyObject {
     var latencyMs: Double? { get }
     /// The median time from a key leaving the phone to the next picture of that window.
     var typingEchoMs: Int? { get }
+    /// What the connection has measured; empty where an implementation measures nothing.
+    var health: DisplayLinkHealth { get }
+    /// Why the connection last closed, nil while it has not.
+    var closeCause: DisplayCloseCause? { get }
+    /// Bumped once the server has announced all its windows after a hello, when the server
+    /// guarantees that order (it sends an epoch): `windows` is then exactly the server's.
+    var windowsAnnounced: Int { get }
+    /// The server process's epoch from its last hello; window ids name the same windows
+    /// only within one. Nil for a server that sends none.
+    var epoch: String? { get }
 
     var onClipboardText: ((String) -> Void)? { get set }
     var clipboardProvider: (() -> String?)? { get set }
@@ -36,6 +46,8 @@ public protocol DisplaySession: AnyObject {
 
     func connect()
     func disconnect()
+    /// The network changed: confirm the connection still answers, or close it.
+    func probeLiveness()
 
     // MARK: Windows
 
@@ -85,6 +97,9 @@ public protocol DisplaySession: AnyObject {
     var cursorIsText: Bool? { get }
     /// What kind of text the focused field takes ("terminal", "password", "normal", …), when known.
     var textPurpose: String? { get }
+    /// The focused field's text around the caret, where its app reports it, with a serial
+    /// bumped on every report.
+    var surroundingText: (window: Int, serial: Int, text: SurroundingText)? { get }
     /// The display closed because another device took it over. Reconnecting on its own would
     /// take it back, so the app waits for the person to ask.
     var isReplaced: Bool { get }
@@ -135,5 +150,11 @@ public extension DisplaySession {
     func pencil(_ sample: PencilSample, in window: RemoteWindow) {}
     func displayWillRefresh(_ display: Int, targetTimestamp: CFTimeInterval) {}
     var textPurpose: String? { nil }
+    var surroundingText: (window: Int, serial: Int, text: SurroundingText)? { nil }
     var isReplaced: Bool { false }
+    var health: DisplayLinkHealth { .empty }
+    var closeCause: DisplayCloseCause? { nil }
+    var windowsAnnounced: Int { 0 }
+    var epoch: String? { nil }
+    func probeLiveness() {}
 }

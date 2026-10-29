@@ -1,10 +1,190 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ComputerLifecycle } from './lifecycle.js'
 import { authenticate } from './auth.js'
+import { config } from './config.js'
 
 afterEach(() => vi.useRealTimers())
 
 describe('computer lifecycle', () => {
+  it('invalidates parked work synchronously and serializes wake behind it', async () => {
+    let release!: () => void
+    const cancel = vi.fn()
+    const driver = { wake: vi.fn(async () => 'desk'), park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 10000)
+    computer.setParkedWorkCanceller(cancel)
+    let generation = -1
+    const parked = computer.parkedExclusive(async value => {
+      generation = value
+      await new Promise<void>(resolve => { release = resolve })
+      expect(computer.isParkedGenerationCurrent(value)).toBe(false)
+    })
+    await vi.waitFor(() => expect(release).toBeDefined())
+    const waking = computer.wake('headless')
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(computer.isParkedGenerationCurrent(generation)).toBe(false)
+    expect(driver.wake).not.toHaveBeenCalled()
+    release()
+    await parked
+    expect(await waking).toBe('desk')
+    await expect(computer.parkedExclusive(async () => {})).rejects.toThrow('not available')
+    await computer.park()
+    expect(await computer.parkedExclusive(async value => value)).not.toBe(generation)
+  })
+
+  it('cancels parked work at wake-and-run, restart and retire admission', async () => {
+    const cancel = vi.fn()
+    const computer = new ComputerLifecycle({ wake: async () => 'desk', park: async () => {}, restart: async () => 'new' }, 10000)
+    computer.setParkedWorkCanceller(cancel)
+    await computer.wakeAndRun(async () => {})
+    expect(cancel).toHaveBeenCalledTimes(1)
+    await computer.restart()
+    expect(cancel).toHaveBeenCalledTimes(2)
+    await computer.retire(async () => {})
+    expect(cancel).toHaveBeenCalledTimes(3)
+    await expect(computer.parkedExclusive(async () => {})).rejects.toThrow('not available')
+  })
+  it('rejects a parked operation queued before a wake is admitted', async () => {
+    const computer = new ComputerLifecycle({ wake: async () => 'desk', park: async () => {} }, 10000)
+    const operation = computer.parkedExclusive(async () => 'must not run')
+    const waking = computer.wake()
+    await expect(operation).rejects.toThrow('not available')
+    await waking
+    await computer.park()
+  })
+  it('validates the host freeze-to-park timeout', () => {
+    expect(config({}).freezeParkMs).toBe(60_000)
+    expect(config({ CABOOSE_FREEZE_PARK_MS: '120000' }).freezeParkMs).toBe(120_000)
+    expect(() => config({ CABOOSE_FREEZE_PARK_MS: '0' })).toThrow('CABOOSE_FREEZE_PARK_MS')
+  })
+  it('freezes after idle, thaws before work, and parks at the configured deadline', async () => {
+    vi.useFakeTimers()
+    const driver = { wake: vi.fn(async () => 'desk'), park: vi.fn(async () => {}), canFreeze: () => true,
+      freeze: vi.fn(async () => {}), thaw: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 10000)
+    await computer.wake()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(computer.state).toBe('frozen')
+    expect(driver.freeze).toHaveBeenCalledTimes(1)
+    const work = vi.fn(async () => 'done')
+    expect(await computer.run(work)).toBe('done')
+    expect(driver.thaw).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(computer.state).toBe('frozen')
+    await vi.advanceTimersByTimeAsync(7000)
+    expect(driver.park).toHaveBeenCalledOnce()
+    expect(computer.state).toBe('parked')
+  })
+
+  it('fences work during an ambiguous pause and retries thaw before allowing it', async () => {
+    vi.useFakeTimers()
+    let rejectPause!: (error: Error) => void
+    const driver = { wake: async () => 'desk', park: vi.fn(async () => {}), canFreeze: () => true,
+      freeze: vi.fn(() => new Promise<void>((_, reject) => { rejectPause = reject })), thaw: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 10000)
+    await computer.wake()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(computer.state).toBe('frozen')
+    const work = vi.fn(async () => 'done')
+    const operation = computer.run(work)
+    expect(work).not.toHaveBeenCalled()
+    rejectPause(new Error('uncertain'))
+    expect(await operation).toBe('done')
+    expect(driver.thaw).toHaveBeenCalledOnce()
+    expect(computer.lastError).toBeNull()
+    await computer.park()
+  })
+  it('does not freeze while a time-sensitive guest service is active', async () => {
+    vi.useFakeTimers()
+    const driver = { wake: async () => 'desk', park: vi.fn(async () => {}), canFreeze: () => true,
+      freeze: vi.fn(async () => {}), thaw: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 10000)
+    computer.setFreezeAllowed(() => false)
+    await computer.wake()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(driver.freeze).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(7000)
+    expect(driver.park).toHaveBeenCalledOnce()
+  })
+  it('parks a frozen VM at the host cap when the idle setting is longer', async () => {
+    vi.useFakeTimers()
+    const driver = { wake: async () => 'desk', park: vi.fn(async () => {}), canFreeze: () => true,
+      freeze: vi.fn(async () => {}), thaw: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 600_000)
+    await computer.wake()
+    await vi.advanceTimersByTimeAsync(62_999)
+    expect(computer.state).toBe('frozen')
+    expect(driver.park).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(driver.park).toHaveBeenCalledOnce()
+  })
+  it('defers freeze and park while the terminal preflight refuses, then retries', async () => {
+    vi.useFakeTimers()
+    const driver = { wake: async () => 'desk', park: vi.fn(async () => {}), canFreeze: () => true,
+      freeze: vi.fn(async () => {}), thaw: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 600_000)
+    const preflight = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true)
+    computer.setBeforeFreeze(preflight)
+    await computer.wake()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(computer.state).toBe('running')
+    expect(driver.freeze).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(computer.state).toBe('frozen')
+    expect(driver.freeze).toHaveBeenCalledOnce()
+    await computer.park()
+  })
+  it('keeps the guest fenced if thaw fails and allows a later reconnect', async () => {
+    vi.useFakeTimers()
+    const driver = { wake: async () => 'desk', park: vi.fn(async () => {}), canFreeze: () => true,
+      freeze: vi.fn(async () => {}), thaw: vi.fn().mockRejectedValueOnce(new Error('resume failed')).mockResolvedValue(undefined) }
+    const computer = new ComputerLifecycle(driver, 10000)
+    await computer.wake()
+    await vi.advanceTimersByTimeAsync(3000)
+    await expect(computer.wake()).rejects.toThrow('resume failed')
+    expect(computer.state).toBe('frozen')
+    expect(await computer.wake()).toBe('desk')
+    expect(computer.state).toBe('running')
+    await computer.park()
+  })
+  it('serializes headless wake and interactive promotion, retrying a failed promotion', async () => {
+    const driver = { wake: vi.fn(async () => 'headless'), park: vi.fn(async () => {}), promote: vi.fn().mockRejectedValueOnce(new Error('display unavailable')).mockResolvedValue('interactive') }
+    const computer = new ComputerLifecycle<string>(driver, 10000)
+    expect(await computer.wake('headless')).toBe('headless')
+    await expect(computer.wake()).rejects.toThrow('display unavailable')
+    expect(computer.state).toBe('running')
+    expect(computer.lastError).toBe('display unavailable')
+    expect(await Promise.all([computer.wake(), computer.wake()])).toEqual(['interactive', 'interactive'])
+    expect(computer.lastError).toBeNull()
+    expect(driver.wake).toHaveBeenCalledOnce()
+    expect(driver.promote).toHaveBeenCalledTimes(2)
+    await computer.park()
+  })
+  it('publishes thawed running state after interactive promotion and reports promotion failure', async () => {
+    vi.useFakeTimers()
+    const events: string[] = []
+    const driver = { wake: async () => 'headless', park: async () => {}, canFreeze: () => true,
+      freeze: async () => {}, thaw: vi.fn(async () => { events.push('thaw') }),
+      promote: vi.fn(async () => { events.push('promote'); return 'interactive' }) }
+    const computer = new ComputerLifecycle(driver, 10000)
+    await computer.wake('headless')
+    await vi.advanceTimersByTimeAsync(3000)
+    computer.subscribe(state => events.push(state))
+    driver.promote.mockRejectedValueOnce(new Error('display unavailable'))
+    await expect(computer.wake()).rejects.toThrow('display unavailable')
+    expect(computer.state).toBe('running')
+    expect(computer.lastError).toBe('display unavailable')
+    expect(await computer.wake()).toBe('interactive')
+    expect(driver.thaw).toHaveBeenCalledOnce()
+    expect(computer.lastError).toBeNull()
+    await computer.park()
+
+    await computer.wake('headless')
+    await vi.advanceTimersByTimeAsync(3000)
+    events.length = 0
+    expect(await computer.wake()).toBe('interactive')
+    expect(events).toEqual(['thaw', 'promote', 'running'])
+    await computer.park()
+  })
   it('wakes for an operation and holds the computer until the operation finishes', async () => {
     vi.useFakeTimers()
     let finish!: () => void

@@ -18,7 +18,7 @@ final class YardModel {
     private(set) var scroll: CGFloat = 0
     var pixelsPerPoint: CGFloat = 2
 
-    /// A tile being carried by its grabber.
+    /// A tile being carried by its title bar.
     struct Carry: Equatable {
         let window: Int
         /// The tile's rect on screen when it was picked up.
@@ -60,15 +60,14 @@ final class YardModel {
     var fullscreenWindow: Int? {
         layout.windows.first { session?.windows[$0]?.isFullscreen == true }
     }
-    /// The window zoomed to the whole screen by a double-tap on its grabber, ⌘⌥F or its menu.
+    /// The window zoomed to the whole screen, edge to edge, until it is pulled back.
     private(set) var zoomed: Int?
-    /// The window covering the whole screen, edge to edge with no bars, until it is pulled
-    /// back into its tile: zoomed, or full screen at the app's own request.
+    /// The window covering the workspace above the dock until pulled back into its tile:
+    /// zoomed, or full screen at the app's own request. Desktop navigation stays visible.
     var coverWindow: Int? { zoomed.flatMap { layout.contains($0) ? $0 : nil } ?? fullscreenWindow }
     /// How far the covering window is back toward its tile: 0 covering, 1 in its tile.
     private(set) var coverProgress: CGFloat = 0
-    /// The whole screen the covering window fills, in points; the display grows to it once
-    /// the bars are hidden.
+    /// The workspace above the dock that a covering window fills, in points.
     var screenSize: CGSize = .zero {
         didSet { if coverWindow != nil, screenSize != oldValue { apply() } }
     }
@@ -85,6 +84,12 @@ final class YardModel {
     /// Each window's tile on screen, scroll applied.
     var tiles: [Int: CGRect] {
         layout.frames(in: metrics).mapValues { $0.offsetBy(dx: -scroll, dy: 0) }
+    }
+
+    /// Where each window itself is on screen: its tile below the tile's title bar. This is
+    /// the window's Linux geometry, and where its input, dialogs and popups are placed.
+    var contents: [Int: CGRect] {
+        tiles.mapValues { metrics.content(ofTile: $0) }
     }
 
     /// The columns on screen, and one either side so a scroll or a move animates into view.
@@ -148,9 +153,9 @@ final class YardModel {
         }
         let scale = pixelsPerPoint
         let cover = coverWindow
-        for (id, tile) in tiles {
+        for (id, content) in contents {
             guard let window = session.windows[id] else { continue }
-            let rect = id == cover && screenSize != .zero ? CGRect(origin: .zero, size: screenSize) : tile
+            let rect = id == cover && screenSize != .zero ? CGRect(origin: .zero, size: screenSize) : content
             send(window, CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale).integral, session)
         }
     }
@@ -174,6 +179,20 @@ final class YardModel {
         }
     }
 
+    /// The display server the windows come from: a new lifetime numbers its windows afresh,
+    /// so the track of the last one is cleared (hand-chosen widths stay). Call it before
+    /// syncing a ready session's windows.
+    func enter(epoch: String?) {
+        let before = memory
+        memory.enter(epoch: epoch)
+        guard memory.epoch != before.epoch else { return }
+        scroll = 0
+        zoomed = nil
+        coverProgress = 0
+        invalidate()
+        save()
+    }
+
     /// The display was reconnected or reconfigured: everything is sent afresh.
     func invalidate() {
         sent.removeAll()
@@ -186,7 +205,7 @@ final class YardModel {
         let scale = pixelsPerPoint
         let available = coverWindow == nil || screenSize == .zero ? metrics.size : screenSize
         let bounds = CGRect(origin: .zero, size: available)
-        let around = parent.flatMap { $0.id == coverWindow ? bounds : tiles[$0.id] } ?? bounds
+        let around = parent.flatMap { $0.id == coverWindow ? bounds : contents[$0.id] } ?? bounds
         let margin: CGFloat = 12
         let width = min(dialog.frame.width / scale, max(1, available.width - 2 * margin))
         let height = min(dialog.frame.height / scale, max(1, available.height - 2 * margin))
@@ -228,6 +247,41 @@ final class YardModel {
             scroll = target
         }
         apply()
+    }
+
+    // MARK: Quick Switch
+
+    /// Where the track was before Quick Switch started showing windows.
+    private var scrollBeforePeek: CGFloat?
+
+    /// Slides the track to show a window's column for Quick Switch, telling Linux nothing:
+    /// no window is configured until the switch lands.
+    func peek(_ window: Int) {
+        guard layout.contains(window) else { return }
+        if scrollBeforePeek == nil { scrollBeforePeek = scroll }
+        let target = layout.scroll(revealing: window, from: scroll, in: metrics)
+        guard target != scroll else { return }
+        withAnimation(.smooth(duration: 0.3)) { scroll = target }
+    }
+
+    /// Ends showing windows: staying where the track is now, or sliding back.
+    func endPeek(keep: Bool) {
+        guard let before = scrollBeforePeek else { return }
+        scrollBeforePeek = nil
+        if !keep, before != scroll { withAnimation(.smooth(duration: 0.3)) { scroll = before } }
+        apply()
+    }
+
+    /// Quick Switch on the yard: windows are shown by sliding the track, and the switch lands
+    /// by focusing the window, which sends the geometry of where the track ended.
+    func switchTarget() -> QuickSwitcher.Desktop {
+        QuickSwitcher.Desktop(owner: .yard, session: session,
+                              preview: { [weak self] in self?.peek($0) },
+                              commit: { [weak self] window in
+                                  self?.focus(window)
+                                  self?.endPeek(keep: true)
+                              },
+                              cancel: { [weak self] in self?.endPeek(keep: false) })
     }
 
     func moveFocus(_ direction: YardLayout.Direction) {
@@ -413,8 +467,7 @@ final class YardModel {
 
     // MARK: Full screen
 
-    /// Zooms a window to the whole screen: it grows out of its tile, and the bars, the dock
-    /// and the status bar step aside.
+    /// Zooms a window to the workspace above the dock, keeping Desktop navigation.
     func zoom(_ window: Int) {
         guard layout.contains(window), coverWindow == nil else { return }
         focus(window, animated: false)
@@ -431,7 +484,7 @@ final class YardModel {
 
     /// Available from every tile, even if the app has not reported its fullscreen state.
     func exitAppFullscreen(_ window: Int) {
-        guard let session, let remote = session.windows[window], let tile = tiles[window] else { return }
+        guard let session, let remote = session.windows[window], let tile = contents[window] else { return }
         let scale = pixelsPerPoint
         let target = CGRect(x: tile.minX * scale, y: tile.minY * scale,
                             width: tile.width * scale, height: tile.height * scale).integral
@@ -467,7 +520,7 @@ final class YardModel {
             guard let self else { return }
             self.zoomed = nil
             self.coverProgress = 0
-            if let session = self.session, let remote = session.windows[window], remote.isFullscreen, let tile = self.tiles[window] {
+            if let session = self.session, let remote = session.windows[window], remote.isFullscreen, let tile = self.contents[window] {
                 // The app asked for full screen; it is told it has left it.
                 let scale = self.pixelsPerPoint
                 let target = CGRect(x: tile.minX * scale, y: tile.minY * scale, width: tile.width * scale, height: tile.height * scale).integral

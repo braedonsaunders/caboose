@@ -21,7 +21,7 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | `src/network.ts` | Each guest's TAP device and /30, NAT and the network fence. |
 | `src/agents.ts`, `src/registry.ts`, `src/agent-catalog.ts` | Agent tasks, the Agent Client Protocol registry, and agent install and sign-in. |
 | `src/agent-routines.ts` | Persistent per-computer routines, same-UUID task recovery and bounded run history; [adapter contract and tests](../../docs/agent-routines.md). |
-| `src/fs-proxy.ts`, `src/files.ts` | `/v1/fs` and `/v1/files`, through the guest's file service. |
+| `src/fs-proxy.ts`, `src/files.ts` | `/v1/fs`, `/v1/files` and the authenticated agent-app bridge, through the guest's file service. |
 | `src/terminal.ts` | `/v1/terminal`: the terminal relay to the guest's terminal service, its control messages and session routes. |
 | `src/screen.ts` | `/v1/screen/*`, the owner's display through its accessibility tree. |
 | `src/app-catalog*.ts`, `src/craft-jobs.ts` | The optional application catalog and Craft CLI jobs. |
@@ -205,8 +205,16 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_BIND` | `127.0.0.1` | Listen address (`0.0.0.0` for every IPv4 interface). |
 | `CABOOSE_PORT` | `7310` | Listen port. |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Guest image, overlays, snapshots and the host's state files. |
+| `CABOOSE_SPLIT_IMAGE` | unset | Directory containing a separately built split microVM image. New Linux computers bind to its immutable version; existing disks remain unchanged. Keep all four version files for those computers. |
+| `CABOOSE_VM_DEPOT` | unset | Linux host directory for a shared Flatpak runtime depot, mounted read-only in microVMs using virtio-fs. Requires Docker, the computer container image, and virtiofsd 1.13 or later; cannot be combined with `CABOOSE_VM_COW=on`. |
 | `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
+| `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks. |
+| `CABOOSE_VM_COW` | `off` | `on` enables Cloud Hypervisor copy-on-write snapshot restore. |
+| `CABOOSE_VM_FREE_PAGE_REPORTING` | `off` | `on` enables a zero-size virtio-balloon with free-page reporting on new Cloud Hypervisor boots. |
+| `CABOOSE_SNAPSHOT_TIER` | `off` | `on` archives parked Linux microVM memory to the configured private S3-compatible store after four hours. |
+| `CABOOSE_SNAPSHOT_KEY_FILE` | unset | Absolute path to a host-owned mode 0600 file containing a 32-byte encryption key as lowercase hex. Required when tiering is on. |
+| `APPKIT_STORAGE_ENDPOINT`, `APPKIT_STORAGE_BUCKET`, `APPKIT_STORAGE_ACCESS_KEY_ID`, `APPKIT_STORAGE_SECRET_ACCESS_KEY` | unset | S3-compatible storage connection used for cold snapshots. Required when tiering is on. |
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
 | `CABOOSE_PUBLIC_URL` | unset | Where phones reach this host from anywhere, such as `https://caboose.example.com`; listed first in pairing links and used as the console auth base URL (auth defaults to loopback when unset). |
 | `CABOOSE_MDNS` | `on` | `off` stops advertising `_caboose._tcp` on the LAN. |
@@ -227,6 +235,25 @@ each image pulls anonymously before it attaches the bundles.
 Invalid values stop the host at startup. `GET /v1/host` reports the version, runtime, GPU,
 image and the non-secret settings the host started with.
 
+Run `pnpm --filter caboose-host exec tsx scripts/check-snapshot-tier.mts` on a
+Linux host with the tier and storage variables set to check an encrypted
+upload, restore and object cleanup using a disposable snapshot. The check
+retains local receipts and reports their path if cleanup fails.
+
+Copy-on-write restore cannot be combined with virtio-fs shares, including shares
+recorded in a parked snapshot. Cloud Hypervisor v54 writes complete snapshots; it does
+not provide dirty-page-only snapshot deltas. Free-page reporting requires the guest balloon driver.
+
+Cold snapshot storage also accepts `APPKIT_STORAGE_REGION` and
+`APPKIT_STORAGE_FORCE_PATH_STYLE` (`true` or `false`). Back up the snapshot key
+with the computer disks and host state: without it cold memory cannot be
+restored. Store the key separately from the object bucket. If tiering is turned
+off while a cold snapshot exists, wake, restart and deletion refuse until the
+storage and original key are configured again. Cold restore needs enough local
+space for the restored snapshot. Failed object deletion is retried using local
+cleanup receipts, including receipts for deleted computers. An image root is local to one host; receipts from a different hostname are retained for operator review. A source file left by a crashed copy-on-write VM must be kept
+until an operator has confirmed no VMM maps it.
+
 The owner's computer's name, memory, CPUs, idle timeout and default agent are saved in
 `caboose.json` under `CABOOSE_IMAGE_ROOT` (atomic rename, mode 0600); saved values override
 the environment. Invalid or unreadable settings stop startup rather than reverting. Back the
@@ -237,6 +264,10 @@ sign-ins (`phones.json`, SHA-256 digests only). Every other computer keeps its o
 `caboose.json`, `push-devices.json` and `activities.json` in `computers/<id>/`.
 
 ## Accounts and tenants
+
+The console accepts the same account through its LAN HTTP address and its HTTPS proxy.
+Session cookies match that connection; an HTTPS `CABOOSE_PUBLIC_URL` does not force
+HTTPS-only cookies onto a LAN HTTP sign-in. HTTPS sessions retain Secure cookies.
 
 Administrators sign in to the console with an email and password; the people whose computers
 they run use only their phones and need no account. A tenant is a household or a team, with
@@ -268,8 +299,9 @@ The owner token manages every computer through `/v1/computers` (list, make, dele
 reaches any one under `/v1/computers/<id>/…`; the routes without an id serve the owner's
 computer, as they always have. Each computer has its own disk, settings, lifecycle, agents,
 catalog, notifications and phones, and its own network slot: a microVM on slot *n* gets TAP
-`caboose<n>` and `192.0.2.(4n+2)`, a container its own container, home, bridge network and
-loopback ports from 20000 + 10 × *n*. The owner's computer is slot 0 with the names and
+`caboose<n>` and a persistent /30: slots 0–63 use `192.0.2.0/24`, later slots use
+`198.18.0.0/15`. A container has its own home and bridge; slots 1–63 retain loopback ports
+from 20000 + 10 × *n*, and later slots use available loopback ports outside that range; stopped containers retain their allocations. The owner's computer is slot 0 with the names and
 addresses below, and cannot be deleted. Deleting another computer removes its disk, files,
 network and phones.
 
@@ -296,7 +328,9 @@ the GPU (`/dev/udmabuf` too, when the host has it), and drives the computer with
 Parking freezes the container (`docker pause`): memory stays in RAM and waking is immediate,
 but a Docker or host restart loses the running session and the next wake starts fresh with
 the home intact. A cold restart stops and starts the same container, so installed packages
-and the catalog's rollback cache survive; removing the container discards them.
+survive; removing the container discards them. New containers get Caboose's seccomp profile
+(`guest/container/caboose-seccomp.json`) unless `CABOOSE_CONTAINER_ARGS` sets one, and mount the
+shared runtime volume `caboose-depot` read-only.
 
 A computer is fenced in both runtimes: it can open no connection to the host or to another
 computer, and reaches only the public internet, not private, link-local (cloud metadata),
@@ -307,7 +341,7 @@ your LAN, never another computer.
 
 The host writes a random token to `/run/caboose/display-token` in the guest (mode 0600,
 owner `caboose`): the microVM gets a new one at every wake, a container when it is created,
-restarted, or first woken by a newly started host. At each wake the host then starts the
+restarted, or first woken by a newly started host. An interactive wake starts the
 file service and the owner's display
 (`caboose-display.service` in the microVM, `caboose-session start` and `ready` in a
 container) and waits until it answers a hello carrying the token and has written its
@@ -315,6 +349,22 @@ launch environment (`caboose-display-ready`). It then reads the launch environme
 `/run/caboose/display.env` (its Wayland socket, Xwayland's `DISPLAY` and `XAUTHORITY`,
 toolkit hints, `PULSE_SERVER`); apps, sign-in windows, opened files and the screen routes are
 started with it.
+
+Agent tasks and routines can wake headlessly: components and file service start, while the
+owner display starts on an interactive session, display connection or app launch. The agent
+display starts on a desktop tool call or an agent-seat display connection. A restored memory
+snapshot keeps any displays that were already running.
+
+When AppKit supports resident pause, a microVM with no leases freezes after three seconds;
+new work resumes it. It parks at the earlier of its idle timeout or the host's
+`CABOOSE_FREEZE_PARK_MS` after freezing. Container and unsupported microVM backends park at
+the configured idle timeout.
+
+On a disposable Linux microVM host with resident pause support, run
+`CABOOSE_OWNER_TOKEN=… node apps/host/scripts/check-freeze.mjs` to check freeze, resume,
+park and snapshot restore. Set `CABOOSE_URL` for a nonlocal host and
+`CABOOSE_CHECK_TIMEOUT_MS` if the configured timeouts exceed 90 seconds. Close other clients
+and terminal sessions first; the check wakes the computer and leaves it running.
 
 `POST /v1/session` returns `{ state, display: { path: "/v1/display", token, protocol:
 "caboose-display" }, computer }`. `/v1/display` is a WebSocket (subprotocol `binary`) that
@@ -415,18 +465,48 @@ Live Activities; other producers can publish the generic job shape through
 `POST /v1/jobs/activity`. The sender uses the app topic with `.push-type.liveactivity`
 appended. The API and its limits are in `docs/architecture.md` § Notifications.
 
+## MCP Library
+
+`src/smithery.ts` is the catalog (Smithery's registry, cached in `CABOOSE_IMAGE_ROOT/smithery`),
+`src/mcp-library.ts` a computer's Library (its Smithery account, connections and the computer's
+access token, in the computer's `mcp-library.json`), and `src/safe-fetch.ts` the client for hosts
+named by untrusted metadata. Routes are under `/v1/mcp` (`docs/architecture.md` § MCP Library and
+§ HTTP API). Tests use a stand-in Smithery; nothing in them reaches the network.
+
 ## Catalog and Craft jobs
 
-The pinned catalog in [`guest/catalog`](../../guest/catalog/README.md) is served at
-`GET /v1/catalog`. `GET /v1/catalog/discover?q=...` searches Debian AppStream desktop entries available to the guest architecture; results include categories and project licences. An empty query returns up to 100 entries, with Caboose picks identified as curated. `apps/host/scripts/check-store.sh` checks discovery, installation, installed state, the desktop launcher and restoration in a disposable Debian container; it requires Docker and network access. Install, update, rollback and removal are asynchronous; watch
-`catalog.progress` and `catalog.changed` on `/v1/control`. The guest downloads and verifies
-release packages before APT runs, and Debian packages come from the signed Debian 13
-repositories. Progress percentages describe measured release-download bytes only;
-verification, package installation and triggers show indeterminate stages. One catalog
-operation runs at a time. Listings distinguish a lock-held active operation from an
-interrupted worker; the host observes surviving work and holds its lease until it ends.
-Retry completes pending dpkg configuration even if the application already reports an
-installed version. Rollback is available only when an earlier release package is cached.
+The Library is the curated catalog in [`guest/catalog`](../../guest/catalog/README.md) followed
+by Flathub (`docs/architecture.md` § Catalog). `GET /v1/catalog` lists curated entries and every
+installed application; `GET /v1/catalog/discover?q=&category=&offset=` ranks the whole Library 40
+at a time without a running computer. `src/flathub.ts` keeps Flathub's index and icons in
+`CABOOSE_IMAGE_ROOT/flathub`, `src/releases.ts` the latest verified Craft releases in
+`CABOOSE_IMAGE_ROOT/releases`, and `src/depot.ts` the shared runtime depot's record in
+`CABOOSE_IMAGE_ROOT/depot.json` (`docs/architecture.md` § Runtime depot). On the container
+runtime the depot is the Docker volume `caboose-depot` and its builder runs `src/depot-builder.py`
+in a throwaway container from `CABOOSE_CONTAINER_IMAGE`. Linux microVM hosts can set
+`CABOOSE_VM_DEPOT` to share a host directory read-only via virtio-fs; otherwise each
+computer installs its own runtimes. A snapshot taken before the share was enabled uses
+its local runtimes until a cold restart attaches the share. Virtio-fs requires shared guest memory; Cloud
+Hypervisor restores shared memory eagerly, so the host rejects enabling both the depot and
+`CABOOSE_VM_COW=on`.
+
+Install, update and removal are asynchronous; watch `catalog.progress` and `catalog.changed` on
+`/v1/control`. Installed applications update once a day while their computer runs. The guest
+downloads and verifies Craft releases against their published SHA-256 before APT runs, Debian
+packages come from the signed Debian 13 repositories, Flathub apps install through
+libflatpak, and catalog games are checked against their pins and unpacked as `caboose` into
+`~/.local/share/caboose/games` ([docs/game-handoff.md](../../docs/game-handoff.md#catalog-games)).
+Progress percentages describe measured download bytes only; verification, package
+installation and triggers show indeterminate stages. One catalog operation runs at a time.
+Listings distinguish a lock-held active operation from an interrupted worker; the host observes
+surviving work and holds its lease until it ends. Retry completes pending dpkg configuration
+even if the application already reports an installed version.
+
+`apps/host/scripts/check-flathub.sh` checks the depot builder, a read-only depot mount, a
+Flathub install that uses the depot's runtime, a sandboxed run under Caboose's seccomp profile
+and removal, in disposable Debian containers; it needs Docker and about 1 GB from Flathub.
+`apps/host/scripts/check-store.sh` checks that a Debian app installed through the earlier
+AppStream discovery is rediscovered from its record.
 
 Craft jobs run a fixed list of installed catalog CLI operations, as `caboose`, on files
 staged in `~/.caboose-jobs/<job>` through `/v1/fs`. The contract, formats, progress events
@@ -450,6 +530,12 @@ failure is retried on the next wake. A container created without the port 14700 
 be recreated to enable Files; keep its home volume. `guest/components/README.md` has the
 disposable-guest check, and `check-upgrade.mjs` (below) the real-host one.
 
+App launches log `App launch timing` with the initial lifecycle state, last phase,
+`acknowledged` or `failed`, and milliseconds for queued wake, preparation and total.
+Subtract wake and preparation from total to measure dispatch. These records omit
+app IDs, arguments, tokens and guest error text. They measure dispatch, not first window
+appearance. A request timeout on the phone does not cancel work already admitted by the host.
+
 ## Real-host checks
 
 These run against a deployed host with a built guest, are separate from the unit tests, and
@@ -462,8 +548,9 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | --- | --- |
 | `CABOOSE_OWNER_TOKEN=… apps/host/scripts/e2e.sh` | Wakes the computer (cold only without a snapshot), says an authenticated hello to the owner's display and the agent seat through the relay with `scripts/display-client.mjs` and requires an encoder it decodes, checks the app list has PNG icons and the core apps, launches the Xfce terminal, parks, resumes, says hello again, checks `/v1/health` has no desk error, and parks. |
 | `node apps/host/scripts/check-lineup.mjs` | Opens Mousepad, btop and OpenCode and requires a new window for each on the owner's display. Leaves them open and does not park. |
-| `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft if needed, launches it and requires a new window. Close any PhotoCraft window first. |
+| `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft (or the catalog app `CABOOSE_CATALOG_APP` names, such as `powder-toy`) if needed, launches it and requires a new window with its name and a PNG icon in the app list. Close the app's windows first. |
 | `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |
+| `apps/host/node_modules/.bin/tsx apps/host/scripts/check-container-ports.mts` | Real Docker port allocation, including legacy and stopped container bindings; requires an existing `node:22-bookworm-slim` image (override with `CABOOSE_CHECK_IMAGE`). |
 | `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk. Hosts with accounts also get a throwaway tenant, removed after the computer even when the check fails. Older hosts without tenants remain supported. It creates no accounts; the owner's computer is only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
 | `node apps/host/scripts/check-accounts.mjs` | Accounts and tenants: the setup state and the owner token's view, then a throwaway tenant with a memory quota, a computer within it made and one beyond it refused, a resize past it refused, and both deleted. It makes no accounts and verifies that setup requires its code even on loopback. |
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
@@ -499,3 +586,35 @@ requested and confirmed selection with `GET /v1/agent/tasks/:id/models`; `PUT` w
 are idle. Providers without an advertisement omit `models`. The runner checks the id
 against fresh session options before prompting; the host does not infer models from keys
 or environment variables. See `guest/agentd/README.md` for persistence and ACP negotiation.
+
+### Desktop shortcut endpoint
+
+`POST /v1/apps/:id/desktop-shortcut` creates an owner-owned standard `.desktop` shortcut in
+`~/Desktop` from a visible installed application. It returns `{ path }` with status 201,
+404 for an unavailable app, and 409 for a filename collision. Entries are bounded to 256 KiB,
+the Desktop directory cannot be a symlink, and publication never overwrites an existing item.
+The copy includes `X-Caboose-AppId` for the native app's installed-ID launch route.
+Run `pnpm test -- src/guest-apps.test.ts` for copy, collision, traversal and symlink checks.
+
+Computer creation and settings accept the `micro`, `standard`, and `gpu` size presets;
+see [the architecture](../../docs/architecture.md) for resources and GPU availability.
+Custom CPU and memory settings remain available.
+
+Chat deletion is covered by `pnpm --filter caboose-host exec vitest run src/agents.test.ts src/agent-delete.test.ts src/server.test.ts src/fleet.test.ts`
+from the repository root. On a real Linux computer, create a chat that writes a file in
+its working directory and one outside it, then swipe Delete in Agents > Chats. Confirm
+Stop and Delete while running (repeat while paused and while awaiting approval). Verify
+both generated files remain, the runner group exits, and the chat stays absent after a
+host restart. A concurrent reply must either finish before deletion or fail without
+recreating history. If runner identity cannot be verified, deletion fails visibly.
+
+The runner-group deletion check uses a disposable Linux Node container with no network,
+128 MiB memory and one CPU. It creates its own detached runner wrappers, exercises
+running and paused deletion, verifies generated files and tombstones, and rejects an
+unrelated process group. From the repository root (with the Node image already present):
+
+```sh
+pnpm --filter caboose-host exec tsx -e "import {writeFileSync} from 'node:fs'; import {DELETE_TASK} from './src/agents.ts'; writeFileSync('/tmp/caboose-delete-task-code.js', DELETE_TASK)"
+docker run --rm --init --network none --memory 128m --cpus 1 -v "$PWD/apps/host/scripts/check-agent-delete.mjs:/check.mjs:ro" -v /tmp/caboose-delete-task-code.js:/delete-task.js:ro node:22-bookworm-slim node /check.mjs /delete-task.js
+rm /tmp/caboose-delete-task-code.js
+```

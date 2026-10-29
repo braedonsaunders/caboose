@@ -2,8 +2,10 @@ import CabooseKit
 import SwiftUI
 import UIKit
 
-/// One window's tile: the live Linux window, cut to a small continuous corner with a fine
-/// bevel and the grabber that moves it. Focus brightens the grabber without outlining the app.
+/// One window's tile: a title bar with the window's controls and title, and below it the
+/// live Linux window, together cut to a small continuous corner with a fine bevel. The bar
+/// never covers the app: the window is laid out for the space below it. Focus brightens
+/// the bar without outlining the app.
 struct YardTile: View {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
@@ -16,14 +18,16 @@ struct YardTile: View {
     var body: some View {
         let radius = yard.metrics.cornerRadius
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        ZStack(alignment: .top) {
-            YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: yard.stretches(window.id), keyboard: keyboard) {
-                if yard.layout.focused != window.id { yard.focus(window.id) }
+        VStack(spacing: 0) {
+            YardTitleBar(window: window, yard: yard, focused: focused, onAsk: onAsk)
+            ZStack {
+                YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: yard.stretches(window.id), keyboard: keyboard) {
+                    if yard.layout.focused != window.id { yard.focus(window.id) }
+                }
+                .modifier(WindowDrop(window: window, pixelsPerPoint: yard.pixelsPerPoint))
+                // Tiles without the keyboard step back a little; their text stays sharp.
+                Color.black.opacity(focused ? 0 : 0.1).allowsHitTesting(false)
             }
-            .modifier(WindowDrop(window: window, pixelsPerPoint: yard.pixelsPerPoint))
-            // Tiles without the keyboard step back a little; their text stays sharp.
-            Color.black.opacity(focused ? 0 : 0.1).allowsHitTesting(false)
-            YardGrabber(window: window, yard: yard, focused: focused, onAsk: onAsk)
         }
         .frame(width: rect.width, height: rect.height)
         .background(Color(white: 0.06))
@@ -48,23 +52,34 @@ enum YardStyle {
                                       center: .center, angle: .degrees(-90))
 }
 
-/// The handle at the top of each tile: tap twice for full screen, hold for the tile's menu,
-/// drag to carry the tile to another place on the track.
-struct YardGrabber: View {
+/// The bar at the top of each tile, above the window: Close and Full Screen at its leading
+/// edge, the title, and the tile's menu. Tap the title to focus the tile, tap it twice for
+/// full screen, hold it for the menu, and drag it to carry the tile to another place on the
+/// track.
+struct YardTitleBar: View {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let yard: YardModel
     let focused: Bool
     let onAsk: (RemoteWindow) -> Void
 
+    private var title: String { window.title.isEmpty ? "Window" : window.title }
+
     var body: some View {
+        let bar = yard.metrics.titleBar
         HStack(spacing: 0) {
-            Spacer(minLength: 0)
-            Capsule()
-                .fill(.white.opacity(focused ? 0.9 : 0.55))
-                .frame(width: 30, height: 4)
-                .shadow(color: .black.opacity(0.45), radius: 2, y: 0.5)
-                .frame(width: 84, height: 28)
+            WindowControls(bar: bar, showsSymbols: true, title: title) { control in
+                switch control {
+                case .close: yard.close(window.id)
+                case .zoom: openCard()
+                case .minimize: break
+                }
+            }
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .gesture(
                     TapGesture(count: 2).onEnded { openCard() }
@@ -76,38 +91,26 @@ struct YardGrabber: View {
                         .onEnded { _ in yard.drop() }
                 )
                 .contextMenu { menuContent }
-                .accessibilityLabel("Move \(window.title.isEmpty ? "Window" : window.title)")
+                .accessibilityLabel("Move \(title)")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { yard.focus(window.id) }
                 .accessibilityAction(named: "Full Screen") { openCard() }
-
             Menu { menuContent } label: {
                 Image(systemName: "ellipsis")
-                    .frame(width: 32, height: 28)
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 40, height: bar.height)
                     .contentShape(Rectangle())
             }
-            .accessibilityLabel("\(window.title.isEmpty ? "Window" : window.title) options")
-            Spacer(minLength: 0)
-            Button(role: .destructive) { yard.close(window.id) } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
-                    .frame(width: 28, height: 28)
-                    .background(.regularMaterial, in: Circle())
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Close \(window.title.isEmpty ? "Window" : window.title)")
+            .accessibilityLabel("\(title) options")
         }
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(.white.opacity(focused ? 0.9 : 0.65))
+        .frame(height: bar.height)
+        .foregroundStyle(.white.opacity(focused ? 0.92 : 0.6))
         .buttonStyle(.plain)
-        .background(alignment: .top) {
-            LinearGradient(colors: [.black.opacity(0.35), .clear], startPoint: .top, endPoint: .bottom)
-                .allowsHitTesting(false)
-        }
+        .background(Color(white: focused ? 0.16 : 0.11))
+        .overlay(alignment: .bottom) { Rectangle().fill(.black.opacity(0.45)).frame(height: 0.5) }
     }
 
-    private func openCard() { model.show(windowID: window.id) }
+    private func openCard() { model.show(windowID: window.id, borderless: true) }
 
     @ViewBuilder private var menuContent: some View {
         Section(window.title.isEmpty ? "Window" : window.title) {
@@ -152,6 +155,7 @@ struct YardGrabber: View {
 /// window that keeps a size of its own is shown at it, centred.
 struct YardSurface: UIViewRepresentable {
     @Environment(AppModel.self) private var model
+    @Environment(\.laptopInputOwned) private var laptopInputOwned
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
     let stretch: Bool
@@ -176,10 +180,12 @@ struct YardSurface: UIViewRepresentable {
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.onTouch = onTouch
         view.stretch = stretch
+        view.locallyRendered = window.game != nil
         view.natural = CGSize(width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
-        if keyboard && model.yardActive, !view.content.isFirstResponder {
+        view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
+        if keyboard && model.yardActive && !laptopInputOwned, !view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.becomeFirstResponder() }
-        } else if (!keyboard || !model.yardActive), view.content.isFirstResponder {
+        } else if (!keyboard || !model.yardActive || laptopInputOwned), view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.resignFirstResponder() }
         }
     }
@@ -189,13 +195,23 @@ final class YardSurfaceView: UIView {
     let content: RemoteWindowView
     var onTouch: (() -> Void)?
     var stretch = false { didSet { if stretch != oldValue { setNeedsLayout() } } }
+    var locallyRendered = false { didSet { if locallyRendered != oldValue { setNeedsLayout() } } }
     var natural: CGSize = .zero { didSet { if natural != oldValue { setNeedsLayout() } } }
+    var laptopPoint: CGPoint? { didSet { if laptopPoint != oldValue { setNeedsLayout() } } }
+    private let laptopCursor = UIImageView(image: UIImage(systemName: "cursorarrow"))
 
     init(content: RemoteWindowView) {
         self.content = content
         super.init(frame: .zero)
         clipsToBounds = true
         addSubview(content)
+        laptopCursor.tintColor = .white
+        laptopCursor.isUserInteractionEnabled = false
+        laptopCursor.layer.shadowColor = UIColor.black.cgColor
+        laptopCursor.layer.shadowOpacity = 0.9
+        laptopCursor.layer.shadowRadius = 2
+        laptopCursor.layer.shadowOffset = .zero
+        content.addSubview(laptopCursor)
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -210,12 +226,18 @@ final class YardSurfaceView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let size = natural.width > 0 && natural.height > 0 ? natural : bounds.size
+        let size = DesktopGeometry.surfaceSize(natural: natural, available: bounds.size, locallyRendered: locallyRendered)
         content.transform = .identity
         content.bounds = CGRect(origin: .zero, size: size)
         let shown = DesktopGeometry.surfaceFrame(natural: size, available: bounds.size, resizing: stretch)
         guard size.width > 0, size.height > 0 else { return }
         content.transform = CGAffineTransform(scaleX: shown.width / size.width, y: shown.height / size.height)
         content.center = CGPoint(x: shown.midX, y: shown.midY)
+        laptopCursor.isHidden = laptopPoint == nil
+        if let point = laptopPoint {
+            let sx = max(0.01, shown.width / size.width), sy = max(0.01, shown.height / size.height)
+            laptopCursor.frame = CGRect(x: point.x * size.width, y: point.y * size.height, width: 18 / sx, height: 24 / sy)
+            content.bringSubviewToFront(laptopCursor)
+        }
     }
 }

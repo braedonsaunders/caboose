@@ -82,6 +82,9 @@ pub struct LavcEncoder {
     /// Software: the BGRX the picture was last converted from, to find which damaged
     /// blocks really changed. (NVENC's picture is BGRX and serves for itself.)
     shadow: Vec<u8>,
+    /// Frozen base pixels under an independently encoded motion stream.
+    excluded: Option<(Rect, Vec<u8>)>,
+    masked: Vec<u8>,
     width: u32,
     height: u32,
     pts: i64,
@@ -201,6 +204,8 @@ impl LavcEncoder {
             encoder,
             picture,
             shadow: Vec::new(),
+            excluded: None,
+            masked: Vec::new(),
             width,
             height,
             pts: 0,
@@ -338,7 +343,7 @@ impl LavcEncoder {
                         image.width, image.height, self.width, self.height
                     )));
                 }
-                f(self, &Pixels { data: &image.data, stride: image.stride })
+                self.with_visible_pixels(&Pixels { data: &image.data, stride: image.stride }, f)
             }
             Input::CpuAt(image, x, y) => {
                 if x + self.width > image.width || y + self.height > image.height {
@@ -348,7 +353,7 @@ impl LavcEncoder {
                     )));
                 }
                 let start = y as usize * image.stride + x as usize * 4;
-                f(self, &Pixels { data: &image.data[start..], stride: image.stride })
+                self.with_visible_pixels(&Pixels { data: &image.data[start..], stride: image.stride }, f)
             }
             Input::Shm(p) => {
                 let read = smithay::wayland::shm::with_buffer_contents(&p.buffer, |ptr, len, data| {
@@ -363,11 +368,39 @@ impl LavcEncoder {
                     // SAFETY: with_buffer_contents maps `len` bytes of the pool at `ptr`
                     // for this closure and turns a truncated pool into an error.
                     let pool = unsafe { std::slice::from_raw_parts(ptr, len) };
-                    f(self, &Pixels { data: &pool[start..], stride: data.stride as usize })
+                    self.with_visible_pixels(&Pixels { data: &pool[start..], stride: data.stride as usize }, f)
                 });
                 read.map_err(|e| EncodeError(format!("shm buffer: {e:?}")))?
             }
         }
+    }
+
+    /// Exclusion is an input invariant, not a damage hint: neither a full convert
+    /// nor tile comparison can see newer pixels beneath the video layer.
+    fn with_visible_pixels<R>(
+        &mut self,
+        src: &Pixels<'_>,
+        f: impl FnOnce(&mut Self, &Pixels<'_>) -> Result<R, EncodeError>,
+    ) -> Result<R, EncodeError> {
+        let Some((rect, frozen)) = &self.excluded else { return f(self, src) };
+        let row = self.width as usize * 4;
+        let height = self.height as usize;
+        if src.stride < row || src.data.len() < (height - 1) * src.stride + row {
+            return Err(EncodeError("the input is smaller than the picture".into()));
+        }
+        let mut masked = std::mem::take(&mut self.masked);
+        masked.resize(row * height, 0);
+        for y in 0..height {
+            masked[y * row..(y + 1) * row].copy_from_slice(&src.data[y * src.stride..][..row]);
+        }
+        let frozen_row = rect.w as usize * 4;
+        for y in 0..rect.h as usize {
+            let start = (rect.y as usize + y) * row + rect.x as usize * 4;
+            masked[start..start + frozen_row].copy_from_slice(&frozen[y * frozen_row..][..frozen_row]);
+        }
+        let result = f(self, &Pixels { data: &masked, stride: row });
+        self.masked = masked;
+        result
     }
 
     /// The changed blocks of `damage` as tiles, if they are few and small enough;
@@ -528,6 +561,36 @@ impl LavcEncoder {
 }
 
 impl Encoder for LavcEncoder {
+    fn exclude(&mut self, region: Option<Rect>) {
+        let region = region
+            .and_then(|r| convert::even_clip(r, self.width, self.height))
+            .map(|(x0, y0, x1, y1)| Rect::new(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32));
+        if self.excluded.as_ref().map(|(r, _)| *r) == region {
+            return;
+        }
+        self.excluded = region.map(|rect| {
+            let row = rect.w as usize * 4;
+            let mut frozen = vec![0; row * rect.h as usize];
+            let source = match self.family {
+                Family::Software if self.shadow.len() == self.width as usize * self.height as usize * 4 => {
+                    Some((self.shadow.as_slice(), self.width as usize * 4))
+                }
+                Family::Nvenc if self.pts > 0 => Some((self.picture.data(0), self.picture.stride(0))),
+                _ => None,
+            };
+            if let Some((pixels, stride)) = source {
+                for y in 0..rect.h as usize {
+                    let start = (rect.y as usize + y) * stride + rect.x as usize * 4;
+                    frozen[y * row..][..row].copy_from_slice(&pixels[start..][..row]);
+                }
+            }
+            (rect, frozen)
+        });
+        if self.excluded.is_none() {
+            self.masked.clear();
+        }
+    }
+
     fn codec(&self) -> Codec {
         self.codec
     }
@@ -752,6 +815,46 @@ mod tests {
             }
             10.0 * (255.0f64.powi(2) / (se / (w * h) as f64).max(1e-9)).log10()
         }
+    }
+
+    #[test]
+    fn excluded_motion_pixels_survive_keyframes_tiles_and_refinement() {
+        ff::init().unwrap();
+        let settings = Settings { threads: 1, refine_after_ms: 0, ..Settings::default() };
+        let mut enc = LavcEncoder::new(Family::Software, Codec::H264, 128, 96, &settings).unwrap();
+        let mut decoder = Decoder::new();
+        let mut image = CpuImage::new(128, 96);
+        image.data.fill(40);
+        let first = enc.encode(Input::Cpu(&image), true, None).unwrap();
+        decoder.psnr(&first, &enc);
+        let region = Rect::new(32, 16, 64, 64);
+        enc.exclude(Some(region));
+        image.data.fill(240);
+        let mut assert_frozen = |picture: Picture, enc: &LavcEncoder| {
+            decoder.0.send_packet(&ff::Packet::copy(&picture.data)).unwrap();
+            let mut decoded = ff::frame::Video::empty();
+            decoder.0.receive_frame(&mut decoded).unwrap();
+            // Check the encoder's picture and its decoded output, not only the
+            // masked RGB scratch buffer. The original ROI is dark, the live one white.
+            let y = enc.picture.data(0)[40 * enc.picture.stride(0) + 48];
+            assert!(y < 80, "motion leaked into the base: luma {y}");
+            let decoded_y = decoded.data(0)[40 * decoded.stride(0) + 48];
+            assert!(decoded_y < 80, "motion leaked into the decoded base: luma {decoded_y}");
+        };
+        let key = enc.encode(Input::Cpu(&image), true, None).unwrap();
+        assert!(key.keyframe);
+        assert_frozen(key, &enc);
+        // Full damage and tile comparison must also use the frozen source.
+        let tiles = enc.tiles(Input::Cpu(&image), &[region], 65536).unwrap().unwrap();
+        assert!(tiles.tiles.is_empty());
+        let delta = enc.encode(Input::Cpu(&image), false, None).unwrap();
+        assert_frozen(delta, &enc);
+        let sharp = enc.refine().unwrap();
+        assert_frozen(sharp, &enc);
+        assert!(image.data.iter().all(|p| *p == 240), "mask changed the motion source");
+        enc.exclude(None);
+        enc.encode(Input::Cpu(&image), false, Some(&[region])).unwrap();
+        assert!(enc.picture.data(0)[40 * enc.picture.stride(0) + 48] > 200, "retirement did not repaint");
     }
 
     #[test]

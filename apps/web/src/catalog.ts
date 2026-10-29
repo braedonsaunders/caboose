@@ -1,6 +1,6 @@
-/** The optional application catalog, as `GET /v1/catalog` reports it (docs/architecture.md, Catalog). */
+/** The optional application catalog, as `GET /v1/catalog` and its discover route report it (docs/architecture.md, Catalog). */
 
-export type CatalogOperation = 'install' | 'update' | 'rollback' | 'remove'
+export type CatalogOperation = 'install' | 'update' | 'remove'
 
 export interface CatalogProgress {
   id: string
@@ -10,44 +10,89 @@ export interface CatalogProgress {
   stage?: string
   /** 0–1 where the installer can estimate it, else null. */
   value?: number | null
+  downloadedBytes?: number
+  totalBytes?: number
 }
 
-export interface CatalogPack {
-  id: string
-  name: string
+export interface CatalogSource {
+  /** Debian packages, a Craft release, a pinned game or a Flathub app. */
+  kind: 'apt' | 'release' | 'game' | 'flatpak'
+  /** Download bytes, when known; a game's are its web build and this computer's native build. */
+  size?: number
 }
-
-export type CatalogSource =
-  | { kind: 'apt'; packages: string[] }
-  | { kind: 'deb'; package: string; version: string; url: string; sha256: string; size: number }
 
 export interface CatalogApp {
+  /** A curated id, `flathub-<appId>` or `debian-<package>`. */
   id: string
   name: string
   summary: string
   category: string
-  packs: string[]
-  /** The freedesktop icon name. */
-  icon: string
+  categories: string[]
   desktopId: string
+  fileTypes: { extensions: string[]; utTypes: string[] }
+  /** A 128-pixel PNG data URL, or null. */
+  iconData: string | null
   source: CatalogSource
-  /** The installed version as dpkg reports it, or null. Last observed while the computer is parked. */
+  /** One of Caboose's curated entries. */
+  curated: boolean
+  origin: 'caboose' | 'flathub' | 'debian'
+  developer: string | null
+  /** A Flathub verified publisher. */
+  verified: boolean
+  license: string | null
+  /** Flathub installs last month. */
+  installs: number | null
+  /** The installed version, or null. Last observed while the computer is parked. */
   installedVersion: string | null
-  canRollback: boolean
+  /** Why this computer cannot install the app, or null. */
+  unavailable: string | null
+  latestVersion: string | null
+  /** Apps update on their own; this is a newer version not yet installed. */
+  updateAvailable: boolean
   lastError: string | null
   /** An operation was running when the computer stopped. */
   interrupted: boolean
-  /** A PNG data URL for release apps; null for Debian apps. */
-  iconData: string | null
-  /** The pinned release version for release apps; null for Debian apps. */
-  pinnedVersion: string | null
-  updateAvailable: boolean
+  active: boolean
   progress: CatalogProgress | null
 }
 
 export interface CatalogResponse {
-  packs: CatalogPack[]
   apps: CatalogApp[]
+}
+
+/** A shelf of the Library's front page: Popular, then one per category. */
+export interface CatalogShelf {
+  id: string
+  title: string
+  /** The category See all lists, or '' for every app. */
+  category: string
+  apps: CatalogApp[]
+}
+
+/** The Library's front page, as `GET /v1/catalog/storefront` reports it. */
+export interface CatalogStorefront {
+  groups: CatalogShelf[]
+  /** Why only Caboose's apps are shown: the host could not reach Flathub. */
+  error: string | null
+}
+
+/** One page of the Library: curated matches first, then Flathub's, ranked by the host. */
+export interface CatalogPage {
+  apps: CatalogApp[]
+  total: number
+  offset: number
+  limit: number
+  /** The display categories, in the host's order. */
+  categories: string[]
+  /** Why only Caboose's apps are listed: the host could not reach Flathub. */
+  error: string | null
+}
+
+export interface DiscoverQuery {
+  q?: string
+  /** One of `CatalogPage.categories`; empty for all. */
+  category?: string
+  offset?: number
 }
 
 /** An operation the host has accepted and not yet finished. */
@@ -64,7 +109,6 @@ export function operationLabel(operation: CatalogOperation): string {
   switch (operation) {
     case 'install': return 'Installing'
     case 'update': return 'Updating'
-    case 'rollback': return 'Rolling back'
     case 'remove': return 'Removing'
   }
 }
@@ -82,33 +126,51 @@ export function progressSummary(progress: CatalogProgress): { label: string; per
 }
 
 /** The version to show: Debian revisions are noise next to an upstream version. */
-export function displayVersion(version: string): string {
-  return version.split('-')[0] ?? version
+export function displayVersion(version: string, source?: CatalogSource): string {
+  return source && source.kind !== 'apt' ? version : version.split('-')[0] ?? version
 }
 
 /** The operations the owner can start for an app, in the order they are offered. */
-export function appActions(app: Pick<CatalogApp, 'installedVersion' | 'updateAvailable' | 'canRollback'>): CatalogOperation[] {
+export function appActions(app: Pick<CatalogApp, 'installedVersion' | 'updateAvailable'>): CatalogOperation[] {
   if (!app.installedVersion) return ['install']
   const actions: CatalogOperation[] = []
   if (app.updateAvailable) actions.push('update')
-  if (app.canRollback) actions.push('rollback')
   actions.push('remove')
   return actions
 }
 
-/** Apps in a pack, in catalog order. */
-export function packApps(catalog: CatalogResponse, packId: string): CatalogApp[] {
-  return catalog.apps.filter(app => app.packs.includes(packId))
+/** A button's label: installing after a failed or interrupted attempt is a retry. */
+export function actionLabel(app: Pick<CatalogApp, 'lastError' | 'interrupted'>, operation: CatalogOperation): string {
+  switch (operation) {
+    case 'install': return app.lastError || app.interrupted ? 'Retry' : 'Install'
+    case 'update': return 'Update now'
+    case 'remove': return 'Remove'
+  }
 }
 
-/** A pack is worth offering while any of its apps is missing. */
-export function packMissing(catalog: CatalogResponse, packId: string): number {
-  return packApps(catalog, packId).filter(app => !app.installedVersion).length
+
+
+/**
+ * Library rows with the catalog's current state. `GET /v1/catalog` lists every app that is
+ * curated, installed, being changed or failed, so a discovered app it leaves out has none of
+ * that state, whatever it had when its page arrived.
+ */
+export function withLiveState(apps: CatalogApp[], catalog: CatalogResponse | null): CatalogApp[] {
+  if (!catalog) return apps
+  const live = new Map(catalog.apps.map(app => [app.id, app]))
+  return apps.map(app => live.get(app.id) ?? (app.curated ? app : {
+    ...app, installedVersion: null, updateAvailable: false, lastError: null, interrupted: false, active: false, progress: null,
+  }))
 }
 
-/** Matches an app by name, summary or category, ignoring case. */
-export function matchesQuery(app: { name: string; summary?: string; category?: string; categories?: string[] }, query: string): boolean {
-  const needle = query.trim().toLowerCase()
-  if (!needle) return true
-  return [app.name, app.summary ?? '', app.category ?? '', ...(app.categories ?? [])].some(value => value.toLowerCase().includes(needle))
+/** The next page after the rows already shown, without an app the ranking moved between pages appearing twice. */
+export function appendPage(shown: CatalogApp[], page: CatalogApp[]): CatalogApp[] {
+  const seen = new Set(shown.map(app => app.id))
+  return [...shown, ...page.filter(app => !seen.has(app.id) && seen.add(app.id))]
+}
+
+/** Where the next page starts, or null once every result has arrived. An empty page ends the list. */
+export function nextOffset(page: Pick<CatalogPage, 'apps' | 'offset' | 'total'>): number | null {
+  const next = page.offset + page.apps.length
+  return page.apps.length > 0 && next < page.total ? next : null
 }

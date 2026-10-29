@@ -1,12 +1,13 @@
 //! text-input-v3, implemented here rather than with Smithay's, which routes everything
 //! through an input-method-v2 client. Caboose's input method is the phone's keyboard:
 //! the compositor needs to know when a focused surface enables text input (to show the
-//! keyboard) and to send commits and pre-edit text straight to it.
+//! keyboard) and to send commits and pre-edit text straight to it, and the phone's
+//! keyboard reads the application's surrounding text so it edits with real context.
 
 use crate::state::State;
 use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::{
     zwp_text_input_manager_v3::{self, ZwpTextInputManagerV3},
-    zwp_text_input_v3::{self, ContentPurpose, ZwpTextInputV3},
+    zwp_text_input_v3::{self, ContentHint, ContentPurpose, ZwpTextInputV3},
 };
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
@@ -18,6 +19,44 @@ use std::sync::Mutex;
 struct Pending {
     enabled: bool,
     purpose: Option<ContentPurpose>,
+    /// A password, PIN or other sensitive field: its text never leaves the computer.
+    sensitive: bool,
+    surrounding: Option<Surrounding>,
+}
+
+impl Pending {
+    fn shared_surrounding(&self) -> Option<Surrounding> {
+        if self.sensitive || matches!(self.purpose, Some(ContentPurpose::Password | ContentPurpose::Pin)) {
+            return None;
+        }
+        self.surrounding.clone()
+    }
+}
+
+/// set_surrounding_text: the text around the caret, and the caret and selection anchor as
+/// byte offsets into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Surrounding {
+    pub text: String,
+    pub cursor: u32,
+    pub anchor: u32,
+}
+
+/// text-input-v3 bounds surrounding text to 4000 bytes.
+const MAX_SURROUNDING: usize = 4000;
+
+impl Surrounding {
+    /// What an application sent, if it is usable: within the protocol's size, offsets on
+    /// character boundaries of the text.
+    fn new(text: String, cursor: i32, anchor: i32) -> Option<Self> {
+        let valid = |offset: i32| offset >= 0 && text.is_char_boundary(offset as usize);
+        (text.len() <= MAX_SURROUNDING && valid(cursor) && valid(anchor))
+            .then_some(Surrounding { cursor: cursor as u32, anchor: anchor as u32, text })
+    }
+
+    pub fn wire(&self) -> caboose_display_protocol::Surrounding {
+        caboose_display_protocol::Surrounding { text: self.text.clone(), cursor: self.cursor.into(), anchor: self.anchor.into() }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -39,11 +78,12 @@ pub struct TextInputs {
     inputs: Vec<ZwpTextInputV3>,
 }
 
-/// A text-input object enabled or disabled on a surface.
+/// A text-input object enabled or disabled on a surface, or its surrounding text changed.
 pub struct Toggle {
     pub surface: WlSurface,
     pub enabled: bool,
     pub purpose: Option<&'static str>,
+    pub surrounding: Option<Surrounding>,
 }
 
 pub fn purpose_name(p: ContentPurpose) -> &'static str {
@@ -90,7 +130,7 @@ impl TextInputs {
                         input.leave(&old);
                     }
                     if inner.current.enabled {
-                        toggles.push(Toggle { surface: old, enabled: false, purpose: None });
+                        toggles.push(Toggle { surface: old, enabled: false, purpose: None, surrounding: None });
                     }
                     inner.current = Pending::default();
                 } else {
@@ -133,6 +173,16 @@ impl TextInputs {
             input.done(serial);
         }
         !inputs.is_empty()
+    }
+
+    /// The surrounding text `surface`'s enabled text input last reported.
+    pub fn surrounding(&mut self, surface: &WlSurface) -> Option<caboose_display_protocol::Surrounding> {
+        self.live().find_map(|i| {
+            let inner = i.data::<InputData>().unwrap().inner.lock().unwrap();
+            (inner.current.enabled && inner.entered.as_ref() == Some(surface))
+                .then(|| inner.current.shared_surrounding().as_ref().map(Surrounding::wire))
+                .flatten()
+        })
     }
 
     /// The text-input state of `surface` now: `Some(purpose)` when it is enabled.
@@ -205,27 +255,40 @@ impl Dispatch<ZwpTextInputV3, InputData> for State {
                     inner.pending = Pending::default();
                     None
                 }
-                // Deletions are sent as key presses (see State::text), so the
-                // application's surrounding text is not needed.
-                Request::SetSurroundingText { .. } => None,
-                Request::SetContentType { purpose, .. } => {
+                // The phone's keyboard reads it; deletions still arrive as key presses
+                // (see State::text), which every application takes.
+                Request::SetSurroundingText { text, cursor, anchor } => {
+                    inner.pending.surrounding = Surrounding::new(text, cursor, anchor);
+                    None
+                }
+                Request::SetContentType { hint, purpose } => {
                     if let WEnum::Value(p) = purpose {
                         inner.pending.purpose = Some(p);
                     }
+                    inner.pending.sensitive = match hint {
+                        WEnum::Value(h) => h.intersects(ContentHint::SensitiveData | ContentHint::HiddenText),
+                        WEnum::Unknown(_) => true,
+                    };
                     None
                 }
                 Request::Commit => {
                     inner.serial = inner.serial.wrapping_add(1);
                     let was = inner.current.enabled;
                     let old_purpose = inner.current.purpose;
+                    let old_surrounding = inner.current.shared_surrounding();
+                    // Pending state stays as set until the next enable, so a commit without
+                    // new surrounding text keeps the last.
                     inner.current = inner.pending.clone();
                     let now = inner.current.enabled;
-                    let changed = was != now || (now && old_purpose != inner.current.purpose);
+                    let changed = was != now
+                        || (now && old_purpose != inner.current.purpose)
+                        || (now && old_surrounding != inner.current.shared_surrounding());
                     match (&inner.entered, changed) {
                         (Some(surface), true) => Some(Toggle {
                             surface: surface.clone(),
                             enabled: now,
                             purpose: inner.current.purpose.map(purpose_name),
+                            surrounding: if now { inner.current.shared_surrounding() } else { None },
                         }),
                         _ => None,
                     }
@@ -244,6 +307,29 @@ impl Dispatch<ZwpTextInputV3, InputData> for State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surrounding_text_must_fit_and_land_on_characters() {
+        let s = Surrounding::new("Héllo".into(), 3, 1).unwrap();
+        assert_eq!((s.cursor, s.anchor), (3, 1));
+        assert!(Surrounding::new("Héllo".into(), 2, 2).is_none(), "inside é");
+        assert!(Surrounding::new("abc".into(), 4, 0).is_none());
+        assert!(Surrounding::new("abc".into(), -1, 0).is_none());
+        assert!(Surrounding::new("a".repeat(4001), 0, 0).is_none());
+        assert_eq!(s.wire().text, "Héllo");
+    }
+
+    #[test]
+    fn sensitive_fields_share_no_text() {
+        let text = Surrounding::new("secret".into(), 6, 6);
+        let mut field = Pending { enabled: true, surrounding: text.clone(), ..Pending::default() };
+        assert_eq!(field.shared_surrounding(), text);
+        field.purpose = Some(ContentPurpose::Password);
+        assert_eq!(field.shared_surrounding(), None);
+        field.purpose = Some(ContentPurpose::Normal);
+        field.sensitive = true;
+        assert_eq!(field.shared_surrounding(), None);
+    }
 
     #[test]
     fn purposes_have_protocol_names() {

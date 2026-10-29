@@ -1,8 +1,8 @@
+import CabooseKit
 import Foundation
 import Observation
 import UIKit
 
-struct CatalogPack: Decodable, Identifiable { let id: String; let name: String }
 struct CatalogProgress: Decodable {
     let id: String
     let operation: String
@@ -45,82 +45,162 @@ struct CatalogApp: Decodable, Identifiable {
     let name: String
     let summary: String
     let category: String
-    let packs: [String]
     let desktopId: String
     let categories: [String]?
     let license: String?
     let curated: Bool?
+    let developer: String?
+    /// Flathub's verified publishers.
+    let verified: Bool?
     let fileTypes: FileTypes
     let iconData: String?
     let source: Source
-    let installedVersion: String?
-    let pinnedVersion: String?
-    let updateAvailable: Bool
-    let canRollback: Bool
-    let lastError: String?
-    let interrupted: Bool
+    var installedVersion: String?
+    /// Why this computer cannot install the app, or nil.
+    let unavailable: String?
+    var updateAvailable: Bool
+    var lastError: String?
+    var interrupted: Bool
     var progress: CatalogProgress?
     var needsRecovery: Bool { !busy && (interrupted || lastError != nil || progress?.phase == "failed") }
     var busy: Bool { progress?.phase == "queued" || progress?.phase == "installing" }
-    var icon: UIImage? {
-        guard let iconData, let comma = iconData.firstIndex(of: ","), let data = Data(base64Encoded: String(iconData[iconData.index(after: comma)...])) else { return nil }
-        return UIImage(data: data)
-    }
+    var icon: UIImage? { iconData.flatMap(Self.decodeIcon) }
     var size: String? { source.size.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } }
+    /// `GET /v1/catalog` lists every app that is curated, installed, being changed or failed,
+    /// so an app from discover that it leaves out has none of that state.
+    var settled: CatalogApp {
+        var app = self
+        app.installedVersion = nil; app.updateAvailable = false; app.lastError = nil; app.interrupted = false; app.progress = nil
+        return app
+    }
+
+    private static let icons = NSCache<NSString, UIImage>()
+    /// A PNG data URL, decoded once and at most 128 pixels on a side: a small file can name
+    /// huge dimensions.
+    private static func decodeIcon(_ url: String) -> UIImage? {
+        if let cached = icons.object(forKey: url as NSString) { return cached }
+        guard let comma = url.firstIndex(of: ","), let data = Data(base64Encoded: String(url[url.index(after: comma)...])),
+              let icon = storeIconImage(data) else { return nil }
+        icons.setObject(icon, forKey: url as NSString)
+        return icon
+    }
 }
-struct CatalogResponse: Decodable { let packs: [CatalogPack]; let apps: [CatalogApp] }
+struct CatalogResponse: Decodable { let apps: [CatalogApp] }
+/// A row of the Library's front page: Popular, then one per category.
+struct StorefrontGroup: Decodable, Identifiable {
+    let id: String
+    let title: String
+    /// The category its See All lists, or "" for every app.
+    let category: String
+    var apps: [CatalogApp]
+}
 
 @MainActor @Observable
 final class CatalogCenter {
     private(set) var apps: [CatalogApp] = []
-    private(set) var packs: [CatalogPack] = []
-    private(set) var storeApps: [CatalogApp] = []
-    private(set) var storeLoading = false
-    var storeError: String?
-    private var storeQuery = ""
-    private var storeGeneration = 0
-    private(set) var recentInstalls: Set<String> = []
+    /// The Library's front page, a row at a time; it shows until a search or category.
+    private(set) var storefront: [StorefrontGroup] = []
+    private(set) var storefrontError: String?
+    /// The Library: one ranked list from discover, curated apps first, a page at a time.
+    private(set) var library: [CatalogApp] = []
+    /// Discover's categories, in its order.
+    private(set) var categories: [String] = []
+    private(set) var libraryQuery = LibraryQuery()
+    private(set) var libraryLoading = false
+    private(set) var libraryLoaded = false
+    var libraryError: String?
+    /// Why the Library shows only Caboose's apps: the host could not reach Flathub.
+    private(set) var libraryNotice: String?
+    private var nextOffset: Int?
+    private var failedOffset = 0
+    private var libraryGeneration = 0
     var error: String?
     private var hostGeneration = 0
     private var host: HostClient?
     var onChange: (() async -> Void)?
 
-    func attach(_ host: HostClient) { hostGeneration += 1; storeGeneration += 1; storeLoading = false; storeApps = []; storeError = nil; self.host = host; Task { await refresh() } }
-    func reset() { hostGeneration += 1; storeGeneration += 1; storeLoading = false; host = nil; apps = []; packs = []; recentInstalls = []; storeApps = []; storeError = nil; storeQuery = ""; error = nil }
+    /// A Library already showing loads its search again from the newly attached host.
+    func attach(_ host: HostClient) {
+        hostGeneration += 1
+        let showing = libraryLoaded || libraryLoading ? libraryQuery : nil
+        let front = !storefront.isEmpty || storefrontError != nil
+        clearLibrary(); storefront = []; storefrontError = nil; self.host = host
+        Task { await refresh(); if front { await loadStorefront() }; if let showing { await discover(showing) } }
+    }
+    /// The Library works while the computer is parked, so it attaches before any wake has.
+    func prepare(_ host: HostClient?) { if self.host == nil, let host { attach(host) } }
+    func reset() { hostGeneration += 1; clearLibrary(); host = nil; apps = []; storefront = []; storefrontError = nil; categories = []; error = nil }
+    private func clearLibrary() {
+        libraryGeneration += 1; libraryLoading = false; libraryLoaded = false; library = []; libraryError = nil; nextOffset = nil; libraryQuery = LibraryQuery()
+    }
     func refresh() async {
         guard let host else { return }
         let generation = hostGeneration
         do {
             let catalog: CatalogResponse = try await host.request("GET", "/v1/catalog", timeout: 60)
             guard hostGeneration == generation else { return }
-            apps = catalog.apps; packs = catalog.packs; storeApps = storeApps.compactMap { item in catalog.apps.first { $0.id == item.id } }; error = nil
-        } catch HostClient.Failure.server(404, _) { if hostGeneration == generation { apps = []; packs = [] } }
+            apps = catalog.apps; error = nil
+            let live = Dictionary(catalog.apps.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            library = library.map { live[$0.id] ?? $0.settled }
+            for index in storefront.indices { storefront[index].apps = storefront[index].apps.map { live[$0.id] ?? $0.settled } }
+        } catch HostClient.Failure.server(404, _) { if hostGeneration == generation { apps = [] } }
         catch { if hostGeneration == generation { self.error = error.localizedDescription } }
     }
-    func discover(_ query: String) async {
+    /// The first page for a search and category. Discover answers from the host's own index,
+    /// so it works while the computer is parked and never wakes it.
+    func discover(_ query: LibraryQuery) async {
+        if query != libraryQuery { library = []; nextOffset = nil; libraryLoaded = false }
+        libraryQuery = query
+        await load(offset: 0)
+    }
+    func loadMore() async {
+        guard !libraryLoading, libraryError == nil, let nextOffset else { return }
+        await load(offset: nextOffset)
+    }
+    func retryLibrary() async { await load(offset: failedOffset) }
+    private func load(offset: Int) async {
         guard let host else { return }
-        if storeQuery != query { storeApps = [] }
-        storeQuery = query
-        storeGeneration += 1
-        let generation = storeGeneration
-        let hostVersion = hostGeneration
-        storeLoading = true
-        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&+=?#"))) else { return }
+        libraryGeneration += 1
+        let generation = libraryGeneration, hostVersion = hostGeneration
+        libraryLoading = true; libraryError = nil
         do {
-            struct Results: Decodable { let apps: [CatalogApp] }
-            let results: Results = try await host.request("GET", "/v1/catalog/discover?q=\(encoded)", timeout: 90)
-            guard storeGeneration == generation && hostGeneration == hostVersion else { return }
-            storeApps = results.apps; storeError = nil; storeLoading = false
-            await refresh()
+            struct Page: Decodable { let apps: [CatalogApp]; let total: Int; let offset: Int; let categories: [String]; let error: String? }
+            let page: Page = try await host.request("GET", libraryQuery.path(offset: offset), timeout: 60)
+            guard libraryGeneration == generation && hostGeneration == hostVersion else { return }
+            let live = Dictionary(apps.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let fresh = page.apps.map { live[$0.id] ?? $0 }
+            library = (page.offset == 0 ? [] : library).appendingPage(fresh)
+            categories = page.categories
+            libraryNotice = page.error
+            nextOffset = LibraryQuery.nextOffset(after: page.offset, count: page.apps.count, total: page.total)
+            libraryLoading = false; libraryLoaded = true
         } catch {
-            guard storeGeneration == generation && hostGeneration == hostVersion else { return }
-            storeError = error.localizedDescription; storeLoading = false
+            guard libraryGeneration == generation && hostGeneration == hostVersion else { return }
+            libraryError = error.localizedDescription; failedOffset = offset; libraryLoading = false
         }
     }
-    func perform(_ id: String, action: String, pack: Bool = false) async {
+    /// The front page's shelves. Like discover, it answers from the host's own index, so it
+    /// works while the computer is parked and never wakes it.
+    func loadStorefront() async {
+        guard let host else { return }
+        let generation = hostGeneration
+        do {
+            struct Storefront: Decodable { let groups: [StorefrontGroup]; let error: String? }
+            let page: Storefront = try await host.request("GET", "/v1/catalog/storefront", timeout: 60)
+            guard hostGeneration == generation else { return }
+            let live = Dictionary(apps.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            storefront = page.groups.map { group in var group = group; group.apps = group.apps.map { live[$0.id] ?? $0 }; return group }
+            storefrontError = nil; libraryNotice = page.error
+        } catch {
+            guard hostGeneration == generation else { return }
+            storefrontError = error.localizedDescription
+        }
+    }
+    func perform(_ id: String, action: String) async {
         guard let host else { return }
         error = nil
-        let path = pack ? "/v1/catalog/packs/\(id)/install" : action == "remove" ? "/v1/catalog/\(id)" : "/v1/catalog/\(id)/\(action)"
+        let encoded = HostClient.pathComponent(id)
+        let path = action == "remove" ? "/v1/catalog/\(encoded)" : "/v1/catalog/\(encoded)/\(action)"
         do {
             let _: [String: Bool] = try await host.request(action == "remove" ? "DELETE" : "POST", path, timeout: 30)
             await refresh()
@@ -129,13 +209,11 @@ final class CatalogCenter {
     func handle(_ type: String, _ event: [String: Any]) {
         guard type.hasPrefix("catalog.") else { return }
         if type == "catalog.progress", let id = event["id"] as? String,
-           let operation = event["operation"] as? String, let phase = event["phase"] as? String,
-           let index = apps.firstIndex(where: { $0.id == id }) {
-            apps[index].progress = CatalogProgress(id: id, operation: operation, phase: phase, message: event["message"] as? String, stage: event["stage"] as? String, value: event["value"] as? Double, downloadedBytes: (event["downloadedBytes"] as? NSNumber)?.int64Value, totalBytes: (event["totalBytes"] as? NSNumber)?.int64Value)
-            if let storeIndex = storeApps.firstIndex(where: { $0.id == id }) {
-                storeApps[storeIndex].progress = apps[index].progress
-            }
-            if phase == "finished" && operation == "install" { recentInstalls.insert(id) }
+           let operation = event["operation"] as? String, let phase = event["phase"] as? String {
+            let progress = CatalogProgress(id: id, operation: operation, phase: phase, message: event["message"] as? String, stage: event["stage"] as? String, value: event["value"] as? Double, downloadedBytes: (event["downloadedBytes"] as? NSNumber)?.int64Value, totalBytes: (event["totalBytes"] as? NSNumber)?.int64Value)
+            if let index = apps.firstIndex(where: { $0.id == id }) { apps[index].progress = progress }
+            if let index = library.firstIndex(where: { $0.id == id }) { library[index].progress = progress }
+            for group in storefront.indices { if let index = storefront[group].apps.firstIndex(where: { $0.id == id }) { storefront[group].apps[index].progress = progress } }
             if phase == "failed" { error = event["message"] as? String ?? "The application could not be installed." }
         }
         if type == "catalog.changed" { Task { await refresh(); await onChange?() } }

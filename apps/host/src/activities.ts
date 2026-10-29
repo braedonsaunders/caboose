@@ -84,6 +84,7 @@ export function agentJob(event: AgentEvent): Job | undefined {
     case 'agent.task.replied': return { id: event.id, kind: 'agent', title: 'Agent task', status: 'running', detail: event.prompt.slice(0, 500) }
     case 'agent.task.paused': return { id: event.id, kind: 'agent', title: 'Agent task', status: 'paused', detail: 'Paused' }
     case 'agent.task.resumed': return { id: event.id, kind: 'agent', title: 'Agent task', status: 'running', detail: 'Working…' }
+    case 'agent.task.deleted': return { id: event.id, kind: 'agent', title: 'Agent task', status: 'cancelled', detail: 'Chat deleted' }
     case 'agent.task.finished': return { id: event.id, kind: 'agent', title: 'Agent task', status: event.status === 'running' || event.status === 'paused' ? 'failed' : event.status, detail: event.summary.slice(0, 500) }
     default: return undefined
   }

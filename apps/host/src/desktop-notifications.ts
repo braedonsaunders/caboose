@@ -23,6 +23,7 @@ done`
 export class DesktopNotifications {
   private timer?: ReturnType<typeof setInterval>
   private polling = false
+  private pending?: Promise<void>
   constructor(private guest: () => AgentGuest | undefined, private emit: (event: DesktopNotification) => void) {}
   setActive(active: boolean) {
     if (active && !this.timer) {
@@ -35,13 +36,16 @@ export class DesktopNotifications {
     const guest = this.guest()
     if (!guest || this.polling) return
     this.polling = true
-    try {
+    this.pending = (async () => { try {
       const output = await guest.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/bin/sh', '-c', DRAIN_NOTIFICATIONS], 10_000)
       for (const line of output.split('\n')) {
         const event = parseDesktopNotification(line)
         if (event) this.emit(event)
       }
     } catch (error) { console.error('Desktop notification poll failed:', error instanceof Error ? error.message : 'unknown error') }
-    finally { this.polling = false }
+    finally { this.polling = false } })()
+    try { await this.pending } finally { this.pending = undefined }
   }
+  /** Called after polling is disabled, before the guest transport is paused. */
+  async quiesce(): Promise<void> { await this.pending }
 }

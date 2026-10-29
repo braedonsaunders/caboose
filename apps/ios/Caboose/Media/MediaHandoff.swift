@@ -32,7 +32,11 @@ struct PlayingMedia: Decodable, Equatable, Identifiable, Sendable {
 final class MediaHandoff {
     private(set) var playing: PlayingMedia?
     /// Being played on the phone now.
-    private(set) var handedOff: PlayingMedia?
+    private(set) var handedOff: PlayingMedia? {
+        didSet { onHandoffChanged?(handedOff != nil) }
+    }
+    /// Native playback owns Now Playing until it returns to the computer.
+    var onHandoffChanged: ((Bool) -> Void)?
     private var host: () -> HostClient? = { nil }
 
     func attach(host: @escaping () -> HostClient?) {

@@ -1,0 +1,277 @@
+#!/usr/bin/python3
+"""xdg-desktop-portal backend org.freedesktop.impl.portal.desktop.caboose.
+
+FileChooser: on the owner's seat, while the phone is present, OpenFile and SaveFile are
+answered from the phone (docs/native-bridge.md § File chooser); otherwise, and when the
+phone hands a request back, xdg-desktop-portal-gtk shows the computer's own dialog.
+Settings: org.freedesktop.appearance and org.gnome.desktop.interface from the phone's
+appearance, so applications follow the phone live.
+"""
+import os
+import pathlib
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import bridgecore as core  # noqa: E402
+
+import gi  # noqa: E402
+gi.require_version('Gio', '2.0')
+from gi.repository import Gio, GLib  # noqa: E402
+
+NAME = 'org.freedesktop.impl.portal.desktop.caboose'
+PATH = '/org/freedesktop/portal/desktop'
+GTK = 'org.freedesktop.impl.portal.desktop.gtk'
+FILE_CHOOSER = 'org.freedesktop.impl.portal.FileChooser'
+SETTINGS = 'org.freedesktop.impl.portal.Settings'
+REQUEST = 'org.freedesktop.impl.portal.Request'
+POLL_MS = 200
+
+XML = f'''<node>
+  <interface name="{FILE_CHOOSER}">
+    <method name="OpenFile"><arg type="o" name="handle" direction="in"/><arg type="s" name="app_id" direction="in"/><arg type="s" name="parent_window" direction="in"/><arg type="s" name="title" direction="in"/><arg type="a{{sv}}" name="options" direction="in"/><arg type="u" name="response" direction="out"/><arg type="a{{sv}}" name="results" direction="out"/></method>
+    <method name="SaveFile"><arg type="o" name="handle" direction="in"/><arg type="s" name="app_id" direction="in"/><arg type="s" name="parent_window" direction="in"/><arg type="s" name="title" direction="in"/><arg type="a{{sv}}" name="options" direction="in"/><arg type="u" name="response" direction="out"/><arg type="a{{sv}}" name="results" direction="out"/></method>
+    <method name="SaveFiles"><arg type="o" name="handle" direction="in"/><arg type="s" name="app_id" direction="in"/><arg type="s" name="parent_window" direction="in"/><arg type="s" name="title" direction="in"/><arg type="a{{sv}}" name="options" direction="in"/><arg type="u" name="response" direction="out"/><arg type="a{{sv}}" name="results" direction="out"/></method>
+  </interface>
+  <interface name="{SETTINGS}">
+    <method name="ReadAll"><arg type="as" name="namespaces" direction="in"/><arg type="a{{sa{{sv}}}}" name="value" direction="out"/></method>
+    <method name="Read"><arg type="s" name="namespace" direction="in"/><arg type="s" name="key" direction="in"/><arg type="v" name="value" direction="out"/></method>
+    <signal name="SettingChanged"><arg type="s" name="namespace"/><arg type="s" name="key"/><arg type="v" name="value"/></signal>
+    <property name="version" type="u" access="read"/>
+  </interface>
+</node>'''
+REQUEST_XML = f'<node><interface name="{REQUEST}"><method name="Close"/></interface></node>'
+
+
+def address():
+    """This bus's address without its guid (D-Bus activation appends one)."""
+    raw = os.environ.get('DBUS_STARTER_ADDRESS') or os.environ.get('DBUS_SESSION_BUS_ADDRESS', '')
+    first = raw.split(';', 1)[0]
+    transport, _, keys = first.partition(':')
+    kept = [k for k in keys.split(',') if k and not k.startswith('guid=')]
+    return f"{transport}:{','.join(kept)}"
+
+
+class Portal:
+    def __init__(self, bus):
+        self.bus = bus
+        self.owner = address() == core.OWNER_BUS
+        self.env_file = core.OWNER_ENV if self.owner else core.AGENT_ENV
+        self.info = Gio.DBusNodeInfo.new_for_xml(XML)
+        self.request_info = Gio.DBusNodeInfo.new_for_xml(REQUEST_XML).interfaces[0]
+        self.open = {}  # handle -> pending request
+        self.look = core.appearance() if self.owner else dict(core.DEFAULT_APPEARANCE)
+        self.values = self.settings()
+        for interface in self.info.interfaces:
+            bus.register_object(PATH, interface, self.method, self.get_property, None)
+        if self.owner:
+            monitor = Gio.File.new_for_path(str(core.APPEARANCE)).monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, None)
+            monitor.connect('changed', lambda *_: self.appearance_changed())
+            self.monitor = monitor
+
+    # Settings -----------------------------------------------------------------------------
+
+    def settings(self):
+        available = {p.name for root in (pathlib.Path('/usr/share/themes'), core.HOME / '.themes', core.HOME / '.local/share/themes')
+                     if root.is_dir() for p in root.iterdir()}
+        return {
+            'org.freedesktop.appearance': core.appearance_settings(self.look),
+            'org.gnome.desktop.interface': core.interface_settings(self.look, available),
+            'org.gnome.desktop.wm.preferences': {'button-layout': ('s', 'close,minimize,maximize:')},
+        }
+
+    def appearance_changed(self):
+        self.look = core.appearance()
+        before, self.values = self.values, self.settings()
+        for namespace, keys in self.values.items():
+            for key, value in keys.items():
+                if before.get(namespace, {}).get(key) != value:
+                    self.bus.emit_signal(None, PATH, SETTINGS, 'SettingChanged',
+                                         GLib.Variant('(ssv)', (namespace, key, GLib.Variant(*value))))
+
+    @staticmethod
+    def matches(namespace, patterns):
+        # An empty list, or "", means every namespace; a trailing ".*" matches a prefix.
+        if not patterns or '' in patterns:
+            return True
+        return any(namespace == p or (p.endswith('.*') and namespace.startswith(p[:-1])) for p in patterns)
+
+    def read_all(self, patterns):
+        return {ns: {k: GLib.Variant(*v) for k, v in keys.items()} for ns, keys in self.values.items() if self.matches(ns, patterns)}
+
+    # Method dispatch ----------------------------------------------------------------------
+
+    def get_property(self, _bus, _sender, _path, interface, prop):
+        if interface == SETTINGS and prop == 'version':
+            return GLib.Variant('u', 2)
+        return None
+
+    def method(self, _bus, sender, _path, interface, method, params, invocation):
+        try:
+            if interface == SETTINGS:
+                if method == 'ReadAll':
+                    invocation.return_value(GLib.Variant('(a{sa{sv}})', (self.read_all(params.unpack()[0]),)))
+                elif method == 'Read':
+                    namespace, key = params.unpack()
+                    value = self.values.get(namespace, {}).get(key)
+                    if value is None:
+                        invocation.return_dbus_error('org.freedesktop.portal.Error.NotFound', 'Requested setting not found')
+                    else:
+                        invocation.return_value(GLib.Variant('(v)', (GLib.Variant(*value),)))
+                return
+            handle, app, _parent, title, options = params.unpack()
+            kind = {'OpenFile': 'file.open', 'SaveFile': 'file.save'}.get(method)
+            pending = {'method': method, 'params': params, 'invocation': invocation, 'delegated': False,
+                       'registration': self.export_request(handle)}
+            self.open[handle] = pending
+            if kind is None or not self.owner or not core.present():
+                self.hand_back(handle)
+                return
+            self.ask(handle, pending, kind, app, title, options)
+        except Exception as error:  # a malformed call must not take the backend down
+            invocation.return_dbus_error('org.freedesktop.portal.Error.Failed', str(error)[:300])
+
+    # File chooser -------------------------------------------------------------------------
+
+    def export_request(self, handle):
+        def close(_bus, _sender, _path, _iface, _method, _params, invocation):
+            invocation.return_value(None)
+            self.close(handle)
+        return self.bus.register_object(handle, self.request_info, close, None, None)
+
+    def ask(self, handle, pending, kind, app, title, options):
+        core.prepare()
+        request = core.new_request(kind, app, title, options)
+        pending.update({'request': request, 'created': time.monotonic(), 'claimed': False, 'absentSince': None})
+        core.write_json(core.REQUESTS / f"{request['id']}.json", request)
+        GLib.timeout_add(POLL_MS, self.check, handle)
+
+    def check(self, handle):
+        pending = self.open.get(handle)
+        if not pending or pending['delegated']:
+            return False
+        request = pending['request']
+        ident = request['id']
+        answer = core.read_json(core.RESPONSES / f'{ident}.json')
+        if answer is not None:
+            self.finish(handle, answer)
+            return False
+        if not pending['claimed']:
+            if (core.CLAIMED / f'{ident}.json').exists():
+                pending['claimed'] = True
+            elif time.monotonic() - pending['created'] > core.CLAIM_SECONDS:
+                # The phone did not take it: withdraw it before it can be claimed.
+                (core.REQUESTS / f'{ident}.json').unlink(missing_ok=True)
+                if (core.CLAIMED / f'{ident}.json').exists():
+                    pending['claimed'] = True
+                else:
+                    self.hand_back(handle)
+                    return False
+            return True
+        if core.present():
+            pending['absentSince'] = None
+        elif pending['absentSince'] is None:
+            pending['absentSince'] = time.monotonic()
+        elif time.monotonic() - pending['absentSince'] > core.ABSENT_SECONDS:
+            self.withdraw(ident)
+            self.hand_back(handle)
+            return False
+        return True
+
+    def withdraw(self, ident):
+        (core.REQUESTS / f'{ident}.json').unlink(missing_ok=True)
+        claimed = core.CLAIMED / f'{ident}.json'
+        if claimed.exists():
+            claimed.unlink(missing_ok=True)
+            core.prepare()
+            (core.CANCELS / ident).touch(mode=0o600)
+
+    def finish(self, handle, raw):
+        pending = self.open[handle]
+        request = pending['request']
+        ident = request['id']
+        (core.RESPONSES / f'{ident}.json').unlink(missing_ok=True)
+        (core.CLAIMED / f'{ident}.json').unlink(missing_ok=True)
+        try:
+            answer = core.check_answer(raw, request)
+        except core.Invalid:
+            self.reply(handle, 2, {})
+            return
+        if answer['response'] == 'computer':
+            self.hand_back(handle)
+        elif answer['response'] == 'cancel':
+            self.reply(handle, 1, {})
+        else:
+            paths = core.chosen(request, answer)
+            if paths is None:
+                self.reply(handle, 2, {})
+                return
+            results = {'uris': GLib.Variant('as', [Gio.File.new_for_path(p).get_uri() for p in paths])}
+            if request['type'] == 'file.save':
+                results['writable'] = GLib.Variant('b', True)
+            flt = answer['filter']
+            if flt is not None:
+                chosen = request['filters'][flt]
+                rules = [(0, p) for p in chosen['patterns']] + [(1, m) for m in chosen['mimeTypes']]
+                results['current_filter'] = GLib.Variant('(sa(us))', (chosen['name'], rules))
+            self.reply(handle, 0, results)
+
+    def close(self, handle):
+        pending = self.open.get(handle)
+        if not pending:
+            return
+        if pending['delegated']:
+            self.bus.call(GTK, handle, REQUEST, 'Close', None, None, Gio.DBusCallFlags.NONE, -1, None, None, None)
+            return
+        self.withdraw(pending['request']['id'])
+        self.reply(handle, 2, {})
+
+    def reply(self, handle, response, results):
+        pending = self.open.pop(handle, None)
+        if not pending:
+            return
+        if pending.get('registration'):
+            self.bus.unregister_object(pending['registration'])
+        pending['invocation'].return_value(GLib.Variant('(ua{sv})', (response, results)))
+
+    def hand_back(self, handle):
+        """The computer's own dialog: xdg-desktop-portal-gtk answers the original call."""
+        pending = self.open[handle]
+        pending['delegated'] = True
+        self.share_environment()
+
+        def done(bus, result):
+            self.open.pop(handle, None)
+            if pending.get('registration'):
+                bus.unregister_object(pending['registration'])
+            try:
+                pending['invocation'].return_value(bus.call_finish(result))
+            except GLib.Error as error:
+                pending['invocation'].return_gerror(error)
+        self.bus.call(GTK, PATH, FILE_CHOOSER, pending['method'], pending['params'], GLib.VariantType('(ua{sv})'),
+                      Gio.DBusCallFlags.NONE, GLib.MAXINT, None, done)
+
+    def share_environment(self):
+        """xdg-desktop-portal-gtk draws on this seat's display: activate it with the seat's
+        launch environment (caboose-bridge does this for the owner's seat at display start)."""
+        env = core.read_env(self.env_file)
+        if not env.get('WAYLAND_DISPLAY'):
+            return
+        self.bus.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'UpdateActivationEnvironment',
+                      GLib.Variant('(a{ss})', (env,)), None, Gio.DBusCallFlags.NONE, 2000, None, None, None)
+
+
+def main():
+    loop = GLib.MainLoop()
+    bus = Gio.bus_get_sync(Gio.BusType.STARTER if os.environ.get('DBUS_STARTER_ADDRESS') else Gio.BusType.SESSION, None)
+    portal = Portal(bus)
+
+    def lost(*_):
+        loop.quit()
+    Gio.bus_own_name_on_connection(bus, NAME, Gio.BusNameOwnerFlags.NONE, None, lost)
+    portal.loop = loop
+    loop.run()
+
+
+if __name__ == '__main__':
+    main()

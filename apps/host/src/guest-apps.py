@@ -3,10 +3,13 @@ import configparser
 import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 
-ROOTS = [pathlib.Path.home() / '.local/share/applications', pathlib.Path('/usr/local/share/applications'), pathlib.Path('/usr/share/applications')]
+# Flatpak exports the desktop entries and icons of the system installation's apps.
+FLATPAK = pathlib.Path('/var/lib/flatpak/exports/share')
+ROOTS = [pathlib.Path.home() / '.local/share/applications', pathlib.Path('/usr/local/share/applications'), FLATPAK / 'applications', pathlib.Path('/usr/share/applications')]
 
 def entries():
     found = {}
@@ -37,7 +40,82 @@ def read(path):
     except (OSError, ValueError, KeyError, configparser.Error):
         return None
 
-if sys.argv[1] == 'launch':
+# Desktop action identifiers are [A-Za-z0-9-] (Desktop Entry Specification, Additional
+# applications actions); the bounds keep a listing small whatever an entry declares.
+ACTION_ID = re.compile(r'[A-Za-z0-9-]{1,64}')
+MAX_ACTIONS = 16
+MAX_ACTION_NAME = 100
+
+def actions(section):
+    """The entry's launchable actions, in declared order: those with a group and a Name, and
+    an Exec unless the application is D-Bus activated (then GLib activates the action)."""
+    found, seen = [], set()
+    dbus = section.get('DBusActivatable', '').strip() == 'true'
+    for ident in section.get('Actions', '').split(';'):
+        ident = ident.strip()
+        if not ACTION_ID.fullmatch(ident) or ident in seen:
+            continue
+        seen.add(ident)
+        group = f'Desktop Action {ident}'
+        if not section.parser.has_section(group):
+            continue
+        action = section.parser[group]
+        name = action.get('Name', '').strip()
+        if not name or not (dbus or action.get('Exec', '').strip()):
+            continue
+        found.append({'id': ident, 'name': name[:MAX_ACTION_NAME]})
+        if len(found) == MAX_ACTIONS:
+            break
+    return found
+
+def desktop_shortcut(ident):
+    """Copy an installed entry; publish atomically, never replace an owner's item."""
+    if not ident.endswith('.desktop') or '/' in ident or len(ident) > 240 or any(ord(c) < 32 for c in ident):
+        raise SystemExit('Invalid application id')
+    entry = entries().get(ident)
+    section = read(entry) if entry else None
+    if section is None:
+        raise SystemExit('Application not found')
+    with open(entry, 'rb') as source:
+        data = source.read(262145)
+    if len(data) > 262144:
+        raise SystemExit('Desktop entry is too large')
+    # This reference is interpreted only as an installed ID by iOS, never as Exec.
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str
+    parser.read_string(data.decode('utf-8'))
+    parser['Desktop Entry']['X-Caboose-AppId'] = ident
+    import io, uuid
+    output = io.StringIO()
+    parser.write(output, space_around_delimiters=False)
+    desktop = pathlib.Path.home() / 'Desktop'
+    desktop.mkdir(exist_ok=True)
+    # A directory fd prevents a renamed/replaced Desktop from redirecting publication.
+    fd = os.open(desktop, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = '.caboose-shortcut-' + uuid.uuid4().hex
+    try:
+        out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o755, dir_fd=fd)
+        with os.fdopen(out, 'w', encoding='utf-8') as target:
+            target.write(output.getvalue())
+            target.flush()
+            os.fsync(target.fileno())
+        try:
+            os.link(temporary, ident, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+        except FileExistsError:
+            raise SystemExit('Desktop shortcut already exists')
+    finally:
+        try: os.unlink(temporary, dir_fd=fd)
+        finally: os.close(fd)
+    print(json.dumps({'path': 'Desktop/' + ident}))
+
+if sys.argv[1] == 'desktop-shortcut':
+    desktop_shortcut(sys.argv[2])
+    sys.exit(0)
+
+# `launch <id> [home-relative file]` starts an entry; `action <id> <action>` starts one of its actions.
+if sys.argv[1] in ('launch', 'action'):
+    if sys.argv[1] == 'action' and len(sys.argv) != 4:
+        raise SystemExit('Usage: action <id> <action>')
     if os.environ.get('CABOOSE_GPU') == 'wsl':
         os.environ.setdefault('GALLIUM_DRIVER', 'd3d12')
     # Craft's winit GUI must use X11, including Caboose Display's Xwayland DISPLAY.
@@ -52,8 +130,12 @@ if sys.argv[1] == 'launch':
         os.environ['GDK_BACKEND'] = 'x11'
         os.environ['QT_QPA_PLATFORM'] = 'xcb'
     entry = entries().get(sys.argv[2])
-    if not entry or read(entry) is None:
+    section = read(entry) if entry else None
+    if section is None:
         raise SystemExit('Application not found')
+    action = sys.argv[3] if sys.argv[1] == 'action' else None
+    if action is not None and action not in {item['id'] for item in actions(section)}:
+        raise SystemExit('Application action not found')
     # GLib handles desktop field codes and does not interpret the Exec as shell; this is
     # what `gio launch` does, without needing the CLI (libglib2.0-bin) in the image.
     import gi
@@ -69,13 +151,18 @@ if sys.argv[1] == 'launch':
     for fd in (0, 1, 2):
         os.dup2(devnull, fd)
     try:
-        files = []
-        if len(sys.argv) > 3:
-            relative = sys.argv[3]
-            if not relative or relative.startswith('/') or any(part in ('', '.', '..') for part in relative.split('/')) or '\0' in relative:
-                raise ValueError('Invalid file path')
-            files = [Gio.File.new_for_path(str(pathlib.Path.home() / relative))]
-        launched = info.launch(files, None)
+        if action is not None:
+            # GLib runs the action's Exec, or activates it over D-Bus; it reports no result.
+            info.launch_action(action, None)
+            launched = True
+        else:
+            files = []
+            if len(sys.argv) > 3:
+                relative = sys.argv[3]
+                if not relative or relative.startswith('/') or any(part in ('', '.', '..') for part in relative.split('/')) or '\0' in relative:
+                    raise ValueError('Invalid file path')
+                files = [Gio.File.new_for_path(str(pathlib.Path.home() / relative))]
+            launched = info.launch(files, None)
     finally:
         os.dup2(saved, 2)
     if not launched:
@@ -88,6 +175,8 @@ else:
     theme = Gtk.IconTheme.get_default()
     if theme is None:
         raise SystemExit(f"No GTK icon theme available on display {os.environ.get('WAYLAND_DISPLAY') or os.environ.get('DISPLAY', ':100')}")
+    if (FLATPAK / 'icons').is_dir():
+        theme.append_search_path(str(FLATPAK / 'icons'))
     apps = []
     start = int(sys.argv[2])
     for ident, path in entries().items():
@@ -113,5 +202,7 @@ else:
             _, png = icon.save_to_bufferv('png', [], [])
             icon_url = 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
         apps.append({'id': ident, 'name': section['Name'], 'icon': icon_url,
-                     'categories': [s for s in section.get('Categories', '').split(';') if s], 'exec': section['Exec']})
+                     'categories': [s for s in section.get('Categories', '').split(';') if s], 'exec': section['Exec'],
+                     'actions': actions(section),
+                     'startupWMClass': section.get('StartupWMClass', '').strip()[:256] or None})
     print(json.dumps(apps))

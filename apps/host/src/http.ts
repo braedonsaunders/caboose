@@ -9,6 +9,12 @@ export function json(response: ServerResponse, status: number, body: unknown): v
   response.end(JSON.stringify(body))
 }
 
+/** A success without a body. */
+export function noContent(response: ServerResponse): void {
+  response.writeHead(204, { 'cache-control': 'no-store' })
+  response.end()
+}
+
 /** A JSON object body of at most `limit` bytes. */
 export async function readJson(request: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []

@@ -5,6 +5,7 @@ import SwiftUI
 struct AgentsView: View {
     @Environment(AppModel.self) private var model
     @State private var search = ""
+    @State private var connectingModel = false
 
     var body: some View {
         let agents = model.agents
@@ -12,6 +13,20 @@ struct AgentsView: View {
             $0.name.localizedCaseInsensitiveContains(search) || $0.description.localizedCaseInsensitiveContains(search)
         }
         List {
+            if search.isEmpty {
+                Section {
+                    Button { connectingModel = true } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Connect a Model")
+                                Text("Use an OpenRouter, Anthropic or OpenAI API key")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        } icon: { Image(systemName: "key") }
+                    }
+                } header: { Text("Models & Accounts") }
+                footer: { Text("Connect with a key here, or choose an agent below to sign in with your account and manage its settings.") }
+            }
             if let error = agents.registryError {
                 Section { Label(error, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.secondary) }
             }
@@ -42,15 +57,10 @@ struct AgentsView: View {
             }
         }
         .searchable(text: $search, prompt: "Search agents")
-        .navigationTitle("Agents")
+        .navigationTitle("Agent Settings")
+        .sheet(isPresented: $connectingModel) { ConnectModelView().environment(model) }
         .refreshable { await agents.refreshAgents() }
         .task { await agents.refreshAgents() }
-        .overlay {
-            if agents.catalog.isEmpty {
-                ContentUnavailableView("No Agents Yet", systemImage: "sparkles",
-                                       description: Text(agents.registryError ?? "The computer has not reached the agent registry yet. Pull to try again."))
-            }
-        }
     }
 
     private func row(_ agent: AgentListing) -> some View {

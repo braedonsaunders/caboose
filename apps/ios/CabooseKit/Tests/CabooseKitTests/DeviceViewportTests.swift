@@ -42,6 +42,31 @@ struct DeviceViewportTests {
         }
     }
 
+    @Test func sideRailRotationKeepsDockAndMaximizedAppInOneMeasuredViewport() {
+        var viewport = DeviceViewport()
+        // These are stage measurements AFTER the shell reserves the rail's width.
+        // Its controls and tabs reserve no additional top or bottom strip.
+        let landscape = CGSize(width: 820, height: 620)
+        let portrait = CGSize(width: 620, height: 820)
+        for size in [landscape, portrait, landscape] {
+            let changed = viewport.updateDesktop(size)
+            #expect(changed)
+            #expect(viewport.owner == .desktop)
+            let guest = DeviceViewport.guestFrame(size: viewport.desktopSize, pixelsPerPoint: 2)
+            #expect(guest.height == size.height * 2)
+            let frame = DesktopGeometry.maximizedFrame(size: viewport.desktopSize,
+                titleBarHeight: 32, dockHeight: 76, dockBottomInset: 10, dockGap: 8)
+            #expect(frame.minY == 0)
+            #expect(frame.width == size.width)
+            #expect(frame.maxY + 32 + 8 + 76 + 10 == size.height)
+            // A fresh frame still fills the full content rect while Chrome redraws.
+            let surface = DesktopGeometry.surfaceFrame(natural: landscape,
+                available: frame.size, resizing: true)
+            #expect(surface.size == frame.size)
+        }
+        #expect(viewport.desktopSize == landscape)
+    }
+
     @Test func openingNewCardRequiresFreshContentMeasurement() {
         var viewport = DeviceViewport()
         viewport.presentCard()

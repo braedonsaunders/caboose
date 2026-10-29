@@ -13,6 +13,7 @@ import { PRESENTATION_GUIDANCE, chooseOption, describeToolCall, Draft, isStaleLo
 const RUNNER = new URL('../caboose-agentd.mjs', import.meta.url).pathname
 const STAND_IN = new URL('./stand-in-agent.mjs', import.meta.url).pathname
 const DESKTOP_MCP = new URL('../../desktop-mcp/caboose-desktop-mcp.mjs', import.meta.url).pathname
+const APPS_MCP = new URL('../../apps/apps-mcp.mjs', import.meta.url).pathname
 const cleanup = []
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step()
@@ -20,7 +21,7 @@ afterEach(async () => {
 
 const AGENT = { id: 'stand-in', name: 'Stand-in', version: '1.0.0', distribution: 'npx', package: '@example/stand-in@1.0.0', args: [], env: {} }
 
-async function sandbox({ caps = '', auth = false } = {}) {
+async function sandbox({ caps = '', auth = false, apps = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'caboose-agentd-'))
   cleanup.push(() => rm(root, { recursive: true, force: true }))
   const home = join(root, 'home')
@@ -37,7 +38,7 @@ async function sandbox({ caps = '', auth = false } = {}) {
   const env = {
     ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, DISPLAY: ':101',
     STAND_IN_STATE: state, STAND_IN_CAPS: caps, STAND_IN_AUTH: auth ? '1' : '',
-    CABOOSE_DESKTOP_MCP: DESKTOP_MCP, CABOOSE_AGENTD_POLL_MS: '30', CABOOSE_AGENTD_CANCEL_GRACE_MS: '600',
+    CABOOSE_DESKTOP_MCP: DESKTOP_MCP, CABOOSE_APPS_MCP: apps ? APPS_MCP : join(root, 'no-apps-mcp.mjs'), CABOOSE_AGENTD_POLL_MS: '30', CABOOSE_AGENTD_CANCEL_GRACE_MS: '600',
   }
   return { root, home, state, env }
 }
@@ -161,6 +162,14 @@ describe('a turn', () => {
     await expect(stat(join(t.dir, 'tool-turn'))).rejects.toThrow()
   })
 
+  it('offers the app tools when they are installed', async () => {
+    const t = await task({ apps: true })
+    await t.prompt(1, 'hello')
+    t.start()
+    await t.turnEnd(1)
+    expect(await t.texts(1)).toContain('turns in session: 1; mcp: caboose-desktop,caboose-apps; blocks: text,text; recap: no; display: :101')
+  })
+
   it('offers installed catalog servers to an ACP session', async () => {
     const t = await task({ craftServers: [
       { name: 'caboose-photocraft', command: 'photocraft-cli', args: ['mcp'], env: [] },
@@ -170,6 +179,31 @@ describe('a turn', () => {
     t.start()
     await t.turnEnd(1)
     expect(await t.texts(1)).toContain('turns in session: 1; mcp: caboose-desktop,caboose-photocraft; blocks: text,text; recap: no; display: :101')
+  })
+
+  it('offers the computer\'s MCP Library to a chat started with it, while the Library is there', async () => {
+    const t = await task()
+    const config = JSON.parse(await readFile(join(t.dir, 'task.json'), 'utf8'))
+    await writeFile(join(t.dir, 'task.json'), JSON.stringify({ ...config, mcpLibrary: true }))
+    const descriptor = join(t.root, 'mcp-library.json')
+    t.env.CABOOSE_MCP_LIBRARY = descriptor
+    await writeFile(descriptor, JSON.stringify({ url: 'https://mcp.smithery.run/space', token: 'svc-scoped-token' }))
+    await t.prompt(1, 'hello')
+    t.start()
+    await t.turnEnd(1)
+    expect(await t.texts(1)).toContain('turns in session: 1; mcp: caboose-desktop,caboose-library; blocks: text,text; recap: no; display: :101')
+  })
+
+  it('says so when the MCP Library a chat started with is gone', async () => {
+    const t = await task()
+    const config = JSON.parse(await readFile(join(t.dir, 'task.json'), 'utf8'))
+    await writeFile(join(t.dir, 'task.json'), JSON.stringify({ ...config, mcpLibrary: true }))
+    t.env.CABOOSE_MCP_LIBRARY = join(t.root, 'absent.json')
+    await t.prompt(1, 'hello')
+    t.start()
+    await t.turnEnd(1)
+    expect(await t.texts(1)).toContain('turns in session: 1; mcp: caboose-desktop; blocks: text,text; recap: no; display: :101')
+    expect((await t.events()).some(event => event.type === 'notice' && event.text.includes("MCP Library isn't available"))).toBe(true)
   })
 
   it('streams an agent-neutral transcript', async () => {

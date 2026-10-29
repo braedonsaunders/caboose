@@ -100,6 +100,21 @@ final class VisibleRecentFilesTests: XCTestCase {
 }
 
 final class LaunchpadLayoutTests: XCTestCase {
+    func testSwipePagesAndRejectsVerticalMovement() {
+        let layout = LaunchpadLayout(size: CGSize(width: 800, height: 600), ui: 1, dockHeight: 76)
+        let count = layout.columns * layout.rows * 3
+        func swipe(_ page: Int, _ dx: CGFloat, _ dy: CGFloat, _ predicted: CGFloat) -> Int {
+            layout.pageAfterSwipe(page, count: count, translation: CGSize(width: dx, height: dy), predicted: CGSize(width: predicted, height: dy))
+        }
+        XCTAssertEqual(swipe(0, -80, 2, -100), 1)
+        XCTAssertEqual(swipe(1, 80, 2, 100), 0)
+        XCTAssertEqual(swipe(1, -20, 2, -180), 2)
+        XCTAssertEqual(swipe(1, -80, 120, -180), 1)
+        XCTAssertEqual(swipe(1, -3, 0, -180), 1)
+        XCTAssertEqual(swipe(0, 80, 0, 100), 0)
+        XCTAssertEqual(swipe(2, -80, 0, -100), 2)
+    }
+
     func testPagesCoverEveryAppAndClampAfterResize() {
         let layout = LaunchpadLayout(size: CGSize(width: 800, height: 600), ui: 1, dockHeight: 76)
         let capacity = layout.columns * layout.rows

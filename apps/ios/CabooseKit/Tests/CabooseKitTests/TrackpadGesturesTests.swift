@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import CabooseKit
 
@@ -99,5 +100,149 @@ struct TrackpadGesturesTests {
         _ = gestures.moved(touches: 1, centroid: CGPoint(x: 150, y: 200), at: 1.30)
         #expect(gestures.cancelled() == [.endDrag])
         #expect(gestures.cancelled() == [])
+    }
+
+    @Test func threeFingerDragStartsOnceAndEndsAtFirstLift() {
+        var gestures = TrackpadGestures()
+        _ = gestures.began(touches: 1, centroid: here, at: 1)
+        _ = gestures.began(touches: 2, centroid: CGPoint(x: 130, y: 200), at: 1.02)
+        _ = gestures.began(touches: 3, centroid: CGPoint(x: 160, y: 200), at: 1.04)
+        #expect(gestures.moved(touches: 3, centroid: CGPoint(x: 162, y: 200), at: 1.05) == [])
+        let start = gestures.moved(touches: 3, centroid: CGPoint(x: 164, y: 200), at: 1.06)
+        #expect(clicks(start) == [.beginDrag])
+        #expect(start.count == 2)
+        #expect(clicks(gestures.moved(touches: 3, centroid: CGPoint(x: 180, y: 200), at: 1.1)) == [])
+        #expect(gestures.ended(remaining: 2, centroid: here, at: 1.12) == [.endDrag])
+        #expect(gestures.moved(touches: 2, centroid: .zero, at: 1.13) == [])
+        #expect(gestures.ended(remaining: 1, centroid: here, at: 1.14) == [])
+        #expect(gestures.moved(touches: 1, centroid: .zero, at: 1.15) == [])
+        #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.16) == [])
+        #expect(!gestures.dragging)
+    }
+
+    @Test func threeFingerTapNeverRightClicks() {
+        var gestures = TrackpadGestures()
+        _ = gestures.began(touches: 3, centroid: here, at: 1)
+        _ = gestures.ended(remaining: 2, centroid: here, at: 1.05)
+        #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.1) == [])
+    }
+
+    @Test func cancelledThreeFingerDragReleasesExactlyOnce() {
+        var gestures = TrackpadGestures()
+        _ = gestures.began(touches: 3, centroid: here, at: 1)
+        _ = gestures.moved(touches: 3, centroid: CGPoint(x: 110, y: 200), at: 1.1)
+        #expect(gestures.cancelled() == [.endDrag])
+        #expect(gestures.cancelled() == [])
+        #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.2) == [])
+        _ = gestures.began(touches: 1, centroid: here, at: 1.3)
+        #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.35) == [.click(button: 1)])
+    }
+
+    @Test func fourthFingerReleasesDragAndRebasesSwipe() {
+        var gestures = TrackpadGestures()
+        _ = gestures.began(touches: 3, centroid: here, at: 1)
+        _ = gestures.moved(touches: 3, centroid: CGPoint(x: 110, y: 200), at: 1.1)
+        #expect(gestures.began(touches: 4, centroid: CGPoint(x: 200, y: 200), at: 1.12) == [.endDrag])
+        #expect(gestures.moved(touches: 4, centroid: CGPoint(x: 247, y: 200), at: 1.2) == [])
+        #expect(gestures.moved(touches: 4, centroid: CGPoint(x: 248, y: 200), at: 1.21) == [.workspace(.right)])
+        #expect(gestures.moved(touches: 4, centroid: .zero, at: 1.22) == [])
+        #expect(gestures.ended(remaining: 3, centroid: here, at: 1.23) == [])
+        #expect(gestures.moved(touches: 3, centroid: .zero, at: 1.24) == [])
+        #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.25) == [])
+    }
+
+    @Test func workspaceSwipeDirectionsAndAxisArbitration() {
+        let examples: [(CGPoint, TrackpadGestures.Direction)] = [
+            (CGPoint(x: -48, y: 0), .left), (CGPoint(x: 48, y: 0), .right),
+            (CGPoint(x: 0, y: -48), .up), (CGPoint(x: 0, y: 48), .down)
+        ]
+        for (point, direction) in examples {
+            var gestures = TrackpadGestures()
+            _ = gestures.began(touches: 4, centroid: .zero, at: 1)
+            #expect(gestures.moved(touches: 4, centroid: point, at: 1.1) == [.workspace(direction)])
+            #expect(gestures.cancelled() == [])
+        }
+        var gestures = TrackpadGestures()
+        _ = gestures.began(touches: 4, centroid: .zero, at: 1)
+        #expect(gestures.moved(touches: 4, centroid: CGPoint(x: 50, y: 50), at: 1.1) == [])
+        #expect(gestures.moved(touches: 4, centroid: CGPoint(x: 70, y: 50), at: 1.2) == [.workspace(.right)])
+    }
+
+    @Test func fifthFingerSuppressesGestureUntilAllLift() {
+        var gestures = TrackpadGestures()
+        _ = gestures.began(touches: 4, centroid: .zero, at: 1)
+        _ = gestures.began(touches: 5, centroid: .zero, at: 1.1)
+        #expect(gestures.moved(touches: 5, centroid: here, at: 1.2) == [])
+        _ = gestures.ended(remaining: 4, centroid: .zero, at: 1.3)
+        #expect(gestures.moved(touches: 4, centroid: here, at: 1.4) == [])
+        #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.5) == [])
+    }
+
+    @Test func pinchEmitsIncrementalLogScaleAndNeverScrollsOrClicks() {
+        var gestures = TrackpadGestures()
+        _ = gestures.began(touches: 1, centroid: .zero, at: 1)
+        _ = gestures.began(touches: 2, centroid: here, at: 1.02, spread: 50)
+        #expect(gestures.moved(touches: 2, centroid: here, at: 1.03, spread: 53) == [])
+        #expect(gestures.moved(touches: 2, centroid: here, at: 1.04, spread: 60) == [.zoom(log(1.2))])
+        #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 150, y: 200), at: 1.05, spread: 66) == [.zoom(log(1.1))])
+        #expect(gestures.moved(touches: 2, centroid: here, at: 1.06, spread: 33) == [.zoom(log(0.5))])
+        #expect(gestures.ended(remaining: 1, centroid: .zero, at: 1.07) == [])
+        #expect(gestures.moved(touches: 1, centroid: here, at: 1.08) == [])
+        #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.09) == [])
+    }
+
+    @Test func normalScrollLatchesDespiteLaterSpreadChange() {
+        var gestures = TrackpadGestures()
+        _ = gestures.began(touches: 2, centroid: .zero, at: 1, spread: 50)
+        #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 0, y: 3), at: 1.01, spread: 51) == [])
+        #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 0, y: 5), at: 1.02, spread: 51) == [.scroll(CGPoint(x: 0, y: -10))])
+        #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 0, y: 6), at: 1.03, spread: 80) == [.scroll(CGPoint(x: 0, y: -2))])
+        #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.1) == [])
+    }
+
+    @Test func ambiguousPinchAndScrollWaitForDominantMotion() {
+        var gestures = TrackpadGestures()
+        _ = gestures.began(touches: 2, centroid: .zero, at: 1, spread: 50)
+        #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 5, y: 0), at: 1.1, spread: 55) == [])
+        #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 5, y: 0), at: 1.2, spread: 60) == [.zoom(log(1.2))])
+    }
+
+    @Test func invalidOrMissingSpreadDoesNotProduceInvalidZoom() {
+        let spreads: [CGFloat?] = [nil, 0, -1, .infinity, .nan]
+        for spread in spreads {
+            var gestures = TrackpadGestures()
+            _ = gestures.began(touches: 2, centroid: .zero, at: 1, spread: spread)
+            #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 0, y: 10), at: 1.1, spread: spread) == [.scroll(CGPoint(x: 0, y: -20))])
+        }
+    }
+
+    @Test func twoFingerLiftDoesNotTurnRemainingFingerIntoPointer() {
+        var gestures = TrackpadGestures()
+        _ = gestures.began(touches: 2, centroid: here, at: 1)
+        _ = gestures.ended(remaining: 1, centroid: .zero, at: 1.1)
+        #expect(gestures.moved(touches: 1, centroid: here, at: 1.15) == [])
+        #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.2) == [.click(button: 3)])
+    }
+}
+
+struct TrackpadZoomTests {
+    @Test func smallChangesAccumulateAndReverse() {
+        var zoom = TrackpadZoom()
+        #expect(zoom.consume(0.07) == 0)
+        #expect(zoom.consume(0.07) == 1)
+        #expect(zoom.consume(-0.15) == -1)
+    }
+    @Test func resetAndInvalidInputDoNotLeakIntoNextPinch() {
+        var zoom = TrackpadZoom()
+        #expect(zoom.consume(0.1) == 0)
+        zoom.reset()
+        #expect(zoom.consume(0.05) == 0)
+        #expect(zoom.consume(.infinity) == 0)
+        #expect(zoom.consume(.nan) == 0)
+    }
+    @Test func enormousJumpsAreBounded() {
+        var zoom = TrackpadZoom()
+        #expect(zoom.consume(1_000_000) == 8)
+        #expect(zoom.consume(-1_000_000) == -8)
     }
 }

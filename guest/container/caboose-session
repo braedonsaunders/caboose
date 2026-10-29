@@ -14,13 +14,66 @@ esac
 export XDG_RUNTIME_DIR=/run/user/1000
 install -d -o caboose -g caboose -m 0700 "$XDG_RUNTIME_DIR"
 install -d -m 0755 /run/dbus
-if [ ! -S /run/dbus/system_bus_socket ]; then dbus-daemon --system --fork; fi
+# /run survives a container stop. Only a failed connection with a known stale-socket
+# error permits removing the socket; a live pid or any other failure stops recovery.
+if python3 - <<'SYSTEM_BUS'
+import errno, os, pathlib, socket, stat
+path = pathlib.Path('/run/dbus/system_bus_socket')
+with socket.socket(socket.AF_UNIX) as connection:
+    connection.settimeout(2)
+    try:
+        connection.connect(str(path))
+    except OSError as error:
+        if error.errno not in (errno.ENOENT, errno.ECONNREFUSED):
+            raise SystemExit(2)
+    else:
+        raise SystemExit(0)
+pidfile = pathlib.Path('/run/dbus/pid')
+if pidfile.exists():
+    value = pidfile.read_text().strip()
+    if not value.isdecimal() or int(value) <= 1:
+        raise SystemExit(2)
+    try:
+        os.kill(int(value), 0)
+    except ProcessLookupError:
+        pass
+    else:
+        raise SystemExit(2)
+try:
+    if not stat.S_ISSOCK(path.lstat().st_mode):
+        raise SystemExit(2)
+    path.unlink()
+except FileNotFoundError:
+    pass
+pidfile.unlink(missing_ok=True)
+raise SystemExit(1)
+SYSTEM_BUS
+then :; else
+  status=$?
+  [ "$status" = 1 ] || { echo 'System bus recovery requires operator attention' >&2; exit "$status"; }
+  dbus-daemon --system --fork
+fi
 install -d -o caboose -g caboose -m 0700 "$CABOOSE_HOME/.cache"
 
 # Each seat has its own session bus, so the agents' notifications never reach the owner.
 session_bus() {
   local bus=$1
-  if [ ! -S "$bus" ]; then runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork; fi
+  # /run survives a container stop. A socket file alone does not prove its daemon lives.
+  if runuser -u caboose -- python3 - "$bus" <<'PY'
+import errno, socket, sys
+with socket.socket(socket.AF_UNIX) as connection:
+    connection.settimeout(2)
+    try:
+        connection.connect(sys.argv[1])
+    except OSError as error:
+        sys.exit(1 if error.errno in (errno.ENOENT, errno.ECONNREFUSED) else 2)
+PY
+  then return; else
+    local status=$?
+    [ "$status" = 1 ] || return "$status"
+  fi
+  rm -f -- "$bus"
+  runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork
 }
 
 # Starts the seat's accessibility bus before any app, so every app on its Xwayland joins that
@@ -59,6 +112,17 @@ notification_endpoint() {
     /bin/sh -c 'echo $$ > "$0"; exec python3 "$1"' "$pidfile" "$3" >>"$log" 2>&1 < /dev/null &
 }
 
+# The native bridge (guest/bridge): Now Playing, the phone's appearance and the seat's
+# activation environment for the portals.
+bridge_daemon() {
+  local bus=$1 pidfile="$XDG_RUNTIME_DIR/caboose-bridge.pid" log="$CABOOSE_HOME/.cache/caboose-bridge.log"
+  [ -f /opt/caboose/bridge/caboose-bridge ] || return 0
+  if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then return; fi
+  touch "$log" && chown caboose:caboose "$log"
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
+    /bin/sh -c 'echo $$ > "$0"; exec python3 /opt/caboose/bridge/caboose-bridge daemon' "$pidfile" >>"$log" 2>&1 < /dev/null &
+}
+
 start_owner() {
   local bus="$XDG_RUNTIME_DIR/bus"
   session_bus "$bus"
@@ -69,6 +133,7 @@ start_owner() {
   # on hosts with a render node); this container's node is the session user's to use.
   if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi
   start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock"
+  bridge_daemon "$bus"
 }
 
 start_agent() {
@@ -77,7 +142,7 @@ start_agent() {
   notification_endpoint caboose-agent-notification-daemon "$bus" /opt/caboose/notifications/daemon.py
   # Agents see and drive its apps through its control socket; it plays no sound.
   start_display caboose-display-agent 14601 "$bus" /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/caboose-video-agent.sock" \
-    --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio
+    --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio --no-games
 }
 
 start_printing() {

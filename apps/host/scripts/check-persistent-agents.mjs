@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Real-host profile/memory/routine check. --agent additionally runs two short provider
 // turns (manual and scheduled) on the owner's account; it must already be signed in.
-// Test routines are deleted and the verification profile is archived, preserving history.
+// Test routines and their chats are deleted; the verification profile is archived.
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 const base = (process.env.CABOOSE_URL ?? 'http://127.0.0.1:7310').replace(/\/$/, '')
@@ -72,7 +72,7 @@ finally {
   if (profile) {
     try {
       for (const task of await call('/v1/agent/tasks')) {
-        if (task.profileId === profile.id && ['running', 'paused'].includes(task.status)) await call(`/v1/agent/tasks/${task.id}/cancel`, 'POST', {})
+        if (task.profileId === profile.id) await call(`/v1/agent/tasks/${task.id}`, 'DELETE', { stop: true })
       }
     } catch (error) { failures.push(error) }
     try { await call(`/v1/agent/profiles/${profile.id}`, 'PATCH', { archived: true }) } catch (error) { failures.push(error) }

@@ -6,6 +6,8 @@ import SwiftUI
 ///
 /// Linux windows keep the server's geometry (in Linux pixels); the desktop draws them at
 /// `frame / pixelsPerPoint` with a native title bar above each one, a dock, and a cursor.
+/// Where each window goes is its place in `FreeDesktopLayout`, kept for the computer: the
+/// frame the owner gave it, or a snap, fitted to whatever size the desktop is now.
 /// Every pointer action is hit-tested here, in desktop points, so the phone's trackpad,
 /// a mouse, or touch on an iPad all reach the same windows the same way.
 @MainActor @Observable
@@ -13,6 +15,8 @@ final class DesktopModel {
     enum Hit: Equatable {
         case none
         case dock(String)
+        case desktopItem(String)
+        case desktopMenu
         case titleBar(Int)
         case close(Int)
         case minimize(Int)
@@ -22,20 +26,94 @@ final class DesktopModel {
         case launcherPage(Int)
         case content(Int, CGPoint)  // window id, point in window pixels
         case resize(Int)
+        /// A window in the open Quick Switch strip, and its Stay Here.
+        case switchItem(Int)
+        case switchStay
     }
+
+    /// Quick Switch, whose strip this desktop hit-tests while it is open: the touch area and
+    /// a TV's trackpad route every touch and click through here.
+    weak var quickSwitch: QuickSwitcher?
 
     /// How much larger than a Mac at arm's length the desktop draws, for the distance it is
     /// seen from: title bars, the dock, the cursor and (through the DPI it asks Linux for)
     /// the apps' own text all grow by it, so a 4K TV across a room reads like a laptop.
     var ui: CGFloat = 1
-    var titleBarHeight: CGFloat { 30 * ui }
-    var dockHeight: CGFloat { 76 * ui }
-    var dockBottomInset: CGFloat { 10 * ui }
+    /// Every window's title bar: its controls' places for drawing and for hit-testing.
+    var titleBar: WindowTitleBar { WindowTitleBar(ui: ui, touch: directTouch) }
+    /// Laptop puts shell chrome below the hinge, outside the guest's display.
+    var detachedChrome = false
+    var pointerArea: CGSize?
+    var titleBarHeight: CGFloat { detachedChrome ? 0 : titleBar.height }
+    var dockHeight: CGFloat { detachedChrome ? 0 : 76 * ui }
+    var dockBottomInset: CGFloat { detachedChrome ? 0 : 10 * ui }
+    private var dockGap: CGFloat { detachedChrome ? 0 : 8 * ui }
     var maximizedFrame: CGRect {
         let area = DesktopGeometry.maximizedFrame(size: size, titleBarHeight: titleBarHeight,
-                                                 dockHeight: dockHeight, dockBottomInset: dockBottomInset, dockGap: 8 * ui)
+                                                 dockHeight: dockHeight, dockBottomInset: dockBottomInset, dockGap: dockGap)
         return CGRect(x: area.minX * pixelsPerPoint, y: area.minY * pixelsPerPoint,
                       width: area.width * pixelsPerPoint, height: area.height * pixelsPerPoint).integral
+    }
+
+    /// Where windows go: the desktop above the dock, in points. A window's whole frame,
+    /// title bar included, stays inside it.
+    var workArea: CGRect {
+        CGRect(x: 0, y: 0, width: max(1, size.width), height: max(1, size.height - dockHeight - dockBottomInset - dockGap))
+    }
+
+    /// The owner's places for the windows, kept for the computer between launches.
+    private(set) var layout = FreeDesktopLayout()
+    /// Saves the places for the computer and screen they belong to.
+    var storageKey: String? {
+        didSet {
+            guard storageKey != oldValue else { return }
+            layout = FreeDesktopLayout.decoded(from: storageKey.flatMap { UserDefaults.standard.data(forKey: $0) })
+        }
+    }
+
+    private func save() {
+        guard let storageKey, let data = layout.encoded() else { return }
+        UserDefaults.standard.set(data, forKey: storageKey)
+    }
+
+    /// Where a dragged title bar would snap the window if let go now, in desktop points.
+    private(set) var snapPreview: CGRect?
+    private var pendingSnap: FreeDesktopLayout.Snap?
+
+    /// A window's whole frame (title bar and content) in desktop points, as Linux pixels.
+    func linuxFrame(_ chrome: CGRect) -> CGRect {
+        CGRect(x: chrome.minX * pixelsPerPoint, y: chrome.minY * pixelsPerPoint,
+               width: chrome.width * pixelsPerPoint, height: max(1, chrome.height - titleBarHeight) * pixelsPerPoint).integral
+    }
+
+    /// The smallest whole frame the window accepts, in desktop points.
+    func minimumChrome(_ window: RemoteWindow) -> CGSize {
+        let minimum = window.minimumSize ?? .zero
+        return CGSize(width: minimum.width / pixelsPerPoint, height: minimum.height / pixelsPerPoint + titleBarHeight)
+    }
+
+    private func app(_ window: RemoteWindow) -> String? { window.appClass?.name }
+
+    /// Where the window belongs on this desktop by its place, in Linux pixels, if it has one.
+    func placedFrame(_ window: RemoteWindow) -> CGRect? {
+        layout.frame(for: window.id, app: app(window), in: workArea, minimum: minimumChrome(window)).map(linuxFrame)
+    }
+
+    /// A window that has no place yet gets its first one, and keeps it. One whose app is
+    /// not known yet is placed without taking over a place kept under its id.
+    func place(_ window: RemoteWindow, index: Int) -> CGRect {
+        if let frame = placedFrame(window) { return frame }
+        let frame = placement(for: window, index: index)
+        guard app(window) != nil || layout.places[window.id] == nil else { return frame }
+        layout.setPreferred(window.id, frame: chromeRect(frame: frame), in: workArea, app: app(window))
+        save()
+        return frame
+    }
+
+    /// The whole frame, in desktop points, of a window at `frame` Linux pixels.
+    private func chromeRect(frame: CGRect) -> CGRect {
+        CGRect(x: frame.minX / pixelsPerPoint, y: frame.minY / pixelsPerPoint,
+               width: frame.width / pixelsPerPoint, height: frame.height / pixelsPerPoint + titleBarHeight)
     }
 
     /// The size factor for a display this many points wide: a 1600-point-wide desktop reads
@@ -62,31 +140,135 @@ final class DesktopModel {
     var dockFrames: [String: CGRect] = [:]
     var contextDockID: String?
     /// Launchpad: every app, in a grid over the desktop.
+    var desktopItemFrames: [String: CGRect] = [:]
+    var desktopMenuFrame: CGRect = .zero
+    var desktopMenuOpen = false
+    var desktopContextItem: String?
+    var openDesktopItem: ((String) -> Void)?
     var launchpadOpen = false
     var launchpadButtonFrame: CGRect = .null
     var launcherFrames: [String: CGRect] = [:]
     var launcherPage = 0
     var launcherPageFrames: [Int: CGRect] = [:]
 
-    private var drag: (hit: Hit, start: CGPoint, frame: CGRect)?
+    /// A press being dragged: what it started on, where the pointer and the window's whole
+    /// frame (in points) were when it started, or when it last left a snap.
+    private var drag: (hit: Hit, start: CGPoint, chrome: CGRect)?
 
     init(pixelsPerPoint: CGFloat) { self.pixelsPerPoint = pixelsPerPoint }
 
-    func sync(with windows: [RemoteWindow]) {
+    /// The display server the windows come from: a new lifetime numbers its windows afresh,
+    /// so every place, the stacking and the minimized windows of the last one are dropped
+    /// before anything is placed. Call it before placing a ready session's windows.
+    func enter(epoch: String?) {
+        let before = layout
+        layout.enter(epoch: epoch)
+        guard layout.epoch != before.epoch else { return }
+        stacking.removeAll()
+        minimized.removeAll()
+        liveWindows = nil
+        save()
+    }
+
+    /// The computer has announced every window it has: places of windows it no longer has
+    /// (closed while away, or from before a cold boot) are dropped.
+    func windowsAnnounced(_ ids: Set<Int>) {
+        let before = layout
+        layout.prune(keeping: ids)
+        if layout != before { save() }
+    }
+
+    /// The windows a ready session last showed, to tell a closed window from a reconnect.
+    private let pointerClicks = PointerClickDriver()
+    private var liveWindows: (session: ObjectIdentifier, ids: Set<Int>)?
+
+    /// Follows the computer's windows. A window's place is forgotten when it closes: when it
+    /// leaves a session that is still ready. A dropped or replaced connection forgets nothing,
+    /// since window ids survive reconnects and parking.
+    func sync(with windows: [RemoteWindow], session: (any DisplaySession)? = nil) {
+        if session?.state != .ready || session.map(ObjectIdentifier.init) != liveWindows?.session { pointerClicks.cancel() }
         let ids = Set(windows.map(\.id))
         stacking.removeAll { !ids.contains($0) }
-        unzoomedFrames = unzoomedFrames.filter { ids.contains($0.key) }
-        for window in windows.sorted(by: { $0.id < $1.id }) where !stacking.contains(window.id) { stacking.append(window.id) }
+        for window in windows.sorted(by: { $0.id < $1.id }) where !stacking.contains(window.id) {
+            stacking.append(window.id)
+            if layout.isMinimized(window.id, app: app(window)) { minimized.insert(window.id) }
+        }
         minimized.formIntersection(ids)
+        guard let session, case .ready = session.state else { return }
+        let identity = ObjectIdentifier(session)
+        if let live = liveWindows, live.session == identity {
+            let closed = live.ids.subtracting(ids)
+            for id in closed { layout.remove(id) }
+            if !closed.isEmpty { save() }
+        }
+        liveWindows = (identity, ids)
     }
 
     func raise(_ id: Int) {
         stacking.removeAll { $0 == id }
         stacking.append(id)
-        minimized.remove(id)
+        if minimized.remove(id) != nil { keepMinimized(id, false) }
     }
 
-    func minimize(_ id: Int) { minimized.insert(id) }
+    /// The window ⌥Tab has selected: shown in front of the others, even from the dock,
+    /// until the switch lands on it or is cancelled. Stacking itself does not change.
+    var peek: Int?
+
+    /// The windows to draw, back to front.
+    var shownWindows: [Int] {
+        var shown = stacking.filter { isVisible($0) && $0 != peek }
+        if let peek, stacking.contains(peek) { shown.append(peek) }
+        return shown
+    }
+
+    /// Application windows, most recently used first.
+    func recentWindows(_ session: any DisplaySession) -> [Int] {
+        session.windows.values.filter { !$0.isAuxiliary }.sorted { $0.raisedAt > $1.raisedAt }.map(\.id)
+    }
+
+    /// Quick Switch on the floating desktop: the selection is drawn in front (`peek`), with no
+    /// geometry sent, and the switch lands by raising and focusing it.
+    func switchTarget(session: (any DisplaySession)?) -> QuickSwitcher.Desktop {
+        QuickSwitcher.Desktop(owner: .desktop, session: session,
+                              preview: { [weak self] in self?.peek = $0 },
+                              commit: { [weak self] window in
+                                  self?.peek = nil
+                                  self?.activate(window, session: session)
+                              },
+                              cancel: { [weak self] in self?.peek = nil })
+    }
+
+    /// A finger held on Launchpad opens Quick Switch to slide through. False when the finger
+    /// is not on Launchpad.
+    func beginSwitchHold(session: (any DisplaySession)?) -> Bool {
+        guard let session, let quickSwitch, hitTest(cursor, windows: session.windows) == .launchpadButton else { return false }
+        launchpadOpen = false
+        quickSwitch.hold(recent: recentWindows(session), desktop: switchTarget(session: session))
+        return quickSwitch.owner == .desktop
+    }
+
+    func trackSwitchHold(at point: CGPoint) { quickSwitch?.track(point) }
+    func endSwitchHold() { quickSwitch?.release() }
+    func cancelSwitchHold() { quickSwitch?.cancel(owner: .desktop) }
+
+    /// Brings a window forward and gives it the keyboard.
+    func activate(_ id: Int, session: (any DisplaySession)?) {
+        guard let session else { return }
+        raise(id)
+        focus(id, session)
+    }
+
+    func minimize(_ id: Int) {
+        minimized.insert(id)
+        keepMinimized(id, true)
+    }
+
+    /// Minimized windows stay in the dock across launches, with their places.
+    private func keepMinimized(_ id: Int, _ value: Bool) {
+        let before = layout
+        layout.setMinimized(id, value)
+        if layout != before { save() }
+    }
 
     func isVisible(_ id: Int) -> Bool { !minimized.contains(id) }
 
@@ -109,7 +291,11 @@ final class DesktopModel {
     }
 
     func hitTest(_ point: CGPoint, windows: [Int: RemoteWindow]) -> Hit {
-        if fullscreenWindow(in: windows) == nil {
+        if quickSwitch?.owner == .desktop {
+            if let item = quickSwitch?.item(at: point) { return .switchItem(item) }
+            if quickSwitch?.staysAt(point) == true { return .switchStay }
+        }
+        if detachedChrome || fullscreenWindow(in: windows) == nil {
             if launchpadButtonFrame.contains(point) { return .launchpadButton }
             for (id, frame) in dockFrames where frame.contains(point) { return .dock(id) }
         }
@@ -124,25 +310,28 @@ final class DesktopModel {
             guard chrome.contains(point) else { continue }
             let content = contentRect(window)
             if content.contains(point) {
-                if !window.isAuxiliary, point.x > content.maxX - 18 * ui, point.y > content.maxY - 18 * ui { return .resize(id) }
+                if !detachedChrome, !window.isAuxiliary, point.x > content.maxX - 18 * ui, point.y > content.maxY - 18 * ui { return .resize(id) }
                 let local = CGPoint(x: (point.x - content.minX) * pixelsPerPoint, y: (point.y - content.minY) * pixelsPerPoint)
                 return .content(id, local)
             }
-            // The traffic lights as DesktopWindow draws them: 12-point circles 8 apart after a
-            // 12-point inset, all scaled by `ui`; each takes half the gap on either side.
-            let x = (point.x - chrome.minX) / ui
-            if x < 28 { return .close(id) }
-            if x < 48 { return .minimize(id) }
-            if x < 68 { return .zoom(id) }
-            return .titleBar(id)
+            // The controls answer where DesktopWindow draws them, across the bar's height.
+            switch titleBar.control(at: CGPoint(x: point.x - chrome.minX, y: point.y - chrome.minY)) {
+            case .close: return .close(id)
+            case .minimize: return .minimize(id)
+            case .zoom: return .zoom(id)
+            case nil: return .titleBar(id)
+            }
         }
+        if desktopMenuFrame.contains(point) { return .desktopMenu }
+        for (id, frame) in desktopItemFrames where frame.contains(point) { return .desktopItem(id) }
         return .none
     }
 
     // MARK: Pointer
 
     func move(by delta: CGPoint, session: (any DisplaySession)?) {
-        cursor = CGPoint(x: min(max(0, cursor.x + delta.x), size.width), y: min(max(0, cursor.y + delta.y), size.height))
+        let bounds = pointerArea ?? size
+        cursor = CGPoint(x: min(max(0, cursor.x + delta.x), bounds.width), y: min(max(0, cursor.y + delta.y), bounds.height))
         guard let session else { return }
         if let drag {
             dragMoved(drag, session: session)
@@ -157,6 +346,25 @@ final class DesktopModel {
     func click(button: Int = 1, session: (any DisplaySession)?, open: (String) -> Void) {
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
+        switch hit {
+        case .switchItem(let id):
+            quickSwitch?.choose(id)
+            return
+        case .switchStay:
+            quickSwitch?.cancel()
+            return
+        case .launchpadButton where button == 3:
+            // A secondary click on Launchpad: the windows to choose from.
+            launchpadOpen = false
+            quickSwitch?.present(recent: recentWindows(session), desktop: switchTarget(session: session))
+            return
+        default:
+            // A click anywhere else while the strip is open closes it, and nothing else.
+            if quickSwitch?.owner == .desktop {
+                quickSwitch?.cancel()
+                return
+            }
+        }
         if case .launcherPage(let direction) = hit {
             launcherFrames = [:]
             launcherPageFrames = [:]
@@ -169,6 +377,9 @@ final class DesktopModel {
             return
         }
         switch hit {
+        case .desktopMenu: desktopMenuOpen = true
+        case .desktopItem(let id):
+            if button == 3 { desktopContextItem = id } else { openDesktopItem?(id) }
         case .launchpadButton: launchpadOpen.toggle()
         case .launcher(let id): open(id)
         case .launcherPage: break
@@ -178,46 +389,65 @@ final class DesktopModel {
         case .minimize(let id): minimize(id)
         case .zoom(let id): toggleZoom(id, session)
         case .titleBar(let id), .resize(let id): raise(id); focus(id, session)
+        case .switchItem, .switchStay:
+            break
         case .content(let id, let local):
             guard let window = session.windows[id] else { return }
             if !window.isAuxiliary { raise(id) }
             focus(id, session)
             session.pointerMove(in: window, to: local)
-            session.pointerButton(in: window, button: button, pressed: true, at: local)
-            session.pointerButton(in: window, button: button, pressed: false, at: local)
+            pointerClicks.click(in: window, session: session, at: local, button: button)
         case .none:
             break
         }
     }
 
     func beginDrag(session: (any DisplaySession)?) {
+        pointerClicks.cancel()
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
         switch hit {
         case .titleBar(let id), .resize(let id):
             guard let window = session.windows[id] else { return }
             raise(id)
-            drag = (hit, cursor, window.frame)
+            drag = (hit, cursor, chromeRect(window))
         case .content(let id, let local):
             guard let window = session.windows[id] else { return }
             raise(id)
             focus(id, session)
             session.pointerButton(in: window, button: 1, pressed: true, at: local)
-            drag = (hit, cursor, window.frame)
+            drag = (hit, cursor, chromeRect(window))
         default:
             break
         }
     }
 
     func endDrag(session: (any DisplaySession)?) {
-        defer { drag = nil }
+        defer { drag = nil; snapPreview = nil; pendingSnap = nil; dragged = nil }
         guard let drag, let session else { return }
-        if case .content(let id, _) = drag.hit, let window = session.windows[id] {
+        switch drag.hit {
+        case .content(let id, _):
+            guard let window = session.windows[id] else { return }
             let content = contentRect(window)
             let local = CGPoint(x: (cursor.x - content.minX) * pixelsPerPoint, y: (cursor.y - content.minY) * pixelsPerPoint)
             session.pointerButton(in: window, button: 1, pressed: false, at: local)
+        case .titleBar(let id), .resize(let id):
+            guard let window = session.windows[id], let frame = dragged else { return }
+            // Where it was let go is where it returns to from a snap.
+            layout.setPreferred(id, frame: frame, in: workArea, app: app(window))
+            if let snap = pendingSnap {
+                layout.setSnap(id, snap, current: frame, in: workArea, app: app(window))
+                applyPlace(window, session)
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            }
+            save()
+        default:
+            break
         }
     }
+
+    /// The whole frame a title bar or corner drag has put the window at, in points.
+    private var dragged: CGRect?
 
     func scroll(by delta: CGPoint, session: (any DisplaySession)?) {
         guard let session, case .content(let id, let local) = hitTest(cursor, windows: session.windows),
@@ -225,21 +455,48 @@ final class DesktopModel {
         session.scroll(in: window, dx: delta.x * pixelsPerPoint, dy: delta.y * pixelsPerPoint, at: local)
     }
 
-    private func dragMoved(_ drag: (hit: Hit, start: CGPoint, frame: CGRect), session: any DisplaySession) {
-        let dx = (cursor.x - drag.start.x) * pixelsPerPoint, dy = (cursor.y - drag.start.y) * pixelsPerPoint
+    private func dragMoved(_ drag: (hit: Hit, start: CGPoint, chrome: CGRect), session: any DisplaySession) {
+        let dx = cursor.x - drag.start.x, dy = cursor.y - drag.start.y
+        let area = workArea
         switch drag.hit {
         case .titleBar(let id):
             guard let window = session.windows[id] else { return }
-            unzoomedFrames.removeValue(forKey: id)
-            session.configure(window, frame: CGRect(x: drag.frame.minX + dx, y: max(0, drag.frame.minY + dy),
-                                                    width: drag.frame.width, height: drag.frame.height), state: ["maximized": false])
+            var start = drag
+            // A snapped window pulled away takes back its own size, under the finger.
+            if layout.snap(of: id) != nil, hypot(dx, dy) > 6 * ui {
+                layout.setSnap(id, nil, current: drag.chrome, in: area, app: app(window))
+                let size = layout.frame(for: id, app: app(window), in: area, minimum: minimumChrome(window))?.size ?? drag.chrome.size
+                start.chrome = FreeDesktopLayout.unsnapped(size: size, from: drag.chrome, grab: drag.start, in: area)
+                self.drag = start
+            }
+            guard layout.snap(of: id) == nil else { return }
+            var frame = start.chrome.offsetBy(dx: dx, dy: dy)
+            frame.origin.y = min(max(area.minY, frame.minY), area.maxY - titleBarHeight)
+            let zone = FreeDesktopLayout.zone(at: cursor, in: area, edge: (directTouch ? 20 : 12) * ui)
+                .flatMap { FreeDesktopLayout.allows($0, in: area, minimum: minimumChrome(window)) ? $0 : nil }
+            if zone == nil {
+                let others = stacking.filter { $0 != id && isVisible($0) }.compactMap { session.windows[$0] }
+                    .filter { !$0.isAuxiliary && !$0.isFullscreen }.map { chromeRect($0) }
+                frame = FreeDesktopLayout.magnetized(frame, others: others, in: area, threshold: 10 * ui)
+            }
+            if zone != pendingSnap {
+                withAnimation(.snappy(duration: 0.2)) {
+                    pendingSnap = zone
+                    snapPreview = zone.map { FreeDesktopLayout.rect(for: $0, in: area, minimum: minimumChrome(window)) }
+                }
+                if zone != nil { UISelectionFeedbackGenerator().selectionChanged() }
+            }
+            dragged = frame
+            session.configure(window, frame: linuxFrame(frame), state: ["maximized": false])
         case .resize(let id):
             guard let window = session.windows[id] else { return }
-            unzoomedFrames.removeValue(forKey: id)
-            let minimum = window.minimumSize ?? CGSize(width: 240, height: 160)
-            session.configure(window, frame: CGRect(x: drag.frame.minX, y: drag.frame.minY,
-                                                    width: max(minimum.width, drag.frame.width + dx),
-                                                    height: max(minimum.height, drag.frame.height + dy)), state: ["maximized": false])
+            if layout.snap(of: id) != nil { layout.setSnap(id, nil, current: drag.chrome, in: area, app: app(window)) }
+            let minimum = minimumChrome(window)
+            let frame = CGRect(x: drag.chrome.minX, y: drag.chrome.minY,
+                               width: max(max(minimum.width, 120 * ui), drag.chrome.width + dx),
+                               height: max(max(minimum.height, 80 * ui + titleBarHeight), drag.chrome.height + dy))
+            dragged = frame
+            session.configure(window, frame: linuxFrame(frame), state: ["maximized": false])
         case .content(let id, _):
             guard let window = session.windows[id] else { return }
             let content = contentRect(window)
@@ -282,30 +539,73 @@ final class DesktopModel {
         }
     }
 
-    /// Frames windows had before they were zoomed, to restore them.
-    private var unzoomedFrames: [Int: CGRect] = [:]
+    /// The frontmost window that is not a menu or dialog: the one the keys act on.
+    func frontWindow(in windows: [Int: RemoteWindow]) -> RemoteWindow? {
+        stacking.reversed().filter { isVisible($0) }.compactMap { windows[$0] }.first { !$0.isAuxiliary }
+    }
 
-    func isZoomed(_ window: Int) -> Bool { unzoomedFrames[window] != nil }
+    /// ⌘⌥ and an arrow: the nearest window that way comes forward.
+    func moveFocus(_ direction: YardLayout.Direction, session: (any DisplaySession)?) {
+        guard let session, let front = frontWindow(in: session.windows) else { return }
+        let frames = Dictionary(uniqueKeysWithValues: stacking.filter { $0 != front.id && isVisible($0) }
+            .compactMap { session.windows[$0] }.filter { !$0.isAuxiliary }.map { ($0.id, chromeRect($0)) })
+        guard let next = FreeDesktopLayout.neighbour(direction, from: chromeRect(front), among: frames) else { return }
+        raise(next)
+        focus(next, session)
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    func isZoomed(_ window: Int) -> Bool { layout.snap(of: window) == .maximized }
 
     /// The green button: fill the desktop above the dock, or go back to where it was.
     func toggleZoom(_ id: Int, _ session: any DisplaySession) {
-        guard let window = session.windows[id] else { return }
-        raise(id)
-        focus(id, session)
-        if let previous = unzoomedFrames.removeValue(forKey: id) {
-            session.configure(window, frame: previous, state: ["maximized": false])
-            return
-        }
-        unzoomedFrames[id] = window.frame
-        session.configure(window, frame: maximizedFrame, state: ["maximized": false])
+        snap(id, isZoomed(id) ? nil : .maximized, session)
     }
 
-    /// Rotation, toolbar changes and display scaling keep zoomed windows above the dock.
-    func resizeMaximizedWindows(session: (any DisplaySession)?) {
+    /// Snaps a window to a side, a corner or the whole work area, or (nil) back to its own
+    /// frame, and focuses it.
+    @discardableResult
+    func snap(_ id: Int, _ snap: FreeDesktopLayout.Snap?, _ session: any DisplaySession) -> Bool {
+        guard let window = session.windows[id], !window.isAuxiliary, app(window) != nil,
+              size.width > 0, size.height > 0 else { return false }
+        if let snap, !FreeDesktopLayout.allows(snap, in: workArea, minimum: minimumChrome(window)) { return false }
+        raise(id)
+        focus(id, session)
+        layout.setSnap(id, snap, current: chromeRect(window), in: workArea, app: app(window))
+        save()
+        applyPlace(window, session)
+        return placedFrame(window) != nil
+    }
+
+    /// Laptop's upper screen shows one app at a time, like a laptop's maximized windows: every
+    /// app window that can fill the desktop does, without changing which one is in front.
+    /// Their Tablet places are another arrangement and stay as they were.
+    func fillWorkArea(_ session: any DisplaySession) {
+        guard size.width > 0, size.height > 0 else { return }
+        let candidates = session.windows.values.map { window in
+            FreeDesktopLayout.FillCandidate(id: window.id, app: app(window), minimum: minimumChrome(window),
+                                            isAuxiliary: window.isAuxiliary, isFullscreen: window.isFullscreen)
+        }
+        let fill = layout.windowsToFill(candidates, in: workArea)
+        for id in fill {
+            guard let window = session.windows[id] else { continue }
+            layout.setSnap(id, .maximized, current: chromeRect(window), in: workArea, app: app(window))
+            applyPlace(window, session)
+        }
+        if !fill.isEmpty { save() }
+    }
+
+    private func applyPlace(_ window: RemoteWindow, _ session: any DisplaySession) {
+        guard let frame = placedFrame(window), window.frame != frame else { return }
+        session.configure(window, frame: frame, state: ["maximized": false])
+    }
+
+    /// Rotation, a new screen, toolbar changes and display scaling: every placed window is
+    /// laid out again from the place the owner chose, so nothing drifts or leaves the desktop.
+    func relayout(session: (any DisplaySession)?) {
         guard let session else { return }
-        for id in unzoomedFrames.keys {
-            guard let window = session.windows[id], !window.isFullscreen else { continue }
-            if window.frame != maximizedFrame { session.configure(window, frame: maximizedFrame, state: ["maximized": false]) }
+        for window in session.windows.values where !window.isAuxiliary && !window.isFullscreen {
+            applyPlace(window, session)
         }
     }
 
@@ -335,21 +635,6 @@ final class DesktopModel {
         origin.y = min(max(usable.minY, origin.y), usable.maxY - height)
         return CGRect(x: origin.x * pixelsPerPoint, y: origin.y * pixelsPerPoint,
                       width: width * pixelsPerPoint, height: height * pixelsPerPoint).integral
-    }
-
-    /// Each window's place when the desktop last went down, in Linux pixels.
-    private var rememberedFrames: [Int: CGRect] = [:]
-
-    /// Keeps the windows' places for when this desktop comes back.
-    func remember(_ windows: [RemoteWindow]) {
-        rememberedFrames = Dictionary(windows.filter { !$0.isOverrideRedirect }.map { ($0.id, $0.frame) }, uniquingKeysWith: { a, _ in a })
-    }
-
-    /// A window's remembered place, once, if it still fits on the desktop.
-    func remembered(_ window: RemoteWindow) -> CGRect? {
-        guard let frame = rememberedFrames.removeValue(forKey: window.id) else { return nil }
-        let bounds = CGRect(x: 0, y: 0, width: size.width * pixelsPerPoint, height: size.height * pixelsPerPoint)
-        return bounds.contains(frame) ? frame : nil
     }
 
     /// A good first place for a new window: centred, cascading, clear of the dock.

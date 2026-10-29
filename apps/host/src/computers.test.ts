@@ -36,6 +36,14 @@ describe('ComputerRegistry', () => {
     expect(reopened.get(b.id)).toEqual(b)
   })
 
+  it('persists computers beyond the legacy 64-slot range', async () => {
+    const dir = await root()
+    const registry = await ComputerRegistry.open(dir)
+    for (let slot = 1; slot <= 65; slot++) expect((await registry.create()).slot).toBe(slot)
+    const reopened = await ComputerRegistry.open(dir)
+    expect(reopened.list().map(computer => computer.slot)).toEqual(Array.from({ length: 66 }, (_, i) => i))
+  })
+
   it('keeps each computer in a tenant with its person, and gives a new host\'s computers to its first tenant', async () => {
     const dir = await root()
     const registry = await ComputerRegistry.open(dir)

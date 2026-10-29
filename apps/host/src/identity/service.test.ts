@@ -60,6 +60,44 @@ describe('claiming the host', () => {
   })
 })
 
+describe('console addresses', () => {
+  it.each(['http://localhost:7310', 'https://computer.example.test'])('keeps LAN and HTTPS sessions usable when advertised at %s', async baseURL => {
+    const dual = Identity.create({ database, baseURL, secret: 'x'.repeat(40), setupCodePath: join(root, 'setup-code') })
+    // Better Auth disables origin checks in tests; exercise its production policy.
+    const context = await dual.auth.$context
+    context.skipOriginCheck = false
+    for (const origin of ['http://192.168.1.85:7310', 'https://computer.example.test']) {
+      const headers = new Headers({ host: new URL(origin).host, origin, 'content-type': 'application/json' })
+      if (origin.startsWith('https:')) headers.set('x-forwarded-proto', 'https')
+      const response = await dual.handleAuthentication(new Request(`${origin}/v1/auth/sign-in/email`, {
+        method: 'POST', headers, body: JSON.stringify({ email: 'owner@example.com', password: 'correct horse' }),
+      }))
+      expect(response.status).toBe(200)
+      const cookies = response.headers.getSetCookie()
+      expect(cookies.length).toBeGreaterThan(0)
+      for (const cookie of cookies) {
+        expect(/;\s*Secure(?:;|$)/i.test(cookie)).toBe(origin.startsWith('https:'))
+        expect(cookie.startsWith('__Secure-')).toBe(origin.startsWith('https:'))
+      }
+      headers.set('cookie', cookieFrom(response))
+      expect(await dual.principal(headers)).toMatchObject({ email: 'owner@example.com', operator: true })
+      const session = await dual.handleAuthentication(new Request(`${origin}/v1/auth/get-session`, { headers }))
+      expect(await session.json()).toMatchObject({ user: { email: 'owner@example.com' } })
+      if (new URL(origin).protocol === new URL(baseURL).protocol) {
+        const hostile = new Headers(headers)
+        hostile.set('origin', 'https://unrelated.example.test')
+        const refused = await dual.handleAuthentication(new Request(`${origin}/v1/auth/sign-out`, { method: 'POST', headers: hostile, body: '{}' }))
+        expect(refused.status).toBe(403)
+      }
+      const signedOut = await dual.handleAuthentication(new Request(`${origin}/v1/auth/sign-out`, { method: 'POST', headers, body: '{}' }))
+      expect(signedOut.status).toBe(200)
+      const cleared = signedOut.headers.getSetCookie()
+      expect(cleared.some(cookie => cookie.includes('session_token=;') && /max-age=0/i.test(cookie))).toBe(true)
+      expect(cleared.every(cookie => /;\s*Secure(?:;|$)/i.test(cookie) === origin.startsWith('https:'))).toBe(true)
+    }
+  })
+})
+
 describe('tenants, administrators and invitations', () => {
   it('makes tenants with quotas and edits them', async () => {
     const family = await identity.createTenant({ name: 'Family', quotas: { memoryMb: 16384, vcpus: 8 } })

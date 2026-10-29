@@ -36,7 +36,9 @@ This directory is a Cargo workspace:
   the encoder reads the client's buffer in place, holding it until it is done, and only the
   client's own damage is looked at (a picture that needs encoder padding is copied, damage
   only). Other windows are rendered damage-tracked, straight into the encoder's input
-  image. The encoder keeps the previous picture and compares the damaged 16×16 blocks
+  image. After ten seconds without an encode job, a worker releases its encoders if no
+  refinement is pending; the next picture recreates them with keyframes. The image is
+  retained for damage-tracked rendering. The encoder keeps the previous picture and compares the damaged 16×16 blocks
   against it, converts only the blocks that really changed (applications often damage a
   whole widget for a blinking caret), and tells libx264 which macroblocks changed so it
   skips the rest. One picture per window is at the encoder at a time and the newest
@@ -75,6 +77,11 @@ This directory is a Cargo workspace:
   client that connects after a field was focused); deletions are BackSpace/Delete
   presses, one per grapheme cluster. Surfaces without text-input-v3 (X11 apps, many
   terminals) get the commit as key presses.
+- **Reconnecting.** Every hello carries the process's random `epoch` (16 hex characters,
+  from `/dev/urandom` at start), so a client can tell that window ids still name the same
+  windows. A hello's `window.create` messages are all written before the next client
+  message is read, so the `pong` to a ping sent after the hello follows them. A new hello
+  replaces the previous connection, which may be the same client's dead one.
 - **Clipboard** (text). The phone's `clipboard` becomes the selection Wayland and X11
   applications paste; what they copy reaches the phone (and a new client is sent the
   current text on connect). Copying between Wayland and X11 applications on the computer
@@ -101,18 +108,26 @@ This directory is a Cargo workspace:
   `video.present` when the application shows each frame. A client that keeps failing to
   decode a stream gets it decoded on the server. Launched applications get
   `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
+- **Game handoff** ([docs/game-handoff.md](../../docs/game-handoff.md), `src/game.rs`). The
+  compositor listens on the game socket (`$CABOOSE_GAME_SOCKET`, default
+  `$XDG_RUNTIME_DIR/caboose-game.sock`) for `caboose-game-run`
+  ([guest/game](../game/README.md)), binds each launcher to the toplevel its process made
+  (SO_PEERCRED), and tells it whether the connected client runs games. A client whose hello
+  says `wasm: true` gets `game.create` after the window's `window.create` and
+  `game.destroy` when the game ends, and the window sends it no pictures meanwhile.
+  `--no-games` turns it off (the agent seat).
 - **Detected motion** (`src/motion.rs`). Each window's changed macroblocks feed a tracker.
   A dense rectangle of at least 192×112 pixels whose blocks change in most pictures at
   15 fps or more, for a second, becomes a `motion` video stream. The window's encode
   worker encodes that crop with its own encoder (no sharpening) and leaves it out of the
-  window picture. Once the region has stopped looking like video for a second, a window
+  window picture. A client advertising `scaled_motion` receives eligible software-encoded regions at half
+  width and height with placement unchanged. Once the region has stopped looking like video for a second, a window
   picture repaints it and the stream ends. Only for a client that lists the stream's codec
-  in `video_decoders`; `--no-motion` turns it off.
+  in `video_decoders` or advertising `scaled_motion`; `--no-motion` turns it off.
 
 Limitations: the renderer is pixman (CPU), so buffers reach the encoders through system
 memory and the compositor offers no YUV formats; tiles come only from the software
-encoders; the clipboard carries text only; cursors are sent by name, not as images;
-Pencil input is ignored (`pencil` is not in `hello.features`); notifications are not sent
+encoders; the clipboard carries text only; cursors are sent by name, not as images; notifications are not sent
 on the display protocol; and characters that are not on the keymap cannot be typed into
 X11 applications.
 
@@ -159,8 +174,10 @@ probe. Every check asserts on what arrived, not on a picture:
 | `two-windows` | two applications stream as two windows |
 | `chromium` | Chromium as a native Wayland client animates at ≥ 55 fps |
 | `chromium-text-input` | touch reaches the page; text-input-v3 is enabled and its commit arrives exactly |
+| `chromium-touch-fling` | a timed native finger swipe scrolls a real Chromium page, then continues after release without client-generated wheel events |
 | `reconnect` | window ids survive a reconnect and each window restarts with a keyframe |
 | `reconnect-idle` | a window streamed in place from its shm buffer that draws nothing between two clients gives the second client the same picture |
+| `encoder-eviction` | a quiet Chromium window changes after encoder eviction; its new keyframe decodes on the same connection |
 | `replace` | a second client takes over; the first gets `bye(replaced)` |
 | `storm` | 48 broken connections while a window animates (closed at once, left silent, handshakes cut short, a wrong token, clients killed mid-stream): the next client streams normally, and the server's threads and memory are back where they were |
 | `takeover` | six clients take the display from each other in turn: each starts with a keyframe, each one replaced gets `bye(replaced)` |
@@ -178,6 +195,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
 | `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer; a blinking caret costs at most 4 extra pictures in 6 s, not one per blink |
 | `motion` | Chromium plays a 480×270 canvas "video" in a page of text for 8 s: it becomes one `motion` stream at the canvas, every frame decodes with a pts, the window stream sends at most half as many pictures beside it, the stream ends after the video stops, and the final window picture matches the one streamed with `--no-motion` (≥ 40 dB) |
+| `scaled-motion` | Chromium motion decodes at half size and retains its placement when the client advertises `scaled_motion` |
 | `tiles` | 31 characters typed into Chromium at 1179×2556 go as tiles: every tile decodes, at most a third of the pictures of a run without tiles, the server spends at most 60% of the CPU, and the final picture (frame plus tiles, as the client paints it) matches the one without tiles (≥ 40 dB); a 250×250 animation at 60 Hz stays video |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
@@ -221,7 +239,8 @@ It needs `XDG_RUNTIME_DIR`. It creates the Wayland socket (`--socket`), starts X
 (`--x-display`), and once both are ready writes the application environment to
 `--env-file` in sh syntax: `WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
 toolkit backends (Wayland first), `CABOOSE_DISPLAY_CONTROL` (its control socket),
-`PULSE_SERVER` when it plays sound, `LIBVA_DRIVER_NAME=caboose`,
+`PULSE_SERVER` when it plays sound, `CABOOSE_GAME_SOCKET` when it hands games off,
+`LIBVA_DRIVER_NAME=caboose`,
 `GST_VA_ALL_DRIVERS=1` and `CABOOSE_VIDEO_SOCKET` when the passthrough driver is
 installed, and the GPU variables it was started with (`GALLIUM_DRIVER`,
 `MESA_D3D12_DEFAULT_ADAPTER_NAME`, `LIBVA_DRIVER_NAME`). It then runs `COMMAND` with that
@@ -239,6 +258,8 @@ summary.
 | `--x-display N` | `110` | Xwayland display number |
 | `--no-xwayland` | | Do not start Xwayland |
 | `--no-audio` | | Do not run PulseAudio or send sound |
+| `--no-games` | | Do not listen for game launchers |
+| `--gpu-spool-limit BYTES` | `2147483648` | The most of one GPU stream kept on disk; a stream that outgrows it ends |
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |
 | `--renderer KIND` | `pixman` | The renderer (pixman is the only one) |
@@ -259,6 +280,7 @@ summary.
 | --- | --- |
 | `XDG_RUNTIME_DIR` | Required. Holds the Wayland socket, the default video socket and the instance's state directory |
 | `CABOOSE_VIDEO_SOCKET` | The video passthrough socket (default `$XDG_RUNTIME_DIR/caboose-video.sock`) |
+| `CABOOSE_GAME_SOCKET` | The game socket (default `$XDG_RUNTIME_DIR/caboose-game.sock`) |
 | `LIBVA_DRIVERS_PATH` | Where to look for `caboose_drv_video.so` (default `/usr/lib/x86_64-linux-gnu/dri`) |
 | `CABOOSE_DISPLAY_LOG` | A `tracing` filter (`info`, `caboose_display=debug`, …) |
 
@@ -278,8 +300,9 @@ caboose-display-probe --check --url ws://127.0.0.1:14601/ --token-file /run/cabo
 `--url` selects the instance (default `ws://127.0.0.1:14600/`). `--save` writes each
 window's stream and last decoded picture (PNG); `--type`, `--click` and `--touch` send
 input once a window shows, and `--actions` replays a sequence of keys, text, taps and
-clicks (`--window` picks the window); `--decoders`, `--video-decoders` and `--audio` set
-what the probe announces; `--json` prints a machine-readable report; `--check` exits 0 as
+clicks (`--window` picks the window, and `close` closes it); `--decoders`,
+`--video-decoders`, `--audio` and `--wasm` set what the probe announces, and with `--wasm`
+the report lists the games handed to it; `--json` prints a machine-readable report; `--check` exits 0 as
 soon as the server answers a hello. `caboose-display-probe --help` lists every option.
 
 ## Control socket
@@ -313,7 +336,7 @@ passthrough driver. Neither enables a unit at boot; the host starts the displays
   by the host at each wake; `caboose-display-agent.service` is the agent seat, started
   when an agent task or the app's Agent space needs it. The agent seat runs
   `--listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio
-  --env-file /run/caboose/agent-display.env` on its own D-Bus session bus
+  --no-games --env-file /run/caboose/agent-display.env` on its own D-Bus session bus
   (`/run/user/1000/agent-bus`, from `caboose-agent-bus.service`) with its own
   notification endpoint, so the agents' notifications never reach the owner. Both units
   turn applications' accessibility on and start the seat's accessibility bus once it is
@@ -336,3 +359,13 @@ check, and the D-Bus notification endpoint and monitor from
 host, separately from the display protocol. Run `guest/notifications/check-container.sh`
 to exercise the monitor without a VM; `guest/notifications/check.sh` checks a running
 guest.
+
+### Window decoration check
+
+`guest/display/scripts/dev.sh python3 scripts/check-decorations.py` starts private
+compositors and GTK 3 windows on Wayland and X11. It verifies that default titlebars
+are absent while menus and explicit custom headerbars remain visible. Build the
+debug compositor first (`cargo build` in the dev container). The dev image includes
+PyGObject and GTK 3 introspection for this check. After deploying a new compositor,
+reopen a CLI launcher such as OpenCode: the phone supplies its single window header,
+while the terminal menu remains usable. Existing app processes must be reopened.

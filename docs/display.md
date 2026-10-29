@@ -17,6 +17,7 @@ wire contract, the Caboose Display Protocol.
    ├ an encoder per stream: libx264, libx265, or NVENC (h264/hevc/av1_nvenc)
    ├ changed-block detection, lossless tiles for small changes, sharpening of quiet areas
    ├ video: codec passthrough (the VA-API driver) and detected motion, as their own streams
+   ├ games: WebAssembly games handed off to the client, which runs them itself
    ├ pacing: frame callbacks released on the client's vsync, at most two frames in flight
    ├ input: pointer, wl_touch, keyboard by keysym, text-input-v3
    └ sound: a private PulseAudio, sent as Opus on the pictures' clock
@@ -43,6 +44,12 @@ wire contract, the Caboose Display Protocol.
 The renderer is pixman, on the CPU. Applications render themselves (with Mesa's D3D12
 driver on WSL2 hosts, for example), and their buffers reach the encoder through system
 memory.
+
+GTK 3 ordinary windows use the KDE server-decoration default; xdg-decoration
+clients are configured for server-side decorations. Both leave their window controls
+to Caboose. The launch environment sets `GTK_CSD=0` for the X11 GTK fallback.
+Application-supplied headerbars and menus remain content: their controls cannot be
+safely removed by cropping the picture.
 
 ## Hosts and encoders
 
@@ -76,6 +83,7 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 | D-Bus session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus`, with its own notification endpoint |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Video socket | `$XDG_RUNTIME_DIR/caboose-video.sock` | `$XDG_RUNTIME_DIR/caboose-video-agent.sock` |
+| Game socket | `$XDG_RUNTIME_DIR/caboose-game.sock` | none (`--no-games`) |
 | Control socket | `…/caboose-display/wayland-caboose-0/control.sock` | `…/caboose-display/wayland-caboose-agent/control.sock` |
 | Started | by the host at each wake | on demand, when an agent task or a watcher (the app's Agent space) needs it |
 
@@ -88,8 +96,8 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 - **Launch environment.** Once Wayland and Xwayland are ready, each instance writes the
   environment its applications need (`WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`,
   `XDG_RUNTIME_DIR`, toolkit backends, `CABOOSE_DISPLAY_CONTROL`, `PULSE_SERVER` when it
-  plays sound, the VA-API passthrough variables when the driver is installed) to its env
-  file in sh syntax.
+  plays sound, `CABOOSE_GAME_SOCKET` when it hands games off, the VA-API passthrough
+  variables when the driver is installed) to its env file in sh syntax.
 - **Per-instance state.** Each instance keeps its X authority (`Xauthority`), the
   Xwayland shim that adds `-auth` (`bin/Xwayland`), its PulseAudio socket
   (`pulse/native`) and its control socket (`control.sock`) under
@@ -184,13 +192,19 @@ for byte.
 - A toplevel's `geometry` is relative to its display's origin. A popup's or dialog's is
   relative to its parent's geometry origin and may be negative. Geometry is the xdg window
   geometry: client-side shadows are outside it and are cropped out of the stream.
+- A configure size is a request. The client keeps the server-reported size for the
+  picture's layout and input coordinates until the app reports a new size; fixed-size
+  windows may decline a request without sending another geometry update. Placement can
+  move immediately, but an in-flight placement never suppresses a reported size change.
 - `frame.rect` is window-local display pixels (origin = the window's geometry origin).
   `frame.crop` is the visible part of the decoded picture in picture pixels (encoders pad,
   for example NVENC 2160 → 2176). When the two sizes differ the client scales, which also
   covers a scale-1 Xwayland window on a scale-3 display. Input `x`/`y` are window-local,
   with the same origin as `rect`.
-- Window ids are unique for the server's lifetime and survive reconnects, so a client can
-  keep a last-frame cache per id.
+- Window ids are unique for the server's lifetime and survive reconnects. A new server
+  process starts its ids again, so a client keeps a window's last picture across a
+  reconnect only when the hello's `epoch` (random for each server process) is the one it
+  had; a hello without an epoch proves nothing.
 
 ### Handshake
 
@@ -200,15 +214,23 @@ hello. On a mismatch it sends `bye { reason: "auth" }` and closes; on an unsuppo
 version, `bye { reason: "version" }`; when none of its encoders is in the client's
 `decoders`, `bye { reason: "protocol" }`. Otherwise it answers `hello` with the display
 ids it accepted, `encoders` = its encoders ∩ the client's decoders in the server's
-preference order, and its `features`; then sends `window.create` for every live window,
-followed by a keyframe of each.
+preference order, its `features` and its `epoch`; then sends `window.create` for every
+live window, followed by a keyframe of each.
+
+The server writes every `window.create` of a hello before it reads the client's next
+message, and answers `ping` on the same ordered connection. A `pong` to a ping sent after
+the hello therefore follows the last `window.create` of that hello: at that point the
+client's windows are exactly the server's. A server that sends `epoch` guarantees this
+order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `audio`, `xwayland`, `video`. A feature is listed only when the
-server implements it. caboose-display always lists `vsync`, `ack`, `touch`,
+`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`. A feature is listed only
+when the server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
 `text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
-plays sound; and `tiles` unless tiles are turned off. It does not list `pencil`.
+plays sound; `tiles` unless tiles are turned off; `wasm` when it hands games off (the
+owner's display) and the client's hello says `wasm: true`; and `gpu` when it relays GPU
+streams (the owner's display) and the client's hello says `gpu: true`; `webview` when the owner display and client support agent-app handoff.
 
 ### Pacing and flow control
 
@@ -239,20 +261,27 @@ Server → client (`0x01`–`0x7F`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x01` | `hello` | `version: uint`, `displays: [uint]`, `encoders: [codec]`, `features: [text]` |
+| `0x01` | `hello` | `version: uint`, `displays: [uint]`, `encoders: [codec]`, `features: [text]`, `epoch?: text` (1–64 bytes; caboose-display sends 16 hex characters) |
 | `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool` |
 | `0x03` | `window.update` | `id` plus any `window.create` field that changed |
 | `0x04` | `window.destroy` | `id` |
 | `0x10` | `frame` | `id`, `codec: "hevc"\|"av1"\|"h264"`, `keyframe: bool`, `pts_us: uint`, `rect`, `crop`, `data: bytes` |
 | `0x11` | `tile` | `id`, `rect`, `format: "png"\|"webp-lossless"`, `data: bytes` |
-| `0x12` | `video.create` | `id`, `window`, `rect`, `clip?: rect`, `z?: int`, `codec: "h264"\|"hevc"\|"av1"\|"vp9"`, `source: "passthrough"\|"surface"\|"motion"`, `color?: { primaries, transfer, matrix, full_range }`, `extradata?: bytes` |
+| `0x12` | `video.create` | `id`, `window`, `rect`, `clip?: rect`, `z?: int`, `codec: "h264"\|"hevc"\|"av1"\|"vp9"`, `source: "passthrough"\|"surface"\|"motion"`, `color?: { primaries, transfer, matrix, full_range }`, `extradata?: bytes`, `scaled?: bool` |
 | `0x13` | `video.frame` | `id`, `seq`, `keyframe: bool`, `pts_us?`, `data: bytes` |
 | `0x14` | `video.update` | `id`, `rect?`, `clip?`, `z?` |
 | `0x15` | `video.destroy` | `id` |
 | `0x16` | `video.present` | `id`, `seq`, `pts_us` |
+| `0x17` | `game.create` | `id`, `window`, `root: text`, `entry: text`, `saves?: [{ mount: text, path: text }]` |
+| `0x18` | `game.destroy` | `id` |
+| `0x19` | `gpu.create` | `id`, `window` |
+| `0x1A` | `gpu.data` | `id`, `offset: uint`, `data: bytes` |
+| `0x1B` | `gpu.destroy` | `id`, `reason?: "spool-limit"` |
+| `0x1C` | `webview.create` | `id`, `window`, `app: text`, `root: text`, `entry: text`, `bridge: text`, `grant: text` |
+| `0x1D` | `webview.destroy` | `id` |
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
-| `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …) |
+| `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
 | `0x30` | `clipboard` | `mime`, `data: bytes` |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x40` | `audio` | `codec: "opus"`, `pts_us`, `channels?: uint` (1 or 2, absent = 2), `data: bytes` |
@@ -263,7 +292,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]` |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool` (booleans present only when true) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
@@ -277,6 +306,9 @@ Client → server (`0x81`–`0xFF`):
 | `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool }` (pixels when precise, otherwise wheel clicks) |
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
+| `0x96` | `gpu.ack` | `id`, `offset`: the client has consumed the stream up to `offset` |
+| `0x97` | `game.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes; the server logs no more): the client cannot run game `id` ([game-handoff.md, "Declining"](game-handoff.md#declining)) |
+| `0x98` | `webview.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes) |
 | `0xA0` | `clipboard` | `mime`, `data: bytes` |
 | `0xFE` | `ping` | `t_us`, answered by `pong` for round-trip time |
 
@@ -293,9 +325,14 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
   the commit is typed as key presses and pre-edit text is not shown. Clients send Return as
   a `key` press/release (`0xFF0D`), not a committed newline: single-line fields can ignore
   newlines committed by an input method.
-- `text_input` fires when the focused window's text-input-v3 is enabled or disabled. With
-  the `text-input-v3` feature the client shows and hides the keyboard from it, and treats a
-  `text` cursor shape only as a fallback.
+- `text_input` fires when the focused window's text-input-v3 is enabled or disabled, and
+  while enabled whenever the application reports new surrounding text. With the
+  `text-input-v3` feature the client shows and hides the keyboard from it, and treats a
+  `text` cursor shape only as a fallback. `surrounding`, `cursor` and `anchor` come
+  together: the application's text around the caret (at most 4000 bytes of UTF-8), and the
+  caret and the selection's other end as byte offsets into it, on character boundaries.
+  They are absent when the application reports none, and for password and PIN fields and
+  fields hinted sensitive or hidden, whose text never leaves the computer.
 - Clients keep pointer gestures (tap, long-press right-click, swipe to scroll) for
   `xwayland: true` windows and send real touch to native Wayland ones, because most X11
   apps turn a touch drag into a selection.
@@ -303,8 +340,11 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
 caboose-display sends a subset of these messages. It sends named cursors (`cursor.named`)
 and no `cursor` images; tiles only as `png`; `video.create` and `video.update` without
 `z`, `color` or `extradata`; and no `notification` (the computer's notifications reach
-the app through the host, from [guest/notifications](../guest/notifications)). It ignores
-`pencil`. The clipboard carries text (`text/plain;charset=utf-8`).
+the app through the host, from [guest/notifications](../guest/notifications)). It delivers
+`pencil` as tablet-unstable-v2 pen events: `hover` and `motion` move the pen (bringing it
+into proximity of the surface under it), `down` and `up` are the tip's contact, `leave` and
+`cancel` take it out of proximity; pressure maps to 0–65535 and tilt passes through in
+degrees. The clipboard carries text (`text/plain;charset=utf-8`).
 
 ### Audio
 
@@ -314,8 +354,26 @@ first sample, the clock of `frame` and `video.present`, so a client plays sound 
 on one timeline. It goes only to a client whose hello lists `"opus"` in `audio_decoders`.
 Digital silence is not sent after a second of it: a gap in `pts_us` is silence, and packets
 resume without a reset. The server lists `audio` in `features` when it has sound to send.
+The iOS player anchors server time to the monotonic host clock when starting playback;
+it does not use the asynchronously updated renderer timebase to detect packet backlog.
+Audio-session interruptions clear that anchor before the next playback begins. Live
+window and motion pictures present immediately; only passthrough presentation uses the
+shared audio timeline, and an idle live video renderer cannot hold audio preroll.
 
 ### Video streams
+
+The iOS app omits `video_decoders`, so passthrough streams return to server decoding. It
+advertises `scaled_motion`, allowing motion streams in the window codec. PCM playback uses decoded sample durations to join adjacent
+packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
+The phone estimates the source sample-clock rate over a bounded rolling arrival window,
+then adjusts playback continuously with pitch preservation. This accommodates virtual
+machines whose clocks run at a different rate without repeatedly discarding sound.
+The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
+only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
+playback resets the clock and estimator. Rate corrections change only the rendering
+rate, without resetting the timebase position; explicit time/host anchors are used only
+when playback starts or restarts.
+
 
 A video stream is layered into a window (`window`) by the client: it decodes it with its
 own decoder and draws it at `rect` (window-local display pixels, the whole picture,
@@ -327,7 +385,8 @@ window. Video ids are their own namespace, unique for the server's lifetime.
 The client intersects `clip` (or `rect` when absent) with the window's bounds and `rect`;
 clipping preserves the scale and origin of the complete decoded picture. The window's
 picture and video layers share one window-pixel-to-view transform, including while the
-previous picture stretches during a resize. A playback layer has one active presentation
+previous picture stretches during a resize. The pixel coordinate space changes only
+when the replacement frame is decoded, not when resize metadata arrives. A playback layer has one active presentation
 owner; thumbnails and inactive presentations do not take it from the visible window.
 
 - The client lists in `hello.video_decoders` what it can play as a video stream. The server
@@ -342,9 +401,16 @@ owner; thumbnails and inactive presentations do not take it from the visible win
   rates. A region qualifies once it has been a dense rectangle of at least 192×112
   picture pixels for a second, with most of its macroblocks changing in most pictures at
   15 or more pictures a second. It is sent in the window stream's codec at the window
-  picture's pixel scale, and only to a client that lists that codec in `video_decoders`;
-  a window with a passthrough stream bound gets none. While the stream exists, the
-  window's `frame`s leave the region out; the client shows the stream over it. Once the
+  picture's pixel scale by default, to a client that lists that codec in `video_decoders` or advertises
+  `scaled_motion`. With `scaled_motion`, a software-encoded region divisible by four is box-filtered to
+  half width and height and `video.create.scaled` is true; `rect` and `clip` still use
+  window coordinates. The client upscales the decoded picture with MetalFX where available,
+  falling back to vImage on the CPU if the scaler cannot be made or fails; if that fails,
+  the video layer scales the decoded picture.
+  A window with a passthrough stream bound gets none. While the stream exists, the
+  window's `frame`s keep the region frozen, including keyframes, replacement codec buffers
+  and refinement passes; the client shows the stream over it. Refining the base does not
+  recreate the motion encoder or lose its reference frames. Once the
   region has stopped looking like that for a second (the video paused, moved, or closed),
   the server sends a window `frame` that repaints the region and then `video.destroy`.
   The client keeps showing the stream until it has shown that frame. A resize ends the
@@ -365,6 +431,46 @@ owner; thumbnails and inactive presentations do not take it from the visible win
   `video.keyframe` the server sends a keyframe (a passthrough stream is replayed from its
   last one). A client that sends three `video.keyframe` for a passthrough stream within
   10 s gets that stream decoded on the server instead.
+
+### Game handoff
+
+A client whose hello says `wasm: true` runs games itself. A game is an ordinary toplevel on
+the computer, made by `caboose-game-run`; `game.create` tells the client that window's game
+runs on the client, from files under `root` (relative to `/home/caboose`) starting at
+`entry` (relative to `root`), and which directories it persists (`saves`: `mount` in the
+game's Emscripten file system, `path` relative to `/home/caboose`). The server sends it after
+the window's `window.create`, in the hello burst too, and `game.destroy` before the window
+is withdrawn or when the game ends. Game ids are their own namespace, unique for the server
+process's lifetime. While a client runs a window's game, the window sends no `frame`,
+`tile` or video stream and `request_keyframe` for it has no effect; `configure` and `close`
+work as for any window, and once the game ends a remaining window sends its picture again
+from a keyframe. The launcher, its socket and the client's side are specified in
+[game-handoff.md](game-handoff.md).
+
+### Agent-app web views
+
+A client that says `webview: true` may receive `webview.create` after its window is
+announced. The app id determines `root` as `Apps/<id>` under the home; `entry` is a relative
+page. `bridge` is a random app-instance socket identifier and `grant` is a random display
+session grant. They reach the native client over the authenticated display connection, not
+the page. The launcher hears the current grant in the game socket's `mode` message. The
+guest accepts bridge calls only for its current grant and document revision. A reconnect or
+takeover rotates the grant, closes the previous document and ends its processes. A client
+that cannot run the view sends `webview.decline`; the compositor withdraws it and the app
+runs locally. The window sends no pictures during handoff. See
+[agent apps](../guest/apps/README.md#native-handoff).
+
+### GPU streams
+
+A client whose hello says `gpu: true` renders windows from their applications' Vulkan calls.
+`gpu.create` binds stream `id` to `window`; `gpu.data` carries the stream's bytes in order,
+`offset` counting from its first byte, which is a GFXReconstruct capture file the client
+replays on its own GPU into the window. The client answers with `gpu.ack` as it consumes the
+stream; the server sends at most 4 MiB beyond the last acknowledged offset. A client that
+connects later receives the stream from offset 0. `gpu.destroy` ends it; with
+`reason: "spool-limit"` the stream outgrew what the server keeps of it and cannot be rendered. While a client renders
+a window's stream, the window sends no `frame`, `tile` or video stream. The launcher and the
+relay are specified in [gpu-stream.md](gpu-stream.md).
 
 ## Measurements
 

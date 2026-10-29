@@ -1,13 +1,15 @@
 import CabooseKit
 import SwiftUI
 
-/// Every app on the computer, and the catalog's apps to add: the Shelf, and Library for packs,
-/// updates and removal.
+/// Every app on the computer, with System Settings & Tools last. Library, in the toolbar, is
+/// where apps are added, updated and removed; New App, beside it, has an agent make one.
 struct AppsScreen: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.shellTabPlacement) private var placement
     @State private var search = ""
     @State private var showSystem = false
     @State private var showLibrary = false
+    @State private var showNewApp = false
     private let columns = [GridItem(.adaptive(minimum: 76, maximum: 96), spacing: 18)]
 
     var body: some View {
@@ -17,7 +19,6 @@ struct AppsScreen: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 28) {
                             installed
-                            if search.isEmpty { shelf }
                         }
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
@@ -30,16 +31,38 @@ struct AppsScreen: View {
                     ComputerStateView()
                 }
             }
+            .safeAreaInset(edge: .top) {
+                if placement == .sidebar, model.phase == .ready {
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        NativeTextInput("Search apps", text: $search, capitalization: .none)
+                        if !search.isEmpty {
+                            Button("Clear search", systemImage: "xmark.circle.fill") { search = "" }.labelStyle(.iconOnly)
+                        }
+                    }
+                    .padding(12)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                }
+            }
             .background { ShellBackground() }
             .navigationTitle("Apps")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button("New App", systemImage: "sparkles") { showNewApp = true }
                     Button("Library", systemImage: "books.vertical") { showLibrary = true }
                 }
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
                 ComputerToolbar()
             }
+            .toolbarVisibility(placement == .sidebar ? .hidden : .automatic, for: .navigationBar)
+            .shellRailActions {
+                Button("New App", systemImage: "sparkles") { showNewApp = true }
+                Button("Library", systemImage: "books.vertical") { showLibrary = true }
+            }
             .sheet(isPresented: $showLibrary) { CatalogLibrary().environment(model) }
+            .sheet(isPresented: $showNewApp) { NewAppSheet().environment(model) }
         }
     }
 
@@ -75,25 +98,6 @@ struct AppsScreen: View {
                         .foregroundStyle(.secondary)
                 }
                 .tint(.secondary)
-            }
-        }
-    }
-
-    /// Optional apps from the computer's catalog: just installed first, then the ones to get.
-    @ViewBuilder private var shelf: some View {
-        let recent = model.catalog.apps.filter { model.catalog.recentInstalls.contains($0.id) }
-        let available = recent + model.catalog.apps.filter { $0.installedVersion == nil && !model.catalog.recentInstalls.contains($0.id) }
-        if !available.isEmpty {
-            VStack(alignment: .leading, spacing: 14) {
-                SectionHeader(title: "Shelf") { showLibrary = true }
-                LazyVGrid(columns: columns, spacing: 22) {
-                    ForEach(available) { app in
-                        ShelfTile(app: app) {
-                            if app.installedVersion != nil, let installed = model.apps.first(where: { $0.id == app.desktopId }) { model.open(installed) }
-                            else if app.installedVersion == nil { Task { await model.catalog.perform(app.id, action: "install") } }
-                        }
-                    }
-                }
             }
         }
     }

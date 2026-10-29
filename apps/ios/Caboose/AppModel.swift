@@ -24,14 +24,21 @@ final class AppModel {
     }
 
     private(set) var phase: Phase
-    let agents = AgentCenter()
+    private(set) var agents = AgentCenter()
     var notificationTaskID: String?
     var askFocusRequested = false
-    let catalog = CatalogCenter()
-    let documents = OpenDocumentCenter()
+    private(set) var catalog = CatalogCenter()
+    /// The computer's MCP Library: Tools, on the Agents tab.
+    private(set) var mcp = McpCenter()
+    private(set) var documents = OpenDocumentCenter()
+    var desktopFiles = DesktopFilesCenter()
+    var dockLaunches = DockLaunchState()
+    private var dockLaunchTimeouts: [String: Task<Void, Never>] = [:]
     /// Videos playing on the computer that can move to the phone.
-    let media = MediaHandoff()
+    private(set) var media = MediaHandoff()
     let phone = PhoneHandoff()
+    /// Linux portals, appearance, media controls and opt-in location for this computer.
+    let bridge = NativeBridge()
     /// Where the computer's sound plays, and the AirPlay device it last played on.
     let airPlay = AirPlayCenter()
     /// A window on the agent seat being watched or taken over full screen.
@@ -40,6 +47,9 @@ final class AppModel {
     private(set) var filesRegistering = false
     private var filesRegistrationRevision = 0
     private(set) var credentials: Credentials?
+    private(set) var savedComputers: [Credentials] = []
+    private var connectionRevision = 0
+    var addingComputer = false
     /// The owner's display.
     private(set) var session: (any DisplaySession)?
     private(set) var computer: HostClient.Session.Computer?
@@ -80,40 +90,96 @@ final class AppModel {
     private(set) var desktop = DesktopModel(pixelsPerPoint: 1)
     private var externalSize: CGSize = .zero
     private var placedWindowIDs = Set<Int>()
-    /// Last frames of the computer's windows, by window id, for instant resume.
+    /// Last frames of the computer's windows, by window id, for instant resume: reduced
+    /// pictures, since they are held through the whole time in the background.
     private var frameCache: [Int: CGImage] = [:]
-    private var reconnectAttempts = 0
-    private var reconnectTask: Task<Void, Never>?
+    /// The server epoch the cached frames belong to: ids name the same windows only within one.
+    private var frameCacheEpoch: String?
+    /// Keeps the display connected: when to reconnect, and what the network is doing.
+    let link = DisplayLink()
+    /// The wake in progress: a second caller for the same computer waits for it, and a
+    /// switch, sign-out, close or backgrounding makes whatever it still learns irrelevant.
+    private let wakes = WakeFence()
+    /// The paired computer (`identity(_:)`) the current session was opened for, so a wake
+    /// for another computer replaces it rather than taking it for its own.
+    private var sessionIdentity: String?
+    /// The last lost connection handed to the link: the session and its connection number.
+    private var handledClosure: (ObjectIdentifier, Int)?
+    /// The connection and server epoch `placedWindowIDs` were placed for.
+    private var placedConnection = 0
+    private var placedEpoch: String?
+    private var announcedSession: ObjectIdentifier?
+    private var announcedGeneration = 0
+
+    /// Which gathering of frames the cache belongs to, so pictures still arriving from the GPU
+    /// after the cache was cleared or gathered again are dropped.
+    private var frameCacheGeneration = 0
+    /// Reduced to this long edge: ample for seeding a window until its keyframe lands.
+    private static let frameCacheLongEdge = 1024
+    /// At most this many bytes of pictures, most recently raised windows first.
+    private static let frameCacheBudget = 24 << 20
     private var fileSearchTask: Task<Void, Never>?
     private var sceneActive = true
 
     private var launchStartedAt: Date?
     private var knownWindowIDs = Set<Int>()
-    private var pasteboardChangeCount = UIPasteboard.general.changeCount
     private var observingWindows = false
 
     init() {
-        let saved = Credentials.load()
+        let collection: Credentials.Collection
+        do { collection = try Credentials.loadCollection() }
+        catch { collection = .init(); pairingFailure = error.localizedDescription }
+        let saved = collection.active
+        savedComputers = collection.computers
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
         shortcuts = Self.loadShortcuts(for: saved)
+        bindConnectionCenters()
+        registerFiles()
+        link.attempt = { [weak self] in await self?.wake(quiet: true) }
+        link.probe = { [weak self] in self?.session?.probeLiveness() }
+        link.start()
+    }
+
+    private func bindConnectionCenters() {
+        let revision = connectionRevision
         agents.onComputer = { [weak self] status in
-            self?.computerStatus = status
-            self?.registerFiles(name: status.settings.name)
+            guard let self, self.connectionRevision == revision else { return }
+            self.computerStatus = status
+            self.registerFiles(name: status.settings.name)
         }
         agents.onEvent = { [weak self] type, event in
-            guard let self else { return }
+            guard let self, self.connectionRevision == revision else { return }
             self.media.handle(type, event)
             self.catalog.handle(type, event)
+            self.mcp.handle(type, event)
             self.phone.handle(type, event)
-            if type == "fs.changed" { self.refreshFileSearch() }
+            self.bridge.handle(type, event)
+            if type == "fs.changed" { self.refreshFileSearch(); Task { await self.desktopFiles.refresh(model: self) } }
             if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
             if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials); self.documents.requestSync(model: self) }
         }
-        registerFiles()
-        catalog.onChange = { [weak self] in await self?.refreshApps() }
-        media.attach(host: { [weak self] in self?.host })
-        phone.attach(host: { [weak self] in self?.host })
+        catalog.onChange = { [weak self] in
+            guard let self, self.connectionRevision == revision else { return }
+            await self.refreshApps()
+        }
+        media.attach(host: { [weak self] in self?.connectionRevision == revision ? self?.host : nil })
+        phone.attach(host: { [weak self] in self?.connectionRevision == revision ? self?.host : nil })
+        bridge.attach(computer: { [weak self] in
+            guard let self, self.connectionRevision == revision,
+                  let host = self.host, let credentials = self.credentials else { return nil }
+            return NativeBridge.Computer(host: host, id: credentials.fileDomainIdentifier, documents: self.documents)
+        }, window: { SoftwareKeyboard.shared.window })
+        bridge.setActive(sceneActive)
+        bridge.nowPlayingSuspended = media.handedOff != nil
+        agents.onControlClosed = { [weak self] in
+            guard let self, self.connectionRevision == revision else { return }
+            self.bridge.controlClosed()
+        }
+        media.onHandoffChanged = { [weak self] handedOff in
+            guard let self, self.connectionRevision == revision else { return }
+            self.bridge.nowPlayingSuspended = handedOff
+        }
     }
 
     var host: HostClient? { credentials.map { HostClient(baseURL: activeHostURL ?? $0.hostURL, token: $0.token) } }
@@ -151,31 +217,88 @@ final class AppModel {
         guard !pairing else { return }
         pairing = true
         pairingFailure = nil
+        let revision = connectionRevision
         Task {
             defer { pairing = false }
-            do { connect(with: try await link.redeem(deviceName: UIDevice.current.name)) }
-            catch { pairingFailure = error.localizedDescription }
+            do {
+                let credentials = try await link.redeem(deviceName: UIDevice.current.name)
+                guard revision == connectionRevision else { return }
+                connect(with: credentials)
+            } catch {
+                guard revision == connectionRevision else { return }
+                pairingFailure = error.localizedDescription
+            }
         }
     }
 
     func connect(with credentials: Credentials) {
-        if let old = self.credentials, old.fileDomainIdentifier != credentials.fileDomainIdentifier { FileDomains.remove(old) }
-        if self.credentials != nil && self.credentials != credentials {
-            fileSearchTask?.cancel()
-            ComputerSearch.clear()
-            PushCoordinator.shared.unregister(from: host)
-            LiveActivityCoordinator.shared.unregister(from: host)
-        }
-        credentials.save()
-        if self.credentials?.fileDomainIdentifier != credentials.fileDomainIdentifier {
-            shortcuts = Self.loadShortcuts(for: credentials)
-            recentFiles = []
-        }
-        self.credentials = credentials
-        filesRegistrationError = nil
-        registerFiles(name: "Caboose")
-        activeHostURL = nil
+        // Commit first: storage failures must leave the current computer connected.
+        let saved: Credentials
+        do { saved = try credentials.save() }
+        catch { pairingFailure = error.localizedDescription; return }
+        resetConnection()
+        self.credentials = saved
+        savedComputers = (try? Credentials.loadCollection().computers) ?? savedComputers
+        shortcuts = Self.loadShortcuts(for: saved)
+        addingComputer = false
+        phase = .waking
+        registerFiles(name: saved.displayName)
         Task { await wake() }
+    }
+
+    func switchComputer(_ computer: Credentials) {
+        guard !pairing, computer.id != credentials?.id else { return }
+        connect(with: computer)
+    }
+
+    /// Stop every connection owner before another identity becomes visible to its callbacks.
+    private func resetConnection() {
+        connectionRevision += 1
+        closeDisplay() // invalidates WakeFence and stops DisplayLink retries
+        fileSearchTask?.cancel()
+        ComputerSearch.clear()
+        PushCoordinator.shared.unregister(from: host)
+        LiveActivityCoordinator.shared.unregister(from: host)
+        if let credentials { FileDomains.remove(credentials) }
+        agents.reset()
+        catalog.reset()
+        mcp.reset()
+        documents.reset()
+        desktopFiles.reset()
+        media.reset()
+        phone.reset()
+        bridge.reset()
+        agents = AgentCenter()
+        catalog = CatalogCenter()
+        mcp = McpCenter()
+        documents = OpenDocumentCenter()
+        media = MediaHandoff()
+        bindConnectionCenters()
+        computer = nil
+        computerStatus = nil
+        apps = []
+        appIcons = [:]
+        clearFrameCache()
+        lastDisplay = nil
+        sessionIdentity = nil
+        placedWindowIDs.removeAll()
+        launching = nil
+        launchStartedAt = nil
+        openingFileSince = nil
+        launchFailure = nil
+        notificationTaskID = nil
+        settingsPresented = false
+        recentFiles = []
+        selectedTab = .home
+        deviceDesktopActive = false
+        deviceViewport = DeviceViewport()
+        desktop = DesktopModel(pixelsPerPoint: 1)
+        yard.invalidate()
+        filesRegistrationRevision += 1
+        filesRegistering = false
+        filesRegistrationError = nil
+        activeHostURL = nil
+        parking = false
     }
 
     /// Change reachability without replacing the phone token or its Files identity.
@@ -184,44 +307,36 @@ final class AppModel {
               current.token == updated.token else { return }
         try updated.saveAddresses()
         credentials = updated
+        savedComputers = (try? Credentials.loadCollection().computers) ?? savedComputers
         if case .failed = phase { Task { await wake() } }
     }
 
     func signOut() {
-        fileSearchTask?.cancel()
-        ComputerSearch.clear()
-        PushCoordinator.shared.unregister(from: host)
-        LiveActivityCoordinator.shared.unregister(from: host)
-        session?.disconnect()
-        session = nil
-        agents.reset()
-        catalog.reset()
-        documents.reset()
-        media.reset()
-        phone.reset()
-        computerStatus = nil
-        settingsPresented = false
-        recentFiles = []
-        selectedTab = .home
-        deviceDesktopActive = false
-        deviceViewport = DeviceViewport()
-        filesRegistrationRevision += 1
-        filesRegistering = false
-        filesRegistrationError = nil
-        if let credentials { FileDomains.remove(credentials) }
-        Credentials.clear()
+        do { try Credentials.clear() }
+        catch { pairingFailure = error.localizedDescription; return }
+        resetConnection()
         credentials = nil
-        activeHostURL = nil
+        savedComputers = (try? Credentials.loadCollection().computers) ?? []
+        shortcuts = AppShortcuts()
         phase = .needsSetup
+        if let next = savedComputers.first { connect(with: next) }
     }
 
     /// Advertise the paired computer without depending on its host or display being online.
     func registerFiles(name: String? = nil) {
-        guard let credentials else { return }
+        guard var credentials else { return }
+        if let name, !name.isEmpty, credentials.computerName != name {
+            credentials.computerName = name
+            do {
+                let saved = try credentials.save()
+                self.credentials = saved
+                savedComputers = (try? Credentials.loadCollection().computers) ?? savedComputers
+            } catch { pairingFailure = error.localizedDescription }
+        }
         filesRegistrationRevision += 1
         let revision = filesRegistrationRevision
         filesRegistering = true
-        let displayName = name ?? computerStatus?.settings.name ?? computer?.name ?? "Caboose"
+        let displayName = name ?? computerStatus?.settings.name ?? computer?.name ?? credentials.displayName
         FileDomains.register(credentials, name: displayName) { [weak self] error in
             guard let self, self.filesRegistrationRevision == revision,
                   self.credentials?.fileDomainIdentifier == credentials.fileDomainIdentifier else { return }
@@ -236,60 +351,114 @@ final class AppModel {
     // MARK: Lifecycle
 
     /// Wakes the computer and opens the display. `quiet` keeps the current screen in place,
-    /// for reconnects the person should not have to notice.
+    /// for reconnects the person should not have to notice. Only one wake runs at a time:
+    /// a second caller waits for the first instead of opening a competing display.
     func wake(quiet: Bool = false) async {
-        if let credentials {
-            let reached = await credentials.reachableURL()
-            if reached != activeHostURL { activeHostURL = reached }
+        if !quiet { link.stop() } // the person asked: whatever was scheduled is superseded
+        guard let credentials else { phase = .needsSetup; return }
+        await wakes.run(identity: Self.identity(credentials)) { [weak self] ticket in
+            await self?.performWake(credentials, ticket: ticket, quiet: quiet)
         }
-        guard let host else { phase = .needsSetup; return }
-        if case .ready = phase, session?.state == .ready { return }
+    }
+
+    /// The paired computer a wake is for: its primary address and this phone's token.
+    private static func identity(_ credentials: Credentials) -> String {
+        credentials.hostURL.absoluteString + " " + credentials.token
+    }
+
+    /// Every change after a suspension first checks `ticket`: a wake for a computer the app
+    /// has since left, or one superseded by sign-out, closing or backgrounding, changes nothing.
+    private func performWake(_ credentials: Credentials, ticket: WakeFence.Ticket, quiet: Bool) async {
+        let reached = await credentials.reachableURL()
+        guard wakes.isCurrent(ticket) else { return }
+        if reached != activeHostURL { activeHostURL = reached }
+        let host = HostClient(baseURL: reached, token: credentials.token)
+        let identity = Self.identity(credentials)
+        // Only this computer's own display counts as up or opening; another's is replaced.
+        switch WakePlan.plan(for: identity, owner: sessionIdentity, state: session?.state, phaseReady: phase == .ready) {
+        case .alreadyLive, .alreadyOpening: return
+        case .wake: break
+        }
         if !quiet { phase = .waking }
         do {
-            let wake = try await host.wake()
-            // A wake may finish after backgrounding or changing computers. Do not attach
-            // an old computer's control channel in either case.
-            guard sceneActive, self.host?.token == host.token, self.host?.baseURL == host.baseURL else { return }
+            // A computer that was just running answers at once; a cold boot gets its minutes.
+            let wake = try await (quiet ? host.wake(timeout: 30) : host.wake())
+            // Do not attach a computer the app has left, or open a display in the background.
+            guard wakes.isCurrent(ticket), sceneActive else { return }
             computer = wake.computer
             registerFiles(name: wake.computer.name)
             if !quiet { phase = .connecting }
-            startSession(host: host, display: wake.display)
+            openDisplay(host: host, display: wake.display, identity: identity)
             agents.detach()
             agents.attach(host: host)
             PushCoordinator.shared.synchronize()
             LiveActivityCoordinator.shared.connected()
             catalog.attach(host)
+            mcp.attach(host)
             documents.requestSync(model: self)
+            Task { await desktopFiles.refresh(model: self) }
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
             Task { await media.refresh() }
             Task { await refreshApps() }
             refreshFileSearch()
             Task { try? await refreshComputer() }
         } catch {
-            phase = .failed(error.localizedDescription)
+            guard wakes.isCurrent(ticket) else { return }
+            wakeFailed(error, quiet: quiet)
         }
+    }
+
+    /// A host that cannot be reached is tried again on the link's schedule; one that answers
+    /// with an error has said what is wrong, and retrying will not change it.
+    private func wakeFailed(_ error: Error, quiet: Bool) {
+        let reason = error.localizedDescription
+        let unreachable: Bool = switch error {
+        case HostClient.Failure.unreachable: true
+        case is URLError: true
+        // A proxy in front of the host (Tailscale Serve, a reverse proxy) while the host restarts.
+        case HostClient.Failure.server(let status, _) where [502, 503, 504].contains(status): true
+        default: false
+        }
+        guard sceneActive, unreachable else {
+            link.stop()
+            phase = .failed(reason)
+            return
+        }
+        // The current screen stays while the link retries: the kept windows, or Waking.
+        link.lost(.wakeFailed, reason: reason)
+        if case .lost(let last) = link.status { phase = .failed(last) }
     }
 
     func sceneBecameActive() {
         sceneActive = true
         registerFiles()
         phone.setActive(true)
+        bridge.setActive(true)
         documents.requestSync(model: self)
+        Task { await desktopFiles.refresh(model: self) }
         showSharedDocumentIfAvailable()
-        offerPasteboardIfChanged()
-        if phase != .displayElsewhere, session == nil || session?.state != .ready { Task { await wake() } }
+        guard phase != .displayElsewhere else { return }
+        switch link.status {
+        case .reconnecting, .waitingForNetwork: return // already on it
+        case .idle, .live, .lost: break
+        }
+        // A session kept through a lost connection resumes quietly behind its windows; back
+        // from the background there is none, so the computer is woken and a new one opened.
+        if let session, case .closed(let reason) = session.state {
+            link.retryNow(reason: reason ?? "The display connection closed.")
+        } else if session == nil {
+            Task { await wake() }
+        }
     }
 
     /// Leaving the app closes the display; the computer keeps every app running and parks on idle.
     func sceneEnteredBackground() {
         sceneActive = false
         phone.setActive(false)
-        reconnectTask?.cancel()
-        if let session {
-            frameCache = session.windows.reduce(into: [:]) { cache, entry in
-                if let image = entry.value.surface.snapshot() { cache[entry.key] = image }
-            }
-        }
+        bridge.setActive(false)
+        wakes.invalidate()
+        link.stop()
+        if let session { cacheFrames(of: session) }
         session?.disconnect()
         session = nil
         agents.detach()
@@ -297,26 +466,90 @@ final class AppModel {
         if case .ready = phase { phase = .waking }
     }
 
+    /// Keeps reduced pictures of the windows most recently raised, as many as fit the budget,
+    /// gathered off the main thread: the scene may be suspended within seconds of leaving the
+    /// screen, and a desktop's windows at full size would be hundreds of megabytes held through
+    /// the background. Those over the budget are dropped; they show once their keyframe lands.
+    private func cacheFrames(of session: any DisplaySession) {
+        frameCacheEpoch = session.epoch
+        frameCacheGeneration += 1
+        frameCache.removeAll()
+        let generation = frameCacheGeneration
+        var budget = Self.frameCacheBudget
+        var chosen: [Int: WindowSurface] = [:]
+        for window in session.windows.values.sorted(by: { $0.raisedAt > $1.raisedAt }) {
+            let size = window.surface.pixelSize
+            guard size.width > 0, size.height > 0 else { continue }
+            let scale = min(1, CGFloat(Self.frameCacheLongEdge) / max(size.width, size.height))
+            let bytes = Int((size.width * scale).rounded()) * Int((size.height * scale).rounded()) * 4
+            guard bytes <= budget else { break }
+            budget -= bytes
+            chosen[window.id] = window.surface
+        }
+        guard !chosen.isEmpty else { return }
+        WindowSurface.snapshots(of: chosen, longEdgeAtMost: Self.frameCacheLongEdge) { [weak self] images in
+            Task { @MainActor in
+                guard let self, self.frameCacheGeneration == generation else { return }
+                self.frameCache = images
+            }
+        }
+    }
+
+    private func clearFrameCache() {
+        frameCacheEpoch = nil
+        frameCacheGeneration += 1
+        frameCache.removeAll()
+    }
+
     private var lastDisplay: HostClient.Session.Display?
 
-    private func startSession(host: HostClient, display: HostClient.Session.Display) {
+    /// Reconnects the session that lost its connection, keeping its windows on screen, or
+    /// opens a new one. Never two: a resumed session is the same object.
+    private func openDisplay(host: HostClient, display: HostClient.Session.Display, identity: String) {
+        if let current = session as? CabooseDisplaySession, case .closed = current.state, !current.isReplaced,
+           current.closeCause != .local, sessionIdentity == identity {
+            lastDisplay = display
+            yard.invalidate()
+            current.resume(displayURL: host.socketURL(display.path), token: host.token, password: display.token,
+                           capabilities: displayCapabilities(), computerIdentity: credentials?.fileDomainIdentifier)
+            return
+        }
+        startSession(host: host, display: display, identity: identity)
+    }
+
+    private func startSession(host: HostClient, display: HostClient.Session.Display, identity: String) {
         session?.disconnect()
         lastDisplay = display
+        sessionIdentity = identity
+        handledClosure = nil
+        placedConnection = 0
         let caps = displayCapabilities()
         placedWindowIDs.removeAll()
         let url = host.socketURL(display.path)
-        let session: any DisplaySession = CabooseDisplaySession(displayURL: url, token: host.token, password: display.token, capabilities: caps)
-        session.onClipboardText = { text in UIPasteboard.general.string = text }
-        session.clipboardProvider = { UIPasteboard.general.string }
-        session.onBell = { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
-        session.onOpenURL = { [weak self] url in self?.phone.open(url) }
-        session.onNotification = { note in Self.post(note) }
+        let session: any DisplaySession = CabooseDisplaySession(displayURL: url, token: host.token, password: display.token, capabilities: caps, computerIdentity: credentials?.fileDomainIdentifier)
+        let isCurrent: () -> Bool = { [weak self, weak session] in
+            guard let self, let session else { return false }
+            return self.session === session
+        }
+        session.onClipboardText = { text in
+            guard isCurrent() else { return }
+            UIPasteboard.general.string = text
+        }
+        session.clipboardProvider = { isCurrent() ? UIPasteboard.general.string : nil }
+        session.onBell = { if isCurrent() { UINotificationFeedbackGenerator().notificationOccurred(.warning) } }
+        session.onOpenURL = { [weak self] url in if isCurrent() { self?.phone.open(url) } }
+        session.onNotification = { note in if isCurrent() { Self.post(note) } }
         // A window raised on the desktop stays on the desktop; only the phone's cards follow it.
         session.onRaise = { [weak self] wid in
-            guard let self else { return }
+            guard isCurrent(), let self else { return }
             if self.yardActive { self.yard.focus(wid) } else if !self.desktopActive { self.presentedWindowID = wid }
         }
-        session.cachedFrame = { [weak self] wid in self?.frameCache[wid] }
+        // A cached frame is shown only for the server epoch it came from; a computer that
+        // restarted since (or a guest that sends no epoch) reuses ids for other windows.
+        session.cachedFrame = { [weak self, weak session] wid in
+            guard isCurrent(), let self, let epoch = self.frameCacheEpoch, epoch == (session as? CabooseDisplaySession)?.server?.epoch else { return nil }
+            return self.frameCache[wid]
+        }
         self.session = session
         yard.session = session
         yard.invalidate()
@@ -324,11 +557,18 @@ final class AppModel {
         observeSession()
     }
 
-    /// "Typing 85 ms · Ping 4 ms": how responsive the computer is right now.
+    /// "Typing 85 ms · Ping 4 ms": how responsive the computer is right now, or what the
+    /// connection is doing instead.
     var connectionSummary: String {
+        if let line = link.statusLine { return line }
+        guard session?.state == .ready else { return "Connecting" }
+        let health = session?.health ?? .empty
         var parts: [String] = []
-        if let echo = session?.typingEchoMs { parts.append("Typing \(echo) ms") }
-        if let ping = session?.latencyMs { parts.append("Ping \(Int(ping.rounded())) ms") }
+        if let echo = health.typingEchoMs { parts.append("Typing \(echo) ms") }
+        if let ping = health.roundTrip?.last { parts.append("Ping \(Int(ping.rounded())) ms") }
+        if let silent = health.sinceLastReceive, silent >= LinkWatchdog.pingInterval * 2 {
+            parts.append("Nothing received for \(Int(silent)) s")
+        }
         return parts.isEmpty ? "Connected" : parts.joined(separator: " · ")
     }
 
@@ -360,6 +600,14 @@ final class AppModel {
         withObservationTracking {
             _ = session.state
             _ = session.windows.count
+            _ = session.windowsAnnounced
+            // Late class metadata settles launch feedback; class and minimum size also
+            // determine whether a window can fill Laptop's upper screen.
+            for window in session.windows.values {
+                _ = window.appClass?.name
+                _ = window.appClass?.instance
+                _ = window.minimumSize
+            }
         } onChange: { [weak self] in
             Task { @MainActor in
                 self?.sessionChanged()
@@ -373,21 +621,44 @@ final class AppModel {
         guard let session else { return }
         switch session.state {
         case .ready:
-            reconnectAttempts = 0
+            // Id-keyed placements belong to this compositor lifetime, not just its host.
+            yard.enter(epoch: session.epoch)
+            desktop.enter(epoch: session.epoch)
+            let identity = ObjectIdentifier(session)
+            if announcedSession != identity {
+                announcedSession = identity
+                announcedGeneration = 0
+            }
+            if session.windowsAnnounced > announcedGeneration {
+                announcedGeneration = session.windowsAnnounced
+                desktop.windowsAnnounced(Set(session.windows.keys))
+            }
+            if link.status != .live { link.connected() }
             if phase != .ready { phase = .ready }
+            // A resumed connection to the same server epoch has the same windows where they
+            // were; any other has new windows (perhaps under old ids) to place.
+            if let display = session as? CabooseDisplaySession, display.connections != placedConnection {
+                if display.epoch == nil || display.epoch != placedEpoch { placedWindowIDs.removeAll() }
+                placedConnection = display.connections
+                placedEpoch = display.epoch
+            }
         case .closed(let reason):
             // Another device has the display: taking it back on our own would start a tug of war.
             if session.isReplaced {
-                reconnectTask?.cancel()
-                reconnectTask = nil
+                link.stop()
                 phase = .displayElsewhere
-            // A dropped connection while the app is in use is retried quietly; only give up after a few tries.
-            } else if sceneActive, reconnectAttempts < 4 {
-                scheduleReconnect()
-            } else if case .ready = phase {
+            // A lost connection while the app is in use is retried quietly on the link's schedule;
+            // the windows stay on screen meanwhile.
+            } else if sceneActive, let cause = session.closeCause?.reconnect {
+                // Each lost connection counts once, however often its state is looked at again.
+                let closure = (ObjectIdentifier(session), (session as? CabooseDisplaySession)?.connections ?? 0)
+                guard handledClosure.map({ $0 != closure }) ?? true else { break }
+                handledClosure = closure
+                link.lost(cause, reason: reason ?? "The display connection closed.")
+                if case .lost(let last) = link.status { phase = .failed(last) }
+            } else if sceneActive, session.closeCause != .local {
+                link.stop()
                 phase = .failed(reason ?? "The display connection closed.")
-            } else if phase == .connecting {
-                phase = .failed(reason ?? "Could not open the display.")
             }
         default:
             break
@@ -398,14 +669,22 @@ final class AppModel {
         if yardActive, deviceViewport.owner != .card {
             yard.sync(session.windows) { $0.appClass?.name }
         } else if desktopActive, deviceViewport.owner != .card {
-            desktop.sync(with: Array(session.windows.values))
+            desktop.sync(with: Array(session.windows.values), session: session)
+            // Each window goes to the place the owner gave it, fitted to this desktop; a new
+            // one gets a first place, which it keeps.
             for (index, window) in appWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
                 placedWindowIDs.insert(window.id)
-                let frame = desktop.isZoomed(window.id) ? desktop.maximizedFrame
-                    : desktop.remembered(window) ?? desktop.placement(for: window, index: index)
+                let frame = desktop.place(window, index: index)
                 session.configure(window, frame: frame, state: ["maximized": false])
                 desktop.raise(window.id)
             }
+            if laptopNeedsInitialFit, laptopDesktopActive, !externalDisplayActive,
+               let front = desktop.frontWindow(in: session.windows) {
+                // Window class and minimum size may arrive after its first announcement.
+                // Keep the fit pending until there is a real, usable placement.
+                if desktop.snap(front.id, .maximized, session) { laptopNeedsInitialFit = false }
+            }
+            if laptopDesktopActive, !externalDisplayActive { desktop.fillWorkArea(session) }
             // Dialogs and tool windows: over their parent, or centred, never left at the origin.
             // Menus and tooltips (override-redirect) keep the place the app chose.
             for window in session.windows.values where window.isAuxiliary && !window.isOverrideRedirect && !placedWindowIDs.contains(window.id) {
@@ -418,7 +697,12 @@ final class AppModel {
         if let presented = presentedWindowID, !current.contains(presented) {
             presentedWindowID = appWindows.first?.id
         }
-        if let target = launching, let newest = added.compactMap({ session.windows[$0] }).first(where: { !$0.isAuxiliary && matches($0, target) }) {
+        for (id, attempt) in dockLaunches.pending {
+            if let app = apps.first(where: { $0.id == id }), appWindows.contains(where: { matches($0, app) }) {
+                finishDockLaunch(id, token: attempt.token)
+            }
+        }
+        if let target = launching, let newest = appWindows.first(where: { matches($0, target) }) {
             launching = nil
             if !desktopActive { presentedWindowID = newest.id }
         }
@@ -439,19 +723,6 @@ final class AppModel {
                 shared?.removeObject(forKey: "document-open-desktop-id")
                 shared?.removeObject(forKey: "document-open-domain")
             }
-        }
-    }
-
-    private func scheduleReconnect() {
-        guard reconnectTask == nil else { return }
-        reconnectAttempts += 1
-        let delay = Double(1 << (reconnectAttempts - 1))
-        reconnectTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            guard let self, !Task.isCancelled else { return }
-            self.reconnectTask = nil
-            self.session = nil
-            await self.wake(quiet: true)
         }
     }
 
@@ -497,11 +768,10 @@ final class AppModel {
         else { deviceDesktopResized(to: deviceViewport.desktopSize) }
     }
 
-    /// Takes the phone's desktop down so a window can be a full-screen card, keeping each
-    /// window's place on it for when the desktop comes back.
+    /// Takes the phone's desktop down so a window can be a full-screen card. Each window's
+    /// place stays in the desktop's layout for when the desktop comes back.
     private func leaveDeviceDesktop() {
         guard deviceDesktopActive else { return }
-        if let session { desktop.remember(Array(session.windows.values)) }
         closeDeviceDesktop()
     }
 
@@ -515,6 +785,8 @@ final class AppModel {
         let scale = min(2, max(1, UIScreen.main.scale))
         if !(desktop.directTouch && desktop.pixelsPerPoint == scale) { desktop = DesktopModel(pixelsPerPoint: scale) }
         desktop.directTouch = true
+        desktop.detachedChrome = laptopDesktopActive
+        desktop.storageKey = freeDesktopKey(external: false).map { $0 + (laptopDesktopActive ? ".laptop" : "") }
         desktop.ui = desktopUI(forWidth: size.width)
         desktop.size = size
         desktop.cursor = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -558,6 +830,7 @@ final class AppModel {
         externalSize = size
         externalScale = scale
         desktop = DesktopModel(pixelsPerPoint: tvPixelsPerPoint(width: size.width, scale: scale))
+        desktop.storageKey = freeDesktopKey(external: true)
         externalDisplayActive = true
         selectedTab = .desktop // the phone's Desktop tab is the TV's trackpad
         desktop.ui = desktopUI(forWidth: size.width)
@@ -593,6 +866,8 @@ final class AppModel {
         let new = tvPixelsPerPoint(width: externalSize.width, scale: externalScale)
         guard old != new else { return }
         let replacement = DesktopModel(pixelsPerPoint: new)
+        // Places are in points, so they hold at any pixel scale.
+        replacement.storageKey = desktop.storageKey
         replacement.ui = desktop.ui
         replacement.size = desktop.size
         replacement.cursor = desktop.cursor
@@ -641,10 +916,10 @@ final class AppModel {
             sessionChanged()
             return
         }
-        // While waking, the coming session is opened for the new screen; in the background, nothing opens.
-        guard sceneActive, phase == .ready || phase == .connecting, let host, let lastDisplay else { return }
-        phase = .connecting
-        startSession(host: host, display: lastDisplay)
+        // A session opening or waiting to reconnect keeps the new screen for its hello (or
+        // sends it after one already sent); a second session would compete with it.
+        // Without a session, the coming wake opens one for the new screen.
+        session?.reconfigure(displayCapabilities())
     }
 
     // MARK: Computer settings
@@ -657,14 +932,22 @@ final class AppModel {
 
     func refreshComputer() async throws {
         guard let host else { return }
-        computerStatus = try await host.computer()
+        let revision = connectionRevision
+        let status = try await host.computer()
+        guard revision == connectionRevision else { return }
+        computerStatus = status
+        registerFiles(name: status.settings.name)
         LiveActivityCoordinator.shared.sync(agents.tasks)
     }
 
     /// Saves only the given changes. Name and auto-park apply at once; memory and cores at the next restart.
     func saveSettings(_ changes: [String: JSONValue]) async throws {
         guard let host, !changes.isEmpty else { return }
-        computerStatus = try await host.updateSettings(changes)
+        let revision = connectionRevision
+        let status = try await host.updateSettings(changes)
+        guard revision == connectionRevision else { return }
+        computerStatus = status
+        registerFiles(name: status.settings.name)
     }
 
     /// A park is underway.
@@ -673,18 +956,20 @@ final class AppModel {
     var wallpaperPickerPresented = false
     /// The owner asked to restart and is being asked to confirm.
     var restartConfirmationPresented = false
-    var lifecycleActionsPresented = false
 
     /// Parks the computer with its memory, so it resumes exactly as it was.
     func parkComputer() async throws {
         guard let host else { return }
+        let revision = connectionRevision
         parking = true
-        defer { parking = false }
+        defer { if revision == connectionRevision { parking = false } }
         closeDisplay()
         do {
             try await host.park()
+            guard revision == connectionRevision else { return }
             phase = .parked
         } catch {
+            guard revision == connectionRevision else { return }
             phase = .failed(error.localizedDescription)
             throw error
         }
@@ -694,13 +979,17 @@ final class AppModel {
     /// Cold-restarts the computer and reconnects. The person has already confirmed that open apps close.
     func restartComputer() async {
         guard let host else { return }
+        let revision = connectionRevision
         settingsPresented = false
         closeDisplay()
-        frameCache.removeAll() // the apps behind these frames are gone
+        clearFrameCache() // the apps behind these frames are gone
         phase = .restarting
         do {
-            computerStatus = try await host.restart()
+            let status = try await host.restart()
+            guard revision == connectionRevision else { return }
+            computerStatus = status
         } catch {
+            guard revision == connectionRevision else { return }
             phase = .failed(error.localizedDescription)
             return
         }
@@ -709,8 +998,11 @@ final class AppModel {
 
     /// Drops the display and the agent channel without parking; the host decides what happens next.
     private func closeDisplay() {
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        dockLaunchTimeouts.values.forEach { $0.cancel() }
+        dockLaunchTimeouts.removeAll()
+        dockLaunches.reset()
+        wakes.invalidate()
+        link.stop()
         presentedWindowID = nil
         presentedAgentWindowID = nil
         session?.disconnect()
@@ -735,9 +1027,12 @@ final class AppModel {
 
     func refreshApps() async {
         guard let host else { return }
+        let revision = connectionRevision
         for attempt in 0 ..< 10 {
+            guard revision == connectionRevision else { return }
             do {
                 let list = try await host.apps()
+                guard revision == connectionRevision else { return }
                 ComputerSearch.indexApps(list)
                 apps = list.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 for app in list where appIcons[app.id] == nil {
@@ -795,6 +1090,7 @@ final class AppModel {
     /// A dock click on the big screen: show the app's windows if it has any, else launch it.
     func openOnDesktop(_ app: HostClient.App) {
         let windows = appWindows.filter { matches($0, app) }
+        if !windows.isEmpty, let pending = dockLaunches.pending[app.id] { finishDockLaunch(app.id, token: pending.token) }
         if yardActive, let latest = windows.first {
             yard.focus(latest.id)
             return
@@ -810,8 +1106,31 @@ final class AppModel {
 
     private var chosenDesktopStyle = DeviceDesktopStyle(rawValue: UserDefaults.standard.string(forKey: "deviceDesktopStyle") ?? "") ?? .tiled
 
+    /// Laptop has a whole-desktop pointer, including native title bars and the dock.
+    /// This temporary arrangement never changes the owner's saved tablet preference.
+    var terminalLaptopActive = false
+    var laptopDesktopActive = false
+    private var laptopNeedsInitialFit = false
+
+    func setLaptopDesktop(_ active: Bool) {
+        guard laptopDesktopActive != active else { return }
+        laptopDesktopActive = active
+        desktop.detachedChrome = active && !externalDisplayActive
+        desktop.pointerArea = nil
+        desktop.dockFrames.removeAll()
+        desktop.launchpadButtonFrame = .zero
+        laptopNeedsInitialFit = active && !externalDisplayActive
+        if deviceDesktopActive { desktop.storageKey = freeDesktopKey(external: false).map { $0 + (active ? ".laptop" : "") } }
+        placedWindowIDs.removeAll()
+        yard.invalidate()
+        if deviceDesktopActive {
+            if deviceDesktopStyle == .tiled { prepareYard() }
+            sessionChanged()
+        }
+    }
+
     var deviceDesktopStyle: DeviceDesktopStyle {
-        get { UIDevice.current.userInterfaceIdiom == .pad ? chosenDesktopStyle : .tiled }
+        get { laptopDesktopActive ? .free : (UIDevice.current.userInterfaceIdiom == .pad ? chosenDesktopStyle : .tiled) }
         set {
             guard UIDevice.current.userInterfaceIdiom == .pad, newValue != chosenDesktopStyle else { return }
             chosenDesktopStyle = newValue
@@ -827,6 +1146,8 @@ final class AppModel {
 
     /// Switchyard: the computer's windows tiled on the device's own screen.
     let yard = YardModel()
+    /// ⌥Tab's strip of recent windows, on whichever desktop is up.
+    let quickSwitch = QuickSwitcher()
     /// The yard is the desktop on this screen: the Desktop tab, no TV, tiled.
     var yardActive: Bool { deviceDesktopActive && deviceDesktopStyle == .tiled }
 
@@ -836,6 +1157,12 @@ final class AppModel {
         yard.pixelsPerPoint = desktop.pixelsPerPoint
         yard.session = session
         yard.learnAppClasses { [weak self] id in self?.session?.windows[id]?.appClass?.name }
+    }
+
+    /// The floating desktop's places, kept for this computer: one arrangement for this
+    /// device's own screen, another for a TV or monitor.
+    private func freeDesktopKey(external: Bool) -> String? {
+        credentials.map { "freedesktop.\(external ? "display" : "device")." + $0.fileDomainIdentifier }
     }
 
     /// ⌘⌥Return: a terminal, as on a Linux desktop.
@@ -849,8 +1176,10 @@ final class AppModel {
     func open(_ app: HostClient.App) {
         recordOpen(app)
         if phase != .ready {
+            let revision = connectionRevision
             Task {
                 await wake()
+                guard revision == connectionRevision else { return }
                 if phase == .connecting || phase == .ready { launch(app) }
             }
             return
@@ -906,18 +1235,30 @@ final class AppModel {
         guard let credentials else { return }
         if !(deviceDesktopActive && selectedTab == .desktop) { leaveDeviceDesktop() }
         openingFileSince = Date()
+        let revision = connectionRevision
         do {
             try await HostShortcutFiles(credentials: credentials).open(path)
+            guard revision == connectionRevision else { return }
             if desktopActive { openingFileSince = nil }
         } catch {
+            guard revision == connectionRevision else { return }
             openingFileSince = nil
             launchFailure = "\((path as NSString).lastPathComponent) didn't open. \(error.localizedDescription)"
             UINotificationFeedbackGenerator().notificationOccurred(.error)
         }
     }
 
-    /// Shows a window as a full-screen card, leaving the phone's desktop first if it is up.
-    func show(windowID: Int) {
+    /// Laptop keeps one workspace; other layouts present the selected window as an app card.
+    var windowCardBorderless = false
+
+    func show(windowID: Int, borderless: Bool = false) {
+        windowCardBorderless = borderless
+        if laptopDesktopActive {
+            presentedWindowID = nil
+            desktop.activate(windowID, session: session)
+            selectedTab = .desktop
+            return
+        }
         presentedWindowID = windowID
     }
 
@@ -946,16 +1287,34 @@ final class AppModel {
         }
     }
 
+    private func finishDockLaunch(_ id: String, token: UUID) {
+        guard dockLaunches.finish(id, token: token) else { return }
+        dockLaunchTimeouts.removeValue(forKey: id)?.cancel()
+    }
+
     private func launch(_ app: HostClient.App) {
-        guard let host else { return }
+        guard let host, let token = dockLaunches.begin(app.id) else { return }
         launching = app
         launchStartedAt = Date()
+        let revision = connectionRevision
         Task {
             do {
                 try await host.launch(app)
+                // Wake and guest preparation precede the window wait. Never expire an
+                // attempt while its launch request can still dispatch the application.
+                guard revision == connectionRevision, dockLaunches.acknowledge(app.id, token: token) else { return }
+                dockLaunchTimeouts[app.id] = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                    guard let self, revision == self.connectionRevision, self.dockLaunches.pending[app.id]?.token == token else { return }
+                    self.finishDockLaunch(app.id, token: token)
+                    if self.launching?.id == app.id { self.launching = nil }
+                    self.launchFailure = "\(app.name) has not shown a window yet. It may still be opening. Check the computer’s open windows before trying again."
+                }
             } catch {
-                launching = nil
-                launchFailure = "\(app.name) didn't open. \(error.localizedDescription)"
+                guard revision == connectionRevision, dockLaunches.pending[app.id]?.token == token else { return }
+                finishDockLaunch(app.id, token: token)
+                if launching?.id == app.id { launching = nil }
+                launchFailure = "Couldn’t confirm \(app.name) opened. \(error.localizedDescription)"
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
         }
@@ -969,8 +1328,8 @@ final class AppModel {
 
     func matches(_ window: RemoteWindow, _ app: HostClient.App) -> Bool {
         guard let appClass = window.appClass else { return false }
-        let id = app.id.replacingOccurrences(of: ".desktop", with: "").lowercased()
-        return [appClass.instance.lowercased(), appClass.name.lowercased()].contains { $0 == id || id.hasSuffix($0) || $0.hasSuffix(id) }
+        return AppWindowIdentity.matches(desktopID: app.id, startupWMClass: app.startupWMClass,
+                                         instance: appClass.instance, name: appClass.name)
     }
 
     func icon(for window: RemoteWindow) -> UIImage? {
@@ -983,13 +1342,6 @@ final class AppModel {
     }
 
     // MARK: Clipboard and notifications
-
-    private func offerPasteboardIfChanged() {
-        let count = UIPasteboard.general.changeCount
-        guard count != pasteboardChangeCount else { return }
-        pasteboardChangeCount = count
-        if UIPasteboard.general.hasStrings, let text = UIPasteboard.general.string { session?.offerClipboard(text) }
-    }
 
     static func requestNotificationPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }

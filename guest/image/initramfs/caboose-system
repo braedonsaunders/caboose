@@ -1,0 +1,20 @@
+#!/bin/sh
+# initramfs-tools local-bottom: root is mounted at $rootmnt before switch_root.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+. /scripts/functions
+[ -e "$rootmnt/etc/caboose-split-system" ] || exit 0
+modprobe erofs || panic 'Caboose system: erofs module unavailable'
+modprobe overlay || panic 'Caboose system: overlay module unavailable'
+# The immutable system image is the first extra virtio block device.
+device=${CABOOSE_SYSTEM_DEVICE:-/dev/vdb}
+tries=0
+while [ ! -b "$device" ] && [ "$tries" -lt 30 ]; do sleep 1; tries=$((tries + 1)); done
+[ -b "$device" ] || panic "Caboose system image $device is missing"
+mkdir -p "$rootmnt/.caboose-system" "$rootmnt/var/lib/caboose/system-overlay"
+mount -t erofs -o ro "$device" "$rootmnt/.caboose-system" || panic 'Cannot mount Caboose system image'
+for name in usr opt; do
+  mkdir -p "$rootmnt/$name" "$rootmnt/var/lib/caboose/system-overlay/$name/upper" "$rootmnt/var/lib/caboose/system-overlay/$name/work"
+  mount -t overlay -o "lowerdir=$rootmnt/.caboose-system/$name,upperdir=$rootmnt/var/lib/caboose/system-overlay/$name/upper,workdir=$rootmnt/var/lib/caboose/system-overlay/$name/work" overlay "$rootmnt/$name" || panic "Cannot mount Caboose $name overlay"
+done

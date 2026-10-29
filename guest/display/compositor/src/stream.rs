@@ -56,6 +56,68 @@ pub struct MotionJob {
     /// Picture pixels, even.
     pub rect: Rect,
     pub keyframe: bool,
+    pub scaled: bool,
+}
+
+/// Box-filter a motion crop to half resolution. Damage remains in source coordinates;
+/// the small picture is rebuilt on each motion update so edge blocks cannot go stale.
+fn half_motion(src: &[u8], stride: usize, width: usize, height: usize) -> Result<CpuImage, String> {
+    if width == 0
+        || height == 0
+        || width % 4 != 0
+        || height % 4 != 0
+        || stride < width * 4
+        || src.len() < (height - 1) * stride + width * 4
+    {
+        return Err("invalid motion crop".into());
+    }
+    let mut out = CpuImage::new((width / 2) as u32, (height / 2) as u32);
+    for y in 0..height / 2 {
+        for x in 0..width / 2 {
+            for c in 0..4 {
+                let i = y * 2 * stride + x * 8 + c;
+                let sum = src[i] as u32 + src[i + 4] as u32 + src[i + stride] as u32 + src[i + stride + 4] as u32;
+                out.data[y * out.stride + x * 4 + c] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn scaled_motion(job: &Job, rect: Rect) -> Result<CpuImage, String> {
+    let (x, y, w, h) = (rect.x as usize, rect.y as usize, rect.w as usize, rect.h as usize);
+    if rect.x < 0 || rect.y < 0 || rect.w <= 0 || rect.h <= 0 {
+        return Err("invalid motion crop".into());
+    }
+    match &job.shm {
+        None => {
+            if x + w > job.image.width as usize || y + h > job.image.height as usize {
+                return Err("motion crop outside image".into());
+            }
+            half_motion(&job.image.data[y * job.image.stride + x * 4..], job.image.stride, w, h)
+        }
+        Some(shm) => smithay::wayland::shm::with_buffer_contents(&shm.buffer, |ptr, len, data| {
+            let sx = shm.x as i64 + rect.x as i64;
+            let sy = shm.y as i64 + rect.y as i64;
+            if sx < 0
+                || sy < 0
+                || sx + rect.w as i64 > data.width as i64
+                || sy + rect.h as i64 > data.height as i64
+                || data.stride <= 0
+                || data.offset < 0
+            {
+                return Err("motion crop outside shm".into());
+            }
+            let start = data.offset as usize + sy as usize * data.stride as usize + sx as usize * 4;
+            if start > len {
+                return Err("motion crop outside shm pool".into());
+            }
+            // SAFETY: Smithay maps the pool for the duration of this closure.
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+            half_motion(&bytes[start..], data.stride as usize, w, h)
+        })
+        .map_err(|e| format!("shm buffer: {e:?}"))?,
+    }
 }
 
 /// The worker's answer: the encoded pictures (or why not) and the image back for reuse.
@@ -216,6 +278,9 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         fresh = true;
     }
     done.hits = job.detect.then(|| detect(&job));
+    if !job.refine {
+        encoders.window.as_mut().unwrap().1.exclude(job.motion.as_ref().map(|m| m.rect));
+    }
     let keyframe = job.keyframe || fresh;
     let damage = if fresh { None } else { job.damage.clone() };
     let full = Rect::new(0, 0, size.0 as i32, size.1 as i32);
@@ -285,20 +350,23 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         done.result = Some(result);
     }
     match &job.motion {
-        None => encoders.motion = None,
+        None if !job.refine => encoders.motion = None,
+        None => {}
         Some(m) => {
             let matches = encoders.motion.as_ref().is_some_and(|(id, r, _)| *id == m.id && *r == m.rect);
             let mut motion_fresh = false;
             if !matches {
                 // Sharpening is for still pictures; video is never still long enough.
                 let settings = Settings { refine_qp: 0, ..job.settings.clone() };
-                encoders.motion = match job.backend.create(m.rect.w as u32, m.rect.h as u32, &settings) {
-                    Ok(e) => Some((m.id, m.rect, e)),
-                    Err(e) => {
-                        done.motion = Some((m.id, Err(format!("cannot open {}: {e}", job.backend.describe()))));
-                        None
-                    }
-                };
+                let divisor = if m.scaled { 2 } else { 1 };
+                encoders.motion =
+                    match job.backend.create(m.rect.w as u32 / divisor, m.rect.h as u32 / divisor, &settings) {
+                        Ok(e) => Some((m.id, m.rect, e)),
+                        Err(e) => {
+                            done.motion = Some((m.id, Err(format!("cannot open {}: {e}", job.backend.describe()))));
+                            None
+                        }
+                    };
                 motion_fresh = true;
             }
             let motion_key = m.keyframe || motion_fresh;
@@ -309,18 +377,36 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
                     x: s.x + m.rect.x,
                     y: s.y + m.rect.y,
                 });
-                let input = match &shm {
-                    Some(shm) => Input::Shm(shm),
-                    None => Input::CpuAt(&job.image, m.rect.x as u32, m.rect.y as u32),
+                let scaled = if m.scaled {
+                    match scaled_motion(&job, m.rect) {
+                        Ok(image) => Some(image),
+                        Err(e) => {
+                            done.motion = Some((m.id, Err(e)));
+                            encoders.motion = None;
+                            done.image = job.image;
+                            return done;
+                        }
+                    }
+                } else {
+                    None
                 };
-                let damage = (!motion_key).then_some(region_damage.as_slice());
+                let input = match (&scaled, &shm) {
+                    (Some(image), _) => Input::Cpu(image),
+                    (None, Some(shm)) => Input::Shm(shm),
+                    (None, None) => Input::CpuAt(&job.image, m.rect.x as u32, m.rect.y as u32),
+                };
+                let damage = (!motion_key && !m.scaled).then_some(region_damage.as_slice());
                 let (result, changed) = encode_with(enc.as_mut(), input, motion_key, damage, false);
                 if result.is_err() {
                     encoders.motion = None;
                 } else {
-                    let changed = changed.unwrap_or_else(|| {
-                        damage.map_or_else(|| vec![Rect::new(0, 0, m.rect.w, m.rect.h)], <[Rect]>::to_vec)
-                    });
+                    let changed = if m.scaled {
+                        region_damage.clone()
+                    } else {
+                        changed.unwrap_or_else(|| {
+                            damage.map_or_else(|| vec![Rect::new(0, 0, m.rect.w, m.rect.h)], <[Rect]>::to_vec)
+                        })
+                    };
                     done.changed.extend(changed.iter().map(|r| Rect::new(r.x + m.rect.x, r.y + m.rect.y, r.w, r.h)));
                 }
                 done.motion = Some((m.id, result));
@@ -338,8 +424,25 @@ impl Worker {
             .name(format!("encode-{window}"))
             .spawn(move || {
                 let mut encoders = Encoders::default();
-                while let Ok(job) = rx.recv() {
-                    if done.send(work(job, &mut encoders)).is_err() {
+                let mut refining = false;
+                loop {
+                    let job = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                        Ok(job) => job,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            if !refining {
+                                encoders = Encoders::default();
+                            }
+                            continue;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    let result = work(job, &mut encoders);
+                    if let Some(ref tiles) = result.tiles {
+                        refining = tiles.refine_in_ms.is_some();
+                    } else if let Some(ref picture) = result.result {
+                        refining = picture.as_ref().ok().is_some_and(|p| p.refine_in_ms.is_some());
+                    }
+                    if done.send(result).is_err() {
                         break;
                     }
                 }
@@ -375,6 +478,8 @@ pub struct Stream {
     pub refine_at_us: Option<u64>,
     /// The visible part of the last picture submitted.
     pub crop: Rect,
+    /// Window-pixel placement of the last submitted picture.
+    pub rect: Rect,
     /// The window's motion region and its stream, while it has one.
     pub motion: Option<MotionStream>,
     /// Watches for a motion region, at the picture size it was made for.
@@ -392,9 +497,33 @@ pub struct MotionStream {
     pub need_keyframe: bool,
     /// The next picture puts the region back into the window picture.
     pub ending: bool,
+    pub scaled: bool,
 }
 
 impl Stream {
+    /// Retire only after a successful base frame has restored the region. Keeping
+    /// the stream here also keeps failed repaint attempts retryable.
+    pub fn end_motion(&mut self) {
+        if let Some(m) = self.motion.as_mut() {
+            m.ending = true;
+            self.dirty = true;
+        }
+    }
+
+    pub fn motion_repainted(&mut self, id: u64, sent: bool) -> bool {
+        if !self.motion.as_ref().is_some_and(|m| m.id == id && m.ending) {
+            return false;
+        }
+        if sent {
+            self.motion = None;
+            true
+        } else {
+            self.dirty = true;
+            self.need_keyframe = true;
+            false
+        }
+    }
+
     pub fn mark_dirty(&mut self, now_us: u64) {
         self.commit_us = now_us;
         self.dirty = true;
@@ -501,12 +630,10 @@ impl Stream {
         if let Some(m) = self.motion.as_mut().filter(|_| job.motion.is_some()) {
             m.need_keyframe = false;
         }
-        if job.ends_motion.is_some() {
-            self.motion = None;
-        }
         // The answer says when to sharpen next.
         self.refine_at_us = None;
         self.crop = job.crop;
+        self.rect = job.rect;
         if let Err(e) = worker.tx.send(job) {
             // The worker exited; recover the image and try again on the next tick.
             self.worker = None;
@@ -520,6 +647,154 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn half_motion_averages_two_by_two_with_padded_rows() {
+        let mut pixels = vec![0; 24 * 4];
+        for y in 0..4 {
+            for x in 0..4 {
+                pixels[y * 24 + x * 4] = (y * 10 + x) as u8;
+            }
+        }
+        let out = half_motion(&pixels, 24, 4, 4).unwrap();
+        assert_eq!((out.width, out.height), (2, 2));
+        assert_eq!([out.data[0], out.data[4], out.data[8], out.data[12]], [6, 8, 26, 28]);
+        assert!(half_motion(&pixels[..20], 24, 4, 4).is_err());
+        assert!(half_motion(&pixels, 24, 3, 4).is_err());
+    }
+
+    #[test]
+    fn motion_retirement_waits_for_a_successful_repaint() {
+        let mut s = Stream {
+            motion: Some(MotionStream {
+                id: 7,
+                rect: Rect::new(0, 0, 16, 16),
+                next_seq: 0,
+                in_flight: Default::default(),
+                need_keyframe: false,
+                ending: false,
+                scaled: false,
+            }),
+            ..Default::default()
+        };
+        s.end_motion();
+        assert!(s.dirty && s.motion.as_ref().unwrap().ending);
+        assert!(!s.motion_repainted(8, true), "another stream cannot retire this one");
+        s.dirty = false;
+        assert!(!s.motion_repainted(7, false));
+        assert!(s.motion.is_some() && s.dirty && s.need_keyframe, "failed repaint must retry");
+        assert!(s.motion_repainted(7, true));
+        assert!(s.motion.is_none());
+    }
+
+    #[test]
+    fn refining_the_base_preserves_the_motion_encoder_and_its_reference_frames() {
+        ffmpeg_next::init().unwrap();
+        let mut encoders = Encoders::default();
+        let job = |image, motion, refine| Job {
+            window: 1,
+            generation: 1,
+            pts_us: 1,
+            image,
+            shm: None,
+            detect: false,
+            keyframe: false,
+            refine,
+            damage: None,
+            rect: Rect::new(0, 0, 128, 96),
+            crop: Rect::new(0, 0, 128, 96),
+            backend: Backend::Software(caboose_display_protocol::Codec::H264),
+            settings: Settings { threads: 1, refine_after_ms: 0, tile_max_px: 0, ..Settings::default() },
+            motion,
+            ends_motion: None,
+        };
+        let motion = || Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: false });
+        let first = work(job(CpuImage::new(128, 96), motion(), false), &mut encoders);
+        assert!(first.motion.unwrap().1.unwrap().keyframe);
+        let sharp = work(job(first.image, None, true), &mut encoders);
+        assert!(sharp.result.unwrap().is_ok());
+        assert!(sharp.motion.is_none());
+        assert!(encoders.motion.is_some(), "refinement is not stream cessation");
+        let next = work(job(sharp.image, motion(), false), &mut encoders);
+        assert!(!next.motion.unwrap().1.unwrap().keyframe, "motion references survive base refinement");
+    }
+
+    #[test]
+    fn recreated_encoders_start_both_streams_with_keyframes() {
+        ffmpeg_next::init().unwrap();
+        let mut encoders = Encoders::default();
+        let job = |image| Job {
+            window: 1,
+            generation: 1,
+            pts_us: 1,
+            image,
+            shm: None,
+            detect: false,
+            keyframe: false,
+            refine: false,
+            damage: Some(vec![Rect::new(0, 0, 16, 16)]),
+            rect: Rect::new(0, 0, 128, 96),
+            crop: Rect::new(0, 0, 128, 96),
+            backend: Backend::Software(caboose_display_protocol::Codec::H264),
+            settings: Settings { threads: 1, refine_qp: 0, tile_max_px: 0, ..Settings::default() },
+            motion: Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: false }),
+            ends_motion: None,
+        };
+        let first = work(job(CpuImage::new(128, 96)), &mut encoders);
+        assert!(first.result.unwrap().unwrap().keyframe);
+        assert!(first.motion.unwrap().1.unwrap().keyframe);
+        encoders = Encoders::default(); // idle eviction
+        let next = work(job(first.image), &mut encoders);
+        assert!(next.result.unwrap().unwrap().keyframe);
+        assert!(next.motion.unwrap().1.unwrap().keyframe);
+    }
+
+    #[test]
+    fn scaled_motion_encodes_half_size_and_keeps_damage_in_window_coordinates() {
+        ffmpeg_next::init().unwrap();
+        let mut encoders = Encoders::default();
+        let job = |image, damage| Job {
+            window: 1,
+            generation: 1,
+            pts_us: 1,
+            image,
+            shm: None,
+            detect: false,
+            keyframe: false,
+            refine: false,
+            damage,
+            rect: Rect::new(0, 0, 128, 96),
+            crop: Rect::new(0, 0, 128, 96),
+            backend: Backend::Software(caboose_display_protocol::Codec::H264),
+            settings: Settings { threads: 1, refine_qp: 0, tile_max_px: 0, ..Settings::default() },
+            motion: Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: true }),
+            ends_motion: None,
+        };
+        let done = work(job(CpuImage::new(128, 96), None), &mut encoders);
+        let picture = done.motion.unwrap().1.unwrap();
+        assert!(picture.keyframe);
+        let codec = ffmpeg_next::decoder::find(ffmpeg_next::codec::Id::H264).unwrap();
+        let mut decoder = ffmpeg_next::codec::context::Context::new_with_codec(codec).decoder().video().unwrap();
+        decoder.send_packet(&ffmpeg_next::Packet::copy(&picture.data)).unwrap();
+        let mut frame = ffmpeg_next::frame::Video::empty();
+        decoder.receive_frame(&mut frame).unwrap();
+        assert_eq!((frame.width(), frame.height()), (32, 32));
+        assert!(done.changed.contains(&Rect::new(32, 16, 64, 64)));
+        let mut image = done.image;
+        for y in 20..24 {
+            for x in 36..40 {
+                image.data[y * image.stride + x * 4] = 255;
+            }
+        }
+        let next = work(job(image, Some(vec![Rect::new(36, 20, 4, 4)])), &mut encoders);
+        assert!(next.changed.contains(&Rect::new(36, 20, 4, 4)));
+        let picture = next.motion.unwrap().1.unwrap();
+        assert!(!picture.keyframe);
+        decoder.send_packet(&ffmpeg_next::Packet::copy(&picture.data)).unwrap();
+        let mut frame = ffmpeg_next::frame::Video::empty();
+        decoder.receive_frame(&mut frame).unwrap();
+        assert_eq!((frame.width(), frame.height()), (32, 32));
+    }
 
     #[test]
     fn acks_release_in_order_and_ignore_unknown_pts() {
@@ -565,6 +840,7 @@ mod tests {
                 in_flight: [0, 1].into(),
                 need_keyframe: false,
                 ending: false,
+                scaled: false,
             }),
             ..Default::default()
         };

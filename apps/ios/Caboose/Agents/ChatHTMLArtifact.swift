@@ -1,6 +1,7 @@
 import CabooseKit
 import SwiftUI
 import WebKit
+import OSLog
 
 struct ChatHTMLArtifact: View {
     @Environment(AppModel.self) private var model
@@ -9,7 +10,7 @@ struct ChatHTMLArtifact: View {
     @State private var expanded = false
     @State private var loading = true
     @State private var error: String?
-    @State private var source = false
+    @State private var retry = UUID()
     @State private var proposed: String?
     @State private var export: ChatArtifactFile?
 
@@ -19,24 +20,25 @@ struct ChatHTMLArtifact: View {
                 Label("Interactive", systemImage: "slider.horizontal.3").font(.caption.weight(.semibold))
                 Spacer()
                 if loading { ProgressView().controlSize(.small).accessibilityLabel("Loading interactive content") }
-                Button { source.toggle() } label: { Image(systemName: "chevron.left.forwardslash.chevron.right") }
-                    .accessibilityLabel(source ? "Hide HTML source" : "Show HTML source")
                 if let export { ShareLink(item: export.url) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("Export HTML") }
-                Button { withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() } } label: {
-                    Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                }.accessibilityLabel(expanded ? "Collapse interactive content" : "Expand interactive content")
+                Button { expanded = true } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                }.accessibilityLabel("Open interactive content full screen")
             }.padding(12)
             Divider()
-            IsolatedArtifactWebView(html: html, height: $height, loading: $loading, error: $error) { message in
+            IsolatedArtifactWebView(html: html, height: $height, loading: $loading, error: $error, expanded: $expanded) { message in
+                expanded = false
                 if proposed == nil { proposed = message }
             }
-            .frame(height: expanded ? 720 : min(500, max(180, height)))
+            .id(retry)
+            .frame(height: error == nil ? min(500, max(180, height)) : 0)
             .accessibilityLabel("Interactive chart or tool")
-            if let error { Label(error, systemImage: "exclamationmark.triangle").font(.caption).padding(12) }
-            if source || error != nil {
-                ScrollView([.horizontal, .vertical]) {
-                    Text(html).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(12)
-                }.frame(maxHeight: 280)
+            if let error {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label(error, systemImage: "exclamationmark.triangle").font(.callout)
+                    Button("Try Again") { self.error = nil; loading = true; retry = UUID() }
+                        .buttonStyle(.bordered)
+                }.padding(16)
             }
         }
         .background(.thinMaterial, in: .rect(cornerRadius: 16))
@@ -67,10 +69,11 @@ private struct IsolatedArtifactWebView: UIViewRepresentable {
     @Binding var height: CGFloat
     @Binding var loading: Bool
     @Binding var error: String?
+    @Binding var expanded: Bool
     let compose: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeUIView(context: Context) -> WKWebView {
+    func makeUIView(context: Context) -> UIView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
@@ -91,25 +94,90 @@ private struct IsolatedArtifactWebView: UIViewRepresentable {
         gesture.delegate = context.coordinator
         view.addGestureRecognizer(gesture)
         context.coordinator.load(html, in: view)
-        return view
+        let container = UIView()
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.addSubview(view)
+        context.coordinator.webView = view
+        context.coordinator.inlineContainer = container
+        return container
     }
-    func updateUIView(_ view: WKWebView, context: Context) {
+    func updateUIView(_ container: UIView, context: Context) {
         context.coordinator.parent = self
+        guard let view = context.coordinator.webView else { return }
         // A completed fence keeps the same web view and JS state as later tokens arrive.
         if context.coordinator.html != html { context.coordinator.load(html, in: view) }
+        context.coordinator.updatePresentation()
     }
-    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+    static func dismantleUIView(_ container: UIView, coordinator: Coordinator) {
+        coordinator.fullscreen?.dismiss(animated: false)
+        guard let view = coordinator.webView else { return }
         view.stopLoading()
         view.configuration.userContentController.removeScriptMessageHandler(forName: "artifact")
         view.navigationDelegate = nil
+        coordinator.webView = nil
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, UIGestureRecognizerDelegate, UIAdaptivePresentationControllerDelegate {
         var parent: IsolatedArtifactWebView
         var html = ""
+        var webView: WKWebView?
+        weak var inlineContainer: UIView?
+        weak var fullscreen: UINavigationController?
+        private var fullscreenConstraints: [NSLayoutConstraint] = []
+        private var changingPresentation = false
         private var lastInteraction = Date.distantPast
         private var generation = UUID()
         init(_ parent: IsolatedArtifactWebView) { self.parent = parent }
+        func updatePresentation() {
+            guard !changingPresentation else { return }
+            if parent.expanded, fullscreen == nil {
+                guard let webView, let inlineContainer, var presenter = inlineContainer.window?.rootViewController else { return }
+                while let next = presenter.presentedViewController { presenter = next }
+                let content = UIViewController()
+                content.title = "Interactive"
+                content.view.backgroundColor = .systemBackground
+                content.navigationItem.rightBarButtonItem = UIBarButtonItem(
+                    title: "Done", style: .done, target: self, action: #selector(closeFullscreen))
+                webView.removeFromSuperview()
+                webView.translatesAutoresizingMaskIntoConstraints = false
+                content.view.addSubview(webView)
+                let area = content.view.safeAreaLayoutGuide
+                fullscreenConstraints = [webView.leadingAnchor.constraint(equalTo: area.leadingAnchor),
+                    webView.trailingAnchor.constraint(equalTo: area.trailingAnchor),
+                    webView.topAnchor.constraint(equalTo: area.topAnchor),
+                    webView.bottomAnchor.constraint(equalTo: area.bottomAnchor)]
+                NSLayoutConstraint.activate(fullscreenConstraints)
+                let navigation = UINavigationController(rootViewController: content)
+                navigation.modalPresentationStyle = .fullScreen
+                fullscreen = navigation
+                changingPresentation = true
+                presenter.present(navigation, animated: true) { [weak self] in
+                    self?.changingPresentation = false
+                    self?.updatePresentation()
+                }
+                navigation.presentationController?.delegate = self
+            } else if !parent.expanded, let fullscreen {
+                changingPresentation = true
+                fullscreen.dismiss(animated: true) { [weak self] in self?.restoreInline() }
+            }
+        }
+        @objc private func closeFullscreen() { parent.expanded = false; updatePresentation() }
+        func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+            parent.expanded = false
+            restoreInline()
+        }
+        private func restoreInline() {
+            NSLayoutConstraint.deactivate(fullscreenConstraints)
+            fullscreenConstraints = []
+            fullscreen = nil
+            changingPresentation = false
+            guard let webView, let inlineContainer else { return }
+            webView.removeFromSuperview()
+            webView.translatesAutoresizingMaskIntoConstraints = true
+            webView.frame = inlineContainer.bounds
+            webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            inlineContainer.addSubview(webView)
+        }
         @objc func tapped() {}
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             lastInteraction = Date()
@@ -119,12 +187,14 @@ private struct IsolatedArtifactWebView: UIViewRepresentable {
         func load(_ html: String, in view: WKWebView) {
             self.html = html
             let current = UUID(); generation = current
-            let rules = #"[{"trigger":{"url-filter":"^(https?|wss?|ftp|file):","url-filter-is-case-sensitive":false},"action":{"type":"block"}}]"#
-            WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "caboose-isolated-artifact-v1", encodedContentRuleList: rules) { [weak self, weak view] list, error in
+            parent.error = nil
+            parent.loading = true
+            WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "caboose-isolated-artifact-v2", encodedContentRuleList: ChatArtifactPolicy.contentRules) { [weak self, weak view] list, error in
                 guard let self, let view, self.generation == current else { return }
                 guard let list else {
                     self.parent.loading = false
-                    self.parent.error = "The isolated preview could not start. HTML source is available below."
+                    Logger(subsystem: "com.braedonsaunders.caboose", category: "ChatPreview").error("Content rule compilation failed: \(String(describing: error), privacy: .public)")
+                    self.parent.error = "This interactive preview couldn’t start. Try loading it again."
                     return
                 }
                 view.configuration.userContentController.removeAllContentRuleLists()
@@ -141,7 +211,14 @@ private struct IsolatedArtifactWebView: UIViewRepresentable {
                 guard Date().timeIntervalSince(lastInteraction) < 2,
                       let value = body["message"] as? String, let message = ChatArtifactPolicy.proposedMessage(value) else { return }
                 lastInteraction = .distantPast
-                parent.compose(message)
+                if let fullscreen {
+                    parent.expanded = false
+                    changingPresentation = true
+                    fullscreen.dismiss(animated: true) { [weak self] in
+                        self?.restoreInline()
+                        self?.parent.compose(message)
+                    }
+                } else { parent.compose(message) }
             default: break
             }
         }
@@ -156,7 +233,7 @@ private struct IsolatedArtifactWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             parent.loading = false
-            parent.error = "The interactive preview stopped. HTML source is available below."
+            parent.error = "This interactive preview stopped. Try loading it again."
         }
         private func failed(_ error: Error) {
             parent.loading = false

@@ -11,7 +11,7 @@ FROM build-deps AS host-build
 COPY apps/host/tsconfig.json apps/host/tsconfig.json
 COPY apps/host/src apps/host/src
 RUN pnpm --filter caboose-host exec tsc --outDir dist && \
-    cp apps/host/src/guest-apps.py apps/host/src/guest-catalog.py apps/host/src/guest-store.py apps/host/src/guest-craft.py apps/host/dist/
+    cp apps/host/src/guest-apps.py apps/host/src/guest-catalog.py apps/host/src/guest-store.py apps/host/src/guest-craft.py apps/host/src/depot-builder.py apps/host/dist/
 
 FROM build-deps AS web-build
 COPY apps/web apps/web
@@ -45,12 +45,21 @@ COPY --from=host-deps /src/apps/host/package.json ./apps/host/package.json
 COPY --from=host-build /src/apps/host/dist ./apps/host/dist
 # The identity database's own migrations, beside AppKit's in node_modules.
 COPY apps/host/migrations ./apps/host/migrations
-COPY guest/agentd/caboose-agentd.mjs guest/agentd/package.json guest/agentd/install.sh ./guest/agentd/
+COPY guest/agentd/caboose-agentd.mjs guest/agentd/agent-tools.mjs guest/agentd/library-mcp.mjs guest/agentd/package.json guest/agentd/install.sh ./guest/agentd/
 COPY guest/components ./guest/components
+COPY guest/desktop-mcp ./guest/desktop-mcp
+COPY guest/keyring ./guest/keyring
+COPY guest/container/caboose-session ./guest/container/
 COPY guest/files ./guest/files
 COPY guest/phone ./guest/phone
 COPY guest/notifications ./guest/notifications
 COPY guest/terminal ./guest/terminal
+COPY guest/bridge ./guest/bridge
+COPY guest/flatpak ./guest/flatpak
+COPY guest/game ./guest/game
+COPY guest/gpu/install.sh guest/gpu/caboose-gpu-run guest/gpu/profile.json ./guest/gpu/
+COPY guest/apps/install.sh guest/apps/caboose-app guest/apps/appcore.py guest/apps/remote.py guest/apps/page.js guest/apps/world.js guest/apps/guide.md guest/apps/apps-mcp.mjs ./guest/apps/
+COPY guest/container/caboose-seccomp.json ./guest/container/caboose-seccomp.json
 COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
 COPY guest/catalog/icons ./guest/catalog/icons
 COPY --from=web-build /src/apps/web/dist ./apps/web/dist

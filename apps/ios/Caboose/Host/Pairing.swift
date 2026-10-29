@@ -54,9 +54,15 @@ struct PairingLink: Equatable {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         switch status {
         case 201:
-            struct Paired: Decodable { let token: String }
-            let token = try JSONDecoder().decode(Paired.self, from: data).token
-            return Credentials(hostURL: hostURL, token: token, alternateURLs: alternateURLs)
+            struct Paired: Decodable {
+                struct Computer: Decodable { let id: String; let name: String }
+                let token: String
+                let computer: Computer?
+            }
+            let paired = try JSONDecoder().decode(Paired.self, from: data)
+            guard !paired.token.isEmpty else { throw Failure.rejected("The computer returned an empty sign-in token.") }
+            return Credentials(hostURL: hostURL, token: paired.token, alternateURLs: alternateURLs,
+                               computerID: paired.computer?.id, computerName: paired.computer?.name)
         case 404: throw Failure.expired
         case 429: throw Failure.tooManyAttempts
         default:

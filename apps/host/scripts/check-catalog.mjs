@@ -1,8 +1,10 @@
-// Real-host check: install and launch PhotoCraft, then require a new window on the owner's display.
+// Real-host check: install and launch a catalog app (PhotoCraft unless CABOOSE_CATALOG_APP
+// names another), then require a new window with its name on the owner's display.
 import { expectNewWindows } from './display-client.mjs'
 
 const base = process.env.CABOOSE_URL ?? 'http://127.0.0.1:7310'
 const owner = process.env.CABOOSE_OWNER_TOKEN
+const id = process.env.CABOOSE_CATALOG_APP ?? 'photocraft'
 if (!owner) throw new Error('Set CABOOSE_OWNER_TOKEN')
 const headers = { authorization: `Bearer ${owner}` }
 async function request(path, method = 'GET') {
@@ -12,25 +14,25 @@ async function request(path, method = 'GET') {
 }
 const session = await request('/v1/session', 'POST')
 let catalog = await request('/v1/catalog')
-let photo = catalog.apps.find(app => app.id === 'photocraft')
-if (!photo) throw new Error('PhotoCraft is absent from the catalog')
-if (!photo.installedVersion) {
-  await request('/v1/catalog/photocraft/install', 'POST')
+let app = catalog.apps.find(entry => entry.id === id)
+if (!app) throw new Error(`${id} is absent from the catalog`)
+if (!app.installedVersion) {
+  await request(`/v1/catalog/${encodeURIComponent(id)}/install`, 'POST')
   const deadline = Date.now() + 30 * 60_000
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 2000))
     catalog = await request('/v1/catalog')
-    photo = catalog.apps.find(app => app.id === 'photocraft')
-    if (photo?.progress?.phase === 'failed') throw new Error(photo.progress.message ?? 'PhotoCraft installation failed')
-    if (photo?.installedVersion && !['queued', 'installing'].includes(photo.progress?.phase)) break
+    app = catalog.apps.find(entry => entry.id === id)
+    if (app?.progress?.phase === 'failed') throw new Error(app.progress.message ?? `${app.name} installation failed`)
+    if (app?.installedVersion && !['queued', 'installing'].includes(app.progress?.phase)) break
   }
-  if (!photo?.installedVersion) throw new Error('PhotoCraft did not install before the deadline')
+  if (!app?.installedVersion) throw new Error(`${app?.name ?? id} did not install before the deadline`)
 }
 const apps = await request('/v1/apps')
-const wanted = [['ai.storyteller.photocraft.desktop', 'PhotoCraft']]
-for (const [id] of wanted) {
-  const app = apps.find(x => x.id === id)
-  if (!app?.icon?.startsWith('data:image/png;base64,')) throw new Error(`${id}: missing app or PNG icon`)
+const wanted = [[app.desktopId, app.name]]
+for (const [desktopId] of wanted) {
+  const entry = apps.find(x => x.id === desktopId)
+  if (!entry?.icon?.startsWith('data:image/png;base64,')) throw new Error(`${desktopId}: missing app or PNG icon`)
 }
 await expectNewWindows(base, owner, session, request, wanted)
-console.log('PhotoCraft installed, launched and opened a new window')
+console.log(`${app.name} ${app.installedVersion} installed, launched and opened a new window`)

@@ -4,6 +4,28 @@ set -eu
 cat <<'CHECK'
 Open Chromium, Thunar and a terminal on a signed device paired to a real computer.
 
+Portrait/landscape shell (Tablet mode, no external display):
+1. Keep the actual Desktop tab open with Chrome focused. Rotate the opened Duo
+   landscape -> portrait -> landscape, with native rail on either side. Portrait
+   has only a controls icon inside the far-right end of the dock: no full-height rail, top toolbar or
+   system tabs. Landscape restores the existing controls. Repeat on iPad (Tiled
+   and Free), including its system-tab configuration, and a closed portrait phone.
+   Chrome uses the full available viewport with its tab/address bars intact; the
+   dock remains at the bottom. No vacant strip remains where the rail was.
+2. Open the portrait panel: it points to its button and grows upward, with controls
+   and Home/Desktop/Agents/Apps/Terminal in one skinny vertical icon column. No square
+   dashboard or detached floating trigger appears. It stays narrow on phone and iPad.
+   Close it using Close, outside tap, and VoiceOver escape. Test large accessibility
+   text and scrolling. Opening/closing it must not resize Chrome or move the dock.
+   Try Keyboard, Screen Layout, AirPlay, Wallpaper, Computer, and lifecycle controls.
+3. Show/hide the keyboard in portrait, then rotate with it shown. The portrait panel
+   remains the chosen chrome despite the shortened viewport. Controls stay reachable
+   and the dock clears the keyboard. Dismiss it: the full viewport returns without drift.
+4. Visit Home/Apps and return; no duplicate tab bar appears. Enter/leave browser
+   fullscreen and the existing app card; controls and dock return once. Rotate with
+   the panel open. In Laptop mode verify the accepted upper app and lower controls
+   remain intact with no extra portrait button, then return to Tablet and repeat.
+
 Switchyard (Desktop tab, no external display):
 1. On a closed/upright phone, move between columns using the dock. Open the Duo or
    rotate a large phone: two columns fit; an iPad offers thirds. Drag a gap and
@@ -11,7 +33,7 @@ Switchyard (Desktop tab, no external display):
    remain visible during resizing and after it settles. Thunar fits its tile.
 2. Double-tap the grabber: the same full-screen app card as Apps opens, with its
    window menu, keyboard and close controls. Focus a different tile, then use the
-   right-side toolbar's Full Screen control: that app opens directly.
+   landscape toolbar's Full Screen control: that app opens directly.
    There is no separate Full Screen button centered above the tile. Repeat with
    the grabber menu, VoiceOver Full Screen action and Command-Option-F.
    Double-tap browser content: the browser receives it. Drag the grabber and long
@@ -53,8 +75,9 @@ Switchyard (Desktop tab, no external display):
    to reveal them, then use Hide Sidebar or swipe outward on its controls to hide.
    Card Full Screen is also in Window Options. Collapse the sidebar
    until toolbar actions overflow; open Full Screen, Switch App and Window Options:
-   their system dialogs escape the sidebar group, with every action reachable and
-   no clipped or near-zero-height submenu. Repeat with the keyboard open.
+   their system dialogs point to the button that opened them, beside the sidebar,
+   with every action reachable and no clipped or near-zero-height submenu. They
+   must not point at the middle of the app. Repeat with the keyboard open.
    On an ordinary iPhone, repeat upright and landscape with large accessibility
    text: the compact horizontal toolbar and all four icon controls stay usable,
    clear of the sensor housing, home indicator and app content.
@@ -125,7 +148,7 @@ Desktop touch and close controls:
     open it once. A single tap selects once. Hold an item: its context menu appears
     before lifting, at that item, and lifting does not choose a menu action. Small
     finger jitter must not drag; moving away before the hold cancels context.
-    Tap then hold and move performs a primary drag. Native app pinch still works.
+    A one-finger drag in a mouse-only window performs a primary drag. Native app pinch still works.
 14. Hold a dock app icon: Open, Pin/Unpin and its Close Window actions appear. Open
     focuses its existing desktop window. GridCraft and other tiles have a visible
     top-right Close Window button; closing still permits the app's unsaved-work dialog.
@@ -135,4 +158,16 @@ Capture evidence with:
   xcrun devicectl device capture screenshot --device DEVICE --destination shot.png
 Use --display-unique-id from the first command to capture each available display.
 Record which device/orientation/display and checks passed; a build alone is not a pass.
+CHECK
+
+cat <<'CHECK'
+Direct touch on mouse-only windows:
+- In an X11 paint app, select a paintable layer and draw with one finger: a continuous
+  stroke begins at the contact point. In a text editor, drag to select; in a file manager,
+  drag an item. None of these one-finger drags scrolls the app.
+- Two fingers scroll with momentum; a two-finger tap or stationary hold opens context.
+- During a drag add a second finger, background the app, or close the card: the primary
+  button releases and later touches do not continue the old drag.
+- Native Wayland browser swipes, canvas gestures, sliders and pinch remain native.
+  With a hardware mouse/trackpad, primary drag and precise scrolling still work.
 CHECK

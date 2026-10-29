@@ -18,6 +18,7 @@ it('validates generic job state and builds ActivityKit APNs envelopes', () => {
   expect(() => parseJob({ ...job, status: 'unknown' })).toThrow()
   expect(activityPayload(job, 'start', 123_000)).toEqual({ aps: { timestamp: 123, event: 'start', 'content-state': { status: 'running', detail: 'Working' }, 'input-push-token': 1, 'attributes-type': 'JobAttributes', attributes: { jobID: 'job-1', kind: 'agent', title: 'Agent' }, alert: { title: 'Agent', body: 'Working' } } })
   expect(activityPayload({ ...job, status: 'succeeded' }, 'end', 123_000)).toMatchObject({ aps: { event: 'end', 'dismissal-date': 3723 } })
+  expect(agentJob({ type: 'agent.task.deleted', id: 'job-1' })).toMatchObject({ id: 'job-1', status: 'cancelled', detail: 'Chat deleted' })
   expect(agentJob({ type: 'agent.task.output', id: 'job-1', kind: 'text', text: 'output' })).toBeUndefined()
 })
 it('persists activity and start tokens privately, sends starts, updates and ends', async () => {

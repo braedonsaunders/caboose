@@ -20,6 +20,15 @@ public enum DisplayProtocol {
         case videoUpdate = 0x14
         case videoDestroy = 0x15
         case videoPresent = 0x16
+        // Game handoff (docs/game-handoff.md).
+        case gameCreate = 0x17
+        case gameDestroy = 0x18
+        // GPU streams (docs/gpu-stream.md).
+        case gpuCreate = 0x19
+        case gpuData = 0x1A
+        case gpuDestroy = 0x1B
+        case webviewCreate = 0x1C
+        case webviewDestroy = 0x1D
         case cursor = 0x20
         case cursorNamed = 0x21
         case textInput = 0x22
@@ -45,6 +54,9 @@ public enum DisplayProtocol {
         case pointer = 0x92
         case key = 0x93
         case text = 0x94
+        case gpuAck = 0x96
+        case gameDecline = 0x97
+        case webviewDecline = 0x98
         case clipboard = 0xA0
         case ping = 0xFE
     }
@@ -222,6 +234,7 @@ public struct VideoStreamFields: Sendable {
     public var codec: DisplayCodec?
     public var source: VideoSource?
     public var color: VideoColor?
+    public var scaled: Bool
 
     init?(_ body: CBOR) {
         guard let id = body["id"]?.int else { return nil }
@@ -233,6 +246,7 @@ public struct VideoStreamFields: Sendable {
         codec = body["codec"]?.string.flatMap(DisplayCodec.init(rawValue:))
         source = body["source"]?.string.flatMap(VideoSource.init(rawValue:))
         color = body["color"].flatMap(VideoColor.init)
+        scaled = body["scaled"]?.bool ?? false
     }
 }
 
@@ -276,17 +290,86 @@ public struct AudioPacket: Sendable {
     }
 }
 
+/// One directory a handed-off game persists through IDBFS: `mount` in the game's Emscripten
+/// file system (and the IndexedDB database IDBFS names after it), `path` the directory on the
+/// computer that holds it, relative to the home.
+public struct GameSave: Equatable, Sendable {
+    public var mount: String
+    public var path: String
+
+    public init(mount: String, path: String) {
+        self.mount = mount
+        self.path = path
+    }
+}
+
+/// `game.create`: window `window` is a game the client runs itself. Its files are served from
+/// `root` (relative to the home), its page is `entry` (relative to `root`). Game ids are their
+/// own namespace, unique for the server process's lifetime.
+public struct GameDescriptor: Equatable, Sendable {
+    public var id: Int
+    public var window: Int
+    public var root: String
+    public var entry: String
+    public var saves: [GameSave]
+
+    public init(id: Int, window: Int, root: String, entry: String, saves: [GameSave] = []) {
+        self.id = id
+        self.window = window
+        self.root = root
+        self.entry = entry
+        self.saves = saves
+    }
+
+    init?(_ body: CBOR) {
+        guard let id = body["id"]?.int, let window = body["window"]?.int, let root = body["root"]?.string,
+              let entry = body["entry"]?.string else { return nil }
+        self.init(id: id, window: window, root: root, entry: entry, saves: body["saves"]?.array?.compactMap { save in
+            guard let mount = save["mount"]?.string, let path = save["path"]?.string else { return nil }
+            return GameSave(mount: mount, path: path)
+        } ?? [])
+    }
+}
+
+public struct WebviewDescriptor: Equatable, Sendable {
+    public var id: Int
+    public var window: Int
+    public var app: String
+    public var bridge: String
+    public var grant: String
+    public var root: String
+    public var entry: String
+
+    init?(_ body: CBOR) {
+        guard let id = body["id"]?.int, let window = body["window"]?.int,
+              let app = body["app"]?.string, let bridge = body["bridge"]?.string, let grant = body["grant"]?.string,
+              let root = body["root"]?.string, let entry = body["entry"]?.string,
+              app.range(of: "^[a-z][a-z0-9-]{0,47}$", options: .regularExpression) != nil,
+              bridge.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil,
+              grant.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil,
+              root == "Apps/" + app, !entry.isEmpty, !entry.hasPrefix("/"),
+              !entry.contains("\0"), !entry.contains("\\"),
+              entry.split(separator: "/", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
+        else { return nil }
+        self.id = id; self.window = window; self.app = app; self.bridge = bridge; self.grant = grant; self.root = root; self.entry = entry
+    }
+}
+
 public struct ServerHello: Equatable, Sendable {
     public var version: Int
     public var displays: [Int]
     public var encoders: [String]
     public var features: Set<String>
+    /// The server process's epoch: window ids name the same windows only within one. Nil
+    /// from a server that sends none, or one that is not 1–64 bytes of text.
+    public var epoch: String?
 
     init(_ body: CBOR) {
         version = body["version"]?.int ?? 0
         displays = body["displays"]?.array?.compactMap { $0.int ?? $0["id"]?.int } ?? []
         encoders = body["encoders"]?.array?.compactMap(\.string) ?? []
         features = Set(body["features"]?.array?.compactMap(\.string) ?? [])
+        epoch = body["epoch"]?.string.flatMap { (1 ... 64).contains($0.utf8.count) ? $0 : nil }
     }
 }
 
@@ -300,7 +383,7 @@ public enum ServerMessage: Sendable {
     case tile(LosslessTile)
     case cursorImage(window: Int?, image: Data, hotspot: CGPoint)
     case cursorNamed(String)
-    case textInput(window: Int, enabled: Bool, purpose: String?)
+    case textInput(window: Int, enabled: Bool, purpose: String?, surrounding: SurroundingText?)
     case clipboard(mime: String, data: Data)
     case notification(id: Int, app: String, summary: String, body: String)
     case audio(AudioPacket)
@@ -312,6 +395,16 @@ public enum ServerMessage: Sendable {
     case videoDestroy(id: Int)
     /// The app is showing passthrough frame `seq` now.
     case videoPresent(id: Int, seq: Int, ptsMicros: UInt64)
+    case webviewCreate(WebviewDescriptor)
+    case webviewDestroy(id: Int)
+    case gameCreate(GameDescriptor)
+    case gameDestroy(id: Int)
+    /// Window `window` is drawn on this device from stream `id`, an application's Vulkan calls.
+    case gpuCreate(id: Int, window: Int)
+    /// The next bytes of stream `id`, `offset` bytes from its start.
+    case gpuData(id: Int, offset: UInt64, data: Data)
+    /// The stream ended; `reason` says why when the computer could not go on (`spool-limit`).
+    case gpuDestroy(id: Int, reason: String?)
     case unknown(type: UInt8)
     /// A known type whose fields are missing or of the wrong kind.
     case malformed(type: UInt8)
@@ -335,7 +428,10 @@ public enum ServerMessage: Sendable {
             parsed = body["image"]?.data.map { .cursorImage(window: body["id"]?.int, image: $0, hotspot: hotspot) }
         case .cursorNamed: parsed = body["name"]?.string.map(ServerMessage.cursorNamed)
         case .textInput:
-            parsed = body["id"]?.int.map { .textInput(window: $0, enabled: body["enabled"]?.bool ?? false, purpose: body["purpose"]?.string) }
+            parsed = body["id"]?.int.map {
+                .textInput(window: $0, enabled: body["enabled"]?.bool ?? false, purpose: body["purpose"]?.string,
+                           surrounding: SurroundingText(text: body["surrounding"]?.string, cursor: body["cursor"]?.int, anchor: body["anchor"]?.int))
+            }
         case .clipboard:
             parsed = body["data"]?.data.map { .clipboard(mime: body["mime"]?.string ?? "text/plain;charset=utf-8", data: $0) }
         case .notification:
@@ -362,6 +458,19 @@ public enum ServerMessage: Sendable {
             } else {
                 parsed = nil
             }
+        case .webviewCreate: parsed = WebviewDescriptor(body).map(ServerMessage.webviewCreate)
+        case .webviewDestroy: parsed = body["id"]?.int.map { .webviewDestroy(id: $0) }
+        case .gameCreate: parsed = GameDescriptor(body).map(ServerMessage.gameCreate)
+        case .gameDestroy: parsed = body["id"]?.int.map { .gameDestroy(id: $0) }
+        case .gpuCreate:
+            if let id = body["id"]?.int, let window = body["window"]?.int { parsed = .gpuCreate(id: id, window: window) } else { parsed = nil }
+        case .gpuData:
+            if let id = body["id"]?.int, let offset = body["offset"]?.uint64, let data = body["data"]?.data {
+                parsed = .gpuData(id: id, offset: offset, data: data)
+            } else {
+                parsed = nil
+            }
+        case .gpuDestroy: parsed = body["id"]?.int.map { .gpuDestroy(id: $0, reason: body["reason"]?.string) }
         }
         self = parsed ?? .malformed(type: frame.type)
     }
@@ -402,6 +511,34 @@ public struct TouchPoint: Equatable, Sendable {
         if let force { pairs.append(("force", CBOR(force))) }
         if let radius { pairs.append(("radius", CBOR(radius))) }
         return .map(pairs.map { (.text($0.0), $0.1) })
+    }
+}
+
+/// The application's text around the caret (text-input-v3 surrounding text), with the
+/// caret and the selection's other end as UTF-8 byte offsets into it.
+public struct SurroundingText: Equatable, Sendable {
+    public let text: String
+    public let cursor: Int
+    public let anchor: Int
+
+    /// Nil unless all three are present and the offsets fall on characters of the text.
+    public init?(text: String?, cursor: Int?, anchor: Int?) {
+        guard let text, let cursor, let anchor else { return nil }
+        let utf8 = text.utf8
+        func boundary(_ offset: Int) -> Bool {
+            guard (0...utf8.count).contains(offset) else { return false }
+            return utf8.index(utf8.startIndex, offsetBy: offset).samePosition(in: text.unicodeScalars) != nil
+        }
+        guard boundary(cursor), boundary(anchor) else { return nil }
+        self.text = text; self.cursor = cursor; self.anchor = anchor
+    }
+
+    /// Text is selected in the application.
+    public var hasSelection: Bool { cursor != anchor }
+
+    /// The text before the caret.
+    public var beforeCaret: String {
+        String(decoding: text.utf8.prefix(cursor), as: UTF8.self)
     }
 }
 
@@ -456,8 +593,10 @@ public enum PointerButtons {
 public enum ClientMessage: Sendable {
     /// `videoDecoders`: what the client plays as video streams; absent, the server sends none.
     /// `audioDecoders`: the sound codecs the client plays ("opus"); absent, the server sends no sound.
+    /// `wasm`: the client runs handed-off games (`"wasm": true`); the key is absent otherwise.
+    /// `gpu`: the client renders GPU streams (`"gpu": true`); the key is absent otherwise.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
-               audioDecoders: [String]? = nil)
+               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -476,6 +615,12 @@ public enum ClientMessage: Sendable {
     case videoAck(video: Int, seq: Int)
     /// The client could not decode a video stream; it drops frames until the next keyframe.
     case videoKeyframe(video: Int)
+    /// The client has consumed GPU stream `id` up to `offset`.
+    case gpuAck(id: Int, offset: UInt64)
+    /// Game `id` cannot run on this device, and why (docs/game-handoff.md, "Declining"). The
+    /// reason is cut to `GameDecline.reasonLimit` UTF-8 bytes at a character boundary.
+    case gameDecline(id: Int, reason: String)
+    case webviewDecline(id: Int, reason: String)
 
     public var frame: DisplayFrame {
         typealias T = DisplayProtocol.ClientType
@@ -486,17 +631,27 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
                 ("video_decoders", videoDecoders.map { .array($0.map { CBOR($0.rawValue) }) }),
                 ("audio_decoders", audioDecoders.map { .array($0.map { CBOR($0) }) }),
+                ("wasm", wasm ? CBOR(true) : nil),
+                ("gpu", gpu ? CBOR(true) : nil),
+                ("scaled_motion", scaledMotion ? CBOR(true) : nil),
+                ("webview", webview ? CBOR(true) : nil),
             ]))
         case .videoAck(let video, let seq):
             return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))
         case .videoKeyframe(let video):
             return DisplayFrame(type: T.videoKeyframe.rawValue, body: map([("id", CBOR(video))]))
+        case .gpuAck(let id, let offset):
+            return DisplayFrame(type: T.gpuAck.rawValue, body: map([("id", CBOR(id)), ("offset", CBOR(offset))]))
+        case .webviewDecline(let id, let reason):
+            return DisplayFrame(type: T.webviewDecline.rawValue, body: map([("id", CBOR(id)), ("reason", CBOR(GameDecline.bounded(reason)))]))
+        case .gameDecline(let id, let reason):
+            return DisplayFrame(type: T.gameDecline.rawValue, body: map([("id", CBOR(id)), ("reason", CBOR(GameDecline.bounded(reason)))]))
         case .vsync(let display, let micros):
             return DisplayFrame(type: T.vsync.rawValue, body: map([("display", CBOR(display)), ("t_us", CBOR(micros))]))
         case .ack(let window, let pts, let decoded):

@@ -6,10 +6,12 @@ mod config;
 mod control;
 mod displays;
 mod encode;
+mod game;
 mod input;
 mod keymap;
 mod motion;
 mod net;
+mod pencil;
 mod render;
 mod session;
 mod state;
@@ -29,6 +31,7 @@ use smithay::reexports::calloop::channel::{channel, Event as ChannelEvent};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode;
 use smithay::reexports::wayland_server::Display;
 use smithay::utils::Clock;
 use smithay::wayland::compositor::CompositorState;
@@ -38,6 +41,7 @@ use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::shell::kde::decoration::KdeDecorationState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shm::ShmState;
@@ -50,9 +54,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Environment for applications started under the compositor. Toolkits are pointed at
-/// Wayland first, X11 (through Xwayland) second.
+/// Wayland first, X11 (through Xwayland) second, and GTK 3 at the desktop portal, which
+/// answers file choosing and appearance from the phone (docs/native-bridge.md).
 const TOOLKIT_ENV: &[(&str, &str)] = &[
     ("GDK_BACKEND", "wayland,x11"),
+    ("GTK_USE_PORTAL", "1"),
+    ("GTK_CSD", "0"),
     ("QT_QPA_PLATFORM", "wayland;xcb"),
     ("MOZ_ENABLE_WAYLAND", "1"),
     ("SDL_VIDEODRIVER", "wayland,x11"),
@@ -137,6 +144,10 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     if let Some(audio) = &state.audio {
         // Applications play into the compositor's PulseAudio, whose sound goes to the phone.
         env.push(("PULSE_SERVER".into(), audio.server_address()));
+    }
+    if let Some(socket) = &state.games.socket {
+        // Game handoff: caboose-game-run finds the compositor here (game.rs).
+        env.push(("CABOOSE_GAME_SOCKET".into(), socket.display().to_string()));
     }
     if let Some(socket) = &state.control.socket {
         // The seat for local tools: windows, input and pictures (control.rs).
@@ -257,6 +268,8 @@ fn run(config: Config) -> Result<(), String> {
     }
     OutputManagerState::new_with_xdg_output::<State>(&dh);
     XdgDecorationState::new::<State>(&dh);
+    // GTK 3 uses this legacy protocol, not xdg-decoration, for ordinary windows.
+    let kde_decoration = KdeDecorationState::new::<State>(&dh, KdeDecorationMode::Server);
     ViewporterState::new::<State>(&dh);
     FractionalScaleManagerState::new::<State>(&dh);
     CursorShapeManagerState::new::<State>(&dh);
@@ -265,6 +278,7 @@ fn run(config: Config) -> Result<(), String> {
     seat.add_keyboard(XkbConfig::default(), 400, 30).map_err(|e| format!("keyboard: {e}"))?;
     seat.add_pointer();
     seat.add_touch();
+    let tablet = pencil::advertise(&dh, &seat);
     let data_device = DataDeviceState::new::<State>(&dh);
     let primary_selection = PrimarySelectionState::new::<State>(&dh);
     let xwayland_shell = XWaylandShellState::new::<State>(&dh);
@@ -276,6 +290,7 @@ fn run(config: Config) -> Result<(), String> {
         .ok_or("cannot compile the default keymap")?;
     let mut input = input::InputState::default();
     input.keysyms = keymap::Keysyms::from_keymap(&keymap);
+    input.pencil.tablet = tablet;
 
     let handle = event_loop.handle();
     let net = net::Net::listen(config.listen, &handle).map_err(|e| format!("listen on {}: {e}", config.listen))?;
@@ -354,6 +369,7 @@ fn run(config: Config) -> Result<(), String> {
         config,
         compositor,
         xdg_shell,
+        kde_decoration,
         shm,
         dmabuf,
         seat_state,
@@ -373,11 +389,13 @@ fn run(config: Config) -> Result<(), String> {
         input,
         focus_history: Vec::new(),
         videos: Default::default(),
+        games: Default::default(),
         control: Default::default(),
         clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
         audio: None,
         audio_tx,
         generation: 0,
+        epoch: session::new_epoch(),
         stats: Default::default(),
         cursor: None,
         refine_timer: None,
@@ -396,6 +414,16 @@ fn run(config: Config) -> Result<(), String> {
             Err(e) => tracing::warn!("no video passthrough: cannot listen on {}: {e}", path.display()),
         },
         None => tracing::info!("no video passthrough: XDG_RUNTIME_DIR is not set"),
+    }
+    match game::socket_path().filter(|_| state.config.games) {
+        Some(path) => match game::Games::listen(&path, &handle) {
+            Ok(g) => {
+                tracing::info!("game socket: {}", path.display());
+                state.games = g;
+            }
+            Err(e) => tracing::warn!("no game handoff: cannot listen on {}: {e}", path.display()),
+        },
+        None => tracing::info!("no game handoff"),
     }
     let instance_dir = std::env::var_os("XDG_RUNTIME_DIR").map(|d| state.config.instance_dir(std::path::Path::new(&d)));
     if let Some(dir) = &instance_dir {

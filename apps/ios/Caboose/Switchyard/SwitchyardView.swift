@@ -5,21 +5,23 @@ import SwiftUI
 /// in columns along a track.
 ///
 /// The windows keep every touch on them. The yard's own gestures live where the apps have
-/// nothing: the gaps between tiles resize them, the grabber at the top of a tile carries it,
+/// nothing: the gaps between tiles resize them, the title bar at the top of a tile carries it,
 /// the screen's side edges and the dock's column cars move along the track, and ⌘⌥ with the
 /// arrows, R, F, W, O, A and Return does all of it from a keyboard. The dock is always there.
 struct SwitchyardView: View {
     static let space = "switchyard"
 
     @Environment(AppModel.self) private var model
+    @Environment(\.shellBottomInset) private var shellBottomInset
     let yard: YardModel
     @State private var askingAbout: RemoteWindow?
 
     var body: some View {
         GeometryReader { proxy in
             // The dock keeps the bottom, just clear of the home indicator; tiles have the rest.
-            let bottom = max(6, proxy.safeAreaInsets.bottom - 10)
-            let area = CGSize(width: proxy.size.width, height: max(0, proxy.size.height - YardDock.height - 6 - bottom))
+            let bottom = DesktopChrome.dockBottomPadding(contentInset: proxy.safeAreaInsets.bottom,
+                                                          windowInset: shellBottomInset)
+            let area = DesktopChrome.workspaceSize(in: proxy.size, dockHeight: YardDock.height, bottomInset: bottom)
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     tracks(size: area)
@@ -29,11 +31,11 @@ struct SwitchyardView: View {
                         .frame(maxWidth: .infinity)
                 }
                 if let id = yard.coverWindow, let window = model.session?.windows[id] {
-                    cover(window, screen: proxy.size)
+                    cover(window, screen: area)
                         .zIndex(4)
                 }
                 popups(model.session?.windows ?? [:], keyTarget: yard.keyTarget(in: model.session?.windows ?? [:]),
-                       size: yard.coverWindow == nil ? area : proxy.size)
+                       size: area)
                     .zIndex(4.5)
                 if yard.overviewOpen {
                     YardOverview(yard: yard)
@@ -47,10 +49,14 @@ struct SwitchyardView: View {
                         .transition(.opacity.combined(with: .scale(scale: 1.04)))
                         .zIndex(6)
                 }
+                // ⌥Tab's strip, over the tiles beside the leading edge.
+                QuickSwitchStrip(owner: .yard, height: area.height, space: .global)
+                    .frame(width: proxy.size.width, height: area.height)
+                    .zIndex(7)
                 YardKeyCommands(yard: yard)
             }
-            .onAppear { yard.screenSize = proxy.size }
-            .onChange(of: proxy.size) { _, size in yard.screenSize = size }
+            .onAppear { yard.screenSize = area }
+            .onChange(of: area) { _, size in yard.screenSize = size }
         }
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
@@ -64,6 +70,8 @@ struct SwitchyardView: View {
         let live = yard.liveWindows
         let keyTarget = yard.keyTarget(in: windows)
         return ZStack(alignment: .topLeading) {
+            DesktopFilesView()
+                .frame(width: size.width, height: size.height)
             if let carry = yard.carry, let preview = carry.preview {
                 RoundedRectangle(cornerRadius: yard.metrics.cornerRadius, style: .continuous)
                     .fill(.white.opacity(0.1))
@@ -90,16 +98,12 @@ struct SwitchyardView: View {
             }
             handles
             edges
-            if yard.layout.isEmpty {
-                YardLauncher(yard: yard, inline: true)
-                    .frame(width: size.width, height: size.height)
-            }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .coordinateSpace(name: Self.space)
         .clipped()
-        // While a window covers the screen the bars step aside and this space grows; the
-        // tiles keep their layout under it, so nothing behind relayouts.
+        // A fullscreen app covers only this workspace. The dock and shell remain usable;
+        // the tiles keep their layout behind the covering window.
         .onAppear { yard.resize(to: size) }
         .onChange(of: size) { _, size in if yard.coverWindow == nil { yard.resize(to: size) } }
         .onChange(of: yard.coverWindow) { _, cover in
@@ -129,7 +133,8 @@ struct SwitchyardView: View {
 
     private func coverFrame(_ id: Int, screen: CGSize) -> CGRect {
         let full = CGRect(origin: .zero, size: screen)
-        let tile = yard.tiles[id] ?? full
+        // It settles into the window's place in its tile, below the tile's title bar.
+        let tile = yard.contents[id] ?? full
         let p = yard.coverProgress
         return CGRect(x: tile.minX * p, y: tile.minY * p,
                       width: full.width + (tile.width - full.width) * p,
@@ -241,9 +246,9 @@ struct SwitchyardView: View {
     private func popupFrames(_ windows: [Int: RemoteWindow], size: CGSize) -> [Int: CGRect] {
         var roots: [Int: CGRect] = [:]
         for window in windows.values where !window.isAuxiliary {
-            guard let tile = yard.tiles[window.id] else { continue }
+            guard let tile = yard.tiles[window.id], let content = yard.contents[window.id] else { continue }
             let covering = yard.coverWindow == window.id
-            let container = covering ? coverFrame(window.id, screen: size) : tile
+            let container = covering ? coverFrame(window.id, screen: size) : content
             let natural = CGSize(width: window.frame.width / yard.pixelsPerPoint,
                                  height: window.frame.height / yard.pixelsPerPoint)
             let surface = DesktopGeometry.surfaceFrame(natural: natural, available: container.size,
@@ -252,7 +257,7 @@ struct SwitchyardView: View {
             if !covering, let carry = yard.carry, carry.window == window.id {
                 let factor = carry.rect.width / max(1, tile.width)
                 shown = CGRect(x: carry.rect.minX + surface.minX * factor,
-                               y: carry.rect.minY + surface.minY * factor,
+                               y: carry.rect.minY + (content.minY - tile.minY + surface.minY) * factor,
                                width: surface.width * factor, height: surface.height * factor)
             }
             roots[window.id] = shown
@@ -290,6 +295,7 @@ private struct YardKeyCommands: View {
             key("Overview", "o") { withAnimation(.smooth(duration: 0.35)) { yard.overviewOpen.toggle() } }
             key("Open App", "a") { withAnimation(.smooth(duration: 0.3)) { yard.launcherOpen.toggle() } }
             key("New Terminal", .return) { model.openTerminalApp() }
+            QuickSwitchKeys(recent: { model.recentWindowIDs.filter { yard.layout.contains($0) } }) { yard.switchTarget() }
         }
         .frame(width: 0, height: 0)
         .opacity(0)

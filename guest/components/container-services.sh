@@ -84,6 +84,68 @@ owner_service() {
   echo "$label did not become ready" >&2; return 1
 }
 MODE=${1:-}
+# The keyring needs both buses even when the owner display stays stopped.
+install -d -m 0755 /run/dbus
+# /run survives a container stop. Only a failed connection with a known stale-socket
+# error permits removing the socket; a live pid or any other failure stops recovery.
+if python3 - <<'SYSTEM_BUS'
+import errno, os, pathlib, socket, stat
+path = pathlib.Path('/run/dbus/system_bus_socket')
+with socket.socket(socket.AF_UNIX) as connection:
+    connection.settimeout(2)
+    try:
+        connection.connect(str(path))
+    except OSError as error:
+        if error.errno not in (errno.ENOENT, errno.ECONNREFUSED):
+            raise SystemExit(2)
+    else:
+        raise SystemExit(0)
+pidfile = pathlib.Path('/run/dbus/pid')
+if pidfile.exists():
+    value = pidfile.read_text().strip()
+    if not value.isdecimal() or int(value) <= 1:
+        raise SystemExit(2)
+    try:
+        os.kill(int(value), 0)
+    except ProcessLookupError:
+        pass
+    else:
+        raise SystemExit(2)
+try:
+    if not stat.S_ISSOCK(path.lstat().st_mode):
+        raise SystemExit(2)
+    path.unlink()
+except FileNotFoundError:
+    pass
+pidfile.unlink(missing_ok=True)
+raise SystemExit(1)
+SYSTEM_BUS
+then :; else
+  status=$?
+  [ "$status" = 1 ] || { echo 'System bus recovery requires operator attention' >&2; exit "$status"; }
+  dbus-daemon --system --fork
+fi
+session_bus() {
+  local bus=$1
+  # /run survives a container stop. A socket file alone does not prove its daemon lives.
+  if runuser -u caboose -- python3 - "$bus" <<'PY'
+import errno, socket, sys
+with socket.socket(socket.AF_UNIX) as connection:
+    connection.settimeout(2)
+    try:
+        connection.connect(sys.argv[1])
+    except OSError as error:
+        sys.exit(1 if error.errno in (errno.ENOENT, errno.ECONNREFUSED) else 2)
+PY
+  then return; else
+    local status=$?
+    [ "$status" = 1 ] || return "$status"
+  fi
+  rm -f -- "$bus"
+  runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork
+}
+
+session_bus "$runtime/bus"
 owner_service files /opt/caboose/files/caboose-files.py 14700 'Caboose file service'
 owner_service terminal /opt/caboose/terminal/caboose-terminal.py 14701 'Caboose terminal service'
 monitor_pid="$runtime/caboose-notifications.pid"
@@ -97,7 +159,7 @@ if $monitor_running && [ "${1:-}" = restart ]; then
   rm -f "$monitor_pid"
   monitor_running=false
 fi
-if ! $monitor_running; then
+if ! $monitor_running && [ -S "$runtime/bus" ]; then
   runuser -u caboose -- touch /home/caboose/.cache/caboose-notifications.log
   runuser -u caboose -- env HOME=/home/caboose XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
     /bin/sh -c 'echo $$ > "$XDG_RUNTIME_DIR/caboose-notifications.pid"; exec /usr/bin/python3 /opt/caboose/notifications/monitor.py' \
@@ -107,5 +169,20 @@ if ! $monitor_running; then
     echo 'The notification monitor did not start.' >&2; exit 1
   fi
 fi
-if ! lpstat -r 2>/dev/null | grep -q 'scheduler is running'; then /usr/sbin/cupsd; fi
-/usr/local/libexec/caboose-phone-printer-setup
+# The native bridge runs with the owner's display (caboose-session); an update restarts a
+# running one so it loads the new code.
+bridge_pid="$runtime/caboose-bridge.pid"
+if [ "${1:-}" = restart ] && [ -s "$bridge_pid" ]; then
+  pid=$(cat "$bridge_pid")
+  if [[ "$pid" =~ ^[0-9]+$ ]] && [ -r "/proc/$pid/cmdline" ] && runuser -u caboose -- grep -zFxq /opt/caboose/bridge/caboose-bridge "/proc/$pid/cmdline"; then
+    runuser -u caboose -- kill -TERM "$pid" || true
+    rm -f "$bridge_pid"
+    runuser -u caboose -- touch /home/caboose/.cache/caboose-bridge.log
+    runuser -u caboose -- env HOME=/home/caboose XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+      /bin/sh -c 'echo $$ > "$0"; exec /usr/bin/python3 /opt/caboose/bridge/caboose-bridge daemon' "$bridge_pid" \
+      >>/home/caboose/.cache/caboose-bridge.log 2>&1 < /dev/null &
+  fi
+fi
+if lpstat -r 2>/dev/null | grep -q 'scheduler is running'; then
+  /usr/local/libexec/caboose-phone-printer-setup
+fi

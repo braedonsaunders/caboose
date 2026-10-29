@@ -1,0 +1,223 @@
+import CoreGraphics
+import Foundation
+
+/// Home's Today: what came in while the owner was away, what Ask finds for what they type,
+/// how big a window's live tile is, and where the shell's tabs sit.
+public enum HomeToday {}
+
+// MARK: Since you left
+
+extension HomeToday {
+    /// An agent task as Home needs it.
+    public struct AgentTask: Sendable {
+        public let id: String
+        public let title: String
+        public let agent: String
+        /// The host's status: `running`, `paused`, `succeeded`, `failed` or `cancelled`.
+        public let status: String
+        public let finishedAt: Date?
+        public let summary: String?
+
+        public init(id: String, title: String, agent: String, status: String, finishedAt: Date?, summary: String?) {
+            self.id = id
+            self.title = title
+            self.agent = agent
+            self.status = status
+            self.finishedAt = finishedAt
+            self.summary = summary
+        }
+    }
+
+    /// Something that finished or changed while the owner was away.
+    public struct Arrival: Equatable, Sendable, Identifiable {
+        public enum Kind: Equatable, Sendable {
+            case agentSucceeded
+            case agentFailed
+            case file
+        }
+
+        /// The task's id, or the file's path.
+        public let id: String
+        public let kind: Kind
+        public let title: String
+        public let detail: String
+        public let date: Date
+    }
+
+    /// Agent turns that ended and files that changed after `since`, newest first, at most
+    /// `limit`, with no more than `fileLimit` of them files so a busy folder cannot bury
+    /// the agents' work. A cancelled turn is left out: the owner stopped it.
+    public static func arrivals(tasks: [AgentTask], files: [RecentFile], since: Date,
+                                limit: Int, fileLimit: Int = 3) -> [Arrival] {
+        var arrivals: [Arrival] = []
+        for task in tasks {
+            guard let date = task.finishedAt, date > since else { continue }
+            let kind: Arrival.Kind
+            switch task.status {
+            case "succeeded": kind = .agentSucceeded
+            case "failed": kind = .agentFailed
+            default: continue
+            }
+            arrivals.append(Arrival(id: task.id, kind: kind, title: task.title,
+                                    detail: firstLine(task.summary) ?? task.agent, date: date))
+        }
+        let changed = RecentFiles.visible(files, limit: files.count).lazy
+            .map { ($0, Date(timeIntervalSince1970: $0.mtime / 1000)) }
+            .filter { $0.1 > since }
+            .prefix(fileLimit)
+        for (file, date) in changed {
+            let name = (file.path as NSString).lastPathComponent
+            let folder = (file.path as NSString).deletingLastPathComponent
+            arrivals.append(Arrival(id: file.path, kind: .file, title: name,
+                                    detail: folder.isEmpty ? "Home" : folder, date: date))
+        }
+        return Array(arrivals.sorted { $0.date > $1.date }.prefix(limit))
+    }
+
+    private static func firstLine(_ text: String?) -> String? {
+        guard let line = text?.split(whereSeparator: \.isNewline).first?
+            .trimmingCharacters(in: .whitespaces), !line.isEmpty else { return nil }
+        return line
+    }
+}
+
+// MARK: Ask
+
+extension HomeToday {
+    /// Something Ask can open: a window, an app or a file.
+    public struct Candidate: Equatable, Sendable, Identifiable {
+        public enum Kind: Int, Comparable, Sendable {
+            case window, app, file
+            public static func < (a: Kind, b: Kind) -> Bool { a.rawValue < b.rawValue }
+        }
+
+        public let kind: Kind
+        /// The window's id, the app's desktop id, or the file's path.
+        public let key: String
+        public let title: String
+        public let subtitle: String
+        public var id: String { "\(kind.rawValue):\(key)" }
+
+        public init(kind: Kind, key: String, title: String, subtitle: String) {
+            self.kind = kind
+            self.key = key
+            self.title = title
+            self.subtitle = subtitle
+        }
+    }
+
+    /// The candidates matching `query`, best first, at most `limit`. Every word of the query
+    /// must start a word of the title or subtitle, ignoring case and accents. A title that
+    /// starts with the query ranks first, then one where every word is in the title; within
+    /// a rank, open windows come before apps and apps before files, each in the order given.
+    public static func find(_ query: String, in candidates: [Candidate], limit: Int) -> [Candidate] {
+        let terms = words(query)
+        guard !terms.isEmpty else { return [] }
+        let phrase = terms.joined(separator: " ")
+        var scored: [(score: Int, index: Int, candidate: Candidate)] = []
+        for (index, candidate) in candidates.enumerated() {
+            let title = words(candidate.title)
+            let all = title + words(candidate.subtitle)
+            guard terms.allSatisfy({ term in all.contains { $0.hasPrefix(term) } }) else { continue }
+            let score: Int
+            if title.joined(separator: " ").hasPrefix(phrase) { score = 0 }
+            else if terms.allSatisfy({ term in title.contains { $0.hasPrefix(term) } }) { score = 1 }
+            else { score = 2 }
+            scored.append((score, index, candidate))
+        }
+        return scored.sorted {
+            if $0.score != $1.score { return $0.score < $1.score }
+            if $0.candidate.kind != $1.candidate.kind { return $0.candidate.kind < $1.candidate.kind }
+            return $0.index < $1.index
+        }
+        .prefix(limit)
+        .map(\.candidate)
+    }
+
+    static func words(_ text: String) -> [String] {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+    }
+}
+
+// MARK: Windows kept while the computer rests
+
+extension HomeToday {
+    /// What Home's window strip shows.
+    public enum Strip: Equatable, Sendable {
+        /// The windows open now, live.
+        case live
+        /// The pictures kept when the owner left, while the computer is not running.
+        case kept
+        case none
+    }
+
+    /// Live windows while the computer runs; while it rests, the kept pictures. A kept
+    /// picture is only ever a picture: tapping one turns the computer on and never opens a
+    /// window by the id it was kept under, since after a cold boot that id may name another
+    /// app's window.
+    public static func strip(running: Bool, live: Int, kept: Int) -> Strip {
+        if running { return live > 0 ? .live : .none }
+        return kept > 0 ? .kept : .none
+    }
+
+    /// What taking the pictures does to the ones kept.
+    public enum KeptUpdate: Equatable, Sendable {
+        /// Keep the windows open now in their place.
+        case replace
+        /// Forget them: the running computer has no windows to show, so a closed app's
+        /// picture must not come back.
+        case clear
+        /// Leave them: the computer is not running, so there is nothing newer.
+        case leave
+    }
+
+    public static func keptUpdate(running: Bool, pictures: Int) -> KeptUpdate {
+        guard running else { return .leave }
+        return pictures > 0 ? .replace : .clear
+    }
+}
+
+// MARK: Layout
+
+extension HomeToday {
+    /// A live window's tile on Home at `height`: the window's own shape, kept between a
+    /// tall portrait and a wide landscape so a strip of them reads as one row.
+    public static func tileSize(window: CGSize, height: CGFloat) -> CGSize {
+        guard window.width > 0, window.height > 0 else { return CGSize(width: height * 0.75, height: height) }
+        let aspect = min(max(window.width / window.height, 0.62), 1.5)
+        return CGSize(width: (height * aspect).rounded(), height: height)
+    }
+
+    /// Fit a complete window into a bounded Home thumbnail, independent of sibling count.
+    public static func previewSize(window: CGSize, height: CGFloat, maximumWidth: CGFloat) -> CGSize {
+        let height = height.isFinite ? max(0, height) : 0
+        let width = maximumWidth.isFinite ? max(0, maximumWidth) : 0
+        guard window.width.isFinite, window.height.isFinite, window.width > 0, window.height > 0 else {
+            return CGSize(width: min(width, height * 0.75), height: height)
+        }
+        let scale = min(width / window.width, height / window.height)
+        return CGSize(width: window.width * scale, height: window.height * scale)
+    }
+
+    /// Where the shell's tabs sit.
+    public enum TabPlacement: Equatable, Sendable {
+        /// The system's own: its vertical bar on the side (iPhone Duo), or iPad's tab bar.
+        case system
+        /// A short cluster at the bottom right, beside the tab's own control at the bottom.
+        case cluster
+        /// A sidebar down the trailing edge with the tabs at its foot.
+        case sidebar
+    }
+
+    /// The system keeps its placement where it draws a vertical bar, and on iPad. An iPhone
+    /// whose bars are horizontal puts the tabs at the bottom right: a cluster when held
+    /// upright, a sidebar once the screen is wide enough to give one up (`sidebarWidth`),
+    /// as on a Duo opened out or any phone on its side.
+    public static func tabPlacement(isPhone: Bool, hasVerticalBar: Bool, width: CGFloat,
+                                    sidebarWidth: CGFloat = 600) -> TabPlacement {
+        guard isPhone, !hasVerticalBar else { return .system }
+        return width >= sidebarWidth ? .sidebar : .cluster
+    }
+}

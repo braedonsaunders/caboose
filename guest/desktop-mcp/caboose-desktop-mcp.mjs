@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
+import { ensureAgentSeat } from './ensure-agent-seat.mjs'
 
 const run = promisify(execFile)
 const DISPLAY = process.env.CABOOSE_AGENT_DISPLAY ?? ':101'
@@ -129,6 +130,7 @@ function text(value, name, max) {
 
 /** Runs a11y.py on the agent display; it always answers one JSON object. */
 async function a11y(command, options) {
+  Object.assign(env, await ensureAgentSeat(), { DISPLAY })
   const args = [A11Y, command, `--display=${DISPLAY}`, ...Object.entries(options).map(([key, value]) => `--${key}=${value}`)]
   let stdout
   try {
@@ -144,6 +146,7 @@ async function a11y(command, options) {
 
 /** Runs seat.py on the agent seat; it answers one JSON object, or exits 1 with {"error"}. */
 async function seat(...args) {
+  Object.assign(env, await ensureAgentSeat(), { DISPLAY })
   try {
     const { stdout } = await run('python3', [SEAT, ...args], { env, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 })
     return JSON.parse(stdout)
@@ -214,6 +217,7 @@ const handlers = {
   },
   async launch({ command }) {
     if (typeof command !== 'string' || !command.trim()) throw new Error('command must be a non-empty string')
+    Object.assign(launchEnv, await ensureAgentSeat(), { DISPLAY })
     const child = spawn('/bin/sh', ['-c', command], { env: launchEnv, detached: true, stdio: 'ignore' })
     child.unref()
     return [{ type: 'text', text: `Started: ${command}` }]

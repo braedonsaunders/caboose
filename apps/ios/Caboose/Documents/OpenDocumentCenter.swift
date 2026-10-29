@@ -50,14 +50,16 @@ final class OpenDocumentCenter {
     }
 
     func installAndOpen(_ app: CatalogApp, model: AppModel) async {
-        guard !busy, let pending else { return }
+        guard model.documents === self, !busy, let pending else { return }
         busy = true; installing = app.id; error = nil
         defer { busy = false; installing = nil }
         await model.catalog.perform(app.id, action: "install")
+        guard model.documents === self else { return }
         if let message = model.catalog.error { error = message; return }
         for _ in 0..<1800 {
-            if Task.isCancelled { return }
+            guard !Task.isCancelled, model.documents === self else { return }
             await model.catalog.refresh()
+            guard model.documents === self else { return }
             if let state = model.catalog.apps.first(where: { $0.id == app.id }) {
                 if state.installedVersion != nil { await open(pending, app: state, model: model); return }
                 if state.progress?.phase == "failed" || (!state.busy && state.lastError != nil) {
@@ -72,7 +74,7 @@ final class OpenDocumentCenter {
     }
 
     func choose(_ app: CatalogApp, model: AppModel) async {
-        guard !busy, let pending else { return }
+        guard model.documents === self, !busy, let pending else { return }
         if app.installedVersion == nil { await installAndOpen(app, model: model); return }
         busy = true; error = nil
         defer { busy = false }
@@ -80,45 +82,55 @@ final class OpenDocumentCenter {
     }
 
     private func open(_ item: Pending, app: CatalogApp, model: AppModel) async {
+        guard model.documents === self else { return }
         guard let host = model.host, let credentials = model.credentials else { error = "Connect to your computer first."; return }
         do {
-            let path: String
-            if let direct = try await OpenDocumentStore.directPath(item.url, domain: credentials.fileDomainIdentifier) {
-                path = direct
-            } else if !item.copyOnly, let existing = try OpenDocumentStore.records(domain: credentials.fileDomainIdentifier).first(where: { record in
-                (try? resolveURL(record).standardizedFileURL) == item.url.standardizedFileURL
-            }) {
-                try await reconcile(existing, host: host)
-                if conflicts.contains(where: { $0.id == existing.id }) { dismiss(); return }
-                path = existing.path
-            } else {
-                let accessing = item.url.startAccessingSecurityScopedResource()
-                defer { if accessing { item.url.stopAccessingSecurityScopedResource() } }
-                let bookmark = try item.copyOnly ? nil : item.url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-                let (snapshot, hash) = try CoordinatedDocument.snapshot(item.url)
-                defer { try? FileManager.default.removeItem(at: snapshot) }
-                let id = UUID().uuidString
-                let folder = "Caboose Documents/" + id
-                let clean = (item.name as NSString).lastPathComponent
-                guard !clean.isEmpty, clean != ".", clean != ".." else { throw HostClient.Failure.unreachable("The document has no usable name.") }
-                path = folder + "/" + clean
-                try await host.openDocumentMkdir("Caboose Documents", allowExisting: true)
-                try await host.openDocumentMkdir(folder)
-                let remote = try await host.openDocumentUpload(snapshot, path: path)
-                if let bookmark {
-                    try OpenDocumentStore.save(OpenDocumentRecord(id: id, domain: credentials.fileDomainIdentifier, name: clean,
-                                                                  path: path, bookmark: bookmark, localHash: hash, remoteETag: remote.etag))
-                }
-            }
+            let path = try await computerPath(for: item.url, name: item.name, copyOnly: item.copyOnly, host: host, domain: credentials.fileDomainIdentifier)
+            if conflicts.contains(where: { $0.record.path == path }) { dismiss(); return }
+            guard model.documents === self else { return }
             try await host.openDocumentLaunch(path, desktopID: app.desktopId)
+            guard model.documents === self else { return }
             model.showLaunchedDocument(app)
             dismiss()
             requestSync(model: model)
         } catch { self.error = error.localizedDescription }
     }
 
+    /// Where an external document is on the computer: its own path when it is an item of
+    /// Caboose's File Provider, the copy already kept in sync with it, or a new copy in
+    /// `Caboose Documents/<uuid>/` kept in sync with its original from now on. A copy-only
+    /// document (an Inbox copy) gets a copy without a sync binding.
+    func computerPath(for url: URL, name: String, copyOnly: Bool, host: HostClient, domain: String) async throws -> String {
+        if let direct = try await OpenDocumentStore.directPath(url, domain: domain) { return direct }
+        if !copyOnly, let existing = try OpenDocumentStore.records(domain: domain).first(where: { record in
+            (try? resolveURL(record).standardizedFileURL) == url.standardizedFileURL
+        }) {
+            try await reconcile(existing, host: host)
+            return existing.path
+        }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let bookmark = try copyOnly ? nil : url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        let (snapshot, hash) = try CoordinatedDocument.snapshot(url)
+        defer { try? FileManager.default.removeItem(at: snapshot) }
+        let id = UUID().uuidString
+        let folder = "Caboose Documents/" + id
+        let clean = (name as NSString).lastPathComponent
+        guard !clean.isEmpty, clean != ".", clean != ".." else { throw HostClient.Failure.unreachable("The document has no usable name.") }
+        let path = folder + "/" + clean
+        try await host.openDocumentMkdir("Caboose Documents", allowExisting: true)
+        try await host.openDocumentMkdir(folder)
+        let remote = try await host.openDocumentUpload(snapshot, path: path)
+        if let bookmark {
+            try OpenDocumentStore.save(OpenDocumentRecord(id: id, domain: domain, name: clean,
+                                                          path: path, bookmark: bookmark, localHash: hash, remoteETag: remote.etag))
+        }
+        return path
+    }
+
     /// Control events can arrive in bursts; reconcile again if a change arrives mid-transfer.
     func requestSync(model: AppModel) {
+        guard model.documents === self else { return }
         if syncing { syncAgain = true; return }
         syncing = true
         syncTask = Task {
@@ -131,11 +143,12 @@ final class OpenDocumentCenter {
     }
 
     private func sync(model: AppModel) async {
+        guard model.documents === self else { return }
         guard let host = model.host, let credentials = model.credentials else { return }
         do {
             let records = try OpenDocumentStore.records(domain: credentials.fileDomainIdentifier)
             for record in records where !conflicts.contains(where: { $0.id == record.id }) {
-                guard !Task.isCancelled, model.credentials?.fileDomainIdentifier == credentials.fileDomainIdentifier else { return }
+                guard !Task.isCancelled, model.documents === self, model.credentials?.fileDomainIdentifier == credentials.fileDomainIdentifier else { return }
                 do { try await reconcile(record, host: host) }
                 catch { if !Task.isCancelled { self.error = "Could not sync \(record.name): \(error.localizedDescription)" } }
             }
@@ -176,7 +189,8 @@ final class OpenDocumentCenter {
     }
 
     func resolve(_ conflict: Conflict, keepComputer: Bool, model: AppModel) async {
-        guard !busy, let host = model.host else { return }
+        guard model.documents === self, !busy, let host = model.host,
+              conflict.record.domain == model.credentials?.fileDomainIdentifier else { return }
         busy = true; error = nil
         defer { busy = false }
         do {

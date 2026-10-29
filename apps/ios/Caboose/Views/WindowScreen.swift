@@ -6,12 +6,17 @@ import SwiftUI
 /// either side edge goes to the next or previous open app, in the order they opened.
 struct WindowScreen: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var chromeVisible = true
+    @State private var laptopActive = false
     @State private var verticalEdge: HorizontalEdge?
     @State private var enteredVerticalLayout = false
     @State private var askingAbout: RemoteWindow?
     @State private var showingApps = false
     @State private var showingOptions = false
+    @State private var cardFit = CardWindowFit()
+    @State private var controlInteraction = 0
+    @State private var screenWidth: CGFloat = 0
     /// How far the card has been swiped sideways, and the picture of the app it reveals.
     @State private var swipe: CGFloat = 0
     @State private var neighbour: (id: Int, picture: CGImage?)?
@@ -21,21 +26,32 @@ struct WindowScreen: View {
             ZStack(alignment: .top) {
                 ShellBackground()
                 if let window = model.window(model.presentedWindowID) {
-                    WindowCardViewport(controlsVisible: chromeVisible, verticalEdge: $verticalEdge) { proxy in
-                        surface(for: window, size: proxy.size)
+                    WindowCardViewport(controlsVisible: chromeVisible && !laptopActive, verticalEdge: $verticalEdge) { _ in
+                        LaptopContainer(isCard: true, activeChanged: { active in
+                            laptopActive = active
+                            // Enter the shared desktop when a card folds into Laptop.
+                            // Its lower dock and whole-desktop pointer have one owner.
+                            if active, !model.externalDisplayActive, let id = model.presentedWindowID {
+                                model.setLaptopDesktop(true)
+                                model.show(windowID: id)
+                            }
+                        }) { _ in
+                            GeometryReader { proxy in surface(for: window, size: proxy.size) }
+                        }
                     }
-                    if !chromeVisible { exitFullScreenHandle }
+                    if !chromeVisible && !laptopActive { exitFullScreenHandle }
                 } else {
                     ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                ConnectionBanner()
             }
             .navigationTitle(model.window(model.presentedWindowID)?.title ?? "Window")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(removing: .title)
             .toolbar {
-                if let window = model.window(model.presentedWindowID) { controls(for: window) }
+                if !laptopActive, let window = model.window(model.presentedWindowID) { controls(for: window) }
             }
-            .toolbarVisibility(chromeVisible ? .automatic : .hidden, for: .navigationBar)
+            .toolbarVisibility(chromeVisible && !laptopActive ? .automatic : .hidden, for: .navigationBar)
             .toolbarBackground(toolbarBackground, for: .navigationBar)
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .onChange(of: verticalEdge) { _, edge in
@@ -48,25 +64,35 @@ struct WindowScreen: View {
             }
             .overlay(alignment: .top) { ApprovalBanner().padding(.top, 8) }
             .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
-            .statusBarHidden(!chromeVisible)
-            .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
+            .statusBarHidden(!chromeVisible || laptopActive)
+            .persistentSystemOverlays(chromeVisible && !laptopActive ? .automatic : .hidden)
+        }
+        .onAppear { chromeVisible = !model.windowCardBorderless }
+        .coordinateSpace(name: "window-controls")
+        .background {
+            GeometryReader { proxy in
+                Color.clear.onChange(of: proxy.size.width, initial: true) { _, width in screenWidth = width }
+            }
+        }
+        .simultaneousGesture(DragGesture(minimumDistance: 10, coordinateSpace: .named("window-controls"))
+            .onChanged { _ in if chromeVisible { controlInteraction += 1 } }
+            .onEnded { value in
+                guard chromeVisible, let edge = verticalEdge,
+                      abs(value.translation.width) > 30,
+                      abs(value.translation.width) > abs(value.translation.height) else { return }
+                let onBar = edge == .trailing ? value.startLocation.x > screenWidth - 100 : value.startLocation.x < 100
+                let outward = edge == .trailing ? value.translation.width > 0 : value.translation.width < 0
+                if onBar && outward { withAnimation(.snappy) { chromeVisible = false } }
+            })
+        .simultaneousGesture(TapGesture().onEnded { controlInteraction += 1 })
+        .task(id: controlsDismissalKey) {
+            guard chromeVisible, !laptopActive, !voiceOverEnabled, !showingApps, !showingOptions,
+                  askingAbout == nil, !model.keyboardVisible,
+                  enteredVerticalLayout || model.windowCardBorderless else { return }
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            withAnimation(.snappy) { chromeVisible = false }
         }
         .tint(Brand.amber)
-        .confirmationDialog("Switch App", isPresented: $showingApps, titleVisibility: .visible) {
-            ForEach(cardOrder) { other in
-                Button { model.presentedWindowID = other.id } label: {
-                    Label(other.title.isEmpty ? "Window" : other.title,
-                          systemImage: other.id == model.presentedWindowID ? "checkmark" : "macwindow")
-                }
-            }
-        } message: {
-            Text(model.window(model.presentedWindowID)?.title ?? "Window")
-        }
-        .confirmationDialog("Window Options", isPresented: $showingOptions, titleVisibility: .visible) {
-            if let window = model.window(model.presentedWindowID) { windowActions(for: window) }
-        } message: {
-            Text(model.connectionSummary)
-        }
         .fullScreenCover(item: Binding(
             get: { model.media.handedOff },
             set: { if $0 == nil, model.media.handedOff != nil { Task { await model.media.finished(at: nil) } } })) { media in
@@ -75,6 +101,13 @@ struct WindowScreen: View {
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }
+    }
+
+    private var controlsDismissalKey: [Int] {
+        [chromeVisible ? 1 : 0, laptopActive ? 1 : 0, voiceOverEnabled ? 1 : 0,
+         showingApps ? 1 : 0, showingOptions ? 1 : 0, askingAbout == nil ? 0 : 1,
+         model.keyboardVisible ? 1 : 0, enteredVerticalLayout ? 1 : 0,
+         model.windowCardBorderless ? 1 : 0, controlInteraction]
     }
 
     /// The native bar paints the selected wallpaper itself, rather than sampling the
@@ -119,7 +152,8 @@ struct WindowScreen: View {
         }
         .onAppear { fit(window, to: size) }
         .onChange(of: size) { _, size in fit(window, to: size) }
-        .onChange(of: window.id) { _, _ in fit(window, to: size) }
+        .onChange(of: window.id) { _, _ in cardFit = CardWindowFit(); fit(window, to: size) }
+        .onChange(of: window.frame) { _, _ in fit(window, to: size) }
     }
 
     // MARK: Swiping between apps
@@ -231,6 +265,7 @@ struct WindowScreen: View {
     /// Native icon items join the system's side bar on Duo and fit a horizontal toolbar
     /// elsewhere. The window title stays in the switcher instead of taking a content row.
     @ToolbarContentBuilder private func controls(for window: RemoteWindow) -> some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) { LaptopModeMenu() }
         ToolbarItem(placement: .topBarLeading) {
             Button("Back to \(model.selectedTab.rawValue.capitalized)", systemImage: "chevron.backward") {
                 model.presentedWindowID = nil
@@ -250,6 +285,16 @@ struct WindowScreen: View {
                 .labelStyle(.iconOnly)
                 .accessibilityValue(window.title.isEmpty ? "Window" : window.title)
                 .simultaneousGesture(toolbarDismissSwipe)
+                .confirmationDialog("Switch App", isPresented: $showingApps, titleVisibility: .visible) {
+                    ForEach(cardOrder) { other in
+                        Button { model.presentedWindowID = other.id } label: {
+                            Label(other.title.isEmpty ? "Window" : other.title,
+                                  systemImage: other.id == model.presentedWindowID ? "checkmark" : "macwindow")
+                        }
+                    }
+                } message: {
+                    Text(window.title.isEmpty ? "Window" : window.title)
+                }
 
             if !model.keyboardVisible {
                 Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible = true }
@@ -260,6 +305,11 @@ struct WindowScreen: View {
             Button("Window Options", systemImage: "ellipsis") { showingOptions = true }
                 .labelStyle(.iconOnly)
                 .simultaneousGesture(toolbarDismissSwipe)
+                .confirmationDialog("Window Options", isPresented: $showingOptions, titleVisibility: .visible) {
+                    windowActions(for: window)
+                } message: {
+                    Text(model.connectionSummary)
+                }
         }
     }
 
@@ -274,7 +324,7 @@ struct WindowScreen: View {
         }
     }
 
-    /// Present actions outside the toolbar so a vertical overflow group cannot clip them.
+    /// The presenting toolbar button anchors these system actions beside the controls.
     @ViewBuilder private func windowActions(for window: RemoteWindow) -> some View {
         Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
         Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
@@ -296,7 +346,7 @@ struct WindowScreen: View {
         guard model.presentedWindowID == window.id, size.width > 0, size.height > 0, let session = model.session else { return }
         model.windowCardResized(to: size)
         let target = DeviceViewport.guestFrame(size: size, pixelsPerPoint: model.pixelsPerPoint)
-        if window.frame != target {
+        if cardFit.shouldCorrect(frame: window.frame, target: target, now: ProcessInfo.processInfo.systemUptime) {
             var state = ["maximized": false]
             if model.externalDisplayActive && window.isFullscreen { state["fullscreen"] = false }
             session.configure(window, frame: target, state: state)
@@ -349,14 +399,15 @@ private struct WindowCardViewport<Content: View>: View {
     var body: some View {
         GeometryReader(content: content)
             .ignoresSafeArea(.container, edges: ignoredEdges)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
             .onAppear { verticalEdge = barEdge }
             .onChange(of: barEdge) { _, edge in
                 // Keep the reveal edge while hidden; read current placement again
                 // when controls are visible after a fold or orientation change.
-                if controlsVisible || edge != nil { verticalEdge = edge }
+                if let edge { verticalEdge = edge }
             }
             .onChange(of: controlsVisible) { _, visible in
-                if visible { verticalEdge = barEdge }
+                if visible, let barEdge { verticalEdge = barEdge }
             }
     }
 
@@ -369,6 +420,7 @@ private struct WindowCardViewport<Content: View>: View {
 /// An interactive remote window surface.
 struct RemoteWindowCanvas: UIViewRepresentable {
     @Environment(AppModel.self) private var model
+    @Environment(\.laptopInputOwned) private var laptopInputOwned
     let window: RemoteWindow
     let keyboardVisible: Bool
 
@@ -384,27 +436,30 @@ struct RemoteWindowCanvas: UIViewRepresentable {
 
     func updateUIView(_ view: YardSurfaceView, context: Context) {
         view.content.session = model.session
+        view.locallyRendered = window.game != nil
         view.content.pixelsPerPoint = model.pixelsPerPoint
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.natural = CGSize(width: window.frame.width / model.pixelsPerPoint,
                               height: window.frame.height / model.pixelsPerPoint)
-        if keyboardVisible, !view.content.isFirstResponder {
+        view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
+        if keyboardVisible && !laptopInputOwned, !view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.becomeFirstResponder() }
-        } else if !keyboardVisible, view.content.isFirstResponder {
+        } else if (!keyboardVisible || laptopInputOwned), view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.resignFirstResponder() }
         }
     }
 }
 
-/// A live preview for Home: same surface, no input.
+/// A live preview for Home: same surface, no input, drawn `width` points wide.
 struct RemoteWindowPreview: UIViewRepresentable {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
+    var width: CGFloat = 150
 
     func makeUIView(context: Context) -> RemoteWindowView {
         let view = RemoteWindowView(session: nil, window: window)
         view.isInteractive = false
-        view.pixelsPerPoint = max(1, window.frame.width / 150)
+        view.pixelsPerPoint = max(1, window.frame.width / width)
         view.pacer = model.session // a live preview is paced like any window on screen
         view.showsVideo = false // the window's own screen plays its videos
         return view
@@ -413,6 +468,6 @@ struct RemoteWindowPreview: UIViewRepresentable {
     func updateUIView(_ view: RemoteWindowView, context: Context) {
         view.pacer = model.session
         if view.remoteWindow?.id != window.id { view.attach(window) }
-        view.pixelsPerPoint = max(1, window.frame.width / 150)
+        view.pixelsPerPoint = max(1, window.frame.width / width)
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import QuartzCore
 
 /// A full-duplex byte stream over the host's `/v1/display` WebSocket relay, which carries
 /// either display protocol.
@@ -11,6 +12,12 @@ public protocol ByteStream: AnyObject, Sendable {
     func close()
     /// Ends the stream because what arrived made no sense.
     func fail(_ error: Error)
+    /// What has been handed to `send` and not yet sent, where the transport reports it.
+    var sendBacklog: SendBacklog? { get }
+}
+
+public extension ByteStream {
+    var sendBacklog: SendBacklog? { nil }
 }
 
 public enum ByteStreamEvent: Sendable {
@@ -26,6 +33,9 @@ public final class WebSocketStream: NSObject, ByteStream, URLSessionWebSocketDel
     private var task: URLSessionWebSocketTask?
     private var closed = false
     private var onEvent: (@Sendable (ByteStreamEvent) -> Void)?
+    private let backlogLock = NSLock()
+    /// When each send not yet completed was handed over, oldest first (sends complete in order).
+    private var pending: [CFTimeInterval] = []
 
     public init(url: URL, token: String) {
         var request = URLRequest(url: url)
@@ -56,11 +66,23 @@ public final class WebSocketStream: NSObject, ByteStream, URLSessionWebSocketDel
     }
 
     public func send(_ data: Data) {
+        backlogLock.withLock { pending.append(CACurrentMediaTime()) }
         queue.async { [self] in
-            guard let task, !closed else { return }
+            guard let task, !closed else { return sent() }
             task.send(.data(data)) { [weak self] error in
+                self?.sent()
                 if let error { self?.finish(error) }
             }
+        }
+    }
+
+    private func sent() {
+        backlogLock.withLock { if !pending.isEmpty { pending.removeFirst() } }
+    }
+
+    public var sendBacklog: SendBacklog? {
+        backlogLock.withLock {
+            SendBacklog(count: pending.count, oldestMs: pending.first.map { (CACurrentMediaTime() - $0) * 1000 })
         }
     }
 
@@ -98,6 +120,7 @@ public final class WebSocketStream: NSObject, ByteStream, URLSessionWebSocketDel
     private func finish(_ error: Error?) {
         guard !closed else { return }
         closed = true
+        backlogLock.withLock { pending.removeAll() }
         session?.invalidateAndCancel()
         onEvent?(.closed(error))
         onEvent = nil

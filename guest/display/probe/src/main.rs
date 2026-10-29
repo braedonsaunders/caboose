@@ -28,7 +28,12 @@ OPTIONS:
     --display WxH@HZxS     a display to announce (repeatable) [default: 1920x1080@60x1]
     --decoders LIST        comma-separated codecs [default: hevc,h264]
     --video-decoders LIST  codecs to accept as video.* streams [default: none]
+    --scaled-motion        accept half-resolution motion streams
     --audio                play the computer's sound (decoded and measured, not heard)
+    --wasm                 run games handed off to the client (reports game.create and
+                           game.destroy; a game's window is a target like any other)
+    --gpu-save DIR         take Vulkan streams (gpu.*): write each to DIR/gpu-<id>.gfxr and
+                           acknowledge what was written
     --duration SECS        how long to run [default: 10]
     --stall-after SECS     then stop reading and sending, the socket left open (a
                            suspended client)
@@ -45,7 +50,10 @@ OPTIONS:
                            mod1, mod4), text:STRING, edit:N:STRING (delete N before,
                            then commit), copy:STRING (the phone's clipboard), tap:X,Y,
                            click:X,Y, wait:MS, maximize (fill the display),
-                           scroll:X,Y,DY (precise, DY pixels), resize:W,H
+                           scroll:X,Y,DY (precise, DY pixels), resize:W,H, close,
+                           decline (refuse the game handed to the probe, as a device that
+                           cannot run it does),
+                           finger-down:X,Y, finger-move:X,Y, finger-up:X,Y (16 ms apart)
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -56,7 +64,10 @@ struct Args {
     displays: Vec<proto::Display>,
     decoders: Vec<Codec>,
     video_decoders: Option<Vec<Codec>>,
+    scaled_motion: bool,
     audio: bool,
+    wasm: bool,
+    gpu_save: Option<PathBuf>,
     duration: Duration,
     /// Stop reading and sending after this long, keeping the connection open.
     stall_after: Option<Duration>,
@@ -94,7 +105,10 @@ fn parse_args() -> Result<Args, String> {
         displays: Vec::new(),
         decoders: vec![Codec::Hevc, Codec::H264],
         video_decoders: None,
+        scaled_motion: false,
         audio: false,
+        wasm: false,
+        gpu_save: None,
         duration: Duration::from_secs(10),
         stall_after: None,
         windows: None,
@@ -125,6 +139,9 @@ fn parse_args() -> Result<Args, String> {
                 a.displays.push(parse_display(id, &v).ok_or_else(|| format!("bad --display {v}"))?);
             }
             "--audio" => a.audio = true,
+            "--scaled-motion" => a.scaled_motion = true,
+            "--wasm" => a.wasm = true,
+            "--gpu-save" => a.gpu_save = Some(value()?.into()),
             "--video-decoders" => {
                 a.video_decoders = Some(
                     value()?
@@ -193,6 +210,19 @@ fn process_cpu_ms(pid: u32) -> Option<f64> {
     // SAFETY: sysconf has no preconditions.
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
     Some((utime + stime) * 1000.0 / ticks)
+}
+
+struct GpuStats {
+    window: u64,
+    bytes: u64,
+    file: Option<std::fs::File>,
+    destroyed: bool,
+    reason: Option<String>,
+}
+
+struct GameStats {
+    game: proto::GameCreate,
+    destroyed: bool,
 }
 
 #[derive(Default)]
@@ -278,6 +308,8 @@ struct VideoStats {
     clip: Option<proto::Rect>,
     codec: Codec,
     source: proto::VideoSource,
+    scaled: bool,
+    size: Option<(u32, u32)>,
     frames: u64,
     bytes: u64,
     /// Frames that carried a pts.
@@ -421,12 +453,25 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 })
                 .to_vec()
         }
+        "finger-down" | "finger-move" | "finger-up" => {
+            let (x, y) = point(arg)?;
+            let phase = match verb {
+                "finger-down" => proto::TouchPhase::Down,
+                "finger-move" => proto::TouchPhase::Motion,
+                _ => proto::TouchPhase::Up,
+            };
+            vec![Message::Touch(proto::Touch {
+                id,
+                points: vec![proto::TouchPoint { slot: 0, phase, x, y, force: None, radius: None }],
+            })]
+        }
         "click" => {
             let (x, y) = point(arg)?;
             [proto::buttons::LEFT, 0]
                 .map(|buttons| Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None }))
                 .to_vec()
         }
+        "close" => vec![Message::Close { id }],
         "wait" => vec![Message::Ping { t_us: arg.parse().map_err(|_| format!("bad wait {arg}"))? }],
         // The window fills its display, as the phone shows one window at a time.
         "maximize" => vec![Message::Configure(proto::Configure {
@@ -514,6 +559,10 @@ fn run(args: Args) -> Result<bool, String> {
             displays: args.displays.clone(),
             video_decoders: args.video_decoders.clone(),
             audio_decoders: args.audio.then(|| vec!["opus".to_owned()]),
+            wasm: args.wasm,
+            webview: false,
+            gpu: args.gpu_save.is_some(),
+            scaled_motion: args.scaled_motion,
         }),
     )?;
 
@@ -532,6 +581,8 @@ fn run(args: Args) -> Result<bool, String> {
     let mut next_vsync = Instant::now();
     let mut text_input_events = 0u32;
     let mut videos: BTreeMap<u64, VideoStats> = BTreeMap::new();
+    let mut games: BTreeMap<u64, GameStats> = BTreeMap::new();
+    let mut gpus: BTreeMap<u64, GpuStats> = BTreeMap::new();
     let mut clipboard: Option<String> = None;
     let mut sound = AudioStats::default();
     let mut ping_sent: Option<u64> = None;
@@ -548,7 +599,15 @@ fn run(args: Args) -> Result<bool, String> {
         if let (Some(id), Some(action)) = (target, pending.front().cloned()) {
             if now >= next_action {
                 pending.pop_front();
-                next_action = now + Duration::from_millis(300);
+                next_action = now + Duration::from_millis(if action.starts_with("finger-") { 16 } else { 300 });
+                if action == "decline" {
+                    // The game handed to the probe, not the window: game ids are their own namespace.
+                    if let Some(game) = games.keys().next().copied() {
+                        let reason = "the probe declines it".to_owned();
+                        send(&mut ws, &Message::GameDecline { id: game, reason })?;
+                    }
+                    continue;
+                }
                 for m in action_messages(id, &action)? {
                     if let Message::Ping { t_us } = m {
                         next_action = now + Duration::from_millis(t_us);
@@ -736,6 +795,48 @@ fn run(args: Args) -> Result<bool, String> {
                     }
                 }
                 Message::TextInput(_) => text_input_events += 1,
+                Message::GameCreate(g) => {
+                    // A game's window sends no pictures, so it becomes the target when its game binds.
+                    if target.is_none() && args.window.is_none_or(|w| w == g.window) {
+                        target = Some(g.window);
+                    }
+                    games.insert(g.id, GameStats { game: g, destroyed: false });
+                }
+                Message::GpuCreate { id, window } => {
+                    if target.is_none() && args.window.is_none_or(|w| w == window) {
+                        target = Some(window);
+                    }
+                    let file = match &args.gpu_save {
+                        Some(dir) => {
+                            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                            Some(std::fs::File::create(dir.join(format!("gpu-{id}.gfxr"))).map_err(|e| e.to_string())?)
+                        }
+                        None => None,
+                    };
+                    gpus.insert(id, GpuStats { window, bytes: 0, file, destroyed: false, reason: None });
+                }
+                Message::GpuData(d) => {
+                    if let Some(g) = gpus.get_mut(&d.id) {
+                        if d.offset == g.bytes {
+                            if let Some(f) = g.file.as_mut() {
+                                f.write_all(&d.data).map_err(|e| e.to_string())?;
+                            }
+                            g.bytes += d.data.len() as u64;
+                            send(&mut ws, &Message::GpuAck { id: d.id, offset: g.bytes })?;
+                        }
+                    }
+                }
+                Message::GpuDestroy { id, reason } => {
+                    if let Some(g) = gpus.get_mut(&id) {
+                        g.destroyed = true;
+                        g.reason = reason;
+                    }
+                }
+                Message::GameDestroy { id } => {
+                    if let Some(g) = games.get_mut(&id) {
+                        g.destroyed = true;
+                    }
+                }
                 Message::ServerClipboard(c) => clipboard = Some(String::from_utf8_lossy(&c.data).into_owned()),
                 Message::Audio(a) => sound.packet(&a),
                 Message::VideoCreate(c) => {
@@ -747,6 +848,8 @@ fn run(args: Args) -> Result<bool, String> {
                             clip: c.clip,
                             codec: c.codec,
                             source: c.source,
+                            scaled: c.scaled,
+                            size: None,
                             frames: 0,
                             bytes: 0,
                             timed: 0,
@@ -791,6 +894,7 @@ fn run(args: Args) -> Result<bool, String> {
                         let mut frame = ff::frame::Video::empty();
                         while ok && d.receive_frame(&mut frame).is_ok() {
                             v.decoded += 1;
+                            v.size = Some((frame.width(), frame.height()));
                         }
                         if !ok {
                             v.decode_errors += 1;
@@ -884,14 +988,44 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
+            gpus.iter()
+                .map(|(id, g)| format!(
+                    "{{\"id\":{id},\"window\":{},\"bytes\":{},\"destroyed\":{},\"reason\":{}}}",
+                    g.window,
+                    g.bytes,
+                    g.destroyed,
+                    g.reason.as_ref().map(|r| format!("{r:?}")).unwrap_or("null".into())
+                ))
+                .collect::<Vec<_>>()
+                .join(","),
+            games
+                .iter()
+                .map(|(id, g)| format!(
+                    "{{\"id\":{id},\"window\":{},\"root\":{:?},\"entry\":{:?},\"saves\":[{}],\"destroyed\":{}}}",
+                    g.game.window,
+                    g.game.root,
+                    g.game.entry,
+                    g.game
+                        .saves
+                        .iter()
+                        .flatten()
+                        .map(|s| format!("{{\"mount\":{:?},\"path\":{:?}}}", s.mount, s.path))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    g.destroyed
+                ))
+                .collect::<Vec<_>>()
+                .join(","),
             videos
                 .iter()
                 .map(|(id, v)| format!(
-                    "{{\"id\":{id},\"window\":{},\"codec\":{:?},\"source\":{:?},\"rect\":[{},{},{},{}],\"clip\":{},\"frames\":{},\"bytes\":{},\"timed\":{},\"keyframe_first\":{},\"keyframes\":{},\"decoded\":{},\"decode_errors\":{},\"presents\":{},\"unknown_presents\":{},\"last_present\":{},\"destroyed\":{}}}",
+                    "{{\"id\":{id},\"window\":{},\"codec\":{:?},\"source\":{:?},\"scaled\":{},\"size\":{},\"rect\":[{},{},{},{}],\"clip\":{},\"frames\":{},\"bytes\":{},\"timed\":{},\"keyframe_first\":{},\"keyframes\":{},\"decoded\":{},\"decode_errors\":{},\"presents\":{},\"unknown_presents\":{},\"last_present\":{},\"destroyed\":{}}}",
                     v.window,
                     v.codec.as_str(),
                     v.source.as_str(),
+                    v.scaled,
+                    v.size.map(|(w,h)| format!("[{w},{h}]")).unwrap_or("null".into()),
                     v.rect.x,
                     v.rect.y,
                     v.rect.w,
@@ -950,6 +1084,23 @@ fn run(args: Args) -> Result<bool, String> {
                 percentile(&w.latency_us, 0.5) / 1000.0,
                 percentile(&w.latency_us, 0.95) / 1000.0,
                 w.decode_errors
+            );
+        }
+        for (id, g) in &gpus {
+            println!(
+                "gpu {id}: window {}, {} bytes{}",
+                g.window,
+                g.bytes,
+                if g.destroyed { ", destroyed" } else { "" }
+            );
+        }
+        for (id, g) in &games {
+            println!(
+                "game {id}: window {}, {}/{}{}",
+                g.game.window,
+                g.game.root,
+                g.game.entry,
+                if g.destroyed { ", destroyed" } else { "" }
             );
         }
         if let Some(c) = cpu_ms {

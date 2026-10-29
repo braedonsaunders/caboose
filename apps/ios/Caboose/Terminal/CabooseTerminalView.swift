@@ -16,6 +16,8 @@ protocol CabooseTerminalViewOwner: AnyObject {
 final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
     weak var owner: CabooseTerminalViewOwner?
     private let keyRow = TerminalKeyRow()
+    weak var inlineKeyRow: TerminalKeyRow?
+    var onKeyboardDismiss: (() -> Void)?
     private let bellFeedback = UINotificationFeedbackGenerator()
     private var pinchStartSize: CGFloat = 0
     private var observers: [NSObjectProtocol] = []
@@ -27,6 +29,17 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
         let saved = CGFloat(UserDefaults.standard.double(forKey: CabooseTerminalView.fontSizeKey))
         return TerminalTheme.fontSizes.contains(saved) ? saved : TerminalTheme.defaultFontSize
     }()
+
+    private var nativeHeader = false
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let wide = (window?.bounds.width ?? bounds.width) >= 600
+        if wide != nativeHeader {
+            nativeHeader = wide
+            inputAccessoryView = keyRow.view.accessory(for: self)
+            if isFirstResponder { reloadInputViews() }
+        }
+    }
 
     init() {
         // A 1×1 start makes the first layout report the real size, whatever it is.
@@ -52,6 +65,8 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
         keyboardAppearance = .dark
         indicatorStyle = .white
         inputAccessoryView = keyRow.view
+        inputAssistantItem.leadingBarButtonGroups = []
+        inputAssistantItem.trailingBarButtonGroups = []
         keyRow.onAction = { [weak self] action in self?.keyRowAction(action) }
 
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:)))
@@ -126,7 +141,7 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
 
     // MARK: The key row
 
-    private func keyRowAction(_ action: TerminalKeyRow.Action) {
+    func keyRowAction(_ action: TerminalKeyRow.Action) {
         switch action {
         case .control:
             controlModifier.toggle()
@@ -134,6 +149,7 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
             metaModifier.toggle()
         case .dismissKeyboard:
             _ = resignFirstResponder()
+            onKeyboardDismiss?()
         case .key(let key):
             let control = controlModifier, alt = metaModifier
             if let bytes = TerminalKeys.bytes(for: key, control: control, alt: alt) {
@@ -158,6 +174,7 @@ final class CabooseTerminalView: TerminalView, TerminalViewDelegate {
 
     private func showModifiers() {
         keyRow.show(control: controlModifier, alt: metaModifier)
+        inlineKeyRow?.show(control: controlModifier, alt: metaModifier)
     }
 
     // MARK: Links

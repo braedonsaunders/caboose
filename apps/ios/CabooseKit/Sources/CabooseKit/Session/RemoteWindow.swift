@@ -15,7 +15,8 @@ public final class RemoteWindow: Identifiable {
     /// The app asked to cover the whole screen (a video player, a game, a slideshow).
     public internal(set) var isFullscreen = false
     public internal(set) var hasAlpha = false
-    /// Position and size in the server's pixel space.
+    /// Position and size in the server's pixel space. Position may follow an in-flight
+    /// placement request; size remains the size reported by the server.
     public internal(set) var frame: CGRect
     public internal(set) var minimumSize: CGSize?
     public internal(set) var maximumSize: CGSize?
@@ -34,6 +35,12 @@ public final class RemoteWindow: Identifiable {
     /// their container: the surface generation that repaints it. A view keeps showing each
     /// such video until it has presented that generation, so the stale pixels under it never show.
     public internal(set) var retiringVideos: [ObjectIdentifier: UInt64] = [:]
+    /// The game this device runs in the window instead of showing the computer's picture
+    /// (docs/game-handoff.md); nil for every other window.
+    public internal(set) var game: RemoteGame?
+    /// The GPU stream this device draws the window from instead of the computer's picture
+    /// (docs/gpu-stream.md); nil for every other window.
+    public internal(set) var gpuStream: RemoteGPUStream?
     public nonisolated let surface: WindowSurface
 
     init(id: Int, frame: CGRect, overrideRedirect: Bool, surface: WindowSurface) {
@@ -82,5 +89,17 @@ final class EchoMeter: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard !samples.isEmpty else { return nil }
         return samples.sorted()[samples.count / 2]
+    }
+
+    /// Seconds since a key press whose window has not drawn since.
+    var pendingSeconds: Double? {
+        lock.lock(); defer { lock.unlock() }
+        return pending.map { Double(DispatchTime.now().uptimeNanoseconds - $0.at) / 1_000_000_000 }
+    }
+
+    /// The connection closed: a key pressed before it can no longer be matched to a picture.
+    func reset() {
+        lock.lock(); defer { lock.unlock() }
+        pending = nil
     }
 }

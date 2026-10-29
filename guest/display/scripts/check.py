@@ -188,6 +188,28 @@ def check_chromium_text_input():
                                    f"--app={PAGES}/input.html"], run)
 
 
+
+def check_chromium_touch_fling():
+    def run(proc, token):
+        time.sleep(2)
+        # Eight native motion samples, then release; no client-generated wheel inertia.
+        actions = ["wait:400", "finger-down:400,600"]
+        actions += [f"finger-move:400,{600 - step * 35}" for step in range(1, 9)]
+        actions += ["finger-up:400,320"]
+        r = probe(["--token-file", token, "--duration", "5", "--windows", "1",
+                   "--display", "900x800@60x1", "--actions", ";".join(actions)])
+        title = r["windows"][0]["title"]
+        if not title.startswith("scroll:"):
+            raise Failed(f"native touch never started sampling: {title!r}")
+        samples = json.loads(title[len("scroll:"):])
+        early = next((y for t, y in samples if t >= 300), None)
+        late = samples[-1][1] if samples else None
+        if early is None or late is None or early < 100 or late - early < 50:
+            raise Failed(f"no sustained native fling: y at 300ms={early}, final={late}; samples={samples}")
+        return f"native touch scrolls to {early}px by 300ms, coasts to {late}px after release; " + summary(r)
+    return with_server(CHROMIUM + ["--window-size=900,800", f"--app={PAGES}/scroll.html"], run)
+
+
 def check_reconnect():
     def run(proc, token):
         a = probe(["--token-file", token, "--duration", "2", "--windows", "1"])
@@ -216,6 +238,18 @@ def check_reconnect_idle():
             raise Failed("the second client's picture of an idle window differs from the first's")
         return f"an idle window's picture is the same for a second client ({len(pictures[1])} byte PNG)"
     return with_server(["xterm", "-geometry", "80x24", "-e", "sh", "-c", "ls -l /usr/bin | head -20; exec sleep 600"], run)
+
+
+def check_encoder_eviction():
+    # One connection stays alive through refinement, ten seconds of quiet, and a
+    # small change. A new keyframe must decode even though the update was partial.
+    def run(proc, token):
+        r = probe(["--token-file", token, "--duration", "19", "--windows", "1"])
+        w = r["windows"][0]
+        if w["keyframes"] < 2 or w["decode_errors"] or w["frames"] < 3:
+            raise Failed(f"idle recreation did not decode from a fresh keyframe: {w}")
+        return f"{w['frames']} pictures, {w['keyframes']} keyframes, no decode errors across idle eviction"
+    return with_server(CHROMIUM + ["--window-size=900,600", f"--app={PAGES}/eviction.html"], run)
 
 
 def check_replace():
@@ -481,6 +515,20 @@ def check_motion():
             f"the final pictures match at {match:.1f} dB")
 
 
+def check_scaled_motion():
+    def run(proc, token):
+        r = probe(["--token-file", token, "--duration", "13", "--windows", "1", "--decoders", "h264", "--scaled-motion"])
+        if len(r["videos"]) != 1:
+            raise Failed(f"expected one motion stream: {r['videos']}")
+        v = r["videos"][0]
+        if not v["scaled"] or v["source"] != "motion" or v["size"] != [v["rect"][2] // 2, v["rect"][3] // 2]:
+            raise Failed(f"scaled motion dimensions or placement are wrong: {v}")
+        if v["frames"] < 120 or v["decoded"] != v["frames"] or v["decode_errors"] or not v["destroyed"]:
+            raise Failed(f"scaled motion did not decode and end cleanly: {v}")
+        return f"{v['frames']} decoded motion frames at {v['size']}, placed at {v['rect']}"
+    return with_server(CHROMIUM + ["--window-size=1280,720", f"--app={PAGES}/movie.html#240"], run)
+
+
 def server_status(pid):
     fields = dict(line.split(":", 1) for line in open(f"/proc/{pid}/status") if ":" in line)
     return int(fields["Threads"]), int(fields["VmRSS"].split()[0]) // 1024
@@ -705,8 +753,11 @@ CHECKS = [
     ("two-windows", check_two_windows),
     ("chromium", check_chromium_motion),
     ("chromium-text-input", check_chromium_text_input),
+    ("chromium-touch-fling", check_chromium_touch_fling),
     ("reconnect", check_reconnect),
     ("reconnect-idle", check_reconnect_idle),
+    ("encoder-eviction", check_encoder_eviction),
+    ("scaled-motion", check_scaled_motion),
     ("replace", check_replace),
     ("storm", check_storm),
     ("takeover", check_takeover),

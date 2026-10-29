@@ -12,7 +12,9 @@ import UIKit
 public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDelegate {
     public override static var layerClass: AnyClass { CAMetalLayer.self }
 
-    public weak var session: (any DisplaySession)?
+    public weak var session: (any DisplaySession)? {
+        willSet { if session !== newValue { cancelTouches() } }
+    }
     /// The session whose pictures this view shows, told of each refresh of the screen it is
     /// on so the server paces the window to it. Set it on display-only views too; it is
     /// `session` when nil.
@@ -34,17 +36,31 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     public var pixelsPerPoint: CGFloat = 2
     /// When false the view only displays (thumbnails, previews).
     public var isInteractive = true {
-        didSet { gestureRecognizers?.forEach { $0.isEnabled = isInteractive } }
+        didSet {
+            if !isInteractive { cancelTouches() }
+            updateGestures()
+        }
     }
+    /// The game this view runs over the window's picture, when the window has one and this is
+    /// its main view (see `layoutGame()`).
+    private weak var gameSurface: GameSurfaceView?
+    /// The desktop routes input separately but owns live game/GPU content, unlike a thumbnail.
+    public var hostsGame = false
+    #if canImport(CabooseGPUStream)
+    /// The GPU stream this view shows over the window's picture (see `layoutGPUStream()`).
+    private weak var gpuStreamView: GPUStreamView?
+    #endif
+    /// The window is a game: its input goes to the game, not to the computer.
+    private var holdsGameInput = false
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     private var displayLink: CADisplayLink?
     private var presentedGeneration: UInt64 = .max
     private var lastPointer = CGPoint.zero
-    private var dragging = false
-    private var scrollRemainder = CGPoint.zero
-    private var momentum = CGPoint.zero
-    private var momentumLink: CADisplayLink?
+    private var directDrag = DirectPointerDrag()
+    private let pointerClicks = PointerClickDriver()
+    private let scrollDriver = ScrollDriver()
+    private var scrollUsesDirectTouch = false
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
     private weak var contextTouchGesture: UILongPressGestureRecognizer?
 
@@ -64,6 +80,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         metalLayer.presentsWithTransaction = false
         backgroundColor = .black
         isMultipleTouchEnabled = true
+        NotificationCenter.default.addObserver(self, selector: #selector(cancelTouches),
+            name: UIApplication.willResignActiveNotification, object: nil)
         installGestures()
         attach(window)
     }
@@ -82,6 +100,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         prefersProse = autocorrectChoice ?? !Self.isCodeApp(window)
         presentedGeneration = .max
         metalLayer.isOpaque = !(window?.hasAlpha ?? false)
+        layoutGame()
     }
 
     public override func didMoveToWindow() {
@@ -108,6 +127,79 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         laidOutVideos = nil
         metalLayer.contentsScale = pixelsPerPoint
         presentedGeneration = .max
+        layoutGame()
+        layoutGPUStream()
+    }
+
+    // MARK: Games
+
+    /// Lays the window's game (`RemoteWindow.game`) over its picture when this view runs it:
+    /// an interactive or desktop view on screen with a connection that plays its media. Thumbnail
+    /// views show the window's picture, which is the game's last snapshot. One web view runs
+    /// each game, so a view takes it only from a view that is not on screen. Touch, the pointer
+    /// and keys of a game window never go to the computer.
+    func layoutGame() {
+        let game = remoteWindow?.game
+        if (game != nil) != holdsGameInput {
+            holdsGameInput = game != nil
+            if holdsGameInput {
+                cancelTouches()
+                stopMomentum()
+                resetTyping()
+            }
+            updateGestures()
+        }
+        let runs = game.map { !$0.isEnded } == true && GamePresentation.hosts(
+            interactive: isInteractive, desktop: hostsGame, contentEnabled: showsVideo,
+            hasConnection: (session ?? pacer) != nil, onScreen: window != nil)
+        if let surface = gameSurface, !runs || surface.game !== game || surface.superview !== self {
+            if surface.superview === self { surface.removeFromSuperview() }
+            gameSurface = nil
+        }
+        guard runs, let game else { return }
+        if gameSurface == nil {
+            let surface = GameSurfaceView.surface(for: game)
+            if surface.superview != nil, surface.superview !== self, surface.window != nil { return }
+            let focused = isFirstResponder
+            insertSubview(surface, at: 0)
+            gameSurface = surface
+            if focused { surface.focus() }
+        }
+        if let surface = gameSurface, surface.frame != bounds { surface.frame = bounds }
+    }
+
+    /// Lays the window's GPU stream over its picture in its interactive or desktop view. Touches
+    /// pass through to this view: the application runs on the computer and takes its input there.
+    func layoutGPUStream() {
+        #if canImport(CabooseGPUStream)
+        let hosts = GamePresentation.hosts(interactive: isInteractive, desktop: hostsGame,
+            contentEnabled: showsVideo, hasConnection: (session ?? pacer) != nil, onScreen: window != nil)
+        let shown = remoteWindow?.gpuStream.flatMap { hosts ? $0.view : nil }
+        if let current = gpuStreamView, current !== shown {
+            if current.superview === self { current.removeFromSuperview() }
+            gpuStreamView = nil
+        }
+        guard let shown else { return }
+        if gpuStreamView == nil {
+            if shown.superview != nil, shown.superview !== self, shown.window != nil { return }
+            shown.isUserInteractionEnabled = false
+            insertSubview(shown, at: 0)
+            gpuStreamView = shown
+        }
+        if shown.frame != bounds { shown.frame = bounds }
+        #endif
+    }
+
+    private func updateGestures() {
+        let enabled = isInteractive && !holdsGameInput
+        gestureRecognizers?.forEach { $0.isEnabled = enabled }
+    }
+
+    /// The keyboard of a game window is the game's.
+    @discardableResult
+    public override func becomeFirstResponder() -> Bool {
+        if let gameSurface, gameSurface.superview === self { return gameSurface.focus() }
+        return super.becomeFirstResponder()
     }
 
     /// Puts each of the window's videos over its picture: the stream's layer at its `rect`,
@@ -196,8 +288,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         caretAnchor = point
         move(to: point)
         session.focus(window)
-        session.pointerButton(in: window, button: button, pressed: true, at: lastPointer)
-        session.pointerButton(in: window, button: button, pressed: false, at: lastPointer)
+        pointerClicks.click(in: window, session: session, at: lastPointer, button: button)
         if button == 3 { showSecondaryClick(at: point) }
     }
 
@@ -268,13 +359,11 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         longPress.delegate = self
         addGestureRecognizer(longPress)
 
-        // Tap, then hold and move for a primary-button drag. An ordinary hold is reserved
-        // for the context menu, so normal finger jitter cannot accidentally start a drag.
-        let touchDrag = UILongPressGestureRecognizer(target: self, action: #selector(handleTouchDrag(_:)))
-        touchDrag.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
-        touchDrag.numberOfTapsRequired = 1
-        touchDrag.minimumPressDuration = 0.15
-        touchDrag.allowableMovement = 10
+        // Mouse-only windows: one finger draws/selects; two fingers navigate.
+        let touchDrag = UIPanGestureRecognizer(target: self, action: #selector(handleTouchDrag(_:)))
+        touchDrag.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber]
+        touchDrag.maximumNumberOfTouches = 1
+        touchDrag.allowedScrollTypesMask = []
         touchDrag.delegate = self
         addGestureRecognizer(touchDrag)
 
@@ -285,10 +374,18 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
         let scroll = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
         scroll.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
-        scroll.allowedScrollTypesMask = .all
+        scroll.allowedScrollTypesMask = []
+        scroll.minimumNumberOfTouches = 2
         scroll.maximumNumberOfTouches = 2
         scroll.delegate = self
         addGestureRecognizer(scroll)
+
+        // Hardware wheel/trackpad events do not have direct finger contacts.
+        let wheel = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
+        wheel.allowedTouchTypes = []
+        wheel.allowedScrollTypesMask = .all
+        wheel.delegate = self
+        addGestureRecognizer(wheel)
 
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(handleHover(_:)))
         addGestureRecognizer(hover)
@@ -307,11 +404,6 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         gesture === secondaryTouchGesture || gesture === contextTouchGesture || !routesNatively(touch)
     }
 
-    public override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
-        if gesture is UIPanGestureRecognizer, dragging { return false }
-        return true
-    }
-
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         stopMomentum()
         click(at: gesture.location(in: self))
@@ -319,6 +411,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     @objc private func handlePointerClick(_ gesture: UITapGestureRecognizer) {
+        stopMomentum()
         click(at: gesture.location(in: self))
         tapped()
     }
@@ -348,7 +441,20 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         focusCheck = nil
     }
 
+    private var adoptedSurrounding = 0
+
+    /// The focused field's real text before its caret, where its app reports it, becomes
+    /// what the keyboard edits. A selection in the app is left to the keystroke path.
+    fileprivate func adoptSurroundingText() {
+        guard isFirstResponder, let window = remoteWindow, let report = session?.surroundingText,
+              report.window == window.id, report.serial != adoptedSurrounding else { return }
+        adoptedSurrounding = report.serial
+        guard !report.text.hasSelection else { return }
+        adoptRemoteText(beforeCaret: report.text.beforeCaret)
+    }
+
     @objc private func handleSecondaryClick(_ gesture: UITapGestureRecognizer) {
+        stopMomentum()
         if gesture === secondaryTouchGesture { cancelTouches() }
         click(at: gesture.location(in: self), button: 3)
     }
@@ -366,22 +472,33 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         click(at: gesture.location(in: self), button: 3)
     }
 
-    @objc private func handleTouchDrag(_ gesture: UILongPressGestureRecognizer) {
-        guard let window = remoteWindow, let session else { return }
+    @objc private func handleTouchDrag(_ gesture: UIPanGestureRecognizer) {
         let point = gesture.location(in: self)
         switch gesture.state {
         case .began:
+            pointerClicks.cancel()
             stopMomentum()
-            dragging = true
-            move(to: point)
-            session.focus(window)
-            session.pointerButton(in: window, button: 1, pressed: true, at: lastPointer)
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        case .changed: move(to: point)
-        case .ended, .cancelled, .failed:
-            if dragging { session.pointerButton(in: window, button: 1, pressed: false, at: pixelPoint(point)) }
-            dragging = false
+            focusCheck = nil
+            if let window = remoteWindow { session?.focus(window) }
+            sendDirectDrag(directDrag.begin(at: point, translation: gesture.translation(in: self)))
+        case .changed:
+            sendDirectDrag(directDrag.move(to: point))
+        case .ended:
+            sendDirectDrag(directDrag.end(at: point))
+        case .cancelled, .failed:
+            sendDirectDrag(directDrag.cancel())
         default: break
+        }
+    }
+
+    private func sendDirectDrag(_ actions: [DirectPointerDrag.Action]) {
+        guard let window = remoteWindow, let session else { return }
+        for action in actions {
+            switch action {
+            case .move(let point): move(to: point)
+            case .button(let point, let pressed):
+                session.pointerButton(in: window, button: 1, pressed: pressed, at: pixelPoint(point))
+            }
         }
     }
 
@@ -390,6 +507,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let point = gesture.location(in: self)
         switch gesture.state {
         case .began:
+            pointerClicks.cancel()
+            stopMomentum()
             move(to: point)
             session.pointerButton(in: window, button: 1, pressed: true, at: lastPointer)
         case .changed:
@@ -433,7 +552,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private func isNative(_ touch: UITouch) -> Bool { nativeTouches.contains(ObjectIdentifier(touch)) }
 
     private func routesNatively(_ touch: UITouch) -> Bool {
-        guard isInteractive, session != nil, let window = remoteWindow else { return false }
+        guard isInteractive, session != nil, let window = remoteWindow, window.game == nil else { return false }
         switch touch.type {
         case .direct: return window.acceptsTouch
         case .pencil: return window.acceptsPencil
@@ -442,6 +561,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        stopMomentum()
         let native = touches.filter(routesNatively)
         nativeTouches.formUnion(native.map(ObjectIdentifier.init))
         if !native.isEmpty {
@@ -538,7 +658,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     /// Lifts every finger the app still thinks is down, e.g. when the view leaves the screen.
-    private func cancelTouches() {
+    @objc private func cancelTouches() {
+        pointerClicks.cancel()
+        stopMomentum()
+        sendDirectDrag(directDrag.cancel())
         if let window = remoteWindow, let session {
             if !activeTouches.isEmpty {
                 session.touch(activeTouches.values.map { TouchPoint(slot: $0.slot, phase: .cancel, x: Double($0.point.x), y: Double($0.point.y)) },
@@ -561,56 +684,49 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         return degrees < 0 ? degrees + 360 : degrees
     }
 
-    /// Swiping scrolls, like any iOS app: content follows the finger, with momentum after release.
+    /// Native touch retains the application's own gestures and fling. Emulated pans
+    /// send precise deltas once per display frame, followed by client-side inertia.
     @objc private func handleScroll(_ gesture: UIPanGestureRecognizer) {
+        let now = CACurrentMediaTime()
         switch gesture.state {
         case .began:
             stopMomentum()
-            scrollRemainder = .zero
-            session?.resetScroll()
+            guard let session, let remoteWindow else { return }
+            session.resetScroll()
             move(to: gesture.location(in: self))
+            scrollUsesDirectTouch = gesture.numberOfTouches > 0
+            let anchor = lastPointer
+            let scale = pixelsPerPoint
+            scrollDriver.begin(at: now - 1.0 / 120) { [weak self, weak session, weak remoteWindow] delta in
+                guard let self, let session, let remoteWindow, self.isInteractive,
+                      self.window != nil, self.session === session, self.remoteWindow === remoteWindow,
+                      session.state == .ready, session.windows[remoteWindow.id] === remoteWindow else { return false }
+                session.scroll(in: remoteWindow, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
+                return true
+            }
+            appendScroll(gesture, at: now)
         case .changed:
-            let translation = gesture.translation(in: self)
-            gesture.setTranslation(.zero, in: self)
-            scrollBy(CGPoint(x: -translation.x, y: -translation.y))
+            appendScroll(gesture, at: now)
         case .ended:
+            appendScroll(gesture, at: now)
             let velocity = gesture.velocity(in: self)
-            startMomentum(CGPoint(x: -velocity.x, y: -velocity.y))
-        default:
-            break
+            // Indirect hardware scrolling already includes OS momentum.
+            scrollDriver.end(at: now, velocity: CGPoint(x: -velocity.x, y: -velocity.y), coast: scrollUsesDirectTouch)
+        case .cancelled, .failed:
+            stopMomentum()
+        default: break
         }
     }
 
-    private func scrollBy(_ points: CGPoint) {
-        guard let window = remoteWindow, let session else { return }
-        let delta = CGPoint(x: points.x * pixelsPerPoint + scrollRemainder.x, y: points.y * pixelsPerPoint + scrollRemainder.y)
-        // Send whole pixels and carry the fraction, so slow drags still scroll.
-        let whole = CGPoint(x: delta.x.rounded(.towardZero), y: delta.y.rounded(.towardZero))
-        scrollRemainder = CGPoint(x: delta.x - whole.x, y: delta.y - whole.y)
-        if whole != .zero { session.scroll(in: window, dx: whole.x, dy: whole.y, at: lastPointer) }
+    private func appendScroll(_ gesture: UIPanGestureRecognizer, at time: TimeInterval) {
+        let translation = gesture.translation(in: self)
+        gesture.setTranslation(.zero, in: self)
+        if translation != .zero {
+            scrollDriver.append(CGPoint(x: -translation.x, y: -translation.y), at: time)
+        }
     }
 
-    private func startMomentum(_ velocity: CGPoint) {
-        guard hypot(velocity.x, velocity.y) > 120 else { return }
-        momentum = velocity
-        let link = CADisplayLink(target: DisplayLinkTarget(self), selector: #selector(DisplayLinkTarget.momentumTick(_:)))
-        link.add(to: .main, forMode: .common)
-        momentumLink = link
-    }
-
-    fileprivate func momentumStep(_ duration: CFTimeInterval) {
-        let dt = CGFloat(min(duration, 1.0 / 30))
-        scrollBy(CGPoint(x: momentum.x * dt, y: momentum.y * dt))
-        let decay = pow(0.135, dt) // UIScrollView's normal deceleration, per second
-        momentum = CGPoint(x: momentum.x * decay, y: momentum.y * decay)
-        if hypot(momentum.x, momentum.y) < 20 { stopMomentum() }
-    }
-
-    private func stopMomentum() {
-        momentumLink?.invalidate()
-        momentumLink = nil
-        momentum = .zero
-    }
+    private func stopMomentum() { scrollDriver.cancel() }
 
     // MARK: Keyboard — the software keyboard through UITextInput, hardware keys through presses.
 
@@ -627,6 +743,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func send(_ edits: [TypingBuffer.Edit]) {
+        guard !holdsGameInput else { return }
         session?.edit(edits, in: remoteWindow)
     }
 
@@ -634,6 +751,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     public override var sendsMarkedTextAsPreedit: Bool { session?.composesText ?? false }
 
     public override func sendPreedit(_ text: String, selection: NSRange) {
+        guard !holdsGameInput else { return }
         session?.compose(text, selection: selection, in: remoteWindow)
     }
 
@@ -652,11 +770,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func sendKey(_ stroke: KeyStroke, modifiers: [String]) {
+        guard !holdsGameInput else { return }
         session?.key(stroke, pressed: true, in: remoteWindow, extraModifiers: modifiers)
         session?.key(stroke, pressed: false, in: remoteWindow, extraModifiers: modifiers)
     }
 
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // Keys the game's page left unhandled travel on up the responder chain, not to the computer.
+        guard !holdsGameInput else { return super.pressesBegan(presses, with: event) }
         resetTyping()
         var unhandled = Set<UIPress>()
         for press in presses {
@@ -670,6 +791,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard !holdsGameInput else { return super.pressesEnded(presses, with: event) }
         var unhandled = Set<UIPress>()
         for press in presses {
             if let (stroke, modifiers) = Self.stroke(for: press) {
@@ -724,13 +846,11 @@ private final class DisplayLinkTarget: NSObject {
             pacer.displayWillRefresh(view.displayID, targetTimestamp: link.targetTimestamp)
         }
         view.checkFocus()
+        view.adoptSurroundingText()
+        view.layoutGame()
+        view.layoutGPUStream()
         view.layoutVideos()
         view.present()
-    }
-
-    @MainActor @objc func momentumTick(_ link: CADisplayLink) {
-        guard let view else { link.invalidate(); return }
-        view.momentumStep(link.targetTimestamp - link.timestamp)
     }
 }
 #endif

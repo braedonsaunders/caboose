@@ -5,12 +5,14 @@ import SwiftUI
 /// agent as the next turn of one session, so it always has the whole conversation; while it
 /// works, what you send waits for its turn to end. New Chat starts a fresh session, and the
 /// chat list holds the earlier ones. Other chats still working are pinned along the top.
+/// Tools, in the toolbar, is the computer's MCP Library: servers every agent on it can use.
 struct AgentsScreen: View {
     @Environment(AppModel.self) private var model
-    @State private var connectingModel = false
+    @Environment(\.shellTabPlacement) private var placement
     @State private var showingChats = false
     @State private var showingLibrary = false
     @State private var showingModels = false
+    @State private var showingTools = false
     @AppStorage(AskTarget.key) private var target = ""
 
     var body: some View {
@@ -27,15 +29,19 @@ struct AgentsScreen: View {
                     AgentThreadView(taskID: chat.id)
                         .id(chat.id)
                 } else {
-                    NewChat(connectModel: { connectingModel = true })
+                    NewChat()
                         .background { AgentReadingBackground() }
-                        .safeAreaBar(edge: .bottom) { ChatComposer(task: nil) { connectingModel = true } }
+                        .safeAreaBar(edge: .bottom) {
+                            ChatComposer(task: nil)
+                                .padding(.top, 12)
+                        }
                         .navigationTitle("Agents")
                 }
             }
             .safeAreaBar(edge: .top) { LiveStrip(excluding: chat?.id) { agents.currentChat = $0 } }
             .background { ShellBackground() }
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarVisibility(placement == .sidebar ? .hidden : .automatic, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Chats", systemImage: "list.bullet") { showingChats = true }
@@ -47,6 +53,9 @@ struct AgentsScreen: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Teammates and Routines", systemImage: "person.2") { showingLibrary = true }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Tools", systemImage: "puzzlepiece.extension") { showingTools = true }
                 }
                 if chat != nil || agents.library.selectedProfile == nil {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -60,15 +69,33 @@ struct AgentsScreen: View {
                 ComputerToolbar()
             }
         }
+        .shellRailActions {
+            if let chat {
+                if chat.isRunning {
+                    if let window = agents.seat?.windows.values.filter({ !$0.isAuxiliary }).sorted(by: { $0.id < $1.id }).last {
+                        Button("Watch", systemImage: "eye") { model.presentAgentWindow(window.id) }
+                    }
+                    Button("Stop", systemImage: "stop", role: .destructive) { Task { await agents.cancel(chat) } }
+                } else if let summary = chat.summary, !summary.isEmpty {
+                    Button("Copy Answer", systemImage: "doc.on.doc") { UIPasteboard.general.string = summary }
+                }
+            }
+            Button("Chats", systemImage: "list.bullet") { showingChats = true }
+            Button("New Chat", systemImage: "square.and.pencil") { agents.currentChat = nil }
+            Button("Teammates and Routines", systemImage: "person.2") { showingLibrary = true }
+            Button("Tools", systemImage: "puzzlepiece.extension") { showingTools = true }
+            Button("Model", systemImage: "cpu") { showingModels = true }
+            Button("Agent Settings", systemImage: "slider.horizontal.3") { model.showAgentSettings = true }
+        }
         .alert("Agent Action Failed", isPresented: Binding(get: { agents.lastError != nil }, set: { if !$0 { agents.lastError = nil } })) {
             Button("OK") { agents.lastError = nil }
         } message: { Text(agents.lastError ?? "") }
-        .sheet(isPresented: $connectingModel) { ConnectModelView().environment(model) }
         .sheet(isPresented: $showingChats) { ChatList().environment(model) }
         .sheet(isPresented: $showingModels) {
             AgentModelPicker(agentID: chat?.agent ?? (agents.listing(target)?.isInstalled == true ? target : agents.defaultAgent ?? ""), taskID: chat?.id).environment(model)
         }
         .sheet(isPresented: $showingLibrary) { AgentLibraryView().environment(model) }
+        .sheet(isPresented: $showingTools) { McpLibrary().environment(model) }
         .onChange(of: agents.focusedTask, initial: true) { _, id in
             guard let id else { return }
             agents.currentChat = id
@@ -82,6 +109,8 @@ private struct ChatList: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
+    @State private var deleting: AgentCenter.Task?
+    @State private var deletionError: String?
 
     var body: some View {
         let agents = model.agents
@@ -109,6 +138,11 @@ private struct ChatList: View {
                         TaskStatusPill(task: task)
                     }
                 }
+                .disabled(agents.deletingChats.contains(task.id))
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button("Delete", role: .destructive) { deleting = task }
+                        .disabled(agents.deletingChats.contains(task.id))
+                }
                 .foregroundStyle(.primary)
                 .listRowBackground(task.id == agents.currentChat ? Color.accentColor.opacity(0.12) : nil)
             }
@@ -117,6 +151,22 @@ private struct ChatList: View {
             }
             .searchable(text: $search, prompt: "Search chats and agents")
             .refreshable { await agents.refresh() }
+            .confirmationDialog(deleting?.isRunning == true ? "Stop and delete this chat?" : "Delete this chat?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+                if let task = deleting {
+                    Button(task.isRunning ? "Stop and Delete" : "Delete Chat", role: .destructive) {
+                        Task {
+                            do { try await agents.deleteChat(task, stop: task.isRunning) }
+                            catch { deletionError = error.localizedDescription }
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) { deleting = nil }
+            } message: {
+                Text("The conversation and queued messages are permanently deleted from this computer. Files created by the agent are kept.")
+            }
+            .alert("Couldn’t Delete Chat", isPresented: Binding(get: { deletionError != nil }, set: { if !$0 { deletionError = nil } })) {
+                Button("OK", role: .cancel) { deletionError = nil }
+            } message: { Text(deletionError ?? "") }
             .navigationTitle("Chats")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -182,7 +232,6 @@ private struct LiveStrip: View {
 private struct NewChat: View {
     @Environment(AppModel.self) private var model
     @AppStorage(AskTarget.key) private var target = ""
-    let connectModel: () -> Void
 
     var body: some View {
         let agents = model.agents
@@ -191,7 +240,7 @@ private struct NewChat: View {
         ScrollView {
             VStack(spacing: 18) {
                 if profile == nil && (agents.defaultAgent == nil || agents.installedAgents.isEmpty) {
-                    SetupCard(connectModel: connectModel)
+                    SetupCard()
                 }
                 Group {
                     if let profile { AgentAvatar(name: profile.name, size: 72) } else if let agent { AgentAvatar(name: agent.name, size: 72) } else { CabooseAvatar(size: 72) }
@@ -213,8 +262,8 @@ private struct NewChat: View {
                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                             agents.draft = suggestion.text
                         } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: suggestion.symbol).font(.title3).foregroundStyle(Brand.amber).frame(width: 28)
+                            HStack(spacing: 10) {
+                                Image(systemName: suggestion.symbol).font(.body).foregroundStyle(Brand.amber).frame(width: 24)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(suggestion.title).font(.subheadline.weight(.semibold))
                                     Text(suggestion.detail).font(.caption).foregroundStyle(.secondary)
@@ -223,7 +272,8 @@ private struct NewChat: View {
                                 Image(systemName: "arrow.up.left").font(.caption).foregroundStyle(.tertiary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 14).padding(.vertical, 13)
+                            .padding(.horizontal, 12).padding(.vertical, 9)
+                            .frame(minHeight: 44)
                         }
                         .buttonStyle(.plain)
                         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
@@ -232,6 +282,7 @@ private struct NewChat: View {
                 .frame(maxWidth: 420)
             }
             .padding(.horizontal, 16)
+            .padding(.bottom, 16)
             .frame(maxWidth: 760)
             .frame(maxWidth: .infinity)
         }
@@ -248,7 +299,6 @@ private struct NewChat: View {
 /// Shown until a computer agent can take work: connect a model with a key, or sign in to one.
 private struct SetupCard: View {
     @Environment(AppModel.self) private var model
-    let connectModel: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -257,12 +307,10 @@ private struct SetupCard: View {
             Text("Agents run inside your computer with your own model. Paste an OpenRouter key to use any model — Claude, GPT, Gemini, Grok, Llama — or an Anthropic or OpenAI key. Or sign in to Claude, Codex or another agent with your account.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            HStack {
-                Button(action: connectModel) { Label("Connect a Model", systemImage: "key") }
-                    .buttonStyle(.glassProminent)
-                Button { model.showAgentSettings = true } label: { Text("Sign In Instead") }
-                    .buttonStyle(.glass)
+            Button { model.showAgentSettings = true } label: {
+                Label("Set Up an Agent", systemImage: "slider.horizontal.3")
             }
+            .buttonStyle(.glassProminent)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

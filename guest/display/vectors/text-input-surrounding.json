@@ -1,0 +1,8 @@
+{
+  "name": "text-input-surrounding",
+  "description": "The application's text around the caret: 'Héllo wor|ld', the caret after 'wor' (byte 10).",
+  "messages": [
+    {"direction": "server", "type": "text_input", "type_id": 34, "fields": {"id": 7, "anchor": 10, "cursor": 10, "enabled": true, "purpose": "normal", "surrounding": "Héllo world"}}
+  ],
+  "hex": "2246000000a66269640766616e63686f720a66637572736f720a67656e61626c6564f567707572706f7365666e6f726d616c6b737572726f756e64696e676c48c3a96c6c6f20776f726c64"
+}

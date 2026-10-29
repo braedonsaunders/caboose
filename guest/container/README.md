@@ -14,7 +14,7 @@ vendor), an NVIDIA GPU on Linux through the NVIDIA container toolkit, and Linux 
 | `Dockerfile` | The image. A first stage compiles Caboose Display and the VA-API passthrough driver; the second installs Debian packages, `guest/image/apps.sh` and the guest components. Built with `guest/` as the context. |
 | `caboose-session` | The session script the host runs with `docker exec` (installed as `/usr/local/bin/caboose-session`). |
 | `chromium-gpu` | Chromium flags for the display and GPU in use (installed as `/etc/chromium.d/caboose-gpu`). |
-| `chromium-seccomp.json` | An optional seccomp profile for Docker hosts that block Chromium's sandbox. |
+| `caboose-seccomp.json` | The seccomp profile the host gives each container, so Chromium's and Flatpak's sandboxes can start. |
 | `check.sh` | A check for a running computer's encoders and sound. |
 
 ## Build
@@ -37,7 +37,8 @@ the agent runner ([`guest/agentd`](../agentd/README.md)), the file service
 ([`guest/terminal`](../terminal/README.md)), notifications
 ([`guest/notifications`](../notifications/README.md)), phone handoff and the `iPhone` printer
 ([`guest/phone`](../phone/README.md)), media handoff
-([`guest/media-handoff`](../media-handoff/README.md)), and the WhiteSur theme. Its
+([`guest/media-handoff`](../media-handoff/README.md)), `caboose-game-run` and the shipped game
+bundles ([`guest/game`](../game/README.md)), and the WhiteSur theme. Its
 environment switches on apps' accessibility trees (`ACCESSIBILITY_ENABLED`,
 `GNOME_ACCESSIBILITY`, `QT_LINUX_ACCESSIBILITY_ALWAYS_ON`). The container's command is
 `sleep infinity`; the host starts the session with `caboose-session`.
@@ -79,6 +80,8 @@ libraries.
 
 The host runs `caboose-session` as root through `docker exec`. Everything it starts for the
 owner runs as `caboose`, and every command is safe to repeat.
+Headless agent wakes start the file and terminal services without starting `start`; the
+owner's session and printing begin on interactive promotion.
 
 | Command | What it does |
 | --- | --- |
@@ -108,13 +111,38 @@ ANGLE over Mesa D3D12. Where the launch environment selects the Caboose VA-API d
 (hosts with a render node), Chromium decodes video through it, so a video reaches the phone
 as its own stream.
 
-Chromium keeps its sandbox enabled. On Docker hosts whose default seccomp policy blocks
-Chromium's namespace sandbox, add `--security-opt seccomp=<absolute path to
-guest/container/chromium-seccomp.json>` to `CABOOSE_CONTAINER_ARGS`. The profile is based on
-the [Moby seccomp v0.2.1 default](https://github.com/moby/profiles/blob/seccomp/v0.2.1/seccomp/default.json)
-(Apache-2.0), with `clone` and `unshare` allowed for user, PID and network namespaces; mount,
-UTS, IPC and cgroup namespace creation stays blocked. Review it against your Docker version
-and security requirements.
+Chromium keeps its sandbox enabled.
+
+### Sandboxes and seccomp
+
+Chromium's sandbox and Flatpak's (bubblewrap) create user, PID, network, IPC, UTS and mount
+namespaces and build each sandbox's root with `mount` and `pivot_root` inside them. Docker's
+default seccomp policy refuses those calls to a process without `CAP_SYS_ADMIN`. The host
+starts every new container with `--security-opt seccomp=caboose-seccomp.json`, unless
+`CABOOSE_CONTAINER_ARGS` names a seccomp policy of its own. The profile is the
+[Moby seccomp v0.2.1 default](https://github.com/moby/profiles/blob/seccomp/v0.2.1/seccomp/default.json)
+(Apache-2.0) with `clone` and `unshare` allowed for any namespace and `mount`, `umount2` and
+`pivot_root` allowed. `setns` is allowed only with exactly `CLONE_NEWUSER` or
+`CLONE_NEWPID` for Flatpak portal subprocesses; type zero, combined masks and other types
+remain denied without `CAP_SYS_ADMIN`. The kernel still checks namespace ownership and
+capabilities; the container's root cannot enter the host's namespaces. A container
+created before this profile keeps its own policy; recreate it (its home volume is kept) to
+run Flatpak apps. On hosts that confine containers with Docker's default AppArmor profile,
+which denies `mount`, Flatpak's sandbox cannot start; the Library says so beside each Flathub
+app.
+
+Docker also masks parts of the container's `/proc`, and the kernel then refuses a sandbox a
+fresh `/proc` of its own. The image diverts `/usr/bin/bwrap` to `/usr/bin/bwrap.distrib` and
+installs `guest/flatpak/caboose-bwrap` in its place, which gives each sandbox the container's
+`/proc` read-only and drops bubblewrap's sysctl-based user-namespace lock, which needs the fresh
+one; Flatpak's seccomp filter still refuses apps every way to make or join a user namespace.
+What this costs is in `docs/architecture.md` § Catalog (Flatpak in a container).
+
+### Shared runtimes
+
+New containers mount the Docker volume `caboose-depot` read-only at `/var/lib/caboose/depot`:
+the host's shared Flatpak runtimes (`docs/architecture.md` § Runtime depot). Only the host's
+builder, a throwaway container from this image, writes it.
 
 ### Parking and restarts
 
@@ -122,7 +150,7 @@ Parking freezes the container (`docker pause`): memory stays in RAM and waking i
 but only while Docker (and, on Windows, WSL) keeps running. After a Docker, WSL or host
 restart the session is gone and the next wake starts it fresh; the home volume persists. A
 cold restart from the app or console stops and starts the same container, so installed
-packages and the catalog's rollback cache in its writable layer survive. Removing or
+packages in its writable layer survive. Removing or
 replacing the container discards them; back up the home volume separately. To pick up a new
 image, remove the container and wake the computer again; the home volume is kept.
 
@@ -149,6 +177,8 @@ Other checks for this image:
   handoff.
 - `docker exec -u root caboose-owner bash -s < guest/phone/check.sh` checks the phone
   commands and printer; it consumes pending handoffs.
+- `docker exec -i -u root caboose-owner bash -s -- --here < guest/game/check.sh` checks game
+  handoff against a private display instance.
 - `guest/notifications/check-container.sh` checks the notification monitor and separate
   session buses in a disposable container.
 - `guest/desktop-mcp/check-a11y.sh` runs both Caboose Display instances and the
@@ -158,3 +188,13 @@ Other checks for this image:
 
 The image builds natively on amd64 and arm64. Its app downloads and VA-API driver path
 match that architecture. The release tag selects the matching image automatically.
+
+The session bus is probed before reuse. A socket left behind by a stopped container is
+replaced only when connecting reports missing or refused; other errors stop startup.
+Run `python3 guest/container/test-session-bus.py` from the repository root to check the probe.
+
+The system bus is probed before reuse, because `/run` survives a container stop. Only a
+missing or refused socket with no live recorded PID permits removing the stale socket and
+pidfile. Other failures require operator attention. Existing-computer component updates
+install the current `caboose-session` script for container computers. Run
+`python3 guest/container/test-system-bus.py` to check the recovery policy.

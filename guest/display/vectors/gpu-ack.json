@@ -1,0 +1,8 @@
+{
+  "name": "gpu-ack",
+  "description": "The client has consumed stream 1 up to byte 65536.",
+  "messages": [
+    {"direction": "client", "type": "gpu.ack", "type_id": 150, "fields": {"id": 1, "offset": 65536}}
+  ],
+  "hex": "9611000000a262696401666f66667365741a00010000"
+}

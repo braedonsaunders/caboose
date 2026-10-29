@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildInviteLink, buildPairingLink, computeSettingsPatch, formatPairingCode, readSessionToken,
+  CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildInviteLink, buildPairingLink, computeSettingsPatch, settingsSavePatch, formatPairingCode, readSessionToken,
   validateSettingsInput, willRequireColdRestart, writeSessionToken, type ComputerSettings,
 } from './api.js'
 import { navigationGroups, parseRoute, routeHref, sidebarPath } from './navigation.js'
 import { quotaDraft, quotasFromDraft } from './tenants.js'
-import { availableActions, idleChoices, memoryChoices } from './state.js'
+import { availableActions, idleChoices, memoryChoices, stateLabel } from './state.js'
 
 const settings: ComputerSettings = { name: 'Studio', memoryMb: 4096, vcpus: 2, idleMs: 600_000 }
 
@@ -25,6 +25,14 @@ describe('settings', () => {
   it('sends only what changed', () => {
     expect(computeSettingsPatch(settings, { ...settings, name: ' Studio ', vcpus: 4 })).toEqual({ vcpus: 4 })
     expect(computeSettingsPatch(settings, settings)).toEqual({})
+  })
+
+  it('does not send a stale preset with an unrelated edit', () => {
+    const external = { ...settings, memoryMb: 8192, vcpus: 8 }
+    const nameOnly = computeSettingsPatch(external, { ...external, name: 'New name' })
+    expect(settingsSavePatch(nameOnly, 'standard')).toEqual({ name: 'New name' })
+    expect(settingsSavePatch({ name: 'New name', memoryMb: 4096, vcpus: 4 }, 'standard')).toEqual({ name: 'New name', size: 'standard' })
+    expect(settingsSavePatch({ vcpus: 3 }, 'custom')).toEqual({ vcpus: 3 })
   })
 
   it('knows when new resources need a cold restart', () => {
@@ -222,6 +230,8 @@ describe('navigation and actions', () => {
     const capabilities = { restart: true }
     expect(availableActions({ state: 'parked', capabilities })).toEqual({ wake: true, park: false, restart: true })
     expect(availableActions({ state: 'running', capabilities })).toEqual({ wake: false, park: true, restart: true })
+    expect(availableActions({ state: 'frozen', capabilities })).toEqual({ wake: true, park: true, restart: true })
+    expect(stateLabel('frozen')).toBe('Sleeping')
     expect(availableActions({ state: 'restarting', capabilities })).toEqual({ wake: false, park: false, restart: false })
     expect(availableActions({ state: 'error', capabilities: { restart: false } })).toEqual({ wake: true, park: false, restart: false })
   })
@@ -242,16 +252,20 @@ describe('host surfaces', () => {
     await client.catalog()
     await client.startCatalogOperation('photocraft', 'install')
     await client.startCatalogOperation('photocraft', 'update')
-    await client.startCatalogOperation('photocraft', 'rollback')
-    await client.startCatalogOperation('photocraft', 'remove')
-    await client.installPack('creative-studio')
+    await client.startCatalogOperation('flathub-org.mozilla.firefox', 'remove')
+    await client.startCatalogOperation('flathub-org/odd id', 'install')
+    await client.discoverCatalog()
+    await client.discoverCatalog({ q: ' photo editor ', category: 'Video & Audio', offset: 40 })
+    await client.catalogStorefront()
     expect(seen.map(entry => [entry.method, entry.url])).toEqual([
       ['GET', '/v1/catalog'],
       ['POST', '/v1/catalog/photocraft/install'],
       ['POST', '/v1/catalog/photocraft/update'],
-      ['POST', '/v1/catalog/photocraft/rollback'],
-      ['DELETE', '/v1/catalog/photocraft'],
-      ['POST', '/v1/catalog/packs/creative-studio/install'],
+      ['DELETE', '/v1/catalog/flathub-org.mozilla.firefox'],
+      ['POST', '/v1/catalog/flathub-org%2Fodd%20id/install'],
+      ['GET', '/v1/catalog/discover?q='],
+      ['GET', '/v1/catalog/discover?q=photo+editor&category=Video+%26+Audio&offset=40'],
+      ['GET', '/v1/catalog/storefront'],
     ])
   })
 

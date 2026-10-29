@@ -74,6 +74,7 @@ export interface AgentTask {
 export type AgentEvent =
   | { type: 'agent.task.started'; id: string; agent: string; agentName?: string; prompt: string }
   | { type: 'agent.task.output'; id: string; kind: 'text' | 'tool' | 'error'; text: string }
+  | { type: 'agent.task.deleted'; id: string }
   | { type: 'agent.task.paused'; id: string }
   | { type: 'agent.task.resumed'; id: string }
   | { type: 'agent.task.finished'; id: string; status: TaskStatus; summary: string; signIn?: SignInMethod[] }
@@ -128,6 +129,11 @@ export interface AgentTaskOptions {
   /** Enables profile tools only after a host-owned binding is persisted. */
   toolJournal?: () => Promise<AgentToolJournal | null>
   craftServers?: () => Promise<Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }>>
+  /**
+   * Brings the computer's MCP Library up to date before a runner starts, and says whether new
+   * chats get it (the `caboose-library` server). Its secrets never enter the task's records.
+   */
+  mcpLibrary?: () => Promise<boolean>
   pollMs?: number
   /** Starts the agent seat's display; defaults to the microVM's systemd unit. */
   ensureSeat?: () => Promise<void>
@@ -152,6 +158,35 @@ if(!args.join(' ').includes('caboose-agentd.mjs run')||cwd!==d)throw Error('Cann
 try{process.kill(-pid,'SIGTERM')}catch(e){if(e.code==='ESRCH')return;throw e}
 for(let i=0;i<50;i++){try{const stat=fs.readFileSync('/proc/'+pid+'/stat','utf8');if(stat.slice(stat.lastIndexOf(')')+2).startsWith('Z'))return}catch(e){if(e.code==='ENOENT')return;throw e}await new Promise(r=>setTimeout(r,100))}
 throw Error('The previous agent session is still stopping; try again');
+})().catch(e=>{console.error(e.message);process.exitCode=1});`
+
+/** Durably unpublish history only after the identified runner group has exited. */
+export const DELETE_TASK = `// delete-agent-task
+const fs=require('fs'),p=require('path'),d=process.argv[1],gone=p.join(p.dirname(d),'.deleted-'+p.basename(d));
+function exists(f){try{return fs.lstatSync(f)}catch(e){if(e.code==='ENOENT')return null;throw e}}
+function members(group){return fs.readdirSync('/proc').filter(n=>/^\\d+$/.test(n)).filter(n=>{try{const s=fs.readFileSync('/proc/'+n+'/stat','utf8');const f=s.slice(s.lastIndexOf(')')+2).split(' ');return Number(f[2])===group&&f[0]!=='Z'}catch(e){if(e.code==='ENOENT'||e.code==='ESRCH')return false;throw e}})}
+(async()=>{
+if(exists(d)){
+if(!exists(d).isDirectory()||exists(d).isSymbolicLink())throw Error('Invalid chat directory');
+let pid;try{pid=Number(fs.readFileSync(d+'/pid','utf8').trim())}catch(e){if(e.code!=='ENOENT')throw e}
+if(pid!==undefined){
+if(!Number.isSafeInteger(pid)||pid<2)throw Error('Invalid runner pid');
+const live=members(pid);
+if(live.length){
+let args,cwd;try{args=fs.readFileSync('/proc/'+pid+'/cmdline','utf8');cwd=fs.readlinkSync('/proc/'+pid+'/cwd')}catch{throw Error('Cannot identify this chat runner')}
+if(!args.includes('caboose-agentd.mjs run')||cwd!==d)throw Error('Cannot identify this chat runner');
+for(const signal of ['SIGTERM','SIGCONT'])try{process.kill(-pid,signal)}catch(e){if(e.code!=='ESRCH')throw e}
+for(let i=0;i<50&&members(pid).length;i++)await new Promise(r=>setTimeout(r,100));
+if(members(pid).length)throw Error('The agent is still stopping; try again');
+}}
+}
+fs.mkdirSync(gone,{recursive:true});const fd=fs.openSync(p.dirname(d),'r');try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}
+if(exists(gone)&&exists(d)){
+if(!exists(gone).isDirectory()||exists(gone).isSymbolicLink())throw Error('Invalid deleted chat directory');
+for(const name of ['prompt.txt','task.json','transcript.jsonl','draft.json','delivery.json','initial-prompt.json','session','models.json','requested-model.json','agent.log','stderr.log','pid','exit-code','agent','agent-name','approval-mode','turns','profile-id','profile-instructions.txt','tool-turn','tool-mailbox','inbox','approvals','receipts','deliveries'])fs.rmSync(p.join(d,name),{recursive:true,force:true});
+for(const name of fs.readdirSync(d))if(/^(?:\\.delivery-input-[0-9a-f-]{36}\\.json|delivery\\.json\\.[0-9a-f-]{36}\\.tmp|\\.(?:models|draft)\\.json\\.[0-9]+\\.tmp)$/.test(name))fs.rmSync(p.join(d,name),{force:true});
+const fd=fs.openSync(d,'r');try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}
+}
 })().catch(e=>{console.error(e.message);process.exitCode=1});`
 
 const HOME = '/home/caboose'
@@ -197,6 +232,7 @@ const LAUNCH = [
  */
 export const START_SCRIPT = [
   'set -e',
+  '[ ! -e "$(dirname \"$1\")/.deleted-$(basename \"$1\")" ] || { echo "task was deleted" >&2; exit 1; }',
   'mkdir -p "${11}/inbox" "${11}/approvals"',
   'cd "${11}"',
   'printf %s "$2" > prompt.txt && printf %s "$3" > agent && printf %s "$4" > agent-name && printf %s "$5" > approval-mode && printf 1 > turns',
@@ -249,7 +285,7 @@ const CANCEL_SCRIPT = [
 ].join('\n')
 
 type Output = { kind: 'text' | 'tool' | 'error'; text: string }
-export interface TurnResult { uncertain?: boolean; turn: number; status: 'succeeded' | 'failed' | 'cancelled'; summary: string; signIn?: SignInMethod[] }
+export interface TurnResult { finishedAt?: string; uncertain?: boolean; turn: number; status: 'succeeded' | 'failed' | 'cancelled'; summary: string; signIn?: SignInMethod[] }
 
 /**
  * Turns one line of the runner's transcript into display events, the start of a turn, or a
@@ -259,6 +295,8 @@ export function interpretLine(line: string): { outputs: Output[]; turn?: number;
   let event: any
   try { event = JSON.parse(line) } catch { return { outputs: [] } }
   const turn = Number.isSafeInteger(event?.turn) ? event.turn as number : undefined
+  const timestamp = typeof event?.at === 'string' && event.at.length <= 40 ? Date.parse(event.at) : NaN
+  const completion = Number.isFinite(timestamp) && timestamp <= Date.now() ? { finishedAt: new Date(timestamp).toISOString() } : {}
   switch (event?.type) {
     case 'user':
       return turn === undefined ? { outputs: [] } : { outputs: [], turn }
@@ -273,17 +311,17 @@ export function interpretLine(line: string): { outputs: Output[]; turn?: number;
       if (turn === undefined) return { outputs: [] }
       const stop = event.stopReason
       const status = stop === 'end_turn' ? 'succeeded' : stop === 'cancelled' ? 'cancelled' : 'failed'
-      return { outputs: [], result: { turn, status, summary: typeof event.summary === 'string' && event.summary ? event.summary : 'Done.' } }
+      return { outputs: [], result: { ...completion, turn, status, summary: typeof event.summary === 'string' && event.summary ? event.summary : 'Done.' } }
     }
     case 'turn_failed': {
       if (turn === undefined) return { outputs: [] }
       const message = typeof event.message === 'string' && event.message ? event.message : 'The agent failed.'
-      return { outputs: [{ kind: 'error', text: message }], result: { turn, status: 'failed', summary: message, ...(event.uncertain === true ? { uncertain: true } : {}) } }
+      return { outputs: [{ kind: 'error', text: message }], result: { ...completion, turn, status: 'failed', summary: message, ...(event.uncertain === true ? { uncertain: true } : {}) } }
     }
     case 'auth_required': {
       if (turn === undefined) return { outputs: [] }
       const signIn = readSignIn(event.authMethods)
-      return { outputs: [], result: { turn, status: 'failed', summary: '', signIn } }
+      return { outputs: [], result: { ...completion, turn, status: 'failed', summary: '', signIn } }
     }
     default:
       return { outputs: [] }
@@ -392,6 +430,7 @@ interface Tracked {
   journal: DeliveryJournal
   journalError?: string
   completedTurn?: number
+  deleting?: boolean
   replyChain?: Promise<unknown>
 }
 
@@ -405,6 +444,7 @@ export class AgentTasks {
   private toolPolling = false
   private toolWork?: Promise<void>
   private readonly craftServers?: AgentTaskOptions["craftServers"]
+  private readonly mcpLibrary?: AgentTaskOptions["mcpLibrary"]
   private readonly pollMs: number
   private readonly ensureSeat?: () => Promise<void>
   private readonly idleMs: number
@@ -419,6 +459,7 @@ export class AgentTasks {
     this.resolver = options.resolver
     this.toolJournal = options.toolJournal
     this.craftServers = options.craftServers
+    this.mcpLibrary = options.mcpLibrary
     this.pollMs = options.pollMs ?? 1000
     this.ensureSeat = options.ensureSeat
     this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS
@@ -493,13 +534,15 @@ export class AgentTasks {
         await asCaboose(guest, 'mv -- "$1.part" "$1" && sync -f "$1"', [staged])
       }
       const craftServers = input.craftMcp === false ? [] : await this.craftServers?.() ?? []
+      // A Library that cannot be brought up to date is left out of this chat, not fatal to it.
+      const library = await this.mcpLibrary?.().catch(error => { console.error('MCP Library unavailable for a new chat:', error instanceof Error ? error.message : error); return false }) ?? false
       if (profile) {
         await asCaboose(guest, 'mkdir -p -- "$1"', [profile.workspace])
         await writeGuestFile(guest, `${staging}/profile-id`, Buffer.from(profile.id))
         await writeGuestFile(guest, `${staging}/profile-instructions.txt`, Buffer.from(profile.instructions))
       }
       const config = JSON.stringify({ agent: launch, model: requestedModel, cwd: profile?.workspace ?? dir, approvals, idleMs: this.idleMs, craftServers,
-        ...(profile ? { profileId: profile.id } : {}), ...(toolJournal ? { agentTools: true } : {}) })
+        ...(library ? { mcpLibrary: true } : {}), ...(profile ? { profileId: profile.id } : {}), ...(toolJournal ? { agentTools: true } : {}) })
       const message = JSON.stringify({ type: 'prompt', turn: 1, deliveryId: journal.intent!.id, text: prompt,
         ...(files.length ? { attachments: files.map((file, index) => ({ path: attachments[index], name: file.name, ...(file.type ? { mimeType: file.type } : {}) })) } : {}) })
       await writeGuestFile(guest, `${staging}/initial-prompt.json`, Buffer.from(message))
@@ -577,7 +620,10 @@ export class AgentTasks {
   }
 
   private serial<T>(entry: Tracked, step: () => Promise<T>): Promise<T> {
-    const operation = (entry.replyChain ?? Promise.resolve()).catch(() => {}).then(step)
+    const operation = (entry.replyChain ?? Promise.resolve()).catch(() => {}).then(() => {
+      if (this.tracked.get(entry.task.id) !== entry) throw new AgentNotFoundError()
+      return step()
+    })
     entry.replyChain = operation
     return operation
   }
@@ -693,6 +739,8 @@ export class AgentTasks {
   /** The queue remains in the journal until positive claim/transcript evidence retires it. */
   private async sendTurn(entry: Tracked, cancelledCurrent = false): Promise<AgentTask> {
     if (entry.task.delivery) throw new AgentConflictError(entry.task.delivery.message)
+    // A runner this turn starts reads the Library's access then; keep it current.
+    await this.mcpLibrary?.().catch(() => false)
     if (entry.journal.intent) {
       const futureIntent = entry.journal.intent.turn > entry.task.turns
       await this.recoverDelivery(entry)
@@ -838,13 +886,14 @@ export class AgentTasks {
     if (input.optionId !== undefined && (typeof input.optionId !== 'string' || !input.optionId || input.optionId.length > 200)) {
       throw new AgentInputError('optionId must be one of the request\'s option ids')
     }
-    if (!isLive(entry.task.status)) return false
-    const guest = this.guest()
-    if (!guest) throw new AgentUnavailableError()
-    const decision = JSON.stringify({
-      allow: input.allow,
-      ...(typeof input.message === 'string' && input.message.trim() ? { message: input.message.trim() } : {}),
-      ...(typeof input.optionId === 'string' ? { optionId: input.optionId } : {}),
+    return this.serial(entry, async () => {
+      if (!isLive(entry.task.status)) return false
+      const guest = this.guest()
+      if (!guest) throw new AgentUnavailableError()
+      const decision = JSON.stringify({
+        allow: input.allow,
+        ...(typeof input.message === 'string' && input.message.trim() ? { message: input.message.trim() } : {}),
+        ...(typeof input.optionId === 'string' ? { optionId: input.optionId } : {}),
     })
     const out = await asCaboose(guest, [
       'cd "$1/approvals" 2>/dev/null || exit 0',
@@ -854,8 +903,9 @@ export class AgentTasks {
     entry.pending = entry.pending.filter(request => request.id !== requestId)
     this.syncPending(entry)
     if (out.trim() !== 'resolved') return false
-    this.emit({ type: 'agent.task.approval.resolved', id, requestId, allow: input.allow })
+    this.emit({ type: 'agent.task.approval.resolved', id, requestId, allow: input.allow === true })
     return true
+    })
   }
 
   /**
@@ -888,6 +938,29 @@ export class AgentTasks {
     return this.serial(entry, () => this.cancelTurn(entry, true))
   }
 
+  /** Removes this computer's history; a live chat requires explicit stop-and-delete. */
+  async delete(id: string, stop = false): Promise<boolean> {
+    if (!TASK_ID.test(id)) throw new AgentNotFoundError()
+    await this.startChain.catch(() => {})
+    await this.restore()
+    const entry = this.tracked.get(id)
+    const remove = async () => {
+      const guest = this.guest()
+      if (!guest) throw new AgentUnavailableError()
+      if (entry && (isLive(entry.task.status) || entry.queue.length) && !stop) throw new AgentConflictError('Stop the agent before deleting this chat')
+      if (entry) entry.deleting = true
+      try {
+        await this.toolWork
+        await asCaboose(guest, 'exec node -e "$2" "$1"', [`${HOME}/Agents/${id}`, DELETE_TASK], 20_000)
+        this.tracked.delete(id)
+        this.releases.get(id)?.(); this.releases.delete(id)
+        this.emit({ type: 'agent.task.deleted', id })
+        return true
+      } finally { if (entry) entry.deleting = false }
+    }
+    return entry ? this.serial(entry, remove) : remove()
+  }
+
   private async cancelTurn(entry: Tracked, drop: boolean): Promise<boolean> {
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
@@ -914,16 +987,17 @@ export class AgentTasks {
     const entry = this.tracked.get(id)
     const guest = this.guest()
     if (!entry || !TASK_ID.test(id) || !guest || entry.task.status !== (paused ? 'running' : 'paused')) return false
-    await guest.run('/bin/sh', ['-c', signal(paused ? 'STOP' : 'CONT'), 'sh', `${HOME}/Agents/${id}`], 15_000)
-    entry.task.status = paused ? 'paused' : 'running'
-    this.emit({ type: paused ? 'agent.task.paused' : 'agent.task.resumed', id })
-    return true
+    return this.serial(entry, async () => {
+      if (entry.task.status !== (paused ? 'running' : 'paused')) return false
+      await guest.run('/bin/sh', ['-c', signal(paused ? 'STOP' : 'CONT'), 'sh', `${HOME}/Agents/${id}`], 15_000)
+      entry.task.status = paused ? 'paused' : 'running'
+      this.emit({ type: paused ? 'agent.task.paused' : 'agent.task.resumed', id })
+      return true
+    })
   }
 
   private async prepareSeat(guest: AgentGuest): Promise<void> {
     await this.home?.ensure(guest)
-    if (this.ensureSeat) await this.ensureSeat().catch(error => console.error('Agent seat did not start:', error))
-    else await guest.run('/bin/sh', ['-c', 'systemctl start caboose-display-agent.service || true'], 30_000)
   }
 
   /**
@@ -936,8 +1010,9 @@ export class AgentTasks {
     if (this.restoring) return this.restoring
     const guest = this.guest()
     if (this.restored || !guest) return
+    const release = this.acquire()
     this.restoring = this.restoreId()
-    try { await this.restoring; this.restored = true } finally { this.restoring = undefined }
+    try { await this.restoring; this.restored = true } finally { this.restoring = undefined; release() }
     this.resume()
   }
 
@@ -1038,10 +1113,11 @@ export class AgentTasks {
   resume(): void {
     if (this.needsRecovery && !this.recovering) {
       this.needsRecovery = false
+      const release = this.acquire()
       this.recovering = Promise.all([...this.tracked.values()].map(entry => this.serial(entry, () => this.recoverDelivery(entry))))
         .then(() => { if ([...this.tracked.values()].some(entry => isLive(entry.task.status))) this.ensurePolling() })
         .catch(error => { this.needsRecovery = true; console.error('Agent recovery failed:', error) })
-        .finally(() => { this.recovering = undefined })
+        .finally(() => { this.recovering = undefined; release() })
     }
     if (!this.restored) void this.restore().catch(error => console.error('Agent recovery failed:', error))
     if ([...this.tracked.values()].some(entry => isLive(entry.task.status))) this.ensurePolling()
@@ -1072,7 +1148,7 @@ export class AgentTasks {
         ? [{ id: task.id, profileId: task.profileId, turn: task.turns }] : [])
       await pollAgentTools(guest, journal, live, task => {
         const current = this.tracked.get(task.id)?.task
-        return Boolean(this.timer && current?.status === 'running' && current.profileId === task.profileId && current.turns === task.turn)
+        return Boolean(!this.tracked.get(task.id)?.deleting && this.timer && current?.status === 'running' && current.profileId === task.profileId && current.turns === task.turn)
       })
     } catch (error) { console.error('Agent tool mailbox failed:', error) }
     finally { this.toolPolling = false }
@@ -1098,7 +1174,7 @@ export class AgentTasks {
       for (const entry of live) {
         const report = reports.get(entry.task.id)
         const version = versions.get(entry.task.id)!
-        if (report && isLive(entry.task.status) && entry.task.turns === version.turn && entry.offset === version.offset) this.apply(entry, report, chunk)
+        if (report && !entry.deleting && this.tracked.get(entry.task.id) === entry && isLive(entry.task.status) && entry.task.turns === version.turn && entry.offset === version.offset) this.apply(entry, report, chunk)
         if (!entry.replying) await entry.replyChain
       }
     } finally {
@@ -1160,15 +1236,15 @@ export class AgentTasks {
     entry.completedTurn = result.turn
     if (result.uncertain && entry.journal.intent) {
       entry.task.delivery = { turn: result.turn, state: 'uncertain', message: result.summary.slice(0, 2000) }
-      this.finish(entry, 'failed', result.summary, announce)
+      this.finish(entry, 'failed', result.summary, announce, undefined, false, result.finishedAt)
       if (announce) void this.serial(entry, () => this.uncertain(entry)).catch(error => console.error('Cannot persist uncertain delivery:', error))
       return
     }
     if (result.signIn) {
       const name = entry.task.agentName ?? entry.task.agent
-      return this.finish(entry, 'failed', `Sign in to ${name} first.`, announce, result.signIn)
+      return this.finish(entry, 'failed', `Sign in to ${name} first.`, announce, result.signIn, false, result.finishedAt)
     }
-    this.finish(entry, result.status, result.summary, announce, undefined, keepLease)
+    this.finish(entry, result.status, result.summary, announce, undefined, keepLease, result.finishedAt)
   }
 
   /** Announces new approval requests and forgets ones answered elsewhere. */
@@ -1213,11 +1289,13 @@ export class AgentTasks {
     else delete entry.task.pendingApproval
   }
 
-  private finish(entry: Tracked, status: TaskStatus, summary: string, announce = true, signIn?: SignInMethod[], keepLease = false): void {
+  private finish(entry: Tracked, status: TaskStatus, summary: string, announce = true, signIn?: SignInMethod[], keepLease = false, finishedAt?: string): void {
     if (!isLive(entry.task.status)) return
     this.setDraft(entry, null)
     entry.task.status = status
-    entry.task.finishedAt = new Date().toISOString()
+    // Restoring old history is not a new completion. Legacy records without a
+    // durable timestamp stay undated rather than resurfacing after every restart.
+    entry.task.finishedAt = finishedAt ?? (announce ? new Date().toISOString() : undefined)
     entry.task.summary = summary.slice(0, 2000)
     if (signIn) entry.task.signIn = signIn
     entry.pending = []
@@ -1377,6 +1455,7 @@ const TRANSCRIPT_SCRIPT = [
 const RESTORE_SCRIPT = [
   'cd "$1" 2>/dev/null || exit 0',
   'for d in ${2:-$(ls -1t)}; do',
+  '  [ ! -e ".deleted-$d" ] || continue',
   '  [ -f "$d/prompt.txt" ] || continue',
   '  pid=$(cat "$d/pid" 2>/dev/null); alive=0; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && alive=1',
   '  resumable=0; [ -f "$d/task.json" ] && resumable=1',

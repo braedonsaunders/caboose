@@ -8,7 +8,6 @@ import SwiftUI
 struct AgentThreadView: View {
     @Environment(AppModel.self) private var model
     let taskID: String
-    @State private var connectingModel = false
     @State private var visibleTurns = 20
 
     var body: some View {
@@ -52,7 +51,7 @@ struct AgentThreadView: View {
                                 .glassEffect(.regular.tint(.yellow.opacity(0.1)), in: .rect(cornerRadius: 20))
                         }
                         if let methods = task.signIn, !methods.isEmpty, !task.isRunning {
-                            SignInRow(task: task, methods: methods) { connectingModel = true }
+                            SignInRow(task: task, methods: methods)
                         }
                         if agents.isLoading(taskID) && thread.turns.allSatisfy({ $0.items.isEmpty }) {
                             ProgressView().frame(maxWidth: .infinity)
@@ -66,7 +65,7 @@ struct AgentThreadView: View {
                 }
                 .defaultScrollAnchor(.bottom)
                 .scrollDismissesKeyboard(.interactively)
-                .safeAreaBar(edge: .bottom) { ChatComposer(task: task) { connectingModel = true } }
+                .safeAreaBar(edge: .bottom) { ChatComposer(task: task) }
                 .toolbar { toolbar(task) }
                 .navigationTitle(agents.title(of: task))
                 .navigationSubtitle(agents.name(of: task))
@@ -79,7 +78,6 @@ struct AgentThreadView: View {
         .background { AgentReadingBackground() }
         // Again once the task list arrives, for a thread opened from a notification before it did.
         .task(id: "\(taskID):\(agents.tasks.contains { $0.id == taskID })") { await agents.loadThread(taskID) }
-        .sheet(isPresented: $connectingModel) { ConnectModelView().environment(model) }
     }
 
     @ToolbarContentBuilder private func toolbar(_ task: AgentCenter.Task) -> some ToolbarContent {
@@ -90,16 +88,13 @@ struct AgentThreadView: View {
                 Button("Watch", systemImage: "eye") { model.presentAgentWindow(window.id) }
             }
         }
-        ToolbarItem(placement: .topBarTrailing) {
-            Menu {
-                if task.isRunning {
-                    Button("Stop", systemImage: "stop", role: .destructive) { Task { await agents.cancel(task) } }
-                } else if let summary = task.summary, !summary.isEmpty {
-                    Button("Copy Answer", systemImage: "doc.on.doc") { UIPasteboard.general.string = summary }
-                }
-                Button("Connect a Model…", systemImage: "key") { connectingModel = true }
-            } label: {
-                Label("More", systemImage: "ellipsis")
+        if task.isRunning {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Stop", systemImage: "stop", role: .destructive) { Task { await agents.cancel(task) } }
+            }
+        } else if let summary = task.summary, !summary.isEmpty {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Copy Answer", systemImage: "doc.on.doc") { UIPasteboard.general.string = summary }
             }
         }
     }

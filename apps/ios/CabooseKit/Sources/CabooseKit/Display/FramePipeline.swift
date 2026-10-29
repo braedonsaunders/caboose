@@ -2,6 +2,7 @@ import CoreGraphics
 import CoreVideo
 import Foundation
 import ImageIO
+import QuartzCore
 
 /// Decodes and applies one window's Caboose Display pictures, in order, off the main thread.
 ///
@@ -11,10 +12,15 @@ import ImageIO
 /// pictures that depend on the lost one are acked as failed without being decoded.
 final class FramePipeline: @unchecked Sendable {
     let windowID: Int
-    let surface = WindowSurface()
+    let surface: WindowSurface
     private let queue: DispatchQueue
     private let send: @Sendable (ClientMessage) -> Void
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
+    private let metrics: ConnectionMetrics?
+    /// Set by `close()` at once, so pictures still queued from a closed connection are
+    /// dropped instead of painting over what a later connection shows.
+    private let retiredLock = NSLock()
+    private var retired = false
     // On `queue`:
     private var decoder: (codec: DisplayCodec, decoder: PictureDecoder)?
     private var awaitingKeyframe = false
@@ -24,15 +30,34 @@ final class FramePipeline: @unchecked Sendable {
     /// and `rect` (window pixels). Tiles are in picture pixels and go through the same mapping.
     private var placement: (crop: CGRect, rect: CGRect)?
 
-    init(windowID: Int, width: Int, height: Int,
+    init(windowID: Int, width: Int, height: Int, metrics: ConnectionMetrics? = nil,
          makeDecoder: @escaping (DisplayCodec) -> PictureDecoder = FramePipeline.hardwareDecoder,
          send: @escaping @Sendable (ClientMessage) -> Void) {
         self.windowID = windowID
         self.send = send
         self.makeDecoder = makeDecoder
+        self.metrics = metrics
+        surface = WindowSurface()
         queue = DispatchQueue(label: "caboose.display.window.\(windowID)", qos: .userInteractive)
         surface.resize(width: width, height: height)
     }
+
+    /// The same window on a new connection to the same server: it paints on into the
+    /// closed pipeline's surface, on the closed pipeline's queue, so everything that one
+    /// still had queued runs (and is dropped) before the first new picture.
+    init(succeeding closed: FramePipeline, width: Int, height: Int, metrics: ConnectionMetrics?,
+         makeDecoder: @escaping (DisplayCodec) -> PictureDecoder, send: @escaping @Sendable (ClientMessage) -> Void) {
+        windowID = closed.windowID
+        surface = closed.surface
+        queue = closed.queue
+        self.send = send
+        self.makeDecoder = makeDecoder
+        self.metrics = metrics
+        showsLivePicture = true
+        surface.resize(width: width, height: height)
+    }
+
+    private var isRetired: Bool { retiredLock.withLock { retired } }
 
     static func hardwareDecoder(_ codec: DisplayCodec) -> PictureDecoder {
         switch codec {
@@ -43,17 +68,23 @@ final class FramePipeline: @unchecked Sendable {
     }
 
     func resize(width: Int, height: Int) {
-        queue.async { [surface] in surface.resize(width: width, height: height) }
+        queue.async { [self] in
+            // Metadata may precede the replacement picture. Keep the old picture's
+            // coordinate space until its successor is decoded, so overlays scale with it.
+            if !showsLivePicture { surface.resize(width: width, height: height) }
+        }
     }
 
-    /// Paints a cached frame, unless a live picture has already landed.
+    /// Paints a cached frame over the whole window, unless a live picture has already landed.
+    /// The kept picture is reduced, so it is scaled to the window's size rather than placed.
     func seed(_ image: CGImage) {
         queue.async { [self] in
-            if !showsLivePicture { surface.upload(image: image, x: 0, y: 0) }
+            if !showsLivePicture, !isRetired { surface.upload(image: image, into: CGRect(origin: .zero, size: surface.pixelSize)) }
         }
     }
 
     func close() {
+        retiredLock.withLock { retired = true }
         queue.async { [self] in
             decoder?.decoder.invalidate()
             decoder = nil
@@ -69,7 +100,10 @@ final class FramePipeline: @unchecked Sendable {
     }
 
     func frame(_ frame: EncodedFrame) {
+        let arrived = CACurrentMediaTime()
         queue.async { [self] in
+            guard !isRetired else { return }
+            let started = CACurrentMediaTime()
             let start = DispatchTime.now().uptimeNanoseconds
             var decoded = false
             if frame.keyframe || !awaitingKeyframe {
@@ -82,6 +116,8 @@ final class FramePipeline: @unchecked Sendable {
                 requestKeyframe(now: start)
             }
             DrawStatistics.shared.record(frame.codec.rawValue, failed: !decoded)
+            let finished = CACurrentMediaTime()
+            metrics?.picture(window: windowID, waited: started - arrived, took: finished - started, failed: !decoded, at: finished)
             let micros = decoded ? Int((DispatchTime.now().uptimeNanoseconds - start) / 1000) : -1
             send(.ack(window: windowID, ptsMicros: frame.ptsMicros, decodedMicros: micros))
         }
@@ -96,6 +132,9 @@ final class FramePipeline: @unchecked Sendable {
         do {
             // A picture the decoder holds back (none here: the server sends no B-frames) is not a failure.
             guard let picture = try decoder.decoder.decode(frame.data) else { return true }
+            if frame.rect.minX == 0, frame.rect.minY == 0 {
+                surface.resize(width: Int(frame.rect.width.rounded(.up)), height: Int(frame.rect.height.rounded(.up)))
+            }
             surface.upload(pixelBuffer: picture, crop: frame.crop, into: frame.rect)
             placement = (frame.crop, frame.rect)
             showsLivePicture = true
@@ -126,6 +165,7 @@ final class FramePipeline: @unchecked Sendable {
     /// picture, in picture pixels, drawn where that part of the picture is shown.
     func tile(_ tile: LosslessTile) {
         queue.async { [self] in
+            guard !isRetired else { return }
             guard let source = CGImageSourceCreateWithData(tile.data as CFData, nil),
                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
                 DrawStatistics.shared.record("tile-\(tile.format)", failed: true)

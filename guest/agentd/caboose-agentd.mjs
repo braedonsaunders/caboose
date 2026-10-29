@@ -31,7 +31,10 @@ const VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.ur
 const HOME = process.env.HOME || homedir()
 const AGENTS_DIR = join(HOME, '.local', 'share', 'caboose', 'agents')
 const DESKTOP_MCP = process.env.CABOOSE_DESKTOP_MCP ?? '/opt/caboose/desktop-mcp.mjs'
+const APPS_MCP = process.env.CABOOSE_APPS_MCP ?? '/opt/caboose/apps/apps-mcp.mjs'
 const AGENT_TOOLS = new URL('./agent-tools.mjs', import.meta.url).pathname
+const LIBRARY_MCP = new URL('./library-mcp.mjs', import.meta.url).pathname
+const LIBRARY_DESCRIPTOR = process.env.CABOOSE_MCP_LIBRARY ?? '/home/caboose/.local/state/caboose/mcp-library.json'
 const POLL_MS = Number(process.env.CABOOSE_AGENTD_POLL_MS) || 250
 const CANCEL_GRACE_MS = Number(process.env.CABOOSE_AGENTD_CANCEL_GRACE_MS) || 15_000
 const INITIALIZE_TIMEOUT_MS = Number(process.env.CABOOSE_AGENTD_INIT_TIMEOUT_MS) || 120_000
@@ -731,6 +734,7 @@ async function discoverModels(spec) {
 
 export const PRESENTATION_GUIDANCE = `Caboose displays your replies in a native iPhone/iPad chat and gives you the computer's tools.
 For an interactive chart, calculator, dashboard or animated widget, return a complete fenced inline-html block containing self-contained HTML with inline CSS, JavaScript and SVG. Use accessible controls and a responsive layout. No external dependencies, network requests, file access, popups or navigation are available inside a widget. Embed required data in the document after obtaining it with your computer tools. Keep each HTML block under 512 KiB. Use text or a downloadable file when a widget does not help.
+When the owner asks for an app, or for a tool, dashboard or game they will come back to, make a Caboose app instead of a widget: a web app in ~/Apps/<id>/ that gets its own icon in their Apps screen, its own window and saved data, and can run programs and use files. Read the app_guide tool (or run caboose-app guide) first, publish it with app_publish, and open it with app_open to check it on your display.
 Link downloadable computer files with Markdown links to absolute /home/caboose/... paths or home-relative paths. Use image Markdown for PNG/JPEG previews. Caboose authenticates these file previews; never include credentials in an artifact.
 An interactive widget may call window.Caboose.compose(message) to propose a follow-up in the native composer. This does not send it or run tools; the owner reviews and sends it. Describe the proposed action clearly on the control. Use the agent's computer tools for actual work, and report real outcomes.`
 
@@ -756,6 +760,9 @@ export class Task {
     this.requestedModel = config.model
     this.cwd = typeof config.cwd === 'string' && isAbsolute(config.cwd) ? config.cwd : this.dir
     this.agentTools = config.agentTools === true && typeof config.profileId === 'string' && existsSync(AGENT_TOOLS)
+    // The computer's MCP Library, if it had one when this chat started; which servers it holds
+    // is whatever the Library holds each time the agent loads its tools.
+    this.mcpLibrary = config.mcpLibrary === true && existsSync(LIBRARY_MCP)
     this.profileInstructions = ''
     if (config.profileId !== undefined) {
       if (typeof config.profileId !== 'string' || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(config.profileId)) throw new Error('Invalid profile id')
@@ -879,8 +886,13 @@ export class Task {
     const mcpServers = existsSync(DESKTOP_MCP)
       ? [{ name: 'caboose-desktop', command: process.execPath, args: [DESKTOP_MCP], env: seatEnv() }]
       : []
+    if (existsSync(APPS_MCP)) mcpServers.push({ name: 'caboose-apps', command: process.execPath, args: [APPS_MCP], env: seatEnv() })
     if (this.agentTools) mcpServers.push({ name: 'caboose-agent-tools', command: process.execPath, args: [AGENT_TOOLS, this.dir], env: [] })
     mcpServers.push(...this.craftServers)
+    if (this.mcpLibrary) {
+      if (existsSync(LIBRARY_DESCRIPTOR)) mcpServers.push({ name: 'caboose-library', command: process.execPath, args: [LIBRARY_MCP], env: [] })
+      else this.transcript.write({ type: 'notice', text: "This computer's MCP Library isn't available to this chat right now. Its servers are back once the Library is." })
+    }
     const previous = (await readFile(join(this.dir, 'session'), 'utf8').catch(() => '')).trim()
     const request = (method, params) => Promise.race([agent.connection.agent.request(method, params), agent.died])
     let continuity = 'new'

@@ -44,8 +44,10 @@ mkdir -p /usr/local/lib
 cp /usr/lib/$triplet/libeatmydata.so.1 /usr/local/lib/libeatmydata.so.1
 LD_PRELOAD=/usr/local/lib/libeatmydata.so.1 debootstrap --variant=minbase --arch="$arch" trixie "$work/root" https://deb.debian.org/debian
 for p in proc sys dev; do mount --rbind "/$p" "$work/root/$p"; mount --make-rslave "$work/root/$p"; done
-cp /builder/configure-guest.sh /builder/apps.sh "$work/root/tmp/"
+cp /builder/configure-guest.sh /builder/apps.sh /builder/desktop-apps.sh /builder/desktop-apps.tsv "$work/root/tmp/"
 cp -r /builder/components "$work/root/tmp/components"
+cp -r /builder/keyring "$work/root/tmp/keyring"
+cp -r /builder/container "$work/root/tmp/container"
 cp -r /builder/files "$work/root/tmp/files"
 cp -r /builder/terminal "$work/root/tmp/terminal"
 cp -r /builder/desktop-mcp "$work/root/tmp/desktop-mcp"
@@ -53,6 +55,11 @@ cp -r /builder/display "$work/root/tmp/caboose-display"
 cp -r /builder/agentd "$work/root/tmp/agentd"
 cp -r /builder/notifications "$work/root/tmp/notifications"
 cp -r /builder/phone "$work/root/tmp/phone"
+cp -r /builder/bridge "$work/root/tmp/bridge"
+cp -r /builder/flatpak "$work/root/tmp/flatpak"
+cp -r /builder/game "$work/root/tmp/game"
+cp -r /builder/gpu "$work/root/tmp/gpu"
+cp -r /builder/apps "$work/root/tmp/apps"
 cp -r /builder/media-handoff "$work/root/tmp/media-handoff"
 cp /etc/resolv.conf "$work/root/etc/resolv.conf"
 chroot "$work/root" /usr/bin/env LD_PRELOAD=/usr/local/lib/libeatmydata.so.1 /bin/bash /tmp/configure-guest.sh
@@ -60,17 +67,38 @@ kernel=$(printf '%s\n' "$work/root"/boot/vmlinuz-* | sort -V | tail -1)
 # Virtualization.framework takes the uncompressed ARM64 Image; Debian may gzip it.
 if [[ $arch == arm64 ]] && gzip -t "$kernel" 2>/dev/null; then gzip -dc "$kernel" > "$work/vmlinux"
 else cp "$kernel" "$work/vmlinux"; fi
-cp "$(printf '%s\n' "$work/root"/boot/initrd.img-* | sort -V | tail -1)" "$work/initrd"
 rm -f "$work/root/usr/local/lib/libeatmydata.so.1" "$work/root/etc/dpkg/dpkg.cfg.d/99-caboose-build" "$work/root/etc/dpkg/dpkg.cfg.d/99-build-speed"
-rm -rf "$work/root/tmp/components" "$work/root/tmp/notifications" "$work/root/tmp/desktop-mcp" "$work/root/tmp/caboose-display" "$work/root/tmp/agentd" "$work/root/tmp/files" "$work/root/tmp/terminal" "$work/root/tmp/phone" "$work/root/tmp/media-handoff"
-rm "$work/root/tmp/configure-guest.sh" "$work/root/tmp/apps.sh"
+rm -rf "$work/root/tmp/components" "$work/root/tmp/container" "$work/root/tmp/keyring" "$work/root/tmp/notifications" "$work/root/tmp/desktop-mcp" "$work/root/tmp/caboose-display" "$work/root/tmp/agentd" "$work/root/tmp/files" "$work/root/tmp/terminal" "$work/root/tmp/phone" "$work/root/tmp/bridge" "$work/root/tmp/flatpak" "$work/root/tmp/game" "$work/root/tmp/gpu" "$work/root/tmp/apps" "$work/root/tmp/media-handoff"
+rm "$work/root/tmp/configure-guest.sh" "$work/root/tmp/apps.sh" "$work/root/tmp/desktop-apps.sh" "$work/root/tmp/desktop-apps.tsv"
 # Complete update work after the final /usr changes to avoid a slow first boot.
 chroot "$work/root" /sbin/ldconfig
 chroot "$work/root" /usr/lib/systemd/systemd-update-done
+if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
+  install -m 0755 /builder/caboose-system "$work/root/etc/initramfs-tools/scripts/local-bottom/caboose-system"
+  printf 'erofs\noverlay\n' >> "$work/root/etc/initramfs-tools/modules"
+  chroot "$work/root" update-initramfs -u
+  touch "$work/root/etc/caboose-split-system"
+  /builder/make-system-image.sh "$work/root" "$work/system.erofs"
+fi
+cp "$(printf '%s\n' "$work/root"/boot/initrd.img-* | sort -V | tail -1)" "$work/initrd"
+if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
+  rm -rf "$work/root/usr" "$work/root/opt"
+  mkdir "$work/root/usr" "$work/root/opt"
+fi
 sync
 for p in dev/pts dev proc sys; do umount -l "$work/root/$p" 2>/dev/null || true; done
 umount "$work/root"
+if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
+  # Deleted /usr and /opt are free blocks, but remain allocated in a raw file.
+  # Zero those blocks before making a sparse copy so clones do not carry them.
+  zerofree "$loop"
+fi
 losetup -d "$loop"; loop=
+if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
+  cp --sparse=always "$work/base.raw" "$work/base.sparse"
+  mv "$work/base.sparse" "$work/base.raw"
+fi
 mv "$work/initrd" /output/initrd
 mv "$work/vmlinux" /output/vmlinux
 mv "$work/base.raw" /output/base.raw
+if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then mv "$work/system.erofs" /output/system.erofs; fi

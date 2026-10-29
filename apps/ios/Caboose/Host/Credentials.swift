@@ -4,15 +4,24 @@ import CryptoKit
 
 /// Where your computer lives and the token that opens it, kept in the Keychain in the
 /// app's shared access group so the share extension can reach the same computer.
-struct Credentials: Equatable {
+struct Credentials: Equatable, Codable, Identifiable {
     var hostURL: URL
     var token: String
     /// Other addresses of the same host — its Tailscale or other VPN address, say — tried
     /// alongside `hostURL` so the computer is reachable at home and away.
     var alternateURLs: [URL] = []
 
+    var computerID: String?
+    var computerName: String?
+    private var storedIdentity: String?
+    var id: String { fileDomainIdentifier }
+    var displayName: String { computerName.flatMap { $0.isEmpty ? nil : $0 } ?? hostURL.host ?? "Caboose" }
+    /// Console authentication uses its own browser session; never put a phone token in a URL.
+    var consoleURL: URL? { Self.normalizedAddress(hostURL.absoluteString) }
+
     /// A pairing-specific identifier, so cached Files data is never reused for another computer.
     var fileDomainIdentifier: String {
+        if let storedIdentity { return storedIdentity }
         let bytes = SHA256.hash(data: Data((hostURL.absoluteString + "\n" + token).utf8))
         return "computer-" + bytes.map { String(format: "%02x", $0) }.joined()
     }
@@ -26,37 +35,74 @@ struct Credentials: Equatable {
     private static let hostKey = "caboose.hostURL"
     private static let alternatesKey = "caboose.alternateHostURLs"
 
-    /// New items go to the first group in the `keychain-access-groups` entitlement, the
-    /// group the app and its share extension share; reads search every group they have.
-    static func load() -> Credentials? {
-        if let token = read(service), !token.isEmpty,
-           let urls = read(addressesService).map({ $0.split(separator: "\n").compactMap { URL(string: String($0)) } }),
-           let host = urls.first {
-            return Credentials(hostURL: host, token: token, alternateURLs: Array(urls.dropFirst()))
+    private static let collectionService = "com.braedonsaunders.caboose.computers"
+
+    struct Collection: Codable {
+        var computers: [Credentials] = []
+        var activeID: String?
+        var active: Credentials? { computers.first { $0.id == activeID } }
+
+        mutating func select(_ incoming: Credentials) -> Credentials {
+            var value = incoming
+            // Server ids are scoped to a host; names and tokens are never computer ids.
+            let host = Credentials.normalizedAddress(value.hostURL.absoluteString)
+            if let index = computers.firstIndex(where: {
+                $0.id == value.id || (value.computerID != nil && $0.computerID == value.computerID &&
+                    host != nil && Credentials.normalizedAddress($0.hostURL.absoluteString) == host)
+            }) {
+                let old = computers[index]
+                value.storedIdentity = old.id
+                if value.computerName == nil { value.computerName = old.computerName }
+                computers[index] = value
+            } else {
+                value.storedIdentity = value.id
+                computers.append(value)
+            }
+            activeID = value.id
+            return value
         }
-        // Before the share extension, the addresses lived in the app's own defaults and the
-        // token in the app's private access group: move them to the shared group once.
-        if let text = UserDefaults.standard.string(forKey: hostKey), let url = URL(string: text),
-           let token = read(service), !token.isEmpty {
-            let alternates = (UserDefaults.standard.stringArray(forKey: alternatesKey) ?? []).compactMap(URL.init(string:))
-            let credentials = Credentials(hostURL: url, token: token, alternateURLs: alternates)
-            credentials.save()
-            return credentials
-        }
-        return developmentDefaults()
     }
 
-    func save() {
-        Self.write(Self.service, token)
-        Self.write(Self.addressesService, candidates.map(\.absoluteString).joined(separator: "\n"))
-        UserDefaults.standard.removeObject(forKey: Self.hostKey)
-        UserDefaults.standard.removeObject(forKey: Self.alternatesKey)
+    /// One Keychain item commits credentials and selection together. A failed update leaves
+    /// the previous collection intact. Legacy items remain available until migration succeeds.
+    static func loadCollection() throws -> Collection {
+        if let data = try readData(collectionService) {
+            return try JSONDecoder().decode(Collection.self, from: data)
+        }
+        var collection = Collection()
+        var legacy: Credentials?
+        if let tokenData = try readData(service), let token = String(data: tokenData, encoding: .utf8), !token.isEmpty {
+            let addresses = try readData(addressesService).flatMap { String(data: $0, encoding: .utf8) }
+            let urls = addresses?.split(separator: "\n").compactMap { URL(string: String($0)) } ?? []
+            if let host = urls.first {
+                legacy = Credentials(hostURL: host, token: token, alternateURLs: Array(urls.dropFirst()))
+            } else if let text = UserDefaults.standard.string(forKey: hostKey), let host = URL(string: text) {
+                legacy = Credentials(hostURL: host, token: token,
+                    alternateURLs: (UserDefaults.standard.stringArray(forKey: alternatesKey) ?? []).compactMap(URL.init(string:)))
+            }
+        }
+        if let legacy = legacy ?? developmentDefaults() {
+            _ = collection.select(legacy)
+            try saveCollection(collection)
+        }
+        return collection
     }
 
-    /// Update only addresses; leave the existing Keychain token untouched.
-    func saveAddresses() throws {
-        let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: Self.addressesService]
-        let data = Data(candidates.map(\.absoluteString).joined(separator: "\n").utf8)
+    static func load() -> Credentials? { try? loadCollection().active }
+
+    @discardableResult
+    func save() throws -> Credentials {
+        var collection = try Self.loadCollection()
+        let saved = collection.select(self)
+        try Self.saveCollection(collection)
+        return saved
+    }
+
+    func saveAddresses() throws { _ = try save() }
+
+    static func saveCollection(_ collection: Collection) throws {
+        let data = try JSONEncoder().encode(collection)
+        let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: collectionService]
         var status = SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
         if status == errSecItemNotFound {
             var item = query
@@ -64,12 +110,12 @@ struct Credentials: Equatable {
             item[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
             status = SecItemAdd(item as CFDictionary, nil)
         }
-        guard status == errSecSuccess else { throw AddressSaveError(status: status) }
+        guard status == errSecSuccess else { throw StoreError(status: status) }
     }
 
-    struct AddressSaveError: LocalizedError {
+    struct StoreError: LocalizedError {
         let status: OSStatus
-        var errorDescription: String? { "Could not save the remote address (Keychain error \(status))." }
+        var errorDescription: String? { "Could not access saved computers (Keychain error \(status))." }
     }
 
     static func normalizedAddress(_ text: String) -> URL? {
@@ -89,21 +135,21 @@ struct Credentials: Equatable {
         if !known.contains(url) { alternateURLs.append(url) }
     }
 
-    static func clear() {
+    /// Forget the selected pairing without deleting any other explicitly paired computer.
+    static func clear() throws {
+        var collection = try loadCollection()
+        // The canonical collection already contains the migrated pairing. Erase the old
+        // storage too, so Forget cannot leave its pre-migration bearer behind.
+        for service in [service, addressesService] {
+            let status = SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service] as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else { throw StoreError(status: status) }
+        }
         UserDefaults.standard.removeObject(forKey: hostKey)
         UserDefaults.standard.removeObject(forKey: alternatesKey)
-        for service in [service, addressesService] {
-            SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service] as CFDictionary)
-        }
-    }
-
-    private static func write(_ service: String, _ value: String) {
-        let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: service]
-        SecItemDelete(query as CFDictionary)
-        var item = query
-        item[kSecValueData] = Data(value.utf8)
-        item[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(item as CFDictionary, nil)
+        let removedID = collection.activeID
+        collection.computers.removeAll { $0.id == removedID }
+        collection.activeID = collection.computers.first?.id
+        try saveCollection(collection)
     }
 
     /// Parses `caboose://connect?host=<url>&token=<token>[&alt=<url>…]`.
@@ -117,7 +163,9 @@ struct Credentials: Equatable {
         self.init(hostURL: url, token: token, alternateURLs: alternates)
     }
 
-    init(hostURL: URL, token: String, alternateURLs: [URL] = []) {
+    init(hostURL: URL, token: String, alternateURLs: [URL] = [], computerID: String? = nil, computerName: String? = nil) {
+        self.computerID = computerID
+        self.computerName = computerName
         self.hostURL = hostURL
         self.token = token
         self.alternateURLs = alternateURLs
@@ -160,22 +208,30 @@ struct Credentials: Equatable {
         return object["error"] == "unauthorized"
     }
 
-    private static func read(_ service: String) -> String? {
+    private static func readData(_ service: String) throws -> Data? {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword, kSecAttrService: service,
             kSecReturnData: true, kSecMatchLimit: kSecMatchLimitOne,
         ]
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data else { throw StoreError(status: status) }
+        return data
     }
 
     /// A developer's own host, injected at build time from the untracked Local.xcconfig.
+    /// Debug builds only: a Release archive from the same machine must never sign in to the
+    /// developer's computer, and the build settings leave the keys empty there as well.
     private static func developmentDefaults() -> Credentials? {
+        #if DEBUG
         guard let host = Bundle.main.object(forInfoDictionaryKey: "CabooseDevelopmentHost") as? String, !host.isEmpty,
               let token = Bundle.main.object(forInfoDictionaryKey: "CabooseDevelopmentToken") as? String, !token.isEmpty,
               let url = URL(string: host) else { return nil }
         return Credentials(hostURL: url, token: token)
+        #else
+        return nil
+        #endif
     }
 }
 

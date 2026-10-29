@@ -58,17 +58,18 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 
 1. **Open Caboose.** The computer wakes, and a parked machine resumes with its memory
    rather than booting.
-2. **Tap an app.** The Home grid lists the computer's real Linux apps with their real
-   icons. Chromium, VS Code or the terminal opens full screen, decoded in hardware, with
-   touch, keyboard, trackpad and clipboard working both ways.
+2. **Tap an app.** Home shows the computer's open windows live, and Apps lists its real
+   Linux apps with their real icons. Chromium, VS Code or the terminal opens full screen,
+   decoded in hardware, with touch, keyboard, trackpad and clipboard working both ways.
 3. **Leave.** Background the app and the stream closes. After the idle timeout the
    computer parks with its memory. Come back tomorrow and everything is where it was.
 4. **Put it on the TV.** Connect a display and the Linux desktop moves to the big screen
    while the phone becomes its trackpad. You can also open the desktop on the phone or
    iPad itself.
-5. **Hand work to an agent.** Ask from the Ask bar. The task runs on the agent's own
+5. **Hand work to an agent.** Ask from Home or the Agents tab. The task runs on the agent's own
    seat, and its windows show up in an Agent space you can watch, take over and hand
-   back.
+   back. Ask an agent for an app and it builds one: its icon appears in Apps, and it opens
+   in its own window like any other app.
 
 ## What's inside
 
@@ -133,6 +134,13 @@ The full contract between app, host and guest is [docs/architecture.md](docs/arc
 
 Paste the line for your machine into a terminal on it. Each installs the same host and web
 console, downloads a verified release and the computer's image, and starts at boot.
+
+| Machine | Install |
+| --- | --- |
+| Apple Silicon Mac, macOS 14+ | [Native Mac installer](deploy/macos/README.md): a menu bar app and host that starts at login, without Docker or administrator privileges. The Mac must stay awake and logged in. |
+| Linux PC, amd64 or arm64 | [Native Linux installer](deploy/linux/README.md): a systemd service, with `/dev/kvm` for microVMs or Docker for the GPU container runtime. |
+| Windows 11 PC | [WSL2](deploy/windows/README.md): the Linux installer in WSL with the GPU container runtime, and `setup-wsl.ps1` for mirrored networking so phones connect to it directly. |
+| Linux server with a domain | [Server installer](deploy/server/README.md): the host behind Caddy with automatic HTTPS, for households or teams. |
 
 **Linux PC** (amd64 or arm64, with systemd and `/dev/kvm`):
 
@@ -210,13 +218,14 @@ loopback, so run it on a host you trust. The GPU container runtime for WSL2 and 
 | [`guest/vaapi`](guest/vaapi) | The VA-API codec-passthrough driver that forwards apps' compressed video to the phone (C) |
 | [`guest/agentd`](guest/agentd) | `caboose-agentd`: the ACP client that runs any registry agent for a task |
 | [`guest/desktop-mcp`](guest/desktop-mcp) | GUI tools for agents on their own seat, and the accessibility helper behind `/v1/screen` |
+| [`guest/apps`](guest/apps) | `caboose-app`: apps agents make, web apps that run in their own window and appear in Apps |
 | [`guest/catalog`](guest/catalog) | The optional apps and packs the computer can install |
 | [`guest/files`](guest/files) | The file service behind the Files app extension and the console |
 | [`guest/notifications`](guest/notifications) | The owner's desktop notifications, forwarded to the phone |
 | [`guest/phone`](guest/phone) | Opening, sharing and printing from the computer to the phone |
 | [`guest/media-handoff`](guest/media-handoff) | Play on iPhone / Apple TV for video playing in the computer's Chromium |
 | [`docs`](docs) | The architecture, and the Caboose Display design and protocol |
-| [`deploy`](deploy) | Native Mac and Linux installers, and the HTTPS server deployment |
+| [`deploy`](deploy) | Native Mac and Linux installers, Windows networking for WSL, and the HTTPS server deployment |
 
 Each component's README covers how to build, run and test it. Pure logic is unit-tested
 (`swift test` in `apps/ios/CabooseKit`, `cargo test` in `guest/display`, and `pnpm test`

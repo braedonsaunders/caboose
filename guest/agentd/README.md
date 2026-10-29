@@ -49,7 +49,7 @@ note on stderr. Values are never written to the transcript or logs.
 
 The host writes these, each whole and renamed into place:
 
-- `task.json` — `{ agent: <spec>, cwd, approvals: "ask" | "auto", idleMs, craftServers, profileId? }`.
+- `task.json` — `{ agent: <spec>, cwd, approvals: "ask" | "auto", idleMs, craftServers, mcpLibrary?, profileId? }`.
 - `inbox/<turn, 6 digits>.prompt.json` — `{ type: "prompt", turn, deliveryId?, text, attachments?: [{ path, name, mimeType? }] }`.
 - `delivery.json` — version 1 journal: `{ version: 1, turns?, original?, startAttachments?, queue, operations, intent?, cancelled? }`.
   `turns` is the monotonic allocated turn count, independent of the launch script's `turns`
@@ -128,10 +128,15 @@ a turn (including the history an agent replays on `session/load`) are not writte
   `WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
   `DBUS_SESSION_BUS_ADDRESS`, `GDK_BACKEND`, `QT_QPA_PLATFORM`, `MOZ_ENABLE_WAYLAND`,
   `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`, `GALLIUM_DRIVER`, `LIBVA_DRIVER_NAME`,
-  `GST_VA_ALL_DRIVERS` and `CABOOSE_VIDEO_SOCKET`. The host also snapshots installed catalog MCP commands into
+  `GST_VA_ALL_DRIVERS` and `CABOOSE_VIDEO_SOCKET`. When `/opt/caboose/apps/apps-mcp.mjs`
+  exists (`CABOOSE_APPS_MCP` overrides the path), `caboose-apps` (see `guest/apps`) follows
+  with the same environment, for making agent apps. The host also snapshots installed catalog MCP commands into
   `task.json` and the runner passes them, with `caboose-desktop`, to new, load and resume
   requests. `craftMcp: false` on task creation disables them for that
-  task, including replies. See the Agents section of the architecture for the app list.
+  task, including replies. A task started with `mcpLibrary: true` also gets `caboose-library`
+  (`library-mcp.mjs`), the computer's MCP Library, while its descriptor
+  (`~/.local/state/caboose/mcp-library.json`, `CABOOSE_MCP_LIBRARY` overrides) exists; without it
+  the transcript says so. See the Agents section of the architecture for the app list.
 - **Prompt.** A text block, then each attachment as an `image` block when the agent's
   `promptCapabilities.image` is set and the file is a PNG, JPEG, GIF or WebP under 10 MB, and
   otherwise a `resource_link` to its `file://` path.
@@ -282,4 +287,6 @@ The runner supplies Caboose presentation guidance with each prompt: downloadable
 links, image previews, and complete self-contained `inline-html` widgets with responsive,
 accessible controls. Widgets have no network or file access; data comes from the agent’s
 computer tools. `window.Caboose.compose(message)` proposes a native follow-up for the owner
-to review and send, and cannot execute a tool itself.
+to review and send, and cannot execute a tool itself. When the owner asks for an app, or
+for something they will come back to, the guidance points the agent to a Caboose app
+(`guest/apps`) instead of a widget.

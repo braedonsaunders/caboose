@@ -221,6 +221,18 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 features: ["vsync", "ack", "touch", "text-input-v3", "cursor-named", "xwayland"]
                     .map(String::from)
                     .to_vec(),
+                epoch: None,
+            }),
+        ),
+        one(
+            "server-hello-epoch",
+            "A server hello with the server process's epoch, which tells a reconnecting client its window ids still name the same windows.",
+            Message::ServerHello(ServerHello {
+                version: 0,
+                displays: vec![1],
+                encoders: vec![Codec::Hevc],
+                features: ["vsync", "ack"].map(String::from).to_vec(),
+                epoch: Some("5f3a9c01d2e4b678".into()),
             }),
         ),
         one("window-create-toplevel", "A native Wayland toplevel with an icon and a minimum size.", Message::WindowCreate(terminal)),
@@ -279,9 +291,23 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "text-input-enabled",
             "text-input-v3 enabled on window 7 with the terminal purpose.",
-            Message::TextInput(TextInputState { id: 7, enabled: true, purpose: Some("terminal".into()) }),
+            Message::TextInput(TextInputState { id: 7, enabled: true, purpose: Some("terminal".into()), surrounding: None }),
         ),
-        one("text-input-disabled", "", Message::TextInput(TextInputState { id: 7, enabled: false, purpose: None })),
+        one(
+            "text-input-surrounding",
+            "The application's text around the caret: 'Héllo wor|ld', the caret after 'wor' (byte 10).",
+            Message::TextInput(TextInputState {
+                id: 7,
+                enabled: true,
+                purpose: Some("normal".into()),
+                surrounding: Some(Surrounding { text: "Héllo world".into(), cursor: 10, anchor: 10 }),
+            }),
+        ),
+        one(
+            "text-input-disabled",
+            "",
+            Message::TextInput(TextInputState { id: 7, enabled: false, purpose: None, surrounding: None }),
+        ),
         one(
             "clipboard-server",
             "",
@@ -315,6 +341,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 source: VideoSource::Passthrough,
                 color: Some(VideoColor { primaries: 9, transfer: 16, matrix: 9, full_range: false }),
                 extradata: None,
+                scaled: false,
             }),
         ),
         one(
@@ -330,6 +357,15 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 source: VideoSource::Surface,
                 color: None,
                 extradata: None,
+                scaled: false,
+            }),
+        ),
+        one(
+            "video-create-scaled-motion",
+            "A half-resolution motion picture placed in window coordinates.",
+            Message::VideoCreate(VideoCreate {
+                id: 3, window: 12, rect: Rect::new(40, 80, 640, 360), clip: None, z: None,
+                codec: Codec::H264, source: VideoSource::Motion, color: None, extradata: None, scaled: true,
             }),
         ),
         one(
@@ -354,6 +390,52 @@ pub fn all(media: &Media) -> Vec<Vector> {
             Message::VideoPresent { id: 1, seq: 17, pts_us: 1_234_633_333 },
         ),
         one("video-ack", "", Message::VideoAck { id: 2, seq: 41 }),
+        one(
+            "game-create",
+            "Window 7's game runs on the client: its files are served from root, it loads entry, and it persists /powder in a directory of the home.",
+            Message::GameCreate(GameCreate {
+                id: 1,
+                window: 7,
+                root: ".local/share/caboose/games/powder-toy/web".into(),
+                entry: "index.html".into(),
+                saves: Some(vec![GameSave { mount: "/powder".into(), path: ".local/share/The Powder Toy".into() }]),
+            }),
+        ),
+        one(
+            "game-create-no-saves",
+            "A game that saves nothing: no saves key.",
+            Message::GameCreate(GameCreate {
+                id: 2,
+                window: 12,
+                root: "Games/doom".into(),
+                entry: "index.html".into(),
+                saves: None,
+            }),
+        ),
+        one("webview-create", "An agent app on window 7.", Message::WebviewCreate(WebviewCreate {
+            id: 1, window: 7, app: "notes".into(), bridge: "0123456789abcdef0123456789abcdef".into(), grant: "fedcba9876543210fedcba9876543210".into(), root: "Apps/notes".into(), entry: "index.html".into(),
+        })),
+        one("webview-destroy", "", Message::WebviewDestroy { id: 1 }),
+        one("webview-decline", "", Message::WebviewDecline { id: 1, reason: "web view failed".into() }),
+        one("game-destroy", "", Message::GameDestroy { id: 1 }),
+        one("gpu-create", "Window 7's pictures are a Vulkan stream the client renders.", Message::GpuCreate { id: 1, window: 7 }),
+        one(
+            "gpu-data",
+            "The first bytes of stream 1: a GFXReconstruct file header (fourcc GFXR, format 0.0, no options).",
+            Message::GpuData(GpuData { id: 1, offset: 0, data: b"GFXR\0\0\0\0\0\0\0\0\0\0\0\0".to_vec() }),
+        ),
+        one("gpu-destroy", "", Message::GpuDestroy { id: 1, reason: None }),
+        one(
+            "gpu-destroy-spool-limit",
+            "The computer stopped keeping stream 1: it outgrew the spool limit.",
+            Message::GpuDestroy { id: 1, reason: Some("spool-limit".into()) },
+        ),
+        one("gpu-ack", "The client has consumed stream 1 up to byte 65536.", Message::GpuAck { id: 1, offset: 65536 }),
+        one(
+            "game-decline",
+            "The client cannot run game 1: its page needs threads the device would not give it.",
+            Message::GameDecline { id: 1, reason: "the page is not cross-origin isolated".into() },
+        ),
         one("video-keyframe", "", Message::VideoKeyframe { id: 1 }),
         one(
             "audio-opus-stereo",
@@ -377,6 +459,18 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 displays: vec![phone(), tv()],
                 video_decoders: None,
                 audio_decoders: None,
+                wasm: false,
+                webview: false,
+                gpu: false,
+                scaled_motion: false,
+            }),
+        ),
+        one(
+            "client-hello-scaled-motion",
+            "A client accepts half-resolution motion without enabling passthrough video.",
+            Message::ClientHello(ClientHello {
+                version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![Codec::H264], displays: vec![phone()],
+                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true,
             }),
         ),
         one(
@@ -389,6 +483,10 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 displays: vec![phone()],
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: None,
+                wasm: false,
+                webview: false,
+                gpu: false,
+                scaled_motion: false,
             }),
         ),
         one(
@@ -401,6 +499,51 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 displays: vec![phone()],
                 video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
                 audio_decoders: Some(vec!["opus".into()]),
+                wasm: false,
+                webview: false,
+                gpu: false,
+                scaled_motion: false,
+            }),
+        ),
+        one(
+            "client-hello-gpu",
+            "client-hello-audio from a client that also renders Vulkan streams.",
+            Message::ClientHello(ClientHello {
+                version: 0,
+                token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264],
+                displays: vec![phone()],
+                video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
+                audio_decoders: Some(vec!["opus".into()]),
+                wasm: false,
+                webview: false,
+                gpu: true,
+                scaled_motion: false,
+            }),
+        ),
+        one(
+            "client-hello-wasm",
+            "client-hello-audio from a client that also runs games handed off to it.",
+            Message::ClientHello(ClientHello {
+                version: 0,
+                token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264],
+                displays: vec![phone()],
+                video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
+                audio_decoders: Some(vec!["opus".into()]),
+                wasm: true,
+                webview: false,
+                gpu: false,
+                scaled_motion: false,
+            }),
+        ),
+        one(
+            "client-hello-webview",
+            "A client that runs agent app web views.",
+            Message::ClientHello(ClientHello {
+                version: 0, token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::H264], displays: vec![phone()],
+                video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false, scaled_motion: false,
             }),
         ),
         one("vsync", "", Message::Vsync { display: 1, t_us: 5_000_008_333 }),

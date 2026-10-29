@@ -168,6 +168,17 @@ import Testing
         #expect(hello.displays == [1, 2])
         #expect(hello.encoders == ["hevc", "h264"])
         #expect(hello.features == ["vsync", "ack", "touch", "text-input-v3", "cursor-named", "xwayland"])
+        #expect(hello.epoch == nil)
+        guard case .hello(let epoch) = try server("server-hello-epoch").first else { Issue.record("not a hello"); return }
+        #expect(epoch.epoch == "5f3a9c01d2e4b678" && epoch.displays == [1] && epoch.features == ["vsync", "ack"])
+    }
+
+    /// An epoch that is not short text cannot prove anything, so it reads as absent.
+    @Test func invalidEpochIsAbsent() {
+        for value: CBOR in [.unsigned(7), .text(""), .text(String(repeating: "e", count: 65)), .bytes(Data([1, 2]))] {
+            #expect(ServerHello(.map([(.text("version"), .unsigned(0)), (.text("epoch"), value)])).epoch == nil)
+        }
+        #expect(ServerHello(.map([(.text("version"), .unsigned(0)), (.text("epoch"), .text("ab"))])).epoch == "ab")
     }
 
     @Test func windows() throws {
@@ -200,10 +211,13 @@ import Testing
     }
 
     @Test func textAndCursor() throws {
-        guard case .textInput(let window, let enabled, let purpose) = try server("text-input-enabled").first else { Issue.record("enabled"); return }
-        #expect(window == 7 && enabled && purpose == "terminal")
-        guard case .textInput(_, let off, let none) = try server("text-input-disabled").first else { Issue.record("disabled"); return }
+        guard case .textInput(let window, let enabled, let purpose, let context) = try server("text-input-enabled").first else { Issue.record("enabled"); return }
+        #expect(window == 7 && enabled && purpose == "terminal" && context == nil)
+        guard case .textInput(_, let off, let none, _) = try server("text-input-disabled").first else { Issue.record("disabled"); return }
         #expect(!off && none == nil)
+        guard case .textInput(_, _, _, let surrounding?) = try server("text-input-surrounding").first else { Issue.record("surrounding"); return }
+        #expect(surrounding.text == "Héllo world" && surrounding.cursor == 10 && !surrounding.hasSelection)
+        #expect(surrounding.beforeCaret == "Héllo wor")
         guard case .cursorNamed(let name) = try server("cursor-named-text").first else { Issue.record("cursor"); return }
         #expect(name == "text")
         guard case .cursorImage(let id, let image, _) = try server("cursor-image").first else { Issue.record("image"); return }
@@ -228,6 +242,73 @@ import Testing
         }
         guard case .audio(let packet) = try server("audio-opus").first else { Issue.record("audio"); return }
         #expect(packet.codec == "opus" && packet.ptsMicros == 1_234_580_000 && packet.channels == 2 && packet.data == Data([0xF8, 0xFF, 0xFE]))
+    }
+
+    @Test func games() throws {
+        guard case .gameCreate(let game) = try server("game-create").first else { Issue.record("game.create"); return }
+        #expect(game == GameDescriptor(id: 1, window: 7, root: ".local/share/caboose/games/powder-toy/web", entry: "index.html",
+                                       saves: [GameSave(mount: "/powder", path: ".local/share/The Powder Toy")]))
+        guard case .gameCreate(let bare) = try server("game-create-no-saves").first else { Issue.record("no saves"); return }
+        #expect(bare == GameDescriptor(id: 2, window: 12, root: "Games/doom", entry: "index.html"))
+        guard case .gameDestroy(1) = try server("game-destroy").first else { Issue.record("game.destroy"); return }
+    }
+
+    @Test func webviews() throws {
+        guard case .webviewCreate(let app) = try server("webview-create").first else { Issue.record("webview.create"); return }
+        #expect(app.id == 1 && app.window == 7 && app.app == "notes" && app.root == "Apps/notes")
+        #expect(app.bridge == "0123456789abcdef0123456789abcdef" && app.grant == "fedcba9876543210fedcba9876543210" && app.entry == "index.html")
+        guard case .webviewDestroy(1) = try server("webview-destroy").first else { Issue.record("webview.destroy"); return }
+    }
+
+    @Test func gpuStreams() throws {
+        guard case .gpuCreate(1, 7) = try server("gpu-create").first else { Issue.record("gpu.create"); return }
+        guard case .gpuData(1, 0, let data) = try server("gpu-data").first else { Issue.record("gpu.data"); return }
+        #expect(data == Data("GFXR".utf8) + Data(count: 12))
+        guard case .gpuDestroy(1, nil) = try server("gpu-destroy").first else { Issue.record("gpu.destroy"); return }
+        guard case .gpuDestroy(1, "spool-limit") = try server("gpu-destroy-spool-limit").first else { Issue.record("reason"); return }
+    }
+
+    /// A stream's bytes arrive in order once; a repeat from the start (a resent stream) and
+    /// anything out of order are dropped, and what arrives before the replay starts is held.
+    @Test func aGPUStreamFeedKeepsOrder() {
+        let feed = GPUStreamFeed()
+        feed.receive(offset: 0, data: Data([1, 2]))
+        feed.receive(offset: 5, data: Data([9]))
+        final class Received { var chunks: [Data] = [] }
+        let received = Received()
+        feed.attach { data in received.chunks.append(data) }
+        feed.receive(offset: 2, data: Data([3]))
+        feed.receive(offset: 0, data: Data([1, 2]))
+        #expect(received.chunks == [Data([1, 2]), Data([3])])
+        #expect(feed.offset == 3)
+        feed.detach()
+        feed.receive(offset: 3, data: Data([4]))
+        #expect(received.chunks.count == 2)
+    }
+
+    /// A game.create without its window, root or entry cannot be run; a save without both
+    /// halves is left out.
+    @Test func incompleteGamesAreMalformed() {
+        let complete: [(CBOR, CBOR)] = [("id", 3), ("window", 7), ("root", "web"), ("entry", "index.html")]
+        for missing in ["id", "window", "root", "entry"] {
+            let body = CBOR.map(complete.filter { $0.0 != CBOR(missing) })
+            guard case .malformed(0x17) = ServerMessage(DisplayFrame(type: 0x17, body: body)) else {
+                Issue.record("without \(missing)"); continue
+            }
+        }
+        let saves = CBOR.map(complete + [("saves", [["mount": "/a", "path": "a"], ["mount": "/b"], "c"])])
+        guard case .gameCreate(let game) = ServerMessage(DisplayFrame(type: 0x17, body: saves)) else { Issue.record("saves"); return }
+        #expect(game.saves == [GameSave(mount: "/a", path: "a")])
+        guard case .malformed(0x18) = ServerMessage(DisplayFrame(type: 0x18, body: ["window": 7])) else { Issue.record("destroy"); return }
+    }
+
+    /// `wasm` is only ever sent as true; without it the hello is the one older servers know.
+    @Test func helloSaysWasmOnlyWhenTrue() {
+        let display = DisplayInfo(id: 1, width: 10, height: 10, scale: 1, refreshHz: 60)
+        let plain = ClientMessage.hello(token: "t", decoders: [.h264], displays: [display]).frame.body
+        #expect(plain["wasm"] == nil)
+        #expect(ClientMessage.hello(token: "t", decoders: [.h264], displays: [display], wasm: false).frame.body.encoded() == plain.encoded())
+        #expect(ClientMessage.hello(token: "t", decoders: [.h264], displays: [display], wasm: true).frame.body["wasm"] == .bool(true))
     }
 
     // MARK: Client messages, byte for byte
@@ -265,6 +346,21 @@ import Testing
         "client-hello-audio": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"]),
+        "client-hello-gpu": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], gpu: true),
+        "client-hello-scaled-motion": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], scaledMotion: true),
+        "gpu-ack": .gpuAck(id: 1, offset: 65536),
+        "game-decline": .gameDecline(id: 1, reason: "the page is not cross-origin isolated"),
+        "webview-decline": .webviewDecline(id: 1, reason: "web view failed"),
+        "client-hello-webview": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], webview: true),
+        "client-hello-wasm": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], wasm: true),
         "video-ack": .videoAck(video: 2, seq: 41),
         "video-keyframe": .videoKeyframe(video: 1),
     ]

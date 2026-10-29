@@ -28,6 +28,7 @@
 	<key>NSCameraUsageDescription</key><string>Take a photo to attach to your agent message.</string>
 	<key>NSMicrophoneUsageDescription</key><string>Dictate a message to your agent.</string>
 	<key>NSSpeechRecognitionUsageDescription</key><string>Turn your speech into an editable agent message.</string>
+	<key>NSLocationWhenInUseUsageDescription</key><string>When you turn on Share Location with Computer, apps on your computer see where you are while Caboose is open.</string>
 	<key>NSLocalNetworkUsageDescription</key><string>Caboose connects to your computer when it runs on your own network.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>

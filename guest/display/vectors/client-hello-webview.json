@@ -1,0 +1,8 @@
+{
+  "name": "client-hello-webview",
+  "description": "A client that runs agent app web views.",
+  "messages": [
+    {"direction": "client", "type": "hello", "type_id": 129, "fields": {"token": "f3a9c1d27e8b4a6f", "version": 0, "webview": true, "decoders": ["h264"], "displays": [{"id": 1, "hdr": true, "scale": {"$float": 3.0}, "width": 1179, "height": 2556, "refresh_hz": {"$float": 120.0}}]}}
+  ],
+  "hex": "8183000000a565746f6b656e70663361396331643237653862346136666776657273696f6e006777656276696577f5686465636f6465727381646832363468646973706c61797381a66269640163686472f5657363616c65fb400800000000000065776964746819049b666865696768741909fc6a726566726573685f687afb405e000000000000"
+}
