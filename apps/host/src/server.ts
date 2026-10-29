@@ -1,3 +1,4 @@
+import { recoveryRoute } from './recovery.js'
 import { CapacitySampler, capacityFor } from './capacity.js'
 import { computerSizes, expandSize } from './sizes.js'
 import { createHash } from 'node:crypto'
@@ -601,7 +602,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       await confirmedRestart()
       return json(response, 200, managementStatus())
     }
-    if (path === '/v1/backup' || path.startsWith('/v1/backup/')) {
+    if (path === '/v1/recovery' || path.startsWith('/v1/recovery/') || path === '/v1/backup' || path.startsWith('/v1/backup/')) {
+      if (path.startsWith('/v1/recovery') && principal.kind === 'phone') return json(response, 403, { error: 'Only administrators manage host captures' })
+      if (path.startsWith('/v1/recovery') && !pieces.storage) return recoveryRoute(undefined, request, response, path, principal, {} as never)
       if (!pieces.storage) return json(response, 404, { error: 'This computer cannot be backed up to a phone' })
       return pieces.storage.backups(request, response, path, principal, {
         restart: confirmedRestart,

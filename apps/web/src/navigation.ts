@@ -3,7 +3,7 @@ import type { SidebarNavGroup } from '@braedonsaunders/appkit-ui'
 import { Building2, Gauge, Monitor, Server, Users } from 'lucide-react'
 
 /** The computer's page is split into tabs, each with its own address. */
-export type ComputerTab = 'overview' | 'files' | 'apps' | 'phones' | 'settings'
+export type ComputerTab = 'overview' | 'files' | 'apps' | 'phones' | 'backups' | 'settings'
 
 export type Route =
   | { page: 'overview' }
@@ -22,6 +22,7 @@ export const COMPUTER_TABS: Array<{ key: ComputerTab; label: string }> = [
   { key: 'files', label: 'Files' },
   { key: 'apps', label: 'Apps' },
   { key: 'phones', label: 'Phones' },
+  { key: 'backups', label: 'Backups' },
   { key: 'settings', label: 'Settings' },
 ]
 

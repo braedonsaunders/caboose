@@ -176,6 +176,13 @@ describe('a host with accounts and tenants', () => {
 
     const theirs = (await (await parent('/v1/computers')).json()).computers as Array<{ id: string; tenantId: string }>
     expect(theirs.map(computer => computer.tenantId)).toEqual([family])
+    expect((await parent(`/v1/computers/${theirs[0]!.id}/recovery`)).status).toBe(200)
+    expect((await operator(`/v1/computers/${OWNER_COMPUTER}/recovery`)).status).toBe(200)
+    for (const [suffix, method] of [['recovery', 'GET'], ['recovery/capture', 'POST'], ['recovery/captures/00000000-0000-4000-8000-000000000000/restore', 'POST']]) {
+      expect((await parent(`/v1/computers/${OWNER_COMPUTER}/${suffix}`, { method })).status).toBe(404)
+    }
+    expect((await parent('/v1/recovery')).status).toBe(403)
+
     expect((await parent(`/v1/computers/${OWNER_COMPUTER}`)).status).toBe(404)
     expect((await parent(`/v1/computers/${OWNER_COMPUTER}/computer`)).status).toBe(404)
     expect((await parent('/v1/computer')).status).toBe(403)
@@ -221,6 +228,10 @@ describe('a host with accounts and tenants', () => {
     const { token: phoneToken } = await paired.json()
     const phone = browser()
     const headers = { authorization: `Bearer ${phoneToken}` }
+    for (const [path, method] of [['/v1/recovery', 'GET'], ['/v1/recovery/capture', 'POST'], [`/v1/computers/${theirs[0]!.id}/recovery`, 'GET']]) {
+      expect((await phone(path!, { headers, method })).status).toBe(403)
+    }
+
     expect((await phone('/v1/host/reach', { headers })).status).toBe(403)
     expect((await phone('/v1/host/capacity', { headers })).status).toBe(403)
     expect((await phone(`/v1/tenants/${family}/capacity`, { headers })).status).toBe(403)
