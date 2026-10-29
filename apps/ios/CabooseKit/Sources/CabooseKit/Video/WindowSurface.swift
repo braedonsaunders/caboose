@@ -71,7 +71,8 @@ public final class WindowSurface: @unchecked Sendable {
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
         guard let clear = commands.makeRenderCommandEncoder(descriptor: pass) else { return }
         clear.endEncoding()
-        if let old = backing, let blit = commands.makeBlitCommandEncoder() {
+        if let old = backing {
+            guard let blit = commands.makeBlitCommandEncoder() else { return }
             let copyWidth = min(old.width, width), copyHeight = min(old.height, height)
             blit.copy(from: old, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
                       sourceSize: MTLSize(width: copyWidth, height: copyHeight, depth: 1),

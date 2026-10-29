@@ -28,6 +28,10 @@ import VideoToolbox
     }
 
     private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> [UInt8] {
+        guard x >= 0, y >= 0, x < image.width, y < image.height else {
+            Issue.record("Pixel (\(x), \(y)) is outside \(image.width)×\(image.height)")
+            return []
+        }
         let data = image.dataProvider!.data! as Data
         let offset = y * image.bytesPerRow + x * 4
         return Array(data[offset ..< offset + 4])
@@ -55,14 +59,20 @@ import VideoToolbox
 
     /// A 62x60 picture in a 64x64 coded frame, shown at twice its size: crop, then scale.
     @Test func hevcKeyframeIsCroppedAndScaled() throws {
-        let frame = try frame("frame-hevc-keyframe-scaled")
+        var frame = try frame("frame-hevc-keyframe-scaled")
+        // An origin-zero frame resizes the surface to its rect. Keep an inset here
+        // so the snapshot contains pixels outside the destination to check.
+        frame.rect.origin = CGPoint(x: 2, y: 3)
         let sent = Sent()
         let pipeline = FramePipeline(windowID: frame.window, width: 130, height: 126) { sent.append($0) }
         pipeline.frame(frame)
         pipeline.flush()
         #expect(sent.acks == [sent.acks.first ?? -1] && (sent.acks.first ?? -1) >= 0)
         let image = try #require(pipeline.surface.snapshot())
+        #expect(image.width == 130 && image.height == 126)
         #expect(painted(image, width: 124, height: 120) > 0.5)
+        #expect(pixel(image, 0, 60) == [0, 0, 0, 0])
+        #expect(pixel(image, 60, 0) == [0, 0, 0, 0])
         // Nothing lands outside `rect`.
         #expect(pixel(image, 127, 60) == [0, 0, 0, 0])
         #expect(pixel(image, 60, 123) == [0, 0, 0, 0])

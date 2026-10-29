@@ -26,3 +26,16 @@ jobs:
       - run: swift --version
       - name: Check protocol, session and Metal surface behavior
         run: swift test --package-path apps/ios/CabooseKit --disable-sandbox -j 2 --filter 'CabooseDisplaySessionTests|DisplayVectorTests|DisplayDecodeTests|TileTests|WindowSurfaceTests'
+      - name: Check the complete kit
+        run: swift test --package-path apps/ios/CabooseKit --disable-sandbox -j 2
+      - name: Collect crash diagnostics
+        if: failure()
+        run: |
+          mkdir -p diagnostics
+          cp ~/Library/Logs/DiagnosticReports/*.ips diagnostics/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: caboosekit-crash-reports
+          path: diagnostics
+          if-no-files-found: ignore

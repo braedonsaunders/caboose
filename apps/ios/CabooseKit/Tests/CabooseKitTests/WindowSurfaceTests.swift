@@ -153,4 +153,22 @@ import Testing
             #expect(pixel(image, x, y) == [0, 0, 0, 0])
         } }
     }
+
+    @Test func growingAfterAShrinkDoesNotRestoreDiscardedPixels() throws {
+        let surface = WindowSurface()
+        surface.resize(width: 8, height: 8)
+        fill(surface, x: 0, y: 0, width: 8, height: 8, bgra: [17, 39, 61, 255])
+        surface.resize(width: 12, height: 10)
+        var image = try #require(surface.snapshot())
+        #expect(pixel(image, 7, 7) == [17, 39, 61, 255])
+        #expect(pixel(image, 8, 7) == [0, 0, 0, 0])
+        #expect(pixel(image, 7, 8) == [0, 0, 0, 0])
+        surface.resize(width: 4, height: 3)
+        surface.resize(width: 8, height: 8)
+        image = try #require(surface.snapshot())
+        for y in 0 ..< 8 { for x in 0 ..< 8 {
+            let expected: [UInt8] = x < 4 && y < 3 ? [17, 39, 61, 255] : [0, 0, 0, 0]
+            #expect(pixel(image, x, y) == expected)
+        } }
+    }
 }
