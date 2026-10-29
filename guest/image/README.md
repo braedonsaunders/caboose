@@ -177,7 +177,8 @@ updated by the host itself through [`guest/components`](../components/README.md)
 `bash guest/image/check-desktop-apps.sh` builds a disposable Debian 13 image on the native
 architecture, installs both pinned clients twice, validates their desktop entries and
 launches the vendor entries as an unprivileged user under Xvfb and D-Bus. It requires a
-visible window from each client, uses the container Chromium namespace seccomp policy,
+visible window from each client, caps the display container at 2 CPUs and 2 GiB,
+uses the container Chromium namespace seccomp policy,
 and removes its container and tagged test image on exit. Run on both native amd64 and
 arm64 hosts to cover both packages. This checks installation and first-window startup;
 it does not verify account sign-in, agent execution, or Caboose Display integration.

@@ -11,5 +11,5 @@ cleanup() {
 trap cleanup EXIT
 # Use the project's existing Chromium namespace policy, never --no-sandbox.
 docker build -t "$image" -f "$here/desktop-check/Dockerfile" "$here"
-docker run --name "$container" --init --memory 2g --shm-size 256m \
+docker run --name "$container" --init --cpus 2 --memory 2g --shm-size 256m \
   --security-opt "seccomp=$here/../container/chromium-seccomp.json" "$image"
