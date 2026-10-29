@@ -41,7 +41,7 @@ describe('computer backups', () => {
   }
 
   async function request(method: string, path: string, body?: unknown, raw?: Buffer): Promise<{ status: number; body: any; bytes: Buffer }> {
-    const response = await fetch(url + path, { method, ...(raw ? { body: raw } : body === undefined ? {} : { body: JSON.stringify(body) }) })
+    const response = await fetch(url + path, { method, ...(raw ? { body: new Uint8Array(raw) } : body === undefined ? {} : { body: JSON.stringify(body) }) })
     const bytes = Buffer.from(await response.arrayBuffer())
     let parsed: unknown = undefined
     try { parsed = JSON.parse(bytes.toString('utf8')) } catch {}

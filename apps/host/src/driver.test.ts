@@ -86,6 +86,15 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
     expect(restores).toEqual([false, true, false, false])
     expect(controller.lastError?.()).toContain('without confirming a disk flush')
     expect(await readFile(join(root, 'overlays', 'owner.raw'), 'utf8')).toBe('persistent user data')
+    // A restored disk replaces the disk in the next restart, and only that one.
+    await writeFile(join(root, 'overlays', 'restored.raw'), 'restored data')
+    controller.replaceDiskOnRestart!({ image: join(root, 'overlays', 'restored.raw'), binding: null })
+    await controller.restart!()
+    expect(await readFile(join(root, 'overlays', 'owner.raw'), 'utf8')).toBe('restored data')
+    expect(existsSync(join(root, 'overlays', 'restored.raw'))).toBe(false)
+    await writeFile(join(root, 'overlays', 'owner.raw'), 'persistent user data')
+    await controller.restart!()
+    expect(await readFile(join(root, 'overlays', 'owner.raw'), 'utf8')).toBe('persistent user data')
     await controller.park()
     await recovery.begin()
     failThaw = true
