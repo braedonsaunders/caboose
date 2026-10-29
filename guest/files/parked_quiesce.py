@@ -218,9 +218,14 @@ def prepare(root='/sys/fs/cgroup', proc='/proc'):
     return {'branches': branch_states(nodes, trusted, root), 'homeDevice': os.stat('/home/caboose').st_dev}
 
 
-def freeze(recorded, root='/sys/fs/cgroup', proc='/proc'):
-    """Freeze only after the host has durably recorded `recorded`."""
+def freeze(intent, root='/sys/fs/cgroup', proc='/proc'):
+    """Freeze only after the host has durably recorded the full intent."""
+    if not isinstance(intent, dict) or set(intent) != {'branches', 'homeDevice'} or type(intent['homeDevice']) is not int or intent['homeDevice'] < 0:
+        raise Unsupported('invalid filesystem freeze intent')
+    recorded = intent['branches']
     check_mounts((Path(proc) / 'self' / 'mountinfo').read_text())
+    if os.stat('/home/caboose').st_dev != intent['homeDevice']:
+        raise Unsupported('home filesystem identity changed')
     nodes = cgroup_tree(root)
     trusted = recovery_ancestry(proc)
     check_control_plane(trusted, proc)
@@ -369,4 +374,4 @@ if __name__ == '__main__':
     elif len(sys.argv) == 3 and sys.argv[1] == 'thaw':
         thaw(branches=json.loads(sys.argv[2]))
     else:
-        raise SystemExit('usage: parked_quiesce.py prepare | freeze BRANCHES_JSON | thaw [BRANCHES_JSON]')
+        raise SystemExit('usage: parked_quiesce.py prepare | freeze INTENT_JSON | thaw [BRANCHES_JSON]')

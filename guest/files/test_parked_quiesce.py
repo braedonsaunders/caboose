@@ -21,9 +21,20 @@ class QuiesceChecks(unittest.TestCase):
             proc = Path(directory)
             (proc / 'self').mkdir()
             (proc / 'self' / 'mountinfo').write_text(ROOT)
-            with patch('parked_quiesce.cgroup_tree', return_value={}), patch('parked_quiesce.recovery_ancestry', return_value=[1]), patch('parked_quiesce.check_control_plane'), patch('parked_quiesce.freeze_branches'), patch('parked_quiesce.freeze_filesystem', side_effect=OSError('unknown outcome')), patch('parked_quiesce.thaw') as recover:
-                with self.assertRaises(OSError): freeze(recorded, proc=directory)
+            with patch('parked_quiesce.os.stat') as stat, patch('parked_quiesce.cgroup_tree', return_value={}), patch('parked_quiesce.recovery_ancestry', return_value=[1]), patch('parked_quiesce.check_control_plane'), patch('parked_quiesce.freeze_branches'), patch('parked_quiesce.freeze_filesystem', side_effect=OSError('unknown outcome')), patch('parked_quiesce.thaw') as recover:
+                stat.return_value.st_dev = 5
+                with self.assertRaises(OSError): freeze({'branches': recorded, 'homeDevice': 5}, proc=directory)
             recover.assert_called_once_with(branches=recorded)
+
+    def test_changed_home_device_refuses_freeze(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / 'self').mkdir()
+            (proc / 'self' / 'mountinfo').write_text(ROOT)
+            with patch('parked_quiesce.os.stat') as stat, patch('parked_quiesce.freeze_branches') as freezer:
+                stat.return_value.st_dev = 6
+                with self.assertRaises(Unsupported): freeze({'branches': [], 'homeDevice': 5}, proc=directory)
+                freezer.assert_not_called()
 
     def test_control_plane_rejects_writable_shared_home_device_mapping(self):
         with tempfile.TemporaryDirectory() as directory:
