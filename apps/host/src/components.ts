@@ -14,7 +14,7 @@ const CHUNK = 48 * 1024
 export async function readBundle(directory = root): Promise<Bundle> {
   const manifest = await readFile(join(directory, 'components/manifest.json'))
   const names: unknown = JSON.parse(manifest.toString())
-  if (!Array.isArray(names) || !names.length || names.some(n => typeof n !== 'string' || !/^[a-z0-9][a-z0-9._/-]*$/.test(n) || n.split('/').includes('..'))) throw new Error('Invalid components manifest')
+  if (!Array.isArray(names) || !names.length || names.some(n => typeof n !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(n) || n.split('/').includes('..'))) throw new Error('Invalid components manifest')
   const hash = createHash('sha256')
   const files: Bundle['files'] = []
   for (const name of names as string[]) {
