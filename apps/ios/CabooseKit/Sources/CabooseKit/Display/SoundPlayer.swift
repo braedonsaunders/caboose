@@ -89,7 +89,7 @@ final class SoundPlayer: @unchecked Sendable {
     }) {
         self.clock = clock
         self.activate = activate
-        renderer.audioTimePitchAlgorithm = .timeDomain
+        renderer.audioTimePitchAlgorithm = .spectral
         clock.add(renderer)
         #if os(iOS)
         interruptionObserver = NotificationCenter.default.addObserver(
