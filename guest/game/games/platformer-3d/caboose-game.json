@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "title": "Platformer 3D",
+  "app_id": "org.godotengine.demo.Platformer3D",
+  "root": "web",
+  "entry": "index.html",
+  "window": { "size": [1280, 720], "min": [640, 360] }
+}
