@@ -572,7 +572,7 @@ other clients and allow component updates to finish before running it. The check
 parks and wakes the computer, creates a unique home directory and moves that
 directory to Trash afterward. A failed cleanup is reported. A fallback wake
 during a read fails the check; it does not prove the source of a failure. Run
-`node --test apps/host/scripts/check-parked-files.test.mjs` for the local harness
+`pnpm --filter caboose-host exec vitest run scripts/check-parked-files.test.mjs` for the local harness
 without a VM. `CABOOSE_CHECK_TIMEOUT_MS` sets the request bound (10–600 seconds).
 | `node apps/host/scripts/check-push.mjs [device-index]` | Run on the host with its `CABOOSE_APNS_*` variables and `CABOOSE_IMAGE_ROOT`: sends a test alert to a device from `push-devices.json` (default index 0) without printing tokens. APNs acceptance is not proof of delivery; check the device. |
 | `apps/host/scripts/check-container.sh` | Against the running Compose service on Linux: the container's own network namespace, TAP and NAT, KVM access, the reflink disk root, authenticated health, and the bundled console (HTML, compiled assets, SPA fallback, API authentication). |
