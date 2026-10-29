@@ -66,4 +66,11 @@ jobs:
         if: matrix.arch == 'arm64'
         run: |
           sudo apt-get install -y qemu-system-arm cpio
-          bash guest/image/check-arm64-boot.sh "$RUNNER_TEMP/split-image"
+          CABOOSE_BOOT_LOG="$RUNNER_TEMP/arm64-boot.log" bash guest/image/check-arm64-boot.sh "$RUNNER_TEMP/split-image"
+      - name: Retain arm64 boot evidence
+        if: always() && matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-cloud-boot-${{ github.sha }}
+          path: ${{ runner.temp }}/arm64-boot.log
+          retention-days: 7

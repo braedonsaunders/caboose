@@ -2,7 +2,7 @@
 # Boot a built split image with software-emulated virtio MMIO; never writes its inputs.
 set -euo pipefail
 image=${1:?usage: check-arm64-boot.sh IMAGE_DIRECTORY}
-for tool in qemu-system-aarch64 cpio timeout unmkinitramfs; do
+for tool in qemu-system-aarch64 cpio timeout unmkinitramfs lsinitramfs python3 gzip; do
   command -v "$tool" >/dev/null || { echo "Missing tool: $tool" >&2; exit 1; }
 done
 for file in base.raw vmlinux initrd system.erofs; do test -s "$image/$file"; done
@@ -39,22 +39,44 @@ echo CABOOSE_ARM64_BOOT_PASSED > /dev/console
 poweroff -f
 CHECK
 chmod 755 "$work/extra/scripts/local-bottom/00-caboose-device-check" "$work/extra/scripts/local-bottom/zz-caboose-boot-check"
-# initramfs-tools may use a generated ORDER file instead of enumerating hooks.
-# Preserve its existing order and run our acceptance hook after all original hooks.
+# ARM initrds without an early archive extract directly into the destination;
+# those with early archives extract their compressed payload into main/.
+# Rebuild the main archive instead of appending raw cpio after a compressed stream.
 unmkinitramfs "$image/initrd" "$work/unpacked"
-if [[ -f "$work/unpacked/main/scripts/local-bottom/ORDER" ]]; then
-  printf '/scripts/local-bottom/00-caboose-device-check "$@"\n' > "$work/extra/scripts/local-bottom/ORDER"
-  cat "$work/unpacked/main/scripts/local-bottom/ORDER" >> "$work/extra/scripts/local-bottom/ORDER"
-  printf '\n/scripts/local-bottom/zz-caboose-boot-check "$@"\n' >> "$work/extra/scripts/local-bottom/ORDER"
+main=$(python3 - "$work/unpacked" "$work/extra/scripts/local-bottom" <<'PYTHON'
+from pathlib import Path
+import shutil
+import sys
+root, extra = map(Path, sys.argv[1:])
+candidates = [path for path in (root, root / 'main') if (path / 'scripts/local-bottom/ORDER').is_file()]
+if len(candidates) != 1:
+    raise SystemExit('Expected exactly one extracted initramfs main ORDER file')
+main = candidates[0]
+directory = main / 'scripts/local-bottom'
+order = directory / 'ORDER'
+original = order.read_text()
+for name in ('00-caboose-device-check', 'zz-caboose-boot-check'):
+    shutil.copyfile(extra / name, directory / name)
+    (directory / name).chmod(0o755)
+order.write_text('/scripts/local-bottom/00-caboose-device-check "$@"\n' + original
+                 + '\n/scripts/local-bottom/zz-caboose-boot-check "$@"\n')
+print(main)
+PYTHON
+)
+echo "Acceptance hooks installed in $main"
+: > "$work/initrd"
+if [[ $main == "$work/unpacked/main" ]]; then
+  for early in "$work/unpacked"/early*; do
+    [[ -d $early ]] || continue
+    (cd "$early" && find . -print0 | cpio --quiet --null -o -H newc --owner=0:0) >> "$work/initrd"
+  done
 fi
-cp "$image/initrd" "$work/initrd"
-(
-  cd "$work/extra"
-  {
-    printf '%s\n' scripts scripts/local-bottom scripts/local-bottom/00-caboose-device-check scripts/local-bottom/zz-caboose-boot-check
-    if [[ -f scripts/local-bottom/ORDER ]]; then printf '%s\n' scripts/local-bottom/ORDER; fi
-  } | cpio --quiet -o -H newc
-) >> "$work/initrd"
+(cd "$main" && find . -print0 | cpio --quiet --null -o -H newc --owner=0:0 | gzip -1) >> "$work/initrd"
+lsinitramfs "$work/initrd" > "$work/files"
+for name in 00-caboose-device-check zz-caboose-boot-check; do
+  grep -Fx "scripts/local-bottom/$name" "$work/files"
+done
+boot_log=${CABOOSE_BOOT_LOG:-$work/boot.log}
 # The root device uses QEMU's temporary snapshot; the EROFS attachment is read-only.
 # No host filesystem, host service, guest network or hardware accelerator is exposed.
 # Explicit MMIO buses preserve the production root=vda/system=vdb contract. QEMU's
@@ -67,7 +89,7 @@ timeout --kill-after=10s 300s qemu-system-aarch64 \
   -drive "if=none,id=root,file=$image/base.raw,format=raw,snapshot=on" \
   -device virtio-blk-device,drive=root,bus=virtio-mmio-bus.0,serial=caboose-ci-root \
   -drive "if=none,id=system,file=$image/system.erofs,format=raw,readonly=on" \
-  -device virtio-blk-device,drive=system,bus=virtio-mmio-bus.1,serial=caboose-ci-system 2>&1 | tee "$work/boot.log"
-tr -d '\r' < "$work/boot.log" | grep -Fx CABOOSE_ARM64_BOOT_PASSED
-if grep -q CABOOSE_ARM64_BOOT_FAILED "$work/boot.log"; then exit 1; fi
+  -device virtio-blk-device,drive=system,bus=virtio-mmio-bus.1,serial=caboose-ci-system 2>&1 | tee "$boot_log"
+tr -d '\r' < "$boot_log" | grep -Fx CABOOSE_ARM64_BOOT_PASSED
+if grep -q CABOOSE_ARM64_BOOT_FAILED "$boot_log"; then exit 1; fi
 echo 'ARM64 cloud kernel mounted the split system and ran Python and dpkg.'
