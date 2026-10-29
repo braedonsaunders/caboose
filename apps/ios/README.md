@@ -430,7 +430,9 @@ Traversal and files outside the computer home never open on the phone.
 
 Return a complete fenced `inline-html` block with an inline SVG chart, a button that changes
 it, a growing/shrinking section and a CSS animation. Check touch, VoiceOver labels, rotation,
-Expand/Collapse and HTML export. Append prose after the fence while streaming: the
+Full Screen, Done and HTML export. Change a widget control, open it full screen, then use
+Done: its interactive state must survive both moves and the view must fit after rotation.
+Append prose after the fence while streaming: the
 widget retains its interactive state. Incomplete HTML shows a completion placeholder,
 never source; an oversized widget shows a size message. A failed preview offers Try Again
 without showing HTML. External script/image,

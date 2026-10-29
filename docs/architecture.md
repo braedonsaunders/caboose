@@ -1831,7 +1831,8 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   widgets show a size message. HTML source is never displayed in the chat. Each widget
   uses an ephemeral WKWebView and an opaque-origin sandbox frame, with CSP and content rules
   blocking network and file access, navigation, external dependencies, frames and popups.
-  Widgets resize with their content, expand in place without losing JavaScript state, and
+  Widgets resize with their content, open full screen by moving the same web view into a
+  native presentation with Done (preserving JavaScript state), and
   offer HTML export. A preview failure shows a compact message with Retry, without dumping
   source. Network-blocking rules use separate scheme patterns supported by WebKit's rule
   compiler. No bearer token enters the web view. The sole native bridge,
