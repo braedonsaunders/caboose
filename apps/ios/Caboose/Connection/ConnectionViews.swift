@@ -170,7 +170,7 @@ struct ConnectionDiagnosticsView: View {
         bits >= 1_000_000 ? String(format: "%.1f Mbit/s", bits / 1_000_000) : String(format: "%.0f kbit/s", bits / 1000)
     }
 
-    private func networkDescription(_ path: DisplayLink.Path) -> String {
+    private func networkDescription(_ path: NetworkPath) -> String {
         var parts = [path.name]
         if path.expensive { parts.append("metered") }
         if path.constrained { parts.append("Low Data Mode") }

@@ -21,34 +21,6 @@ final class DisplayLink {
         case lost(String)
     }
 
-    /// The network path the phone is on, as `NWPathMonitor` reports it.
-    struct Path: Equatable {
-        var satisfied: Bool
-        var interfaces: [NWInterface.InterfaceType]
-        var expensive: Bool
-        var constrained: Bool
-
-        init(_ path: NWPath) {
-            satisfied = path.status == .satisfied
-            interfaces = path.availableInterfaces.map(\.type)
-            expensive = path.isExpensive
-            constrained = path.isConstrained
-        }
-
-        /// "Wi-Fi", "Cellular", "Wired"…: the interface traffic prefers.
-        var name: String {
-            guard satisfied, let first = interfaces.first else { return "No network" }
-            return switch first {
-            case .wifi: "Wi-Fi"
-            case .cellular: "Cellular"
-            case .wiredEthernet: "Wired"
-            case .loopback: "Loopback"
-            case .other: "Other (VPN or tunnel)"
-            @unknown default: "Other"
-            }
-        }
-    }
-
     struct Drop: Equatable, Identifiable {
         let id = UUID()
         let at: Date
@@ -56,7 +28,7 @@ final class DisplayLink {
     }
 
     private(set) var status: Status = .idle
-    private(set) var path: Path?
+    private(set) var path: NetworkPath?
     /// The most recent losses of the display, newest first.
     private(set) var drops: [Drop] = []
     /// Reconnects that reached the display since the app started.
@@ -71,14 +43,14 @@ final class DisplayLink {
     private var policy = ReconnectPolicy()
     private var pending: Task<Void, Never>?
     private var monitor: NWPathMonitor?
-    private var lastPath: Path?
+    private var lastPath: NetworkPath?
 
     /// Starts following the network path. Calling it again does nothing.
     func start() {
         guard monitor == nil else { return }
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
-            let summary = Path(path)
+            let summary = NetworkPath(path)
             Task { @MainActor in self?.pathChanged(summary) }
         }
         monitor.start(queue: DispatchQueue(label: "caboose.display.path"))
@@ -167,7 +139,7 @@ final class DisplayLink {
         await self.attempt?()
     }
 
-    private func pathChanged(_ next: Path) {
+    private func pathChanged(_ next: NetworkPath) {
         let previous = lastPath
         lastPath = next
         path = next
@@ -179,22 +151,33 @@ final class DisplayLink {
             }
             return
         }
-        // The first report is the path the app started on, not a change.
-        guard let previous, previous != next else { return }
         switch status {
-        case .live:
-            // A socket on an interface the phone left can stay open for minutes saying nothing.
-            if previous.interfaces != next.interfaces || !previous.satisfied { probe?() }
-        case .waitingForNetwork(let reason), .lost(let reason), .reconnecting(_, _, _, let reason):
-            // A new network is a new chance: start over, now.
-            retryNow(reason: reason)
         case .idle:
             break
+        case .live:
+            // A socket on a route the phone left can stay open for minutes saying nothing.
+            if NetworkPath.response(from: previous, to: next, live: true) == .probe { probe?() }
+        case .waitingForNetwork(let reason), .lost(let reason), .reconnecting(_, _, _, let reason):
+            // A new network is a new chance: start over, now.
+            if NetworkPath.response(from: previous, to: next, live: false) == .retry { retryNow(reason: reason) }
         }
     }
 
     private func record(_ reason: String) {
         drops.insert(Drop(at: Date(), reason: reason), at: 0)
         if drops.count > 5 { drops.removeLast(drops.count - 5) }
+    }
+}
+
+extension NetworkPath {
+    /// The kinds of interface the path uses (`usesInterfaceType`), not the ones merely available.
+    init(_ path: NWPath) {
+        let kinds: [(NWInterface.InterfaceType, Kind)] = [
+            (.wifi, .wifi), (.cellular, .cellular), (.wiredEthernet, .wired), (.loopback, .loopback), (.other, .other),
+        ]
+        self.init(satisfied: path.status == .satisfied,
+                  uses: Set(kinds.filter { path.usesInterfaceType($0.0) }.map(\.1)),
+                  gateways: path.gateways.map { "\($0)" },
+                  expensive: path.isExpensive, constrained: path.isConstrained)
     }
 }
