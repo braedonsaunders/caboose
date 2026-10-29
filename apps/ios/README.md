@@ -462,6 +462,10 @@ must be recreated). The Library comes from the host's own index, so it works whi
 is parked and never wakes it; getting, updating and removing an app need the computer running,
 and the host's reason shows when it is not.
 
+**New App**, beside Library, makes an app instead of installing one: describe it, tap Create,
+and a chat starts with the default agent asking for a Caboose app (`guest/apps`). The chat
+opens in Agents; the agent publishes the app, and it appears in Apps with its own icon.
+
 The wallpaper lies behind every tab and the desktop, here and on a TV: the brand gradient,
 wallpapers that change every quarter hour, one wallpaper, or a picture of your own from
 Photos. Rotation uses the 67 curated Unsplash photographs served by Lorem Picsum, with

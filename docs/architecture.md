@@ -1958,7 +1958,7 @@ repeated lines removed and clipped to a few lines, opens on tap.
 | Home | Today: the computer's state; its windows live in most-recently-used order, or while it rests their last pictures, kept on the phone; approvals (answered in place) and agents at work; agent turns that ended and visible files that changed since the app last left the screen, else the newest visible files (from the same `/v1/fs` scan that feeds Spotlight); pinned and recent apps; AirPlay; and Ask, which opens a window, app or file by name or starts a chat with the default agent |
 | Desktop | The computer's desktop on this screen, configured for exactly the space beside or between the bars, with Keyboard, AirPlay and Full Screen in the toolbar; while a TV shows the desktop, the phone's trackpad |
 | Agents | The Ask bar, approvals, tasks and the agent seat's windows |
-| Apps | Every desktop entry, System Settings & Tools last, and Library |
+| Apps | Every desktop entry, System Settings & Tools last, Library, and New App, which starts a chat with the default agent to make an [agent app](#agent-apps) |
 | Terminal | A native terminal, present when the app is built with it |
 
 `caboose://home`, `desktop`, `agents`, `apps` and `terminal` select a tab;
