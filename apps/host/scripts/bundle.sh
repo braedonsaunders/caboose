@@ -74,7 +74,7 @@ find "$repo/apps/host/dist" -name '*.test.js' -delete
 
 echo "Collecting production dependencies"
 ( cd "$repo" && pnpm --filter caboose-host deploy --prod "$work/host" )
-mkdir -p "$root/app/apps/host" "$root/app/apps/web" "$root/app/guest/catalog" "$root/bin"
+mkdir -p "$root/app/apps/host" "$root/app/apps/web" "$root/app/guest/catalog" "$root/app/guest/container" "$root/bin"
 cp -R "$work/host/node_modules" "$work/host/package.json" "$root/app/apps/host/"
 cp -R "$repo/apps/host/dist" "$root/app/apps/host/dist"
 cp -R "$repo/apps/host/migrations" "$root/app/apps/host/migrations"
@@ -88,6 +88,8 @@ cp -R "$repo/apps/web/dist" "$root/app/apps/web/dist"
   }' "$root/app/guest" )
 cp "$repo/guest/catalog/catalog.json" "$root/app/guest/catalog/"
 cp -R "$repo/guest/catalog/icons" "$root/app/guest/catalog/icons"
+# The seccomp profile the host gives containers (guest/container/README.md).
+cp "$repo/guest/container/caboose-seccomp.json" "$root/app/guest/container/"
 cp "$repo/apps/host/scripts/setup-disks.sh" "$root/bin/caboose-setup-disks"
 
 echo "Adding Node $NODE_VERSION ($os-$node_arch)"

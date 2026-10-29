@@ -1,4 +1,4 @@
-import type { CatalogOperation, CatalogResponse } from './catalog.js'
+import type { CatalogOperation, CatalogPage, CatalogResponse, CatalogStorefront, DiscoverQuery } from './catalog.js'
 import { fsQuery, joinPath, numberedName, type FileItem } from './files.js'
 import type { ComponentsUpgrade, HealthStatus, HostInfo } from './host.js'
 
@@ -585,6 +585,19 @@ export class CabooseClient {
     return this.request<CatalogResponse>('GET', '/v1/catalog', { timeoutMs: 60_000 })
   }
 
+  /** A page of the Library from the host's own index; it works while the computer is parked and never wakes it. */
+  /** The Library's front page: shelves of apps, from the host's own index; never wakes the computer. */
+  catalogStorefront(): Promise<CatalogStorefront> {
+    return this.request<CatalogStorefront>('GET', '/v1/catalog/storefront', { timeoutMs: 60_000 })
+  }
+
+  discoverCatalog({ q = '', category = '', offset = 0 }: DiscoverQuery = {}): Promise<CatalogPage> {
+    const query = new URLSearchParams({ q: q.trim() })
+    if (category) query.set('category', category)
+    if (offset > 0) query.set('offset', String(offset))
+    return this.request<CatalogPage>('GET', `/v1/catalog/discover?${query}`, { timeoutMs: 60_000 })
+  }
+
   /** Queues an operation; the host answers 202 and the catalog then reports its progress. */
   startCatalogOperation(id: string, operation: CatalogOperation): Promise<{ accepted: true }> {
     const app = `/v1/catalog/${encodeURIComponent(id)}`
@@ -593,9 +606,6 @@ export class CabooseClient {
       : this.request<{ accepted: true }>('POST', `${app}/${operation}`, { timeoutMs: 30_000 })
   }
 
-  installPack(id: string): Promise<{ accepted: true }> {
-    return this.request<{ accepted: true }>('POST', `/v1/catalog/packs/${encodeURIComponent(id)}/install`, { timeoutMs: 30_000 })
-  }
 
   /** Lists a home-relative folder. Every /v1/fs request wakes a parked computer. */
   async listFiles(path: string): Promise<FileItem[]> {

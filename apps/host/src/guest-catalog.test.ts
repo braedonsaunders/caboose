@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -8,7 +8,7 @@ import { afterEach, expect, it } from 'vitest'
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-it('verifies guest downloads before invoking apt and retains the previous release for rollback', () => {
+it('verifies a release download against its published checksum before apt, and keeps no release once installed', () => {
   const root = mkdtempSync(join(tmpdir(), 'caboose-catalog-test-')); roots.push(root)
   const bin = join(root, 'bin'); mkdirSync(bin)
   const put = (name: string, body: string) => writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 })
@@ -16,11 +16,13 @@ it('verifies guest downloads before invoking apt and retains the previous releas
   put('dpkg', 'exit 0')
   put('apt-get', 'printf "%s\\n" "$*" >> "$TEST_APT_LOG"')
   put('dpkg-query', 'printf "installed\\t1.0.0-1"')
-  const script = readFileSync(new URL('./guest-catalog.py', import.meta.url), 'utf8').replace("Path('/var/lib/caboose/catalog')", `Path(${JSON.stringify(join(root, 'state'))})`)
+  const state = join(root, 'state')
+  const script = readFileSync(new URL('./guest-catalog.py', import.meta.url), 'utf8').replace("Path('/var/lib/caboose/catalog')", `Path(${JSON.stringify(state)})`)
   const payload = join(root, 'payload'), log = join(root, 'apt.log')
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, TEST_PAYLOAD: payload, TEST_APT_LOG: log }
   const source = (version: string, contents: string) => ({ kind: 'deb', package: 'example', version, url: 'https://example.invalid/file.deb', size: Buffer.byteLength(contents), sha256: createHash('sha256').update(contents).digest('hex') })
   const execute = (action: string, src: ReturnType<typeof source>) => spawnSync('/usr/bin/python3', ['-c', script, action, JSON.stringify({ id: 'example', source: src })], { env, encoding: 'utf8' })
+  mkdirSync(state); writeFileSync(join(state, 'example-0.9.0.deb'), 'old cached release')
   writeFileSync(payload, 'first release')
   expect(execute('install', source('1.0.0', 'first release')).status).toBe(0)
   writeFileSync(payload, 'wrong contents')
@@ -30,12 +32,10 @@ it('verifies guest downloads before invoking apt and retains the previous releas
   expect(readFileSync(log, 'utf8').match(/install -y/g)).toHaveLength(1)
   writeFileSync(payload, 'second release')
   expect(execute('update', source('2.0.0', 'second release')).status).toBe(0)
-  expect(execute('rollback', source('2.0.0', 'second release')).status).toBe(0)
-  const state = JSON.parse(readFileSync(join(root, 'state/example.json'), 'utf8')) as { current: { version: string }; previous: { version: string } }
-  expect(state.current.version).toBe('1.0.0')
-  expect(state.previous.version).toBe('2.0.0')
-  expect(readFileSync(log, 'utf8')).toContain('example-1.0.0.deb')
+  expect(readFileSync(log, 'utf8')).toContain('example-2.0.0.deb')
   expect(readFileSync(log, 'utf8')).toContain('mesa-vulkan-drivers libgl1-mesa-dri')
+  expect(readdirSync(state).filter(name => name.endsWith('.deb'))).toEqual([])
+  expect(spawnSync('/usr/bin/python3', ['-c', script, 'rollback', JSON.stringify({ id: 'example', source: source('2.0.0', 'second release') })], { env, encoding: 'utf8' }).stderr).toContain('Unknown operation')
 })
 
 function fixture() {
@@ -51,7 +51,7 @@ function fixture() {
   const script = readFileSync(new URL('./guest-catalog.py', import.meta.url), 'utf8').replace("Path('/var/lib/caboose/catalog')", `Path(${JSON.stringify(state)})`)
   const app = { id: 'example', operationId: 'test-operation', source: { kind: 'apt', packages: ['example'] } }
   const execute = (action: string, argument: unknown = app, code = script) => spawnSync('/usr/bin/python3', ['-c', code, action, JSON.stringify(argument)], { env, encoding: 'utf8' })
-  const list = () => JSON.parse(execute('list', [app]).stdout).example
+  const list = () => JSON.parse(execute('list', [app]).stdout).apps.example
   const read = () => JSON.parse(readFileSync(join(state, 'example.json'), 'utf8'))
   const save = (record: unknown) => writeFileSync(join(state, 'example.json'), JSON.stringify(record))
   const start = (argument: unknown = app, code = script) => {

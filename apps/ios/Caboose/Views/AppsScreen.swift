@@ -1,8 +1,8 @@
 import CabooseKit
 import SwiftUI
 
-/// Every app on the computer, and the catalog's apps to add: the Shelf, and Library for packs,
-/// updates and removal.
+/// Every app on the computer, and the curated apps to add: the Shelf, and Library for every
+/// app there is to get, collections, updates and removal.
 struct AppsScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.shellTabPlacement) private var placement
@@ -99,7 +99,8 @@ struct AppsScreen: View {
         }
     }
 
-    /// Optional apps from the computer's catalog: just installed first, then the ones to get.
+    /// Curated apps: just installed first, then the ones to get. Other apps join only while
+    /// they install or need attention; once installed they are with the rest above.
     @ViewBuilder private var shelf: some View {
         let recent = model.catalog.apps.filter { model.catalog.recentInstalls.contains($0.id) }
         let available = recent + model.catalog.apps.filter { $0.installedVersion == nil && !model.catalog.recentInstalls.contains($0.id) }

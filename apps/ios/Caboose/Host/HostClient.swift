@@ -144,9 +144,17 @@ struct HostClient: Sendable {
         return components.url!
     }
 
+    /// The address of a route. `path` is percent-encoded (ids through `pathComponent`) and may
+    /// end in a query string; characters a URL cannot hold are encoded, escapes are kept.
+    func endpoint(_ path: String) -> URL {
+        var root = baseURL.absoluteString
+        while root.hasSuffix("/") { root.removeLast() }
+        return URL(string: root + path) ?? baseURL.appendingPathComponent(path)
+    }
+
     func request<T: Decodable>(_ method: String, _ path: String, body: [String: JSONValue]? = nil,
                                timeout: TimeInterval) async throws -> T {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path), timeoutInterval: timeout)
+        var request = URLRequest(url: endpoint(path), timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")

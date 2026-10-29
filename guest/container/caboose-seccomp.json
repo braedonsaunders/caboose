@@ -877,15 +877,16 @@
         "unshare"
       ],
       "action": "SCMP_ACT_ALLOW",
-      "args": [
-        {
-          "index": 0,
-          "value": 235012096,
-          "valueTwo": 0,
-          "op": "SCMP_CMP_MASKED_EQ"
-        }
+      "comment": "Caboose: namespaces for Chromium's and Flatpak's (bubblewrap's) sandboxes; the kernel still requires CAP_SYS_ADMIN in the owning user namespace"
+    },
+    {
+      "names": [
+        "mount",
+        "umount2",
+        "pivot_root"
       ],
-      "comment": "Permit Chromium user, PID and network namespaces without mount, UTS, IPC or cgroup namespaces."
+      "action": "SCMP_ACT_ALLOW",
+      "comment": "Caboose: bubblewrap builds each Flatpak sandbox's root inside its own user and mount namespaces; without CAP_SYS_ADMIN the container cannot mount elsewhere"
     }
   ]
 }

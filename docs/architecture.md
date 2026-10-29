@@ -373,38 +373,111 @@ messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 
 ### Catalog
 
-`guest/catalog/catalog.json` supplies curated applications, packs and release pins. The
-Library also searches the guest's Debian AppStream desktop-application metadata and displays
-at most 100 matching applications with categories and project licences. The initial selection labels Caboose picks as curated; it does not claim a popularity ranking. The guest requires
-an APT candidate for its architecture; the host validates the package and desktop identifiers
-before offering an APT operation. A discovered application's package and AppStream identity
-are retained in its operation record so it can be rediscovered after a host restart. Search
-requires a running guest and does not wake it. The Library reports discovery failures and
-keeps curated entries available. Debian applications install from Debian 13's signed repositories. On arm64, the catalog
-omits the pinned Craft `.deb` packages, which are x86_64-only, and packs with no compatible entries. Craft releases have
-fixed URLs, byte counts and SHA-256 hashes. No pin changes automatically; a changed pin
-makes an update available for the owner to choose.
+The Library is every application a computer can add: Caboose's curated entries
+(`guest/catalog/catalog.json`: Craft releases and Debian applications) and Flathub's desktop
+applications. A Flathub application that is also a curated entry (`flathub` in `catalog.json`)
+is shown once, as the curated entry. Every operation is on one application.
+
+- **Storefront.** The Library's front page is shelves: Popular (every application by installs
+  in the last month, a curated entry counted by its Flathub twin's), then one per category
+  with Caboose's entries first and the category's most installed Flathub applications after,
+  15 to a shelf.
+- **Lists.** A search, or a shelf's whole category, is one ranked list: curated matches first,
+  then Flathub's by popularity, or with a query by relevance weighted by popularity.
+
+- **Flathub.** The host keeps its own index of Flathub's desktop applications for the
+  computer's architecture: name, summary, developer, licence, verified publisher, display
+  categories, keywords, the runtime the stable branch builds against, and installs in the last
+  month. It is fetched from Flathub's public search API (every page, about 3,300 apps) on first
+  use and daily after, validated field by field, and kept in `CABOOSE_IMAGE_ROOT/flathub`;
+  a failed refresh keeps the last index. Icons are Flathub's 128-pixel PNGs, fetched once
+  each and kept beside it. Search needs no running computer and never wakes one. Without a
+  query, Flathub apps are ordered by installs; with one, every word must match the name,
+  keywords, id, summary or developer, and relevance is weighted by popularity.
+- **Craft releases** follow each app's latest GitHub release
+  (`storytold/<id>`, `<id>-<version>-linux-<x86_64|aarch64>.deb`). A release is offered only
+  when its asset's published SHA-256 and size are present; prereleases and drafts are not. The
+  host checks GitHub at most every six hours, keeps the last verified release on disk, and keeps
+  offering it when GitHub is unreachable or a newer tag has no verifiable asset.
+- **Debian applications** install from Debian 13's signed repositories. Debian applications the
+  Library discovered through AppStream before it offered Flathub stay listed, updatable and
+  removable: their package and AppStream identity are kept in their operation record.
+
+**Updates.** Installed applications update themselves. Once a day while a computer runs (never
+waking one), the host first updates the shared runtimes, then asks the guest which Flathub apps
+have a newer commit and which curated Debian packages APT can upgrade, compares each Craft app's
+installed version with its latest release, and runs an ordinary `update` operation for each.
+`updateAvailable` reports what the last check found and `update` installs it at once.
 
 The host runs the installer (`guest-catalog.py`) as root through the guest channel on both
-runtimes. Downloads go directly from the guest, are size- and SHA-256-checked before APT
-installs them, and are kept in `/var/lib/caboose/catalog` for rollback. Release installs
-also install `mesa-vulkan-drivers` and `libgl1-mesa-dri`. Debian applications cannot be
-rolled back. Installed versions come from dpkg; failures and interrupted operations are
-recorded in the guest and reported on the next listing. A guest operation lock, retained
-by package-manager children, distinguishes active work from an interrupted worker. A
-retry of failed or interrupted work completes pending dpkg configuration before trying
+runtimes. A Craft release downloads directly from the guest and is size- and SHA-256-checked
+before APT installs it with `mesa-vulkan-drivers` and `libgl1-mesa-dri`; the `.deb` is deleted
+once installed. A Flathub app installs into the computer's system Flatpak installation through
+libflatpak, from the Flathub remote whose repository file (with its signing key) ships in
+`guest/flatpak`. Installed versions come from dpkg and Flatpak; failures and interrupted
+operations are recorded in the guest and reported on the next listing. A guest operation lock,
+retained by package-manager children, distinguishes active work from an interrupted worker. A
+retry of failed or interrupted Debian work completes pending dpkg configuration before trying
 the requested operation again, even when dpkg already reports the application installed.
 
+### Runtime depot
+
+Flatpak apps run on shared runtimes (GNOME, KDE, Freedesktop), each about a gigabyte. A host
+downloads each runtime once, for every computer: none is installed ahead of an app that needs it.
+
+- **One installation, read-only everywhere.** The depot is a Flatpak installation owned by the
+  host: the Docker volume `caboose-depot` on the container runtime, mounted read-only at
+  `/var/lib/caboose/depot` in each computer. `/etc/flatpak/installations.d/caboose-depot.conf`
+  names it; the installer adds it as the dependency source of every app transaction, so an app
+  installs into its own computer and runs on the depot's runtime in place.
+- **Written only by the host's builder.** Before a Flathub install or update, the host adds the
+  app's runtime (with its GL driver, locale and codec extensions) through a builder: a
+  throwaway container from the computer image with the depot writable, running
+  `depot-builder.py`. No computer can modify a runtime another computer runs. Builds are
+  serialized; a second request for the same runtime waits for the first.
+- **Daily maintenance.** The builder updates every runtime. A superseded runtime's deployed
+  files stay for 14 days for apps that started on it and still run. A runtime no computer has
+  reported using for 30 days is removed; a computer whose apps still need it after a long sleep
+  gets it back on its next listing, before an app needs it.
+- **Without the depot** (a microVM host, or a container created before the depot existed), an
+  app's runtime installs into the computer itself.
+
+**Flatpak in a container.** Flatpak runs each app in bubblewrap, which needs user and mount
+namespaces and gives the app its own `/proc`. A container computer gets them as follows:
+
+- The host creates containers with `guest/container/caboose-seccomp.json`, which allows the
+  namespaces and the mounts inside them (the kernel still requires `CAP_SYS_ADMIN` in the
+  owning user namespace, which the container's root lacks).
+- The kernel lets a sandbox mount a fresh `/proc` only where a fully visible one exists, and
+  Docker masks parts of the container's. In container computers `/usr/bin/bwrap` is
+  `guest/flatpak/caboose-bwrap` (the real one is diverted to `/usr/bin/bwrap.distrib`), which
+  gives each sandbox the container's `/proc` read-only instead. A Flatpak app there can see
+  the computer's processes, and read the `/proc` entries of its user's other processes, which
+  Flatpak elsewhere hides; nothing of the host is exposed, and Docker's masks stay.
+- bubblewrap's own lock on nested user namespaces (`--disable-userns`, which writes
+  `/proc/sys/user/max_user_namespaces`) needs that fresh `/proc`, so the wrapper drops it and
+  `--assert-userns-disabled`. Flatpak's seccomp filter still refuses every app `unshare`,
+  `setns`, `clone` with `CLONE_NEWUSER` and `clone3`; `check-flathub.sh` proves each refusal
+  inside a running app.
+- A sandbox root starts (Flatpak's own setup, such as `ldconfig`) begins in a user namespace
+  of its own, since the container's root cannot make the others.
+
+A container created before this profile cannot start the sandbox: the guest probes it as the
+computer's user, and the Library lists Flathub apps there with `unavailable` saying the computer
+must be recreated (its home is kept). On hosts that confine containers with Docker's default
+AppArmor profile, which denies `mount`, the probe fails the same way. A microVM computer needs
+none of this: its root holds every capability inside the VM.
+
 Only one catalog operation runs at a time, and it holds a computer lease. A second
-operation, a park, a restart or a Craft job receives 409 while one runs. Applications are
-installed individually; collections do not install applications. The listing reports the last
+operation, a park, a restart or a Craft job receives 409 while one runs. The listing reports the last
 observed state while the computer is parked and never wakes it. `/v1/apps` discovers
 installed desktop entries independently. Listings include the active operation's progress;
 a host that rediscovers it holds a lease and observes it until it ends. A command-channel
 timeout alone does not mark a still-active guest operation failed or release its lease.
 
-Download progress measures the bytes currently in the release file against its pinned
-size. `value` is that download fraction, capped at 1; it is never an overall installation
+Download progress measures bytes received: a Craft release's file against its published
+size, a Flatpak transaction's or the depot builder's transferred bytes against the
+transaction's download size. `value` is that download fraction, capped at 1; it is never an overall installation
 percentage. `downloadedBytes` and `totalBytes` accompany it. Preparation, verification,
 repository refresh, package installation, package configuration (including triggers) and
 removal are indeterminate, with `value: null`. Package setup can continue after dpkg
@@ -888,14 +961,15 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/catalog/discover?q=...` | Search Debian desktop applications, or list up to 100 when `q` is empty; returns `{ apps }` |
-| `GET` | `/v1/catalog` | `{ packs, apps }`: each catalog entry with `installedVersion`, `canRollback`, `lastError`, `interrupted`, `active`, `iconData`, `pinnedVersion`, `updateAvailable` and `progress` |
-| `POST` | `/v1/catalog/:id/install`, `/update`, `/rollback` | Queue an operation → 202 `{ accepted: true }` |
+| `GET` | `/v1/catalog/storefront` | The Library's front page (§ Catalog): `{ groups: [{ id, title, category, apps }], error }`, Popular first (`category` `""`), then each category with apps. Never wakes the computer |
+| `GET` | `/v1/catalog/discover?q=&category=&offset=` | The Library, ranked (§ Catalog), 40 at a time: `{ apps, total, offset, limit, categories, error }`. `category` is one of `categories` (Create, Video & Audio, Make, Productivity, Development, Games, Internet, Learn, Science, System, Utilities). `error` explains a Flathub index that could not be fetched; curated entries are still listed. Never wakes the computer |
+| `GET` | `/v1/catalog` | `{ apps }`: every curated entry and every other application that is installed, being changed or failed; an application this list leaves out is not installed. Each has `origin` (`caboose`, `flathub` or `debian`), `curated`, `categories`, `developer`, `verified`, `license`, `installs`, `installedVersion`, `latestVersion`, `updateAvailable`, `lastError`, `interrupted`, `active` (a guest operation runs), `unavailable` (why this computer cannot install it, or null), `iconData` and `progress` |
+| `POST` | `/v1/catalog/:id/install`, `/update` | Queue an operation → 202 `{ accepted: true }`. A Flathub id is `flathub-<app id>`, URL-encoded |
 | `DELETE` | `/v1/catalog/:id` | Queue removal → 202 |
 | `POST` | `/v1/catalog/:id/run` | **Wakes.** Run a Craft job (below) |
 
 Catalog mutations answer 409 while the computer is not running, another catalog operation
-runs, or a Craft job runs; 404 for an unknown application or pack.
+runs, or a Craft job runs; 404 for an unknown application.
 
 **Craft jobs.** A client stages inputs under `.caboose-jobs/<job>/` through `/v1/fs`, where
 `job` is 32 lowercase hex digits and inputs are named `input-0.<ext>`, `input-1.<ext>`, ….
@@ -918,7 +992,7 @@ operation in progress, answers 409; a failed CLI answers 502 with its output. Th
 broadcasts `job.progress` with `kind: "craft"` on start and on success or failure, and
 publishes the same job to Live Activities. A FilmCraft project's media must be at its
 original paths in the computer; the CLI reports offline media as a failure. The operations
-follow the pinned releases' CLIs:
+follow the releases' CLIs as documented at:
 [PhotoCraft v0.16.0](https://github.com/storytold/photocraft/blob/v0.16.0/book/src/automation/cli.md),
 [PDFCraft v0.14.0](https://github.com/storytold/pdfcraft/blob/v0.14.0/apps/pdfcraft-cli/src/main.rs),
 [LightCraft v0.14.0](https://github.com/storytold/lightcraft/blob/v0.14.0/apps/lightcraft-cli/src/main.rs) and

@@ -3,6 +3,7 @@ import { guardContainerPrinting } from './components.js'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { readFile, rm } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import type { Config, GpuKind } from './config.js'
 import type { ComputerIdentity, ComputerResources } from './driver.js'
 import type { App, Controller, Session } from './server.js'
@@ -50,6 +51,21 @@ export function containerPlacement(config: Pick<Config, 'containerName' | 'conta
  * instant, but unlike a microVM snapshot it does not survive a restart of the host;
  * after one the computer boots fresh with its home intact. See docs/architecture.md.
  */
+/**
+ * Caboose's seccomp profile: Moby's default, plus the namespaces and mounts that Chromium's
+ * and Flatpak's sandboxes make inside user namespaces of their own. The kernel still requires
+ * CAP_SYS_ADMIN in the owning user namespace, which the container's root does not have.
+ */
+export const SECCOMP_PROFILE = fileURLToPath(new URL('../../../guest/container/caboose-seccomp.json', import.meta.url))
+/** The Docker volume holding the host's shared Flatpak runtimes (docs/architecture.md § Runtime depot). */
+export const DEPOT_VOLUME = 'caboose-depot'
+
+/** The profile, unless the operator's own arguments choose a seccomp policy. */
+export function securityArgs(extra: readonly string[]): string[] {
+  const chosen = extra.some((arg, index) => arg.startsWith('--security-opt=seccomp') || (extra[index - 1] === '--security-opt' && arg.startsWith('seccomp')))
+  return chosen ? [] : ['--security-opt', `seccomp=${SECCOMP_PROFILE}`]
+}
+
 export type Docker = (args: string[], timeoutMs?: number) => Promise<string>
 
 export function dockerCli(binary = 'docker'): Docker {
@@ -132,6 +148,9 @@ export function createContainerController(config: Config, dependencies: { docker
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
       '-p', `127.0.0.1:${place.ports.files}:${FILES_PORT}`, '-p', `127.0.0.1:${place.ports.terminal}:${TERMINAL_PORT}`, '-p', `127.0.0.1:${place.ports.display}:${OWNER_DISPLAY_PORT}`, '-p', `127.0.0.1:${place.ports.agent}:${AGENT_DISPLAY_PORT}`,
       '-v', `${place.home}:/home/caboose`,
+      // Shared runtimes: written only by the host's builder, never by a computer.
+      '-v', `${DEPOT_VOLUME}:/var/lib/caboose/depot:ro`,
+      ...securityArgs(config.containerArgs),
       ...gpuArgs(gpu, dependencies.exists),
       ...config.containerArgs,
       config.containerImage,
@@ -228,7 +247,7 @@ export function createContainerController(config: Config, dependencies: { docker
       if ((await state()) === 'running') await docker(['pause', name], 60_000)
       running = false
     },
-    /** Restart the same container so installed packages and their rollback cache survive. */
+    /** Restart the same container so installed packages survive. */
     async restart() {
       lastError = null
       if (running) {

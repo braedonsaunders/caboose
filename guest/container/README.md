@@ -14,7 +14,7 @@ vendor), an NVIDIA GPU on Linux through the NVIDIA container toolkit, and Linux 
 | `Dockerfile` | The image. A first stage compiles Caboose Display and the VA-API passthrough driver; the second installs Debian packages, `guest/image/apps.sh` and the guest components. Built with `guest/` as the context. |
 | `caboose-session` | The session script the host runs with `docker exec` (installed as `/usr/local/bin/caboose-session`). |
 | `chromium-gpu` | Chromium flags for the display and GPU in use (installed as `/etc/chromium.d/caboose-gpu`). |
-| `chromium-seccomp.json` | An optional seccomp profile for Docker hosts that block Chromium's sandbox. |
+| `caboose-seccomp.json` | The seccomp profile the host gives each container, so Chromium's and Flatpak's sandboxes can start. |
 | `check.sh` | A check for a running computer's encoders and sound. |
 
 ## Build
@@ -108,13 +108,37 @@ ANGLE over Mesa D3D12. Where the launch environment selects the Caboose VA-API d
 (hosts with a render node), Chromium decodes video through it, so a video reaches the phone
 as its own stream.
 
-Chromium keeps its sandbox enabled. On Docker hosts whose default seccomp policy blocks
-Chromium's namespace sandbox, add `--security-opt seccomp=<absolute path to
-guest/container/chromium-seccomp.json>` to `CABOOSE_CONTAINER_ARGS`. The profile is based on
-the [Moby seccomp v0.2.1 default](https://github.com/moby/profiles/blob/seccomp/v0.2.1/seccomp/default.json)
-(Apache-2.0), with `clone` and `unshare` allowed for user, PID and network namespaces; mount,
-UTS, IPC and cgroup namespace creation stays blocked. Review it against your Docker version
-and security requirements.
+Chromium keeps its sandbox enabled.
+
+### Sandboxes and seccomp
+
+Chromium's sandbox and Flatpak's (bubblewrap) create user, PID, network, IPC, UTS and mount
+namespaces and build each sandbox's root with `mount` and `pivot_root` inside them. Docker's
+default seccomp policy refuses those calls to a process without `CAP_SYS_ADMIN`. The host
+starts every new container with `--security-opt seccomp=caboose-seccomp.json`, unless
+`CABOOSE_CONTAINER_ARGS` names a seccomp policy of its own. The profile is the
+[Moby seccomp v0.2.1 default](https://github.com/moby/profiles/blob/seccomp/v0.2.1/seccomp/default.json)
+(Apache-2.0) with `clone` and `unshare` allowed for any namespace and `mount`, `umount2` and
+`pivot_root` allowed. The kernel still requires `CAP_SYS_ADMIN` in the namespace's owning user
+namespace, which the container's root does not hold, so these calls reach only namespaces a
+sandbox created for itself: the policy Debian applies to every unprivileged user. A container
+created before this profile keeps its own policy; recreate it (its home volume is kept) to
+run Flatpak apps. On hosts that confine containers with Docker's default AppArmor profile,
+which denies `mount`, Flatpak's sandbox cannot start; the Library says so beside each Flathub
+app.
+
+Docker also masks parts of the container's `/proc`, and the kernel then refuses a sandbox a
+fresh `/proc` of its own. The image diverts `/usr/bin/bwrap` to `/usr/bin/bwrap.distrib` and
+installs `guest/flatpak/caboose-bwrap` in its place, which gives each sandbox the container's
+`/proc` read-only and drops bubblewrap's sysctl-based user-namespace lock, which needs the fresh
+one; Flatpak's seccomp filter still refuses apps every way to make or join a user namespace.
+What this costs is in `docs/architecture.md` § Catalog (Flatpak in a container).
+
+### Shared runtimes
+
+New containers mount the Docker volume `caboose-depot` read-only at `/var/lib/caboose/depot`:
+the host's shared Flatpak runtimes (`docs/architecture.md` § Runtime depot). Only the host's
+builder, a throwaway container from this image, writes it.
 
 ### Parking and restarts
 
@@ -122,7 +146,7 @@ Parking freezes the container (`docker pause`): memory stays in RAM and waking i
 but only while Docker (and, on Windows, WSL) keeps running. After a Docker, WSL or host
 restart the session is gone and the next wake starts it fresh; the home volume persists. A
 cold restart from the app or console stops and starts the same container, so installed
-packages and the catalog's rollback cache in its writable layer survive. Removing or
+packages in its writable layer survive. Removing or
 replacing the container discards them; back up the home volume separately. To pick up a new
 image, remove the container and wake the computer again; the home volume is kept.
 

@@ -24,6 +24,8 @@ COPY desktop-mcp /builder/desktop-mcp
 COPY notifications /builder/notifications
 
 COPY phone /builder/phone
+COPY bridge /builder/bridge
+COPY flatpak /builder/flatpak
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /out/vaapi/caboose_drv_video.so /builder/display/
 COPY display/caboose-display-ready display/systemd/caboose-display.service display/systemd/caboose-display-agent.service /builder/display/
 COPY agentd/caboose-agentd.mjs agentd/package.json agentd/install.sh /builder/agentd/
