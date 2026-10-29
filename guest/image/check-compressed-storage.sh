@@ -88,6 +88,9 @@ umount "$work/root"
 # The backup GPT must still be intact after formatting/writing the limited loop.
 sfdisk --verify "$work/base.raw"
 btrfs check --readonly "$loop"
-mount -t btrfs -o ro,nologreplay "$loop" "$work/root"
+if ! mount -t btrfs -o ro,nologreplay "$loop" "$work/root"; then
+  dmesg | tail -60 >&2
+  exit 1
+fi
 test -s "$work/root/compressible"
 echo "Compressed root check passed; discarded $(((before - after) * 512)) backing bytes"
