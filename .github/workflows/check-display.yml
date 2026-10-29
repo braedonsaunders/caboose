@@ -1,0 +1,41 @@
+name: Check display and guest contracts
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/check-display.yml'
+      - 'guest/display/**'
+      - 'guest/apps/**'
+      - 'guest/files/**'
+      - 'guest/components/**'
+      - 'apps/ios/CabooseKit/Sources/CabooseKit/Resources/AgentApp*.js'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: display-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check guest bridge and injected page contracts
+        run: |
+          python3 -m unittest discover -s guest/apps -p 'test_*.py'
+          python3 -m unittest discover -s guest/files -p 'test_webview_endpoint.py'
+          node --test guest/apps/agent-page.test.mjs
+      - name: Build the Linux display test environment
+        run: docker build -t caboose-display-dev guest/display
+      - name: Check the combined compositor and protocol
+        env:
+          CABOOSE_DISPLAY_CPUS: '2'
+          CABOOSE_DISPLAY_MEMORY: 4g
+        run: guest/display/scripts/dev.sh cargo test --workspace
