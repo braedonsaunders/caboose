@@ -133,6 +133,20 @@ a real host, `CABOOSE_HOST_URL=… CABOOSE_HOST_TOKEN=… swift test --filter Li
 opens a terminal over URLSession as the app does, runs a command, resizes, reattaches from
 its offset, is replaced by a second connection, exits, and checks the closes that follow.
 
+## Native surface geometry
+
+Desktop windows and panels on Home, Agents, Terminal and native bridge presentations use
+`ConcentricRectangle` with a minimum interior radius. iOS resolves the corners against
+its enclosing container on iPhone, iPad and external displays; no hardware lookup table
+is used. Title-bar controls read `containerCornerInsets`, with the same leading offset
+used for floating-desktop hit testing. Both APIs are available on the app's iOS 26 minimum.
+System sheets and navigation retain their own safe areas, and app fullscreen retains its
+existing aspect-fit policy. Tile outer margins are zero; interior resize handles remain.
+
+Run `swift test --jobs 1 --filter SwitchyardTests` in CabooseKit for edge partition and
+scroll geometry. Run `sh scripts/check-desktop.sh` for the native corner/device checks.
+A screenshot alone does not establish that a physical display corner leaves controls visible.
+
 ## Checking Switchyard on a device
 
 The layout and work-area geometry are unit-tested (`swift test --filter 'SwitchyardTests|DesktopGeometryTests|FreeDesktopLayoutTests|WindowTitleBarTests|QuickSwitchTests|DockMenuTests'`).

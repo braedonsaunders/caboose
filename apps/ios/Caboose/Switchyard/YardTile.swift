@@ -17,7 +17,7 @@ struct YardTile: View {
 
     var body: some View {
         let radius = yard.metrics.cornerRadius
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let shape = ConcentricRectangle(cornerRadius: radius)
         VStack(spacing: 0) {
             YardTitleBar(window: window, yard: yard, focused: focused, onAsk: onAsk)
             ZStack {
@@ -32,6 +32,7 @@ struct YardTile: View {
         .frame(width: rect.width, height: rect.height)
         .background(Color(white: 0.06))
         .clipShape(shape)
+        .containerShape(shape)
         // The bevel: light along the top edge, a little shade along the bottom, as glass has.
         .overlay {
             shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.3), .white.opacity(0.07), .black.opacity(0.28)],
@@ -67,41 +68,45 @@ struct YardTitleBar: View {
 
     var body: some View {
         let bar = yard.metrics.titleBar
-        HStack(spacing: 0) {
-            WindowControls(bar: bar, showsSymbols: true, title: title) { control in
-                switch control {
-                case .close: yard.close(window.id)
-                case .zoom: openCard()
-                case .minimize: break
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                WindowControls(bar: bar, showsSymbols: true, title: title) { control in
+                    switch control {
+                    case .close: yard.close(window.id)
+                    case .zoom: openCard()
+                    case .minimize: break
+                    }
                 }
-            }
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
-                .gesture(
-                    TapGesture(count: 2).onEnded { openCard() }
-                        .exclusively(before: TapGesture().onEnded { yard.focus(window.id) })
-                )
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 8, coordinateSpace: .named(SwitchyardView.space))
-                        .onChanged { value in yard.carry(window.id, by: value.translation) }
-                        .onEnded { _ in yard.drop() }
-                )
-                .contextMenu { menuContent }
-                .accessibilityLabel("Move \(title)")
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction { yard.focus(window.id) }
-                .accessibilityAction(named: "Full Screen") { openCard() }
-            Menu { menuContent } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(width: 40, height: bar.height)
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
+                    .gesture(
+                        TapGesture(count: 2).onEnded { openCard() }
+                            .exclusively(before: TapGesture().onEnded { yard.focus(window.id) })
+                    )
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 8, coordinateSpace: .named(SwitchyardView.space))
+                            .onChanged { value in yard.carry(window.id, by: value.translation) }
+                            .onEnded { _ in yard.drop() }
+                    )
+                    .contextMenu { menuContent }
+                    .accessibilityLabel("Move \(title)")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { yard.focus(window.id) }
+                    .accessibilityAction(named: "Full Screen") { openCard() }
+                Menu { menuContent } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 40, height: bar.height)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("\(title) options")
             }
-            .accessibilityLabel("\(title) options")
+            .padding(EdgeInsets().inset(by: geometry.containerCornerInsets, edges: .horizontal))
+            .frame(height: bar.height)
         }
         .frame(height: bar.height)
         .foregroundStyle(.white.opacity(focused ? 0.92 : 0.6))

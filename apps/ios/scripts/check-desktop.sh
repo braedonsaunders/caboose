@@ -4,6 +4,20 @@ set -eu
 cat <<'CHECK'
 Open Chromium, Thunar and a terminal on a signed device paired to a real computer.
 
+Native container corners (iOS 26 and 27, iPhone/iPad/external display):
+1. In Tablet/Tiled, put one window across the workspace. Its straight top and left
+   edges meet the workspace with no wallpaper strip. Scroll to the last column:
+   its trailing edge is flush. Two/three columns and stacked tiles retain resize gaps.
+2. Check the physical corner as well as the screenshot. Close/Full Screen/menu
+   controls remain completely visible and tappable. Repeat Free mode maximized,
+   restored, snapped and dragged near each corner. Pointer hit targets match controls.
+3. Rotate/fold, move the sidebar, show the keyboard, and use iPad window resizing.
+   Check Home cards, Agents panels, Terminal controls, trackpad, dock and sheets:
+   boundary corners follow their container; interior cards retain their design radius.
+4. Verify app-card fullscreen aspect, popup/input alignment, hinge division and DPI
+   are unchanged. Repeat with VoiceOver and large text. No device radius is inferred
+   from a safe-area height. Record device/OS/mode and before/after screenshots.
+
 Floating desktop snap chooser (iPad Free/Tablet and external display):
 1. Drag an app by its title bar beyond twelve points. A translucent chooser appears
    above the windows. Sweep across full screen, halves, all four quarters, thirds,

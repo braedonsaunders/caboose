@@ -31,10 +31,10 @@ struct DesktopView: View {
                 }
                 // Where the window being dragged would snap if let go now.
                 if let preview = desktop.snapPreview {
-                    RoundedRectangle(cornerRadius: 12 * desktop.ui, style: .continuous)
+                    ConcentricRectangle(cornerRadius: 12 * desktop.ui)
                         .fill(Color.accentColor.opacity(0.12))
-                        .strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 2)
-                        .background(.ultraThinMaterial.opacity(0.6), in: RoundedRectangle(cornerRadius: 12 * desktop.ui, style: .continuous))
+                        .overlay { ConcentricRectangle(cornerRadius: 12 * desktop.ui).strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 2) }
+                        .background(.ultraThinMaterial.opacity(0.6), in: ConcentricRectangle(cornerRadius: 12 * desktop.ui))
                         .frame(width: preview.width, height: preview.height)
                         .position(x: preview.midX, y: preview.midY)
                         .allowsHitTesting(false)
@@ -102,9 +102,9 @@ private struct DesktopSnapPalette: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 20 * ui)
+            ConcentricRectangle(cornerRadius: 20 * ui)
                 .fill(.regularMaterial)
-                .overlay { RoundedRectangle(cornerRadius: 20 * ui).strokeBorder(.white.opacity(0.25)) }
+                .overlay { ConcentricRectangle(cornerRadius: 20 * ui).strokeBorder(.white.opacity(0.25)) }
                 .shadow(color: .black.opacity(0.25), radius: 20 * ui, y: 8 * ui)
                 .frame(width: palette.frame.width, height: palette.frame.height)
                 .position(x: palette.frame.midX, y: palette.frame.midY)
@@ -115,10 +115,10 @@ private struct DesktopSnapPalette: View {
                 .position(x: palette.frame.midX, y: palette.frame.minY + 18 * ui)
             ForEach(Array(palette.regions.enumerated()), id: \.offset) { _, region in
                 let active = region.enabled && selected == region.snap
-                RoundedRectangle(cornerRadius: 6 * ui)
+                ConcentricRectangle(cornerRadius: 6 * ui)
                     .fill(active ? Color.accentColor.opacity(0.85) : Color.primary.opacity(region.enabled ? 0.16 : 0.04))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 6 * ui)
+                        ConcentricRectangle(cornerRadius: 6 * ui)
                             .strokeBorder(active ? Color.white.opacity(0.9) : Color.primary.opacity(0.12), lineWidth: active ? 2 : 1)
                     }
                     .frame(width: max(0, region.frame.width - 4 * ui), height: max(0, region.frame.height - 4 * ui))
@@ -154,17 +154,25 @@ struct DesktopWindow: View {
             if !desktop.detachedChrome && !window.isAuxiliary && !window.isFullscreen {
                 let ui = desktop.ui
                 let bar = desktop.titleBar
-                HStack(spacing: 0) {
-                    // Under a finger the symbols always show; a pointer shows them on hover.
-                    WindowControls(bar: bar, hovered: hoveredControl, showsSymbols: desktop.directTouch && !desktop.pointerHovering)
-                    Spacer(minLength: 8 * ui)
-                    if let icon { Image(uiImage: icon).resizable().frame(width: 15 * ui, height: 15 * ui).padding(.trailing, 6 * ui) }
-                    Text(window.title.isEmpty ? "Window" : window.title)
-                        .font(.system(size: 13 * ui, weight: .semibold))
-                        .lineLimit(1)
-                    Spacer(minLength: 8 * ui)
-                    // Balances the controls, so the title is centred on the window.
-                    Color.clear.frame(width: bar.controlsWidth)
+                GeometryReader { geometry in
+                    let clearance = EdgeInsets().inset(by: geometry.containerCornerInsets, edges: .horizontal)
+                    HStack(spacing: 0) {
+                        // Under a finger the symbols always show; a pointer shows them on hover.
+                        WindowControls(bar: bar, hovered: hoveredControl, showsSymbols: desktop.directTouch && !desktop.pointerHovering)
+                        Spacer(minLength: 8 * ui)
+                        if let icon { Image(uiImage: icon).resizable().frame(width: 15 * ui, height: 15 * ui).padding(.trailing, 6 * ui) }
+                        Text(window.title.isEmpty ? "Window" : window.title)
+                            .font(.system(size: 13 * ui, weight: .semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: 8 * ui)
+                        // Balances the controls, so the title is centred on the window.
+                        Color.clear.frame(width: bar.controlsWidth)
+                    }
+                    .padding(clearance)
+                    .frame(height: bar.height)
+                    .onChange(of: clearance.leading, initial: true) { _, inset in
+                        desktop.titleBarLeadingInsets[window.id] = inset
+                    }
                 }
                 .frame(height: bar.height)
                 .background(.regularMaterial)
@@ -175,7 +183,8 @@ struct DesktopWindow: View {
                 .modifier(WindowDrop(window: window, pixelsPerPoint: desktop.pixelsPerPoint, presentedSize: surface.size))
         }
         .frame(width: chrome.width, height: chrome.height)
-        .clipShape(RoundedRectangle(cornerRadius: window.isFullscreen ? 0 : (window.isAuxiliary ? 6 : 11) * desktop.ui, style: .continuous))
+        .clipShape(ConcentricRectangle(corners: window.isFullscreen ? .fixed(0) : .concentric(minimum: .fixed((window.isAuxiliary ? 6 : 11) * desktop.ui))))
+        .onDisappear { desktop.titleBarLeadingInsets[window.id] = nil }
         .shadow(color: .black.opacity(window.isAuxiliary ? 0.25 : 0.45), radius: window.isAuxiliary ? 8 : 24, y: window.isAuxiliary ? 3 : 12)
         .position(x: chrome.midX, y: chrome.midY)
         .onChange(of: WindowGeometryState(frame: window.frame, fullscreen: window.isFullscreen), initial: true) { _, state in
@@ -264,7 +273,7 @@ struct Dock: View {
                 .font(.system(size: 26 * ui, weight: .medium))
                 .foregroundStyle(.white.opacity(0.9))
                 .frame(width: 52 * ui, height: 52 * ui)
-                .background(.white.opacity(desktop.launchpadOpen ? 0.25 : 0.12), in: RoundedRectangle(cornerRadius: 12 * ui, style: .continuous))
+                .background(.white.opacity(desktop.launchpadOpen ? 0.25 : 0.12), in: ConcentricRectangle(cornerRadius: 12 * ui))
                 .scaleEffect(hot ? 1.28 : 1, anchor: .bottom)
                 .animation(.spring(duration: 0.22), value: hot)
                 .padding(.bottom, 7 * ui)
@@ -274,7 +283,7 @@ struct Dock: View {
         }
         .padding(.horizontal, 12 * ui)
         .padding(.vertical, 8 * ui)
-        .glassEffect(.regular, in: .rect(cornerRadius: 22 * ui))
+        .glassEffect(.regular, in: .surface(cornerRadius: 22 * ui))
     }
 
     /// A continuous, thin strip below the hinge, never a floating capsule over content.

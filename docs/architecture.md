@@ -2195,8 +2195,19 @@ the app card, and a detached view releases its layers.
   so it uses the client-provided size, while an app's own full-screen request is preserved.
   Transient windows (menus, dialogs, tooltips) are positioned relative to their parent,
   never as separate cards.
+- **Native surface corners.** Screen-facing desktop, Home, agent, terminal and bridge
+  panels use iOS 26 container-concentric shapes with their interior design radius as a
+  minimum. The system resolves each corner against the enclosing screen or presentation;
+  no device-model radius is stored. Tile and floating-window title controls use measured
+  container corner insets, and the floating desktop applies the same leading clearance
+  to its control hit tests. System sheets and navigation keep their native safe areas.
+  Media/fullscreen fitting, monitor DPI and measured hinge divisions remain independent
+  of surface decoration.
 - **Switchyard.** Without an external display the Desktop tab tiles the windows on the
   device's own screen (on iPad, a toolbar choice keeps the floating desktop instead).
+  The outer tile margins are zero; interior resize gaps remain three points on narrow
+  workspaces and four elsewhere. Columns and scroll stops use the same outer-margin
+  geometry, so the leading and trailing edges settle flush with the workspace.
   Windows sit in columns on a horizontal track that scrolls; a column holds one window or
   a stack (two on an upright phone, three elsewhere). Column widths are ⅓, ½, ⅔ or full,
   offered only where a tile is at least 280 points wide and two halves fit, so an upright

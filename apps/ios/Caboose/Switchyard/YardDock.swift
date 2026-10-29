@@ -61,7 +61,7 @@ struct YardDock: View {
         }
         .padding(.horizontal, 12)
         .frame(height: Self.height)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .glassEffect(.regular, in: ConcentricRectangle(cornerRadius: 22))
         .simultaneousGesture(
             DragGesture(minimumDistance: 20).onEnded { value in
                 guard value.translation.height < -30, abs(value.translation.height) > abs(value.translation.width), !columns.isEmpty else { return }

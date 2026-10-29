@@ -63,10 +63,10 @@ public struct YardLayout: Codable, Equatable, Sendable {
     /// Each column's rect on the track.
     public func columnFrames(in metrics: YardMetrics) -> [Int: CGRect] {
         var frames: [Int: CGRect] = [:]
-        var x = metrics.gap
+        var x = metrics.outerGap
         for column in columns {
             let width = width(of: column, in: metrics)
-            frames[column.id] = CGRect(x: x, y: metrics.gap, width: width, height: metrics.columnHeight)
+            frames[column.id] = CGRect(x: x, y: metrics.outerGap, width: width, height: metrics.columnHeight)
             x += width + metrics.gap
         }
         return frames
@@ -87,7 +87,8 @@ public struct YardLayout: Codable, Equatable, Sendable {
 
     /// The track's whole width, gaps at both ends included.
     public func trackWidth(in metrics: YardMetrics) -> CGFloat {
-        columns.reduce(metrics.gap) { $0 + width(of: $1, in: metrics) + metrics.gap }
+        let widths = columns.reduce(CGFloat(0)) { $0 + width(of: $1, in: metrics) }
+        return 2 * metrics.outerGap + widths + CGFloat(max(0, columns.count - 1)) * metrics.gap
     }
 
     static func split(_ frame: CGRect, heights: [CGFloat], gap: CGFloat) -> [CGRect] {
@@ -375,8 +376,8 @@ public struct YardLayout: Codable, Equatable, Sendable {
         let maximum = maximumScroll(in: metrics)
         var stops: Set<CGFloat> = [0, maximum]
         for frame in columnFrames(in: metrics).values {
-            stops.insert(min(maximum, max(0, frame.minX - metrics.gap)))
-            stops.insert(min(maximum, max(0, frame.maxX + metrics.gap - metrics.size.width)))
+            stops.insert(min(maximum, max(0, frame.minX - metrics.outerGap)))
+            stops.insert(min(maximum, max(0, frame.maxX + metrics.outerGap - metrics.size.width)))
         }
         return stops.sorted()
     }
@@ -394,8 +395,8 @@ public struct YardLayout: Codable, Equatable, Sendable {
         let maximum = maximumScroll(in: metrics)
         var scroll = min(maximum, max(0, scroll))
         // Half a point of slack: column edges are sums of fractions and seldom exact.
-        if frame.minX - metrics.gap < scroll - 0.5 { scroll = frame.minX - metrics.gap }
-        else if frame.maxX + metrics.gap > scroll + metrics.size.width + 0.5 { scroll = frame.maxX + metrics.gap - metrics.size.width }
+        if frame.minX - metrics.outerGap < scroll - 0.5 { scroll = frame.minX - metrics.outerGap }
+        else if frame.maxX + metrics.outerGap > scroll + metrics.size.width + 0.5 { scroll = frame.maxX + metrics.outerGap - metrics.size.width }
         return min(maximum, max(0, scroll))
     }
 

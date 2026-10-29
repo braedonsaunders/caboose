@@ -283,10 +283,10 @@ struct SetupView: View {
             VStack(spacing: 12) {
                 NativeTextInput("Computer address — https://…", text: $host, keyboard: .URL, capitalization: .none, correction: false, contentType: .URL)
                     .padding(14)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 14))
+                    .glassEffect(.regular, in: .surface(cornerRadius: 14))
                 NativeTextInput("Pairing code or sign-in token", text: $token, secure: true, capitalization: .none, correction: false)
                     .padding(14)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 14))
+                    .glassEffect(.regular, in: .surface(cornerRadius: 14))
                 if let error {
                     Text(error).font(.footnote).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
                 }

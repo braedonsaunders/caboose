@@ -317,8 +317,8 @@ struct LiveWindowTile: View {
                     .frame(width: previewWidth, height: size.height, alignment: .topLeading)
                     .frame(width: size.width, height: size.height)
                     .background(Color(white: 0.08))
-                    .clipShape(.rect(cornerRadius: Self.cornerRadius, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous).strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
+                    .clipShape(.surface(cornerRadius: Self.cornerRadius))
+                    .overlay(ConcentricRectangle(cornerRadius: Self.cornerRadius).strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
                     .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
                 TileLabel(icon: model.icon(for: window), app: model.appName(for: window), title: window.title, width: size.width)
             }
@@ -485,8 +485,8 @@ private struct KeptWindowTile: View {
                     }
                 }
                 .frame(width: size.width, height: size.height)
-                .clipShape(.rect(cornerRadius: LiveWindowTile.cornerRadius, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: LiveWindowTile.cornerRadius, style: .continuous).strokeBorder(.white.opacity(0.1), lineWidth: 0.5))
+                .clipShape(.surface(cornerRadius: LiveWindowTile.cornerRadius))
+                .overlay(ConcentricRectangle(cornerRadius: LiveWindowTile.cornerRadius).strokeBorder(.white.opacity(0.1), lineWidth: 0.5))
                 TileLabel(icon: model.apps.first { $0.name == frame.app }.flatMap { model.appIcons[$0.id] }, app: frame.app, title: frame.title, width: size.width)
                     .opacity(0.7)
             }
@@ -552,7 +552,7 @@ struct NeedsYou: View {
                         }
                         .padding(16)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .glassEffect(.regular.tint(Brand.amber.opacity(0.10)), in: .rect(cornerRadius: 24))
+                        .glassEffect(.regular.tint(Brand.amber.opacity(0.10)), in: .surface(cornerRadius: 24))
                         .contentShape(Rectangle())
                         .onTapGesture { openChat(task.id) }
                     }
@@ -593,7 +593,7 @@ struct Working: View {
                     }
                 }
                 .padding(.vertical, 4)
-                .glassEffect(.regular, in: .rect(cornerRadius: 24))
+                .glassEffect(.regular, in: .surface(cornerRadius: 24))
             }
         }
     }
@@ -663,7 +663,7 @@ struct SinceYouLeft: View {
             }
         }
         .padding(.vertical, 4)
-        .glassEffect(.regular, in: .rect(cornerRadius: 24))
+        .glassEffect(.regular, in: .surface(cornerRadius: 24))
     }
 
     private var tasks: [HomeToday.AgentTask] {
@@ -864,7 +864,7 @@ private struct HomeColumnRow: ViewModifier {
             .padding(.top, -top)
             .padding(.bottom, -bottom)
             .frame(width: width)
-            .clipShape(.rect(cornerRadius: cornerRadius, style: .continuous))
+            .clipShape(.surface(cornerRadius: cornerRadius))
     }
 }
 

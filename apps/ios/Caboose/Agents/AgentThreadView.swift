@@ -48,7 +48,7 @@ struct AgentThreadView: View {
                         if let approval = task.pendingApproval {
                             ApprovalRow(task: task, approval: approval)
                                 .padding(14)
-                                .glassEffect(.regular.tint(.yellow.opacity(0.1)), in: .rect(cornerRadius: 20))
+                                .glassEffect(.regular.tint(.yellow.opacity(0.1)), in: .surface(cornerRadius: 20))
                         }
                         if let methods = task.signIn, !methods.isEmpty, !task.isRunning {
                             SignInRow(task: task, methods: methods)
@@ -168,7 +168,7 @@ struct PromptBubble: View {
                     .font(.body)
                     .textSelection(.enabled)
                     .padding(.horizontal, 14).padding(.vertical, 10)
-                    .background(Brand.amber.opacity(0.22), in: .rect(cornerRadius: 20))
+                    .background(Brand.amber.opacity(0.22), in: .surface(cornerRadius: 20))
                 ForEach(Array(attachmentNames.enumerated()), id: \.offset) { _, path in
                     Label((path as NSString).lastPathComponent, systemImage: "paperclip")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -234,7 +234,7 @@ private struct ToolGroupView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(0.05), in: .rect(cornerRadius: 16))
+        .background(.white.opacity(0.05), in: .surface(cornerRadius: 16))
     }
 }
 
@@ -315,7 +315,7 @@ private struct PlanView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(0.05), in: .rect(cornerRadius: 16))
+        .background(.white.opacity(0.05), in: .surface(cornerRadius: 16))
     }
 }
 
@@ -359,7 +359,7 @@ private struct OutcomeView: View {
                     .font(.footnote)
                     .foregroundStyle(.orange)
                     .padding(10)
-                    .background(.orange.opacity(0.1), in: .rect(cornerRadius: 12))
+                    .background(.orange.opacity(0.1), in: .surface(cornerRadius: 12))
             case .signInRequired:
                 EmptyView() // the sign-in options below the thread say what to do
             }

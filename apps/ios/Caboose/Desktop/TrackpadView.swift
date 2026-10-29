@@ -62,8 +62,8 @@ struct TrackpadScreen: View {
                           enabled: model.presentedWindowID == nil && model.selectedTab == .desktop,
                           input: $input, systemKeyboard: $systemKeyboard)
                 .background { DesktopKeyCommands(desktop: desktop) }
-                .clipShape(RoundedRectangle(cornerRadius: input.showsKeyboard ? 16 : 28, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: input.showsKeyboard ? 16 : 28, style: .continuous).stroke(.white.opacity(0.12)))
+                .clipShape(ConcentricRectangle(cornerRadius: input.showsKeyboard ? 16 : 28))
+                .overlay(ConcentricRectangle(cornerRadius: input.showsKeyboard ? 16 : 28).stroke(.white.opacity(0.12)))
             if !input.showsKeyboard {
                 TimelineView(.periodic(from: .now, by: 2)) { _ in
                     Text(model.connectionSummary).font(.caption.monospacedDigit()).foregroundStyle(.secondary)

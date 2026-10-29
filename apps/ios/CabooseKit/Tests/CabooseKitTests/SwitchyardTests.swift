@@ -36,14 +36,27 @@ struct SwitchyardTests {
         #expect(YardMetrics(size: CGSize(width: 540, height: 400)).presets == [1])
     }
 
+    @Test func outerMarginsAreIndependentOfResizeGaps() {
+        for margin in [CGFloat(0), 8] {
+            let metrics = YardMetrics(size: CGSize(width: 1000, height: 700), outerGap: margin)
+            var layout = YardLayout()
+            layout.insert(1, in: metrics)
+            let frame = layout.frames(in: metrics)[1]!
+            #expect(frame.minX == margin && frame.minY == margin)
+            #expect(frame.maxY == metrics.size.height - margin)
+            #expect(metrics.points(forFraction: 1) == metrics.size.width - 2 * margin)
+            #expect(abs(2 * metrics.points(forFraction: 0.5) + metrics.gap + 2 * margin - metrics.size.width) < 0.001)
+        }
+    }
+
     @Test func fractionsTileTheScreenExactly() {
         for metrics in [duo, pad] {
             let half: CGFloat = metrics.points(forFraction: 0.5)
-            let filled: CGFloat = 2 * half + 3 * metrics.gap
+            let filled: CGFloat = 2 * half + metrics.gap + 2 * metrics.outerGap
             #expect(abs(filled - metrics.size.width) < 0.001)
         }
         let thirdWide: CGFloat = pad.points(forFraction: third)
-        let filled: CGFloat = 3 * thirdWide + 4 * pad.gap
+        let filled: CGFloat = 3 * thirdWide + 2 * pad.gap + 2 * pad.outerGap
         #expect(abs(filled - pad.size.width) < 0.001)
         #expect(abs(pad.fraction(forPoints: thirdWide) - third) < 0.0001)
     }
@@ -73,9 +86,9 @@ struct SwitchyardTests {
     @Test func onAPhoneEveryColumnIsFullWidth() {
         let layout = layout([1, 2, 3], in: phone)
         let frames = layout.frames(in: phone)
-        for id in [1, 2, 3] { #expect(frames[id]?.width == phone.size.width - 2 * phone.gap) }
-        #expect(frames[2]?.minX == phone.size.width)
-        #expect(layout.restingScrolls(in: phone) == [0, 437, 874])
+        for id in [1, 2, 3] { #expect(frames[id]?.width == phone.size.width - 2 * phone.outerGap) }
+        #expect(frames[2]?.minX == phone.size.width + phone.gap)
+        #expect(layout.restingScrolls(in: phone) == [0, 443, 886])
     }
 
     @Test func closingAWindowGivesItsSpaceBack() {
@@ -116,7 +129,7 @@ struct SwitchyardTests {
         #expect(ok1)
         let frames = layout.frames(in: duo)
         let top = frames[1]!, bottom = frames[2]!
-        #expect(top.minY == duo.gap && bottom.maxY == duo.size.height - duo.gap)
+        #expect(top.minY == duo.outerGap && bottom.maxY == duo.size.height - duo.outerGap)
         #expect(bottom.minY - top.maxY == duo.gap)
         #expect(abs(top.height - bottom.height) <= 1)
         layout.remove(1, in: duo)
@@ -190,7 +203,7 @@ struct SwitchyardTests {
         let ids = layout.columns.map(\.id)
         let folded = YardMetrics(size: CGSize(width: 400, height: 760))
         #expect(layout.columns.map(\.id) == ids)
-        #expect(layout.frames(in: folded)[1]!.width == folded.size.width - 2 * folded.gap)
+        #expect(layout.frames(in: folded)[1]!.width == folded.size.width - 2 * folded.outerGap)
         #expect(layout.frames(in: duo)[1]!.width == duo.points(forFraction: 0.5))
     }
 
@@ -290,7 +303,7 @@ struct SwitchyardTests {
         let frames = layout.columnFrames(in: pad)
         let fourth = frames[layout.columns[3].id]!
         let scroll = layout.scroll(revealing: 4, from: 0, in: pad)
-        #expect(scroll == fourth.maxX + pad.gap - pad.size.width)
+        #expect(scroll == fourth.maxX + pad.outerGap - pad.size.width)
         #expect(layout.scroll(revealing: 2, from: scroll, in: pad) == scroll)
         #expect(layout.scroll(revealing: 1, from: scroll, in: pad) == 0)
         #expect(layout.visibleColumns(at: scroll, in: pad) == layout.columns.dropFirst().map(\.id))
@@ -299,8 +312,8 @@ struct SwitchyardTests {
     @Test func aFlickRestsOnAColumnEdge() {
         let layout = layout([1, 2, 3], in: phone)
         #expect(layout.restingScroll(from: 120, in: phone) == 0)
-        #expect(layout.restingScroll(from: 120, velocity: 900, in: phone) == 437)
-        #expect(layout.restingScroll(from: 2000, in: phone) == 874)
+        #expect(layout.restingScroll(from: 120, velocity: 900, in: phone) == 443)
+        #expect(layout.restingScroll(from: 2000, in: phone) == 886)
     }
 
     @Test func handlesSitInTheGaps() {

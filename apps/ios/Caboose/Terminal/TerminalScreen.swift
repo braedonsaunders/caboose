@@ -295,7 +295,7 @@ private struct TerminalStatusBar: View {
         .font(.subheadline)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .glassEffect(.regular, in: .rect(cornerRadius: 18))
+        .glassEffect(.regular, in: .surface(cornerRadius: 18))
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
         .transition(.move(edge: .bottom).combined(with: .opacity))

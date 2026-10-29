@@ -283,7 +283,7 @@ private struct BridgeSendingView: View {
             Text(count == 1 ? "Sending to Computer…" : "Sending \(count) Files to Computer…").font(.headline)
         }
         .padding(28)
-        .glassEffect(.regular, in: .rect(cornerRadius: 24))
+        .glassEffect(.regular, in: .surface(cornerRadius: 24))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.opacity(0.2))
     }

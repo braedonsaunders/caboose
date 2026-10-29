@@ -77,6 +77,9 @@ final class DesktopModel {
     }
 
     /// Where a dragged title bar would snap the window if let go now, in desktop points.
+    /// Native title-bar clearance, shared by drawing and pointer hit testing.
+    var titleBarLeadingInsets: [Int: CGFloat] = [:]
+
     private(set) var snapPreview: CGRect?
     private(set) var snapPalette: FreeDesktopLayout.SnapPalette?
     private(set) var pendingSnap: FreeDesktopLayout.Snap?
@@ -363,7 +366,7 @@ final class DesktopModel {
                 return .content(id, local)
             }
             // The controls answer where DesktopWindow draws them, across the bar's height.
-            switch titleBar.control(at: CGPoint(x: point.x - chrome.minX, y: point.y - chrome.minY)) {
+            switch titleBar.control(at: CGPoint(x: point.x - chrome.minX - (titleBarLeadingInsets[id] ?? 0), y: point.y - chrome.minY)) {
             case .close: return .close(id)
             case .minimize: return .minimize(id)
             case .zoom: return .zoom(id)
