@@ -4,7 +4,7 @@ import Testing
 
 /// The socket side of a GPU stream and the device's one-stream-at-a-time line
 /// (docs/gpu-stream.md).
-@Suite struct GPUStreamTests {
+@Suite(.serialized) struct GPUStreamTests {
     /// Records deliveries, and how many were in progress at once.
     final class Deliveries: @unchecked Sendable {
         private let lock = NSLock()
@@ -74,5 +74,33 @@ import Testing
         // Ending again changes nothing.
         second.end()
         #expect(second.status == .ended(reason: "spool-limit"))
+    }
+
+    /// A replay that fails on its own ends its stream visibly and lets the next one play; an
+    /// event from an earlier replay of the stream changes nothing.
+    @Test @MainActor func aFailedReplayEndsVisiblyAndFreesTheDevice() {
+        let first = RemoteGPUStream(id: 1, window: 7, feed: GPUStreamFeed()) { _ in }
+        let second = RemoteGPUStream(id: 2, window: 9, feed: GPUStreamFeed()) { _ in }
+        first.replayEnded(playback: first.currentPlayback - 1, failure: "stale")
+        #expect(first.status == .playing)
+        first.replayEnded(playback: first.currentPlayback, failure: "VK_ERROR_DEVICE_LOST")
+        #expect(first.status == .ended(reason: "replay: VK_ERROR_DEVICE_LOST"))
+        #expect(RemoteGPUStream.message(for: first.status)?.contains("VK_ERROR_DEVICE_LOST") == true)
+        #expect(second.status == .playing)
+        second.end()
+        #expect(RemoteGPUStream.waitingLine.isEmpty)
+    }
+
+    /// A stream let go without `end()` (its session dropped) holds no place in line.
+    @Test @MainActor func aStreamLetGoGivesUpItsPlace() {
+        var first: RemoteGPUStream? = RemoteGPUStream(id: 1, window: 7, feed: GPUStreamFeed()) { _ in }
+        let second = RemoteGPUStream(id: 2, window: 9, feed: GPUStreamFeed()) { _ in }
+        #expect(second.status == .waiting(behind: 7))
+        #expect(first != nil)
+        first = nil
+        RemoteGPUStream.advance()
+        #expect(second.status == .playing)
+        second.end()
+        #expect(RemoteGPUStream.waitingLine.isEmpty)
     }
 }
