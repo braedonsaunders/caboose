@@ -141,7 +141,8 @@ checks package identity and lets apt resolve dependencies. Vendor desktop entrie
 handlers, icons, sandbox settings and signed apt repository registration remain intact;
 subsequent system package updates can update the clients. The terminal launchers are
 named **Claude Code CLI** and **Codex CLI**. Each desktop client requires the owner's
-sign-in. Cowork's nested KVM/QEMU runtime is not included or supported by this image.
+sign-in. Cowork's nested KVM/QEMU runtime is not included or supported by this image. Run `guest/image/check-system-image.sh` on Linux to check image creation,
+extraction, source preservation and overwrite refusal.
 
 The x86_64-only Craft packages are absent from the ARM64 catalog. Optional applications are installed from the host's catalog ([`guest/catalog`](../catalog/README.md)).
 
@@ -216,4 +217,5 @@ creates and checks an EROFS image containing the prepared root's `usr` and `opt`
 It refuses to replace an existing output and leaves the source unchanged. The image
 contains uncompressed, non-inlined files; filesystem DAX additionally requires a
 DAX-capable device and guest kernel. The current microVM boot path does not attach
-this image.
+this image. Run `guest/image/check-system-image.sh` on Linux to check image creation,
+extraction, source preservation and overwrite refusal.
