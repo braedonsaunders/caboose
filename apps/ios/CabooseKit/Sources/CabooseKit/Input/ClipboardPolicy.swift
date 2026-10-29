@@ -91,8 +91,8 @@ public enum ClipboardPolicy {
     private static func filePathsResult(_ data: Data) -> (paths: [String]?, refusal: Refusal?) {
         guard let list = String(data: data, encoding: .utf8) else { return (nil, .malformed) }
         var paths: [String] = []
-        for raw in list.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = raw.hasSuffix("\r") ? raw.dropLast() : raw
+        // CRLF is one Character in Swift, so lines split on any newline.
+        for line in list.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
             if line.isEmpty || line.hasPrefix("#") { continue }
             guard line.hasPrefix("file://") else { return (nil, .malformed) }
             var rest = line.dropFirst("file://".count)

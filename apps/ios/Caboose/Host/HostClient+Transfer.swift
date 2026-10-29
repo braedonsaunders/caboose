@@ -1,3 +1,4 @@
+#if CABOOSE_APP
 import CabooseKit
 import Foundation
 
@@ -98,3 +99,4 @@ extension HostClient {
         return bytes
     }
 }
+#endif
