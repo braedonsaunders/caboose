@@ -259,6 +259,20 @@ final class FakeDecoder: PictureDecoder {
         #expect(pipeline.surface.pixelSize == CGSize(width: 16, height: 20))
     }
 
+    @Test func aWindowShownOnlyAsTilesFollowsAResizeAtOnce() throws {
+        // A popup (alpha) never gets a frame; after a resize its next picture is a whole tile at
+        // the new size, so the surface must already be that size when the tile lands.
+        let pipeline = FramePipeline(windowID: 9, width: 8, height: 8, makeDecoder: { _ in FakeDecoder() }, send: { _ in })
+        defer { pipeline.close() }
+        let png = try TileTests.png(width: 8, height: 8, red: 1, green: 2, blue: 3)
+        let body: CBOR = ["id": 9, "rect": [0, 0, 8, 8], "format": "png", "data": .bytes(png)]
+        pipeline.tile(try #require(LosslessTile(body)))
+        pipeline.flush()
+        pipeline.resize(width: 16, height: 20)
+        pipeline.flush()
+        #expect(pipeline.surface.pixelSize == CGSize(width: 16, height: 20))
+    }
+
     @Test func aBrokenStreamAsksForOneKeyframeAndSkipsToIt() async throws {
         _ = try await ready()
         decoder.fails = true
