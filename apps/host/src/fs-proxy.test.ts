@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { WebSocket } from 'ws'
 import { createCabooseServer, type Controller } from './server.js'
 import { ComputerLifecycle } from './lifecycle.js'
-import { proxyFiles } from './fs-proxy.js'
+import { proxyFiles, publicFileUrl } from './fs-proxy.js'
 import { SettingsStore, settingsLimits } from './settings.js'
 
 const cleanup: Array<() => Promise<void>> = []
@@ -191,4 +191,15 @@ it('signals control clients when the guest change anchor advances', async () => 
   await once(socket, 'open')
   await vi.waitFor(() => expect(events).toContainEqual({ type: 'fs.changed', anchor: 'epoch:2' }), { timeout: 3000 })
   socket.terminate()
+})
+
+
+it('allows only public operations after URL normalization', () => {
+  const base = 'http://127.0.0.1:14700'
+  for (const path of ['/v1/fs/keyring', '/v1/fs/content/../keyring', '/v1/fs/%2e/keyring',
+    '/v1/fs/%2e%2e/keyring', '/v1/fs/%6beyring', '/v1/fs/%2fkeyring', '/keyring',
+    'http://evil.test/v1/fs/content', '//evil.test/v1/fs/content']) {
+    expect(publicFileUrl(path, base), path).toBeUndefined()
+  }
+  expect(publicFileUrl('/v1/fs/content?path=keyring', base)?.href).toBe(base + '/content?path=keyring')
 })

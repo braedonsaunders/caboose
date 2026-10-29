@@ -6,12 +6,24 @@ export interface FileService { url: string; token: string }
 
 const IDLE_TIMEOUT_MS = 60_000
 
+/** Only public filesystem operations cross this boundary; guest control endpoints never do. */
+export function publicFileUrl(raw: string, base: string): URL | undefined {
+  const origin = new URL(base)
+  const input = new URL(raw, origin)
+  if (input.origin !== origin.origin || !input.pathname.startsWith('/v1/fs/')) return undefined
+  const path = input.pathname.slice('/v1/fs'.length)
+  if (!['/changes', '/stat', '/list', '/content', '/item', '/mkdir', '/move'].includes(path)) return undefined
+  const target = new URL(path, origin)
+  target.search = input.search
+  return target
+}
+
 /** Relay one request without buffering the file; the caller holds the lifecycle lease. */
 export async function proxyFiles(service: FileService, input: IncomingMessage, output: ServerResponse, idleTimeoutMs = IDLE_TIMEOUT_MS): Promise<void> {
   // The request may have waited behind a wake or another lifecycle operation.
   if (input.aborted || output.destroyed) return
-  const url = new URL(input.url ?? '/', service.url)
-  url.pathname = url.pathname.slice('/v1/fs'.length) || '/'
+  const url = publicFileUrl(input.url ?? '/', service.url)
+  if (!url) { output.writeHead(404, { connection: 'close' }); output.end(); return }
   const headers: Record<string, string> = { authorization: `Bearer ${service.token}` }
   for (const name of ['content-type', 'content-length', 'range', 'if-match', 'if-none-match']) {
     const value = input.headers[name]

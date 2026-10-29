@@ -48,3 +48,13 @@ to the network: it is a private host-to-guest transport.
 
 - `apps/host/scripts/check-fs.mjs` checks a paired computer through the public API (see
   [`apps/host`](../../apps/host/README.md#real-host-checks)).
+
+### Private keyring provisioning
+
+The host sends `POST /keyring` over the same authenticated private service connection,
+with exactly 64 lowercase hex characters in the body. The endpoint serializes requests and
+pipes the credential to `caboose-keyring` on stdin; it writes no credential file or request
+log and returns only a fixed state with `Cache-Control: no-store`. The host filesystem
+proxy allows only public file operations and cannot forward this endpoint. Run
+`python3 guest/files/test_keyring_endpoint.py` for body, authorization, serialization and
+error-redaction checks without starting Linux services.

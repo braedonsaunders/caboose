@@ -10,6 +10,7 @@ import os
 import re
 import select
 import struct
+import subprocess
 import secrets
 import stat
 import threading
@@ -23,6 +24,7 @@ PORT = int(os.environ.get('CABOOSE_FILES_PORT', '14700'))
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 rootfd = os.open(ROOT, DIR)
 lock = threading.RLock()
+keyring_lock = threading.Lock()
 
 
 def parts(path):
@@ -253,6 +255,25 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return self.reply(401, {'error': 'unauthorized'})
             u = urlsplit(self.path); q = parse_qs(u.query, keep_blank_values=True)
+            if u.path == '/keyring':
+                headers = {'Cache-Control': 'no-store'}
+                if self.command != 'POST' or self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length') != '64':
+                    return self.reply(400, {'state': 'unavailable'}, headers)
+                self.connection.settimeout(10)
+                password = self.rfile.read(64)
+                if len(password) != 64 or any(c not in b'0123456789abcdef' for c in password):
+                    return self.reply(400, {'state': 'unavailable'}, headers)
+                if not keyring_lock.acquire(blocking=False):
+                    return self.reply(409, {'state': 'unavailable'}, headers)
+                try:
+                    result = subprocess.run(['/usr/bin/python3', '/opt/caboose/keyring/caboose-keyring'],
+                                            input=password, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=45)
+                    state = 'ready' if result.returncode == 0 and result.stdout.strip() == b'{"state": "ready"}' else 'migration-required' if result.returncode == 3 else 'unavailable'
+                    return self.reply(200 if state == 'ready' else 409, {'state': state}, headers)
+                except Exception:
+                    return self.reply(503, {'state': 'unavailable'}, headers)
+                finally:
+                    keyring_lock.release()
             path = q.get('path', [''])[0]
             parts(path)
             if self.command == 'GET' and u.path == '/changes':
