@@ -66,6 +66,23 @@ fn window_lineage(
     pid.map(crate::video::lineage).unwrap_or_default()
 }
 
+/// A random identifier for this server process (16 hex characters). Window ids restart
+/// with the process, so a client keeps a window's last picture across a reconnect only
+/// when the epoch is unchanged. Without /dev/urandom, the clock and pid still differ
+/// between runs.
+pub fn new_epoch() -> String {
+    use std::io::Read;
+    let mut bytes = [0u8; 8];
+    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).is_err() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        bytes = (nanos ^ ((std::process::id() as u64) << 32)).to_le_bytes();
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Constant-time comparison, so the token cannot be guessed byte by byte.
 fn token_matches(expected: &[u8], given: &[u8]) -> bool {
     if expected.len() != given.len() {
@@ -240,6 +257,7 @@ impl State {
                     self.audio.is_some(),
                     self.encoders.settings.tile_max_px > 0,
                 ),
+                epoch: Some(self.epoch.clone()),
             }),
         );
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
@@ -845,6 +863,14 @@ mod tests {
         pad_edges(&mut image, 3, 1, None);
         assert_eq!(image.data[3 * 4], 3);
         assert_eq!(&image.data[16..32], &image.data[0..16]);
+    }
+
+    #[test]
+    fn epochs_are_hex_and_differ() {
+        let (a, b) = (new_epoch(), new_epoch());
+        assert_eq!(a.len(), 16);
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_ne!(a, b);
     }
 
     #[test]

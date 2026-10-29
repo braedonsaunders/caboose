@@ -378,6 +378,7 @@ fn run(config: Config) -> Result<(), String> {
         audio: None,
         audio_tx,
         generation: 0,
+        epoch: session::new_epoch(),
         stats: Default::default(),
         cursor: None,
         refine_timer: None,

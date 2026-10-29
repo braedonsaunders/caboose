@@ -221,6 +221,18 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 features: ["vsync", "ack", "touch", "text-input-v3", "cursor-named", "xwayland"]
                     .map(String::from)
                     .to_vec(),
+                epoch: None,
+            }),
+        ),
+        one(
+            "server-hello-epoch",
+            "A server hello with the server process's epoch, which tells a reconnecting client its window ids still name the same windows.",
+            Message::ServerHello(ServerHello {
+                version: 0,
+                displays: vec![1],
+                encoders: vec![Codec::Hevc],
+                features: ["vsync", "ack"].map(String::from).to_vec(),
+                epoch: Some("5f3a9c01d2e4b678".into()),
             }),
         ),
         one("window-create-toplevel", "A native Wayland toplevel with an icon and a minimum size.", Message::WindowCreate(terminal)),
