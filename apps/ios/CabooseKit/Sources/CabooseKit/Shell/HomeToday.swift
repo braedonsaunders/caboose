@@ -190,6 +190,17 @@ extension HomeToday {
         return CGSize(width: (height * aspect).rounded(), height: height)
     }
 
+    /// Fit a complete window into a bounded Home thumbnail, independent of sibling count.
+    public static func previewSize(window: CGSize, height: CGFloat, maximumWidth: CGFloat) -> CGSize {
+        let height = height.isFinite ? max(0, height) : 0
+        let width = maximumWidth.isFinite ? max(0, maximumWidth) : 0
+        guard window.width.isFinite, window.height.isFinite, window.width > 0, window.height > 0 else {
+            return CGSize(width: min(width, height * 0.75), height: height)
+        }
+        let scale = min(width / window.width, height / window.height)
+        return CGSize(width: window.width * scale, height: window.height * scale)
+    }
+
     /// Where the shell's tabs sit.
     public enum TabPlacement: Equatable, Sendable {
         /// The system's own: its vertical bar on the side (iPhone Duo), or iPad's tab bar.

@@ -239,9 +239,9 @@ struct OnScreenStrip: View {
 
     var body: some View {
         let windows = model.phase == .ready ? model.appWindows : []
-        let count = model.phase == .ready ? windows.count : frames.frames.count
-        let width: CGFloat? = wide ? max(0, ((columnWidth ?? 720) - CGFloat(max(0, min(count, 3) - 1)) * 14) / CGFloat(max(1, min(count, 3)))) : nil
-        let height: CGFloat = width.map { min(280, $0 / 1.5) } ?? 156
+        // A lone app stays a thumbnail; the number of windows never stretches it.
+        let height: CGFloat = wide ? 196 : 156
+        let width = min(320, columnWidth ?? 320)
         let strip = HomeToday.strip(running: model.phase == .ready, live: windows.count, kept: frames.frames.count)
         Group {
             switch strip {
@@ -296,8 +296,8 @@ struct LiveWindowTile: View {
     var width: CGFloat? = nil
 
     var body: some View {
-        let size = width.map { CGSize(width: $0, height: height) } ?? HomeToday.tileSize(window: window.frame.size, height: height)
-        let previewWidth = width == nil ? size.width : min(size.width, size.height * window.frame.width / max(1, window.frame.height))
+        let size = HomeToday.previewSize(window: window.frame.size, height: height, maximumWidth: width ?? 320)
+        let previewWidth = size.width
         Button { model.show(windowID: window.id) } label: {
             VStack(alignment: .leading, spacing: 8) {
                 RemoteWindowPreview(window: window, width: previewWidth)
@@ -332,7 +332,7 @@ private struct KeptWindowTile: View {
     let resume: () -> Void
 
     var body: some View {
-        let size = width.map { CGSize(width: $0, height: height) } ?? HomeToday.tileSize(window: CGSize(width: frame.width, height: frame.height), height: height)
+        let size = HomeToday.previewSize(window: CGSize(width: frame.width, height: frame.height), height: height, maximumWidth: width ?? 320)
         Button(action: resume) {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack {
@@ -340,7 +340,7 @@ private struct KeptWindowTile: View {
                     if let image {
                         Image(uiImage: image)
                             .resizable()
-                            .aspectRatio(contentMode: width == nil ? .fill : .fit)
+                            .aspectRatio(contentMode: .fit)
                             .frame(width: size.width, height: size.height, alignment: width == nil ? .topLeading : .center)
                             .saturation(0.35)
                             .brightness(-0.18)

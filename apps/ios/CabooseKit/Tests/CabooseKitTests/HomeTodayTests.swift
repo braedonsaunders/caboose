@@ -93,6 +93,16 @@ struct HomeTodayTests {
         #expect(HomeToday.tileSize(window: .zero, height: 160) == CGSize(width: 120, height: 160))
     }
 
+    @Test func previewsFitWideAndPortraitWindowsWithoutFillingTheRow() {
+        for window in [CGSize(width: 1340, height: 910), CGSize(width: 3000, height: 600), CGSize(width: 600, height: 1600)] {
+            let size = HomeToday.previewSize(window: window, height: 196, maximumWidth: 320)
+            #expect(size.width <= 320 && size.height <= 196)
+            #expect(abs(size.width / size.height - window.width / window.height) < 0.0001)
+        }
+        let narrow = HomeToday.previewSize(window: CGSize(width: 1200, height: 800), height: 196, maximumWidth: 180)
+        #expect(narrow == CGSize(width: 180, height: 120))
+    }
+
     @Test func tabsSitAtTheBottomRightWhereBarsAreHorizontal() {
         // An iPhone held upright, then on its side or a Duo opened out.
         #expect(HomeToday.tabPlacement(isPhone: true, hasVerticalBar: false, width: 402) == .cluster)
