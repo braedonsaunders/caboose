@@ -46,36 +46,44 @@ struct ShellTabChrome: ViewModifier {
                     }
                     .animation(.snappy, value: hidden)
             case .sidebar:
-                content
-                    .toolbarVisibility(.hidden, for: .tabBar)
-                    .safeAreaInset(edge: .trailing, spacing: 0) {
+                GeometryReader { proxy in
+                    // A real content column, not a safe-area overlay on a NavigationStack:
+                    // child scroll views, composers and terminal grids get this exact width.
+                    HStack(spacing: 0) {
+                        content
+                            .frame(width: max(0, proxy.size.width - (immersive ? 0 : ShellTabButtons.sidebarWidth + 8)),
+                                   height: proxy.size.height)
                         if !immersive {
-                            GeometryReader { proxy in
+                            VStack(spacing: 0) {
+                                Spacer(minLength: 0)
                                 ScrollView(.vertical) {
                                     VStack(spacing: 8) {
                                         if tab == .desktop { DesktopRailControls() }
-                                        Spacer(minLength: 0)
                                         ShellTabButtons(axis: .vertical)
                                     }
-                                    // Padding is inside the measured rail; the keyboard
-                                    // can shorten it without making controls unreachable.
-                                    .frame(minHeight: max(0, proxy.size.height - 16))
                                     .padding(.vertical, 8)
                                     .frame(width: ShellTabButtons.sidebarWidth)
                                 }
                                 .scrollIndicators(.hidden)
-                                .frame(width: ShellTabButtons.sidebarWidth, height: proxy.size.height)
+                                .scrollBounceBehavior(.basedOnSize)
+                                .frame(width: ShellTabButtons.sidebarWidth,
+                                       height: min(max(0, proxy.size.height - 16), railHeight))
                                 .glassEffect(.regular, in: .rect(cornerRadius: 26))
                             }
-                            .frame(width: ShellTabButtons.sidebarWidth)
                             .padding(.trailing, 8)
-                            .ignoresSafeArea(.container, edges: tab == .desktop ? [.top, .bottom] : [])
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                            .padding(.bottom, 8)
                         }
                     }
-                    .animation(.snappy, value: immersive)
+                }
+                .toolbarVisibility(.hidden, for: .tabBar)
+                .animation(.snappy, value: immersive)
             }
         }
+    }
+
+    private var railHeight: CGFloat {
+        let tabs = TerminalSlot.isFilled ? 5 : 4
+        return CGFloat(tabs * 54 + (tabs - 1) * 4 + 16) + (tab == .desktop ? 184 : 0)
     }
 
     /// Under the keyboard, as the system's tab bar is, and out of the way of a window that

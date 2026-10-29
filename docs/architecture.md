@@ -1744,8 +1744,10 @@ The app is a system tab view (SwiftUI `TabView` with `Tab`). Outside portrait De
 where the system draws a vertical bar, and on iPad, the tabs are the system's. On an iPhone whose bars are horizontal
 the system's tab bar is hidden and the tabs sit at the bottom right
 (`HomeToday.tabPlacement`): a cluster beside the tab's own bottom control (Home's Ask) when
-the screen is under 600 points wide, else a sidebar on the trailing edge with the tabs at
-its foot. Portrait Desktop overrides both system and custom tab placement: the far-right icon
+the screen is under 600 points wide, else a compact rail at the bottom trailing edge. Tablet portrait uses that compact
+rail on both Duo and iPad. The rail’s material wraps only its controls, and an explicit
+content column reserves its width so grids, chat composers and the Ask field do not
+run behind it. Portrait Desktop overrides both system and custom tab placement: the far-right icon
 in the dock opens an upward, button-anchored 72-point-wide vertical strip of icons for
 Desktop controls and app navigation. The strip scrolls within 512 points; Close, outside
 tap and the accessibility escape action dismiss it. The same strip fits a portrait phone. No navigation bar, native tab rail,

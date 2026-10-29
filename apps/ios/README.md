@@ -578,3 +578,8 @@ settings and verify the menu retains the name after relaunch. Open Manage Comput
 verify ordinary console sign-in with no phone bearer in the URL. With Keychain access
 unavailable, verify the failure is shown and the active connection is unchanged. Start from
 a legacy single pairing and verify migration keeps its Files identity and shortcuts.
+
+Tablet-portrait shell check: on Home, Agents, Apps and Terminal, navigation forms a
+compact bottom-right rail with no empty full-height glass. Page content, Ask, composers
+and the terminal fit beside it. Rotate to landscape and back, then show and hide the
+keyboard; the rail stays reachable above it and no second tab bar appears.

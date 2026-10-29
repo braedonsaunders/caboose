@@ -15,9 +15,10 @@ struct MainTabs: View {
 
     var body: some View {
         @Bindable var model = model
-        let placement = HomeToday.tabPlacement(isPhone: UIDevice.current.userInterfaceIdiom == .phone,
+        let systemPlacement = HomeToday.tabPlacement(isPhone: UIDevice.current.userInterfaceIdiom == .phone,
                                                hasVerticalBar: barEdge != nil, width: width)
         let portraitDesktop = DesktopChrome.usesCompactPanel(size: windowSize)
+        let placement: HomeToday.TabPlacement = portraitDesktop && windowSize.width >= 600 ? .sidebar : systemPlacement
         let desktopHidesBars = model.selectedTab == .desktop &&
             (portraitDesktop || model.laptopDesktopActive || (model.yardActive && !model.externalDisplayActive && model.yard.coverWindow != nil))
         TabView(selection: $model.selectedTab) {
