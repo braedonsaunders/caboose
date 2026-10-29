@@ -3,13 +3,20 @@ import Testing
 @testable import CabooseKit
 
 struct DesktopChromeTests {
-    @Test func portraitOverridesWidthBasedAndSystemTabs() {
-        // Closed phone, open Duo, and both iPad sizes must use the same chrome.
-        for size in [CGSize(width: 390, height: 844), CGSize(width: 686, height: 980),
+    @Test func widePortraitOverridesWidthBasedAndSystemTabs() {
+        // Open Duo and iPad portrait windows use compact controls in the dock.
+        for size in [CGSize(width: 686, height: 980),
                      CGSize(width: 768, height: 1024), CGSize(width: 1024, height: 1366)] {
             #expect(DesktopChrome.usesCompactPanel(size: size))
             #expect(!DesktopChrome.usesCompactPanel(size: CGSize(width: size.height, height: size.width)))
         }
+    }
+
+    @Test func closedPhoneKeepsItsNativeSidebar() {
+        for width in [390.0, 402, 466, 599] {
+            #expect(!DesktopChrome.usesCompactPanel(size: CGSize(width: width, height: 844)))
+        }
+        #expect(DesktopChrome.usesCompactPanel(size: CGSize(width: 600, height: 844)))
     }
 
     @Test func squareWindowKeepsCompactControls() {

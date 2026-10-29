@@ -1761,7 +1761,7 @@ the app card, and a detached view releases its layers.
 
 ### Shell
 
-The app is a system tab view (SwiftUI `TabView` with `Tab`). Outside portrait Desktop,
+The app is a system tab view (SwiftUI `TabView` with `Tab`). Outside wide portrait Desktop,
 where the system draws a vertical bar, and on iPad, the tabs are the system's. On an iPhone whose bars are horizontal
 the system's tab bar is hidden and the tabs sit at the bottom right
 (`HomeToday.tabPlacement`): a cluster beside the tab's own bottom control (Home's Ask) when
@@ -1771,10 +1771,10 @@ in a separate capsule above it. Page actions and lifecycle actions share the con
 capsule’s overflow menu; the native top toolbar is hidden on this custom path. A single
 wallpaper continues behind both capsules, and an explicit
 content column reserves its width so grids, chat composers and the Ask field do not
-run behind it. Portrait Desktop overrides both system and custom tab placement: the far-right icon
+run behind it. Portrait Desktop at 600 points or wider overrides both system and custom tab placement: the far-right icon
 in the dock opens an upward, button-anchored 72-point-wide vertical strip of icons for
 Desktop controls and app navigation. The strip scrolls within 512 points; Close, outside
-tap and the accessibility escape action dismiss it. The same strip fits a portrait phone. No navigation bar, native tab rail,
+tap and the accessibility escape action dismiss it. Narrow phone windows retain their native shell controls. No navigation bar, native tab rail,
 or custom sidebar reserves a strip; the closed panel leaves the full available desktop
 viewport and bottom dock. Window bounds determine portrait, so showing the keyboard does
 not switch chrome. Landscape keeps its native bar where available or its custom sidebar;
@@ -1824,7 +1824,7 @@ not account discovery.
   320 points of width and 196 points of height, regardless of the window count. File names
   and paths truncate within the same column.
   The landscape Desktop toolbar’s Full Screen control opens the focused app card.
-  Portrait Desktop hides the native toolbar and tabs together for its compact panel.
+  Wide portrait Desktop hides the native toolbar and tabs together for its compact panel; a closed phone keeps its native bar.
 - **AirPlay.** iOS lets no app select an AirPlay device or start Screen Mirroring. The
   AirPlay control (in Home's and the Desktop's AirPlay sheet) remembers the AirPlay output the computer's sound last played on (from the
   audio session's route) and, on a tap, switches the session to long-form video routing and

@@ -353,7 +353,7 @@ keyboard, as the system's tab bar does; the sidebar stays, its tabs riding above
 keyboard, as the system's vertical bar does. Both step aside for a window covering the
 Desktop. Where the system
 draws its vertical bar (iPhone Duo, iOS 27.1), and on iPad, the system's tab bar is used,
-except portrait Desktop, whose controls and navigation share the compact dock-side panel.
+except wide portrait Desktop, whose controls and navigation share the compact dock-side panel.
 
 ## Computer settings
 
@@ -548,10 +548,11 @@ Trackpad Gestures guide with the mappings and platform limitations. With a conne
 monitor, the phone shows window previews above its keyboard/trackpad and leaves the monitor's
 workspace intact. Book posture and compact screens keep the ordinary layout in Automatic.
 
-In Tablet mode, portrait Desktop has a controls icon at the far-right end of the bottom dock. Its
+In Tablet mode, portrait Desktop at 600 points or wider has a controls icon at the far-right end of the bottom dock. Its
 upward, anchored strip shows desktop controls and app navigation as a single vertical
 column of icons, with Close and VoiceOver escape to dismiss. The strip is 72 points wide
-and scrolls within 512 points, including on a phone; it never becomes a full-height rail or reserves desktop space. Native toolbar and
+and scrolls within 512 points; it never becomes a full-height rail or reserves desktop space.
+A closed phone keeps its native right-hand sidebar rather than selecting the tablet panel. Native toolbar and
 tabs are hidden on this path, including iPad system tabs and Duo's native rail.
 Landscape keeps the native rail where available and otherwise the custom rail. Laptop
 keeps its bottom-half controls. Window bounds select portrait independently of the keyboard.
