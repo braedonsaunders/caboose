@@ -1578,8 +1578,9 @@ the app card, and a detached view releases its layers.
   rotation, a TV, a zoom or a relaunch, is derived from that pair, keeping the free space
   on each side in proportion, so a layout never drifts and returns exactly when the size
   does. Places are kept on the phone per computer, one arrangement for its own screen and
-  one for an external display, at most 64, and only for a window of the app that had the
-  place. A window's place is forgotten when it closes while the display session is ready.
+  one for an external display, at most 64, and only for a window with the same known app
+  class that had the place. Minimized windows keep their dock state with their places.
+  A window's place is forgotten when it closes while the display session is ready.
   ⌘⌥ with the arrows brings the nearest window that way forward, with ⇧ snaps the front
   window left or right, maximizes it (↑) or restores it (↓); F zooms, M minimizes, W closes,
   A opens Launchpad and Return a terminal.
