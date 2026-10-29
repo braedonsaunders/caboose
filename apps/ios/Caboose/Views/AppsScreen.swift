@@ -2,13 +2,14 @@ import CabooseKit
 import SwiftUI
 
 /// Every app on the computer, with System Settings & Tools last. Library, in the toolbar, is
-/// where apps are added, updated and removed.
+/// where apps are added, updated and removed; New App, beside it, has an agent make one.
 struct AppsScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.shellTabPlacement) private var placement
     @State private var search = ""
     @State private var showSystem = false
     @State private var showLibrary = false
+    @State private var showNewApp = false
     private let columns = [GridItem(.adaptive(minimum: 76, maximum: 96), spacing: 18)]
 
     var body: some View {
@@ -48,7 +49,8 @@ struct AppsScreen: View {
             .background { ShellBackground() }
             .navigationTitle("Apps")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button("New App", systemImage: "sparkles") { showNewApp = true }
                     Button("Library", systemImage: "books.vertical") { showLibrary = true }
                 }
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
@@ -56,9 +58,11 @@ struct AppsScreen: View {
             }
             .toolbarVisibility(placement == .sidebar ? .hidden : .automatic, for: .navigationBar)
             .shellRailActions {
+                Button("New App", systemImage: "sparkles") { showNewApp = true }
                 Button("Library", systemImage: "books.vertical") { showLibrary = true }
             }
             .sheet(isPresented: $showLibrary) { CatalogLibrary().environment(model) }
+            .sheet(isPresented: $showNewApp) { NewAppSheet().environment(model) }
         }
     }
 
