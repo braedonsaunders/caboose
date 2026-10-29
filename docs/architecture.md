@@ -389,6 +389,11 @@ any application: the accessibility bus of the seat's session bus, with its socke
 after the seat's X display and published as `AT_SPI_BUS` on its Xwayland, so Wayland and
 X11 applications on a seat share one bus and the two seats never share one.
 
+X11 foreground metadata follows the seat’s keyboard focus. `_NET_ACTIVE_WINDOW` identifies
+the focused X11 window and is zero while a Wayland surface or no surface has focus.
+The compositor reconciles stale XWM property notifications on events; this does not
+change application focus protocols or synthesize input.
+
 **Control socket.** Each instance serves `control.sock` (mode 0600, only to processes of
 its own user) for the computer's own tools: the screen routes and the agents' desktop tools
 see and drive a seat through it, Wayland and X11 windows alike. One request per line, one

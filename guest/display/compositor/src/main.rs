@@ -20,6 +20,7 @@ mod text_input;
 mod video;
 mod windows;
 mod xauth;
+mod x11_focus;
 mod xwm;
 
 use config::{Config, Parsed, RendererChoice};
@@ -378,6 +379,7 @@ fn run(config: Config) -> Result<(), String> {
         xwayland_shell,
         seat,
         xwm: None,
+        x11_foreground: None,
         text_inputs,
         windows: Default::default(),
         displays,
@@ -470,7 +472,7 @@ fn run(config: Config) -> Result<(), String> {
             std::process::Stdio::inherit(),
             |_| (),
         ) {
-            Ok((x, client)) => Some((x, client, prepared.authority)),
+            Ok((x, client)) => Some((x, client, prepared.authority, prepared.cookie)),
             Err(e) => {
                 tracing::error!("cannot start Xwayland on :{number}: {e}; continuing without X11");
                 None
@@ -478,13 +480,16 @@ fn run(config: Config) -> Result<(), String> {
         }
     });
     match spawned {
-        Some((xwayland, client, authority)) => {
+        Some((xwayland, client, authority, cookie)) => {
             handle
                 .insert_source(xwayland, move |event, _, state: &mut State| match event {
                     XWaylandEvent::Ready { x11_socket, display_number } => {
                         match X11Wm::start_wm(state.handle.clone(), x11_socket, client.clone()) {
                             Ok(wm) => {
                                 state.xwm = Some(wm);
+                                if let Err(error) = x11_focus::Foreground::install(state, display_number, &cookie) {
+                                    tracing::error!("X11 foreground initialization: {error}");
+                                }
                                 ready(state, Some(display_number), Some(&authority));
                             }
                             Err(e) => {

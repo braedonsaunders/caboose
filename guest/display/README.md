@@ -86,7 +86,9 @@ This directory is a Cargo workspace:
   applications paste; what they copy reaches the phone (and a new client is sent the
   current text on connect). Copying between Wayland and X11 applications on the computer
   works through Xwayland's window manager. When a focused window closes, focus returns to
-  the window focused before it.
+  the window focused before it. X11 foreground metadata (`_NET_ACTIVE_WINDOW`)
+tracks the seat’s focused X11 window and clears for Wayland or no focus. Stale XWM
+property updates are reconciled on notifications, without a polling timer.
 - **Sound.** The compositor runs its own PulseAudio on a private socket with a null sink
   as the only, so default, output, and gives launched applications `PULSE_SERVER`. While a
   client that plays Opus is connected (`hello.audio_decoders`), `parec` records the sink and
@@ -369,3 +371,21 @@ debug compositor first (`cargo build` in the dev container). The dev image inclu
 PyGObject and GTK 3 introspection for this check. After deploying a new compositor,
 reopen a CLI launcher such as OpenCode: the phone supplies its single window header,
 while the terminal menu remains usable. Existing app processes must be reopened.
+
+### X11 foreground regression
+
+`scripts/check-x11-focus.py` runs against a disposable, initially empty seat. Source
+that seat’s launch environment and run:
+
+```sh
+python3 scripts/check-x11-focus.py --control "$CABOOSE_DISPLAY_CONTROL" \
+  --wayland-command weston-simple-shm
+```
+
+The fixture creates a passive X11 client and a globally active `WM_TAKE_FOCUS` client,
+checks Return delivery, injects stale foreground properties and a property burst,
+then checks Wayland and empty-seat transitions and notification convergence. It uses
+Python, libX11 and libXtst; the supplied command creates a native Wayland window.
+It closes its own clients on success or failure and refuses an occupied seat. Run
+the identical fixture on the previous compositor as a negative control: stale
+foreground metadata fails its foreground assertion. No owner display is involved.
