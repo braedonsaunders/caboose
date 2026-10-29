@@ -161,7 +161,7 @@ private struct LaptopControls: View {
                             LaptopKeyHeader(surface: surface).frame(maxWidth: .infinity).frame(height: 48)
                             LaptopComboKeyboard(onText: { surface.insertText($0) },
                                                 onKey: { surface.performKeyboardAction(.key($0)) },
-                                                onSystemKeyboard: openSystemKeyboard)
+                                                onNativeKeyboard: openSystemKeyboard)
                         }
                         .background(Color(uiColor: .systemGray5))
                     }

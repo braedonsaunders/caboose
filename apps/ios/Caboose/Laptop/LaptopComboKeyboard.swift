@@ -6,7 +6,7 @@ import UIKit
 struct LaptopComboKeyboard: View {
     var onText: (String) -> Void
     var onKey: (String) -> Void
-    var onSystemKeyboard: () -> Void
+    var onNativeKeyboard: () -> Void
 
     @State private var page: Page = .letters
     @State private var shift = false
@@ -36,7 +36,7 @@ struct LaptopComboKeyboard: View {
                         page = page == .letters ? .numbers : .letters
                     }
                     .frame(width: unit * 1.4)
-                    Button(action: onSystemKeyboard) {
+                    Button(action: onNativeKeyboard) {
                         Image(systemName: "globe")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
