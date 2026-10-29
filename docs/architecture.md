@@ -696,8 +696,8 @@ guest answer 409 while it is not running.
 | `GET` | `/v1/display` | **WebSocket**, subprotocol `binary` (required). Relay to the owner's display, port 14600 |
 | `GET` | `/v1/display?seat=agent` | **WebSocket**, subprotocol `binary`. Starts the agent seat if needed, then relays to port 14601; closes with 1011 `agent seat unavailable` if it does not start |
 | `GET` | `/v1/control` | **WebSocket.** JSON events (below). `?foreground=1` marks the app's foreground connection; `?phone=1` subscribes to phone handoff events |
-| `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec }]` |
-| `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }` |
+| `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec, actions }]`. `actions` is the entry's desktop actions (`Actions=` with a `[Desktop Action …]` group, a Name, and an Exec unless the entry is D-Bus activated): at most 16 `{ id, name }`, ids `[A-Za-z0-9-]{1,64}`, names at most 100 characters |
+| `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }`. An optional `{ action }` runs one of its `actions` instead (GLib runs its Exec or activates it over D-Bus); 400 for an invalid id, 404 for an entry or action the computer does not have |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`. Open an `http(s)` URL (at most 8192 characters, no spaces or control characters) with the default handler on the owner's display |
 | `GET` | `/v1/health` | microVM: `{ host, hypervisor: "cloud-hypervisor" \| "virtualization", kvm, desk, machine }` with appkit-desk's stats (`kvm` applies only to Cloud Hypervisor); container: `{ host, runtime: "container", gpu, container, running, machine }`; both add `image`. `machine` is `{ memoryMb, availableMemoryMb, cpus, disk: { totalBytes, freeBytes } \| null }`: the machine the computers share, with `disk` the volume holding `CABOOSE_IMAGE_ROOT` (null when it cannot be read). `image` is `{ state: "ready" \| "fetching" \| "failed" \| "missing", reference: string \| null, receivedBytes?, totalBytes?, message? }`: the computer's image ([Published images](#published-images)); `missing` means no reference to fetch from |
 | `GET` | `/v1/host` | How the host was started (below) |
@@ -2028,8 +2028,8 @@ that wakes or parks the computer.
 
 ### Shortcuts and Spotlight
 
-App Intents wake or park the computer, open a Linux app, open a URL on the computer, ask a
-computer agent (an approval-gated task, returning a task link), open, get or save computer
+App Intents wake or park the computer, open a Linux app or run one of its desktop actions
+(New Private Window, a new document), open a URL on the computer, ask a computer agent (an approval-gated task, returning a task link), open, get or save computer
 files, and run the four Craft operations. App shortcuts offer phrases to Siri and
 Shortcuts. App and file entities use the authenticated host API. File paths are relative to
 the home; saving creates new files and refuses to overwrite.
@@ -2041,7 +2041,8 @@ returned to the shortcut.
 
 File search lists the home recursively through `/v1/fs`, skipping unreadable or removed
 directories and the top-level `.caboose-jobs` directory, and sorts by modification time.
-It suggests the 200 most recent files; a text query searches all of them. On wake and on
+It suggests the 200 most recent files; a text query searches all of them. Apps are indexed
+with their desktop actions, each found under its own name and run when selected. On wake and on
 `fs.changed`, while a control connection is active, the app replaces its 200 Spotlight file
 entries; a connection failure during a scan leaves the previous entries in place. The app
 also indexes the current app list, opens an indexed app or file when it is selected, and
