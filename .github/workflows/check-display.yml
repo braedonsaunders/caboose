@@ -8,6 +8,10 @@ on:
       - 'guest/apps/**'
       - 'guest/files/**'
       - 'guest/components/**'
+      - 'guest/container/Dockerfile'
+      - 'guest/image/Dockerfile'
+      - 'guest/image/build-inside.sh'
+      - 'apps/host/Dockerfile'
       - 'apps/ios/CabooseKit/Sources/CabooseKit/Resources/AgentApp*.js'
   workflow_dispatch:
 
@@ -29,6 +33,7 @@ jobs:
           node-version: 22
       - name: Check guest bridge and injected page contracts
         run: |
+          python3 -m unittest guest.components.test_staging guest.components.test_install guest.components.test_vsock_services guest.components.test_container_services.BusStartup
           python3 -m unittest discover -s guest/apps -p 'test_*.py'
           python3 guest/files/test_webview_endpoint.py
           node --test guest/apps/agent-page.test.mjs
