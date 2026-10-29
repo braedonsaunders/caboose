@@ -140,6 +140,7 @@ seconds, for the writes in flight.
 
 **Input.** Touch, the hardware keyboard, the pointer and game controllers (the Gamepad API,
 from GameController) go to the web view on the device; none of it is sent to the computer.
+An on-screen controller the app draws appears to the page as one more gamepad.
 Resizing, fullscreen, focus and closing the window still go to caboose-display as
 `configure` and `close`.
 

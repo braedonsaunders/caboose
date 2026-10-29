@@ -257,6 +257,7 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | Xwayland | `:110` | `:101` |
 | Applications | Wayland first, X11 through Xwayland as a fallback | The same |
 | Sound | Its own PulseAudio, sent as Opus | None (`--no-audio`) |
+| Game handoff | `$XDG_RUNTIME_DIR/caboose-game.sock` | None (`--no-games`) |
 | Session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus` |
 | Notification endpoint | `caboose-notification-daemon.service` | `caboose-agent-notification-daemon.service` |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
@@ -265,8 +266,9 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
 `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`),
-`CABOOSE_DISPLAY_CONTROL` (its control socket, below), plus `LIBVA_DRIVER_NAME=caboose` when
-the passthrough driver is installed. Each keeps its X authority, Xwayland shim, PulseAudio
+`CABOOSE_DISPLAY_CONTROL` (its control socket, below), `CABOOSE_GAME_SOCKET` on the owner's
+display ([game-handoff.md](game-handoff.md)), plus `LIBVA_DRIVER_NAME=caboose` when the
+passthrough driver is installed. Each keeps its X authority, Xwayland shim, PulseAudio
 socket and control socket under `$XDG_RUNTIME_DIR/caboose-display/<wayland socket name>/`.
 The units set `ACCESSIBILITY_ENABLED=1`, `GNOME_ACCESSIBILITY=1` and
 `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`, and start the seat's AT-SPI bus (`a11y.py bus`) before
@@ -1833,6 +1835,23 @@ the app card, and a detached view releases its layers.
   display), the address in use, reconnects and recent losses with their reasons. The
   computer's encode time and the one-way network delay are not measured, because the
   phone and the computer share no clock.
+
+### Game handoff
+
+CabooseKit's `Game/` runs the games caboose-display hands off ([game-handoff.md](game-handoff.md)).
+`CabooseDisplaySession.runsGames`, true wherever WebKit is available, puts `wasm: true` in the
+hello. `game.create` sets `RemoteWindow.game`, a `RemoteGame` that lasts through a resume from
+the same server epoch and ends on `game.destroy`, when its window is withdrawn, or when the
+session ends. The session sends no input addressed to a game window, and `close` for a game
+window first waits up to five seconds for saves still being written. The host's `/v1/fs` is
+reached at the display URL's origin with the host bearer token. `RemoteWindowView`'s
+interactive view lays the game's one `GameSurfaceView` (a `WKWebView` with a non-persistent
+data store) over the window and turns off its own gestures and key forwarding; when the view
+leaves the screen or the app stops being active, a snapshot becomes the window's picture.
+`CabooseGameSchemeHandler` serves `caboose-game://<id>/<path>` from a least-recently-used cache
+in `Caches/CabooseGames`, bounded at 1 GiB and keyed by computer, path and etag. Save sync
+writes IDBFS changes within two seconds and retries every five seconds while the game runs.
+An on-screen controller reaches the page's Gamepad API through `RemoteGame.gamepad`.
 
 ### Shell
 
