@@ -81,7 +81,7 @@ describe('computer backups', () => {
     await backups.open()
     server = createServer((req, res) => {
       const path = new URL(req.url ?? '/', 'http://x').pathname
-      (path.startsWith('/v1/recovery') ? recoveryRoute(backups, req, res, path, { kind: 'owner' }, context) : backups.handle(req, res, path, phone, context)).catch(error => {
+      void (path.startsWith('/v1/recovery') ? recoveryRoute(backups, req, res, path, { kind: 'owner' }, context) : backups.handle(req, res, path, phone, context)).catch(error => {
         const status = error instanceof SettingsInputError ? 400 : error instanceof AgentNotFoundError ? 404 : error instanceof ComputerConflictError ? 409 : 500
         if (status === 500) console.error(error)
         res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: error.message }))
