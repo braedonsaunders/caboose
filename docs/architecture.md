@@ -302,8 +302,8 @@ caboose-display-ready [TIMEOUT] [PORT]   # default 60 s, port 14600
 It exits 0 once the instance on `PORT` answers a hello made with the current display
 token. The host starts the owner's display with
 `systemctl start caboose-display.service && caboose-display-ready 60 14600` (microVM) or
-`caboose-session start` and `ready` (container), then reads `/run/caboose/display.env`. A
-display preparation fails if the display writes no launch environment.
+`caboose-session start` and `ready` (container), then reads `/run/caboose/display.env`.
+Display preparation fails if the display writes no launch environment.
 
 ### Display token
 
@@ -320,9 +320,9 @@ response; the host relays display bytes without inspecting them.
 
 **File service.** `guest/files/caboose-files.py` (`/opt/caboose/files/`,
 `caboose-files.service`) runs as `caboose` on TCP 14700 and requires
-`Authorization: Bearer <display token>` on every request. The host starts it at each wake
-before the owner's display, and waits up to 60 s for it to listen; a computer without the
-service still wakes. The protocol is in [Files](#files).
+`Authorization: Bearer <display token>` on every request. The component readiness gate
+starts it after each wake and waits up to 60 s for it to listen. File requests wait for
+that gate and report a failed component update. The protocol is in [Files](#files).
 
 **Terminal service.** `guest/terminal/caboose-terminal.py` (`/opt/caboose/terminal/`,
 `caboose-terminal.service` in the microVM, `caboose-components-services` in the container)
