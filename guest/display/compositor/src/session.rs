@@ -32,7 +32,7 @@ pub struct Session {
 
 /// Features this server implements (docs/display.md, Handshake).
 pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool) -> Vec<String> {
-    let mut f = vec!["vsync", "ack", "touch", "text-input-v3", "cursor-named", "clipboard"];
+    let mut f = vec!["vsync", "ack", "touch", "pencil", "text-input-v3", "cursor-named", "clipboard"];
     if xwayland {
         f.push("xwayland");
     }
@@ -207,9 +207,7 @@ impl State {
                 }
             }
             Message::ClientClipboard(c) => self.clipboard_from_phone(c),
-            Message::Pencil(_) => {
-                // Pencil input is not supported; `pencil` is absent from the hello's features.
-            }
+            Message::Pencil(p) => self.pencil(&p),
             other => tracing::debug!("connection {conn}: ignoring {}", other.name()),
         }
     }

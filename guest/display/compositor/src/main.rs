@@ -10,6 +10,7 @@ mod input;
 mod keymap;
 mod motion;
 mod net;
+mod pencil;
 mod render;
 mod session;
 mod state;
@@ -267,6 +268,7 @@ fn run(config: Config) -> Result<(), String> {
     seat.add_keyboard(XkbConfig::default(), 400, 30).map_err(|e| format!("keyboard: {e}"))?;
     seat.add_pointer();
     seat.add_touch();
+    let tablet = pencil::advertise(&dh, &seat);
     let data_device = DataDeviceState::new::<State>(&dh);
     let primary_selection = PrimarySelectionState::new::<State>(&dh);
     let xwayland_shell = XWaylandShellState::new::<State>(&dh);
@@ -278,6 +280,7 @@ fn run(config: Config) -> Result<(), String> {
         .ok_or("cannot compile the default keymap")?;
     let mut input = input::InputState::default();
     input.keysyms = keymap::Keysyms::from_keymap(&keymap);
+    input.pencil.tablet = tablet;
 
     let handle = event_loop.handle();
     let net = net::Net::listen(config.listen, &handle).map_err(|e| format!("listen on {}: {e}", config.listen))?;

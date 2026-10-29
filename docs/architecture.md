@@ -1889,9 +1889,11 @@ not account discovery.
   Ctrl+A/C/X/V/Z/Y use native editing commands, with Copy/Cut blocked in secure fields.
   Unsupported chords announce their unavailability without inserting text. Send and Hide clear composer
   focus; updates and send completion leave it hidden until a tap or explicit focus request.
-- **Pencil.** The client defines `pencil` samples (pressure, tilt, azimuth, hover), but the
-  compositor does not advertise the `pencil` feature, so Apple Pencil acts as touch and
-  Linux applications receive no pressure or tilt.
+- **Pencil.** Apple Pencil is a tablet pen (tablet-unstable-v2): the client sends
+  `pencil` samples with pressure and tilt for every coalesced touch, and hover on iPads that
+  have it; the compositor presents one tablet ("Apple Pencil") with one pen tool, so Wayland
+  applications and, through Xwayland's tablet devices, X11 applications (GIMP, Krita,
+  Xournal++, Inkscape) draw with pressure and tilt. Fingers stay touch.
 
 ### Terminal
 

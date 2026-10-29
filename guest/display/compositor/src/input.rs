@@ -49,11 +49,14 @@ pub struct InputState {
     implied: HashMap<u32, Vec<u32>>,
     /// The innermost popup holding an xdg_popup grab.
     pub popup_grab: Option<u64>,
+    /// Apple Pencil, as the seat's tablet pen (pencil.rs).
+    pub pencil: crate::pencil::PencilState,
 }
 
 impl InputState {
     pub fn forget_window(&mut self, id: u64) {
         self.touches.retain(|_, w| *w != id);
+        self.pencil.forget_window(id);
         if self.popup_grab == Some(id) {
             self.popup_grab = None;
         }
@@ -63,7 +66,7 @@ impl InputState {
 impl State {
     /// The logical position of a window-local display-pixel point, and the surface
     /// under it with that surface's origin.
-    fn locate(&self, id: u64, x: f64, y: f64) -> Option<(Point<f64, Logical>, Option<Focus>)> {
+    pub(crate) fn locate(&self, id: u64, x: f64, y: f64) -> Option<(Point<f64, Logical>, Option<Focus>)> {
         let w = self.windows.get(id)?;
         let display = self.displays.resolve(Some(w.display));
         let origin = self.windows.logical_origin(id, &self.displays).to_f64();
@@ -102,7 +105,7 @@ impl State {
     }
 
     /// Focus follows a press: the window, or for a popup the popup itself.
-    fn press_focus(&mut self, id: u64) {
+    pub(crate) fn press_focus(&mut self, id: u64) {
         self.dismiss_popups_unless(id);
         if self.input.popup_grab.is_none() {
             self.focus_window(id);

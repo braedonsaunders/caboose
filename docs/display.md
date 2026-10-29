@@ -211,10 +211,10 @@ order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
 `cursor-named`, `tiles`, `audio`, `xwayland`, `video`. A feature is listed only when the
-server implements it. caboose-display always lists `vsync`, `ack`, `touch`,
+server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
 `text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
-plays sound; and `tiles` unless tiles are turned off. It does not list `pencil`.
+plays sound; and `tiles` unless tiles are turned off.
 
 ### Pacing and flow control
 
@@ -309,8 +309,11 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
 caboose-display sends a subset of these messages. It sends named cursors (`cursor.named`)
 and no `cursor` images; tiles only as `png`; `video.create` and `video.update` without
 `z`, `color` or `extradata`; and no `notification` (the computer's notifications reach
-the app through the host, from [guest/notifications](../guest/notifications)). It ignores
-`pencil`. The clipboard carries text (`text/plain;charset=utf-8`).
+the app through the host, from [guest/notifications](../guest/notifications)). It delivers
+`pencil` as tablet-unstable-v2 pen events: `hover` and `motion` move the pen (bringing it
+into proximity of the surface under it), `down` and `up` are the tip's contact, `leave` and
+`cancel` take it out of proximity; pressure maps to 0–65535 and tilt passes through in
+degrees. The clipboard carries text (`text/plain;charset=utf-8`).
 
 ### Audio
 

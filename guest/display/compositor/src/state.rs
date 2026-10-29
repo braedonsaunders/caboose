@@ -805,4 +805,5 @@ smithay::delegate_output!(State);
 smithay::delegate_viewporter!(State);
 smithay::delegate_fractional_scale!(State);
 smithay::delegate_cursor_shape!(State);
+smithay::delegate_tablet_manager!(State);
 smithay::delegate_xwayland_shell!(State);

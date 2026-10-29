@@ -116,8 +116,7 @@ This directory is a Cargo workspace:
 
 Limitations: the renderer is pixman (CPU), so buffers reach the encoders through system
 memory and the compositor offers no YUV formats; tiles come only from the software
-encoders; the clipboard carries text only; cursors are sent by name, not as images;
-Pencil input is ignored (`pencil` is not in `hello.features`); notifications are not sent
+encoders; the clipboard carries text only; cursors are sent by name, not as images; notifications are not sent
 on the display protocol; and characters that are not on the keymap cannot be typed into
 X11 applications.
 
