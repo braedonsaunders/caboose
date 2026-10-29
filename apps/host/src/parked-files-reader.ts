@@ -106,9 +106,13 @@ async function streamContent(view: ParkedFilesView, path: string, start: number,
 async function checked(view: ParkedFilesView, parts: string[], deadline: number): Promise<Stat> {
   const root = parseStat(await fish(view, 'lstatns', ['/'], deadline))
   if ((root.mode & 0o170000) !== 0o040000 || !(root.mode & 0o001)) throw new ParkedReaderUnsupported()
+  // A named-user ACL can deny traversal even when the other-execute bit is set.
+  // Reject all xattrs on non-owner ancestors rather than guessing ACL semantics.
+  if ((await fish(view, 'lgetxattrs', ['/'], deadline)).trim()) throw new ParkedReaderUnsupported()
   // /home must be a real directory, not a symlink to an unrelated subtree.
   const homeParent = parseStat(await fish(view, 'lstatns', ['/home'], deadline))
   if ((homeParent.mode & 0o170000) !== 0o040000 || !(homeParent.mode & 0o001)) throw new ParkedReaderUnsupported()
+  if ((await fish(view, 'lgetxattrs', ['/home'], deadline)).trim()) throw new ParkedReaderUnsupported()
   let path = ROOT
   let current = parseStat(await fish(view, 'lstatns', [path], deadline))
   if (current.uid !== 1000 || (current.mode & 0o170000) !== 0o040000 || !(current.mode & 0o100)) throw new ParkedReaderUnsupported()

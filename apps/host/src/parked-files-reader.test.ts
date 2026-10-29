@@ -17,6 +17,7 @@ it('serves owner-fenced stat, list and range; unsupported paths fall back', asyn
   const fake = join(root, 'timeout')
   const script = `#!/bin/sh
 case "$*" in
+  *" lgetxattrs "*) exit 0 ;;
   *" download-offset "*) printf bc ;;
   *" readdir "*) printf '[0] = {\\n  ino: 2\\n  ftyp: d\\n  name: .\\n}\\n[1] = {\\n  ino: 12\\n  ftyp: r\\n  name: note\\n}\\n' ;;
   *" lstatns /home/caboose/note"*) printf 'st_ino: 12\\nst_mode: 33188\\nst_uid: 1000\\nst_size: 4\\nst_mtime_sec: 1\\nst_mtime_nsec: 0\\nst_ctime_sec: 1\\nst_ctime_nsec: 0\\n' ;;
@@ -53,6 +54,7 @@ it('uses a parked view for a safe read and wakes for unsupported reads and mutat
   const fake = join(root, 'timeout')
   await writeFile(fake, `#!/bin/sh
 case "$*" in
+  *" lgetxattrs "*) exit 0 ;;
   *" lstatns /home/caboose/note"*) printf 'st_ino: 12\\nst_mode: 33188\\nst_uid: 1000\\nst_size: 4\\nst_mtime_sec: 1\\nst_mtime_nsec: 0\\nst_ctime_sec: 1\\nst_ctime_nsec: 0\\n' ;;
   *" lstatns /home/caboose"*) printf 'st_ino: 2\\nst_mode: 16877\\nst_uid: 1000\\nst_size: 4096\\nst_mtime_sec: 1\\nst_mtime_nsec: 0\\nst_ctime_sec: 1\\nst_ctime_nsec: 0\\n' ;;
   *" lstatns /"*) printf 'st_ino: 2\\nst_mode: 16877\\nst_uid: 0\\nst_size: 4096\\nst_mtime_sec: 1\\nst_mtime_nsec: 0\\nst_ctime_sec: 1\\nst_ctime_nsec: 0\\n' ;;
@@ -87,4 +89,22 @@ esac
     await app.shutdown(); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve()))
     await rm(root, { recursive: true, force: true })
   }
+})
+
+it('refuses a non-owner ancestor with an access ACL despite other execute', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'parked-reader-acl-'))
+  const fake = join(root, 'timeout')
+  await writeFile(fake, `#!/bin/sh
+case "$*" in
+  *" lstatns /"*) printf 'st_ino: 2\\nst_mode: 16877\\nst_uid: 0\\nst_size: 4096\\nst_mtime_sec: 1\\nst_mtime_nsec: 0\\nst_ctime_sec: 1\\nst_ctime_nsec: 0\\n' ;;
+  *" lgetxattrs /"*) printf '[0] = {\\n  attrname: system.posix_acl_access\\n}\\n' ;;
+  *) exit 1 ;;
+esac
+`); await chmod(fake, 0o755)
+  process.env.PATH = root + ':' + originalPath
+  const app = createServer((req, res) => { void serveParkedFiles({ id: 'id', homeDevice: 123, directory: root, image: '/disk' }, req, res).then(served => { if (!served) { res.writeHead(409); res.end('wake') } }) })
+  app.listen(0, '127.0.0.1'); await once(app, 'listening')
+  try {
+    expect((await fetch(`http://127.0.0.1:${(app.address() as AddressInfo).port}/v1/fs/stat?path=note`)).status).toBe(409)
+  } finally { app.closeAllConnections(); await new Promise<void>(resolve => app.close(() => resolve())); await rm(root, { recursive: true, force: true }) }
 })
