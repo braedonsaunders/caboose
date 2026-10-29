@@ -1,0 +1,12 @@
+[Unit]
+Description=Caboose host service vsock relays
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/caboose/vsock/caboose-vsock-services.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

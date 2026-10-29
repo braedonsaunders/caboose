@@ -1,5 +1,7 @@
 [
   "components/install.sh",
+  "components/caboose-vsock-services.py",
+  "components/caboose-vsock-services.service",
   "components/container-services.sh",
   "components/version.py",
   "desktop-mcp/caboose-desktop-mcp.mjs",

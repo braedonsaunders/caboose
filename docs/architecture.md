@@ -273,6 +273,10 @@ appkit-desk. Those listeners and their active connections close when the compute
 restarts, is deleted, or fails to wake. They reopen on wake; guest service tokens still
 authorize every connection.
 
+Linux VM guest components include a host-CID-only vsock bridge to the display, agent display,
+Files and terminal loopback TCP services. The current host continues to use guest TCP for
+these services; the bridge is available for hosts that support the AppKit vsock connector.
+
 ### Displays
 
 Two Caboose Display instances run in the computer, both as `caboose`:
