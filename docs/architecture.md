@@ -1032,6 +1032,10 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   10000 events. A missing, expired, overflowed or previous-run anchor answers
   `reset: true`, and the client re-enumerates. Rename events carry the inotify `cookie`
   that pairs the old and new path.
+- The journal is a notification mechanism, not a complete consistency proof: inotify
+  does not report every change (including modifications through memory mappings), and
+  processing is asynchronous. The host does not serve parked reads from this journal;
+  reads and writes wake the computer.
 - While the computer runs and at least one control socket is connected, the host polls the
   journal every second and broadcasts `fs.changed { anchor }` when something changed.
 - `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
