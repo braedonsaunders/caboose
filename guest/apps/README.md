@@ -136,7 +136,8 @@ computer, on its own display `:150`, session bus and throwaway home. Its probe a
 inline, `data:`, `blob:`, `eval` and `Function` script and remote frames are blocked by the
 policy; that `exec` returns code and output, times out and refuses a non-list argv; that an
 undeclared capability and a path outside the home are refused; that `spawn` streams; that
-script navigation away is refused and a frame's forged request is ignored; that an edit
+script navigation away is refused and a frame's forged request is ignored; that a classic
+script runs and a page without `<meta charset>` decodes as UTF-8; that an edit
 reloads the page, ending the old page's programs and keeping its storage; that a second
 launch raises the first; that quitting ends every program; and that storage survives a
 restart.
