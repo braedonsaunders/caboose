@@ -258,7 +258,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x16` | `video.present` | `id`, `seq`, `pts_us` |
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
-| `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …) |
+| `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
 | `0x30` | `clipboard` | `mime`, `data: bytes` |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x40` | `audio` | `codec: "opus"`, `pts_us`, `channels?: uint` (1 or 2, absent = 2), `data: bytes` |
@@ -299,9 +299,14 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
   the commit is typed as key presses and pre-edit text is not shown. Clients send Return as
   a `key` press/release (`0xFF0D`), not a committed newline: single-line fields can ignore
   newlines committed by an input method.
-- `text_input` fires when the focused window's text-input-v3 is enabled or disabled. With
-  the `text-input-v3` feature the client shows and hides the keyboard from it, and treats a
-  `text` cursor shape only as a fallback.
+- `text_input` fires when the focused window's text-input-v3 is enabled or disabled, and
+  while enabled whenever the application reports new surrounding text. With the
+  `text-input-v3` feature the client shows and hides the keyboard from it, and treats a
+  `text` cursor shape only as a fallback. `surrounding`, `cursor` and `anchor` come
+  together: the application's text around the caret (at most 4000 bytes of UTF-8), and the
+  caret and the selection's other end as byte offsets into it, on character boundaries.
+  They are absent when the application reports none, and for password and PIN fields and
+  fields hinted sensitive or hidden, whose text never leaves the computer.
 - Clients keep pointer gestures (tap, long-press right-click, swipe to scroll) for
   `xwayland: true` windows and send real touch to native Wayland ones, because most X11
   apps turn a touch drag into a selection.

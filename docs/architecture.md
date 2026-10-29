@@ -1858,12 +1858,15 @@ not account discovery.
 - **Pointer.** A hardware trackpad and mouse work through `UIPointerInteraction` and
   `GCMouse`.
 - **Keyboard.** The iOS keyboard works through `UITextInput`, so autocorrect, QuickPath,
-  dictation, emoji and marked-text input (Chinese, Japanese, Korean) work. The remote text
-  is unknown, so the client keeps a `TypingBuffer` of what was typed since the last click,
-  Return or non-text key, assumes the remote caret is at its end, and turns each edit iOS
-  makes into BackSpaces and keystrokes from where the old and new text differ. Where an app
-  has text-input-v3, the keyboard follows its state, its content purpose turns autocorrect
-  off for terminals and passwords, and marked text is a preedit. Return commits any marked
+  dictation, emoji and marked-text input (Chinese, Japanese, Korean) work. The client keeps
+  a `TypingBuffer` of the field's text before the remote caret and turns each edit iOS makes
+  into BackSpaces and keystrokes from where the old and new text differ. Where the app
+  reports its surrounding text (text-input-v3), the buffer is the field's real text before
+  the caret, so predictions, autocorrect and dictation work with the words already in the
+  field and can correct them; a report that races fresh keystrokes waits until the app has
+  caught up. Otherwise the buffer is what was typed since the last click, Return or non-text
+  key. Where an app has text-input-v3, the keyboard follows its state, its content purpose
+  turns autocorrect off for terminals and passwords, and marked text is a preedit. Return commits any marked
   text and sends a real Enter key press/release, so a browser address bar submits. An
   unmodified software Return dismisses the keyboard except in terminals and code editors;
   pasted multiline text and hardware Return leave it open. Otherwise autocorrect and
